@@ -1,0 +1,8 @@
+{
+  "name": "Copy of VoiceFlow pre",
+  "description": "A text-to-speech application featuring a modern UI, powered by Perplexity AI (Text) and Chatterbox/Gemini (Audio).",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
