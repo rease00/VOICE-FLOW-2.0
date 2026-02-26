@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { Button } from '../components/Button';
 import { AppScreen } from '../types';
-import { Sparkles, Mic, Radio, Activity } from 'lucide-react';
+import { Sparkles, Mic, Activity } from 'lucide-react';
 
 interface OnboardingProps {
   setScreen: (screen: AppScreen) => void;
@@ -20,24 +19,18 @@ export const Onboarding: React.FC<OnboardingProps> = ({ setScreen }) => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-center relative overflow-hidden w-full">
-      
-      {/* Live Animated Background */}
-      <div className="absolute inset-0 z-0 opacity-70 pointer-events-none">
-         <div className="absolute top-[-20%] left-[-20%] w-[60vw] h-[60vw] bg-purple-600 rounded-full mix-blend-multiply filter blur-3xl animate-blob"></div>
-         <div className="absolute top-[10%] right-[-20%] w-[60vw] h-[60vw] bg-indigo-600 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-2000"></div>
-         <div className="absolute bottom-[-20%] left-[20%] w-[60vw] h-[60vw] bg-pink-600 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-4000"></div>
-      </div>
+    <div className="relative flex min-h-[100dvh] w-full flex-col items-center justify-center overflow-y-auto overflow-x-hidden bg-transparent px-4 py-6">
+      <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(65%_55%_at_12%_8%,rgba(99,102,241,0.28),transparent_62%),radial-gradient(55%_48%_at_88%_14%,rgba(14,165,233,0.22),transparent_64%),linear-gradient(160deg,#0d0e15_0%,#141726_52%,#161a28_100%)]" />
 
       {/* Grid Overlay */}
-      <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 z-0 pointer-events-none"></div>
+      <div className="pointer-events-none absolute inset-0 z-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.06)_1px,transparent_1px)] [background-size:46px_46px]" />
 
-      <div className="z-10 w-full max-w-md p-6 flex flex-col items-center">
+      <div className="vf-glass-panel z-10 flex w-full max-w-md flex-col items-center rounded-[2rem] border border-white/20 bg-white/5 p-6 shadow-[0_28px_65px_rgba(3,5,12,0.48)]">
         
         {/* 3D Floating Icon Container */}
         <div className="relative w-72 h-72 flex items-center justify-center mb-12">
            <div className="absolute inset-0 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-full opacity-20 animate-pulse"></div>
-           <div className="relative z-10 bg-white/10 backdrop-blur-md border border-white/20 p-8 rounded-[3rem] shadow-2xl transform transition-transform hover:scale-105 duration-500">
+           <div className="relative z-10 rounded-[3rem] border border-white/25 bg-white/10 p-8 shadow-2xl backdrop-blur-md transform transition-transform duration-500 hover:scale-105">
               <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-6 rounded-2xl shadow-lg">
                  <Mic size={64} className="text-white drop-shadow-md" />
               </div>
@@ -95,24 +88,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ setScreen }) => {
           </button>
         </div>
       </div>
-      
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes blob {
-          0% { transform: translate(0px, 0px) scale(1); }
-          33% { transform: translate(30px, -50px) scale(1.1); }
-          66% { transform: translate(-20px, 20px) scale(0.9); }
-          100% { transform: translate(0px, 0px) scale(1); }
-        }
-        .animate-blob {
-          animation: blob 7s infinite;
-        }
-        .animation-delay-2000 {
-          animation-delay: 2s;
-        }
-        .animation-delay-4000 {
-          animation-delay: 4s;
-        }
-      `}} />
     </div>
   );
 };

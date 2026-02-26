@@ -1,0 +1,47 @@
+{
+  "generatedAt": "2026-02-25T06:46:32.673Z",
+  "backendUrl": "http://127.0.0.1:7800",
+  "inputPath": "artifacts/tmp_xtts_test.wav",
+  "modelName": "vf_low_cpu_timbre",
+  "results": [
+    {
+      "policy": "AUTO_RELIABLE",
+      "ok": true,
+      "status": 200,
+      "elapsedMs": 217,
+      "outputBytes": 443406,
+      "sha256": "959021c737004d74f88b8e9f8469007d4f804f112da9e811016b9bd9f0c88f5d",
+      "engineSelected": "RVC",
+      "engineExecuted": "RVC_FALLBACK",
+      "fallbackUsed": "1",
+      "fallbackReason": "selected_model",
+      "supportsOneShotCloneAtDecision": "1"
+    },
+    {
+      "policy": "LHQ_PILOT",
+      "ok": true,
+      "status": 200,
+      "elapsedMs": 204,
+      "outputBytes": 443406,
+      "sha256": "959021c737004d74f88b8e9f8469007d4f804f112da9e811016b9bd9f0c88f5d",
+      "engineSelected": "LHQ_SVC",
+      "engineExecuted": "RVC_FALLBACK",
+      "fallbackUsed": "1",
+      "fallbackReason": "lhq_unhealthy",
+      "supportsOneShotCloneAtDecision": "0"
+    },
+    {
+      "policy": "XTTS_ONLY",
+      "ok": true,
+      "status": 200,
+      "elapsedMs": 177,
+      "outputBytes": 443406,
+      "sha256": "959021c737004d74f88b8e9f8469007d4f804f112da9e811016b9bd9f0c88f5d",
+      "engineSelected": "RVC",
+      "engineExecuted": "RVC_FALLBACK",
+      "fallbackUsed": "1",
+      "fallbackReason": "selected_model",
+      "supportsOneShotCloneAtDecision": "1"
+    }
+  ]
+}

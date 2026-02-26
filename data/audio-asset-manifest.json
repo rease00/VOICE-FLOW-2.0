@@ -1,0 +1,207 @@
+﻿{
+    "generatedAt":  "2026-02-24T19:08:00.7434264Z",
+    "license":  "Pixabay License",
+    "note":  "Audio files are downloaded from cdn.pixabay.com and served locally for reliable playback.",
+    "assets":  [
+                   {
+                       "id":  "m_cinematic_melody",
+                       "name":  "Cinematic Melody",
+                       "category":  "Cinematic",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/10/23/audio_fa974e579a.mp3",
+                       "targetPath":  "public/assets/audio/music/cinematic_melody.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_just_relax",
+                       "name":  "Just Relax",
+                       "category":  "Calm",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/11/23/audio_64b2dd1bce.mp3",
+                       "targetPath":  "public/assets/audio/music/just_relax.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_beyond_horizons",
+                       "name":  "Beyond Horizons",
+                       "category":  "Cinematic",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2024/04/11/audio_825f6f9a35.mp3",
+                       "targetPath":  "public/assets/audio/music/beyond_horizons.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_autumn_piano",
+                       "name":  "Autumn Piano",
+                       "category":  "Calm",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2023/09/05/audio_8cfcc17b8c.mp3",
+                       "targetPath":  "public/assets/audio/music/autumn_is_coming_piano.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_lofi",
+                       "name":  "Lo-Fi Chill",
+                       "category":  "Lo-Fi",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/05/27/audio_1808fbf07a.mp3",
+                       "targetPath":  "public/assets/audio/music/lofi_chill.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_corporate_upbeat",
+                       "name":  "Corporate Upbeat",
+                       "category":  "Upbeat",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/01/18/audio_d0a13f69d2.mp3",
+                       "targetPath":  "public/assets/audio/music/corporate_upbeat.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_chill_synthwave",
+                       "name":  "Chill Synthwave",
+                       "category":  "Electronic",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2024/04/11/audio_c4c79fe54e.mp3",
+                       "targetPath":  "public/assets/audio/music/chill_synthwave_80x.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "m_soaring_heights",
+                       "name":  "Soaring Heights",
+                       "category":  "Cinematic",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2024/05/08/audio_373e05c162.mp3",
+                       "targetPath":  "public/assets/audio/music/soaring_heights.mp3",
+                       "type":  "music"
+                   },
+                   {
+                       "id":  "level_up",
+                       "name":  "Level Up",
+                       "category":  "UI",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2024/04/01/audio_e939eebbb1.mp3",
+                       "targetPath":  "public/assets/audio/sfx/level_up.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "punch",
+                       "name":  "Punch Hit",
+                       "category":  "Impacts",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2023/02/22/audio_d7a43e9b3b.mp3",
+                       "targetPath":  "public/assets/audio/sfx/punch_hit.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "scream",
+                       "name":  "Scream",
+                       "category":  "Horror",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/03/15/audio_de85bac61d.mp3",
+                       "targetPath":  "public/assets/audio/sfx/scream.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "boost",
+                       "name":  "Boost Transition",
+                       "category":  "Transitions",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/03/24/audio_f57273b4d6.mp3",
+                       "targetPath":  "public/assets/audio/sfx/boost_transition.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "whoosh",
+                       "name":  "Whoosh",
+                       "category":  "Transitions",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2025/07/30/audio_b3087a581e.mp3",
+                       "targetPath":  "public/assets/audio/sfx/whoosh.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "applause_cheer",
+                       "name":  "Applause Cheer",
+                       "category":  "Crowd",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2024/08/31/audio_aa510c96aa.mp3",
+                       "targetPath":  "public/assets/audio/sfx/applause_cheer.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "dog_bark",
+                       "name":  "Dog Bark",
+                       "category":  "Animals",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/03/15/audio_aa4b5cc81b.mp3",
+                       "targetPath":  "public/assets/audio/sfx/dog_bark.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "sliding_door",
+                       "name":  "Sliding Door",
+                       "category":  "Doors",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/08/04/audio_c92a7a25af.mp3",
+                       "targetPath":  "public/assets/audio/sfx/sliding_door.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "door_open_close",
+                       "name":  "Door Open Close",
+                       "category":  "Doors",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/03/10/audio_1394a10e86.mp3",
+                       "targetPath":  "public/assets/audio/sfx/door_open_close.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "door_lock",
+                       "name":  "Door Lock",
+                       "category":  "Doors",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/03/10/audio_6454d7af21.mp3",
+                       "targetPath":  "public/assets/audio/sfx/door_lock.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "light_rain",
+                       "name":  "Light Rain",
+                       "category":  "Environment",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2022/04/16/audio_520eb6a5cc.mp3",
+                       "targetPath":  "public/assets/audio/sfx/light_rain.mp3",
+                       "type":  "sfx"
+                   },
+                   {
+                       "id":  "m_novel_ambient_pages",
+                       "name":  "Novel Ambient Pages",
+                       "targetPath":  "public/assets/audio/music/novel_ambient_pages.mp3",
+                       "type":  "music",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/11/13/audio_cb4f1212a9.mp3",
+                       "category":  "Ambient"
+                   },
+                   {
+                       "id":  "m_novel_cinematic_arc",
+                       "name":  "Novel Cinematic Arc",
+                       "targetPath":  "public/assets/audio/music/novel_cinematic_arc.mp3",
+                       "type":  "music",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/11/24/audio_82498b22da.mp3",
+                       "category":  "Cinematic"
+                   },
+                   {
+                       "id":  "m_novel_romance_glow",
+                       "name":  "Novel Romance Glow",
+                       "targetPath":  "public/assets/audio/music/novel_romance_glow.mp3",
+                       "type":  "music",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/11/25/audio_91b32e02f9.mp3",
+                       "category":  "Romantic"
+                   },
+                   {
+                       "id":  "m_novel_mystery_night",
+                       "name":  "Novel Mystery Night",
+                       "targetPath":  "public/assets/audio/music/novel_mystery_night.mp3",
+                       "type":  "music",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/11/23/audio_035a943c87.mp3",
+                       "category":  "Horror"
+                   },
+                   {
+                       "id":  "m_novel_comedy_bounce",
+                       "name":  "Novel Comedy Bounce",
+                       "targetPath":  "public/assets/audio/music/novel_comedy_bounce.mp3",
+                       "type":  "music",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/07/27/audio_202082aa0b.mp3",
+                       "category":  "Comedy"
+                   },
+                   {
+                       "id":  "m_novel_tension_dark",
+                       "name":  "Novel Tension Dark",
+                       "targetPath":  "public/assets/audio/music/novel_tension_dark.mp3",
+                       "type":  "music",
+                       "sourceUrl":  "https://cdn.pixabay.com/audio/2021/12/11/audio_0ad0f9e437.mp3",
+                       "category":  "Horror"
+                   }
+               ]
+}

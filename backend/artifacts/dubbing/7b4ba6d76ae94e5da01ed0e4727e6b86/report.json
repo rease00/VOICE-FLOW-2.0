@@ -1,0 +1,32 @@
+{
+  "pipelineVersion": "v2",
+  "jobId": "7b4ba6d76ae94e5da01ed0e4727e6b86",
+  "preflight": {
+    "ok": false,
+    "checks": [],
+    "failureCount": 0
+  },
+  "stageTimeline": [],
+  "selectedVoices": [],
+  "segmentStats": {},
+  "alignment": [],
+  "outputFiles": {},
+  "speakerDetection": {
+    "speakers": [],
+    "segmentCount": 0
+  },
+  "cloneStore": {
+    "scope": "job_only",
+    "profiles": []
+  },
+  "xttsRequests": [],
+  "synthesisFailures": [],
+  "qualityGate": {
+    "passed": false,
+    "reasons": [
+      "No module named 'video_dubbing'"
+    ]
+  },
+  "speakerSynthesisStats": {},
+  "error": "No module named 'video_dubbing'"
+}

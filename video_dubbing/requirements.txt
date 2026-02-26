@@ -1,0 +1,12 @@
+numpy>=1.26,<3
+soundfile>=0.12
+librosa>=0.10
+faster-whisper>=1.1
+requests>=2.32
+demucs>=4.0
+speechbrain>=1.0
+pyannote.audio>=3.1
+ctranslate2>=4.3
+transformers>=4.45
+pyworld>=0.3.4
+pydub>=0.25
