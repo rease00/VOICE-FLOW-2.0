@@ -8,12 +8,12 @@ import {
     AlertCircle, Download, CheckCircle2, Menu, Box,
     Plus, Bot, Volume2, Clock, Send, 
     Film, Mic2, Sliders,
-    Key, Lock, Terminal, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, BookOpen, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus
+    Key, Lock, Terminal, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, BookOpen, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Shield, Coins, Gift
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
 import { GenerationSettings, AppScreen, ClonedVoice, DubSegment, CharacterProfile, VoiceOption, StudioEditorMode } from '../types';
-import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, autoCorrectText, proofreadScript, DirectorOptions, parseScriptToSegments, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT } from '../services/geminiService';
+import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, autoCorrectText, proofreadScript, DirectorOptions, parseScriptToSegments, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, guessGenderFromName } from '../services/geminiService';
 import { buildDubAlignmentReport, extractAndSeparateDubbingStems, mixFinalDub } from '../services/dubbingService';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { useUser } from '../contexts/UserContext';
@@ -32,6 +32,8 @@ import { NovelWorkspaceV2 } from '../components/NovelWorkspaceV2';
 import { BlockScriptEditor } from '../components/studio/BlockScriptEditor';
 import { MorphingGenerateButton } from '../components/studio/MorphingGenerateButton';
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
+import { AdminPanel } from '../components/AdminPanel';
+import { createTokenPackCheckoutSession, redeemCoupon } from '../services/accountService';
 
 interface MainAppProps {
   setScreen: (screen: AppScreen) => void;
@@ -42,7 +44,8 @@ enum Tab {
   LAB = 'LAB',
   DUBBING = 'DUBBING',
   CHARACTERS = 'CHARACTERS',
-  NOVEL = 'NOVEL'
+  NOVEL = 'NOVEL',
+  ADMIN = 'ADMIN',
 }
 
 type LabMode = 'CLONING' | 'COVERS';
@@ -516,7 +519,27 @@ const GenerationWidget = ({
 };
 
 export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
-  const { stats, updateStats, setShowSubscriptionModal, addToHistory, user, clonedVoices, addClonedVoice, drafts, saveDraft, deleteDraft, characterLibrary, updateCharacter, deleteCharacter, getVoiceForCharacter, syncCast, signOutUser } = useUser();
+  const {
+    stats,
+    setShowSubscriptionModal,
+    addToHistory,
+    user,
+    clonedVoices,
+    addClonedVoice,
+    drafts,
+    saveDraft,
+    deleteDraft,
+    characterLibrary,
+    updateCharacter,
+    deleteCharacter,
+    getVoiceForCharacter,
+    syncCast,
+    signOutUser,
+    watchAd,
+    refreshEntitlements,
+    isAdmin,
+    hasUnlimitedAccess,
+  } = useUser();
   
   // --- State ---
   const [activeTab, setActiveTab] = useState<Tab>(Tab.STUDIO);
@@ -557,6 +580,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // Modals & Overlays
   const [showSettings, setShowSettings] = useState(false);
   const [showAdModal, setShowAdModal] = useState(false);
+  const [couponCode, setCouponCode] = useState('');
+  const [isRedeemingCoupon, setIsRedeemingCoupon] = useState(false);
+  const [isBuyingTokenPack, setIsBuyingTokenPack] = useState(false);
   const [toast, setToast] = useState<{msg: string, type: 'success' | 'error' | 'info'} | null>(null);
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => {
     const saved = localStorage.getItem('vf_ui_theme');
@@ -577,6 +603,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // Editor Tools
   const [isAiWriting, setIsAiWriting] = useState(false);
+  const [isAutoAssigningCast, setIsAutoAssigningCast] = useState(false);
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
   const [detectedSpeakers, setDetectedSpeakers] = useState<string[]>([]);
   const [studioEditorMode, setStudioEditorMode] = useState<StudioEditorMode>(() => {
@@ -668,7 +695,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const [showFloatingStudioGenerate, setShowFloatingStudioGenerate] = useState(false);
 
-  const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !stats.isPremium;
+  const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !hasUnlimitedAccess;
+  const currentEngineSpendable = settings.engine === 'KOKORO'
+    ? Math.max(0, Number(stats.wallet?.spendableNowByEngine?.KOKORO || 0))
+    : Math.max(0, Number(stats.wallet?.spendableNowByEngine?.GEM || 0));
+  const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
+  const hasAdClaimsRemaining =
+    Math.max(0, Number(stats.wallet?.adClaimsToday || 0)) < Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3));
+  const canClaimAdReward = hasAdClaimsRemaining;
+  const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
+  const walletVff = Math.max(0, Number(stats.wallet?.vffBalance || 0));
+  const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
+  const walletStackTotal = walletMonthlyFree + walletVff + walletPaid;
+  const walletStackMax = Math.max(1, walletStackTotal, Number(stats.wallet?.monthlyFreeLimit || 0));
+  const stackPercent = (value: number): number => {
+      const ratio = (Math.max(0, value) / walletStackMax) * 100;
+      return value <= 0 ? 0 : Math.max(6, Math.min(100, ratio));
+  };
   const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => setToast({ msg, type });
   const patchDubbingUiState = useCallback((patch: Partial<DubbingUiState>) => {
       setDubbingUiState((prev) => ({
@@ -981,6 +1024,195 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return [...names];
   }, [activeTab, detectedSpeakers, dubScript, text]);
   const isStudioMultiSpeakerEnabled = settings.multiSpeakerEnabled !== false;
+
+  const inferSpeakerGender = useCallback((speaker: string, sample: string): VoiceOption['gender'] => {
+      const existing = characterLibrary.find((item) => item.name.toLowerCase() === speaker.toLowerCase());
+      if (existing?.gender && existing.gender !== 'Unknown') return existing.gender;
+
+      const fromName = guessGenderFromName(speaker);
+      if (fromName !== 'Unknown') return fromName;
+
+      const probe = `${speaker} ${sample}`.toLowerCase();
+      if (/\b(she|her|hers|mother|mom|queen|princess|girl|woman|madam|didi|behen|aunty)\b/i.test(probe)) return 'Female';
+      if (/\b(he|him|his|father|dad|king|prince|boy|man|sir|bhai|bhaiya|uncle)\b/i.test(probe)) return 'Male';
+      return 'Unknown';
+  }, [characterLibrary]);
+
+  const inferSpeakerTone = useCallback((sample: string): 'calm' | 'energetic' | 'serious' => {
+      const textSample = String(sample || '').trim();
+      if (!textSample) return 'calm';
+
+      let energeticScore = 0;
+      let seriousScore = 0;
+
+      if ((textSample.match(/!/g) || []).length >= 2) energeticScore += 2;
+      if (/[A-Z]{4,}/.test(textSample)) energeticScore += 1;
+      if (/\b(wow|great|amazing|quick|hurry|run|go|excited|lets|let's|jaldi|wah|chalo)\b/i.test(textSample)) energeticScore += 2;
+
+      if (/\b(danger|warning|battle|war|crime|murder|order|command|urgent|serious|must)\b/i.test(textSample)) seriousScore += 2;
+      if ((textSample.match(/[?.]/g) || []).length > 4) seriousScore += 1;
+      if (/\b(quietly|slowly|softly|carefully|gently)\b/i.test(textSample)) seriousScore += 1;
+
+      if (energeticScore >= seriousScore + 2) return 'energetic';
+      if (seriousScore > energeticScore) return 'serious';
+      return 'calm';
+  }, []);
+
+  const autoAssignCastVoices = useCallback(() => {
+      if (!isStudioMultiSpeakerEnabled) {
+          showToast('Enable Multi-Speaker Mode first.', 'info');
+          return;
+      }
+      if (!castSpeakers.length) {
+          showToast('No cast speakers found to map.', 'info');
+          return;
+      }
+
+      const scopedCatalog = getLanguageScopedVoiceCatalog(settings.engine, activeScriptLanguageCode);
+      const catalog = scopedCatalog.length > 0 ? scopedCatalog : getEngineVoiceCatalog(settings.engine);
+      if (!catalog.length) {
+          showToast('No voices available for auto-assignment.', 'error');
+          return;
+      }
+
+      const sourceScript = activeTab === Tab.DUBBING ? dubScript : text;
+      const parsedSegments = parseScriptToSegments(sourceScript);
+
+      const speakerLookup = new Map<string, string>();
+      castSpeakers.forEach((speaker) => {
+          const normalized = String(speaker || '').trim();
+          if (!normalized) return;
+          speakerLookup.set(normalized.toLowerCase(), normalized);
+      });
+
+      const speakerSamples = new Map<string, string[]>();
+      parsedSegments.forEach((segment) => {
+          const rawSpeaker = String(segment.speaker || '').trim();
+          if (!rawSpeaker || rawSpeaker.toUpperCase() === 'SFX') return;
+          const canonicalSpeaker = speakerLookup.get(rawSpeaker.toLowerCase()) || rawSpeaker;
+          if (!speakerSamples.has(canonicalSpeaker)) speakerSamples.set(canonicalSpeaker, []);
+          const line = String(segment.text || '').trim();
+          if (line) speakerSamples.get(canonicalSpeaker)?.push(line);
+      });
+
+      const hashText = (value: string): number => {
+          let hash = 0;
+          for (let idx = 0; idx < value.length; idx += 1) {
+              hash = ((hash << 5) - hash) + value.charCodeAt(idx);
+              hash |= 0;
+          }
+          return Math.abs(hash);
+      };
+
+      const narratorSpeakerPattern = /\b(narrator|voice\s*over|storyteller|commentator)\b/i;
+      const energeticVoicePattern = /\b(nova|shimmer|heart|bella|sarah|aoede|callirrhoe|priya|anjali|sophie|olivia)\b/i;
+      const seriousVoicePattern = /\b(onyx|fable|echo|george|david|michael|fenrir|omega|psi|alnilam|iapetus)\b/i;
+
+      setIsAutoAssigningCast(true);
+      try {
+          const usedVoiceIds = new Set<string>();
+          const nextMapping: Record<string, string> = {};
+
+          castSpeakers.forEach((speaker) => {
+              const normalizedSpeaker = String(speaker || '').trim();
+              if (!normalizedSpeaker) return;
+
+              const sample = (speakerSamples.get(normalizedSpeaker) || []).slice(0, 3).join(' ');
+              const inferredGender = inferSpeakerGender(normalizedSpeaker, sample);
+              const tone = inferSpeakerTone(sample);
+              const rememberedVoiceId = getVoiceForCharacter(normalizedSpeaker);
+
+              const ranked = catalog
+                  .map((voice, index) => {
+                      const meta = `${voice.name || ''} ${voice.id || ''} ${voice.accent || ''} ${voice.country || ''} ${voice.ageGroup || ''}`.toLowerCase();
+                      let score = 0;
+
+                      if (inferredGender !== 'Unknown') {
+                          if (voice.gender === inferredGender) score += 26;
+                          else if (voice.gender !== 'Unknown') score -= 8;
+                      } else if (voice.gender === 'Unknown') {
+                          score += 3;
+                      }
+
+                      if (rememberedVoiceId && voice.id === rememberedVoiceId) score += 8;
+                      if (settings.speakerMapping?.[normalizedSpeaker] === voice.id) score += 4;
+                      if ((voice.ageGroup || '').toLowerCase().includes('adult')) score += 2;
+
+                      const isNarrator = narratorSpeakerPattern.test(normalizedSpeaker);
+                      if (isNarrator && seriousVoicePattern.test(meta)) score += 10;
+                      if (tone === 'energetic' && energeticVoicePattern.test(meta)) score += 9;
+                      if (tone === 'serious' && seriousVoicePattern.test(meta)) score += 9;
+                      if (tone === 'calm' && narratorSpeakerPattern.test(meta)) score += 6;
+                      if (meta.includes(normalizedSpeaker.toLowerCase())) score += 7;
+
+                      if (!usedVoiceIds.has(voice.id)) score += 4;
+                      score += (hashText(`${normalizedSpeaker}:${voice.id}`) % 7) / 100;
+                      score -= index * 0.0001;
+
+                      return { voice, score };
+                  })
+                  .sort((a, b) => b.score - a.score);
+
+              const selectedVoice =
+                  ranked.find((entry) => !usedVoiceIds.has(entry.voice.id))?.voice ||
+                  ranked[0]?.voice ||
+                  catalog[0];
+
+              if (!selectedVoice) return;
+              nextMapping[normalizedSpeaker] = selectedVoice.id;
+              usedVoiceIds.add(selectedVoice.id);
+
+              const existingCharacter = characterLibrary.find(
+                  (item) => item.name.toLowerCase() === normalizedSpeaker.toLowerCase()
+              );
+              updateCharacter({
+                  id: existingCharacter?.id || crypto.randomUUID(),
+                  name: normalizedSpeaker,
+                  voiceId: selectedVoice.id,
+                  gender: selectedVoice.gender !== 'Unknown' ? selectedVoice.gender : inferredGender,
+                  age: resolveVoiceAgeGroup(selectedVoice),
+                  avatarColor: existingCharacter?.avatarColor || '#6366f1',
+                  description: existingCharacter?.description || 'Auto-assigned from AI cast',
+              });
+          });
+
+          if (!Object.keys(nextMapping).length) {
+              showToast('No cast speakers available to auto-assign.', 'info');
+              return;
+          }
+
+          setSettings((prev) => ({
+              ...prev,
+              speakerMapping: {
+                  ...prev.speakerMapping,
+                  ...nextMapping,
+              },
+          }));
+          const mappedCount = Object.keys(nextMapping).length;
+          showToast(`AI assigned ${mappedCount} cast voice${mappedCount === 1 ? '' : 's'}.`, 'success');
+      } finally {
+          setIsAutoAssigningCast(false);
+      }
+  }, [
+      activeScriptLanguageCode,
+      activeTab,
+      castSpeakers,
+      characterLibrary,
+      dubScript,
+      getEngineVoiceCatalog,
+      getLanguageScopedVoiceCatalog,
+      getVoiceForCharacter,
+      inferSpeakerGender,
+      inferSpeakerTone,
+      isStudioMultiSpeakerEnabled,
+      resolveVoiceAgeGroup,
+      settings.engine,
+      settings.speakerMapping,
+      showToast,
+      text,
+      updateCharacter,
+  ]);
+
   const dubbingStatusAppearance = useMemo(() => {
       if (dubbingUiState.phase === 'running') {
           return {
@@ -1895,14 +2127,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const wavBlob = audioBufferToWav(mixedBuffer);
       const url = URL.createObjectURL(wavBlob);
       
-      if (!stats.isPremium) updateStats({ generationsUsed: stats.generationsUsed + 1 });
-      
       return { url, voiceNameDisplay };
   };
 
   const handleGenerate = async () => {
     if (!text.trim()) return showToast("Please enter some text.", "info");
-    if (isLimitReached) return setShowAdModal(true);
+    if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
+    if (isWalletBlocked) {
+      if (settings.engine === 'KOKORO' && hasAdClaimsRemaining) {
+        setShowAdModal(true);
+        return;
+      }
+      return showToast(`Insufficient ${settings.engine} VF balance.`, 'error');
+    }
     
     // Setup Abort Controller
     if (generationAbortController.current) generationAbortController.current.abort();
@@ -2186,7 +2423,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerateDub = async () => {
       if (!dubScript) return showToast("Generate a script first", "info");
-      if (isLimitReached) return setShowAdModal(true);
+    if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
+    if (isWalletBlocked) {
+      if (settings.engine === 'KOKORO' && hasAdClaimsRemaining) {
+        setShowAdModal(true);
+        return;
+      }
+      return showToast(`Insufficient ${settings.engine} VF balance.`, 'error');
+    }
       patchDubbingUiState({
           phase: 'running',
           progress: 5,
@@ -2469,8 +2713,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   setIsRenderingDubVideo(false);
               }
           }
-
-          if (!stats.isPremium) updateStats({ generationsUsed: stats.generationsUsed + processedSegments.length });
 
       } catch (e: any) {
           if (e.name === 'AbortError') {
@@ -2833,7 +3075,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ? 'Characters'
         : activeTab === Tab.NOVEL
           ? 'Novel Workspace'
-          : 'Voice Lab';
+          : activeTab === Tab.ADMIN
+            ? 'Admin'
+            : 'Voice Lab';
   const isGuestSession =
     !user.email ||
     user.email.toLowerCase() === 'guest@voiceflow.ai' ||
@@ -2866,6 +3110,38 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       void refreshTtsRuntimeStatus();
   };
 
+  const handleRedeemCoupon = async () => {
+      const code = couponCode.trim();
+      if (!code) return;
+      setIsRedeemingCoupon(true);
+      try {
+          const result = await redeemCoupon(code, mediaBackendUrl);
+          setCouponCode('');
+          showToast(`Coupon applied: +${result.creditedVf.toLocaleString()} VF`, 'success');
+          await refreshEntitlements();
+      } catch (error: any) {
+          showToast(error?.message || 'Coupon redeem failed.', 'error');
+      } finally {
+          setIsRedeemingCoupon(false);
+      }
+  };
+
+  const handleBuyTokenPack = async () => {
+      setIsBuyingTokenPack(true);
+      try {
+          const result = await createTokenPackCheckoutSession(mediaBackendUrl, {
+              successUrl: `${window.location.origin}${window.location.pathname}?billing=success`,
+              cancelUrl: `${window.location.origin}${window.location.pathname}?billing=cancel`,
+          });
+          if (!result.url) throw new Error('Checkout URL is missing.');
+          window.location.href = result.url;
+      } catch (error: any) {
+          showToast(error?.message || 'Could not start token pack checkout.', 'error');
+      } finally {
+          setIsBuyingTokenPack(false);
+      }
+  };
+
   // --- UI Components ---
 
   const Sidebar = () => (
@@ -2889,6 +3165,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 { id: Tab.DUBBING, icon: <Film size={18} />, label: 'Video Dub' },
                 { id: Tab.CHARACTERS, icon: <Users size={18} />, label: 'Characters' },
                 { id: Tab.LAB, icon: <Fingerprint size={18} />, label: 'Voice Lab' },
+                ...(isAdmin ? [{ id: Tab.ADMIN, icon: <Shield size={18} />, label: 'Admin' }] : []),
             ].map(item => (
                 <button 
                     key={item.id}
@@ -2930,6 +3207,79 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 </div>
             </div>
         )}
+
+        <div className="px-4 pt-2 pb-40">
+            <div className="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                    <div className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-indigo-700">
+                        <Coins size={13} />
+                        Token Wallet
+                    </div>
+                    <span className="text-[10px] font-semibold text-gray-600">
+                        {currentEngineSpendable.toLocaleString()} spendable now
+                    </span>
+                </div>
+                <div className="flex items-end gap-3">
+                    <div className="h-28 w-8 rounded-full border border-indigo-200 bg-white p-1">
+                        <div className="flex h-full flex-col-reverse overflow-hidden rounded-full bg-gray-100">
+                            <div style={{ height: `${stackPercent(walletMonthlyFree)}%` }} className="bg-sky-400/90" title="Monthly free VF" />
+                            <div style={{ height: `${stackPercent(walletVff)}%` }} className="bg-violet-400/90" title="VFF (ad reward)" />
+                            <div style={{ height: `${stackPercent(walletPaid)}%` }} className="bg-emerald-400/90" title="Paid VF" />
+                        </div>
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-1 text-[11px]">
+                        <div className="flex items-center justify-between text-gray-700">
+                            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-400" /> Monthly</span>
+                            <strong>{walletMonthlyFree.toLocaleString()}</strong>
+                        </div>
+                        <div className="flex items-center justify-between text-gray-700">
+                            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-violet-400" /> VFF</span>
+                            <strong>{walletVff.toLocaleString()}</strong>
+                        </div>
+                        <div className="flex items-center justify-between text-gray-700">
+                            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-400" /> Paid</span>
+                            <strong>{walletPaid.toLocaleString()}</strong>
+                        </div>
+                        <div className="pt-1 text-[10px] text-gray-500">
+                            Ads today: {Math.max(0, Number(stats.wallet?.adClaimsToday || 0))}/{Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3))}
+                        </div>
+                    </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                        onClick={() => setShowAdModal(true)}
+                        disabled={!canClaimAdReward}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-violet-200 bg-white px-2 py-2 text-[11px] font-semibold text-violet-700 disabled:opacity-50"
+                    >
+                        <Gift size={12} />
+                        Watch Ad
+                    </button>
+                    <button
+                        onClick={() => { void handleBuyTokenPack(); }}
+                        disabled={isBuyingTokenPack}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-white px-2 py-2 text-[11px] font-semibold text-emerald-700 disabled:opacity-50"
+                    >
+                        {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
+                        100k pack
+                    </button>
+                </div>
+                <div className="mt-2 flex items-center gap-1">
+                    <input
+                        value={couponCode}
+                        onChange={(event) => setCouponCode(event.target.value)}
+                        placeholder="Coupon code"
+                        className="h-8 min-w-0 flex-1 rounded-lg border border-gray-200 px-2 text-[11px] outline-none focus:border-indigo-300"
+                    />
+                    <button
+                        onClick={() => { void handleRedeemCoupon(); }}
+                        disabled={isRedeemingCoupon || !couponCode.trim()}
+                        className="h-8 rounded-lg border border-indigo-200 px-2 text-[11px] font-semibold text-indigo-700 disabled:opacity-50"
+                    >
+                        {isRedeemingCoupon ? <Loader2 size={12} className="animate-spin" /> : 'Redeem'}
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-100 bg-gray-50/50">
             <button
@@ -3401,7 +3751,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                          : 'bg-gray-100 border-gray-200 text-gray-600'
                      }`}>
                          <Box size={14} />
-                         {stats.isPremium ? 'PRO UNLIMITED' : `${stats.generationsUsed} / ${stats.generationsLimit} Gens`}
+                         {`${currentEngineSpendable.toLocaleString()} VF (${settings.engine})`}
                      </div>
 
                      {!stats.isPremium && (
@@ -3703,13 +4053,34 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         <h3 className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 ${
                                             isStudioMultiSpeakerEnabled ? 'text-indigo-400' : 'text-gray-500'
                                         }`}><Bot size={14}/> AI Cast</h3>
-                                        <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase ${
-                                            isStudioMultiSpeakerEnabled
-                                              ? 'bg-white text-indigo-500 border border-indigo-100'
-                                              : 'bg-white text-gray-500 border border-gray-200'
-                                        }`}>
-                                            {isStudioMultiSpeakerEnabled ? activeScriptLanguageCode.toUpperCase() : 'Disabled'}
-                                        </span>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={autoAssignCastVoices}
+                                                disabled={
+                                                    !isStudioMultiSpeakerEnabled ||
+                                                    isAutoAssigningCast ||
+                                                    castSpeakers.length === 0 ||
+                                                    castVoiceOptions.length === 0
+                                                }
+                                                title="AI auto-assign best speaker voices from script text"
+                                                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                    isStudioMultiSpeakerEnabled
+                                                        ? 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                                                        : 'bg-white text-gray-500 border-gray-200'
+                                                } disabled:opacity-60`}
+                                            >
+                                                {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                                                AI Auto
+                                            </button>
+                                            <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase ${
+                                                isStudioMultiSpeakerEnabled
+                                                  ? 'bg-white text-indigo-500 border border-indigo-100'
+                                                  : 'bg-white text-gray-500 border border-gray-200'
+                                            }`}>
+                                                {isStudioMultiSpeakerEnabled ? activeScriptLanguageCode.toUpperCase() : 'Disabled'}
+                                            </span>
+                                        </div>
                                     </div>
                                     {!isStudioMultiSpeakerEnabled && (
                                       <p className="mb-3 text-[11px] font-medium text-gray-500">
@@ -4016,6 +4387,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             setActiveTab(Tab.STUDIO);
                             showToast("Sent to Studio for Audio Generation", "success");
                         }}
+                    />
+                )}
+
+                {activeTab === Tab.ADMIN && isAdmin && (
+                    <AdminPanel
+                        mediaBackendUrl={mediaBackendUrl}
+                        onToast={showToast}
+                        onRefreshEntitlements={refreshEntitlements}
                     />
                 )}
                 
@@ -4497,7 +4876,22 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           />
       )}
       {showSettings && <SettingsPanel />}
-      <AdModal isOpen={showAdModal} onClose={() => setShowAdModal(false)} onReward={() => { updateStats({ generationsUsed: Math.max(0, stats.generationsUsed - 1) }); setShowAdModal(false); showToast("Reward granted!", "success"); }} />
+      <AdModal
+        isOpen={showAdModal}
+        onClose={() => setShowAdModal(false)}
+        onReward={() => {
+          void (async () => {
+            try {
+              await watchAd();
+              showToast('Reward granted: +1000 VFF', 'success');
+            } catch (error: any) {
+              showToast(error?.message || 'Ad reward claim failed.', 'error');
+            } finally {
+              setShowAdModal(false);
+            }
+          })();
+        }}
+      />
       {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
       </div>
     </div>

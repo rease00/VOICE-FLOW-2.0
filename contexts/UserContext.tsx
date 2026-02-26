@@ -5,6 +5,7 @@ import {
   RecaptchaVerifier,
   createUserWithEmailAndPassword,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPhoneNumber,
   signInWithPopup,
@@ -15,6 +16,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   setDoc,
   writeBatch,
@@ -30,7 +32,7 @@ import {
 } from '../types';
 import { INITIAL_STATS, VOICES } from '../constants';
 import { guessGenderFromName } from '../services/geminiService';
-import { ensureStatsUsageWindows, ensureVfUsageStats } from '../services/usageMetering';
+import { createEmptyWalletStats, ensureStatsUsageWindows, ensureVfUsageStats } from '../services/usageMetering';
 import {
   facebookProvider,
   firebaseAuth,
@@ -48,7 +50,7 @@ import {
   verifyLocalAdminPassword,
   type LocalAdminSessionPayload,
 } from '../services/localAdminAuth';
-import { AccountEntitlements, fetchAccountEntitlements } from '../services/accountService';
+import { AccountEntitlements, claimAdReward, fetchAccountEntitlements } from '../services/accountService';
 import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 
 interface ExtendedUserContextType extends UserContextType {
@@ -102,6 +104,7 @@ const readSettingsBackendUrl = (): string => {
 };
 
 const normalizeStoredStats = (stored: any): UserStats => {
+  const walletFallback = createEmptyWalletStats();
   const merged: UserStats = {
     ...INITIAL_STATS,
     ...stored,
@@ -111,6 +114,14 @@ const normalizeStoredStats = (stored: any): UserStats => {
     planName: stored?.planName === 'Pro' || stored?.planName === 'Plus' || stored?.planName === 'Enterprise' ? stored.planName : 'Free',
     lastResetDate: typeof stored?.lastResetDate === 'string' ? stored.lastResetDate : undefined,
     vfUsage: ensureVfUsageStats(stored?.vfUsage),
+    wallet: {
+      ...walletFallback,
+      ...(stored?.wallet || {}),
+      spendableNowByEngine: {
+        GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
+        KOKORO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.KOKORO ?? walletFallback.spendableNowByEngine.KOKORO)),
+      },
+    },
   };
   return ensureStatsUsageWindows(merged);
 };
@@ -119,6 +130,8 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   const usage = ensureVfUsageStats(prev.vfUsage);
   const monthlyByEngine = entitlements.monthly?.byEngine || {};
   const dailyByEngine = entitlements.daily?.byEngine || {};
+  const walletFallback = createEmptyWalletStats();
+  const wallet = entitlements.wallet || walletFallback;
 
   const dailyTotalChars = Object.values(dailyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
   const monthlyTotalChars = Object.values(monthlyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
@@ -167,7 +180,53 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         },
       },
     },
+    wallet: {
+      monthlyFreeRemaining: Math.max(0, Number(wallet.monthlyFreeRemaining || 0)),
+      monthlyFreeLimit: Math.max(0, Number(wallet.monthlyFreeLimit || 0)),
+      vffBalance: Math.max(0, Number(wallet.vffBalance || 0)),
+      paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
+      spendableNowByEngine: {
+        GEM: Math.max(0, Number(wallet.spendableNowByEngine?.GEM || 0)),
+        KOKORO: Math.max(0, Number(wallet.spendableNowByEngine?.KOKORO || 0)),
+      },
+      adClaimsToday: Math.max(0, Number(wallet.adClaimsToday || 0)),
+      adClaimsDailyLimit: Math.max(1, Number(wallet.adClaimsDailyLimit || walletFallback.adClaimsDailyLimit)),
+      vffMonthKey: wallet.vffMonthKey,
+    },
   });
+};
+
+const isTruthyAdminFlag = (value: unknown): boolean => {
+  if (value === true) return true;
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+};
+
+const hasFirestoreAdminRole = (data: Record<string, unknown> | null | undefined): boolean => {
+  if (!data) return false;
+  if (isTruthyAdminFlag(data.isAdmin) || isTruthyAdminFlag(data.admin)) return true;
+
+  const role = String(data.role ?? '').trim().toLowerCase();
+  if (role === 'admin') return true;
+
+  const rolesRaw = data.roles;
+  if (Array.isArray(rolesRaw)) {
+    const hasAdmin = rolesRaw.some((item) => String(item ?? '').trim().toLowerCase() === 'admin');
+    if (hasAdmin) return true;
+  }
+  return false;
+};
+
+const readFirestoreAdminStatus = async (uid: string): Promise<boolean> => {
+  const normalizedUid = String(uid || '').trim();
+  if (!normalizedUid) return false;
+  try {
+    const snapshot = await getDoc(doc(firestoreDb, 'users', normalizedUid));
+    if (!snapshot.exists()) return false;
+    return hasFirestoreAdminRole(snapshot.data() as Record<string, unknown>);
+  } catch {
+    return false;
+  }
 };
 
 const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
@@ -175,7 +234,9 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   if (!current) return BLANK_USER;
   const tokenResult = await current.getIdTokenResult(true).catch(() => null);
   const hasAdminClaim = Boolean(tokenResult?.claims?.admin);
-  const isAdmin = isAdminIdentity(current.uid, current.email, hasAdminClaim);
+  const envOrClaimAdmin = isAdminIdentity(current.uid, current.email, hasAdminClaim);
+  const firestoreAdmin = envOrClaimAdmin ? false : await readFirestoreAdminStatus(current.uid);
+  const isAdmin = envOrClaimAdmin || firestoreAdmin;
   const providerIds = (current.providerData || [])
     .map((provider) => String(provider?.providerId || '').trim())
     .filter(Boolean);
@@ -344,28 +405,45 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const rawEmail = String(email || '').trim();
     if (isLocalAdminUsername(rawEmail)) {
       const configIssue = getLocalAdminConfigIssue();
-      if (configIssue) {
-        return { ok: false, error: `Local admin login is disabled: ${configIssue}` };
+      if (!configIssue) {
+        const valid = await verifyLocalAdminPassword(String(password || ''));
+        if (!valid) {
+          return { ok: false, error: 'Invalid admin credentials.' };
+        }
+        const session = await createLocalAdminSession();
+        if (!session) {
+          return { ok: false, error: 'Could not create local admin session. Check local admin env values.' };
+        }
+        if (charactersUnsubscribeRef.current) {
+          charactersUnsubscribeRef.current();
+          charactersUnsubscribeRef.current = null;
+        }
+        if (firebaseAuth.currentUser) {
+          await signOut(firebaseAuth).catch(() => undefined);
+        }
+        setUser(mapLocalAdminSessionToProfile(session));
+        setCharacterLibrary(DEFAULT_CHARACTERS);
+        await refreshEntitlements();
+        return { ok: true };
       }
-      const valid = await verifyLocalAdminPassword(String(password || ''));
-      if (!valid) {
-        return { ok: false, error: 'Invalid admin credentials.' };
+
+      const fallbackEmail = resolveFirebaseLoginEmail(rawEmail);
+      if (!fallbackEmail.includes('@')) {
+        return {
+          ok: false,
+          error: `Local admin login is disabled: ${configIssue}. Firebase fallback requires VITE_ADMIN_LOGIN_EMAIL or a valid Firebase auth domain.`,
+        };
       }
-      const session = await createLocalAdminSession();
-      if (!session) {
-        return { ok: false, error: 'Could not create local admin session. Check local admin env values.' };
+      try {
+        await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
+        await refreshEntitlements();
+        return { ok: true };
+      } catch (error: any) {
+        return {
+          ok: false,
+          error: `Local admin login is disabled: ${configIssue}. Firebase fallback failed: ${mapFirebaseAuthError(error)}`,
+        };
       }
-      if (charactersUnsubscribeRef.current) {
-        charactersUnsubscribeRef.current();
-        charactersUnsubscribeRef.current = null;
-      }
-      if (firebaseAuth.currentUser) {
-        await signOut(firebaseAuth).catch(() => undefined);
-      }
-      setUser(mapLocalAdminSessionToProfile(session));
-      setCharacterLibrary(DEFAULT_CHARACTERS);
-      await refreshEntitlements();
-      return { ok: true };
     }
 
     try {
@@ -407,6 +485,30 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
+    }
+  };
+
+  const requestPasswordReset: UserContextType['requestPasswordReset'] = async (email) => {
+    const rawEmail = String(email || '').trim();
+    if (!rawEmail) {
+      return { ok: false, error: 'Enter your email first.' };
+    }
+    if (isLocalAdminUsername(rawEmail)) {
+      return {
+        ok: false,
+        error: 'Local admin password is managed via local env; use Firebase email directly if needed.',
+      };
+    }
+    const normalizedEmail = resolveFirebaseLoginEmail(rawEmail);
+    if (!normalizedEmail.includes('@')) {
+      return { ok: false, error: 'Use a valid email address.' };
+    }
+    try {
+      await sendPasswordResetEmail(firebaseAuth, normalizedEmail);
+      return { ok: true };
+    } catch {
+      // Keep response generic to avoid account enumeration hints.
+      return { ok: true };
     }
   };
 
@@ -530,6 +632,14 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           ...prev,
           ...partial,
           vfUsage: ensureVfUsageStats((partial as any).vfUsage ?? prev.vfUsage),
+          wallet: {
+            ...prev.wallet,
+            ...((partial as any).wallet || {}),
+            spendableNowByEngine: {
+              ...prev.wallet.spendableNowByEngine,
+              ...(((partial as any).wallet || {}).spendableNowByEngine || {}),
+            },
+          },
         })
       ),
     history,
@@ -551,12 +661,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     showSubscriptionModal,
     setShowSubscriptionModal: (show) => setShowSubscriptionModal(show),
     watchAd: async () => {
-      setStats((prev) =>
-        ensureStatsUsageWindows({
-          ...prev,
-          generationsUsed: Math.max(0, prev.generationsUsed - 1),
-        })
-      );
+      const entitlements = await claimAdReward(readSettingsBackendUrl());
+      setStats((prev) => mapEntitlementsToStats(entitlements, prev));
     },
     recordTtsUsage: () => {
       void refreshEntitlements();
@@ -567,6 +673,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     getVoiceForCharacter: (name) => characterLibrary.find((char) => char.name.toLowerCase() === name.toLowerCase())?.voiceId,
     signInWithEmail,
     signUpWithEmail,
+    requestPasswordReset,
     signOutUser,
     signInWithGoogle,
     signInWithFacebook,

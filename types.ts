@@ -178,6 +178,26 @@ export interface MemoryEntry {
 export interface ProjectMemoryLedger {
   characters: MemoryEntry[];
   places: MemoryEntry[];
+  chapterSummaries?: ChapterMemorySummary[];
+}
+
+export interface ChapterMemorySummary {
+  chapterId: string;
+  chapterTitle: string;
+  summary: string;
+  newCharacters: string[];
+  newPlaces: string[];
+  updatedAt: string;
+}
+
+export interface ChapterVersionSnapshot {
+  id: string;
+  chapterId: string;
+  timestamp: string;
+  sourceText: string;
+  adaptedText: string;
+  label: string;
+  reason?: string;
 }
 
 export type ChapterAdaptationStatus = 'idle' | 'queued' | 'running' | 'done' | 'failed';
@@ -295,6 +315,17 @@ export interface VfUsageStats {
   lastRecordedAt?: number;
 }
 
+export interface UserWalletStats {
+  monthlyFreeRemaining: number;
+  monthlyFreeLimit: number;
+  vffBalance: number;
+  paidVfBalance: number;
+  spendableNowByEngine: Record<GenerationSettings['engine'], number>;
+  adClaimsToday: number;
+  adClaimsDailyLimit: number;
+  vffMonthKey?: string;
+}
+
 export interface UserStats {
   generationsUsed: number;
   generationsLimit: number;
@@ -302,6 +333,7 @@ export interface UserStats {
   planName: 'Free' | 'Pro' | 'Plus' | 'Enterprise';
   lastResetDate?: string;
   vfUsage: VfUsageStats;
+  wallet: UserWalletStats;
 }
 
 export interface UserProfile {
@@ -352,6 +384,7 @@ export interface UserContextType {
 
   signInWithEmail: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   signUpWithEmail: (email: string, password: string, displayName?: string) => Promise<{ ok: boolean; error?: string }>;
+  requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
   signOutUser: () => Promise<void>;
   signInWithGoogle: () => Promise<{ ok: boolean; error?: string }>;
   signInWithFacebook: () => Promise<{ ok: boolean; error?: string }>;

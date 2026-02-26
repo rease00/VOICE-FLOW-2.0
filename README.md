@@ -45,6 +45,25 @@ node -e "const c=require('node:crypto');const pwd=process.argv[1];if(!pwd){conso
 - Optional fallback UID: `VF_DEV_BYPASS_UID=dev_local_user`
 - For guardian approvals, include local UID in `VF_ADMIN_APPROVER_UIDS` and configure `VF_ADMIN_APPROVAL_TOKEN`.
 
+## Admin Firebase Fallback (when local admin env is missing)
+
+If `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64` (or related local admin env vars) is missing/invalid, signing in with `admin` now falls back to Firebase email/password login.
+
+1. Set frontend env mapping in `.env`:
+- `VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>`
+- Optional: `VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>`
+- Optional: `VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>`
+
+2. In Firebase (Firestore), mark the admin user for UI/admin fallback:
+- Document path: `users/<uid>`
+- Add one of:
+  - `isAdmin: true`
+  - `admin: true`
+  - `role: "admin"`
+  - `roles: ["admin"]`
+
+3. Restart the frontend dev server after `.env` changes.
+
 ## Real RVC + Media Backend
 
 The app now supports a real local media backend for:

@@ -27,6 +27,10 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_USAGE_DAILY.clear()
     backend_app._INMEMORY_USAGE_EVENTS.clear()
     backend_app._INMEMORY_STRIPE_CUSTOMERS.clear()
+    backend_app._INMEMORY_WALLET_DAILY.clear()
+    backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
+    backend_app._INMEMORY_COUPONS.clear()
+    backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
 
 
 def test_auth_enforcement_blocks_missing_token(monkeypatch) -> None:
@@ -173,3 +177,75 @@ def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     ent = backend_app._load_entitlement("stripe_user_1")
     assert ent["plan"] == "Pro"
     assert ent["monthlyVfLimit"] == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"]
+
+
+def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "ad_reward_user"
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+    for _ in range(3):
+        ok = client.post("/wallet/ad-reward/claim", headers=headers)
+        assert ok.status_code == 200
+    blocked = client.post("/wallet/ad-reward/claim", headers=headers)
+    assert blocked.status_code == 429
+    assert "Daily ad reward limit reached" in blocked.json()["detail"]
+
+
+def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "coupon_user_1"
+    backend_app._INMEMORY_COUPONS["coupon_1"] = {
+        "id": "coupon_1",
+        "code": "WELCOME1000",
+        "creditVf": 1000,
+        "active": True,
+        "redeemedCount": 0,
+        "maxRedemptions": 100,
+    }
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+
+    first = client.post("/wallet/coupons/redeem", json={"code": "WELCOME1000"}, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["creditedVf"] == 1000
+    ent = backend_app._load_entitlement(uid)
+    assert ent["paidVfBalance"] == 1000
+
+    second = client.post("/wallet/coupons/redeem", json={"code": "WELCOME1000"}, headers=headers)
+    assert second.status_code == 409
+
+
+def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
+    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
+    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
+
+    client = TestClient(backend_app.app)
+    event_payload = {
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_token_pack_1",
+                "metadata": {
+                    "kind": "token_pack",
+                    "uid": "wallet_user_1",
+                    "packVf": "100000",
+                    "finalAmountInr": "499",
+                },
+                "customer": "cus_wallet_1",
+                "amount_total": 49900,
+                "currency": "inr",
+            }
+        },
+    }
+    first = client.post("/billing/webhook", json=event_payload)
+    second = client.post("/billing/webhook", json=event_payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    entitlement = backend_app._load_entitlement("wallet_user_1")
+    assert entitlement["paidVfBalance"] == 100000

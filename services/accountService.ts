@@ -25,6 +25,7 @@ export interface AccountEntitlements {
   monthly: {
     vfLimit: number;
     vfUsed: number;
+    monthlyFreeVfUsed?: number;
     vfRemaining: number;
     generationCount: number;
     periodKey: string;
@@ -51,6 +52,16 @@ export interface AccountEntitlements {
   limits: {
     vfRates: Record<string, number>;
     monthlyPlanCaps: Record<string, number>;
+  };
+  wallet?: {
+    monthlyFreeRemaining: number;
+    monthlyFreeLimit: number;
+    vffBalance: number;
+    paidVfBalance: number;
+    spendableNowByEngine: Record<'KOKORO' | 'GEM', number>;
+    adClaimsToday: number;
+    adClaimsDailyLimit: number;
+    vffMonthKey?: string;
   };
 }
 
@@ -108,3 +119,66 @@ export const createPortalSession = async (baseUrl?: string, returnUrl?: string):
   return { url: String(payload?.url || '') };
 };
 
+export const createTokenPackCheckoutSession = async (
+  baseUrl?: string,
+  options?: { successUrl?: string; cancelUrl?: string }
+): Promise<{ url: string; sessionId?: string; packVf?: number; finalAmountInr?: number }> => {
+  const response = await authFetch(
+    `${toBaseUrl(baseUrl)}/billing/token-pack/checkout-session`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        successUrl: options?.successUrl,
+        cancelUrl: options?.cancelUrl,
+      }),
+    },
+    { requireAuth: true }
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const payload = await response.json();
+  return {
+    url: String(payload?.url || ''),
+    sessionId: payload?.sessionId ? String(payload.sessionId) : undefined,
+    packVf: Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined,
+    finalAmountInr: Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined,
+  };
+};
+
+export const claimAdReward = async (baseUrl?: string): Promise<AccountEntitlements> => {
+  const response = await authFetch(
+    `${toBaseUrl(baseUrl)}/wallet/ad-reward/claim`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    },
+    { requireAuth: true }
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const payload = await response.json();
+  return payload?.entitlements as AccountEntitlements;
+};
+
+export const redeemCoupon = async (code: string, baseUrl?: string): Promise<{ creditedVf: number; entitlements: AccountEntitlements }> => {
+  const response = await authFetch(
+    `${toBaseUrl(baseUrl)}/wallet/coupons/redeem`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    },
+    { requireAuth: true }
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const payload = await response.json();
+  return {
+    creditedVf: Math.max(0, Number(payload?.creditedVf || 0)),
+    entitlements: payload?.entitlements as AccountEntitlements,
+  };
+};

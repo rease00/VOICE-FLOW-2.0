@@ -28,6 +28,9 @@ class DubbingConfig:
     mix_clip_fade_ms: float = 12.0
     mix_stretch_min_rate: float = 0.85
     mix_stretch_max_rate: float = 1.35
+    gemini_pair_group_max_concurrency: int = 7
+    gemini_pair_group_retry_once: bool = True
+    gemini_pair_group_timeout_sec: int = 240
 
     @property
     def segments_dir(self) -> Path:
@@ -72,6 +75,9 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         mix_clip_fade_ms=float(os.getenv("VF_DUB_MIX_CLIP_FADE_MS", "12")),
         mix_stretch_min_rate=float(os.getenv("VF_DUB_MIX_STRETCH_MIN_RATE", "0.85")),
         mix_stretch_max_rate=float(os.getenv("VF_DUB_MIX_STRETCH_MAX_RATE", "1.35")),
+        gemini_pair_group_max_concurrency=int(os.getenv("VF_GEMINI_PAIR_GROUP_MAX_CONCURRENCY", "7")),
+        gemini_pair_group_retry_once=str(os.getenv("VF_GEMINI_PAIR_GROUP_RETRY_ONCE", "true")).strip().lower() in {"1", "true", "yes", "on"},
+        gemini_pair_group_timeout_sec=int(os.getenv("VF_GEMINI_PAIR_GROUP_TIMEOUT_SEC", "240")),
     )
 
     if cfg.mix_stretch_min_rate <= 0:
@@ -82,6 +88,12 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         cfg.mix_stretch_min_rate, cfg.mix_stretch_max_rate = cfg.mix_stretch_max_rate, cfg.mix_stretch_min_rate
     if cfg.mix_clip_fade_ms < 0:
         cfg.mix_clip_fade_ms = 0.0
+    if cfg.gemini_pair_group_max_concurrency < 1:
+        cfg.gemini_pair_group_max_concurrency = 1
+    if cfg.gemini_pair_group_max_concurrency > 7:
+        cfg.gemini_pair_group_max_concurrency = 7
+    if cfg.gemini_pair_group_timeout_sec <= 0:
+        cfg.gemini_pair_group_timeout_sec = 240
 
     nllb_raw = os.getenv("VF_NLLB_CT2_PATH", "").strip()
     if nllb_raw:

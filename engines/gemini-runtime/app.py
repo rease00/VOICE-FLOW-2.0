@@ -10,6 +10,7 @@ import time
 import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +34,11 @@ from shared.gemini_allocator import (
     normalize_model_name,
     parse_api_keys as parse_api_keys_shared,
     is_valid_api_key as is_valid_api_key_shared,
+)
+from shared.gemini_multi_speaker import (
+    build_studio_pair_groups as build_studio_pair_groups_shared,
+    normalize_multi_speaker_line_map as normalize_multi_speaker_line_map_shared,
+    split_int16_pcm_for_lines as split_int16_pcm_for_lines_shared,
 )
 
 try:
@@ -74,6 +80,7 @@ GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS = max(
 )
 GEMINI_BATCH_MAX_ITEMS = max(1, int(os.getenv("GEMINI_BATCH_MAX_ITEMS", "64")))
 GEMINI_BATCH_MAX_PARALLEL = max(1, int(os.getenv("GEMINI_BATCH_MAX_PARALLEL", "4")))
+GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY = 7
 GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS = max(
     0,
     int(os.getenv("GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS", "30")),
@@ -226,6 +233,10 @@ class SynthesizeRequest(BaseModel):
     voiceName: Optional[str] = None
     voice_id: Optional[str] = None
     speaker_voices: Optional[list[Dict[str, str]]] = None
+    multi_speaker_mode: Optional[str] = None
+    multi_speaker_max_concurrency: Optional[int] = None
+    multi_speaker_retry_once: Optional[bool] = None
+    multi_speaker_line_map: Optional[list[Dict[str, Any]]] = None
     apiKey: Optional[str] = ""
     speed: float = 1.0
     language: Optional[str] = None
@@ -233,6 +244,7 @@ class SynthesizeRequest(BaseModel):
     style: Optional[str] = None
     speaker: Optional[str] = None
     trace_id: Optional[str] = None
+    return_line_chunks: Optional[bool] = None
 
 
 class BatchSynthesizeItem(SynthesizeRequest):
@@ -782,6 +794,464 @@ def _build_text_order_two_speaker_windows(
     return windows
 
 
+def _normalize_multi_speaker_mode(raw_mode: object) -> str:
+    token = str(raw_mode or "").strip().lower()
+    if token in {"studio_pair_groups", "legacy_windows", "off"}:
+        return token
+    if not token:
+        return "legacy_windows"
+    return "legacy_windows"
+
+
+def _normalize_multi_speaker_line_map(raw_line_map: object) -> list[Dict[str, Any]]:
+    normalized = normalize_multi_speaker_line_map_shared(raw_line_map)
+    out: list[Dict[str, Any]] = []
+    for item in normalized:
+        text = _normalize_synthesis_text(str(item.get("text") or ""))
+        if not text:
+            continue
+        out.append(
+            {
+                "lineIndex": int(item.get("lineIndex", 0)),
+                "speaker": str(item.get("speaker") or "").strip(),
+                "text": text,
+            }
+        )
+    return out
+
+
+def _split_int16_pcm_for_lines(pcm_bytes: bytes, line_weights: list[float]) -> tuple[list[bytes], bool]:
+    return split_int16_pcm_for_lines_shared(pcm_bytes, line_weights)
+
+
+def _build_studio_pair_groups(
+    line_map: list[Dict[str, Any]],
+    speaker_voices: list[Dict[str, str]],
+    target_voice: str,
+) -> list[Dict[str, Any]]:
+    return build_studio_pair_groups_shared(line_map, speaker_voices, target_voice)
+
+
+def _synthesize_studio_pair_groups(
+    *,
+    trace_id: str,
+    target_voice: str,
+    language_code: str,
+    speaker_hint: str,
+    normalized_speaker_voices: list[Dict[str, str]],
+    normalized_line_map: list[Dict[str, Any]],
+    primary_key_pool: list[str],
+    fallback_request_key: Optional[str],
+    effective_key_pool: list[str],
+    requested_concurrency: int,
+    retry_once: bool,
+) -> Dict[str, Any]:
+    groups = _build_studio_pair_groups(
+        line_map=normalized_line_map,
+        speaker_voices=normalized_speaker_voices,
+        target_voice=target_voice,
+    )
+    if not groups:
+        raise HTTPException(status_code=400, detail="multi_speaker_line_map does not contain valid grouped dialogue.")
+
+    concurrency_cap = max(1, int(requested_concurrency))
+    effective_concurrency = min(
+        concurrency_cap,
+        GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY,
+        len(groups),
+        len(effective_key_pool),
+    )
+    effective_concurrency = max(1, effective_concurrency)
+    max_attempts = 2 if retry_once else 1
+
+    _emit_stage_event(
+        trace_id,
+        "synthesis",
+        "start",
+        {
+            "strategy": "studio_pair_groups",
+            "lineCount": len(normalized_line_map),
+            "groupCount": len(groups),
+            "concurrency": effective_concurrency,
+            "keyPoolSize": len(effective_key_pool),
+            "retryOnce": bool(retry_once),
+        },
+    )
+
+    def run_group(group: Dict[str, Any]) -> Dict[str, Any]:
+        group_lines: list[Dict[str, Any]] = list(group.get("lines") or [])
+        group_weights = [
+            float(max(1, len(str(line.get("text") or "").strip().split())))
+            for line in group_lines
+        ]
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                pcm_bytes, model_used, speech_mode_used, key_index_used = _synthesize_pcm_with_key_pool(
+                    text_input=str(group.get("text") or ""),
+                    trace_id=trace_id,
+                    speaker_hint=speaker_hint or ", ".join(group.get("speakers") or []),
+                    language_code=language_code,
+                    target_voice=target_voice,
+                    speaker_voices=list(group.get("speakerVoices") or []),
+                    primary_key_pool=primary_key_pool,
+                    fallback_request_key=fallback_request_key,
+                    effective_key_pool=effective_key_pool,
+                    speech_mode_requested="studio_pair_groups",
+                    window_index=int(group.get("groupIndex", 0)) + 1,
+                    window_total=len(groups),
+                    affinity_speakers=[str(value) for value in list(group.get("speakers") or [])],
+                )
+                line_chunks, used_pause_boundaries = _split_int16_pcm_for_lines(pcm_bytes, group_weights)
+                return {
+                    "groupIndex": int(group.get("groupIndex", 0)),
+                    "lines": group_lines,
+                    "lineChunks": line_chunks,
+                    "model": model_used,
+                    "speechMode": speech_mode_used,
+                    "keyIndex": int(key_index_used),
+                    "splitMode": "pause" if used_pause_boundaries else "duration",
+                    "attempts": attempt,
+                }
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+        if last_exc is None:
+            raise RuntimeError("group_synthesis_failed")
+        raise last_exc
+
+    group_results: list[Dict[str, Any]] = []
+    group_errors: list[Dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=effective_concurrency) as executor:
+        future_map = {executor.submit(run_group, group): group for group in groups}
+        for future in concurrent.futures.as_completed(future_map):
+            group = future_map[future]
+            try:
+                result = future.result()
+                group_results.append(result)
+            except Exception as exc:  # noqa: BLE001
+                detail = str(exc).strip()
+                parsed_detail = _normalize_error_payload(detail) if detail else None
+                group_errors.append(
+                    {
+                        "groupIndex": int(group.get("groupIndex", -1)),
+                        "speakers": list(group.get("speakers") or []),
+                        "error": parsed_detail or {"summary": detail or "Group synthesis failed."},
+                    }
+                )
+
+    if group_errors:
+        detail_payload = {
+            "error": "Gemini grouped multi-speaker synthesis failed.",
+            "errorCode": ERROR_CODE_UPSTREAM_MODEL_FAILED,
+            "summary": f"{len(group_errors)} grouped synthesis task(s) failed.",
+            "trace_id": trace_id,
+            "strategy": "studio_pair_groups",
+            "groupCount": len(groups),
+            "failedGroups": group_errors,
+        }
+        raise RuntimeError(json.dumps(detail_payload, ensure_ascii=True))
+
+    line_audio_by_index: Dict[int, bytes] = {}
+    line_split_mode_by_index: Dict[int, str] = {}
+    models_used: list[str] = []
+    speech_modes_used: list[str] = []
+    key_indexes_used: list[int] = []
+    pause_split_groups = 0
+    duration_split_groups = 0
+
+    for result in sorted(group_results, key=lambda item: int(item.get("groupIndex", 0))):
+        models_used.append(str(result.get("model") or ""))
+        speech_modes_used.append(str(result.get("speechMode") or ""))
+        key_indexes_used.append(int(result.get("keyIndex", -1)))
+        if str(result.get("splitMode") or "") == "pause":
+            pause_split_groups += 1
+        else:
+            duration_split_groups += 1
+        line_chunks = list(result.get("lineChunks") or [])
+        group_lines = list(result.get("lines") or [])
+        for idx, line in enumerate(group_lines):
+            line_index = int(line.get("lineIndex", -1))
+            if line_index < 0:
+                continue
+            chunk = line_chunks[idx] if idx < len(line_chunks) else b""
+            line_audio_by_index[line_index] = bytes(chunk)
+            line_split_mode_by_index[line_index] = str(result.get("splitMode") or "duration")
+
+    ordered_line_indexes = [int(line.get("lineIndex", -1)) for line in normalized_line_map]
+    ordered_line_indexes = [index for index in ordered_line_indexes if index >= 0]
+    final_chunks: list[bytes] = []
+    ordered_line_chunks: list[Dict[str, Any]] = []
+    for line_index in ordered_line_indexes:
+        chunk = bytes(line_audio_by_index.get(line_index, b""))
+        silence_fallback = False
+        if not chunk:
+            chunk = b"\x00\x00" * 240  # 10ms silence fallback.
+            silence_fallback = True
+        final_chunks.append(chunk)
+        ordered_line_chunks.append(
+            {
+                "lineIndex": line_index,
+                "pcmBytes": chunk,
+                "splitMode": "silence" if silence_fallback else str(line_split_mode_by_index.get(line_index, "duration")),
+                "silenceFallback": silence_fallback,
+            }
+        )
+
+    final_pcm_bytes = b"".join(final_chunks)
+    if not final_pcm_bytes:
+        raise RuntimeError("Gemini grouped synthesis returned empty audio.")
+
+    wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
+    unique_models = [model for model in models_used if model]
+    model_header = unique_models[0] if unique_models else _normalize_model_name(TTS_MODEL)
+    key_selection_index = key_indexes_used[0] if key_indexes_used else -1
+    diagnostics_payload: Dict[str, Any] = {
+        "engine": "GEM",
+        "traceId": trace_id,
+        "strategies": ["studio_pair_groups"],
+        "recoveryUsed": bool(retry_once),
+        "groupCount": len(groups),
+        "lineCount": len(normalized_line_map),
+        "concurrencyUsed": effective_concurrency,
+        "keyPoolSize": len(effective_key_pool),
+        "pauseSplitGroups": pause_split_groups,
+        "durationSplitGroups": duration_split_groups,
+        "lineChunkCount": len(ordered_line_chunks),
+    }
+    _emit_stage_event(
+        trace_id,
+        "completed",
+        "ok",
+        {
+            "strategy": "studio_pair_groups",
+            "bytes": len(wav_bytes),
+            "groupCount": len(groups),
+            "lineCount": len(normalized_line_map),
+            "concurrency": effective_concurrency,
+            "pauseSplitGroups": pause_split_groups,
+            "durationSplitGroups": duration_split_groups,
+            "keySelectionIndex": key_selection_index,
+            "lineChunkCount": len(ordered_line_chunks),
+        },
+    )
+    return {
+        "wavBytes": wav_bytes,
+        "sampleRate": 24000,
+        "lineChunks": ordered_line_chunks,
+        "traceId": trace_id,
+        "model": model_header,
+        "speechModeUsed": "studio_pair_groups",
+        "speechModes": speech_modes_used,
+        "speechModeRequested": "studio_pair_groups",
+        "keySelectionIndex": key_selection_index,
+        "keyPoolSize": len(effective_key_pool),
+        "speakerHint": speaker_hint or None,
+        "windowCount": len(groups),
+        "diagnostics": diagnostics_payload,
+    }
+
+
+def _build_line_map_word_windows(
+    normalized_line_map: list[Dict[str, Any]],
+    max_words: int,
+) -> list[list[Dict[str, Any]]]:
+    safe_max_words = max(1, int(max_words))
+    if not normalized_line_map:
+        return []
+    windows: list[list[Dict[str, Any]]] = []
+    current: list[Dict[str, Any]] = []
+    current_words = 0
+    for line in normalized_line_map:
+        text = _normalize_synthesis_text(str(line.get("text") or ""))
+        if not text:
+            continue
+        line_words = max(1, count_words(text))
+        if current and (current_words + line_words) > safe_max_words:
+            windows.append(current)
+            current = []
+            current_words = 0
+        current.append(
+            {
+                "lineIndex": int(line.get("lineIndex", 0)),
+                "speaker": str(line.get("speaker") or "").strip(),
+                "text": text,
+            }
+        )
+        current_words += line_words
+        if current_words >= safe_max_words:
+            windows.append(current)
+            current = []
+            current_words = 0
+    if current:
+        windows.append(current)
+    return windows
+
+
+def _build_realtime_metrics(wav_bytes: bytes, processing_ms: int) -> Dict[str, Any]:
+    audio_duration_sec = 0.0
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as handle:
+            frames = int(handle.getnframes() or 0)
+            frame_rate = int(handle.getframerate() or 0)
+            if frame_rate > 0 and frames > 0:
+                audio_duration_sec = float(frames) / float(frame_rate)
+    except Exception:
+        audio_duration_sec = 0.0
+    safe_processing_sec = max(0.001, float(max(0, int(processing_ms))) / 1000.0)
+    realtime_factor_x = float(audio_duration_sec) / safe_processing_sec
+    target_realtime_x = 150.0
+    return {
+        "processingMs": int(max(0, int(processing_ms))),
+        "audioDurationSec": round(float(audio_duration_sec), 4),
+        "realtimeFactorX": round(float(realtime_factor_x), 4),
+        "targetRealtimeX": target_realtime_x,
+        "targetMet": bool(realtime_factor_x >= target_realtime_x),
+    }
+
+
+def _synthesize_studio_pair_group_windows(
+    *,
+    trace_id: str,
+    target_voice: str,
+    language_code: str,
+    speaker_hint: str,
+    normalized_speaker_voices: list[Dict[str, str]],
+    normalized_line_map: list[Dict[str, Any]],
+    primary_key_pool: list[str],
+    fallback_request_key: Optional[str],
+    effective_key_pool: list[str],
+    requested_concurrency: int,
+    retry_once: bool,
+    started_at_ms: int,
+    include_line_chunks: bool,
+) -> Dict[str, Any]:
+    line_windows = _build_line_map_word_windows(normalized_line_map, MAX_WORDS_PER_REQUEST)
+    if not line_windows:
+        raise HTTPException(status_code=400, detail="multi_speaker_line_map does not contain valid grouped dialogue.")
+
+    aggregated_line_chunks: Dict[int, Dict[str, Any]] = {}
+    models_used: list[str] = []
+    speech_modes_used: list[str] = []
+    key_indexes_used: list[int] = []
+    total_group_count = 0
+    total_pause_split_groups = 0
+    total_duration_split_groups = 0
+    max_concurrency_used = 0
+
+    for line_window in line_windows:
+        window_result = _synthesize_studio_pair_groups(
+            trace_id=trace_id,
+            target_voice=target_voice,
+            language_code=language_code,
+            speaker_hint=speaker_hint,
+            normalized_speaker_voices=normalized_speaker_voices,
+            normalized_line_map=line_window,
+            primary_key_pool=primary_key_pool,
+            fallback_request_key=fallback_request_key,
+            effective_key_pool=effective_key_pool,
+            requested_concurrency=requested_concurrency,
+            retry_once=retry_once,
+        )
+        for item in list(window_result.get("lineChunks") or []):
+            line_index = int(item.get("lineIndex", -1))
+            if line_index < 0:
+                continue
+            aggregated_line_chunks[line_index] = {
+                "lineIndex": line_index,
+                "pcmBytes": bytes(item.get("pcmBytes") or b""),
+                "splitMode": str(item.get("splitMode") or "duration"),
+                "silenceFallback": bool(item.get("silenceFallback")),
+            }
+        models_used.append(str(window_result.get("model") or ""))
+        speech_modes_used.extend([str(mode) for mode in list(window_result.get("speechModes") or []) if str(mode or "").strip()])
+        key_indexes_used.append(int(window_result.get("keySelectionIndex", -1)))
+        diagnostics = window_result.get("diagnostics") if isinstance(window_result.get("diagnostics"), dict) else {}
+        total_group_count += int(diagnostics.get("groupCount", 0) or 0)
+        total_pause_split_groups += int(diagnostics.get("pauseSplitGroups", 0) or 0)
+        total_duration_split_groups += int(diagnostics.get("durationSplitGroups", 0) or 0)
+        max_concurrency_used = max(max_concurrency_used, int(diagnostics.get("concurrencyUsed", 0) or 0))
+
+    ordered_line_indexes = [int(line.get("lineIndex", -1)) for line in normalized_line_map]
+    ordered_line_indexes = [index for index in ordered_line_indexes if index >= 0]
+    ordered_line_chunks: list[Dict[str, Any]] = []
+    final_pcm_chunks: list[bytes] = []
+    for line_index in ordered_line_indexes:
+        item = aggregated_line_chunks.get(line_index) or {}
+        chunk = bytes(item.get("pcmBytes") or b"")
+        silence_fallback = False
+        if not chunk:
+            chunk = b"\x00\x00" * 240
+            silence_fallback = True
+        final_pcm_chunks.append(chunk)
+        ordered_line_chunks.append(
+            {
+                "lineIndex": line_index,
+                "pcmBytes": chunk,
+                "splitMode": "silence" if silence_fallback else str(item.get("splitMode") or "duration"),
+                "silenceFallback": bool(item.get("silenceFallback")) or silence_fallback,
+            }
+        )
+
+    final_pcm_bytes = b"".join(final_pcm_chunks)
+    if not final_pcm_bytes:
+        raise RuntimeError("Gemini grouped synthesis returned empty audio.")
+
+    wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
+    model_header = next((item for item in models_used if item), _normalize_model_name(TTS_MODEL))
+    key_selection_index = key_indexes_used[0] if key_indexes_used else -1
+    diagnostics_payload: Dict[str, Any] = {
+        "engine": "GEM",
+        "traceId": trace_id,
+        "strategies": ["studio_pair_groups", "line_map_word_windows"] if len(line_windows) > 1 else ["studio_pair_groups"],
+        "recoveryUsed": bool(retry_once),
+        "groupCount": total_group_count,
+        "lineCount": len(normalized_line_map),
+        "windowCount": len(line_windows),
+        "concurrencyUsed": max_concurrency_used,
+        "keyPoolSize": len(effective_key_pool),
+        "pauseSplitGroups": total_pause_split_groups,
+        "durationSplitGroups": total_duration_split_groups,
+        "lineChunkCount": len(ordered_line_chunks),
+    }
+    diagnostics_payload.update(
+        _build_realtime_metrics(
+            wav_bytes=wav_bytes,
+            processing_ms=max(0, int(time.time() * 1000) - started_at_ms),
+        )
+    )
+    _emit_stage_event(
+        trace_id,
+        "completed",
+        "ok",
+        {
+            "strategy": "studio_pair_groups",
+            "bytes": len(wav_bytes),
+            "windowCount": len(line_windows),
+            "groupCount": total_group_count,
+            "lineCount": len(normalized_line_map),
+            "keySelectionIndex": key_selection_index,
+            "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
+        },
+    )
+    return {
+        "wavBytes": wav_bytes,
+        "sampleRate": 24000,
+        "lineChunks": ordered_line_chunks if include_line_chunks else [],
+        "traceId": trace_id,
+        "model": model_header,
+        "speechModeUsed": "studio_pair_groups",
+        "speechModes": speech_modes_used or ["studio_pair_groups"],
+        "speechModeRequested": "studio_pair_groups",
+        "keySelectionIndex": key_selection_index,
+        "keyPoolSize": len(effective_key_pool),
+        "speakerHint": speaker_hint or None,
+        "windowCount": len(line_windows),
+        "diagnostics": diagnostics_payload,
+    }
+
+
 def _remaining_timeout_ms(started_at_ms: int, total_timeout_ms: int) -> int:
     elapsed = max(0, int(time.time() * 1000) - started_at_ms)
     return max(0, int(total_timeout_ms) - elapsed)
@@ -1082,14 +1552,40 @@ def _normalize_error_payload(raw_error: str) -> Dict[str, Any] | None:
 
 
 def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
+    started_at_ms = int(time.time() * 1000)
     text = _normalize_synthesis_text(payload.text)
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty.")
     trace_id = _normalize_trace_id(payload.trace_id)
     target_voice = str(payload.voiceName or payload.voice_id or "Fenrir").strip() or "Fenrir"
     normalized_speaker_voices = _normalize_speaker_voices(payload.speaker_voices or [], target_voice=target_voice)
+    multi_speaker_mode = _normalize_multi_speaker_mode(payload.multi_speaker_mode)
+    if multi_speaker_mode == "off":
+        normalized_speaker_voices = []
+    normalized_line_map = _normalize_multi_speaker_line_map(payload.multi_speaker_line_map)
+    return_line_chunks_requested = bool(payload.return_line_chunks)
+    try:
+        requested_pair_concurrency = (
+            int(payload.multi_speaker_max_concurrency)
+            if payload.multi_speaker_max_concurrency is not None
+            else GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY
+        )
+    except Exception:
+        requested_pair_concurrency = GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY
+    requested_pair_concurrency = max(
+        1,
+        min(GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY, requested_pair_concurrency),
+    )
+    retry_group_once = True if payload.multi_speaker_retry_once is None else bool(payload.multi_speaker_retry_once)
+    use_studio_pair_groups = (
+        multi_speaker_mode == "studio_pair_groups"
+        and len(normalized_speaker_voices) >= 2
+        and len(normalized_line_map) >= 2
+    )
     use_windowed_multi = len(normalized_speaker_voices) > 2
-    if use_windowed_multi:
+    if use_studio_pair_groups:
+        requested_speech_mode = "studio_pair_groups"
+    elif use_windowed_multi:
         requested_speech_mode = "text-order-two-speaker-windows"
     elif len(normalized_speaker_voices) == 2:
         requested_speech_mode = "multi-speaker"
@@ -1100,7 +1596,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     language_code = resolve_language_code(text, payload.language)
     speaker_hint = re.sub(r"\s+", " ", str(payload.speaker or "")).strip()
     word_count = count_words(text)
-    if word_count > MAX_WORDS_PER_REQUEST:
+    if word_count > MAX_WORDS_PER_REQUEST and not use_studio_pair_groups:
         raise HTTPException(
             status_code=400,
             detail={
@@ -1108,6 +1604,23 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "maxWords": MAX_WORDS_PER_REQUEST,
                 "actualWords": word_count,
             },
+        )
+
+    if use_studio_pair_groups:
+        return _synthesize_studio_pair_group_windows(
+            trace_id=trace_id,
+            target_voice=target_voice,
+            language_code=language_code,
+            speaker_hint=speaker_hint,
+            normalized_speaker_voices=normalized_speaker_voices,
+            normalized_line_map=normalized_line_map,
+            primary_key_pool=primary_key_pool,
+            fallback_request_key=fallback_request_key,
+            effective_key_pool=effective_key_pool,
+            requested_concurrency=requested_pair_concurrency,
+            retry_once=retry_group_once,
+            started_at_ms=started_at_ms,
+            include_line_chunks=return_line_chunks_requested,
         )
 
     raw_windows: list[Dict[str, Any]]
@@ -1217,6 +1730,20 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         else:
             speech_mode_used = speech_modes_used[0] if speech_modes_used else "single-speaker"
         key_selection_index = key_indexes_used[0] if key_indexes_used else -1
+        diagnostics_payload: Dict[str, Any] = {
+            "engine": "GEM",
+            "traceId": trace_id,
+            "chunkCount": len(windows),
+            "strategies": ["legacy_windows" if not use_windowed_multi else "text_order_two_speaker_windows"],
+            "recoveryUsed": False,
+            "keyPoolSize": len(effective_key_pool),
+        }
+        diagnostics_payload.update(
+            _build_realtime_metrics(
+                wav_bytes=wav_bytes,
+                processing_ms=max(0, int(time.time() * 1000) - started_at_ms),
+            )
+        )
 
         _emit_stage_event(
             trace_id,
@@ -1231,10 +1758,13 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "keySelectionIndex": key_selection_index,
                 "keyPoolSize": len(effective_key_pool),
                 "speakerHint": speaker_hint or None,
+                "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
             },
         )
         return {
             "wavBytes": wav_bytes,
+            "sampleRate": 24000,
+            "lineChunks": [],
             "traceId": trace_id,
             "model": model_header,
             "speechModeUsed": speech_mode_used,
@@ -1244,6 +1774,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "keyPoolSize": len(effective_key_pool),
             "speakerHint": speaker_hint or None,
             "windowCount": len(windows),
+            "diagnostics": diagnostics_payload,
         }
     except HTTPException:
         raise
@@ -1340,11 +1871,12 @@ def capabilities() -> JSONResponse:
                 "multiSpeakerMaxSpeakers": 2,
                 "supportsBatchSynthesis": True,
                 "batchEndpoint": "/synthesize/batch",
+                "structuredEndpoint": "/synthesize/structured",
                 "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
                 "batchDefaultParallelism": GEMINI_BATCH_MAX_PARALLEL,
                 "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
                 "multiSpeakerMaxSpeakersPerCall": 2,
-                "multiSpeakerBatchingMode": "text_order_two_speaker_windows",
+                "multiSpeakerBatchingMode": "studio_pair_groups_with_line_map_windows",
             },
         }
     )
@@ -1542,14 +2074,63 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
 @app.post("/synthesize")
 def synthesize(payload: SynthesizeRequest) -> Response:
     synthesis_result = _synthesize_text_to_wav(payload)
+    headers = {
+        "X-VoiceFlow-Trace-Id": str(synthesis_result.get("traceId") or ""),
+        "X-VoiceFlow-Model": str(synthesis_result.get("model") or ""),
+        "X-VoiceFlow-Speech-Mode": str(synthesis_result.get("speechModeUsed") or ""),
+    }
+    diagnostics = synthesis_result.get("diagnostics")
+    if isinstance(diagnostics, dict) and diagnostics:
+        headers["X-VoiceFlow-Diagnostics"] = quote(
+            json.dumps(diagnostics, ensure_ascii=True, separators=(",", ":")),
+            safe="",
+        )
     return Response(
         content=synthesis_result["wavBytes"],
         media_type="audio/wav",
-        headers={
-            "X-VoiceFlow-Trace-Id": str(synthesis_result.get("traceId") or ""),
-            "X-VoiceFlow-Model": str(synthesis_result.get("model") or ""),
-            "X-VoiceFlow-Speech-Mode": str(synthesis_result.get("speechModeUsed") or ""),
-        },
+        headers=headers,
+    )
+
+
+@app.post("/synthesize/structured")
+def synthesize_structured(payload: SynthesizeRequest) -> JSONResponse:
+    payload_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    payload_data["return_line_chunks"] = True
+    structured_payload = SynthesizeRequest(**payload_data)
+    synthesis_result = _synthesize_text_to_wav(structured_payload)
+    line_chunks_out: list[Dict[str, Any]] = []
+    for item in list(synthesis_result.get("lineChunks") or []):
+        line_index = int(item.get("lineIndex", -1))
+        if line_index < 0:
+            continue
+        pcm_bytes = bytes(item.get("pcmBytes") or b"")
+        wav_chunk = pcm16_to_wav(pcm_bytes if pcm_bytes else (b"\x00\x00" * 240), sample_rate=24000)
+        line_chunks_out.append(
+            {
+                "lineIndex": line_index,
+                "audioBase64": base64.b64encode(wav_chunk).decode("ascii"),
+                "contentType": "audio/wav",
+                "splitMode": str(item.get("splitMode") or "duration"),
+                "silenceFallback": bool(item.get("silenceFallback")),
+            }
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "engine": APP_NAME,
+            "traceId": synthesis_result.get("traceId"),
+            "model": synthesis_result.get("model"),
+            "speechModeUsed": synthesis_result.get("speechModeUsed"),
+            "speechModes": synthesis_result.get("speechModes"),
+            "speechModeRequested": synthesis_result.get("speechModeRequested"),
+            "keySelectionIndex": synthesis_result.get("keySelectionIndex"),
+            "keyPoolSize": synthesis_result.get("keyPoolSize"),
+            "windowCount": synthesis_result.get("windowCount"),
+            "diagnostics": synthesis_result.get("diagnostics"),
+            "wavBase64": base64.b64encode(bytes(synthesis_result.get("wavBytes") or b"")).decode("ascii"),
+            "contentType": "audio/wav",
+            "lineChunks": line_chunks_out,
+        }
     )
 
 

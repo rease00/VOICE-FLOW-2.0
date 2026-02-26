@@ -143,14 +143,22 @@ STRIPE_CHECKOUT_CANCEL_URL = (
 )
 VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
 VF_ENGINE_RATES = {
-    "GEM": 3,
+    "GEM": 5,
     "KOKORO": 1,
 }
+VF_ENGINE_PLAN_RATES: dict[str, dict[str, int]] = {
+    "KOKORO": {"free": 1, "pro": 1, "plus": 1},
+    "GEM": {"free": 5, "pro": 4, "plus": 3},
+}
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
-    "free": {"plan": "Free", "monthlyVfLimit": 8000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+    "free": {"plan": "Free", "monthlyVfLimit": 10000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
     "pro": {"plan": "Pro", "monthlyVfLimit": 200000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
     "plus": {"plan": "Plus", "monthlyVfLimit": 500000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
 }
+VF_AD_REWARD_CLAIM_LIMIT_PER_DAY = max(1, int((os.getenv("VF_AD_REWARD_CLAIM_LIMIT_PER_DAY") or "3").strip() or "3"))
+VF_AD_REWARD_VFF_AMOUNT = max(1, int((os.getenv("VF_AD_REWARD_VFF_AMOUNT") or "1000").strip() or "1000"))
+VF_TOKEN_PACK_VF_AMOUNT = max(1, int((os.getenv("VF_TOKEN_PACK_VF_AMOUNT") or "100000").strip() or "100000"))
+VF_TOKEN_PACK_BASE_INR = max(1, int((os.getenv("VF_TOKEN_PACK_BASE_INR") or "499").strip() or "499"))
 GEMINI_ALLOCATOR_CONFIG = load_allocator_config()
 BACKEND_GEMINI_ALLOCATOR_WAIT_TIMEOUT_MS = max(
     5000,
@@ -1289,6 +1297,10 @@ _INMEMORY_USAGE_MONTHLY: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_DAILY: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_EVENTS: dict[str, dict[str, Any]] = {}
 _INMEMORY_STRIPE_CUSTOMERS: dict[str, str] = {}
+_INMEMORY_WALLET_DAILY: dict[str, dict[str, Any]] = {}
+_INMEMORY_WALLET_TRANSACTIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_COUPONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_LOCK = threading.Lock()
 
 
@@ -1349,6 +1361,22 @@ def _usage_day_period_label(now: Optional[datetime] = None) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+def _wallet_month_key(now: Optional[datetime] = None) -> str:
+    dt = now or _utc_now()
+    return dt.strftime("%Y-%m")
+
+
+def _safe_now_iso(now: Optional[datetime] = None) -> str:
+    return (now or _utc_now()).isoformat()
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = str(value or "").strip().lower()
+    return token in {"1", "true", "yes", "on"}
+
+
 def _default_entitlement(uid: str) -> dict[str, Any]:
     _ = uid
     defaults = PLAN_LIMITS["free"]
@@ -1361,7 +1389,10 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "subscriptionId": None,
         "currencyMode": "INR_BASE_AUTO_FX",
         "billingCountry": None,
-        "updatedAt": _utc_now().isoformat(),
+        "paidVfBalance": 0,
+        "vffBalance": 0,
+        "vffMonthKey": _wallet_month_key(),
+        "updatedAt": _safe_now_iso(),
     }
 
 
@@ -1381,6 +1412,22 @@ def _plan_key_from_name(plan_name: str) -> str:
 
 def _plan_config(plan_name: str) -> dict[str, Any]:
     return PLAN_LIMITS[_plan_key_from_name(plan_name)]
+
+
+def _engine_rate_for_plan(plan_name: str, engine: str) -> int:
+    plan_key = _plan_key_from_name(plan_name)
+    engine_key = str(engine or "").strip().upper()
+    rates = VF_ENGINE_PLAN_RATES.get(engine_key) or {}
+    if plan_key in rates:
+        return _as_positive_int(rates[plan_key]) or 1
+    return _as_positive_int(VF_ENGINE_RATES.get(engine_key)) or 1
+
+
+def _round_inr(value: float) -> int:
+    try:
+        return max(1, int(round(float(value))))
+    except Exception:
+        return 1
 
 
 def _billing_status_from_subscription(subscription_status: str) -> str:
@@ -1519,10 +1566,141 @@ def _require_request_uid(request: Request) -> str:
     raise HTTPException(status_code=401, detail="Authentication required.")
 
 
+def _firestore_user_is_admin(uid: str) -> bool:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return False
+    users_collection = _firestore_collection("users")
+    if users_collection is None:
+        return False
+    try:
+        doc = users_collection.document(safe_uid).get()
+    except Exception:
+        return False
+    if not doc.exists:
+        return False
+    payload = doc.to_dict() or {}
+    if _as_bool(payload.get("isAdmin")) or _as_bool(payload.get("admin")):
+        return True
+    role = str(payload.get("role") or "").strip().lower()
+    if role == "admin":
+        return True
+    roles = payload.get("roles")
+    if isinstance(roles, list):
+        for item in roles:
+            if str(item or "").strip().lower() == "admin":
+                return True
+    return False
+
+
+def _request_claim_is_admin(request: Request) -> bool:
+    claims = getattr(request.state, "auth_claims", None)
+    if not isinstance(claims, dict):
+        return False
+    return _as_bool(claims.get("admin"))
+
+
+def _require_admin_uid(request: Request) -> str:
+    uid = _require_request_uid(request)
+    if _request_claim_is_admin(request):
+        return uid
+    if uid in VF_ADMIN_APPROVER_UIDS:
+        return uid
+    if not VF_AUTH_ENFORCE and uid.startswith("local_admin"):
+        return uid
+    if _firestore_user_is_admin(uid):
+        return uid
+    raise HTTPException(status_code=403, detail="Admin access required.")
+
+
 def _firestore_collection(name: str) -> Any:
     if _FIRESTORE_DB is None:
         return None
     return _FIRESTORE_DB.collection(name)
+
+
+def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
+    current = now or _utc_now()
+    month_key = _wallet_month_key(current)
+    normalized = dict(entitlement or {})
+    normalized["paidVfBalance"] = _as_positive_int(normalized.get("paidVfBalance"))
+    saved_month = str(normalized.get("vffMonthKey") or "").strip()
+    if saved_month != month_key:
+        normalized["vffBalance"] = 0
+        normalized["vffMonthKey"] = month_key
+    else:
+        normalized["vffBalance"] = _as_positive_int(normalized.get("vffBalance"))
+        normalized["vffMonthKey"] = saved_month or month_key
+    return normalized
+
+
+def _monthly_free_remaining(entitlement: dict[str, Any], monthly: dict[str, Any]) -> int:
+    monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit"))
+    monthly_free_used = _as_positive_int(monthly.get("monthlyFreeVfUsed"))
+    return max(0, monthly_limit - monthly_free_used)
+
+
+def _wallet_spendable_now(entitlement: dict[str, Any], monthly: dict[str, Any], engine: str) -> int:
+    safe_engine = str(engine or "").strip().upper()
+    monthly_remaining = _monthly_free_remaining(entitlement, monthly)
+    paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
+    if safe_engine == "KOKORO":
+        return monthly_remaining + _as_positive_int(entitlement.get("vffBalance")) + paid_balance
+    return monthly_remaining + paid_balance
+
+
+def _wallet_charge_breakdown(
+    entitlement: dict[str, Any],
+    monthly: dict[str, Any],
+    engine: str,
+    vf_cost: int,
+) -> dict[str, int]:
+    remaining = _as_positive_int(vf_cost)
+    breakdown = {"vff": 0, "monthlyVf": 0, "paidVf": 0}
+    if remaining <= 0:
+        return breakdown
+    safe_engine = str(engine or "").strip().upper()
+    monthly_remaining = _monthly_free_remaining(entitlement, monthly)
+    paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
+    vff_balance = _as_positive_int(entitlement.get("vffBalance"))
+
+    def spend(bucket: str, available: int) -> None:
+        nonlocal remaining
+        if remaining <= 0:
+            return
+        use = min(max(0, available), remaining)
+        if use <= 0:
+            return
+        breakdown[bucket] = use
+        remaining -= use
+
+    if safe_engine == "KOKORO":
+        spend("vff", vff_balance)
+        spend("monthlyVf", monthly_remaining)
+        spend("paidVf", paid_balance)
+    else:
+        spend("monthlyVf", monthly_remaining)
+        spend("paidVf", paid_balance)
+    return breakdown
+
+
+def _wallet_daily_doc_id(uid: str, now: Optional[datetime] = None) -> str:
+    return f"{uid}_{_usage_day_key(now)}"
+
+
+def _ad_claims_today(uid: str, now: Optional[datetime] = None) -> int:
+    current = now or _utc_now()
+    doc_id = _wallet_daily_doc_id(uid, current)
+    collection = _firestore_collection("wallet_daily")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_WALLET_DAILY.get(doc_id) or {}
+            return _as_positive_int(row.get("adClaimCount"))
+    doc = collection.document(doc_id).get()
+    if not doc.exists:
+        return 0
+    payload = doc.to_dict() or {}
+    return _as_positive_int(payload.get("adClaimCount"))
 
 
 def _load_entitlement(uid: str) -> dict[str, Any]:
@@ -1533,7 +1711,9 @@ def _load_entitlement(uid: str) -> dict[str, Any]:
             existing = _INMEMORY_ENTITLEMENTS.get(uid)
             if not existing:
                 _INMEMORY_ENTITLEMENTS[uid] = {**defaults}
-            return {**_INMEMORY_ENTITLEMENTS[uid]}
+            current = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS[uid])
+            _INMEMORY_ENTITLEMENTS[uid] = current
+            return {**current}
     doc = collection.document(uid).get()
     if not doc.exists:
         collection.document(uid).set(defaults)
@@ -1548,19 +1728,31 @@ def _load_entitlement(uid: str) -> dict[str, Any]:
     merged["dailyGenerationLimit"] = _as_positive_int(
         merged.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"]
     ) or plan_cfg["dailyGenerationLimit"]
+    merged = _normalize_entitlement_wallet(merged)
     return merged
 
 
 def _write_entitlement(uid: str, payload: dict[str, Any]) -> None:
-    payload = {**payload, "updatedAt": _utc_now().isoformat()}
+    patch = {**payload, "updatedAt": _safe_now_iso()}
+    if "monthlyVfLimit" in patch:
+        patch["monthlyVfLimit"] = _as_positive_int(patch.get("monthlyVfLimit"))
+    if "dailyGenerationLimit" in patch:
+        patch["dailyGenerationLimit"] = _as_positive_int(patch.get("dailyGenerationLimit"))
+    if "paidVfBalance" in patch:
+        patch["paidVfBalance"] = _as_positive_int(patch.get("paidVfBalance"))
+    if "vffBalance" in patch:
+        patch["vffBalance"] = _as_positive_int(patch.get("vffBalance"))
+    if "vffMonthKey" in patch:
+        patch["vffMonthKey"] = str(patch.get("vffMonthKey") or _wallet_month_key()).strip() or _wallet_month_key()
+
     collection = _firestore_collection("entitlements")
     if collection is None:
         with _INMEMORY_LOCK:
-            current = _INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid)
-            current.update(payload)
-            _INMEMORY_ENTITLEMENTS[uid] = current
+            current = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
+            current.update(patch)
+            _INMEMORY_ENTITLEMENTS[uid] = _normalize_entitlement_wallet(current)
         return
-    collection.document(uid).set(payload, merge=True)
+    collection.document(uid).set(patch, merge=True)
 
 
 def _link_customer_uid(customer_id: str, uid: str) -> None:
@@ -1597,6 +1789,7 @@ def _usage_defaults(uid: str, now: Optional[datetime] = None) -> tuple[dict[str,
         "uid": uid,
         "periodKey": _usage_month_period_label(current),
         "vfUsed": 0,
+        "monthlyFreeVfUsed": 0,
         "generationCount": 0,
         "byEngine": {
             "GEM": {"chars": 0, "vf": 0},
@@ -1652,7 +1845,6 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
     if safe_engine not in VF_ENGINE_RATES:
         safe_engine = "GEM"
     safe_chars = _as_positive_int(char_count)
-    vf_cost = safe_chars * VF_ENGINE_RATES[safe_engine]
     now = _utc_now()
     monthly_doc_id = _inmemory_usage_month_doc_id(uid, now)
     daily_doc_id = _inmemory_usage_day_doc_id(uid, now)
@@ -1660,22 +1852,39 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
 
     if _firestore_collection("usage_events") is None:
         with _INMEMORY_LOCK:
-            entitlement = _INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid)
+            entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid), now)
             _INMEMORY_ENTITLEMENTS[uid] = entitlement
             monthly = _INMEMORY_USAGE_MONTHLY.get(monthly_doc_id) or _usage_defaults(uid, now)[0]
             daily = _INMEMORY_USAGE_DAILY.get(daily_doc_id) or _usage_defaults(uid, now)[1]
             event = _INMEMORY_USAGE_EVENTS.get(event_doc_id)
             if event and str(event.get("status")) in {"reserved", "committed"}:
-                return {"ok": True, "alreadyReserved": True, "event": event, "monthly": monthly, "daily": daily}
+                return {"ok": True, "alreadyReserved": True, "event": event, "monthly": monthly, "daily": daily, "entitlement": entitlement}
 
-            monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit"))
-            daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit"))
-            if _as_positive_int(monthly.get("vfUsed")) + vf_cost > monthly_limit:
-                raise HTTPException(status_code=429, detail="Monthly VF limit exceeded.")
+            monthly.setdefault("monthlyFreeVfUsed", _as_positive_int(monthly.get("monthlyFreeVfUsed")))
+
+            plan_cfg = _plan_config(_normalize_plan_name(str(entitlement.get("plan") or "Free")))
+            daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"])
+            rate = _engine_rate_for_plan(str(entitlement.get("plan") or "Free"), safe_engine)
+            vf_cost = safe_chars * rate
+
             if _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
                 raise HTTPException(status_code=429, detail="Daily generation limit reached.")
 
+            charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
+            covered = (
+                _as_positive_int(charge_breakdown.get("vff"))
+                + _as_positive_int(charge_breakdown.get("monthlyVf"))
+                + _as_positive_int(charge_breakdown.get("paidVf"))
+            )
+            if covered < vf_cost:
+                raise HTTPException(status_code=429, detail="Insufficient VF balance for this generation.")
+
+            entitlement["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) - _as_positive_int(charge_breakdown.get("vff")))
+            entitlement["paidVfBalance"] = max(0, _as_positive_int(entitlement.get("paidVfBalance")) - _as_positive_int(charge_breakdown.get("paidVf")))
+            entitlement["updatedAt"] = now.isoformat()
+
             monthly["vfUsed"] = _as_positive_int(monthly.get("vfUsed")) + vf_cost
+            monthly["monthlyFreeVfUsed"] = _as_positive_int(monthly.get("monthlyFreeVfUsed")) + _as_positive_int(charge_breakdown.get("monthlyVf"))
             monthly["generationCount"] = _as_positive_int(monthly.get("generationCount")) + 1
             monthly_engine = dict((monthly.get("byEngine") or {}).get(safe_engine) or {})
             monthly_engine["chars"] = _as_positive_int(monthly_engine.get("chars")) + safe_chars
@@ -1698,16 +1907,23 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
                 "engine": safe_engine,
                 "chars": safe_chars,
                 "vfCost": vf_cost,
+                "rate": rate,
                 "monthDocId": monthly_doc_id,
                 "dayDocId": daily_doc_id,
+                "chargeBreakdown": {
+                    "vff": _as_positive_int(charge_breakdown.get("vff")),
+                    "monthlyVf": _as_positive_int(charge_breakdown.get("monthlyVf")),
+                    "paidVf": _as_positive_int(charge_breakdown.get("paidVf")),
+                },
                 "createdAt": now.isoformat(),
                 "updatedAt": now.isoformat(),
             }
 
+            _INMEMORY_ENTITLEMENTS[uid] = entitlement
             _INMEMORY_USAGE_MONTHLY[monthly_doc_id] = monthly
             _INMEMORY_USAGE_DAILY[daily_doc_id] = daily
             _INMEMORY_USAGE_EVENTS[event_doc_id] = event_payload
-            return {"ok": True, "alreadyReserved": False, "event": event_payload, "monthly": monthly, "daily": daily}
+            return {"ok": True, "alreadyReserved": False, "event": event_payload, "monthly": monthly, "daily": daily, "entitlement": entitlement}
 
     assert _FIRESTORE_DB is not None
     assert firebase_firestore is not None
@@ -1723,28 +1939,42 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
     def _apply(transaction_obj: Any) -> dict[str, Any]:
         entitlement_doc = entitlements_ref.get(transaction=transaction_obj)
         entitlement = entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
+        entitlement = _normalize_entitlement_wallet(entitlement, now)
         plan_cfg = _plan_config(_normalize_plan_name(str(entitlement.get("plan") or "Free")))
-        monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit") or plan_cfg["monthlyVfLimit"])
         daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"])
+        rate = _engine_rate_for_plan(str(entitlement.get("plan") or "Free"), safe_engine)
+        vf_cost = safe_chars * rate
 
         monthly_doc = monthly_ref.get(transaction=transaction_obj)
         daily_doc = daily_ref.get(transaction=transaction_obj)
         default_monthly, default_daily = _usage_defaults(uid, now)
         monthly = {**default_monthly, **(monthly_doc.to_dict() or {})} if monthly_doc.exists else {**default_monthly}
         daily = {**default_daily, **(daily_doc.to_dict() or {})} if daily_doc.exists else {**default_daily}
+        monthly.setdefault("monthlyFreeVfUsed", _as_positive_int(monthly.get("monthlyFreeVfUsed")))
 
         event_doc = event_ref.get(transaction=transaction_obj)
         if event_doc.exists:
             existing_event = event_doc.to_dict() or {}
             if str(existing_event.get("status")) in {"reserved", "committed"}:
-                return {"ok": True, "alreadyReserved": True, "event": existing_event, "monthly": monthly, "daily": daily}
-
-        if _as_positive_int(monthly.get("vfUsed")) + vf_cost > monthly_limit:
-            raise RuntimeError("Monthly VF limit exceeded.")
+                return {"ok": True, "alreadyReserved": True, "event": existing_event, "monthly": monthly, "daily": daily, "entitlement": entitlement}
         if _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
             raise RuntimeError("Daily generation limit reached.")
 
+        charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
+        covered = (
+            _as_positive_int(charge_breakdown.get("vff"))
+            + _as_positive_int(charge_breakdown.get("monthlyVf"))
+            + _as_positive_int(charge_breakdown.get("paidVf"))
+        )
+        if covered < vf_cost:
+            raise RuntimeError("Insufficient VF balance for this generation.")
+
+        entitlement["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) - _as_positive_int(charge_breakdown.get("vff")))
+        entitlement["paidVfBalance"] = max(0, _as_positive_int(entitlement.get("paidVfBalance")) - _as_positive_int(charge_breakdown.get("paidVf")))
+        entitlement["updatedAt"] = now.isoformat()
+
         monthly["vfUsed"] = _as_positive_int(monthly.get("vfUsed")) + vf_cost
+        monthly["monthlyFreeVfUsed"] = _as_positive_int(monthly.get("monthlyFreeVfUsed")) + _as_positive_int(charge_breakdown.get("monthlyVf"))
         monthly["generationCount"] = _as_positive_int(monthly.get("generationCount")) + 1
         monthly_engine = dict((monthly.get("byEngine") or {}).get(safe_engine) or {})
         monthly_engine["chars"] = _as_positive_int(monthly_engine.get("chars")) + safe_chars
@@ -1767,8 +1997,14 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
             "engine": safe_engine,
             "chars": safe_chars,
             "vfCost": vf_cost,
+            "rate": rate,
             "monthDocId": monthly_doc_id,
             "dayDocId": daily_doc_id,
+            "chargeBreakdown": {
+                "vff": _as_positive_int(charge_breakdown.get("vff")),
+                "monthlyVf": _as_positive_int(charge_breakdown.get("monthlyVf")),
+                "paidVf": _as_positive_int(charge_breakdown.get("paidVf")),
+            },
             "createdAt": now.isoformat(),
             "updatedAt": now.isoformat(),
         }
@@ -1777,7 +2013,7 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
         transaction_obj.set(monthly_ref, monthly, merge=True)
         transaction_obj.set(daily_ref, daily, merge=True)
         transaction_obj.set(event_ref, event_payload, merge=True)
-        return {"ok": True, "alreadyReserved": False, "event": event_payload, "monthly": monthly, "daily": daily}
+        return {"ok": True, "alreadyReserved": False, "event": event_payload, "monthly": monthly, "daily": daily, "entitlement": entitlement}
 
     try:
         return _apply(transaction)
@@ -1805,11 +2041,17 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
             if status == "reserved":
                 monthly = _INMEMORY_USAGE_MONTHLY.get(str(event.get("monthDocId") or ""))
                 daily = _INMEMORY_USAGE_DAILY.get(str(event.get("dayDocId") or ""))
+                entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
                 engine = str(event.get("engine") or "GEM").upper()
                 vf_cost = _as_positive_int(event.get("vfCost"))
                 chars = _as_positive_int(event.get("chars"))
+                charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
+                refund_vff = _as_positive_int(charge_breakdown.get("vff"))
+                refund_paid = _as_positive_int(charge_breakdown.get("paidVf"))
+                refund_monthly = _as_positive_int(charge_breakdown.get("monthlyVf"))
                 if monthly is not None:
                     monthly["vfUsed"] = max(0, _as_positive_int(monthly.get("vfUsed")) - vf_cost)
+                    monthly["monthlyFreeVfUsed"] = max(0, _as_positive_int(monthly.get("monthlyFreeVfUsed")) - refund_monthly)
                     monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
                     monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
                     monthly_engine["vf"] = max(0, _as_positive_int(monthly_engine.get("vf")) - vf_cost)
@@ -1824,6 +2066,11 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
                     daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - chars)
                     daily.setdefault("byEngine", {})[engine] = daily_engine
                     daily["updatedAt"] = now
+                if refund_vff > 0 or refund_paid > 0:
+                    entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + refund_vff
+                    entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + refund_paid
+                    entitlement["updatedAt"] = now
+                    _INMEMORY_ENTITLEMENTS[uid] = entitlement
             event["status"] = "reverted"
             event["updatedAt"] = now
             event["error"] = str(error_detail or "")
@@ -1850,16 +2097,26 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
         if status != "reserved":
             transaction_obj.set(event_ref, {"status": "reverted", "updatedAt": now, "error": str(error_detail)}, merge=True)
             return
+        entitlements_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
         monthly_ref = _FIRESTORE_DB.collection("usage_monthly").document(str(event.get("monthDocId") or ""))
         daily_ref = _FIRESTORE_DB.collection("usage_daily").document(str(event.get("dayDocId") or ""))
+        entitlement_doc = entitlements_ref.get(transaction=transaction_obj)
         monthly_doc = monthly_ref.get(transaction=transaction_obj)
         daily_doc = daily_ref.get(transaction=transaction_obj)
+        entitlement = _normalize_entitlement_wallet(
+            entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
+        )
         engine = str(event.get("engine") or "GEM").upper()
         vf_cost = _as_positive_int(event.get("vfCost"))
         chars = _as_positive_int(event.get("chars"))
+        charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
+        refund_vff = _as_positive_int(charge_breakdown.get("vff"))
+        refund_paid = _as_positive_int(charge_breakdown.get("paidVf"))
+        refund_monthly = _as_positive_int(charge_breakdown.get("monthlyVf"))
         if monthly_doc.exists:
             monthly = monthly_doc.to_dict() or {}
             monthly["vfUsed"] = max(0, _as_positive_int(monthly.get("vfUsed")) - vf_cost)
+            monthly["monthlyFreeVfUsed"] = max(0, _as_positive_int(monthly.get("monthlyFreeVfUsed")) - refund_monthly)
             monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
             monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
             monthly_engine["vf"] = max(0, _as_positive_int(monthly_engine.get("vf")) - vf_cost)
@@ -1877,28 +2134,45 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
             daily.setdefault("byEngine", {})[engine] = daily_engine
             daily["updatedAt"] = now
             transaction_obj.set(daily_ref, daily, merge=True)
+        if refund_vff > 0 or refund_paid > 0:
+            entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + refund_vff
+            entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + refund_paid
+            entitlement["updatedAt"] = now
+            transaction_obj.set(entitlements_ref, entitlement, merge=True)
         transaction_obj.set(event_ref, {"status": "reverted", "updatedAt": now, "error": str(error_detail)}, merge=True)
 
     _apply(transaction)
 
 
 def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
-    entitlement = _load_entitlement(uid)
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
     monthly, daily = _load_usage_windows(uid)
     monthly_used = _as_positive_int(monthly.get("vfUsed"))
     monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit"))
+    monthly_free_used = _as_positive_int(monthly.get("monthlyFreeVfUsed"))
     daily_used = _as_positive_int(daily.get("generationCount"))
     daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit"))
+    plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
+    plan_key = _plan_key_from_name(plan_name)
+    month_key = _wallet_month_key()
+    if str(entitlement.get("vffMonthKey") or "") != month_key:
+        entitlement["vffBalance"] = 0
+        entitlement["vffMonthKey"] = month_key
+    vff_balance = _as_positive_int(entitlement.get("vffBalance"))
+    paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
+    monthly_free_remaining = max(0, monthly_limit - monthly_free_used)
+    ad_claims_today = _ad_claims_today(uid)
     month_start, month_end = _month_window_bounds()
     day_start, day_end = _day_window_bounds()
     return {
         "uid": uid,
-        "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+        "plan": plan_name,
         "status": str(entitlement.get("status") or "free_active"),
         "monthly": {
             "vfLimit": monthly_limit,
             "vfUsed": monthly_used,
-            "vfRemaining": max(0, monthly_limit - monthly_used),
+            "monthlyFreeVfUsed": monthly_free_used,
+            "vfRemaining": monthly_free_remaining,
             "generationCount": _as_positive_int(monthly.get("generationCount")),
             "periodKey": str(monthly.get("periodKey") or _usage_month_period_label()),
             "windowStartUtc": month_start,
@@ -1921,8 +2195,24 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             "currencyMode": entitlement.get("currencyMode") or "INR_BASE_AUTO_FX",
             "billingCountry": entitlement.get("billingCountry"),
         },
+        "wallet": {
+            "monthlyFreeRemaining": monthly_free_remaining,
+            "monthlyFreeLimit": monthly_limit,
+            "vffBalance": vff_balance,
+            "paidVfBalance": paid_balance,
+            "spendableNowByEngine": {
+                "KOKORO": monthly_free_remaining + vff_balance + paid_balance,
+                "GEM": monthly_free_remaining + paid_balance,
+            },
+            "adClaimsToday": ad_claims_today,
+            "adClaimsDailyLimit": VF_AD_REWARD_CLAIM_LIMIT_PER_DAY,
+            "vffMonthKey": str(entitlement.get("vffMonthKey") or month_key),
+        },
         "limits": {
-            "vfRates": VF_ENGINE_RATES,
+            "vfRates": {
+                "KOKORO": _engine_rate_for_plan(plan_key, "KOKORO"),
+                "GEM": _engine_rate_for_plan(plan_key, "GEM"),
+            },
             "monthlyPlanCaps": {
                 "Free": PLAN_LIMITS["free"]["monthlyVfLimit"],
                 "Pro": PLAN_LIMITS["pro"]["monthlyVfLimit"],
@@ -2036,6 +2326,42 @@ class BillingPortalSessionRequest(BaseModel):
     returnUrl: Optional[str] = None
 
 
+class BillingTokenPackCheckoutSessionRequest(BaseModel):
+    successUrl: Optional[str] = None
+    cancelUrl: Optional[str] = None
+
+
+class CouponCreateRequest(BaseModel):
+    code: str
+    creditVf: int
+    expiresAt: Optional[str] = None
+    maxRedemptions: Optional[int] = None
+    active: bool = True
+    note: Optional[str] = None
+
+
+class CouponPatchRequest(BaseModel):
+    active: Optional[bool] = None
+    expiresAt: Optional[str] = None
+    maxRedemptions: Optional[int] = None
+    note: Optional[str] = None
+
+
+class CouponRedeemRequest(BaseModel):
+    code: str
+
+
+class AdminUserPatchRequest(BaseModel):
+    plan: Optional[str] = None
+    paidVfDelta: Optional[int] = None
+    vffDelta: Optional[int] = None
+    disabled: Optional[bool] = None
+
+
+class AdminResetPasswordRequest(BaseModel):
+    newPassword: str
+
+
 class TtsSynthesizeRequest(BaseModel):
     engine: str = "GEM"
     text: str
@@ -2055,6 +2381,10 @@ class TtsSynthesizeRequest(BaseModel):
     response_format: Optional[str] = None
     emotion_ref_id: Optional[str] = None
     emotion_strength: Optional[float] = None
+    multi_speaker_mode: Optional[str] = None
+    multi_speaker_max_concurrency: Optional[int] = None
+    multi_speaker_retry_once: Optional[bool] = None
+    multi_speaker_line_map: Optional[list[dict[str, Any]]] = None
 
 
 class AiGenerateTextRequest(BaseModel):
@@ -2868,6 +3198,101 @@ def _resolve_checkout_url_override(candidate: Optional[str], fallback: str) -> s
     if not value:
         return fallback
     return value
+
+
+def _token_pack_amount_inr_for_plan(plan_name: str) -> int:
+    plan_key = _plan_key_from_name(plan_name)
+    discount = 0.0
+    if plan_key == "pro":
+        discount = 0.10
+    elif plan_key == "plus":
+        discount = 0.20
+    return _round_inr(VF_TOKEN_PACK_BASE_INR * (1.0 - discount))
+
+
+def _parse_optional_datetime(raw: Optional[str]) -> Optional[datetime]:
+    token = str(raw or "").strip()
+    if not token:
+        return None
+    try:
+        normalized = token.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _normalize_coupon_code(raw_code: str) -> str:
+    token = str(raw_code or "").strip().upper()
+    token = re.sub(r"[^A-Z0-9_-]", "", token)
+    return token[:64]
+
+
+def _credit_paid_vf(
+    *,
+    uid: str,
+    amount: int,
+    reason: str,
+    transaction_id: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> tuple[bool, dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    credit_amount = _as_positive_int(amount)
+    if not safe_uid or credit_amount <= 0:
+        return False, _load_entitlement(safe_uid or "")
+    now = _utc_now()
+    tx_id = str(transaction_id or "").strip()
+    tx_payload = {
+        "uid": safe_uid,
+        "kind": "credit",
+        "bucket": "paidVF",
+        "amount": credit_amount,
+        "reason": str(reason or "credit"),
+        "metadata": metadata or {},
+        "createdAt": now.isoformat(),
+    }
+
+    transactions = _firestore_collection("wallet_transactions")
+    entitlements = _firestore_collection("entitlements")
+    if transactions is None or entitlements is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            if tx_id and tx_id in _INMEMORY_WALLET_TRANSACTIONS:
+                return False, _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid))
+            entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid), now)
+            entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_amount
+            entitlement["updatedAt"] = now.isoformat()
+            _INMEMORY_ENTITLEMENTS[safe_uid] = entitlement
+            if tx_id:
+                _INMEMORY_WALLET_TRANSACTIONS[tx_id] = {**tx_payload, "id": tx_id}
+            return True, entitlement
+
+    ent_ref = _FIRESTORE_DB.collection("entitlements").document(safe_uid)
+    tx_ref = _FIRESTORE_DB.collection("wallet_transactions").document(tx_id or f"wallet_{uuid.uuid4().hex}")
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> tuple[bool, dict[str, Any]]:
+        if tx_id:
+            existing_tx = tx_ref.get(transaction=transaction_obj)
+            if existing_tx.exists:
+                current_doc = ent_ref.get(transaction=transaction_obj)
+                current_ent = _normalize_entitlement_wallet(
+                    current_doc.to_dict() if current_doc.exists else _default_entitlement(safe_uid),
+                    now,
+                )
+                return False, current_ent
+
+        ent_doc = ent_ref.get(transaction=transaction_obj)
+        entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(safe_uid), now)
+        entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_amount
+        entitlement["updatedAt"] = now.isoformat()
+        transaction_obj.set(ent_ref, entitlement, merge=True)
+        transaction_obj.set(tx_ref, {**tx_payload, "id": tx_ref.id}, merge=True)
+        return True, entitlement
+
+    return _apply(transaction)
 
 
 def _normalize_conversion_policy(raw_policy: str, default: str = "AUTO_RELIABLE") -> str:
@@ -4160,11 +4585,553 @@ def _sync_entitlement_from_subscription(
     return payload
 
 
+def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
+    safe_limit = max(1, min(200, int(limit)))
+    needle = str(search or "").strip().lower()
+    users: list[dict[str, Any]] = []
+
+    if _firebase_ready() and firebase_auth is not None:
+        page = firebase_auth.list_users()  # type: ignore[attr-defined]
+        for record in page.iterate_all():
+            uid = str(getattr(record, "uid", "") or "")
+            email = str(getattr(record, "email", "") or "")
+            display_name = str(getattr(record, "display_name", "") or "")
+            disabled = bool(getattr(record, "disabled", False))
+            if needle:
+                haystack = f"{uid} {email} {display_name}".lower()
+                if needle not in haystack:
+                    continue
+            entitlement = _load_entitlement(uid)
+            monthly, daily = _load_usage_windows(uid)
+            custom_claims = getattr(record, "custom_claims", None) or {}
+            users.append(
+                {
+                    "uid": uid,
+                    "email": email,
+                    "displayName": display_name,
+                    "disabled": disabled,
+                    "admin": _as_bool(custom_claims.get("admin")) or _firestore_user_is_admin(uid),
+                    "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+                    "status": str(entitlement.get("status") or "free_active"),
+                    "wallet": {
+                        "paidVfBalance": _as_positive_int(entitlement.get("paidVfBalance")),
+                        "vffBalance": _as_positive_int(entitlement.get("vffBalance")),
+                    },
+                    "usage": {
+                        "monthlyVfUsed": _as_positive_int(monthly.get("vfUsed")),
+                        "dailyGenerationUsed": _as_positive_int(daily.get("generationCount")),
+                    },
+                }
+            )
+            if len(users) >= safe_limit:
+                break
+        return users
+
+    collection = _firestore_collection("entitlements")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            for uid, payload in _INMEMORY_ENTITLEMENTS.items():
+                if needle and needle not in uid.lower():
+                    continue
+                entitlement = _normalize_entitlement_wallet(payload)
+                users.append(
+                    {
+                        "uid": uid,
+                        "email": "",
+                        "displayName": uid,
+                        "disabled": False,
+                        "admin": uid in VF_ADMIN_APPROVER_UIDS or uid.startswith("local_admin"),
+                        "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+                        "status": str(entitlement.get("status") or "free_active"),
+                        "wallet": {
+                            "paidVfBalance": _as_positive_int(entitlement.get("paidVfBalance")),
+                            "vffBalance": _as_positive_int(entitlement.get("vffBalance")),
+                        },
+                        "usage": {"monthlyVfUsed": 0, "dailyGenerationUsed": 0},
+                    }
+                )
+                if len(users) >= safe_limit:
+                    break
+            return users
+
+    docs = collection.limit(safe_limit * 2).stream()
+    for doc in docs:
+        uid = str(doc.id or "")
+        if needle and needle not in uid.lower():
+            continue
+        entitlement = _normalize_entitlement_wallet(doc.to_dict() or {})
+        users.append(
+            {
+                "uid": uid,
+                "email": "",
+                "displayName": uid,
+                "disabled": False,
+                "admin": _firestore_user_is_admin(uid),
+                "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+                "status": str(entitlement.get("status") or "free_active"),
+                "wallet": {
+                    "paidVfBalance": _as_positive_int(entitlement.get("paidVfBalance")),
+                    "vffBalance": _as_positive_int(entitlement.get("vffBalance")),
+                },
+                "usage": {"monthlyVfUsed": 0, "dailyGenerationUsed": 0},
+            }
+        )
+        if len(users) >= safe_limit:
+            break
+    return users
+
+
+def _admin_set_user_disabled(uid: str, disabled: bool) -> None:
+    if not _firebase_ready() or firebase_auth is None:
+        raise HTTPException(status_code=503, detail="Firebase admin auth is not configured.")
+    try:
+        firebase_auth.update_user(uid, disabled=bool(disabled))  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to update user status: {exc}") from exc
+
+
+def _admin_set_user_password(uid: str, new_password: str) -> None:
+    if not _firebase_ready() or firebase_auth is None:
+        raise HTTPException(status_code=503, detail="Firebase admin auth is not configured.")
+    password = str(new_password or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    try:
+        firebase_auth.update_user(uid, password=password)  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to reset password: {exc}") from exc
+
+
+def _admin_revoke_user_sessions(uid: str) -> None:
+    if not _firebase_ready() or firebase_auth is None:
+        raise HTTPException(status_code=503, detail="Firebase admin auth is not configured.")
+    try:
+        firebase_auth.revoke_refresh_tokens(uid)  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to revoke sessions: {exc}") from exc
+
+
 @app.get("/account/entitlements")
 def account_entitlements(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
     payload = _entitlement_usage_payload(uid)
     return JSONResponse({"ok": True, "entitlements": payload})
+
+
+@app.post("/wallet/ad-reward/claim")
+def wallet_ad_reward_claim(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    now = _utc_now()
+    day_doc_id = _wallet_daily_doc_id(uid, now)
+    month_key = _wallet_month_key(now)
+    wallet_daily = _firestore_collection("wallet_daily")
+    entitlements = _firestore_collection("entitlements")
+
+    if wallet_daily is None or entitlements is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_WALLET_DAILY.get(day_doc_id) or {
+                "uid": uid,
+                "periodKey": _usage_day_period_label(now),
+                "adClaimCount": 0,
+            }
+            claim_count = _as_positive_int(row.get("adClaimCount"))
+            if claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
+                raise HTTPException(status_code=429, detail="Daily ad reward limit reached.")
+            row["adClaimCount"] = claim_count + 1
+            row["updatedAt"] = now.isoformat()
+            _INMEMORY_WALLET_DAILY[day_doc_id] = row
+            entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid), now)
+            if str(entitlement.get("vffMonthKey") or "") != month_key:
+                entitlement["vffBalance"] = 0
+                entitlement["vffMonthKey"] = month_key
+            entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + VF_AD_REWARD_VFF_AMOUNT
+            entitlement["updatedAt"] = now.isoformat()
+            _INMEMORY_ENTITLEMENTS[uid] = entitlement
+        return JSONResponse({"ok": True, "entitlements": _entitlement_usage_payload(uid)})
+
+    daily_ref = _FIRESTORE_DB.collection("wallet_daily").document(day_doc_id)
+    ent_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> None:
+        daily_doc = daily_ref.get(transaction=transaction_obj)
+        row = (
+            {**(daily_doc.to_dict() or {})}
+            if daily_doc.exists
+            else {"uid": uid, "periodKey": _usage_day_period_label(now), "adClaimCount": 0}
+        )
+        claim_count = _as_positive_int(row.get("adClaimCount"))
+        if claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
+            raise RuntimeError("Daily ad reward limit reached.")
+        row["adClaimCount"] = claim_count + 1
+        row["updatedAt"] = now.isoformat()
+
+        ent_doc = ent_ref.get(transaction=transaction_obj)
+        entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
+        if str(entitlement.get("vffMonthKey") or "") != month_key:
+            entitlement["vffBalance"] = 0
+            entitlement["vffMonthKey"] = month_key
+        entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + VF_AD_REWARD_VFF_AMOUNT
+        entitlement["updatedAt"] = now.isoformat()
+
+        transaction_obj.set(daily_ref, row, merge=True)
+        transaction_obj.set(ent_ref, entitlement, merge=True)
+
+    try:
+        _apply(transaction)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+    return JSONResponse({"ok": True, "entitlements": _entitlement_usage_payload(uid)})
+
+
+@app.post("/wallet/coupons/redeem")
+def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    code = _normalize_coupon_code(payload.code)
+    if not code:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+    now = _utc_now()
+
+    coupons = _firestore_collection("coupons")
+    redemptions = _firestore_collection("coupon_redemptions")
+    entitlements = _firestore_collection("entitlements")
+    transactions = _firestore_collection("wallet_transactions")
+
+    if coupons is None or redemptions is None or entitlements is None or transactions is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            coupon_id = ""
+            coupon: dict[str, Any] = {}
+            for item_id, row in _INMEMORY_COUPONS.items():
+                if str(row.get("code") or "").upper() == code:
+                    coupon_id = item_id
+                    coupon = dict(row)
+                    break
+            if not coupon_id:
+                raise HTTPException(status_code=404, detail="Coupon not found.")
+            if not _as_bool(coupon.get("active")):
+                raise HTTPException(status_code=400, detail="Coupon is inactive.")
+            expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
+            if expires and expires <= now:
+                raise HTTPException(status_code=400, detail="Coupon has expired.")
+            redemption_key = f"{coupon_id}_{uid}"
+            if redemption_key in _INMEMORY_COUPON_REDEMPTIONS:
+                raise HTTPException(status_code=409, detail="Coupon already redeemed by this user.")
+            redeemed_count = _as_positive_int(coupon.get("redeemedCount"))
+            max_redemptions = _as_positive_int(coupon.get("maxRedemptions"))
+            if max_redemptions > 0 and redeemed_count >= max_redemptions:
+                raise HTTPException(status_code=400, detail="Coupon redemption limit reached.")
+            credit_vf = _as_positive_int(coupon.get("creditVf"))
+            if credit_vf <= 0:
+                raise HTTPException(status_code=400, detail="Coupon has no redeemable value.")
+
+            coupon["redeemedCount"] = redeemed_count + 1
+            coupon["updatedAt"] = now.isoformat()
+            _INMEMORY_COUPONS[coupon_id] = coupon
+            _INMEMORY_COUPON_REDEMPTIONS[redemption_key] = {
+                "couponId": coupon_id,
+                "uid": uid,
+                "code": code,
+                "creditedVf": credit_vf,
+                "createdAt": now.isoformat(),
+            }
+        _credit_paid_vf(
+            uid=uid,
+            amount=credit_vf,
+            reason="coupon_redeem",
+            transaction_id=f"coupon_{coupon_id}_{uid}",
+            metadata={"couponId": coupon_id, "code": code},
+        )
+        return JSONResponse({"ok": True, "creditedVf": credit_vf, "entitlements": _entitlement_usage_payload(uid)})
+
+    coupon_docs = list(_FIRESTORE_DB.collection("coupons").where("code", "==", code).limit(1).stream())
+    if not coupon_docs:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
+    coupon_doc = coupon_docs[0]
+    coupon_id = str(coupon_doc.id)
+    redemption_doc_id = f"{coupon_id}_{uid}"
+    coupon_ref = _FIRESTORE_DB.collection("coupons").document(coupon_id)
+    redemption_ref = _FIRESTORE_DB.collection("coupon_redemptions").document(redemption_doc_id)
+    entitlement_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
+    tx_ref = _FIRESTORE_DB.collection("wallet_transactions").document(f"coupon_{coupon_id}_{uid}")
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> int:
+        fresh_coupon_doc = coupon_ref.get(transaction=transaction_obj)
+        if not fresh_coupon_doc.exists:
+            raise RuntimeError("Coupon not found.")
+        coupon = fresh_coupon_doc.to_dict() or {}
+        if not _as_bool(coupon.get("active")):
+            raise RuntimeError("Coupon is inactive.")
+        expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
+        if expires and expires <= now:
+            raise RuntimeError("Coupon has expired.")
+        redemption_doc = redemption_ref.get(transaction=transaction_obj)
+        if redemption_doc.exists:
+            raise RuntimeError("Coupon already redeemed by this user.")
+        redeemed_count = _as_positive_int(coupon.get("redeemedCount"))
+        max_redemptions = _as_positive_int(coupon.get("maxRedemptions"))
+        if max_redemptions > 0 and redeemed_count >= max_redemptions:
+            raise RuntimeError("Coupon redemption limit reached.")
+        credit_vf = _as_positive_int(coupon.get("creditVf"))
+        if credit_vf <= 0:
+            raise RuntimeError("Coupon has no redeemable value.")
+
+        ent_doc = entitlement_ref.get(transaction=transaction_obj)
+        entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
+        entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_vf
+        entitlement["updatedAt"] = now.isoformat()
+        coupon["redeemedCount"] = redeemed_count + 1
+        coupon["updatedAt"] = now.isoformat()
+
+        transaction_obj.set(coupon_ref, coupon, merge=True)
+        transaction_obj.set(
+            redemption_ref,
+            {
+                "couponId": coupon_id,
+                "uid": uid,
+                "code": code,
+                "creditedVf": credit_vf,
+                "createdAt": now.isoformat(),
+            },
+            merge=True,
+        )
+        transaction_obj.set(entitlement_ref, entitlement, merge=True)
+        transaction_obj.set(
+            tx_ref,
+            {
+                "id": tx_ref.id,
+                "uid": uid,
+                "kind": "credit",
+                "bucket": "paidVF",
+                "amount": credit_vf,
+                "reason": "coupon_redeem",
+                "metadata": {"couponId": coupon_id, "code": code},
+                "createdAt": now.isoformat(),
+            },
+            merge=True,
+        )
+        return credit_vf
+
+    try:
+        credited_vf = _apply(transaction)
+    except RuntimeError as exc:
+        detail = str(exc)
+        status = 409 if "already redeemed" in detail.lower() else 400
+        if "not found" in detail.lower():
+            status = 404
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+    return JSONResponse({"ok": True, "creditedVf": credited_vf, "entitlements": _entitlement_usage_payload(uid)})
+
+
+@app.get("/admin/users")
+def admin_list_users(request: Request, q: str = "", limit: int = 50) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    rows = _admin_list_users(limit=limit, search=q)
+    return JSONResponse({"ok": True, "users": rows, "count": len(rows)})
+
+
+@app.patch("/admin/users/{target_uid}")
+def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    uid = str(target_uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+
+    patch: dict[str, Any] = {}
+    if payload.plan is not None:
+        normalized_plan = _normalize_plan_name(payload.plan)
+        plan_cfg = _plan_config(normalized_plan)
+        patch["plan"] = normalized_plan
+        patch["monthlyVfLimit"] = plan_cfg["monthlyVfLimit"]
+        patch["dailyGenerationLimit"] = plan_cfg["dailyGenerationLimit"]
+
+    if payload.paidVfDelta is not None:
+        delta = int(payload.paidVfDelta)
+        patch["paidVfBalance"] = max(0, _as_positive_int(entitlement.get("paidVfBalance")) + delta)
+    if payload.vffDelta is not None:
+        delta = int(payload.vffDelta)
+        patch["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) + delta)
+        patch["vffMonthKey"] = _wallet_month_key()
+
+    if patch:
+        _write_entitlement(uid, patch)
+
+    if payload.disabled is not None:
+        _admin_set_user_disabled(uid, bool(payload.disabled))
+
+    return JSONResponse({"ok": True, "uid": uid, "entitlements": _entitlement_usage_payload(uid)})
+
+
+@app.post("/admin/users/{target_uid}/reset-password")
+def admin_reset_user_password(target_uid: str, payload: AdminResetPasswordRequest, request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    uid = str(target_uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    _admin_set_user_password(uid, payload.newPassword)
+    return JSONResponse({"ok": True, "uid": uid})
+
+
+@app.post("/admin/users/{target_uid}/revoke-sessions")
+def admin_revoke_user_sessions(target_uid: str, request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    uid = str(target_uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    _admin_revoke_user_sessions(uid)
+    return JSONResponse({"ok": True, "uid": uid})
+
+
+@app.delete("/admin/users/{target_uid}")
+def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    uid = str(target_uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+
+    if _firebase_ready() and firebase_auth is not None:
+        try:
+            firebase_auth.delete_user(uid)  # type: ignore[attr-defined]
+        except Exception:
+            # Best effort; Firestore cleanup still runs.
+            pass
+
+    collection_names = [
+        "entitlements",
+        "users",
+        "usage_monthly",
+        "usage_daily",
+        "usage_events",
+        "wallet_daily",
+        "coupon_redemptions",
+    ]
+    if _FIRESTORE_DB is not None:
+        for name in collection_names:
+            try:
+                coll = _FIRESTORE_DB.collection(name)
+                if name in {"entitlements", "users"}:
+                    coll.document(uid).delete()
+                    continue
+                docs = coll.where("uid", "==", uid).stream()
+                for doc in docs:
+                    doc.reference.delete()
+            except Exception:
+                continue
+    else:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ENTITLEMENTS.pop(uid, None)
+            for key in [k for k in _INMEMORY_USAGE_MONTHLY.keys() if k.startswith(f"{uid}_")]:
+                _INMEMORY_USAGE_MONTHLY.pop(key, None)
+            for key in [k for k in _INMEMORY_USAGE_DAILY.keys() if k.startswith(f"{uid}_")]:
+                _INMEMORY_USAGE_DAILY.pop(key, None)
+            for key in [k for k in _INMEMORY_USAGE_EVENTS.keys() if k.startswith(f"{uid}_")]:
+                _INMEMORY_USAGE_EVENTS.pop(key, None)
+            for key in [k for k in _INMEMORY_WALLET_DAILY.keys() if k.startswith(f"{uid}_")]:
+                _INMEMORY_WALLET_DAILY.pop(key, None)
+            for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
+                _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
+
+    return JSONResponse({"ok": True, "uid": uid})
+
+
+@app.post("/admin/coupons")
+def admin_create_coupon(payload: CouponCreateRequest, request: Request) -> JSONResponse:
+    admin_uid = _require_admin_uid(request)
+    code = _normalize_coupon_code(payload.code)
+    if not code:
+        raise HTTPException(status_code=400, detail="Invalid coupon code.")
+    credit_vf = _as_positive_int(payload.creditVf)
+    if credit_vf <= 0:
+        raise HTTPException(status_code=400, detail="creditVf must be positive.")
+    max_redemptions = _as_positive_int(payload.maxRedemptions)
+    expires_dt = _parse_optional_datetime(payload.expiresAt)
+    coupon_id = f"coupon_{uuid.uuid4().hex[:12]}"
+    now = _utc_now().isoformat()
+    row = {
+        "id": coupon_id,
+        "code": code,
+        "creditVf": credit_vf,
+        "active": bool(payload.active),
+        "maxRedemptions": max_redemptions,
+        "redeemedCount": 0,
+        "expiresAt": expires_dt.isoformat() if expires_dt else None,
+        "note": str(payload.note or "")[:240],
+        "createdBy": admin_uid,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    collection = _firestore_collection("coupons")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            for existing in _INMEMORY_COUPONS.values():
+                if str(existing.get("code") or "").upper() == code:
+                    raise HTTPException(status_code=409, detail="Coupon code already exists.")
+            _INMEMORY_COUPONS[coupon_id] = row
+    else:
+        existing = list(collection.where("code", "==", code).limit(1).stream())
+        if existing:
+            raise HTTPException(status_code=409, detail="Coupon code already exists.")
+        collection.document(coupon_id).set(row, merge=True)
+
+    return JSONResponse({"ok": True, "coupon": row})
+
+
+@app.get("/admin/coupons")
+def admin_list_coupons(request: Request, limit: int = 100) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    safe_limit = max(1, min(300, int(limit)))
+    coupons: list[dict[str, Any]] = []
+    collection = _firestore_collection("coupons")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            coupons = list(_INMEMORY_COUPONS.values())[:safe_limit]
+    else:
+        docs = collection.limit(safe_limit).stream()
+        coupons = [{**(doc.to_dict() or {}), "id": doc.id} for doc in docs]
+    coupons.sort(key=lambda row: str(row.get("createdAt") or ""), reverse=True)
+    return JSONResponse({"ok": True, "coupons": coupons})
+
+
+@app.patch("/admin/coupons/{coupon_id}")
+def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    safe_coupon_id = str(coupon_id or "").strip()
+    if not safe_coupon_id:
+        raise HTTPException(status_code=400, detail="Missing coupon id.")
+    patch: dict[str, Any] = {"updatedAt": _utc_now().isoformat()}
+    if payload.active is not None:
+        patch["active"] = bool(payload.active)
+    if payload.maxRedemptions is not None:
+        patch["maxRedemptions"] = _as_positive_int(payload.maxRedemptions)
+    if payload.expiresAt is not None:
+        expires = _parse_optional_datetime(payload.expiresAt)
+        patch["expiresAt"] = expires.isoformat() if expires else None
+    if payload.note is not None:
+        patch["note"] = str(payload.note)[:240]
+
+    collection = _firestore_collection("coupons")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            current = _INMEMORY_COUPONS.get(safe_coupon_id)
+            if not current:
+                raise HTTPException(status_code=404, detail="Coupon not found.")
+            current.update(patch)
+            _INMEMORY_COUPONS[safe_coupon_id] = current
+            return JSONResponse({"ok": True, "coupon": current})
+
+    ref = collection.document(safe_coupon_id)
+    doc = ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
+    ref.set(patch, merge=True)
+    fresh = ref.get().to_dict() or {}
+    return JSONResponse({"ok": True, "coupon": {**fresh, "id": safe_coupon_id}})
 
 
 @app.post("/billing/checkout-session")
@@ -4211,6 +5178,65 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
     return JSONResponse({"ok": True, "url": session.get("url"), "sessionId": session.get("id")})
 
 
+@app.post("/billing/token-pack/checkout-session")
+def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSessionRequest, request: Request) -> JSONResponse:
+    _require_stripe_ready()
+    uid = _require_request_uid(request)
+    entitlement = _load_entitlement(uid)
+    plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
+    final_amount_inr = _token_pack_amount_inr_for_plan(plan_name)
+    customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    if not customer_id:
+        try:
+            customer = stripe.Customer.create(  # type: ignore[attr-defined]
+                metadata={"uid": uid},
+                description=f"VoiceFlow user {uid}",
+            )
+            customer_id = str(customer.get("id") or "")
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Failed to create Stripe customer: {exc}") from exc
+        _write_entitlement(uid, {"stripeCustomerId": customer_id})
+        _link_customer_uid(customer_id, uid)
+
+    success_url = _resolve_checkout_url_override(payload.successUrl, STRIPE_CHECKOUT_SUCCESS_URL)
+    cancel_url = _resolve_checkout_url_override(payload.cancelUrl, STRIPE_CHECKOUT_CANCEL_URL)
+    try:
+        session = stripe.checkout.Session.create(  # type: ignore[attr-defined]
+            mode="payment",
+            customer=customer_id,
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "inr",
+                        "product_data": {"name": f"VoiceFlow {VF_TOKEN_PACK_VF_AMOUNT:,} paid VF pack"},
+                        "unit_amount": final_amount_inr * 100,
+                    },
+                    "quantity": 1,
+                }
+            ],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "kind": "token_pack",
+                "uid": uid,
+                "packVf": str(VF_TOKEN_PACK_VF_AMOUNT),
+                "finalAmountInr": str(final_amount_inr),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to create token-pack checkout session: {exc}") from exc
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "url": session.get("url"),
+            "sessionId": session.get("id"),
+            "packVf": VF_TOKEN_PACK_VF_AMOUNT,
+            "finalAmountInr": final_amount_inr,
+        }
+    )
+
+
 @app.post("/billing/portal-session")
 def billing_portal_session(payload: BillingPortalSessionRequest, request: Request) -> JSONResponse:
     _require_stripe_ready()
@@ -4252,30 +5278,53 @@ async def billing_webhook(request: Request) -> JSONResponse:
 
     try:
         if event_type == "checkout.session.completed":
-            uid = str((data_obj.get("metadata") or {}).get("uid") or "")
-            customer_id = str(data_obj.get("customer") or "")
-            subscription_id = str(data_obj.get("subscription") or "")
-            billing_country = ((data_obj.get("customer_details") or {}).get("address") or {}).get("country")
-            if subscription_id and stripe is not None:
-                sub = stripe.Subscription.retrieve(subscription_id)  # type: ignore[attr-defined]
-                sub_status = str(sub.get("status") or "active")
-                items = ((sub.get("items") or {}).get("data") or [])
-                first_item = items[0] if items else {}
-                price_id = str(((first_item.get("price") or {}).get("id")) or "")
+            metadata = data_obj.get("metadata") if isinstance(data_obj.get("metadata"), dict) else {}
+            checkout_kind = str(metadata.get("kind") or "").strip().lower()
+            if checkout_kind == "token_pack":
+                uid = str(metadata.get("uid") or "")
+                if not uid:
+                    uid = _resolve_uid_from_customer(str(data_obj.get("customer") or ""))
+                if uid:
+                    session_id = str(data_obj.get("id") or "")
+                    pack_vf = _as_positive_int(metadata.get("packVf") or VF_TOKEN_PACK_VF_AMOUNT)
+                    tx_id = f"stripe_checkout_token_pack_{session_id}" if session_id else ""
+                    _credit_paid_vf(
+                        uid=uid,
+                        amount=pack_vf,
+                        reason="stripe_token_pack",
+                        transaction_id=tx_id or None,
+                        metadata={
+                            "eventType": event_type,
+                            "sessionId": session_id,
+                            "amountTotal": _as_positive_int(data_obj.get("amount_total")),
+                            "currency": str(data_obj.get("currency") or "inr"),
+                        },
+                    )
             else:
-                sub_status = "active"
-                price_id = _stripe_price_id_for_plan(str((data_obj.get("metadata") or {}).get("plan") or "free"))
-            if not uid:
-                uid = _resolve_uid_from_customer(customer_id)
-            if uid:
-                _sync_entitlement_from_subscription(
-                    uid=uid,
-                    customer_id=customer_id,
-                    subscription_id=subscription_id,
-                    subscription_status=sub_status,
-                    price_id=price_id,
-                    billing_country=billing_country,
-                )
+                uid = str(metadata.get("uid") or "")
+                customer_id = str(data_obj.get("customer") or "")
+                subscription_id = str(data_obj.get("subscription") or "")
+                billing_country = ((data_obj.get("customer_details") or {}).get("address") or {}).get("country")
+                if subscription_id and stripe is not None:
+                    sub = stripe.Subscription.retrieve(subscription_id)  # type: ignore[attr-defined]
+                    sub_status = str(sub.get("status") or "active")
+                    items = ((sub.get("items") or {}).get("data") or [])
+                    first_item = items[0] if items else {}
+                    price_id = str(((first_item.get("price") or {}).get("id")) or "")
+                else:
+                    sub_status = "active"
+                    price_id = _stripe_price_id_for_plan(str(metadata.get("plan") or "free"))
+                if not uid:
+                    uid = _resolve_uid_from_customer(customer_id)
+                if uid:
+                    _sync_entitlement_from_subscription(
+                        uid=uid,
+                        customer_id=customer_id,
+                        subscription_id=subscription_id,
+                        subscription_status=sub_status,
+                        price_id=price_id,
+                        billing_country=billing_country,
+                    )
         elif event_type in {"customer.subscription.updated", "customer.subscription.deleted"}:
             customer_id = str(data_obj.get("customer") or "")
             uid = str((data_obj.get("metadata") or {}).get("uid") or "") or _resolve_uid_from_customer(customer_id)
@@ -4372,6 +5421,26 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
     elif engine == "XTTS":
         if voice_id:
             upstream_payload["voice"] = voice_id
+    multi_speaker_mode = str(payload.multi_speaker_mode or "").strip().lower()
+    if multi_speaker_mode:
+        if multi_speaker_mode not in {"studio_pair_groups", "legacy_windows", "off"}:
+            raise HTTPException(
+                status_code=400,
+                detail="multi_speaker_mode must be one of: studio_pair_groups, legacy_windows, off",
+            )
+        upstream_payload["multi_speaker_mode"] = multi_speaker_mode
+
+    if payload.multi_speaker_max_concurrency is not None:
+        try:
+            bounded_concurrency = max(1, min(7, int(payload.multi_speaker_max_concurrency)))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="multi_speaker_max_concurrency must be an integer.") from exc
+        upstream_payload["multi_speaker_max_concurrency"] = bounded_concurrency
+
+    if payload.multi_speaker_retry_once is not None:
+        upstream_payload["multi_speaker_retry_once"] = bool(payload.multi_speaker_retry_once)
+    if payload.multi_speaker_line_map is not None:
+        upstream_payload["multi_speaker_line_map"] = payload.multi_speaker_line_map
     upstream_payload.setdefault("request_id", request_id)
 
     try:
@@ -4809,8 +5878,19 @@ def _auto_route_dubbing_voices(
     preferred_map: dict[str, str],
     speakers: list[str],
     tts_route: str = "auto",
+    xtts_mode: str = "preferred",
+    tts_runtime: str = "xtts",
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    route = str(tts_route or "auto").strip().lower()
+    route = str(tts_route or "").strip().lower()
+    runtime_token = str(tts_runtime or "").strip().lower()
+    _ = str(xtts_mode or "").strip().lower()
+    if not route or route == "auto":
+        if runtime_token == "gem":
+            route = "gem_only"
+        elif runtime_token == "kokoro":
+            route = "kokoro_only"
+        else:
+            route = "auto"
     if route not in {"auto", "gem_only", "kokoro_only"}:
         route = "auto"
     routes: list[dict[str, Any]] = []

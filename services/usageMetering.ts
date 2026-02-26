@@ -1,9 +1,9 @@
-import { GenerationSettings, UserStats, VfEngineUsage, VfUsageStats, VfUsageWindow } from '../types';
+import { GenerationSettings, UserStats, UserWalletStats, VfEngineUsage, VfUsageStats, VfUsageWindow } from '../types';
 
 export const VF_UNIT = 'VF' as const;
 export const VF_ENGINE_RATES: Record<GenerationSettings['engine'], number> = {
   KOKORO: 1,
-  GEM: 3,
+  GEM: 5,
 };
 
 const createEngineUsage = (): VfEngineUsage => ({ chars: 0, vf: 0 });
@@ -38,6 +38,20 @@ export const createEmptyVfUsageStats = (): VfUsageStats => ({
   monthly: createWindow(getLocalMonthKey()),
   lifetime: createWindow('lifetime'),
   lastRecordedAt: undefined,
+});
+
+export const createEmptyWalletStats = (): UserWalletStats => ({
+  monthlyFreeRemaining: 0,
+  monthlyFreeLimit: 0,
+  vffBalance: 0,
+  paidVfBalance: 0,
+  spendableNowByEngine: {
+    GEM: 0,
+    KOKORO: 0,
+  },
+  adClaimsToday: 0,
+  adClaimsDailyLimit: 3,
+  vffMonthKey: undefined,
 });
 
 const sanitizeEngineUsage = (value: any): VfEngineUsage => ({

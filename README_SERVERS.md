@@ -92,6 +92,17 @@ If guardian approval actions are used, add the same UID to backend allowlist:
 $env:VF_ADMIN_APPROVER_UIDS="local_admin"
 ```
 
+If local admin env keys are missing/invalid, `admin` login falls back to Firebase email/password:
+
+```powershell
+VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>
+VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>   # optional
+VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>       # optional
+```
+
+Firestore admin fallback (optional UI/admin resolution):
+- `users/<uid>` document with `isAdmin: true` or `role: "admin"` (or `roles: ["admin"]`).
+
 ## Manual Per-Service Start (Separate Terminals)
 
 If you do not want to use bootstrap, run each server manually.
