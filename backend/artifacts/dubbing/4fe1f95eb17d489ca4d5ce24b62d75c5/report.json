@@ -1,0 +1,93 @@
+{
+  "pipelineVersion": "v2",
+  "jobId": "4fe1f95eb17d489ca4d5ce24b62d75c5",
+  "preflight": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "ffmpeg",
+        "ok": true,
+        "detail": "ffmpeg found on PATH",
+        "remediation": "Install FFmpeg and ensure ffmpeg executable is available in PATH."
+      },
+      {
+        "name": "demucs_cli",
+        "ok": true,
+        "detail": "demucs command found",
+        "remediation": "Install demucs and ensure the demucs entrypoint is available in PATH."
+      },
+      {
+        "name": "source_media",
+        "ok": true,
+        "detail": "Source file: C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\backend\\artifacts\\dubbing\\4fe1f95eb17d489ca4d5ce24b62d75c5\\video_2026-02-23_18-49-33.mp4",
+        "remediation": "Provide a valid source media file."
+      },
+      {
+        "name": "pyannote_token",
+        "ok": true,
+        "detail": "PYANNOTE_AUTH_TOKEN configured",
+        "remediation": "Set PYANNOTE_AUTH_TOKEN environment variable for diarization."
+      },
+      {
+        "name": "nllb_model",
+        "ok": true,
+        "detail": "NLLB path: C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\video_dubbing\\models\\nllb_ct2",
+        "remediation": "Set VF_NLLB_CT2_PATH or place model at video_dubbing/models/nllb_ct2."
+      },
+      {
+        "name": "latentsync_cmd",
+        "ok": true,
+        "detail": "LatentSync command configured",
+        "remediation": "Set VF_LATENTSYNC_CMD with '{input}' and '{output}' placeholders."
+      },
+      {
+        "name": "whisper_runtime",
+        "ok": true,
+        "detail": "Whisper runtime initialized",
+        "remediation": "Install faster-whisper and model dependencies."
+      },
+      {
+        "name": "speechbrain_runtime",
+        "ok": true,
+        "detail": "SpeechBrain unavailable (fallback mode): module 'torchaudio' has no attribute 'list_audio_backends'",
+        "remediation": "Install a compatible speechbrain+torchaudio stack for model-based emotion detection."
+      },
+      {
+        "name": "pyworld_runtime",
+        "ok": true,
+        "detail": "pyworld module import ok",
+        "remediation": "Install pyworld package."
+      },
+      {
+        "name": "xtts_runtime",
+        "ok": true,
+        "detail": "XTTS runtime health at http://127.0.0.1:7860",
+        "remediation": "Start XTTS runtime on configured URL."
+      }
+    ],
+    "failureCount": 0
+  },
+  "stageTimeline": [],
+  "selectedVoices": [],
+  "segmentStats": {},
+  "alignment": [],
+  "outputFiles": {},
+  "speakerDetection": {
+    "speakers": [],
+    "segmentCount": 0
+  },
+  "cloneStore": {
+    "scope": "job_only",
+    "profiles": []
+  },
+  "xttsRequests": [],
+  "synthesisFailures": [],
+  "qualityGate": {
+    "passed": false,
+    "reasons": [
+      "WindowsPath('C:/Users/1wasi/OneDrive/Desktop/voice-Flow/backend/artifacts/dubbing/4fe1f95eb17d489ca4d5ce24b62d75c5/video_2026-02-23_18-49-33.mp4') and WindowsPath('C:/Users/1wasi/OneDrive/Desktop/voice-Flow/backend/artifacts/dubbing/4fe1f95eb17d489ca4d5ce24b62d75c5/video_2026-02-23_18-49-33.mp4') are the same file"
+    ]
+  },
+  "speakerSynthesisStats": {},
+  "error": "WindowsPath('C:/Users/1wasi/OneDrive/Desktop/voice-Flow/backend/artifacts/dubbing/4fe1f95eb17d489ca4d5ce24b62d75c5/video_2026-02-23_18-49-33.mp4') and WindowsPath('C:/Users/1wasi/OneDrive/Desktop/voice-Flow/backend/artifacts/dubbing/4fe1f95eb17d489ca4d5ce24b62d75c5/video_2026-02-23_18-49-33.mp4') are the same file"
+}

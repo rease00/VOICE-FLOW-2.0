@@ -1,0 +1,93 @@
+{
+  "version": "2026-02-25",
+  "windowSeconds": 60,
+  "defaultWaitTimeoutMs": 90000,
+  "models": [
+    {
+      "id": "gemini-2.5-flash",
+      "rpm": 5,
+      "tpm": 250000,
+      "enabledFor": ["text", "ocr"]
+    },
+    {
+      "id": "gemini-3-flash",
+      "rpm": 5,
+      "tpm": 250000,
+      "enabledFor": ["text", "ocr"]
+    },
+    {
+      "id": "gemini-2.5-flash-lite",
+      "rpm": 10,
+      "tpm": 250000,
+      "enabledFor": ["text", "ocr"]
+    },
+    {
+      "id": "gemini-2.5-flash-preview-tts",
+      "rpm": 3,
+      "tpm": 10000,
+      "enabledFor": ["tts"]
+    },
+    {
+      "id": "gemma-3-27b",
+      "rpm": 30,
+      "tpm": 15000,
+      "enabledFor": ["text"]
+    },
+    {
+      "id": "gemma-3-12b",
+      "rpm": 30,
+      "tpm": 15000,
+      "enabledFor": ["text"]
+    },
+    {
+      "id": "gemma-3-4b",
+      "rpm": 30,
+      "tpm": 15000,
+      "enabledFor": ["text"]
+    },
+    {
+      "id": "gemma-3-2b",
+      "rpm": 30,
+      "tpm": 15000,
+      "enabledFor": ["text"]
+    },
+    {
+      "id": "gemma-3-1b",
+      "rpm": 30,
+      "tpm": 15000,
+      "enabledFor": ["text"]
+    },
+    {
+      "id": "gemini-embedding-001",
+      "rpm": 100,
+      "tpm": 30000,
+      "enabledFor": ["reserved"]
+    },
+    {
+      "id": "gemini-robotics-er-1.5-preview",
+      "rpm": 10,
+      "tpm": 250000,
+      "enabledFor": ["reserved"]
+    }
+  ],
+  "routes": {
+    "tts": [
+      "gemini-2.5-flash-preview-tts"
+    ],
+    "text": [
+      "gemini-2.5-flash",
+      "gemini-3-flash",
+      "gemini-2.5-flash-lite",
+      "gemma-3-27b",
+      "gemma-3-12b",
+      "gemma-3-4b",
+      "gemma-3-2b",
+      "gemma-3-1b"
+    ],
+    "ocr": [
+      "gemini-2.5-flash",
+      "gemini-3-flash",
+      "gemini-2.5-flash-lite"
+    ]
+  }
+}

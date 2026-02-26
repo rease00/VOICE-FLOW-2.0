@@ -1,0 +1,675 @@
+{
+  "pipelineVersion": "v2",
+  "jobId": "fce06a57a25b4291a31b62547b898250",
+  "preflight": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "ffmpeg",
+        "ok": true,
+        "detail": "ffmpeg found on PATH",
+        "remediation": "Install FFmpeg and ensure ffmpeg executable is available in PATH."
+      },
+      {
+        "name": "demucs_cli",
+        "ok": true,
+        "detail": "demucs command found",
+        "remediation": "Install demucs and ensure the demucs entrypoint is available in PATH."
+      },
+      {
+        "name": "source_media",
+        "ok": true,
+        "detail": "Source file: C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\backend\\artifacts\\dubbing\\fce06a57a25b4291a31b62547b898250\\video_2026-02-23_18-49-33.mp4",
+        "remediation": "Provide a valid source media file."
+      },
+      {
+        "name": "pyannote_token",
+        "ok": true,
+        "detail": "PYANNOTE_AUTH_TOKEN configured",
+        "remediation": "Set PYANNOTE_AUTH_TOKEN environment variable for diarization."
+      },
+      {
+        "name": "nllb_model",
+        "ok": true,
+        "detail": "NLLB path: C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\video_dubbing\\models\\nllb_ct2",
+        "remediation": "Set VF_NLLB_CT2_PATH or place model at video_dubbing/models/nllb_ct2."
+      },
+      {
+        "name": "latentsync_cmd",
+        "ok": true,
+        "detail": "LatentSync command configured",
+        "remediation": "Set VF_LATENTSYNC_CMD with '{input}' and '{output}' placeholders."
+      },
+      {
+        "name": "whisper_runtime",
+        "ok": true,
+        "detail": "Whisper runtime initialized",
+        "remediation": "Install faster-whisper and model dependencies."
+      },
+      {
+        "name": "speechbrain_runtime",
+        "ok": true,
+        "detail": "SpeechBrain unavailable (fallback mode): module 'torchaudio' has no attribute 'list_audio_backends'",
+        "remediation": "Install a compatible speechbrain+torchaudio stack for model-based emotion detection."
+      },
+      {
+        "name": "pyworld_runtime",
+        "ok": true,
+        "detail": "pyworld module import ok",
+        "remediation": "Install pyworld package."
+      },
+      {
+        "name": "xtts_runtime",
+        "ok": true,
+        "detail": "XTTS runtime health at http://127.0.0.1:7860",
+        "remediation": "Start XTTS runtime on configured URL."
+      }
+    ],
+    "failureCount": 0
+  },
+  "stageTimeline": [
+    {
+      "stage": "preprocess",
+      "status": "completed",
+      "startMs": 1772004275714,
+      "endMs": 1772004488414,
+      "durationMs": 212700
+    },
+    {
+      "stage": "diarize",
+      "status": "completed",
+      "startMs": 1772004488414,
+      "endMs": 1772004488415,
+      "durationMs": 1
+    },
+    {
+      "stage": "emotion_detect",
+      "status": "completed",
+      "startMs": 1772004488415,
+      "endMs": 1772004488428,
+      "durationMs": 13
+    },
+    {
+      "stage": "segment_detect",
+      "status": "completed",
+      "startMs": 1772004488428,
+      "endMs": 1772004540790,
+      "durationMs": 52362
+    },
+    {
+      "stage": "translate",
+      "status": "completed",
+      "startMs": 1772004540790,
+      "endMs": 1772004540792,
+      "durationMs": 2
+    },
+    {
+      "stage": "tts",
+      "status": "completed",
+      "startMs": 1772004540810,
+      "endMs": 1772005113790,
+      "durationMs": 572980
+    },
+    {
+      "stage": "prosody_transfer",
+      "status": "completed",
+      "startMs": 1772005113790,
+      "endMs": 1772005189687,
+      "durationMs": 75897
+    },
+    {
+      "stage": "reconstruct",
+      "status": "completed",
+      "startMs": 1772005189687,
+      "endMs": 1772005193142,
+      "durationMs": 3455
+    },
+    {
+      "stage": "lip_sync",
+      "status": "completed",
+      "startMs": 1772005193142,
+      "endMs": 1772005193423,
+      "durationMs": 281
+    }
+  ],
+  "selectedVoices": [
+    {
+      "speaker": "SPEAKER_00",
+      "engine": "XTTS",
+      "status": "selected",
+      "voiceId": "xtts_shahrukh_voice"
+    }
+  ],
+  "segmentStats": {
+    "count": 34,
+    "speakers": [
+      "SPEAKER_00"
+    ],
+    "language": "auto"
+  },
+  "alignment": [
+    {
+      "index": 0,
+      "score": 1.0,
+      "target": 1.04,
+      "actual": 1.04
+    },
+    {
+      "index": 1,
+      "score": 1.0,
+      "target": 2.34,
+      "actual": 2.34
+    },
+    {
+      "index": 2,
+      "score": 1.0,
+      "target": 3.9200000000000017,
+      "actual": 3.9200000000000017
+    },
+    {
+      "index": 3,
+      "score": 1.0,
+      "target": 2.7399999999999984,
+      "actual": 2.7399999999999984
+    },
+    {
+      "index": 4,
+      "score": 1.0,
+      "target": 2.3200000000000003,
+      "actual": 2.3200000000000003
+    },
+    {
+      "index": 5,
+      "score": 1.0,
+      "target": 2.8199999999999967,
+      "actual": 2.8199999999999967
+    },
+    {
+      "index": 6,
+      "score": 1.0,
+      "target": 3.719999999999999,
+      "actual": 3.719999999999999
+    },
+    {
+      "index": 7,
+      "score": 1.0,
+      "target": 3.760000000000005,
+      "actual": 3.760000000000005
+    },
+    {
+      "index": 8,
+      "score": 1.0,
+      "target": 2.5,
+      "actual": 2.5
+    },
+    {
+      "index": 9,
+      "score": 1.0,
+      "target": 1.980000000000004,
+      "actual": 1.980000000000004
+    },
+    {
+      "index": 10,
+      "score": 1.0,
+      "target": 3.6400000000000006,
+      "actual": 3.6400000000000006
+    },
+    {
+      "index": 11,
+      "score": 1.0,
+      "target": 2.239999999999995,
+      "actual": 2.239999999999995
+    },
+    {
+      "index": 12,
+      "score": 1.0,
+      "target": 2.4399999999999977,
+      "actual": 2.4399999999999977
+    },
+    {
+      "index": 13,
+      "score": 1.0,
+      "target": 2.5400000000000063,
+      "actual": 2.5400000000000063
+    },
+    {
+      "index": 14,
+      "score": 1.0,
+      "target": 3.6199999999999903,
+      "actual": 3.6199999999999903
+    },
+    {
+      "index": 15,
+      "score": 1.0,
+      "target": 3.980000000000004,
+      "actual": 3.980000000000004
+    },
+    {
+      "index": 16,
+      "score": 1.0,
+      "target": 2.480000000000004,
+      "actual": 2.480000000000004
+    },
+    {
+      "index": 17,
+      "score": 1.0,
+      "target": 3.5400000000000063,
+      "actual": 3.5400000000000063
+    },
+    {
+      "index": 18,
+      "score": 1.0,
+      "target": 3.739999999999995,
+      "actual": 3.739999999999995
+    },
+    {
+      "index": 19,
+      "score": 1.0,
+      "target": 3.5999999999999943,
+      "actual": 3.5999999999999943
+    },
+    {
+      "index": 20,
+      "score": 1.0,
+      "target": 5.980000000000004,
+      "actual": 5.980000000000004
+    },
+    {
+      "index": 21,
+      "score": 1.0,
+      "target": 0.9200000000000017,
+      "actual": 0.9200000000000017
+    },
+    {
+      "index": 22,
+      "score": 1.0,
+      "target": 4.0,
+      "actual": 4.0
+    },
+    {
+      "index": 23,
+      "score": 1.0,
+      "target": 4.060000000000002,
+      "actual": 4.060000000000002
+    },
+    {
+      "index": 24,
+      "score": 1.0,
+      "target": 4.019999999999996,
+      "actual": 4.019999999999996
+    },
+    {
+      "index": 25,
+      "score": 1.0,
+      "target": 3.6799999999999926,
+      "actual": 3.6799999999999926
+    },
+    {
+      "index": 26,
+      "score": 1.0,
+      "target": 4.0400000000000205,
+      "actual": 4.0400000000000205
+    },
+    {
+      "index": 27,
+      "score": 1.0,
+      "target": 3.8799999999999955,
+      "actual": 3.8799999999999955
+    },
+    {
+      "index": 28,
+      "score": 1.0,
+      "target": 3.719999999999999,
+      "actual": 3.719999999999999
+    },
+    {
+      "index": 29,
+      "score": 1.0,
+      "target": 3.859999999999985,
+      "actual": 3.859999999999985
+    },
+    {
+      "index": 30,
+      "score": 1.0,
+      "target": 5.860000000000014,
+      "actual": 5.860000000000014
+    },
+    {
+      "index": 31,
+      "score": 1.0,
+      "target": 2.619999999999976,
+      "actual": 2.619999999999976
+    },
+    {
+      "index": 32,
+      "score": 1.0,
+      "target": 3.9000000000000057,
+      "actual": 3.9000000000000057
+    },
+    {
+      "index": 33,
+      "score": 1.0,
+      "target": 2.4199999999999875,
+      "actual": 2.4199999999999875
+    }
+  ],
+  "outputFiles": {
+    "audio": {
+      "path": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\backend\\artifacts\\dubbing\\fce06a57a25b4291a31b62547b898250\\dubbed_audio.wav",
+      "size": 15860202,
+      "sha256": "d0e4198fc0f7189178f9aef38e181c1eb53df57a549450a7df750cddad6601a4"
+    },
+    "video": {
+      "path": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\backend\\artifacts\\dubbing\\fce06a57a25b4291a31b62547b898250\\dubbed_video_final.mp4",
+      "size": 58778469,
+      "sha256": "d34f97e94bc21aaaffbd00fc76497477824ece07b48ce9a67c07229fbff0067e"
+    }
+  },
+  "speakerDetection": {
+    "speakers": [
+      "SPEAKER_00"
+    ],
+    "segmentCount": 34
+  },
+  "cloneStore": {
+    "scope": "job_only",
+    "profiles": [
+      {
+        "speaker": "SPEAKER_00",
+        "referencePath": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+        "cloneScope": "job_only"
+      }
+    ]
+  },
+  "xttsRequests": [
+    {
+      "index": 0,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 1,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 2,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 3,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 4,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 5,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 6,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 7,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 8,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 9,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 10,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 11,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 12,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 13,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 14,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 15,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 16,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 17,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 18,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 19,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 20,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 21,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 22,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 23,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 24,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 25,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 26,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 27,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 28,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 29,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 30,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 31,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 32,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    },
+    {
+      "index": 33,
+      "speaker": "SPEAKER_00",
+      "voice_id": "xtts_shahrukh_voice",
+      "speaker_wav": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\artifacts\\voice-assets\\xtts\\clones\\fce06a57a25b4291a31b62547b898250\\SPEAKER_00.wav",
+      "ok": true,
+      "error": null
+    }
+  ],
+  "synthesisFailures": [],
+  "qualityGate": {
+    "passed": true,
+    "reasons": []
+  },
+  "speakerSynthesisStats": {
+    "SPEAKER_00": {
+      "segments": 34,
+      "ok": 34,
+      "failed": 0
+    }
+  },
+  "engineSelected": "AUTO_RELIABLE",
+  "engineExecuted": "XTTS",
+  "fallbackUsed": false,
+  "fallbackReason": null,
+  "supportsOneShotCloneAtDecision": true
+}

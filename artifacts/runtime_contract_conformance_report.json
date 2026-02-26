@@ -1,0 +1,160 @@
+{
+  "startedAt": "2026-02-26T06:51:08.742Z",
+  "mediaBackendUrl": "http://127.0.0.1:7800",
+  "passed": true,
+  "checks": [
+    {
+      "engine": "GEM",
+      "ok": true,
+      "violations": [],
+      "sample": {
+        "engine": "GEM",
+        "runtime": "gemini-runtime",
+        "ready": true,
+        "languages": [
+          "multilingual"
+        ],
+        "speed": {
+          "min": 0.7,
+          "max": 1.3,
+          "default": 1
+        },
+        "supportsEmotion": false,
+        "supportsStyle": false,
+        "supportsSpeakerWav": false,
+        "model": "gemini-2.5-flash-preview-tts",
+        "modelCandidates": [
+          "gemini-2.5-flash-preview-tts"
+        ],
+        "supportsMultiSpeaker": true,
+        "supportsBatchSynthesis": true,
+        "batchEndpoint": "/synthesize/batch",
+        "batchMaxItems": 64,
+        "batchDefaultParallelism": 4,
+        "batchMaxParallelism": 4,
+        "voiceCount": null,
+        "emotionCount": 0,
+        "metadata": {
+          "apiKeyConfigured": true,
+          "keyPoolSize": 64,
+          "mode": "gemini-only",
+          "maxWordsPerRequest": 5000,
+          "segmentation": "disabled",
+          "multiSpeakerMaxSpeakers": 2,
+          "supportsBatchSynthesis": true,
+          "batchEndpoint": "/synthesize/batch",
+          "batchMaxItems": 64,
+          "batchDefaultParallelism": 4,
+          "batchMaxParallelism": 4,
+          "multiSpeakerMaxSpeakersPerCall": 2,
+          "multiSpeakerBatchingMode": "text_order_two_speaker_windows",
+          "source": "runtime"
+        },
+        "displayName": "Google Cloud - HQ-PLUS"
+      }
+    },
+    {
+      "engine": "KOKORO",
+      "ok": true,
+      "violations": [],
+      "sample": {
+        "engine": "KOKORO",
+        "runtime": "kokoro-runtime",
+        "ready": true,
+        "languages": [
+          "en",
+          "hi"
+        ],
+        "speed": {
+          "min": 0.75,
+          "max": 1.35,
+          "default": 1
+        },
+        "supportsEmotion": false,
+        "supportsStyle": false,
+        "supportsSpeakerWav": false,
+        "supportsBatchSynthesis": true,
+        "batchEndpoint": "/synthesize/batch",
+        "batchMaxItems": 64,
+        "batchDefaultParallelism": 2,
+        "batchMaxParallelism": 2,
+        "model": "kokoro-full",
+        "voiceCount": 16,
+        "emotionCount": 0,
+        "metadata": {
+          "deviceMode": "cpu",
+          "sampleRate": 24000,
+          "maxWordsPerRequest": 5000,
+          "segmentationProfile": "quality-first",
+          "supportsBatchSynthesis": true,
+          "batchEndpoint": "/synthesize/batch",
+          "batchMaxItems": 64,
+          "batchDefaultParallelism": 2,
+          "batchMaxParallelism": 2,
+          "chunking": {
+            "hi": {
+              "hard_char_cap": 160,
+              "target_char_cap": 130,
+              "max_words_per_chunk": 30,
+              "join_crossfade_ms": 15
+            },
+            "default": {
+              "hard_char_cap": 220,
+              "target_char_cap": 180,
+              "max_words_per_chunk": 45,
+              "join_crossfade_ms": 15
+            }
+          },
+          "source": "runtime"
+        },
+        "displayName": "Kokoro - Basic"
+      }
+    },
+    {
+      "engine": "XTTS",
+      "ok": true,
+      "violations": [],
+      "sample": {
+        "engine": "XTTS",
+        "runtime": "xtts-runtime",
+        "ready": true,
+        "languages": [
+          "en",
+          "hi"
+        ],
+        "speed": {
+          "min": 0.7,
+          "max": 1.35,
+          "default": 1
+        },
+        "supportsEmotion": true,
+        "supportsStyle": true,
+        "supportsSpeakerWav": true,
+        "model": "Abhinay45/XTTS-Hindi-finetuned",
+        "voiceCount": 7,
+        "emotionCount": 0,
+        "metadata": {
+          "source": "fallback",
+          "maxWordsPerRequest": 5000,
+          "segmentationProfile": "quality-first",
+          "chunking": {
+            "hi": {
+              "hard_char_cap": 145,
+              "target_char_cap": 118,
+              "max_words_per_chunk": 28
+            },
+            "default": {
+              "hard_char_cap": 320,
+              "target_char_cap": 230,
+              "max_words_per_chunk": 45
+            }
+          },
+          "capabilityProbeError": "timed out"
+        },
+        "displayName": "XTTS - Standard"
+      }
+    }
+  ],
+  "failures": [],
+  "finishedAt": "2026-02-26T06:51:12.492Z"
+}

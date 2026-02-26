@@ -11,6 +11,13 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+.venvs/
+.runtime/
+__pycache__/
+*.pyc
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +29,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local XTTS asset binaries (keep manifests/reports in git)
+artifacts/voice-assets/**/*.wav
+artifacts/voice-assets/**/*.mp3
+artifacts/voice-assets/**/*.flac
+artifacts/voice-assets/**/*.ogg
+artifacts/cache/

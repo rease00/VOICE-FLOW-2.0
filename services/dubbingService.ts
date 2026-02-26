@@ -1,11 +1,149 @@
 import { DubSegment, GenerationSettings } from "../types";
 import { audioBufferToWav, getAudioContext } from "./geminiService";
+import { separateVideoStemWithBackend } from "./mediaBackendService";
 
-// --- 1. AUDIO MIX ENGINE (DSP) ---
-export const isolateBackgroundTrack = async (videoFile: File): Promise<AudioBuffer> => {
+export interface DubbingStemPack {
+  fullMix: AudioBuffer;
+  speechStem: AudioBuffer;
+  backgroundStem: AudioBuffer;
+  speechStemBlob: Blob;
+  backgroundStemBlob: Blob;
+  duration: number;
+}
+
+interface DubbingStemExtractionOptions {
+  backendUrl?: string;
+  preferBackendModel?: boolean;
+  onStatus?: (message: string) => void;
+}
+
+const createCompatibleBuffer = (
+  ctx: BaseAudioContext,
+  channels: number,
+  length: number,
+  sampleRate: number
+): AudioBuffer => ctx.createBuffer(Math.max(1, channels), Math.max(1, length), Math.max(8000, sampleRate));
+
+const renderSpeechStem = async (input: AudioBuffer): Promise<AudioBuffer> => {
+  const sampleRate = input.sampleRate || 48000;
+  const OfflineContextClass = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+  if (!OfflineContextClass) return input;
+
+  const offlineCtx = new OfflineContextClass(input.numberOfChannels, input.length, sampleRate);
+  const source = offlineCtx.createBufferSource();
+  source.buffer = input;
+
+  // Dialogue-focused chain: highpass + lowpass + mild compression.
+  const highpass = offlineCtx.createBiquadFilter();
+  highpass.type = 'highpass';
+  highpass.frequency.value = 110;
+  highpass.Q.value = 0.75;
+
+  const lowpass = offlineCtx.createBiquadFilter();
+  lowpass.type = 'lowpass';
+  lowpass.frequency.value = 5200;
+  lowpass.Q.value = 0.85;
+
+  const compressor = offlineCtx.createDynamicsCompressor();
+  compressor.threshold.value = -24;
+  compressor.knee.value = 18;
+  compressor.ratio.value = 2.8;
+  compressor.attack.value = 0.004;
+  compressor.release.value = 0.22;
+
+  source.connect(highpass);
+  highpass.connect(lowpass);
+  lowpass.connect(compressor);
+  compressor.connect(offlineCtx.destination);
+  source.start(0);
+
+  try {
+    return await offlineCtx.startRendering();
+  } catch {
+    return input;
+  }
+};
+
+const subtractSpeechFromFull = (full: AudioBuffer, speech: AudioBuffer): AudioBuffer => {
+  const ctx = getAudioContext();
+  const channels = Math.max(full.numberOfChannels, speech.numberOfChannels);
+  const length = Math.max(full.length, speech.length);
+  const out = createCompatibleBuffer(ctx, channels, length, full.sampleRate || speech.sampleRate || 48000);
+
+  for (let ch = 0; ch < channels; ch += 1) {
+    const outData = out.getChannelData(ch);
+    const fullData = full.getChannelData(Math.min(ch, full.numberOfChannels - 1));
+    const speechData = speech.getChannelData(Math.min(ch, speech.numberOfChannels - 1));
+    const speechAttenuation = 0.76;
+
+    for (let i = 0; i < outData.length; i += 1) {
+      const base = i < fullData.length ? fullData[i] : 0;
+      const dialogue = i < speechData.length ? speechData[i] : 0;
+      outData[i] = Math.max(-1, Math.min(1, base - (dialogue * speechAttenuation)));
+    }
+  }
+
+  return out;
+};
+
+// --- 1 + 2. EXTRACT AUDIO AND SPLIT DIALOGUE/BED ---
+const decodeAudioBlob = async (ctx: AudioContext, blob: Blob): Promise<AudioBuffer> => {
+  const payload = await blob.arrayBuffer();
+  // Safari decodeAudioData mutates/consumes buffer in some runtimes.
+  return ctx.decodeAudioData(payload.slice(0));
+};
+
+export const extractAndSeparateDubbingStems = async (
+  videoFile: File,
+  options?: DubbingStemExtractionOptions
+): Promise<DubbingStemPack> => {
   const ctx = getAudioContext();
   const arrayBuffer = await videoFile.arrayBuffer();
-  return await ctx.decodeAudioData(arrayBuffer);
+  const fullMix = await ctx.decodeAudioData(arrayBuffer.slice(0));
+
+  const shouldUseBackend = Boolean(options?.preferBackendModel && options?.backendUrl);
+  if (shouldUseBackend) {
+    try {
+      options?.onStatus?.("Running model-based source separation (Demucs)...");
+      const speechStemBlob = await separateVideoStemWithBackend(options?.backendUrl || '', videoFile, {
+        stem: 'speech',
+      });
+      options?.onStatus?.("Extracting background stem from model output...");
+      const backgroundStemBlob = await separateVideoStemWithBackend(options?.backendUrl || '', videoFile, {
+        stem: 'background',
+      });
+      const speechStem = await decodeAudioBlob(ctx, speechStemBlob);
+      const backgroundStem = await decodeAudioBlob(ctx, backgroundStemBlob);
+      return {
+        fullMix,
+        speechStem,
+        backgroundStem,
+        speechStemBlob,
+        backgroundStemBlob,
+        duration: fullMix.duration,
+      };
+    } catch (error) {
+      console.warn("Model-based separation failed; falling back to local stem extraction.", error);
+    }
+  }
+
+  const speechStem = await renderSpeechStem(fullMix);
+  const backgroundStem = subtractSpeechFromFull(fullMix, speechStem);
+
+  return {
+    fullMix,
+    speechStem,
+    backgroundStem,
+    speechStemBlob: audioBufferToWav(speechStem),
+    backgroundStemBlob: audioBufferToWav(backgroundStem),
+    duration: fullMix.duration,
+  };
+};
+
+// Backward-compat helper used by existing callers.
+export const isolateBackgroundTrack = async (videoFile: File): Promise<AudioBuffer> => {
+  const stems = await extractAndSeparateDubbingStems(videoFile);
+  return stems.backgroundStem;
 };
 
 // --- 2. ADVANCED TTS ENGINE (Formants & F0 Simulation) ---
@@ -159,15 +297,17 @@ export const mixFinalDub = async (
       }
       
       // --- TIME STRETCH / FIT ---
-      const targetDuration = seg.endTime - seg.startTime;
+      const targetDurationRaw = seg.endTime - seg.startTime;
       const currentDuration = segmentBuffer.duration;
+      const hasTargetWindow = Number.isFinite(targetDurationRaw) && targetDurationRaw > 0.06;
+      const targetDuration = hasTargetWindow ? targetDurationRaw : currentDuration;
       let stretchRatio = 1.0;
       
-      // Only stretch if too long and not SFX
-      if (!isSFX && currentDuration > targetDuration && targetDuration > 0) {
+      // Stretch both faster/slower to fit target window for better lip-sync.
+      if (!isSFX && hasTargetWindow && targetDuration > 0) {
         stretchRatio = currentDuration / targetDuration;
-        if (stretchRatio > 1.4) stretchRatio = 1.4; // Cap speedup to avoid artifacts
-        if (stretchRatio < 0.7) stretchRatio = 0.7; // Cap slowdown
+        if (stretchRatio > 1.42) stretchRatio = 1.42; // Cap speedup to avoid artifacts
+        if (stretchRatio < 0.72) stretchRatio = 0.72; // Cap slowdown
       }
       
       const actualDuration = currentDuration / stretchRatio;
@@ -186,7 +326,7 @@ export const mixFinalDub = async (
       source.playbackRate.value = stretchRatio;
       
       const vocalGain = offlineCtx.createGain();
-      vocalGain.gain.value = settings.speechVolume || 1.0;
+      vocalGain.gain.value = settings.speechVolume ?? 1.0;
       
       source.connect(vocalGain);
       vocalGain.connect(offlineCtx.destination);
@@ -235,6 +375,58 @@ export const mixFinalDub = async (
     console.error("Final rendering failed:", e);
     throw new Error("Failed to render final mix");
   }
+};
+
+export interface DubAlignmentEntry {
+  speaker: string;
+  targetDuration: number;
+  generatedDuration: number;
+}
+
+export interface DubAlignmentReport {
+  ok: boolean;
+  coveragePct: number;
+  averageRatioErrorPct: number;
+  maxRatioErrorPct: number;
+  lipSyncScore: number;
+  notes: string[];
+}
+
+export const buildDubAlignmentReport = (
+  allSegmentsCount: number,
+  generatedSegmentsCount: number,
+  entries: DubAlignmentEntry[]
+): DubAlignmentReport => {
+  const safeAll = Math.max(1, allSegmentsCount);
+  const coveragePct = Math.max(0, Math.min(100, (generatedSegmentsCount / safeAll) * 100));
+
+  const ratioErrors = entries
+    .filter((entry) => entry.targetDuration > 0 && Number.isFinite(entry.targetDuration) && Number.isFinite(entry.generatedDuration))
+    .map((entry) => Math.abs(entry.generatedDuration - entry.targetDuration) / entry.targetDuration);
+
+  const avgError = ratioErrors.length > 0
+    ? ratioErrors.reduce((sum, value) => sum + value, 0) / ratioErrors.length
+    : 0;
+  const maxError = ratioErrors.length > 0 ? Math.max(...ratioErrors) : 0;
+
+  const averageRatioErrorPct = avgError * 100;
+  const maxRatioErrorPct = maxError * 100;
+  const lipSyncScore = Math.max(0, Math.round(100 - (avgError * 120) - (maxError * 40) - ((100 - coveragePct) * 0.35)));
+
+  const notes: string[] = [];
+  if (coveragePct < 95) notes.push('Low generated segment coverage.');
+  if (averageRatioErrorPct > 28) notes.push('Average duration drift is high; lip-sync may look loose.');
+  if (maxRatioErrorPct > 55) notes.push('Some lines are heavily stretched/compressed.');
+  if (!notes.length) notes.push('Alignment checks passed for current dubbing track.');
+
+  return {
+    ok: coveragePct >= 95 && averageRatioErrorPct <= 28 && maxRatioErrorPct <= 55,
+    coveragePct: Number(coveragePct.toFixed(1)),
+    averageRatioErrorPct: Number(averageRatioErrorPct.toFixed(1)),
+    maxRatioErrorPct: Number(maxRatioErrorPct.toFixed(1)),
+    lipSyncScore,
+    notes,
+  };
 };
 
 // --- 4. ADDITIONAL HELPER: DETECT OPTIMAL DUCK POINTS ---
