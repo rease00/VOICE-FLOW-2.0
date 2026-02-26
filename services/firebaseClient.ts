@@ -63,10 +63,10 @@ export const resolveFirebaseLoginEmail = (rawEmail: string): string => {
   const trimmed = String(rawEmail || '').trim();
   if (!trimmed) return '';
   if (trimmed.includes('@')) return trimmed;
-  if (trimmed.toLowerCase() !== 'admin') return trimmed;
-  if (explicitAdminLoginEmail) return explicitAdminLoginEmail;
-  if (firebaseConfig.authDomain) {
-    return `admin@${firebaseConfig.authDomain}`.toLowerCase();
+  const token = trimmed.toLowerCase();
+  if (/^admin[0-9]*$/.test(token) && firebaseConfig.authDomain) {
+    if (token === 'admin' && explicitAdminLoginEmail) return explicitAdminLoginEmail;
+    return `${token}@${firebaseConfig.authDomain}`.toLowerCase();
   }
   return trimmed;
 };

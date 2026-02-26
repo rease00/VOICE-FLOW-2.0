@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Facebook, Lock, Mail, Phone, ShieldCheck, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, Eye, EyeOff, Facebook, Lock, Mail, ShieldCheck, User } from 'lucide-react';
 import { AppScreen } from '../types';
 import { useUser } from '../contexts/UserContext';
 
@@ -13,21 +13,19 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const {
     signInWithEmail,
     signUpWithEmail,
+    requestPasswordReset,
     signInWithGoogle,
     signInWithFacebook,
-    startPhoneSignIn,
-    confirmPhoneSignIn,
   } = useUser();
   const [mode, setMode] = useState<AuthMode>('login');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [phoneCode, setPhoneCode] = useState('');
-  const [phoneStep, setPhoneStep] = useState<'idle' | 'otp_sent'>('idle');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -41,9 +39,14 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     }
   }, []);
 
+  useEffect(() => {
+    setInfoMsg(null);
+  }, [mode]);
+
   const handleEmailSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg(null);
+    setInfoMsg(null);
     setIsLoading(true);
     try {
       const result = mode === 'signup'
@@ -61,6 +64,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
 
   const handleGoogle = async () => {
     setErrorMsg(null);
+    setInfoMsg(null);
     setIsLoading(true);
     try {
       const result = await signInWithGoogle();
@@ -76,6 +80,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
 
   const handleFacebook = async () => {
     setErrorMsg(null);
+    setInfoMsg(null);
     setIsLoading(true);
     try {
       const result = await signInWithFacebook();
@@ -89,33 +94,19 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     }
   };
 
-  const handleSendOtp = async () => {
+  const handleForgotPassword = async () => {
     setErrorMsg(null);
-    setIsLoading(true);
+    setInfoMsg(null);
+    setIsResetting(true);
     try {
-      const result = await startPhoneSignIn(phoneNumber, 'vf-phone-recaptcha');
+      const result = await requestPasswordReset(email);
       if (!result.ok) {
-        setErrorMsg(result.error || 'Could not send OTP.');
+        setErrorMsg(result.error || 'Could not request password reset.');
         return;
       }
-      setPhoneStep('otp_sent');
+      setInfoMsg('If an account exists for this email, a reset link has been sent.');
     } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleVerifyOtp = async () => {
-    setErrorMsg(null);
-    setIsLoading(true);
-    try {
-      const result = await confirmPhoneSignIn(phoneCode);
-      if (!result.ok) {
-        setErrorMsg(result.error || 'Invalid OTP.');
-        return;
-      }
-      setScreen(AppScreen.MAIN);
-    } finally {
-      setIsLoading(false);
+      setIsResetting(false);
     }
   };
 
@@ -152,6 +143,13 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
           <div className="mb-5 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">
             <AlertCircle size={16} className="mt-0.5 shrink-0" />
             <span>{errorMsg}</span>
+          </div>
+        )}
+
+        {infoMsg && (
+          <div className="mb-5 flex items-start gap-2 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-700">
+            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+            <span>{infoMsg}</span>
           </div>
         )}
 
@@ -205,11 +203,23 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
+            {mode === 'login' && (
+              <div className="mt-2 text-right">
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={isLoading || isResetting}
+                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isResetting ? 'Sending reset link...' : 'Forgot password?'}
+                </button>
+              </div>
+            )}
           </div>
 
           <button
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || isResetting}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-900 py-3.5 text-sm font-bold text-white shadow-lg shadow-gray-200 transition-all hover:bg-black disabled:cursor-not-allowed disabled:opacity-70"
           >
             {isLoading ? 'Please wait...' : mode === 'signup' ? 'Create Account' : 'Sign In'} {!isLoading && <ArrowRight size={16} />}
@@ -240,50 +250,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
             <Facebook size={14} /> Facebook
           </button>
         </div>
-
-        <div className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50 p-3">
-          <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-indigo-700">
-            <Phone size={12} /> Phone (Optional)
-          </div>
-          {phoneStep === 'idle' ? (
-            <div className="space-y-2">
-              <input
-                value={phoneNumber}
-                onChange={(event) => setPhoneNumber(event.target.value)}
-                placeholder="+919999999999"
-                className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400"
-              />
-              <button
-                type="button"
-                onClick={handleSendOtp}
-                disabled={isLoading || !phoneNumber.trim()}
-                className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
-              >
-                Send OTP
-              </button>
-              <div id="vf-phone-recaptcha" className="min-h-[18px]" />
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <input
-                value={phoneCode}
-                onChange={(event) => setPhoneCode(event.target.value)}
-                placeholder="Enter OTP code"
-                className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400"
-              />
-              <button
-                type="button"
-                onClick={handleVerifyOtp}
-                disabled={isLoading || !phoneCode.trim()}
-                className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
-              >
-                Verify OTP
-              </button>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
 };
-

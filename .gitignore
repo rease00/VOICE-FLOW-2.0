@@ -36,3 +36,8 @@ artifacts/voice-assets/**/*.mp3
 artifacts/voice-assets/**/*.flac
 artifacts/voice-assets/**/*.ogg
 artifacts/cache/
+
+# Local NLLB model assets (too large for standard repo push)
+video_dubbing/models/nllb_ct2/model.bin
+video_dubbing/models/nllb_ct2/sentencepiece.bpe.model
+video_dubbing/models/nllb_ct2/tokenizer.json

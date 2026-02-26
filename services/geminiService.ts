@@ -2196,7 +2196,7 @@ export const generateSpeech = async (
   );
   const hasTrueMultiSpeakerScript = multiSpeakerEnabled && isMultiSpeaker && speakersList.length > 1;
   const defaultGeminiVoice = resolveGeminiVoiceName(voiceName || settings.voiceId || 'Fenrir', 'Fenrir');
-  const geminiNativeMultiSpeaker = (() => {
+  const geminiStudioPairGroupsPlan = (() => {
     if (activeEngine !== 'GEM') return null;
     if (!multiSpeakerEnabled) return null;
     if (!hasTrueMultiSpeakerScript || hasSfx) return null;
@@ -2219,27 +2219,37 @@ export const generateSpeech = async (
       speakerOrder.push(speaker);
     }
 
-    // Gemini built-in multi-speaker currently supports exactly two speakers.
-    if (speakerOrder.length !== 2) return null;
+    if (speakerOrder.length < 2) return null;
 
     const initialVoices = speakerOrder.map((speaker) => resolveGeminiVoiceForSpeaker(speaker, defaultGeminiVoice));
-    const resolvedVoices = ensureDistinctGeminiVoices(initialVoices, defaultGeminiVoice);
+    const resolvedVoices = speakerOrder.length === 2
+      ? ensureDistinctGeminiVoices(initialVoices, defaultGeminiVoice)
+      : initialVoices;
     const speakerVoices = speakerOrder.map((speaker, index) => ({
       speaker,
       voiceName: resolvedVoices[index] || defaultGeminiVoice,
     }));
-    const scriptText = speechSegments
+    const lineMap = speechSegments
       .map((segment) => {
         const speaker = String(segment.speaker || '').trim();
         const dialogue = String(segment.text || '').trim();
-        if (!speaker || !dialogue) return '';
+        if (!speaker || !dialogue) return null;
         const emotionCue =
           segment.emotion && segment.emotion !== 'Neutral'
             ? `(Tone: ${segment.emotion}) `
             : '';
-        return `${speaker}: ${emotionCue}${dialogue}`.trim();
+        return {
+          lineIndex: 0,
+          speaker,
+          text: `${emotionCue}${dialogue}`.trim(),
+        };
       })
-      .filter(Boolean)
+      .filter((item): item is { lineIndex: number; speaker: string; text: string } => Boolean(item && item.speaker && item.text))
+      .map((item, index) => ({ ...item, lineIndex: index }));
+    if (lineMap.length < 2) return null;
+
+    const scriptText = lineMap
+      .map((item) => `${item.speaker}: ${item.text}`)
       .join('\n')
       .trim();
     if (!scriptText) return null;
@@ -2247,10 +2257,11 @@ export const generateSpeech = async (
     return {
       scriptText,
       speakerVoices,
+      lineMap,
     };
   })();
-  const useGeminiBuiltInMultiSpeaker = Boolean(geminiNativeMultiSpeaker) && !hasTrueMultiSpeakerScript;
-  if (primaryEngine) {
+  const useGeminiBuiltInMultiSpeaker = Boolean(geminiStudioPairGroupsPlan);
+  if (primaryEngine && !(useGeminiBuiltInMultiSpeaker && activeEngine === 'GEM')) {
     const totalSpeechText = studioSegments
       .filter((segment) => !segment.isSfx)
       .map((segment) => cleanText(segment.text))
@@ -2274,8 +2285,7 @@ export const generateSpeech = async (
     )
   );
   
-  // --- BATCH PROCESSING FOR MULTI-SPEAKER ---
-  if (useSegmentedGeneration) {
+  const synthesizeViaSegmentedGeneration = async (): Promise<AudioBuffer> => {
     const validSegments = studioSegments
       .map((s, i) => ({ ...s, originalIndex: i }))
       .filter(s => s.text.trim() || s.isSfx);
@@ -2463,10 +2473,15 @@ export const generateSpeech = async (
     // Sort and concatenate
     segmentResults.sort((a, b) => a.index - b.index);
     return concatenateAudioBuffers(ctx, segmentResults.map(s => s.buffer));
+  };
+
+  // --- BATCH PROCESSING FOR MULTI-SPEAKER ---
+  if (useSegmentedGeneration) {
+    return await synthesizeViaSegmentedGeneration();
   }
 
   const processedText = useGeminiBuiltInMultiSpeaker
-    ? String(geminiNativeMultiSpeaker?.scriptText || '').trim()
+    ? String(geminiStudioPairGroupsPlan?.scriptText || '').trim()
     : cleanText(text);
   if (!processedText) {
     throw new Error("Input text is empty after processing.");
@@ -2499,7 +2514,17 @@ export const generateSpeech = async (
           voiceName: targetVoiceName,
           voice_id: normalizedRequest.voice_id,
           language: normalizedRequest.language,
-          speaker_voices: geminiNativeMultiSpeaker?.speakerVoices,
+          speaker_voices: geminiStudioPairGroupsPlan?.speakerVoices,
+          multi_speaker_mode: useGeminiBuiltInMultiSpeaker ? 'studio_pair_groups' : undefined,
+          multi_speaker_max_concurrency: useGeminiBuiltInMultiSpeaker ? 7 : undefined,
+          multi_speaker_retry_once: useGeminiBuiltInMultiSpeaker ? true : undefined,
+          multi_speaker_line_map: useGeminiBuiltInMultiSpeaker
+            ? geminiStudioPairGroupsPlan?.lineMap.map((line) => ({
+                lineIndex: line.lineIndex,
+                speaker: line.speaker,
+                text: line.text,
+              }))
+            : undefined,
           speed: normalizedRequest.speed,
           emotion: normalizedRequest.emotion,
           style: normalizedRequest.style,
@@ -2510,14 +2535,27 @@ export const generateSpeech = async (
         'Gemini runtime synthesis'
       );
     } catch (runtimeError: any) {
+      let finalRuntimeError: any = runtimeError;
+      if (useGeminiBuiltInMultiSpeaker) {
+        try {
+          console.warn(
+            'Gemini grouped multi-speaker synthesis failed; falling back to segmented mode.',
+            runtimeError
+          );
+          return await synthesizeViaSegmentedGeneration();
+        } catch (fallbackError: any) {
+          finalRuntimeError = fallbackError;
+          console.warn('Gemini segmented fallback failed after grouped mode error.', fallbackError);
+        }
+      }
       if (!allowPersonalGeminiBypass) {
-        throw runtimeError;
+        throw finalRuntimeError;
       }
       const configuredApiKey = resolveGeminiApiKey(settings);
       if (!configuredApiKey) {
         throw new Error("Personal Gemini key mode is enabled, but API key is missing.");
       }
-      console.warn('Gemini runtime synthesis failed; personal-key mode enabled, switching to direct Gemini API.', runtimeError);
+      console.warn('Gemini runtime synthesis failed; personal-key mode enabled, switching to direct Gemini API.', finalRuntimeError);
     }
   }
 
@@ -2812,6 +2850,12 @@ export const generateSpeech = async (
   try {
     const targetVoice = defaultGeminiVoice;
     const textToSpeak = processedText;
+    const directGeminiMultiSpeaker =
+      useGeminiBuiltInMultiSpeaker &&
+      geminiStudioPairGroupsPlan &&
+      geminiStudioPairGroupsPlan.speakerVoices.length === 2
+        ? geminiStudioPairGroupsPlan.speakerVoices
+        : null;
     const ttsModelsToTry = await getGeminiModelCandidates(
       ai,
       geminiKey,
@@ -2830,11 +2874,11 @@ export const generateSpeech = async (
           contents: [{ parts: [{ text: textToSpeak }] }],
           config: {
             responseModalities: [Modality.AUDIO],
-            speechConfig: useGeminiBuiltInMultiSpeaker && geminiNativeMultiSpeaker
+            speechConfig: directGeminiMultiSpeaker
               ? {
                 languageCode: lang,
                 multiSpeakerVoiceConfig: {
-                  speakerVoiceConfigs: geminiNativeMultiSpeaker.speakerVoices.map((entry) => ({
+                  speakerVoiceConfigs: directGeminiMultiSpeaker.map((entry) => ({
                     speaker: entry.speaker,
                     voiceConfig: {
                       prebuiltVoiceConfig: {

@@ -78,10 +78,10 @@ export const AdModal: React.FC<AdModalProps> = ({ isOpen, onClose, onReward }) =
 
         <div className="p-6 text-center space-y-4">
            <h3 className="font-bold text-lg text-gray-900">
-             {isCompleted ? "Thanks for watching!" : "Watch to unlock generation"}
+             {isCompleted ? "Thanks for watching!" : "Watch to claim VFF"}
            </h3>
-           <p className="text-gray-500 text-sm">
-             Support us by watching a short video to get 1 free generation. Upgrade to Pro to remove ads.
+          <p className="text-gray-500 text-sm">
+             Support us by watching a short video to get +1000 VFF (Basic/Kokoro only). Daily max: 3 claims.
            </p>
 
            {isCompleted && (

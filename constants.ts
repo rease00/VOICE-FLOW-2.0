@@ -1,5 +1,5 @@
 import { VoiceOption, MusicTrack, LanguageOption, SoundEffect, UserStats } from './types';
-import { createEmptyVfUsageStats } from './services/usageMetering';
+import { createEmptyVfUsageStats, createEmptyWalletStats } from './services/usageMetering';
 
 // ============================================================================
 // VOICES - 30 Valid Voice Options mapped to Gemini Supported Models
@@ -316,5 +316,6 @@ export const INITIAL_STATS: UserStats = {
   isPremium: false,
   planName: 'Free',
   vfUsage: createEmptyVfUsageStats(),
+  wallet: createEmptyWalletStats(),
 };
 
