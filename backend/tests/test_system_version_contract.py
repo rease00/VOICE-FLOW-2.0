@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend.app import app
+from app import app
 
 
 def test_system_version_contract() -> None:

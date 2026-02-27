@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 
 def _load_kokoro_runtime_module():
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     runtime_dir = root / "engines" / "kokoro-runtime"
     module_path = runtime_dir / "app.py"
     if str(runtime_dir) not in sys.path:

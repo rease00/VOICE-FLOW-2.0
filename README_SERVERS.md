@@ -106,6 +106,7 @@ Firestore admin fallback (optional UI/admin resolution):
 ## Manual Per-Service Start (Separate Terminals)
 
 If you do not want to use bootstrap, run each server manually.
+Python entrypoints now auto-load `backend/.env` then root `.env` when env vars are unset/empty.
 
 Media backend (port `7800`):
 
@@ -116,23 +117,26 @@ python backend/app.py
 Gemini runtime (port `7810`):
 
 ```powershell
-python -m uvicorn app:app --app-dir engines/gemini-runtime --host 127.0.0.1 --port 7810
+python -m uvicorn app:app --app-dir backend/engines/gemini-runtime --host 127.0.0.1 --port 7810
 ```
 
 Gemini runtime env vars (optional, for multi-key rate-limit fallback):
 
 ```powershell
 $env:GEMINI_API_KEYS="AIzaKey1,AIzaKey2,AIzaKey3"
+$env:GEMINI_API_KEYS_FILE="C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt"
 $env:GEMINI_KEY_COOLDOWN_BASE_MS="8000"
 $env:GEMINI_KEY_COOLDOWN_MAX_MS="120000"
 $env:GEMINI_KEY_RETRY_LIMIT="8"
 $env:GEMINI_KEY_WAIT_SLICE_MS="1000"
 ```
 
+`GEMINI_API_KEYS_FILE` can be used by both backend and Gemini runtime to load key pools from a local file.
+
 Kokoro runtime (port `7820`):
 
 ```powershell
-python -m uvicorn app:app --app-dir engines/kokoro-runtime --host 127.0.0.1 --port 7820
+python -m uvicorn app:app --app-dir backend/engines/kokoro-runtime --host 127.0.0.1 --port 7820
 ```
 
 ## Health Endpoints
@@ -145,6 +149,13 @@ python -m uvicorn app:app --app-dir engines/kokoro-runtime --host 127.0.0.1 --po
   - Kokoro: `http://127.0.0.1:7820/v1/capabilities`
 - Aggregated capabilities:
   - Media backend: `http://127.0.0.1:7800/tts/engines/capabilities`
+- Account generation history:
+  - `GET http://127.0.0.1:7800/account/generation-history?limit=30`
+  - `DELETE http://127.0.0.1:7800/account/generation-history`
+- Admin Gemini key pool:
+  - `GET http://127.0.0.1:7800/admin/gemini/pool/status`
+  - `POST http://127.0.0.1:7800/admin/gemini/pool/reload`
+  - Runtime reload proxy target: `POST http://127.0.0.1:7810/v1/admin/api-pool/reload`
 
 ## Useful Commands
 
@@ -163,8 +174,8 @@ npm run backend:install:rvc
 Switch active TTS engine (bootstrap helper):
 
 ```powershell
-node scripts/bootstrap-services.mjs switch KOKORO
-node scripts/bootstrap-services.mjs switch GEM
+node backend/scripts/bootstrap-services.mjs switch KOKORO
+node backend/scripts/bootstrap-services.mjs switch GEM
 ```
 
 Run strict reliability gate pipeline:
@@ -173,8 +184,15 @@ Run strict reliability gate pipeline:
 npm run ci:reliability
 ```
 
+Run Gemini/runtime wiring audit:
+
+```powershell
+npm run audit:gemini-stack
+```
+
 ## Logs and Runtime State
 
-- Runtime logs: `.runtime/logs/`
-- PID files: `.runtime/pids/`
-- Venvs used by bootstrap: `.venvs/`
+- Runtime logs: `backend/.runtime/logs/`
+- PID files: `backend/.runtime/pids/`
+- Venvs used by bootstrap: `backend/.venvs/`
+- Legacy root `.runtime/` can contain stale logs from old startup paths; treat `backend/.runtime/` as canonical.

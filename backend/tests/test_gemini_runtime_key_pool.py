@@ -12,9 +12,11 @@ from shared.gemini_allocator import AllocatorConfig, GeminiRateAllocator, ModelL
 
 
 def _load_gemini_runtime_module():
-    root = Path(__file__).resolve().parents[2]
-    runtime_dir = root / "engines" / "gemini-runtime"
+    workspace_root = Path(__file__).resolve().parents[1]
+    runtime_dir = workspace_root / "engines" / "gemini-runtime"
     module_path = runtime_dir / "app.py"
+    if str(workspace_root) not in sys.path:
+        sys.path.insert(0, str(workspace_root))
     if str(runtime_dir) not in sys.path:
         sys.path.insert(0, str(runtime_dir))
     spec = importlib.util.spec_from_file_location("gemini_runtime_app", module_path)
@@ -255,3 +257,88 @@ def test_admin_api_pool_exposes_model_level_usage() -> None:
         runtime._RUNTIME_ALLOCATOR = original_allocator
         runtime._SERVER_API_KEY_POOL = original_pool
         runtime._SERVER_API_KEY_SET = original_pool_set
+
+
+def test_admin_api_pool_reload_refreshes_keys_from_file(monkeypatch, tmp_path: Path) -> None:
+    key1 = _make_key(21)
+    key2 = _make_key(22)
+    key_file = tmp_path / "runtime_keys.txt"
+    key_file.write_text(f"{key1}\n", encoding="utf-8")
+
+    monkeypatch.setenv("GEMINI_API_KEYS", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
+    runtime = _load_gemini_runtime_module()
+    client = TestClient(runtime.app)
+
+    initial = client.get("/v1/admin/api-pool")
+    assert initial.status_code == 200
+    initial_payload = initial.json()
+    assert int(initial_payload.get("pool", {}).get("keyCount", 0)) == 1
+    assert str(initial_payload.get("configuredKeyFilePath") or "").strip() == str(key_file)
+    assert str(initial_payload.get("keyFilePath") or "").strip() == str(key_file)
+
+    key_file.write_text(f"{key1}\n{key2}\n", encoding="utf-8")
+    reloaded = client.post("/v1/admin/api-pool/reload")
+    assert reloaded.status_code == 200
+    reload_payload = reloaded.json()
+    assert reload_payload.get("ok") is True
+    assert int(reload_payload.get("keyPoolSize", 0)) == 2
+    assert str(reload_payload.get("configuredKeyFilePath") or "").strip() == str(key_file)
+    assert str(reload_payload.get("keyFilePath") or "").strip() == str(key_file)
+
+    latest = client.get("/v1/admin/api-pool")
+    assert latest.status_code == 200
+    latest_payload = latest.json()
+    assert int(latest_payload.get("pool", {}).get("keyCount", 0)) == 2
+
+
+def test_lazy_pool_self_heal_before_missing_error(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    key = _make_key(33)
+
+    original_pool = runtime._SERVER_API_KEY_POOL
+    original_pool_set = runtime._SERVER_API_KEY_SET
+    original_genai = runtime.genai
+    original_types = runtime.types
+
+    class _DummyModels:
+        def generate_content(self, **kwargs: object) -> object:
+            return type("_Resp", (), {"text": "ok"})()
+
+    class _DummyClient:
+        def __init__(self, api_key: str, http_options: object | None = None) -> None:
+            self.api_key = api_key
+            self.http_options = http_options
+            self.models = _DummyModels()
+
+    class _DummyGenai:
+        Client = _DummyClient
+
+    class _DummyTypes:
+        class HttpOptions:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+    def _fake_refresh() -> tuple[str, ...]:
+        runtime._SERVER_API_KEY_POOL = (key,)
+        runtime._SERVER_API_KEY_SET = frozenset({key})
+        return (key,)
+
+    try:
+        runtime._SERVER_API_KEY_POOL = tuple()
+        runtime._SERVER_API_KEY_SET = frozenset()
+        runtime.genai = _DummyGenai
+        runtime.types = _DummyTypes
+        monkeypatch.setattr(runtime, "_refresh_server_api_key_pool", _fake_refresh)
+        _, _, effective = runtime._ensure_runtime_pool_or_raise(trace_id="lazy_self_heal_test", api_key=None)
+        assert effective == [key]
+    finally:
+        runtime._SERVER_API_KEY_POOL = original_pool
+        runtime._SERVER_API_KEY_SET = original_pool_set
+        runtime.genai = original_genai
+        runtime.types = original_types

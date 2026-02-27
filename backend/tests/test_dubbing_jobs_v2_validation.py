@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import backend.app as backend_app
+import app as backend_app
 
 
 class _NoopThread:

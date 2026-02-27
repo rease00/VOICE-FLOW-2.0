@@ -6,6 +6,8 @@
 
 This contains everything you need to run your app locally.
 
+Frontend architecture reference: `docs/FRONTEND_ARCHITECTURE.md`
+
 View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZQpALSdbKM7
 
 ## Run Locally
@@ -15,11 +17,16 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Configure Gemini key pool in [`.env`](.env):
+   `GEMINI_API_KEYS_FILE=C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt`
 3. Run full local stack (services + UI in one lifecycle):
    `npm run dev`
 4. Frontend-only mode (no service orchestration):
    `npm run dev:ui`
+
+Optional multi-key pool from file:
+- Set `GEMINI_API_KEYS_FILE` to a local text file path (for example `C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt`).
+- File format supports one key per line or comma/newline-separated keys.
 
 ## Local Encrypted Admin Login
 
@@ -77,9 +84,7 @@ All backends now run locally using Python, each in its own virtual environment:
 - `Gemini runtime` on `7810`
 - `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
 
-Then set URLs in app Settings:
-- `Gemini TTS Runtime URL` (e.g. `http://127.0.0.1:7810`)
-- `Kokoro TTS Runtime URL` (e.g. `http://127.0.0.1:7820`)
+Runtime/backend URLs are wired internally to local defaults in the app.
 
 ### One-click backend + TTS bootstrap
 
@@ -109,7 +114,7 @@ Dev orchestration env knobs (optional):
 `npm run dev` behavior:
 - retries bootstrap failures with bounded backoff
 - auto-restarts crashed session-owned services (up to capped attempts)
-- prints concise actionable errors and points to `.runtime/logs/*.log`
+- prints concise actionable errors and points to `backend/.runtime/logs/*.log`
 
 Health checks include:
 - `http://127.0.0.1:7800/health` (media backend)
@@ -117,7 +122,7 @@ Health checks include:
 - `http://127.0.0.1:7820/health` (Kokoro runtime)
 
 Notes:
-- Each runtime gets an isolated venv under `.venvs/`.
+- Each runtime gets an isolated venv under `backend/.venvs/`.
 - First bootstrap installs Python dependencies for each runtime.
 - `services:bootstrap:gpu` sets GPU-first runtime envs where available.
 - For full RVC conversion features, install optional deps with `npm run backend:install:rvc`.
@@ -136,12 +141,16 @@ Then open Voice Lab -> `AI Covers (RVC)` -> `Refresh Models`.
 Run backend audit:
 `npm run audit:media`
 
+Run Gemini/runtime wiring audit:
+`npm run audit:gemini-stack`
+
 Optional sample checks:
 - `VF_AUDIT_VIDEO=/path/to/sample.mp4 npm run audit:media`
 - `VF_AUDIT_VIDEO=/path/to/sample.mp4 VF_AUDIT_AUDIO=/path/to/dub.wav npm run audit:media`
 
 Audit report output:
-- `artifacts/media_backend_audit.json`
+- `backend/artifacts/media_backend_audit.json`
+- `backend/artifacts/gemini_stack_audit.json`
 
 ### TTS Audits (GEM + KOKORO)
 
@@ -158,11 +167,24 @@ Full strict reliability pipeline (type checks + all required audits/contracts):
 - `npm run ci:reliability`
 
 Primary outputs:
-- `artifacts/tts_hi_30s_report.json`
-- `artifacts/runtime_contract_conformance_report.json`
+- `backend/artifacts/tts_hi_30s_report.json`
+- `backend/artifacts/runtime_contract_conformance_report.json`
 
 Notes:
 - Reliability runbook: `docs/RELIABILITY_RUNBOOK.md`
+
+## Generation History + Gemini Pool Admin
+
+- Backend now stores per-user generation history as compressed metadata (`gzip+base64+json`) with no audio bytes.
+- Frontend sidebar (`MainApp`) shows `Recent Generations` under `Recent Drafts`, including engine, voice, preview text, chars, and timestamp.
+- History API:
+  - `GET /account/generation-history?limit=30`
+  - `DELETE /account/generation-history`
+- Admin Gemini pool API:
+  - `GET /admin/gemini/pool/status`
+  - `POST /admin/gemini/pool/reload`
+- Runtime pool reload endpoint:
+  - `POST /v1/admin/api-pool/reload` on Gemini runtime (`7810`)
 
 ## Novel Workspace v1 (Google Drive Powered)
 

@@ -8,7 +8,9 @@
    - `npm run services:bootstrap:gpu`
 3. Verify runtime health:
    - `npm run services:check`
-4. Stop all managed runtimes:
+4. Audit Gemini/runtime wiring:
+   - `npm run audit:gemini-stack`
+5. Stop all managed runtimes:
    - `npm run services:down`
 
 ## Reliability CI Gate
@@ -39,6 +41,7 @@
    - `GET /runtime/logs/tail?service=media-backend`
    - `GET /runtime/logs/tail?service=kokoro-runtime`
    - `GET /runtime/logs/tail?service=gemini-runtime`
+   - Canonical log directory: `backend/.runtime/logs/`
 4. If synthesis fails, use `trace_id`:
    - Request includes optional `trace_id`
    - Runtime response includes `X-VoiceFlow-Trace-Id`
