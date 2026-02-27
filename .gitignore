@@ -30,12 +30,11 @@ __pycache__/
 *.sln
 *.sw?
 
-# Local XTTS asset binaries (keep manifests/reports in git)
-artifacts/voice-assets/**/*.wav
-artifacts/voice-assets/**/*.mp3
-artifacts/voice-assets/**/*.flac
-artifacts/voice-assets/**/*.ogg
-artifacts/cache/
+# Generated artifacts (keep only placeholders tracked)
+artifacts/**
+!artifacts/.gitkeep
+backend/artifacts/**
+!backend/artifacts/.gitkeep
 
 # Local NLLB model assets (too large for standard repo push)
 video_dubbing/models/nllb_ct2/model.bin

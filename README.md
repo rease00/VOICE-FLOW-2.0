@@ -76,12 +76,10 @@ All backends now run locally using Python, each in its own virtual environment:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
 - `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
-- `XTTS runtime` on `7860`
 
 Then set URLs in app Settings:
 - `Gemini TTS Runtime URL` (e.g. `http://127.0.0.1:7810`)
 - `Kokoro TTS Runtime URL` (e.g. `http://127.0.0.1:7820`)
-- `XTTS Runtime URL` (default `http://127.0.0.1:7860`)
 
 ### One-click backend + TTS bootstrap
 
@@ -96,9 +94,6 @@ Validate endpoints only:
 
 Restart all services after backend/runtime code updates:
 - `npm run services:restart`
-- Or target a single service/engine:
-  - `node scripts/bootstrap-services.mjs restart media-backend`
-  - `node scripts/bootstrap-services.mjs restart XTTS`
 
 Stop all bootstrapped services:
 - `npm run services:down`
@@ -120,8 +115,6 @@ Health checks include:
 - `http://127.0.0.1:7800/health` (media backend)
 - `http://127.0.0.1:7810/health` (Gemini runtime)
 - `http://127.0.0.1:7820/health` (Kokoro runtime)
-- `http://127.0.0.1:7860/health` (XTTS runtime)
-- `http://127.0.0.1:7860/v1/voices` (XTTS voice registry)
 
 Notes:
 - Each runtime gets an isolated venv under `.venvs/`.
@@ -150,52 +143,25 @@ Optional sample checks:
 Audit report output:
 - `artifacts/media_backend_audit.json`
 
-### XTTS + Audio-Mix Audit v2 (Phase 1-2)
+### TTS Audits (GEM + KOKORO)
 
-Run smoke audit (default path-compatible command):
-- `npm run audit:xtts:audio-mix`
-- `npm run audit:xtts:audio-mix:smoke`
+Run Hindi emotion coverage audit:
+- `npm run audit:tts:hindi`
 
-Run matrix audit:
-- `npm run audit:xtts:audio-mix:matrix`
-  - Matrix selection is deterministic and capped by `VF_XTTS_AUDIO_AUDIT_MAX_SCENARIOS` (default `24`).
+Run long-text smoke audit:
+- `npm run audit:tts:longtext:smoke`
 
-Compare current report vs baseline:
-- `npm run audit:xtts:audio-mix:baseline`
-
-Bless current report as new baseline (intentional update only):
-- `npm run audit:xtts:audio-mix:bless`
-
-CI-style flow (matrix + baseline compare):
-- `npm run audit:xtts:audio-mix:ci`
+Run long-text matrix audit:
+- `npm run audit:tts:longtext:matrix`
 
 Full strict reliability pipeline (type checks + all required audits/contracts):
 - `npm run ci:reliability`
 
 Primary outputs:
-- `artifacts/xtts_audio_mix_audit_report.v2.json`
-- `artifacts/xtts_audio_mix_audit_report.json` (compatibility summary)
-- `artifacts/xtts_audio_mix_baseline_compare.json`
+- `artifacts/tts_hi_30s_report.json`
 - `artifacts/runtime_contract_conformance_report.json`
 
-Scenario config and baseline files:
-- `data/tts/xtts_audio_mix_scenarios.json`
-- `data/tts/baselines/xtts_audio_mix_baseline.json`
-
-Environment variables:
-- `VF_XTTS_AUDIO_AUDIT_MODE=smoke|matrix` (default `smoke`)
-- `VF_XTTS_AUDIO_GATE_MODE=warn|enforce` (default `warn`)
-- `VF_XTTS_AUDIO_BASELINE_PATH=<path>` (default `data/tts/baselines/xtts_audio_mix_baseline.json`)
-- `VF_XTTS_AUDIO_AUDIT_MAX_SCENARIOS=<n>` (default `24`)
-- `VF_XTTS_AUDIO_AUDIT_FAIL_FAST=0|1` (default `0`)
-
-Gate lifecycle:
-- `warn`: reports regressions and prints `would_fail=true`, exits success.
-- `enforce`: same checks, exits non-zero when gates are violated.
-
 Notes:
-- Baseline should be blessed only after review of matrix results.
-- PDF/perceptual/MOS scoring is intentionally not part of this phase.
 - Reliability runbook: `docs/RELIABILITY_RUNBOOK.md`
 
 ## Novel Workspace v1 (Google Drive Powered)

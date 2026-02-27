@@ -779,7 +779,7 @@ def _detect_emotion_from_segment_audio(
     try:
         with open(segment_wav_path, "rb") as handle:
             response = requests.post(
-                XTTS_EMOTION_HELPER_URL,
+                TTS_EMOTION_HELPER_URL,
                 files={"file": ("segment.wav", handle, "audio/wav")},
                 data={"language": language_hint or "auto"},
                 timeout=TTS_EMOTION_HELPER_TIMEOUT_SEC,
@@ -3151,16 +3151,12 @@ def _runtime_url_for_engine(engine: str) -> str:
     normalized = _normalize_engine_name(engine)
     if normalized == "GEM":
         return GEMINI_RUNTIME_URL
-    if normalized == "KOKORO":
-        return KOKORO_RUNTIME_URL
-    return XTTS_RUNTIME_URL
+    return KOKORO_RUNTIME_URL
 
 
 def _runtime_synthesize_path_for_engine(engine: str) -> str:
-    normalized = _normalize_engine_name(engine)
-    if normalized in {"GEM", "KOKORO"}:
-        return "/synthesize"
-    return "/v1/text-to-speech"
+    _normalize_engine_name(engine)
+    return "/synthesize"
 
 
 def _stripe_price_id_for_plan(plan: str) -> str:
@@ -5418,9 +5414,6 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
     elif engine == "KOKORO":
         if voice_id:
             upstream_payload["voiceId"] = voice_id
-    elif engine == "XTTS":
-        if voice_id:
-            upstream_payload["voice"] = voice_id
     multi_speaker_mode = str(payload.multi_speaker_mode or "").strip().lower()
     if multi_speaker_mode:
         if multi_speaker_mode not in {"studio_pair_groups", "legacy_windows", "off"}:
@@ -5878,19 +5871,8 @@ def _auto_route_dubbing_voices(
     preferred_map: dict[str, str],
     speakers: list[str],
     tts_route: str = "auto",
-    xtts_mode: str = "preferred",
-    tts_runtime: str = "xtts",
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     route = str(tts_route or "").strip().lower()
-    runtime_token = str(tts_runtime or "").strip().lower()
-    _ = str(xtts_mode or "").strip().lower()
-    if not route or route == "auto":
-        if runtime_token == "gem":
-            route = "gem_only"
-        elif runtime_token == "kokoro":
-            route = "kokoro_only"
-        else:
-            route = "auto"
     if route not in {"auto", "gem_only", "kokoro_only"}:
         route = "auto"
     routes: list[dict[str, Any]] = []
@@ -5955,6 +5937,32 @@ def _auto_route_dubbing_voices(
     return chosen_map, routes
 
 
+def _default_engine_for_tts_route(tts_route: str) -> str:
+    route = str(tts_route or "").strip().lower()
+    if route == "kokoro_only":
+        return "KOKORO"
+    return "GEM"
+
+
+def _resolve_engine_executed_from_requests(tts_requests: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {"GEM": 0, "KOKORO": 0}
+    first_seen = ""
+    for request_item in tts_requests:
+        engine = str(request_item.get("engine") or "").strip().upper()
+        if engine not in counts:
+            continue
+        counts[engine] += 1
+        if not first_seen:
+            first_seen = engine
+
+    total = counts["GEM"] + counts["KOKORO"]
+    if total <= 0:
+        return "GEM"
+    if counts["GEM"] == counts["KOKORO"] and first_seen:
+        return first_seen
+    return "GEM" if counts["GEM"] > counts["KOKORO"] else "KOKORO"
+
+
 def _build_dubbing_output_files(result: dict[str, Any]) -> dict[str, Any]:
     final_video = Path(str(result.get("dubbed_video_final") or ""))
     final_audio = Path(str(result.get("dubbed_audio") or ""))
@@ -6005,7 +6013,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
     preflight: dict[str, Any] = {"ok": False, "checks": [], "failureCount": 0}
     clone_scope = "job_only"
     engine_selected = "AUTO_RELIABLE"
-    engine_executed = "XTTS"
+    engine_executed = "GEM"
     fallback_used = False
     fallback_reason: Optional[str] = None
     supports_one_shot_clone_at_decision = True
@@ -6114,10 +6122,10 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         advanced = job_payload.get("advanced") if isinstance(job_payload.get("advanced"), dict) else {}
         input_voice_map = advanced.get("voice_map") if isinstance(advanced.get("voice_map"), dict) else {}
         engine_selected = _normalize_conversion_policy(str(advanced.get("engine_policy") or "AUTO_RELIABLE"))
-        xtts_mode = str(advanced.get("xtts_mode") or "preferred").strip().lower()
-        tts_runtime = str(advanced.get("tts_runtime") or "xtts").strip().lower()
-        if tts_runtime not in {"xtts", "gem"}:
-            tts_runtime = "xtts"
+        tts_route = str(advanced.get("tts_route") or "auto").strip().lower()
+        if tts_route not in {"auto", "gem_only", "kokoro_only"}:
+            tts_route = "auto"
+        engine_executed = _default_engine_for_tts_route(tts_route)
         multispeaker_policy = str(advanced.get("multispeaker_policy") or "auto_diarize").strip().lower()
         segment_failure_policy = str(advanced.get("segment_failure_policy") or "hard_fail").strip().lower()
         clone_scope = str(advanced.get("clone_scope") or "job_only").strip().lower()
@@ -6168,15 +6176,14 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             resolved_map, routed = _auto_route_dubbing_voices(
                 preferred_map=input_voice_map if input_voice_map else initial,
                 speakers=speakers,
-                xtts_mode=xtts_mode,
-                tts_runtime=tts_runtime,
+                tts_route=tts_route,
             )
             selected_engine_by_speaker = {
-                str(item.get("speaker") or ""): str(item.get("engine") or "XTTS")
+                str(item.get("speaker") or ""): str(item.get("engine") or "GEM")
                 for item in routed
                 if str(item.get("status") or "") == "selected"
             }
-            default_engine = "GEM" if tts_runtime == "gem" else "XTTS"
+            default_engine = _default_engine_for_tts_route(tts_route)
             for seg in segments:
                 speaker = str(seg.get("speaker") or "SPEAKER_00")
                 seg["tts_engine"] = selected_engine_by_speaker.get(speaker, default_engine)
@@ -6187,6 +6194,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             source_path=source_path,
             output_dir=job_dir,
             target_language=target_language,
+            tts_route=tts_route,
             voice_map=input_voice_map,
             strict=True,
             voice_map_resolver=_resolve_voice_map,
@@ -6209,8 +6217,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             _, selected_routes = _auto_route_dubbing_voices(
                 preferred_map=input_voice_map,
                 speakers=speakers,
-                xtts_mode=xtts_mode,
-                tts_runtime=tts_runtime,
+                tts_route=tts_route,
             )
         alignment = list(result.get("alignment") or [])
         if not alignment:
@@ -6229,6 +6236,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
 
         speaker_profiles = list(result.get("speaker_profiles") or [])
         tts_requests = list(result.get("tts_requests") or [])
+        engine_executed = _resolve_engine_executed_from_requests(tts_requests)
         synthesis_failures = list(result.get("synthesis_failures") or [])
         for speaker in speakers:
             speaker_synthesis_stats[speaker] = {"segments": 0, "ok": 0, "failed": 0}
@@ -6428,7 +6436,7 @@ def _run_dubbing_job(job_id: str, job_payload: dict[str, Any]) -> None:
             "speaker": ("diarize", 45),
             "emotion": ("emotion_detect", 55),
             "segment": ("segment_detect", 62),
-            "xtts": ("tts", 74),
+            "tts": ("tts", 74),
             "pyworld": ("prosody_transfer", 84),
             "reconstruction": ("reconstruct", 92),
             "latentsync": ("lip_sync", 97),
@@ -6626,7 +6634,7 @@ async def video_mux_dub(
 async def create_dubbing_job(
     source_file: UploadFile = File(...),
     target_language: str = Form("auto"),
-    engine: str = Form("XTTS"),
+    engine: str = Form("GEM"),
     voice_map: str = Form("{}"),
     transcript: str = Form(""),
     emotion_matching: bool = Form(True),
@@ -6709,14 +6717,22 @@ async def create_dubbing_job_v2(
         default="AUTO_RELIABLE",
     ).lower()
     selected_policy = _normalize_conversion_policy(str(advanced_payload.get("engine_policy") or "AUTO_RELIABLE"))
-    if "xtts_mode" not in advanced_payload:
-        advanced_payload["xtts_mode"] = "preferred"
-    if str(advanced_payload.get("xtts_mode")).strip().lower() not in {"preferred", "strict"}:
-        raise HTTPException(status_code=400, detail="advanced.xtts_mode must be preferred or strict")
-    if "tts_runtime" not in advanced_payload:
-        advanced_payload["tts_runtime"] = "xtts"
-    if str(advanced_payload.get("tts_runtime")).strip().lower() not in {"xtts", "gem"}:
-        raise HTTPException(status_code=400, detail="advanced.tts_runtime must be xtts or gem")
+    if "xtts_mode" in advanced_payload:
+        raise HTTPException(
+            status_code=400,
+            detail="advanced.xtts_mode is no longer supported. Use advanced.tts_route (auto|gem_only|kokoro_only).",
+        )
+    if "tts_runtime" in advanced_payload:
+        raise HTTPException(
+            status_code=400,
+            detail="advanced.tts_runtime is no longer supported. Use advanced.tts_route (auto|gem_only|kokoro_only).",
+        )
+    if "tts_route" not in advanced_payload:
+        advanced_payload["tts_route"] = "auto"
+    tts_route = str(advanced_payload.get("tts_route") or "auto").strip().lower()
+    if tts_route not in {"auto", "gem_only", "kokoro_only"}:
+        raise HTTPException(status_code=400, detail="advanced.tts_route must be auto, gem_only, or kokoro_only")
+    advanced_payload["tts_route"] = tts_route
     advanced_payload["multispeaker_policy"] = "auto_diarize"
     if "segment_failure_policy" not in advanced_payload:
         advanced_payload["segment_failure_policy"] = "hard_fail"
@@ -6741,6 +6757,7 @@ async def create_dubbing_job_v2(
     }
 
     with DUBBING_JOB_LOCK:
+        default_engine_executed = _default_engine_for_tts_route(tts_route)
         DUBBING_JOBS[job_id] = {
             "id": job_id,
             "status": "queued",
@@ -6761,9 +6778,9 @@ async def create_dubbing_job_v2(
             "speakerSynthesisStats": {},
             "qualityGate": {"passed": False, "reasons": []},
             "engineSelected": selected_policy,
-            "engineExecuted": "XTTS",
+            "engineExecuted": default_engine_executed,
             "engineSelectedDisplay": _conversion_policy_display_name(selected_policy),
-            "engineExecutedDisplay": _executed_engine_display_name("XTTS"),
+            "engineExecutedDisplay": _executed_engine_display_name(default_engine_executed),
             "fallbackUsed": selected_policy == "LHQ_PILOT",
             "fallbackReason": "lhq_missing_clone_parity" if selected_policy == "LHQ_PILOT" else None,
             "supportsOneShotCloneAtDecision": selected_policy != "LHQ_PILOT",
@@ -6959,8 +6976,6 @@ async def convert_rvc(
                 executed_engine = "RVC_FALLBACK"
             else:
                 rvc_ok, rvc_detail = rvc_adapter.health()
-                if policy == "LHQ_PILOT":
-                    selected_engine = "XTTS"
                 if rvc_ok:
                     rvc_adapter.convert(
                         str(normalized_wav),

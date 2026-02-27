@@ -135,23 +135,14 @@ Kokoro runtime (port `7820`):
 python -m uvicorn app:app --app-dir engines/kokoro-runtime --host 127.0.0.1 --port 7820
 ```
 
-XTTS runtime (port `7860`):
-
-```powershell
-python -m uvicorn app:app --app-dir engines/xtts-runtime --host 127.0.0.1 --port 7860
-```
-
 ## Health Endpoints
 
 - Media backend: `http://127.0.0.1:7800/health`
 - Gemini runtime: `http://127.0.0.1:7810/health`
 - Kokoro runtime: `http://127.0.0.1:7820/health`
-- XTTS runtime: `http://127.0.0.1:7860/health`
-- XTTS voices: `http://127.0.0.1:7860/v1/voices`
 - Runtime capabilities (per engine):
   - Gemini: `http://127.0.0.1:7810/v1/capabilities`
   - Kokoro: `http://127.0.0.1:7820/v1/capabilities`
-  - XTTS: `http://127.0.0.1:7860/v1/capabilities`
 - Aggregated capabilities:
   - Media backend: `http://127.0.0.1:7800/tts/engines/capabilities`
 
@@ -172,7 +163,6 @@ npm run backend:install:rvc
 Switch active TTS engine (bootstrap helper):
 
 ```powershell
-node scripts/bootstrap-services.mjs switch XTTS
 node scripts/bootstrap-services.mjs switch KOKORO
 node scripts/bootstrap-services.mjs switch GEM
 ```

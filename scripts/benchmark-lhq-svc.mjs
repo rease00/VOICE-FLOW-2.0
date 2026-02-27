@@ -11,7 +11,7 @@ const INPUT_PATH = process.env.VF_BENCH_AUDIO || "";
 const MODEL_NAME = process.env.VF_BENCH_MODEL || "vf_low_cpu_timbre";
 const OUT_FILE = path.join(ROOT, "artifacts", "lhq_svc_benchmark_report.json");
 
-const POLICIES = ["AUTO_RELIABLE", "LHQ_PILOT", "XTTS_ONLY"];
+const POLICIES = ["AUTO_RELIABLE", "LHQ_PILOT"];
 
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
