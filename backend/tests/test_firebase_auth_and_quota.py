@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-import backend.app as backend_app
+import app as backend_app
 
 
 class _DummyRuntimeResponse:
@@ -26,6 +26,8 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_USAGE_MONTHLY.clear()
     backend_app._INMEMORY_USAGE_DAILY.clear()
     backend_app._INMEMORY_USAGE_EVENTS.clear()
+    backend_app._INMEMORY_GENERATION_HISTORY.clear()
+    backend_app._INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
     backend_app._INMEMORY_STRIPE_CUSTOMERS.clear()
     backend_app._INMEMORY_WALLET_DAILY.clear()
     backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
@@ -101,6 +103,40 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     payload = ent.json()["entitlements"]
     assert payload["daily"]["generationUsed"] == 0
     assert payload["monthly"]["vfUsed"] == 0
+
+
+def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    uid = "local_admin_unlimited"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "dailyGenerationLimit": 1,
+        "monthlyVfLimit": 0,
+        "vffBalance": 0,
+        "paidVfBalance": 0,
+    }
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+    for i in range(3):
+        response = client.post(
+            "/tts/synthesize",
+            json={"engine": "GEM", "text": f"admin run {i}", "request_id": f"admin_req_{i}"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+    ent = client.get("/account/entitlements", headers=headers)
+    assert ent.status_code == 200
+    payload = ent.json()["entitlements"]
+    assert payload["daily"]["generationUsed"] == 3
+    assert payload["monthly"]["vfUsed"] > 0
+
+    event = backend_app._INMEMORY_USAGE_EVENTS.get(f"{uid}_admin_req_2")
+    assert isinstance(event, dict)
+    assert bool((event.get("limitBypass") or {}).get("enabled")) is True
 
 
 class _DummyStripe:
@@ -193,6 +229,23 @@ def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:
     assert "Daily ad reward limit reached" in blocked.json()["detail"]
 
 
+def test_admin_wallet_ad_reward_bypasses_daily_cap(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "local_admin_rewards"
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+    claims = backend_app.VF_AD_REWARD_CLAIM_LIMIT_PER_DAY + 3
+    for _ in range(claims):
+        ok = client.post("/wallet/ad-reward/claim", headers=headers)
+        assert ok.status_code == 200
+    ent = client.get("/account/entitlements", headers=headers)
+    assert ent.status_code == 200
+    payload = ent.json()["entitlements"]
+    assert payload["wallet"]["adClaimsToday"] == claims
+    assert payload["wallet"]["vffBalance"] == claims * backend_app.VF_AD_REWARD_VFF_AMOUNT
+
+
 def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -216,6 +269,34 @@ def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
 
     second = client.post("/wallet/coupons/redeem", json={"code": "WELCOME1000"}, headers=headers)
     assert second.status_code == 409
+
+
+def test_admin_wallet_coupon_redeem_bypasses_user_and_max_limits(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "local_admin_coupon"
+    backend_app._INMEMORY_COUPONS["coupon_admin"] = {
+        "id": "coupon_admin",
+        "code": "ADMIN1000",
+        "creditVf": 1000,
+        "active": True,
+        "redeemedCount": 0,
+        "maxRedemptions": 1,
+    }
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+
+    first = client.post("/wallet/coupons/redeem", json={"code": "ADMIN1000"}, headers=headers)
+    second = client.post("/wallet/coupons/redeem", json={"code": "ADMIN1000"}, headers=headers)
+    third = client.post("/wallet/coupons/redeem", json={"code": "ADMIN1000"}, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+
+    ent = backend_app._load_entitlement(uid)
+    assert ent["paidVfBalance"] == 3000
+    assert backend_app._INMEMORY_COUPONS["coupon_admin"]["redeemedCount"] == 3
+    assert len(backend_app._INMEMORY_COUPON_REDEMPTIONS) == 3
 
 
 def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import base64
+import gzip
 import json
 import hashlib
 import mimetypes
@@ -54,16 +55,20 @@ except Exception:
     stripe = None  # type: ignore
 
 APP_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = APP_ROOT.parent
+PROJECT_ROOT = APP_ROOT
+WORKSPACE_ROOT = APP_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from shared.env_loader import load_backend_env_files
 from shared.gemini_allocator import (
     GeminiRateAllocator,
     estimate_text_tokens,
     load_allocator_config,
     parse_api_keys as parse_api_keys_shared,
 )
+
+load_backend_env_files(Path(__file__).resolve())
 ARTIFACTS_DIR = APP_ROOT / "artifacts"
 RUNTIME_LOG_DIR = PROJECT_ROOT / ".runtime" / "logs"
 MODELS_DIR = Path(os.getenv("VF_RVC_MODELS_DIR", str(APP_ROOT / "models" / "rvc"))).resolve()
@@ -159,6 +164,17 @@ VF_AD_REWARD_CLAIM_LIMIT_PER_DAY = max(1, int((os.getenv("VF_AD_REWARD_CLAIM_LIM
 VF_AD_REWARD_VFF_AMOUNT = max(1, int((os.getenv("VF_AD_REWARD_VFF_AMOUNT") or "1000").strip() or "1000"))
 VF_TOKEN_PACK_VF_AMOUNT = max(1, int((os.getenv("VF_TOKEN_PACK_VF_AMOUNT") or "100000").strip() or "100000"))
 VF_TOKEN_PACK_BASE_INR = max(1, int((os.getenv("VF_TOKEN_PACK_BASE_INR") or "499").strip() or "499"))
+VF_GENERATION_HISTORY_MAX_ITEMS = max(
+    10,
+    int((os.getenv("VF_GENERATION_HISTORY_MAX_ITEMS") or "200").strip() or "200"),
+)
+VF_GENERATION_HISTORY_PREVIEW_CHARS = max(
+    40,
+    int((os.getenv("VF_GENERATION_HISTORY_PREVIEW_CHARS") or "220").strip() or "220"),
+)
+VF_GENERATION_HISTORY_CODEC = "gzip+base64+json"
+GEMINI_API_KEYS_FILE = str(os.getenv("GEMINI_API_KEYS_FILE") or "").strip()
+DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
 GEMINI_ALLOCATOR_CONFIG = load_allocator_config()
 BACKEND_GEMINI_ALLOCATOR_WAIT_TIMEOUT_MS = max(
     5000,
@@ -1301,6 +1317,8 @@ _INMEMORY_WALLET_DAILY: dict[str, dict[str, Any]] = {}
 _INMEMORY_WALLET_TRANSACTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_GENERATION_HISTORY: dict[str, dict[str, Any]] = {}
+_INMEMORY_DAILY_USAGE_RESET_STATUS: dict[str, Any] = {}
 _INMEMORY_LOCK = threading.Lock()
 
 
@@ -1368,6 +1386,140 @@ def _wallet_month_key(now: Optional[datetime] = None) -> str:
 
 def _safe_now_iso(now: Optional[datetime] = None) -> str:
     return (now or _utc_now()).isoformat()
+
+
+def _history_sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(item or {})
+    payload: dict[str, Any] = {
+        "id": str(safe.get("id") or uuid.uuid4().hex),
+        "timestamp": _as_positive_int(safe.get("timestamp") or int(time.time() * 1000)),
+        "status": str(safe.get("status") or "completed").strip().lower() or "completed",
+        "engine": str(safe.get("engine") or "GEM").strip().upper() or "GEM",
+        "voiceName": str(safe.get("voiceName") or safe.get("voice_name") or "").strip()[:120],
+        "voiceId": str(safe.get("voiceId") or safe.get("voice_id") or "").strip()[:120],
+        "chars": _as_positive_int(safe.get("chars")),
+        "textPreview": str(safe.get("textPreview") or "").strip()[:VF_GENERATION_HISTORY_PREVIEW_CHARS],
+        "requestId": str(safe.get("requestId") or safe.get("request_id") or "").strip()[:120],
+        "traceId": str(safe.get("traceId") or safe.get("trace_id") or "").strip()[:120],
+    }
+    payload["text"] = payload["textPreview"]
+    return payload
+
+
+def _history_encode_items_gzip_b64(items: list[dict[str, Any]]) -> str:
+    serialized = json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = gzip.compress(serialized, compresslevel=9)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def _history_decode_items_gzip_b64(blob: str) -> list[dict[str, Any]]:
+    token = str(blob or "").strip()
+    if not token:
+        return []
+    try:
+        compressed = base64.b64decode(token.encode("ascii"), validate=False)
+        raw = gzip.decompress(compressed)
+        parsed = json.loads(raw.decode("utf-8"))
+        if not isinstance(parsed, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in parsed:
+            if isinstance(item, dict):
+                out.append(_history_sanitize_item(item))
+        return out
+    except Exception:
+        return []
+
+
+def _history_row_from_items(uid: str, items: list[dict[str, Any]], now_iso: Optional[str] = None) -> dict[str, Any]:
+    normalized_uid = str(uid or "").strip()
+    safe_items = [_history_sanitize_item(item) for item in list(items or []) if isinstance(item, dict)]
+    if len(safe_items) > VF_GENERATION_HISTORY_MAX_ITEMS:
+        safe_items = safe_items[:VF_GENERATION_HISTORY_MAX_ITEMS]
+    latest_at_ms = max([_as_positive_int(item.get("timestamp")) for item in safe_items], default=0)
+    return {
+        "uid": normalized_uid,
+        "updatedAt": str(now_iso or _safe_now_iso()),
+        "itemCount": len(safe_items),
+        "latestAtMs": latest_at_ms,
+        "codec": VF_GENERATION_HISTORY_CODEC,
+        "itemsGzipB64": _history_encode_items_gzip_b64(safe_items),
+    }
+
+
+def _history_get_row(uid: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return {}
+    collection = _firestore_collection("generation_history")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            return dict(_INMEMORY_GENERATION_HISTORY.get(safe_uid) or {})
+    try:
+        doc = collection.document(safe_uid).get()
+    except Exception:
+        return {}
+    if not doc.exists:
+        return {}
+    payload = doc.to_dict() or {}
+    payload["uid"] = safe_uid
+    return payload
+
+
+def _history_get_items(uid: str, limit: int = 30) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(200, int(limit)))
+    row = _history_get_row(uid)
+    items = _history_decode_items_gzip_b64(str(row.get("itemsGzipB64") or ""))
+    if not items:
+        return []
+    items.sort(key=lambda item: _as_positive_int(item.get("timestamp")), reverse=True)
+    return items[:safe_limit]
+
+
+def _history_write_row(uid: str, row: dict[str, Any]) -> None:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return
+    collection = _firestore_collection("generation_history")
+    payload = dict(row or {})
+    payload["uid"] = safe_uid
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_GENERATION_HISTORY[safe_uid] = payload
+        return
+    try:
+        collection.document(safe_uid).set(payload, merge=True)
+    except Exception:
+        with _INMEMORY_LOCK:
+            _INMEMORY_GENERATION_HISTORY[safe_uid] = payload
+
+
+def _history_append_item(uid: str, item: dict[str, Any]) -> None:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return
+    current = _history_get_items(safe_uid, limit=VF_GENERATION_HISTORY_MAX_ITEMS)
+    next_items = [_history_sanitize_item(item), *current]
+    if len(next_items) > VF_GENERATION_HISTORY_MAX_ITEMS:
+        next_items = next_items[:VF_GENERATION_HISTORY_MAX_ITEMS]
+    row = _history_row_from_items(safe_uid, next_items, now_iso=_safe_now_iso())
+    _history_write_row(safe_uid, row)
+
+
+def _history_clear(uid: str) -> None:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return
+    collection = _firestore_collection("generation_history")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_GENERATION_HISTORY.pop(safe_uid, None)
+        return
+    try:
+        collection.document(safe_uid).delete()
+    except Exception:
+        with _INMEMORY_LOCK:
+            _INMEMORY_GENERATION_HISTORY.pop(safe_uid, None)
 
 
 def _as_bool(value: Any) -> bool:
@@ -1600,15 +1752,29 @@ def _request_claim_is_admin(request: Request) -> bool:
     return _as_bool(claims.get("admin"))
 
 
+def _request_is_admin(request: Request, uid: Optional[str] = None) -> bool:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        safe_uid = str(getattr(request.state, "uid", "") or "").strip()
+    if not safe_uid and not VF_AUTH_ENFORCE:
+        header_uid = str(request.headers.get("x-dev-uid") or "").strip()
+        safe_uid = header_uid or VF_DEV_BYPASS_UID
+    if not safe_uid:
+        return False
+    if _request_claim_is_admin(request):
+        return True
+    if safe_uid in VF_ADMIN_APPROVER_UIDS:
+        return True
+    if not VF_AUTH_ENFORCE and safe_uid.startswith("local_admin"):
+        return True
+    if _firestore_user_is_admin(safe_uid):
+        return True
+    return False
+
+
 def _require_admin_uid(request: Request) -> str:
     uid = _require_request_uid(request)
-    if _request_claim_is_admin(request):
-        return uid
-    if uid in VF_ADMIN_APPROVER_UIDS:
-        return uid
-    if not VF_AUTH_ENFORCE and uid.startswith("local_admin"):
-        return uid
-    if _firestore_user_is_admin(uid):
+    if _request_is_admin(request, uid):
         return uid
     raise HTTPException(status_code=403, detail="Admin access required.")
 
@@ -1644,9 +1810,10 @@ def _wallet_spendable_now(entitlement: dict[str, Any], monthly: dict[str, Any], 
     safe_engine = str(engine or "").strip().upper()
     monthly_remaining = _monthly_free_remaining(entitlement, monthly)
     paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
-    if safe_engine == "KOKORO":
-        return monthly_remaining + _as_positive_int(entitlement.get("vffBalance")) + paid_balance
-    return monthly_remaining + paid_balance
+    vff_balance = _as_positive_int(entitlement.get("vffBalance"))
+    if safe_engine not in {"GEM", "KOKORO"}:
+        return monthly_remaining + paid_balance
+    return monthly_remaining + vff_balance + paid_balance
 
 
 def _wallet_charge_breakdown(
@@ -1659,7 +1826,6 @@ def _wallet_charge_breakdown(
     breakdown = {"vff": 0, "monthlyVf": 0, "paidVf": 0}
     if remaining <= 0:
         return breakdown
-    safe_engine = str(engine or "").strip().upper()
     monthly_remaining = _monthly_free_remaining(entitlement, monthly)
     paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
     vff_balance = _as_positive_int(entitlement.get("vffBalance"))
@@ -1674,13 +1840,10 @@ def _wallet_charge_breakdown(
         breakdown[bucket] = use
         remaining -= use
 
-    if safe_engine == "KOKORO":
-        spend("vff", vff_balance)
-        spend("monthlyVf", monthly_remaining)
-        spend("paidVf", paid_balance)
-    else:
-        spend("monthlyVf", monthly_remaining)
-        spend("paidVf", paid_balance)
+    # Unified cross-engine spending order: monthly free -> VFF -> paid VF.
+    spend("monthlyVf", monthly_remaining)
+    spend("vff", vff_balance)
+    spend("paidVf", paid_balance)
     return breakdown
 
 
@@ -1840,7 +2003,14 @@ def _load_usage_windows(uid: str, now: Optional[datetime] = None) -> tuple[dict[
     return {**default_monthly, **(monthly or {})}, {**default_daily, **(daily or {})}
 
 
-def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> dict[str, Any]:
+def _reserve_usage(
+    uid: str,
+    request_id: str,
+    engine: str,
+    char_count: int,
+    bypass_limits: bool = False,
+    bypass_reason: str = "",
+) -> dict[str, Any]:
     safe_engine = str(engine or "").strip().upper()
     if safe_engine not in VF_ENGINE_RATES:
         safe_engine = "GEM"
@@ -1867,7 +2037,7 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
             rate = _engine_rate_for_plan(str(entitlement.get("plan") or "Free"), safe_engine)
             vf_cost = safe_chars * rate
 
-            if _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
+            if not bypass_limits and _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
                 raise HTTPException(status_code=429, detail="Daily generation limit reached.")
 
             charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
@@ -1876,7 +2046,7 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
                 + _as_positive_int(charge_breakdown.get("monthlyVf"))
                 + _as_positive_int(charge_breakdown.get("paidVf"))
             )
-            if covered < vf_cost:
+            if not bypass_limits and covered < vf_cost:
                 raise HTTPException(status_code=429, detail="Insufficient VF balance for this generation.")
 
             entitlement["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) - _as_positive_int(charge_breakdown.get("vff")))
@@ -1914,6 +2084,10 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
                     "vff": _as_positive_int(charge_breakdown.get("vff")),
                     "monthlyVf": _as_positive_int(charge_breakdown.get("monthlyVf")),
                     "paidVf": _as_positive_int(charge_breakdown.get("paidVf")),
+                },
+                "limitBypass": {
+                    "enabled": bool(bypass_limits),
+                    "reason": str(bypass_reason or "").strip(),
                 },
                 "createdAt": now.isoformat(),
                 "updatedAt": now.isoformat(),
@@ -1957,7 +2131,7 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
             existing_event = event_doc.to_dict() or {}
             if str(existing_event.get("status")) in {"reserved", "committed"}:
                 return {"ok": True, "alreadyReserved": True, "event": existing_event, "monthly": monthly, "daily": daily, "entitlement": entitlement}
-        if _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
+        if not bypass_limits and _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
             raise RuntimeError("Daily generation limit reached.")
 
         charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
@@ -1966,7 +2140,7 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
             + _as_positive_int(charge_breakdown.get("monthlyVf"))
             + _as_positive_int(charge_breakdown.get("paidVf"))
         )
-        if covered < vf_cost:
+        if not bypass_limits and covered < vf_cost:
             raise RuntimeError("Insufficient VF balance for this generation.")
 
         entitlement["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) - _as_positive_int(charge_breakdown.get("vff")))
@@ -2004,6 +2178,10 @@ def _reserve_usage(uid: str, request_id: str, engine: str, char_count: int) -> d
                 "vff": _as_positive_int(charge_breakdown.get("vff")),
                 "monthlyVf": _as_positive_int(charge_breakdown.get("monthlyVf")),
                 "paidVf": _as_positive_int(charge_breakdown.get("paidVf")),
+            },
+            "limitBypass": {
+                "enabled": bool(bypass_limits),
+                "reason": str(bypass_reason or "").strip(),
             },
             "createdAt": now.isoformat(),
             "updatedAt": now.isoformat(),
@@ -2202,7 +2380,7 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             "paidVfBalance": paid_balance,
             "spendableNowByEngine": {
                 "KOKORO": monthly_free_remaining + vff_balance + paid_balance,
-                "GEM": monthly_free_remaining + paid_balance,
+                "GEM": monthly_free_remaining + vff_balance + paid_balance,
             },
             "adClaimsToday": ad_claims_today,
             "adClaimsDailyLimit": VF_AD_REWARD_CLAIM_LIMIT_PER_DAY,
@@ -3727,12 +3905,79 @@ def _extract_text_with_local_ocr(media_bytes: bytes) -> str:
     return merged
 
 
+def _resolve_gemini_keys_file_path(path_hint: str) -> Path:
+    raw_hint = str(path_hint or "").strip()
+    candidates: list[Path] = []
+    if raw_hint:
+        hint_path = Path(raw_hint).expanduser()
+        if hint_path.is_absolute():
+            candidates.append(hint_path)
+        else:
+            candidates.append(APP_ROOT / hint_path)
+            candidates.append(WORKSPACE_ROOT / hint_path)
+    candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
+
+    first_candidate: Optional[Path] = None
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        marker = str(resolved)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if first_candidate is None:
+            first_candidate = resolved
+        try:
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        except Exception:
+            continue
+    return first_candidate or DEFAULT_GEMINI_API_KEYS_FILE
+
+
+def _read_gemini_keys_from_file(path_hint: str) -> list[str]:
+    target = _resolve_gemini_keys_file_path(path_hint)
+    try:
+        if not target.exists() or not target.is_file():
+            return []
+        raw = target.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    return parse_api_keys_shared(raw)
+
+
+def _gemini_pool_source_diagnostics() -> dict[str, Any]:
+    configured_file_path = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
+    resolved_file_path = _resolve_gemini_keys_file_path(configured_file_path)
+    file_item_count = 0
+    file_exists = False
+    if str(resolved_file_path):
+        file_exists = resolved_file_path.exists() and resolved_file_path.is_file()
+        if file_exists:
+            file_item_count = len(_read_gemini_keys_from_file(str(resolved_file_path)))
+    env_pool_count = len(parse_api_keys_shared(str(os.getenv("GEMINI_API_KEYS") or "").strip()))
+    single_key_present = bool(str(os.getenv("GEMINI_API_KEY") or "").strip() or str(os.getenv("API_KEY") or "").strip())
+    return {
+        "configuredFilePath": configured_file_path,
+        "filePath": str(resolved_file_path),
+        "fileExists": file_exists,
+        "fileKeyCount": file_item_count,
+        "envPoolKeyCount": env_pool_count,
+        "singleKeyPresent": single_key_present,
+    }
+
+
 def _resolve_gemini_fallback_key_pool() -> list[str]:
     raw_pool = str(os.getenv("GEMINI_API_KEYS") or "").strip()
+    file_pool = _read_gemini_keys_from_file(str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip())
     candidates: list[str] = []
     seen: set[str] = set()
     for token in [
         *parse_api_keys_shared(raw_pool),
+        *file_pool,
         os.getenv("VF_GEMINI_API_KEY") or "",
         os.getenv("GEMINI_API_KEY") or "",
         os.getenv("API_KEY") or "",
@@ -3747,10 +3992,84 @@ def _resolve_gemini_fallback_key_pool() -> list[str]:
     return candidates
 
 
+def _backend_gemini_pool_snapshot() -> dict[str, Any]:
+    key_pool = _resolve_gemini_fallback_key_pool()
+    if not key_pool:
+        return {
+            "ok": True,
+            "pool": {"keyCount": 0, "healthyKeys": 0, "unhealthyKeys": 0, "atLimitKeys": 0},
+            "keys": [],
+            "models": [],
+            "source": _gemini_pool_source_diagnostics(),
+        }
+    BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
+    snapshot = BACKEND_GEMINI_ALLOCATOR.snapshot(key_pool)
+    payload = dict(snapshot if isinstance(snapshot, dict) else {})
+    payload["ok"] = True
+    payload["source"] = _gemini_pool_source_diagnostics()
+    return payload
+
+
+def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
+    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool"
+    try:
+        response = requests.get(endpoint, timeout=timeout_sec)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {"detail": response.text[:220]}
+    if not response.ok:
+        return {
+            "ok": False,
+            "statusCode": response.status_code,
+            "error": payload.get("detail") if isinstance(payload, dict) else str(payload),
+            "endpoint": endpoint,
+        }
+    if not isinstance(payload, dict):
+        payload = {"payload": payload}
+    payload["ok"] = True
+    payload["endpoint"] = endpoint
+    return payload
+
+
+def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
+    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool/reload"
+    try:
+        response = requests.post(endpoint, timeout=timeout_sec)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {"detail": response.text[:220]}
+    if not response.ok:
+        compatibility: Optional[str] = None
+        if int(response.status_code) in {404, 405}:
+            compatibility = "runtime_reload_endpoint_unavailable"
+        elif int(response.status_code) in {400, 422}:
+            compatibility = "runtime_reload_endpoint_incompatible"
+        return {
+            "ok": False,
+            "statusCode": response.status_code,
+            "error": payload.get("detail") if isinstance(payload, dict) else str(payload),
+            "endpoint": endpoint,
+            "compatibility": compatibility,
+        }
+    if not isinstance(payload, dict):
+        payload = {"payload": payload}
+    payload["ok"] = True
+    payload["endpoint"] = endpoint
+    return payload
+
+
 def _extract_text_with_gemini_fallback(media_bytes: bytes, mime_type: str, language_hint: str, task_label: str) -> str:
     key_pool = _resolve_gemini_fallback_key_pool()
     if not key_pool:
-        raise RuntimeError("Gemini API key is missing for AI fallback.")
+        raise RuntimeError(
+            "Gemini key pool is empty for AI fallback. Configure GEMINI_API_KEYS_FILE (preferred), GEMINI_API_KEYS, or GEMINI_API_KEY."
+        )
     BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
 
     prompt = (
@@ -4714,9 +5033,33 @@ def account_entitlements(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "entitlements": payload})
 
 
+@app.get("/account/generation-history")
+def account_generation_history(request: Request, limit: int = 30) -> JSONResponse:
+    uid = _require_request_uid(request)
+    safe_limit = max(1, min(200, int(limit)))
+    items = _history_get_items(uid, limit=safe_limit)
+    return JSONResponse(
+        {
+            "ok": True,
+            "limit": safe_limit,
+            "count": len(items),
+            "codec": VF_GENERATION_HISTORY_CODEC,
+            "items": items,
+        }
+    )
+
+
+@app.delete("/account/generation-history")
+def account_generation_history_clear(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    _history_clear(uid)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/wallet/ad-reward/claim")
 def wallet_ad_reward_claim(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    admin_limit_bypass = _request_is_admin(request, uid)
     now = _utc_now()
     day_doc_id = _wallet_daily_doc_id(uid, now)
     month_key = _wallet_month_key(now)
@@ -4731,7 +5074,7 @@ def wallet_ad_reward_claim(request: Request) -> JSONResponse:
                 "adClaimCount": 0,
             }
             claim_count = _as_positive_int(row.get("adClaimCount"))
-            if claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
+            if not admin_limit_bypass and claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
                 raise HTTPException(status_code=429, detail="Daily ad reward limit reached.")
             row["adClaimCount"] = claim_count + 1
             row["updatedAt"] = now.isoformat()
@@ -4758,7 +5101,7 @@ def wallet_ad_reward_claim(request: Request) -> JSONResponse:
             else {"uid": uid, "periodKey": _usage_day_period_label(now), "adClaimCount": 0}
         )
         claim_count = _as_positive_int(row.get("adClaimCount"))
-        if claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
+        if not admin_limit_bypass and claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
             raise RuntimeError("Daily ad reward limit reached.")
         row["adClaimCount"] = claim_count + 1
         row["updatedAt"] = now.isoformat()
@@ -4785,6 +5128,7 @@ def wallet_ad_reward_claim(request: Request) -> JSONResponse:
 @app.post("/wallet/coupons/redeem")
 def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    admin_limit_bypass = _request_is_admin(request, uid)
     code = _normalize_coupon_code(payload.code)
     if not code:
         raise HTTPException(status_code=400, detail="Coupon code is required.")
@@ -4811,12 +5155,16 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
             expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
             if expires and expires <= now:
                 raise HTTPException(status_code=400, detail="Coupon has expired.")
-            redemption_key = f"{coupon_id}_{uid}"
-            if redemption_key in _INMEMORY_COUPON_REDEMPTIONS:
+            redemption_key = (
+                f"{coupon_id}_{uid}_{uuid.uuid4().hex}"
+                if admin_limit_bypass
+                else f"{coupon_id}_{uid}"
+            )
+            if not admin_limit_bypass and redemption_key in _INMEMORY_COUPON_REDEMPTIONS:
                 raise HTTPException(status_code=409, detail="Coupon already redeemed by this user.")
             redeemed_count = _as_positive_int(coupon.get("redeemedCount"))
             max_redemptions = _as_positive_int(coupon.get("maxRedemptions"))
-            if max_redemptions > 0 and redeemed_count >= max_redemptions:
+            if not admin_limit_bypass and max_redemptions > 0 and redeemed_count >= max_redemptions:
                 raise HTTPException(status_code=400, detail="Coupon redemption limit reached.")
             credit_vf = _as_positive_int(coupon.get("creditVf"))
             if credit_vf <= 0:
@@ -4832,12 +5180,21 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
                 "creditedVf": credit_vf,
                 "createdAt": now.isoformat(),
             }
+        coupon_tx_id = (
+            f"coupon_{coupon_id}_{uid}_{uuid.uuid4().hex}"
+            if admin_limit_bypass
+            else f"coupon_{coupon_id}_{uid}"
+        )
         _credit_paid_vf(
             uid=uid,
             amount=credit_vf,
             reason="coupon_redeem",
-            transaction_id=f"coupon_{coupon_id}_{uid}",
-            metadata={"couponId": coupon_id, "code": code},
+            transaction_id=coupon_tx_id,
+            metadata={
+                "couponId": coupon_id,
+                "code": code,
+                "adminLimitBypass": bool(admin_limit_bypass),
+            },
         )
         return JSONResponse({"ok": True, "creditedVf": credit_vf, "entitlements": _entitlement_usage_payload(uid)})
 
@@ -4846,11 +5203,20 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
         raise HTTPException(status_code=404, detail="Coupon not found.")
     coupon_doc = coupon_docs[0]
     coupon_id = str(coupon_doc.id)
-    redemption_doc_id = f"{coupon_id}_{uid}"
+    redemption_doc_id = (
+        f"{coupon_id}_{uid}_{uuid.uuid4().hex}"
+        if admin_limit_bypass
+        else f"{coupon_id}_{uid}"
+    )
+    tx_doc_id = (
+        f"coupon_{coupon_id}_{uid}_{uuid.uuid4().hex}"
+        if admin_limit_bypass
+        else f"coupon_{coupon_id}_{uid}"
+    )
     coupon_ref = _FIRESTORE_DB.collection("coupons").document(coupon_id)
     redemption_ref = _FIRESTORE_DB.collection("coupon_redemptions").document(redemption_doc_id)
     entitlement_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
-    tx_ref = _FIRESTORE_DB.collection("wallet_transactions").document(f"coupon_{coupon_id}_{uid}")
+    tx_ref = _FIRESTORE_DB.collection("wallet_transactions").document(tx_doc_id)
     transaction = _FIRESTORE_DB.transaction()
 
     @firebase_firestore.transactional
@@ -4864,12 +5230,13 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
         expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
         if expires and expires <= now:
             raise RuntimeError("Coupon has expired.")
-        redemption_doc = redemption_ref.get(transaction=transaction_obj)
-        if redemption_doc.exists:
-            raise RuntimeError("Coupon already redeemed by this user.")
+        if not admin_limit_bypass:
+            redemption_doc = redemption_ref.get(transaction=transaction_obj)
+            if redemption_doc.exists:
+                raise RuntimeError("Coupon already redeemed by this user.")
         redeemed_count = _as_positive_int(coupon.get("redeemedCount"))
         max_redemptions = _as_positive_int(coupon.get("maxRedemptions"))
-        if max_redemptions > 0 and redeemed_count >= max_redemptions:
+        if not admin_limit_bypass and max_redemptions > 0 and redeemed_count >= max_redemptions:
             raise RuntimeError("Coupon redemption limit reached.")
         credit_vf = _as_positive_int(coupon.get("creditVf"))
         if credit_vf <= 0:
@@ -4904,7 +5271,11 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
                 "bucket": "paidVF",
                 "amount": credit_vf,
                 "reason": "coupon_redeem",
-                "metadata": {"couponId": coupon_id, "code": code},
+                "metadata": {
+                    "couponId": coupon_id,
+                    "code": code,
+                    "adminLimitBypass": bool(admin_limit_bypass),
+                },
                 "createdAt": now.isoformat(),
             },
             merge=True,
@@ -4921,6 +5292,120 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
         raise HTTPException(status_code=status, detail=detail) from exc
 
     return JSONResponse({"ok": True, "creditedVf": credited_vf, "entitlements": _entitlement_usage_payload(uid)})
+
+
+def _load_daily_usage_reset_status() -> dict[str, Any]:
+    collection = _firestore_collection("admin_ops")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            return dict(_INMEMORY_DAILY_USAGE_RESET_STATUS or {})
+    try:
+        doc = collection.document("daily_usage_reset_status").get()
+    except Exception:
+        return {}
+    if not doc.exists:
+        return {}
+    payload = doc.to_dict() or {}
+    payload["id"] = "daily_usage_reset_status"
+    return payload
+
+
+def _write_daily_usage_reset_status(payload: dict[str, Any]) -> None:
+    row = dict(payload or {})
+    collection = _firestore_collection("admin_ops")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
+            _INMEMORY_DAILY_USAGE_RESET_STATUS.update(row)
+        return
+    try:
+        collection.document("daily_usage_reset_status").set(row, merge=False)
+    except Exception:
+        with _INMEMORY_LOCK:
+            _INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
+            _INMEMORY_DAILY_USAGE_RESET_STATUS.update(row)
+
+
+def _reset_daily_usage_all(*, dry_run: bool, requested_by: str) -> dict[str, Any]:
+    now = _utc_now()
+    period_key = _usage_day_period_label(now)
+    day_key = _usage_day_key(now)
+    mode = "in_memory"
+    docs_cleared = 0
+    users: set[str] = set()
+    reserved_events_today: Optional[int] = None
+
+    usage_daily = _firestore_collection("usage_daily")
+    if usage_daily is None:
+        with _INMEMORY_LOCK:
+            matching_keys: list[str] = []
+            for doc_id, row in _INMEMORY_USAGE_DAILY.items():
+                if str((row or {}).get("periodKey") or "").strip() != period_key:
+                    continue
+                matching_keys.append(doc_id)
+                uid = str((row or {}).get("uid") or "").strip()
+                if uid:
+                    users.add(uid)
+            docs_cleared = len(matching_keys)
+            if not dry_run:
+                for doc_id in matching_keys:
+                    _INMEMORY_USAGE_DAILY.pop(doc_id, None)
+            reserved_events_today = sum(
+                1
+                for event in _INMEMORY_USAGE_EVENTS.values()
+                if str((event or {}).get("status") or "").strip().lower() == "reserved"
+                and str((event or {}).get("dayDocId") or "").strip().endswith(f"_{day_key}")
+            )
+    else:
+        mode = "firestore"
+        try:
+            docs = list(usage_daily.where("periodKey", "==", period_key).stream())
+        except Exception:
+            docs = []
+        for doc in docs:
+            row = doc.to_dict() or {}
+            uid = str(row.get("uid") or "").strip()
+            if uid:
+                users.add(uid)
+        docs_cleared = len(docs)
+        if not dry_run:
+            for doc in docs:
+                try:
+                    doc.reference.delete()
+                except Exception:
+                    continue
+
+    summary = {
+        "ok": True,
+        "dryRun": bool(dry_run),
+        "mode": mode,
+        "dayKey": day_key,
+        "periodKey": period_key,
+        "usersAffected": len(users),
+        "docsCleared": docs_cleared,
+        "requestedBy": str(requested_by or "").strip(),
+        "ranAt": now.isoformat(),
+        "reservedEventsToday": reserved_events_today,
+    }
+    if not dry_run:
+        _write_daily_usage_reset_status(summary)
+    return summary
+
+
+@app.get("/admin/usage/reset-daily-all/status")
+def admin_daily_usage_reset_status(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    payload = _load_daily_usage_reset_status()
+    if not payload:
+        return JSONResponse({"ok": True, "status": "never_run"})
+    return JSONResponse({"ok": True, "status": "available", "lastRun": payload})
+
+
+@app.post("/admin/usage/reset-daily-all")
+def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONResponse:
+    admin_uid = _require_admin_uid(request)
+    summary = _reset_daily_usage_all(dry_run=bool(dryRun), requested_by=admin_uid)
+    return JSONResponse(summary)
 
 
 @app.get("/admin/users")
@@ -5000,6 +5485,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
     collection_names = [
         "entitlements",
         "users",
+        "generation_history",
         "usage_monthly",
         "usage_daily",
         "usage_events",
@@ -5010,7 +5496,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
         for name in collection_names:
             try:
                 coll = _FIRESTORE_DB.collection(name)
-                if name in {"entitlements", "users"}:
+                if name in {"entitlements", "users", "generation_history"}:
                     coll.document(uid).delete()
                     continue
                 docs = coll.where("uid", "==", uid).stream()
@@ -5031,6 +5517,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
                 _INMEMORY_WALLET_DAILY.pop(key, None)
             for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
                 _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
+            _INMEMORY_GENERATION_HISTORY.pop(uid, None)
 
     return JSONResponse({"ok": True, "uid": uid})
 
@@ -5128,6 +5615,41 @@ def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Req
     ref.set(patch, merge=True)
     fresh = ref.get().to_dict() or {}
     return JSONResponse({"ok": True, "coupon": {**fresh, "id": safe_coupon_id}})
+
+
+@app.get("/admin/gemini/pool/status")
+def admin_gemini_pool_status(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    backend_snapshot = _backend_gemini_pool_snapshot()
+    runtime_snapshot = _runtime_gemini_pool_snapshot()
+    return JSONResponse(
+        {
+            "ok": bool(backend_snapshot.get("ok")) and bool(runtime_snapshot.get("ok")),
+            "backend": backend_snapshot,
+            "runtime": runtime_snapshot,
+        }
+    )
+
+
+@app.post("/admin/gemini/pool/reload")
+def admin_gemini_pool_reload(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    key_pool = _resolve_gemini_fallback_key_pool()
+    if not key_pool:
+        raise HTTPException(status_code=400, detail="Gemini key pool is empty.")
+    BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
+    backend_snapshot = _backend_gemini_pool_snapshot()
+    runtime_reload = _runtime_gemini_pool_reload()
+    runtime_snapshot = _runtime_gemini_pool_snapshot()
+    return JSONResponse(
+        {
+            "ok": bool(backend_snapshot.get("ok")) and bool(runtime_reload.get("ok")),
+            "detail": "Gemini key pool reloaded.",
+            "backend": backend_snapshot,
+            "runtimeReload": runtime_reload,
+            "runtime": runtime_snapshot,
+        }
+    )
 
 
 @app.post("/billing/checkout-session")
@@ -5383,16 +5905,54 @@ def ai_generate_text(payload: AiGenerateTextRequest, request: Request) -> JSONRe
     return JSONResponse(body)
 
 
+def _decode_runtime_error_detail(response: requests.Response) -> Any:
+    content_type = str(response.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict) and "detail" in payload:
+                detail = payload.get("detail")
+                if isinstance(detail, str):
+                    text = detail.strip()
+                    if text.startswith("{") or text.startswith("["):
+                        try:
+                            return json.loads(text)
+                        except Exception:
+                            return detail
+                return detail
+            return payload
+        except Exception:
+            pass
+
+    text_detail = str(response.text or "").strip()
+    if text_detail:
+        if text_detail.startswith("{") or text_detail.startswith("["):
+            try:
+                return json.loads(text_detail)
+            except Exception:
+                return text_detail[:1200]
+        return text_detail[:1200]
+    return "TTS runtime failed."
+
+
 @app.post("/tts/synthesize")
 def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
     uid = _require_request_uid(request)
+    admin_limit_bypass = _request_is_admin(request, uid)
     text = str(payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required.")
     engine = _normalize_engine_name(payload.engine)
     request_id = str(payload.request_id or uuid.uuid4().hex).strip()
 
-    reserve = _reserve_usage(uid, request_id, engine, len(text))
+    reserve = _reserve_usage(
+        uid,
+        request_id,
+        engine,
+        len(text),
+        bypass_limits=admin_limit_bypass,
+        bypass_reason="admin_request" if admin_limit_bypass else "",
+    )
     _ = reserve
 
     runtime_base = _runtime_url_for_engine(engine)
@@ -5444,7 +6004,13 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
 
     if not runtime_response.ok:
         _finalize_usage(uid, request_id, success=False, error_detail=f"runtime_error:{runtime_response.status_code}")
-        detail = runtime_response.text[:400]
+        detail = _decode_runtime_error_detail(runtime_response)
+        trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
+        if isinstance(detail, dict):
+            payload_detail = dict(detail)
+            if trace_id and not payload_detail.get("trace_id"):
+                payload_detail["trace_id"] = trace_id
+            raise HTTPException(status_code=runtime_response.status_code, detail=payload_detail)
         raise HTTPException(status_code=runtime_response.status_code, detail=detail or "TTS runtime failed.")
 
     _finalize_usage(uid, request_id, success=True)
@@ -5455,6 +6021,22 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
     trace_id = runtime_response.headers.get("x-voiceflow-trace-id")
     if trace_id:
         out_headers["x-voiceflow-trace-id"] = trace_id
+    preview = text[:VF_GENERATION_HISTORY_PREVIEW_CHARS]
+    if len(text) > VF_GENERATION_HISTORY_PREVIEW_CHARS:
+        preview = f"{preview}..."
+    history_item = {
+        "id": request_id,
+        "timestamp": int(time.time() * 1000),
+        "status": "completed",
+        "engine": engine,
+        "voiceName": str(payload.voiceName or "").strip(),
+        "voiceId": voice_id,
+        "chars": len(text),
+        "textPreview": preview,
+        "requestId": request_id,
+        "traceId": str(trace_id or "").strip(),
+    }
+    _history_append_item(uid, history_item)
     diagnostics = runtime_response.headers.get("x-voiceflow-diagnostics")
     if diagnostics:
         out_headers["x-voiceflow-diagnostics"] = diagnostics

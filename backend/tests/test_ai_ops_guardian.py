@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-import backend.app as backend_app
+import app as backend_app
 
 
 def _reset_ai_ops_state() -> None:

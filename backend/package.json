@@ -1,0 +1,27 @@
+{
+  "name": "voiceflow-backend-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev-all": "node scripts/dev-all.mjs",
+    "backend:start": "python app.py",
+    "backend:install": "python -m pip install -r requirements.txt",
+    "backend:install:rvc": "python -m pip install -r requirements.txt",
+    "services:bootstrap": "node scripts/bootstrap-services.mjs up",
+    "services:bootstrap:gpu": "node scripts/bootstrap-services.mjs up --gpu",
+    "services:check": "node scripts/bootstrap-services.mjs check",
+    "services:restart": "node scripts/bootstrap-services.mjs restart",
+    "services:down": "node scripts/bootstrap-services.mjs down",
+    "audit:gemini-stack": "node scripts/audit-gemini-stack.mjs",
+    "audit:media": "node scripts/audit-media-backend.mjs",
+    "benchmark:lhq-svc": "node scripts/benchmark-lhq-svc.mjs",
+    "test:contracts": "node scripts/test-runtime-contracts.mjs",
+    "test:tts:hindi-30s": "node scripts/test-tts-hindi-30s.mjs",
+    "audit:tts:hindi": "node scripts/test-tts-hindi-30s.mjs",
+    "audit:tts:longtext:smoke": "node scripts/test-tts-longtext-5000.mjs --mode smoke",
+    "audit:tts:longtext:matrix": "node scripts/test-tts-longtext-5000.mjs --mode matrix",
+    "ci:reliability": "node scripts/ci-reliability.mjs",
+    "pytest": "python -m pytest tests -q"
+  }
+}

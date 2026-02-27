@@ -4,7 +4,7 @@ import re
 
 from shared.gemini_allocator import GeminiRateAllocator
 
-import backend.app as backend_app
+import app as backend_app
 
 
 class _FakeResponse:

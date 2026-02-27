@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-import backend.app as backend_app
+import app as backend_app
 
 
 def _engine_by_health_url() -> dict[str, str]:
