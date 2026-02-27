@@ -36,11 +36,9 @@ const DEFAULT_SKIP_DIRS = new Set([
 ]);
 
 const DEFAULT_SKIP_PREFIXES = [
-  'engines/xtts-runtime/models',
   'engines/kokoro-runtime/models',
   'engines/gemini-runtime/models',
   'artifacts/voice-assets',
-  'artifacts/xtts_audio_mix_audit',
 ];
 
 const SKIP_DIRS = ALL_FOLDERS ? new Set() : DEFAULT_SKIP_DIRS;

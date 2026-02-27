@@ -10,7 +10,6 @@ const MODE = process.argv.includes('--mode')
 const REPORT_PATH = path.join(ROOT, 'artifacts', 'tts_longtext_5000_audit_report.json');
 const GEM_URL = String(process.env.VF_GEMINI_RUNTIME_URL || 'http://127.0.0.1:7810').replace(/\/+$/, '');
 const KOKORO_URL = String(process.env.VF_KOKORO_RUNTIME_URL || 'http://127.0.0.1:7820').replace(/\/+$/, '');
-const XTTS_URL = String(process.env.VF_XTTS_RUNTIME_URL || 'http://127.0.0.1:7860').replace(/\/+$/, '');
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_LONGTEXT_TIMEOUT_MS || 240000);
 
 const EN_UNITS = [
@@ -34,11 +33,6 @@ const ENGINES = {
   KOKORO: {
     url: `${KOKORO_URL}/synthesize`,
     voice: 'hf_alpha',
-    language: { en: 'en', hi: 'hi' },
-  },
-  XTTS: {
-    url: `${XTTS_URL}/v1/text-to-speech`,
-    voice: 'xtts_in_m_adult_01',
     language: { en: 'en', hi: 'hi' },
   },
 };
@@ -143,37 +137,23 @@ const synthesize = async ({ engine, language, words, traceId }) => {
   const normalizedWords = countWords(text);
   const languageCode = runtime.language[language];
 
-  let payload;
-  if (engine === 'GEM') {
-    payload = {
-      text,
-      voiceName: runtime.voice,
-      voice_id: runtime.voice,
-      language: languageCode,
-      speed: 1.0,
-      trace_id: traceId,
-    };
-  } else if (engine === 'KOKORO') {
-    payload = {
-      text,
-      voiceId: runtime.voice,
-      voice_id: runtime.voice,
-      language: languageCode,
-      speed: 1.0,
-      trace_id: traceId,
-    };
-  } else {
-    payload = {
-      text,
-      voice: runtime.voice,
-      voice_id: runtime.voice,
-      language: languageCode,
-      speed: 1.0,
-      stream: false,
-      response_format: 'wav',
-      trace_id: traceId,
-    };
-  }
+  const payload = engine === 'GEM'
+    ? {
+        text,
+        voiceName: runtime.voice,
+        voice_id: runtime.voice,
+        language: languageCode,
+        speed: 1.0,
+        trace_id: traceId,
+      }
+    : {
+        text,
+        voiceId: runtime.voice,
+        voice_id: runtime.voice,
+        language: languageCode,
+        speed: 1.0,
+        trace_id: traceId,
+      };
 
   const started = Date.now();
   const response = await postJsonWithTimeout(runtime.url, payload);
@@ -207,7 +187,7 @@ const synthesize = async ({ engine, language, words, traceId }) => {
 };
 
 const runSmoke = async (report) => {
-  for (const engine of ['GEM', 'KOKORO', 'XTTS']) {
+  for (const engine of ['GEM', 'KOKORO']) {
     for (const language of ['hi', 'en']) {
       const traceId = `vf_longtxt_${engine.toLowerCase()}_${language}_${Date.now().toString(36)}`;
       const result = await synthesize({
@@ -229,7 +209,7 @@ const runSmoke = async (report) => {
 };
 
 const runMatrix = async (report) => {
-  for (const engine of ['GEM', 'KOKORO', 'XTTS']) {
+  for (const engine of ['GEM', 'KOKORO']) {
     for (const words of [4999, 5000, 5001]) {
       const traceId = `vf_longtxt_${engine.toLowerCase()}_${words}_${Date.now().toString(36)}`;
       const result = await synthesize({
@@ -262,7 +242,6 @@ const main = async () => {
     runtimes: {
       GEM: GEM_URL,
       KOKORO: KOKORO_URL,
-      XTTS: XTTS_URL,
     },
     tests: [],
     passed: false,

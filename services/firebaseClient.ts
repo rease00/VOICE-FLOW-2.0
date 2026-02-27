@@ -1,4 +1,4 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { FirebaseApp, getApp, getApps, initializeApp } from 'firebase/app';
 import {
   FacebookAuthProvider,
   GoogleAuthProvider,
@@ -21,6 +21,14 @@ const hasRequiredFirebaseConfig =
   Boolean(firebaseConfig.projectId) &&
   Boolean(firebaseConfig.appId);
 
+const FALLBACK_FIREBASE_APP_NAME = 'voiceflow-fallback';
+const FALLBACK_FIREBASE_CONFIG = {
+  apiKey: 'demo-key',
+  authDomain: 'demo.firebaseapp.com',
+  projectId: 'demo-project',
+  appId: '1:1:web:1',
+};
+
 const parseCsvEnv = (raw: unknown): string[] =>
   String(raw || '')
     .split(',')
@@ -42,7 +50,26 @@ if (!hasRequiredFirebaseConfig) {
   console.warn('Firebase config is incomplete. Set VITE_FIREBASE_* environment variables.');
 }
 
-const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+const getOrCreateApp = (config: Record<string, string>, name?: string): FirebaseApp => {
+  if (name) {
+    const existing = getApps().find((entry) => entry.name === name);
+    return existing || initializeApp(config, name);
+  }
+  return getApps().length > 0 ? getApp() : initializeApp(config);
+};
+
+let firebaseApp = getOrCreateApp(hasRequiredFirebaseConfig ? firebaseConfig : FALLBACK_FIREBASE_CONFIG);
+let usingFirebaseFallback = !hasRequiredFirebaseConfig;
+
+try {
+  // Accessing auth eagerly allows us to fallback safely instead of crashing module init.
+  getAuth(firebaseApp);
+} catch (error) {
+  usingFirebaseFallback = true;
+  firebaseApp = getOrCreateApp(FALLBACK_FIREBASE_CONFIG, FALLBACK_FIREBASE_APP_NAME);
+  // eslint-disable-next-line no-console
+  console.warn('Firebase auth init failed. Falling back to local-safe Firebase app.', error);
+}
 
 export const firebaseAuth = getAuth(firebaseApp);
 export const firestoreDb = getFirestore(firebaseApp);
@@ -57,7 +84,7 @@ googleProvider.addScope('https://www.googleapis.com/auth/documents');
 export const facebookProvider = new FacebookAuthProvider();
 facebookProvider.addScope('email');
 
-export const isFirebaseConfigured = hasRequiredFirebaseConfig;
+export const isFirebaseConfigured = hasRequiredFirebaseConfig && !usingFirebaseFallback;
 
 export const resolveFirebaseLoginEmail = (rawEmail: string): string => {
   const trimmed = String(rawEmail || '').trim();

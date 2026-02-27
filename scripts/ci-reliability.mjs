@@ -22,17 +22,6 @@ const steps = [
     args: ['exec', '--', 'tsc', '--noEmit'],
   },
   {
-    name: 'XTTS frontend speaker audit',
-    command: npmBin,
-    args: ['run', 'audit:xtts:frontend-speakers'],
-  },
-  {
-    name: 'XTTS audio mix CI gate',
-    command: npmBin,
-    args: ['run', 'audit:xtts:audio-mix:ci'],
-    env: { VF_XTTS_AUDIO_GATE_MODE: 'enforce' },
-  },
-  {
     name: 'Media backend audit',
     command: npmBin,
     args: ['run', 'audit:media'],

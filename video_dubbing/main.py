@@ -26,6 +26,7 @@ def run_pipeline(
     output_dir: str | Path,
     *,
     target_language: str = "hi",
+    tts_route: str = "auto",
     voice_map: dict[str, str] | None = None,
     strict: bool = False,
     voice_map_resolver: Optional[Callable[[list[dict], dict[str, str]], dict[str, str]]] = None,
@@ -59,6 +60,7 @@ def run_pipeline(
         "source_path": str(copied_source),
         "output_dir": str(cfg.output_root),
         "target_language": target_language,
+        "tts_route": str(tts_route or "auto").strip().lower(),
         "voice_map": voice_map or {},
     }
 
@@ -138,6 +140,7 @@ def main() -> None:
     parser.add_argument("input", help="input media path (video/audio)")
     parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent / "output"))
     parser.add_argument("--target-language", default="hi")
+    parser.add_argument("--tts-route", default="auto", choices=["auto", "gem_only", "kokoro_only"])
     parser.add_argument("--voice-map", default="{}", help='JSON, e.g. {"SPEAKER_00":"alloy"}')
     args = parser.parse_args()
 
@@ -146,6 +149,7 @@ def main() -> None:
         args.input,
         args.output_dir,
         target_language=args.target_language,
+        tts_route=args.tts_route,
         voice_map=voice_map,
         strict=False,
         logger=lambda msg: print(f"[video_dubbing] {msg}"),
