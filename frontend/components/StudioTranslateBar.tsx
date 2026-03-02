@@ -18,11 +18,11 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
   onTranslate,
 }) => {
   return (
-    <div className="px-4 py-2 bg-gradient-to-r from-indigo-50/80 to-sky-50/80 backdrop-blur-sm border-t border-gray-100 flex items-center justify-between gap-2 relative z-10">
+    <div className="vf-translate-bar px-4 py-2 bg-gradient-to-r from-indigo-50/80 to-sky-50/80 backdrop-blur-sm border-t border-gray-100 flex items-center justify-between gap-2 relative z-10">
       <div className="flex items-center gap-2 overflow-hidden">
         <Languages size={14} className="text-indigo-600 shrink-0" />
         <span className="text-xs font-bold text-gray-600 hidden sm:inline">Translate:</span>
-        <div className="flex items-center gap-1 bg-white rounded-lg border border-indigo-100 p-0.5 shadow-sm overflow-x-auto no-scrollbar">
+        <div className="vf-translate-shell flex items-center gap-1 bg-white rounded-lg border border-indigo-100 p-0.5 shadow-sm overflow-x-auto no-scrollbar">
           <button
             onClick={() => onTargetLang('Hinglish')}
             className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all whitespace-nowrap ${targetLang === 'Hinglish' ? 'bg-gradient-to-r from-orange-500 to-pink-500 text-white shadow-md shadow-orange-200' : 'text-gray-600 hover:bg-gray-100'}`}
@@ -52,10 +52,10 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
           </select>
         </div>
       </div>
-      <button
-        onClick={onTranslate}
-        disabled={isBusy}
-        className="text-xs font-bold text-indigo-600 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap disabled:opacity-55"
+        <button
+          onClick={onTranslate}
+          disabled={isBusy}
+        className="vf-translate-run text-xs font-bold text-indigo-600 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap disabled:opacity-55"
       >
         <Globe size={12} />
         Run Translate

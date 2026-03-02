@@ -47,6 +47,27 @@ const base64ToBlobUrl = (audioBase64: string, contentType: string): string | nul
   }
 };
 
+const isPlaybackInterruptedError = (error: unknown): boolean => {
+  const name = String((error as any)?.name || '').trim().toLowerCase();
+  const message = String((error as any)?.message || '').trim().toLowerCase();
+  return (
+    name === 'aborterror' ||
+    message.includes('interrupted by a new load request') ||
+    message.includes('play() request was interrupted') ||
+    message.includes('the fetching process for the media resource was aborted')
+  );
+};
+
+const isAutoplayBlockedError = (error: unknown): boolean => {
+  const name = String((error as any)?.name || '').trim().toLowerCase();
+  const message = String((error as any)?.message || '').trim().toLowerCase();
+  return (
+    name === 'notallowederror' ||
+    message.includes('user didn\'t interact') ||
+    message.includes('not allowed by the user agent')
+  );
+};
+
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   audioUrl,
   isGenerating = false,
@@ -68,6 +89,33 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const seenChunkKeysRef = useRef<Set<string>>(new Set());
   const liveChunkUrlsRef = useRef<string[]>([]);
   const isSwitchingLiveSourceRef = useRef<boolean>(false);
+  const pendingAutoPlayRef = useRef<boolean>(false);
+  const suppressTransientErrorUntilRef = useRef<number>(0);
+
+  const markIntentionalSourceSwitch = useCallback(() => {
+    pendingAutoPlayRef.current = true;
+    suppressTransientErrorUntilRef.current = Date.now() + 1800;
+  }, []);
+
+  const safePlay = useCallback(async (audio: HTMLAudioElement, mode: 'auto' | 'manual') => {
+    try {
+      await audio.play();
+      return true;
+    } catch (error: any) {
+      if (isPlaybackInterruptedError(error)) {
+        return false;
+      }
+      if (mode === 'auto' && isAutoplayBlockedError(error)) {
+        return false;
+      }
+      if (mode === 'manual' && isAutoplayBlockedError(error)) {
+        setPlayError('Playback blocked by browser. Tap Play once more.');
+        return false;
+      }
+      setPlayError(String(error?.message || 'Playback failed.'));
+      return false;
+    }
+  }, []);
 
   const revokeLiveChunkUrls = useCallback(() => {
     for (const url of liveChunkUrlsRef.current) {
@@ -84,6 +132,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     liveQueueRef.current = [];
     seenChunkKeysRef.current.clear();
     isSwitchingLiveSourceRef.current = false;
+    pendingAutoPlayRef.current = false;
     revokeLiveChunkUrls();
   }, [revokeLiveChunkUrls]);
 
@@ -103,6 +152,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
 
     isSwitchingLiveSourceRef.current = true;
+    markIntentionalSourceSwitch();
     setActiveSourceType('live');
     setActiveSourceUrl(next.url);
     setCurrentTime(0);
@@ -110,19 +160,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       setDuration(next.durationSec);
     }
     setPlayError(null);
-    setTimeout(() => {
-      const currentAudio = audioRef.current;
-      if (!currentAudio) {
-        isSwitchingLiveSourceRef.current = false;
-        return;
-      }
-      void currentAudio.play().catch((error: any) => {
-        setPlayError(error?.message || 'Playback failed.');
-      }).finally(() => {
-        isSwitchingLiveSourceRef.current = false;
-      });
-    }, 0);
-  }, [audioUrl]);
+  }, [audioUrl, markIntentionalSourceSwitch]);
 
   const hasPlayableAudio = Boolean(activeSourceUrl) || liveQueueRef.current.length > 0;
   const seekEnabled = Boolean(audioUrl && activeSourceType === 'final');
@@ -144,6 +182,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setCurrentTime(0);
     setDuration(0);
     setPlayError(null);
+    pendingAutoPlayRef.current = false;
   }, [audioUrl, clearLiveQueue, isLiveStreaming, liveChunks.length]);
 
   useEffect(() => {
@@ -193,10 +232,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     previousGeneratingRef.current = isGenerating;
     if (!audioUrl || !justFinishedGenerating || !audioRef.current) return;
     if (activeSourceType === 'live') return;
-    void audioRef.current.play().catch(() => {
-      // Browser autoplay restrictions can block this; user can tap Play.
-    });
-  }, [activeSourceType, audioUrl, isGenerating]);
+    if (activeSourceUrl !== audioUrl) {
+      markIntentionalSourceSwitch();
+      setActiveSourceType('final');
+      setActiveSourceUrl(audioUrl);
+      return;
+    }
+    void safePlay(audioRef.current, 'auto');
+  }, [activeSourceType, activeSourceUrl, audioUrl, isGenerating, markIntentionalSourceSwitch, safePlay]);
 
   const togglePlay = async () => {
     const audio = audioRef.current;
@@ -210,18 +253,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             return;
           }
           if (audioUrl) {
+            markIntentionalSourceSwitch();
             setActiveSourceType('final');
             setActiveSourceUrl(audioUrl);
-            setTimeout(() => {
-              void audioRef.current?.play().catch(() => {
-                // noop
-              });
-            }, 0);
             return;
           }
           return;
         }
-        await audio.play();
+        await safePlay(audio, 'manual');
       } else {
         audio.pause();
       }
@@ -295,12 +334,23 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           if (Number.isFinite(nextDuration) && nextDuration > 0) {
             setDuration(nextDuration);
           }
+          const shouldAutoPlay = pendingAutoPlayRef.current;
+          pendingAutoPlayRef.current = false;
+          if (shouldAutoPlay && e.currentTarget.paused) {
+            void safePlay(e.currentTarget, 'auto');
+          }
+          isSwitchingLiveSourceRef.current = false;
         }}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onEnded={handleEnded}
-        onError={() => {
+        onError={(event) => {
           setIsPlaying(false);
+          isSwitchingLiveSourceRef.current = false;
+          pendingAutoPlayRef.current = false;
+          if (Date.now() < suppressTransientErrorUntilRef.current) return;
+          const mediaCode = Number(event.currentTarget.error?.code || 0);
+          if (mediaCode === 1) return; // MEDIA_ERR_ABORTED during expected source swaps.
           setPlayError('Unable to load generated audio.');
         }}
         crossOrigin="anonymous"

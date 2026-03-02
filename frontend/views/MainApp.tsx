@@ -3575,9 +3575,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   return (
-    <div className={`relative min-h-screen ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : ''}`}>
+    <div className={`relative min-h-screen ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
       <div className="vf-live-wallpaper" aria-hidden />
-      <div className={`vf-app-shell flex min-h-screen bg-[#f8fafc] font-sans text-gray-900 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
+      <div className={`vf-app-shell flex min-h-screen bg-transparent font-sans text-gray-900 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
       {/* Mobile Overlay */}
       {isMobileMenuOpen && (
         <button
@@ -3595,7 +3595,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       <main className="flex-1 flex flex-col md:pl-64 relative h-screen overflow-hidden transition-all">
         
         {/* Floating Top Bar */}
-        <header className={`fixed top-2 left-2 right-2 md:left-[calc(16rem+0.75rem)] md:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
+        <header className={`vf-topbar fixed top-2 left-2 right-2 md:left-[calc(16rem+0.75rem)] md:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
           resolvedTheme === 'dark'
             ? 'border-slate-700/80 bg-slate-950/82 shadow-[0_18px_38px_rgba(2,6,23,0.72)]'
             : 'border-white/70 bg-white/85 shadow-[0_18px_38px_rgba(15,23,42,0.14)]'
@@ -3689,7 +3689,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${activeTab === Tab.STUDIO ? 'pb-32 md:pb-44 lg:pb-48 xl:pb-52' : 'pb-32'}`}
+          className={`vf-main-scroll flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${activeTab === Tab.STUDIO ? 'pb-44 md:pb-44 lg:pb-48 xl:pb-52' : 'pb-36'}`}
         >
             <div className={`mx-auto w-full space-y-6 ${activeTab === Tab.STUDIO ? 'max-w-[1140px]' : 'max-w-5xl'}`}>
                 
@@ -3810,7 +3810,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            <button
 	                                                key={v.id}
 	                                                onClick={() => setSettings(s => ({ ...s, voiceId: v.id }))}
-	                                                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
+	                                                className={`vf-voice-chip ${isSelected ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
 	                                            >
 	                                                <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{v.name[0]}</div>
                                                     <div className="flex flex-col items-start leading-tight">
@@ -3827,7 +3827,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <button
 	                                            key={v.id}
 	                                            onClick={() => setSettings(s => ({...s, voiceId: v.id}))}
-	                                            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${settings.voiceId === v.id ? 'bg-amber-600 text-white border-amber-600' : 'bg-amber-50 text-amber-700 border-amber-100'}`}
+	                                            className={`vf-voice-chip ${settings.voiceId === v.id ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${settings.voiceId === v.id ? 'bg-amber-600 text-white border-amber-600' : 'bg-amber-50 text-amber-700 border-amber-100'}`}
 	                                        >
 	                                             <Fingerprint size={14}/> {v.name}
 	                                        </button>
@@ -4800,7 +4800,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         </div>
 
         {activeTab === Tab.STUDIO && (
-            <div className="vf-studio-generate-anchor fixed z-[47] w-[min(22rem,calc(100vw-1.5rem))] md:w-[min(23rem,calc(100vw-18rem))] xl:w-[min(24rem,calc(100vw-24rem))] animate-in slide-in-from-bottom-4 fade-in duration-200">
+            <div className="vf-studio-generate-anchor fixed z-[47] w-[min(20.5rem,calc(100vw-1.25rem))] md:w-[min(23rem,calc(100vw-18rem))] xl:w-[min(24rem,calc(100vw-24rem))] animate-in slide-in-from-bottom-4 fade-in duration-200">
                 <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
                     <MorphingGenerateButton
                       onClick={handleGenerate}
@@ -4820,7 +4820,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       <div
         className={`fixed right-4 md:right-6 z-50 flex flex-col items-end gap-4 ${
           activeTab === Tab.STUDIO
-            ? 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-28 lg:bottom-32'
+            ? 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)] md:bottom-28 lg:bottom-32'
             : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-6'
         }`}
       >

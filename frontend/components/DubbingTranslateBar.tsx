@@ -24,12 +24,12 @@ export const DubbingTranslateBar: React.FC<DubbingTranslateBarProps> = ({
   onTranslateAudio,
 }) => {
   return (
-    <div className="px-4 py-2.5 bg-gradient-to-r from-blue-50/80 to-indigo-50/80 backdrop-blur-sm border-b border-gray-100 relative z-10">
+    <div className="vf-translate-bar px-4 py-2.5 bg-gradient-to-r from-blue-50/80 to-indigo-50/80 backdrop-blur-sm border-b border-gray-100 relative z-10">
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-2 min-w-[12rem]">
           <Globe size={14} className="text-blue-600 shrink-0" />
           <span className="text-[10px] font-black uppercase tracking-wide text-blue-700">Target</span>
-          <div className="flex items-center gap-1 bg-white rounded-lg border border-blue-100 px-1 py-0.5 shadow-sm">
+          <div className="vf-translate-shell flex items-center gap-1 bg-white rounded-lg border border-blue-100 px-1 py-0.5 shadow-sm">
             <select
               value={targetLang}
               onChange={(e) => onTargetLang(e.target.value)}

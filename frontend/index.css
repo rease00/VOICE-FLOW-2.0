@@ -326,7 +326,142 @@
   .vf-studio-generate-anchor {
     left: 50%;
     transform: translateX(-50%);
-    bottom: calc(env(safe-area-inset-bottom) + 1rem);
+    bottom: calc(env(safe-area-inset-bottom) + 1.25rem);
+    pointer-events: none;
+  }
+
+  .vf-studio-generate-anchor > * {
+    pointer-events: auto;
+  }
+
+  .vf-hybrid-light .vf-live-wallpaper {
+    background:
+      radial-gradient(84% 62% at 6% 4%, rgba(99, 102, 241, 0.18), transparent 58%),
+      radial-gradient(74% 64% at 92% 8%, rgba(56, 189, 248, 0.16), transparent 60%),
+      radial-gradient(88% 78% at 48% 102%, rgba(236, 72, 153, 0.1), transparent 68%),
+      linear-gradient(160deg, #f3f7ff 0%, #edf4ff 48%, #f4f8ff 100%);
+  }
+
+  .vf-hybrid-light .vf-app-shell {
+    background:
+      linear-gradient(180deg, rgba(248, 251, 255, 0.72), rgba(246, 250, 255, 0.78));
+  }
+
+  .vf-hybrid-light .vf-main-scroll {
+    background:
+      radial-gradient(100% 75% at 0% 0%, rgba(99, 102, 241, 0.08), transparent 56%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.12));
+  }
+
+  .vf-hybrid-light .vf-topbar {
+    border-color: rgba(191, 219, 254, 0.72) !important;
+    background:
+      linear-gradient(155deg, rgba(255, 255, 255, 0.9), rgba(246, 250, 255, 0.86)) !important;
+    box-shadow:
+      0 20px 44px rgba(30, 64, 175, 0.14),
+      0 0 0 1px rgba(191, 219, 254, 0.45) !important;
+  }
+
+  .vf-runtime-chip {
+    backdrop-filter: blur(8px);
+    transition:
+      transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 220ms ease,
+      border-color 220ms ease,
+      background-color 220ms ease;
+    will-change: transform;
+  }
+
+  .vf-runtime-chip:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .vf-runtime-chip--active {
+    box-shadow:
+      0 10px 20px rgba(79, 70, 229, 0.2),
+      0 0 0 1px rgba(165, 180, 252, 0.4);
+  }
+
+  .vf-hybrid-light .vf-runtime-chip {
+    background: rgba(255, 255, 255, 0.9) !important;
+    border-color: rgba(148, 163, 184, 0.42) !important;
+  }
+
+  .vf-hybrid-light .vf-runtime-chip:hover:not(:disabled) {
+    border-color: rgba(99, 102, 241, 0.5) !important;
+    box-shadow: 0 8px 18px rgba(99, 102, 241, 0.16);
+  }
+
+  .vf-hybrid-light .vf-surface-card {
+    background:
+      linear-gradient(155deg, rgba(255, 255, 255, 0.97), rgba(246, 250, 255, 0.96)) !important;
+    border-color: rgba(203, 213, 225, 0.86) !important;
+    box-shadow:
+      0 10px 30px rgba(15, 23, 42, 0.08),
+      0 1px 0 rgba(255, 255, 255, 0.92) inset !important;
+  }
+
+  .vf-hybrid-light .vf-surface-card:hover {
+    border-color: rgba(165, 180, 252, 0.8) !important;
+    box-shadow:
+      0 16px 34px rgba(30, 64, 175, 0.14),
+      0 0 0 1px rgba(199, 210, 254, 0.62) !important;
+  }
+
+  .vf-hybrid-light .vf-editor-shell {
+    box-shadow:
+      0 18px 36px rgba(99, 102, 241, 0.1),
+      0 0 0 1px rgba(219, 234, 254, 0.72);
+  }
+
+  .vf-hybrid-light .vf-translate-bar {
+    background:
+      linear-gradient(90deg, rgba(224, 231, 255, 0.76), rgba(219, 234, 254, 0.72)) !important;
+    border-color: rgba(203, 213, 225, 0.82) !important;
+  }
+
+  .vf-hybrid-light .vf-translate-shell {
+    border-color: rgba(165, 180, 252, 0.55) !important;
+    background: rgba(255, 255, 255, 0.9) !important;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.1);
+  }
+
+  .vf-hybrid-light .vf-translate-run {
+    color: rgb(79 70 229) !important;
+  }
+
+  .vf-hybrid-light .vf-translate-run:hover {
+    background: rgba(224, 231, 255, 0.9) !important;
+    color: rgb(67 56 202) !important;
+  }
+
+  .vf-hybrid-light .vf-voice-chip {
+    background: rgba(248, 250, 252, 0.98) !important;
+    color: rgb(71 85 105) !important;
+    border-color: rgba(226, 232, 240, 0.95) !important;
+  }
+
+  .vf-hybrid-light .vf-voice-chip:hover {
+    background: rgba(238, 242, 255, 0.94) !important;
+    color: rgb(51 65 85) !important;
+    border-color: rgba(199, 210, 254, 0.9) !important;
+  }
+
+  .vf-hybrid-light .vf-voice-chip--active {
+    background: linear-gradient(145deg, rgba(99, 102, 241, 0.97), rgba(147, 51, 234, 0.94)) !important;
+    color: #ffffff !important;
+    border-color: rgba(99, 102, 241, 0.95) !important;
+    box-shadow: 0 10px 22px rgba(79, 70, 229, 0.28) !important;
+  }
+
+  .vf-hybrid-light .vf-studio-generate-dock {
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.9) 0%, rgba(224, 231, 255, 0.82) 100%),
+      radial-gradient(82% 100% at 100% 0%, rgba(147, 197, 253, 0.28), transparent 62%);
+    border-color: rgba(129, 140, 248, 0.45) !important;
+    box-shadow:
+      0 18px 34px rgba(79, 70, 229, 0.24),
+      0 0 0 1px rgba(165, 180, 252, 0.35) !important;
   }
 
   .vf-hybrid-aod .vf-app-shell {
