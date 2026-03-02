@@ -3,12 +3,13 @@ import { Check, Crown, Loader2, ShieldCheck, Sparkles, X } from 'lucide-react';
 import { Button } from './Button';
 import { useUser } from '../contexts/UserContext';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson } from '../src/shared/storage/localStore';
 
 const resolveBackendUrl = (): string => {
   const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  return String(parsed?.mediaBackendUrl || '').trim() || 'http://127.0.0.1:7800';
+  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
 };
 
 interface PlanCardConfig {

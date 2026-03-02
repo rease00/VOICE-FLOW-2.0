@@ -39,6 +39,7 @@ import { AdminTabContent } from '../src/features/admin/components/AdminTabConten
 import { NovelTabContent } from '../src/features/novel/components/NovelTabContent';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
 import { fetchTtsEnginesStatus } from '../src/shared/api/gatewayClient';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { blobUrlToFile } from '../services/blobFileService';
 import {
   normalizeAssistantProviderControlsEnabled,
@@ -162,7 +163,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   perplexityApiKey: '',
   localLlmUrl: 'http://localhost:5000',
   geminiApiKey: '',
-  mediaBackendUrl: 'http://127.0.0.1:7800',
+  mediaBackendUrl: resolveApiBaseUrl(),
   backendApiKey: '',
   llvcModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.GEM,

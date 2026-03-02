@@ -57,12 +57,19 @@ import {
   type ScheduledTaskRun,
   verifyAdminAuditChain,
 } from '../services/adminService';
+import { sanitizeUiText } from '../src/shared/ui/terminology';
 
 type ToastKind = 'success' | 'error' | 'info';
 type OpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
 type CouponKind = 'wallet_credit' | 'subscription_discount';
 type CouponPolicy = 'single_global' | 'single_per_user' | 'max_redemptions';
 type RbacDraft = { role: string; status: string };
+type CouponPlanDraftRow = {
+  id: string;
+  plan: string;
+  percentOff: string;
+  amountOffInr: string;
+};
 
 interface AdminPanelProps {
   mediaBackendUrl: string;
@@ -73,6 +80,12 @@ interface AdminPanelProps {
 const planOptions = ['Free', 'Pro', 'Plus'] as const;
 type AdminUserPatch = Parameters<ReturnType<typeof useAdminUsers>['patchAdminUser']>[1];
 type AdminUserDraft = Partial<Pick<AdminUserPatch, 'plan' | 'disabled' | 'paidVfDelta' | 'vffDelta'>>;
+const createCouponPlanDraftRow = (plan = '', percentOff = '20', amountOffInr = '100'): CouponPlanDraftRow => ({
+  id: `row_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+  plan,
+  percentOff,
+  amountOffInr,
+});
 
 const allPermissions: AdminPermission[] = [
   'users.read',
@@ -114,9 +127,9 @@ const isForbiddenError = (error: unknown): boolean => {
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error && typeof error === 'object' && typeof (error as { message?: string }).message === 'string') {
-    return String((error as { message: string }).message);
+    return sanitizeUiText(String((error as { message: string }).message));
   }
-  return fallback;
+  return sanitizeUiText(fallback);
 };
 
 const formatDate = (value?: string | null): string => {
@@ -167,17 +180,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const [newCouponExpiry, setNewCouponExpiry] = useState('');
   const [newCouponNote, setNewCouponNote] = useState('');
   const [newCouponDiscountType, setNewCouponDiscountType] = useState<'percent' | 'fixed_inr'>('percent');
-  const [newCouponPercentOff, setNewCouponPercentOff] = useState('20');
-  const [newCouponAmountOffInr, setNewCouponAmountOffInr] = useState('100');
-  const [newCouponPercentOffPro, setNewCouponPercentOffPro] = useState('20');
-  const [newCouponPercentOffPlus, setNewCouponPercentOffPlus] = useState('25');
-  const [newCouponAmountOffInrPro, setNewCouponAmountOffInrPro] = useState('100');
-  const [newCouponAmountOffInrPlus, setNewCouponAmountOffInrPlus] = useState('150');
-  const [newCouponPlanPro, setNewCouponPlanPro] = useState(true);
-  const [newCouponPlanPlus, setNewCouponPlanPlus] = useState(true);
-  const [newCouponCustomPlan, setNewCouponCustomPlan] = useState('');
-  const [newCouponPercentOffCustom, setNewCouponPercentOffCustom] = useState('30');
-  const [newCouponAmountOffInrCustom, setNewCouponAmountOffInrCustom] = useState('200');
+  const [couponPlanRows, setCouponPlanRows] = useState<CouponPlanDraftRow[]>(() => [
+    createCouponPlanDraftRow('pro', '20', '100'),
+    createCouponPlanDraftRow('plus', '25', '150'),
+  ]);
 
   const [rbacCatalog, setRbacCatalog] = useState<AdminRoleCatalogPayload | null>(null);
   const [rbacAssignments, setRbacAssignments] = useState<AdminRoleAssignment[]>([]);
@@ -253,7 +259,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
 
   const notifyError = (error: unknown, fallback: string) => {
     if (isForbiddenError(error)) return;
-    onToast(getErrorMessage(error, fallback), 'error');
+    onToast(sanitizeUiText(getErrorMessage(error, fallback)), 'error');
   };
 
   const hydrateGeneratedCouponCode = async () => {
@@ -315,6 +321,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       if (approvals.status === 'fulfilled') setOpsApprovals(approvals.value);
       if (gateway.status === 'fulfilled') setOpsGateway(gateway.value as Record<string, unknown>);
       if (queue.status === 'fulfilled') setOpsQueue(queue.value as Record<string, unknown>);
+      const failures = [usage, guardian, approvals, gateway, queue].filter(
+        (result) => result.status === 'rejected'
+      ) as PromiseRejectedResult[];
+      if (failures.length > 0) {
+        const fallback = failures.length === 5
+          ? 'Failed to load ops telemetry.'
+          : `Some ops telemetry endpoints failed (${failures.length}/5).`;
+        notifyError(failures[0]?.reason, fallback);
+      }
     } catch (error: unknown) {
       notifyError(error, 'Failed to load ops telemetry.');
     } finally {
@@ -411,7 +426,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       const payload = await fetchGeminiPoolStatus(mediaBackendUrl);
       setGeminiPoolStatus(payload);
     } catch (error: unknown) {
-      notifyError(error, 'Failed to load Gemini pool status.');
+      notifyError(error, 'Failed to load primary AI pool status.');
     } finally {
       setIsLoadingGeminiPool(false);
     }
@@ -422,9 +437,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     try {
       const payload = await reloadGeminiPool(mediaBackendUrl);
       setGeminiPoolStatus(payload);
-      onToast(payload?.detail || 'Gemini key pool reloaded.', 'success');
+      onToast(sanitizeUiText(payload?.detail || 'Primary AI key pool reloaded.'), 'success');
     } catch (error: unknown) {
-      notifyError(error, 'Failed to reload Gemini pool.');
+      notifyError(error, 'Failed to reload primary AI pool.');
     } finally {
       setIsReloadingGeminiPool(false);
     }
@@ -553,7 +568,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const canAuditRead = can('audit.read');
   const canAnalyticsRead = can('analytics.read');
   const sanitizePlanToken = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  const normalizedCustomPlanToken = useMemo(() => sanitizePlanToken(newCouponCustomPlan), [newCouponCustomPlan]);
+  const updateCouponPlanRow = (rowId: string, patch: Partial<Omit<CouponPlanDraftRow, 'id'>>) => {
+    setCouponPlanRows((previous) => previous.map((row) => (row.id === rowId ? { ...row, ...patch } : row)));
+  };
+  const addCouponPlanRow = (plan = '') => {
+    const safePlan = sanitizePlanToken(plan);
+    setCouponPlanRows((previous) => {
+      if (safePlan && previous.some((row) => sanitizePlanToken(row.plan) === safePlan)) return previous;
+      const defaultsByPlan: Record<string, { percentOff: string; amountOffInr: string }> = {
+        pro: { percentOff: '20', amountOffInr: '100' },
+        plus: { percentOff: '25', amountOffInr: '150' },
+      };
+      const defaults = defaultsByPlan[safePlan] || { percentOff: '20', amountOffInr: '100' };
+      return [...previous, createCouponPlanDraftRow(safePlan || '', defaults.percentOff, defaults.amountOffInr)];
+    });
+  };
+  const removeCouponPlanRow = (rowId: string) => {
+    setCouponPlanRows((previous) => {
+      if (previous.length <= 1) return previous;
+      return previous.filter((row) => row.id !== rowId);
+    });
+  };
 
   const handleCreateCoupon = async () => {
     if (!canCouponsWrite) {
@@ -584,55 +619,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     } else {
       payload.discountType = newCouponDiscountType;
       const planDiscountMap = new Map<string, { plan: string; discountType: 'percent' | 'fixed_inr'; percentOff?: number; amountOffInr?: number }>();
-      const upsertPlanDiscount = (entry: { plan: string; discountType: 'percent' | 'fixed_inr'; percentOff?: number; amountOffInr?: number }) => {
-        if (!entry.plan) return;
-        planDiscountMap.set(entry.plan, entry);
-      };
-      if (newCouponDiscountType === 'percent') {
-        if (newCouponPlanPro) {
-          upsertPlanDiscount({
-            plan: 'pro',
-            discountType: 'percent',
-            percentOff: Math.max(0.01, Math.min(100, Number(newCouponPercentOffPro || newCouponPercentOff) || 0)),
-          });
+      couponPlanRows.forEach((row) => {
+        const safePlan = sanitizePlanToken(row.plan);
+        if (!safePlan) return;
+        if (newCouponDiscountType === 'percent') {
+          const percentOff = Math.max(0.01, Math.min(100, Number(row.percentOff) || 0));
+          planDiscountMap.set(safePlan, { plan: safePlan, discountType: 'percent', percentOff });
+          return;
         }
-        if (newCouponPlanPlus) {
-          upsertPlanDiscount({
-            plan: 'plus',
-            discountType: 'percent',
-            percentOff: Math.max(0.01, Math.min(100, Number(newCouponPercentOffPlus || newCouponPercentOff) || 0)),
-          });
-        }
-        if (normalizedCustomPlanToken) {
-          upsertPlanDiscount({
-            plan: normalizedCustomPlanToken,
-            discountType: 'percent',
-            percentOff: Math.max(0.01, Math.min(100, Number(newCouponPercentOffCustom || newCouponPercentOff) || 0)),
-          });
-        }
-      } else {
-        if (newCouponPlanPro) {
-          upsertPlanDiscount({
-            plan: 'pro',
-            discountType: 'fixed_inr',
-            amountOffInr: Math.max(1, Math.floor(Number(newCouponAmountOffInrPro || newCouponAmountOffInr) || 0)),
-          });
-        }
-        if (newCouponPlanPlus) {
-          upsertPlanDiscount({
-            plan: 'plus',
-            discountType: 'fixed_inr',
-            amountOffInr: Math.max(1, Math.floor(Number(newCouponAmountOffInrPlus || newCouponAmountOffInr) || 0)),
-          });
-        }
-        if (normalizedCustomPlanToken) {
-          upsertPlanDiscount({
-            plan: normalizedCustomPlanToken,
-            discountType: 'fixed_inr',
-            amountOffInr: Math.max(1, Math.floor(Number(newCouponAmountOffInrCustom || newCouponAmountOffInr) || 0)),
-          });
-        }
-      }
+        const amountOffInr = Math.max(1, Math.floor(Number(row.amountOffInr) || 0));
+        planDiscountMap.set(safePlan, { plan: safePlan, discountType: 'fixed_inr', amountOffInr });
+      });
       const planDiscounts = Array.from(planDiscountMap.values());
       if (!planDiscounts.length) {
         onToast('Select at least one plan and discount.', 'info');
@@ -656,7 +653,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       await createAdminCoupon(payload as Parameters<typeof createAdminCoupon>[0]);
       setNewCouponExpiry('');
       setNewCouponNote('');
-      setNewCouponCustomPlan('');
       onToast('Coupon created.', 'success');
       await reloadCouponsSafely();
       await hydrateGeneratedCouponCode();
@@ -828,7 +824,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
             Refresh All
           </button>
         </div>
-        <p className="text-xs text-gray-500">Priority order: Users, Access Control, Coupons, Gemini Pool, Ops.</p>
+        <p className="text-xs text-gray-500">Priority order: Users, Access Control, Coupons, Primary AI Pool, Ops.</p>
       </section>
 
       <section className="hidden rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -1056,7 +1052,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
             <Key size={16} className="text-indigo-600" />
-            Gemini Pool
+            Primary AI Pool
           </div>
           <button
             onClick={() => {
@@ -1072,7 +1068,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
         {isLoadingGeminiPool && (
           <div className="text-xs text-gray-500 inline-flex items-center gap-2">
             <Loader2 size={13} className="animate-spin" />
-            Loading Gemini pool status...
+            Loading primary AI pool status...
           </div>
         )}
         {!isLoadingGeminiPool && (
@@ -1087,7 +1083,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
               </div>
             </div>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-xs">
-              <div className="mb-2 font-semibold text-gray-800">Gemini runtime</div>
+              <div className="mb-2 font-semibold text-gray-800">Cloud runtime</div>
               <div className="space-y-1 text-gray-600">
                 <div>Keys: <strong>{Number(runtimePool.keyCount || 0)}</strong></div>
                 <div>Healthy: <strong>{Number(runtimePool.healthyKeys || 0)}</strong></div>
@@ -1102,9 +1098,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                 <div>File keys: <strong>{Number(sourceDiag.fileKeyCount || 0)}</strong></div>
                 <div>Env pool keys: <strong>{Number(sourceDiag.envPoolKeyCount || 0)}</strong></div>
               </div>
-              <div className="mt-1 truncate text-gray-500">Configured path: {String(sourceDiag.configuredFilePath || '-')}</div>
-              <div className="mt-1 truncate text-gray-500">Resolved path: {String(sourceDiag.filePath || '-')}</div>
-              <div className="mt-1 truncate text-gray-500">Runtime resolved path: {String(geminiPoolStatus?.runtime?.keyFilePath || '-')}</div>
+              <div className="mt-1 truncate text-gray-500">Configured path: {sanitizeUiText(String(sourceDiag.configuredFilePath || '-'))}</div>
+              <div className="mt-1 truncate text-gray-500">Resolved path: {sanitizeUiText(String(sourceDiag.filePath || '-'))}</div>
+              <div className="mt-1 truncate text-gray-500">Runtime resolved path: {sanitizeUiText(String(geminiPoolStatus?.runtime?.keyFilePath || '-'))}</div>
             </div>
           </div>
         )}
@@ -1371,26 +1367,51 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                 ) : (
                   <div className="grid gap-2">
                     <select value={newCouponDiscountType} onChange={(event) => setNewCouponDiscountType(event.target.value as 'percent' | 'fixed_inr')} className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs"><option value="percent">Percent</option><option value="fixed_inr">Fixed INR</option></select>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div className="col-span-2 flex items-center gap-2 rounded-lg border border-gray-200 px-2 text-[11px]">
-                        <label className="inline-flex items-center gap-1"><input type="checkbox" checked={newCouponPlanPro} onChange={(event) => setNewCouponPlanPro(event.target.checked)} />Pro</label>
-                        <label className="inline-flex items-center gap-1"><input type="checkbox" checked={newCouponPlanPlus} onChange={(event) => setNewCouponPlanPlus(event.target.checked)} />Plus</label>
+                    <div className="rounded-lg border border-gray-200 p-2">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-semibold text-gray-700">Plan-specific discounts</div>
+                        <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => addCouponPlanRow('pro')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Pro</button>
+                          <button type="button" onClick={() => addCouponPlanRow('plus')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Plus</button>
+                          <button type="button" onClick={() => addCouponPlanRow()} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">+ Add plan</button>
+                        </div>
                       </div>
-                      <input value={newCouponCustomPlan} onChange={(event) => setNewCouponCustomPlan(event.target.value)} placeholder="Custom plan (optional)" className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" />
+                      <div className="grid gap-2">
+                        {couponPlanRows.map((row) => (
+                          <div key={row.id} className="grid grid-cols-12 gap-2">
+                            <input
+                              value={row.plan}
+                              onChange={(event) => updateCouponPlanRow(row.id, { plan: event.target.value })}
+                              placeholder="Plan key (pro, plus, enterprise)"
+                              className="col-span-6 h-9 rounded-lg border border-gray-200 px-2.5 text-xs"
+                            />
+                            {newCouponDiscountType === 'percent' ? (
+                              <input
+                                value={row.percentOff}
+                                onChange={(event) => updateCouponPlanRow(row.id, { percentOff: event.target.value })}
+                                placeholder="% Off"
+                                className="col-span-4 h-9 rounded-lg border border-gray-200 px-2.5 text-xs"
+                              />
+                            ) : (
+                              <input
+                                value={row.amountOffInr}
+                                onChange={(event) => updateCouponPlanRow(row.id, { amountOffInr: event.target.value })}
+                                placeholder="INR Off"
+                                className="col-span-4 h-9 rounded-lg border border-gray-200 px-2.5 text-xs"
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => removeCouponPlanRow(row.id)}
+                              className="col-span-2 rounded-lg border border-gray-200 px-2 text-[10px] font-semibold text-gray-600"
+                              disabled={couponPlanRows.length <= 1}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    {newCouponDiscountType === 'percent' ? (
-                      <div className="grid grid-cols-3 gap-2">
-                        <input value={newCouponPercentOffPro} onChange={(event) => setNewCouponPercentOffPro(event.target.value)} placeholder="Pro % Off" className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" disabled={!newCouponPlanPro} />
-                        <input value={newCouponPercentOffPlus} onChange={(event) => setNewCouponPercentOffPlus(event.target.value)} placeholder="Plus % Off" className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" disabled={!newCouponPlanPlus} />
-                        <input value={newCouponPercentOffCustom} onChange={(event) => setNewCouponPercentOffCustom(event.target.value)} placeholder={normalizedCustomPlanToken ? `${normalizedCustomPlanToken} % Off` : 'Custom % Off'} className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" disabled={!normalizedCustomPlanToken} />
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-3 gap-2">
-                        <input value={newCouponAmountOffInrPro} onChange={(event) => setNewCouponAmountOffInrPro(event.target.value)} placeholder="Pro INR Off" className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" disabled={!newCouponPlanPro} />
-                        <input value={newCouponAmountOffInrPlus} onChange={(event) => setNewCouponAmountOffInrPlus(event.target.value)} placeholder="Plus INR Off" className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" disabled={!newCouponPlanPlus} />
-                        <input value={newCouponAmountOffInrCustom} onChange={(event) => setNewCouponAmountOffInrCustom(event.target.value)} placeholder={normalizedCustomPlanToken ? `${normalizedCustomPlanToken} INR Off` : 'Custom INR Off'} className="h-9 rounded-lg border border-gray-200 px-2.5 text-xs" disabled={!normalizedCustomPlanToken} />
-                      </div>
-                    )}
                   </div>
                 )}
                 <div className="grid grid-cols-3 gap-2">
@@ -1449,7 +1470,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
 
       <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Key size={16} className="text-indigo-600" />Gemini Pool</div>
+          <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Key size={16} className="text-indigo-600" />Primary AI Pool</div>
           {canOpsMutate && (
             <button onClick={() => { void handleReloadGeminiPool(); }} disabled={isReloadingGeminiPool} className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-60">
               {isReloadingGeminiPool ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
@@ -1457,7 +1478,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
             </button>
           )}
         </div>
-        {!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : isLoadingGeminiPool ? <div className="text-xs text-gray-500">Loading Gemini pool status...</div> : (
+        {!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : isLoadingGeminiPool ? <div className="text-xs text-gray-500">Loading primary AI pool status...</div> : (
           <div className="grid gap-3 md:grid-cols-3 text-xs">
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Backend</div><div>Keys: <strong>{asNumber((backendPool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((backendPool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((backendPool as Record<string, unknown>).atLimitKeys)}</strong></div></div>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runtime</div><div>Keys: <strong>{asNumber((runtimePool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((runtimePool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((runtimePool as Record<string, unknown>).atLimitKeys)}</strong></div></div>
@@ -1502,7 +1523,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
         {opsTab === 'guardian' && (!canGuardianRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `guardian.read` permission.</div> : (
           <div className="space-y-3 text-xs">
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Guardian status</div><div>Pending approvals: <strong>{asNumber(opsGuardian?.pendingApprovalCount)}</strong></div><div>Issues: <strong>{Array.isArray(opsGuardian?.issues) ? opsGuardian.issues.length : 0}</strong></div></div>
-            {canGuardianMutate && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Guarded actions</div><div className="flex flex-wrap gap-2"><button onClick={() => { const token = window.prompt('Enter admin approval token'); if (!token) return; void withSaving('ops_refresh_pool', async () => { await runOpsGuardianAction('refresh_gemini_pool', { adminToken: token }, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">Refresh Gemini Pool</button><button onClick={() => { const token = window.prompt('Enter admin approval token'); if (!token) return; void withSaving('ops_soft_shedding', async () => { await runOpsGuardianAction('enable_soft_shedding', { adminToken: token }, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">Enable Soft Shedding</button></div></div>}
+            {canGuardianMutate && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Guarded actions</div><div className="flex flex-wrap gap-2"><button onClick={() => { const token = window.prompt('Enter admin approval token'); if (!token) return; void withSaving('ops_refresh_pool', async () => { await runOpsGuardianAction('refresh_gemini_pool', { adminToken: token }, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">Refresh Primary AI Pool</button><button onClick={() => { const token = window.prompt('Enter admin approval token'); if (!token) return; void withSaving('ops_soft_shedding', async () => { await runOpsGuardianAction('enable_soft_shedding', { adminToken: token }, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">Enable Soft Shedding</button></div></div>}
           </div>
         ))}
 

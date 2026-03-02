@@ -5,6 +5,7 @@ import { useUser } from '../contexts/UserContext';
 import { getEngineDisplayName } from '../services/engineDisplay';
 import { EngineLogo } from '../components/EngineLogo';
 import { BrandLogo } from '../components/BrandLogo';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, readStorageString } from '../src/shared/storage/localStore';
 import {
@@ -37,8 +38,7 @@ const detectDarkTheme = (): boolean => {
 
 const readSettingsBackendUrl = (): string => {
   const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  const value = String(parsed?.mediaBackendUrl || '').trim();
-  return value || 'http://127.0.0.1:7800';
+  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
 };
 
 const WindowCard: React.FC<{ title: string; data: VfUsageWindow; isDarkUi: boolean }> = ({ title, data, isDarkUi }) => (

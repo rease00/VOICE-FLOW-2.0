@@ -56,6 +56,20 @@ class _FakeResponse:
         return json.loads(self.content.decode("utf-8"))
 
 
+def _record_runtime_call(
+    calls: list[dict[str, Any]],
+    cfg: Any,
+    *,
+    url: str,
+    payload: dict[str, Any],
+    timeout: int,
+) -> None:
+    # Ignore background runtime traffic from unrelated tests/threads.
+    if not (url.startswith(str(cfg.gemini_runtime_url)) or url.startswith(str(cfg.kokoro_runtime_url))):
+        return
+    calls.append({"url": url, "json": dict(payload), "timeout": timeout})
+
+
 def test_stage6_tts_auto_route_prefers_kokoro_for_hindi(monkeypatch, tmp_path: Path) -> None:
     cfg = build_config(tmp_path)
     cfg.gemini_runtime_url = "http://gem-runtime"
@@ -66,7 +80,7 @@ def test_stage6_tts_auto_route_prefers_kokoro_for_hindi(monkeypatch, tmp_path: P
     calls: list[dict[str, Any]] = []
 
     def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
-        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        _record_runtime_call(calls, cfg, url=url, payload=json, timeout=timeout)
         return _FakeResponse(_wav_bytes())
 
     monkeypatch.setattr(stage6_tts.requests, "post", _stub_post)
@@ -106,7 +120,7 @@ def test_stage6_tts_route_gem_only(monkeypatch, tmp_path: Path) -> None:
     calls: list[dict[str, Any]] = []
 
     def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
-        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        _record_runtime_call(calls, cfg, url=url, payload=json, timeout=timeout)
         return _FakeResponse(_wav_bytes())
 
     monkeypatch.setattr(stage6_tts.requests, "post", _stub_post)
@@ -146,7 +160,7 @@ def test_stage6_tts_auto_route_falls_back_to_gem(monkeypatch, tmp_path: Path) ->
     calls: list[dict[str, Any]] = []
 
     def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
-        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        _record_runtime_call(calls, cfg, url=url, payload=json, timeout=timeout)
         if "kokoro-runtime" in url:
             return _FakeResponse(b"", status_code=503)
         return _FakeResponse(_wav_bytes())
@@ -197,7 +211,7 @@ def test_stage6_tts_grouped_gemini_structured_success(monkeypatch, tmp_path: Pat
         return base64.b64encode(out.getvalue()).decode("ascii")
 
     def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
-        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        _record_runtime_call(calls, cfg, url=url, payload=json, timeout=timeout)
         if url.endswith("/synthesize/structured"):
             line_map = list(json.get("multi_speaker_line_map") or [])
             line_chunks = [
@@ -251,7 +265,7 @@ def test_stage6_tts_grouped_failure_falls_back_to_segmented(monkeypatch, tmp_pat
     calls: list[dict[str, Any]] = []
 
     def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
-        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        _record_runtime_call(calls, cfg, url=url, payload=json, timeout=timeout)
         if url.endswith("/synthesize/structured"):
             return _FakeResponse(status_code=503)
         return _FakeResponse(_wav_bytes())
@@ -293,7 +307,7 @@ def test_stage6_grouped_line_map_mismatch_falls_back_to_segmented(monkeypatch, t
         return base64.b64encode(out.getvalue()).decode("ascii")
 
     def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
-        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        _record_runtime_call(calls, cfg, url=url, payload=json, timeout=timeout)
         if url.endswith("/synthesize/structured"):
             payload = {
                 "ok": True,

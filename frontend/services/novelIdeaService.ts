@@ -1,6 +1,7 @@
 import { GenerationSettings, NovelIdeaCard, NovelIdeaSource } from '../types';
 import { generateTextContent } from './geminiService';
 import { authFetch } from './authHttpClient';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 
 export interface NovelIdeaMetadata {
   ok: boolean;
@@ -13,8 +14,7 @@ export interface NovelIdeaMetadata {
 }
 
 const toBaseUrl = (input?: string): string => {
-  const raw = (input || 'http://127.0.0.1:7800').trim();
-  return raw.replace(/\/+$/, '');
+  return resolveApiBaseUrl(input);
 };
 
 const parseBackendError = async (response: Response): Promise<string> => {

@@ -4,6 +4,7 @@ import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, KOKORO_VOICES
 import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisContractService";
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
+import { resolveApiBaseUrl } from "../src/shared/api/config";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
 import {
   MAX_WORDS_PER_WINDOW,
@@ -72,8 +73,7 @@ const resolveGeminiRuntimeBaseUrl = (
 const resolveMediaBackendBaseUrl = (
   settings: Pick<GenerationSettings, 'mediaBackendUrl'>
 ): string => {
-  const raw = String(settings.mediaBackendUrl || 'http://127.0.0.1:7800').trim();
-  return raw.replace(/\/+$/, '');
+  return resolveApiBaseUrl(settings.mediaBackendUrl);
 };
 
 const formatRetryDelayHint = (retryAfterMs?: number): string => {
@@ -1976,11 +1976,18 @@ export const generateSpeech = async (
   const activeEngine =
     rawEngine === 'GEMINI'
       ? 'GEM'
+      : rawEngine === 'NEURAL_2' || rawEngine === 'NURAL2' || rawEngine === 'NURAL_2'
+        ? 'NEURAL2'
       : rawEngine === 'KOKORO_RUNTIME'
         ? 'KOKORO'
         : rawEngine;
+  const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'NEURAL2';
   const runtimeEngine: GenerationSettings['engine'] =
-    activeEngine === 'KOKORO' ? 'KOKORO' : 'GEM';
+    activeEngine === 'KOKORO'
+      ? 'KOKORO'
+      : activeEngine === 'NEURAL2'
+        ? 'NEURAL2'
+        : 'GEM';
   const primaryEngine = isPrimaryTtsEngine(activeEngine) ? activeEngine : null;
   const traceId = createSynthesisTraceId(runtimeEngine);
   
@@ -2136,7 +2143,7 @@ export const generateSpeech = async (
     backendBase: string,
     jobId: string,
     runtimeLabel: string,
-    engine: 'GEM' | 'KOKORO'
+    engine: 'GEM' | 'NEURAL2' | 'KOKORO'
   ): Promise<{ audioBytes: ArrayBuffer; responseHeaders: Record<string, string> }> => {
     const startedAt = Date.now();
     const encodedJobId = encodeURIComponent(jobId);
@@ -2334,7 +2341,7 @@ export const generateSpeech = async (
   };
 
   const synthesizeViaBackendGateway = async (
-    engine: 'GEM' | 'KOKORO',
+    engine: 'GEM' | 'NEURAL2' | 'KOKORO',
     runtimeUrl: string,
     endpointPath: string,
     payload: Record<string, unknown>,
@@ -2495,7 +2502,7 @@ export const generateSpeech = async (
   };
 
   const maybeSynthesizePrimaryLongText = async (
-    engine: 'GEM' | 'KOKORO',
+    engine: 'GEM' | 'NEURAL2' | 'KOKORO',
     candidateText: string,
     synthesizeChunk: (
       chunkText: string,
@@ -2635,7 +2642,7 @@ export const generateSpeech = async (
   const hasTrueMultiSpeakerScript = multiSpeakerEnabled && isMultiSpeaker && speakersList.length > 1;
   const defaultGeminiVoice = resolveGeminiVoiceName(voiceName || settings.voiceId || 'Fenrir', 'Fenrir');
   const geminiStudioPairGroupsPlan = (() => {
-    if (activeEngine !== 'GEM') return null;
+    if (!usesGemRuntime) return null;
     if (!multiSpeakerEnabled) return null;
     if (!hasTrueMultiSpeakerScript || hasSfx) return null;
 
@@ -2699,7 +2706,7 @@ export const generateSpeech = async (
     };
   })();
   const useGeminiBuiltInMultiSpeaker = Boolean(geminiStudioPairGroupsPlan);
-  if (primaryEngine && !(useGeminiBuiltInMultiSpeaker && activeEngine === 'GEM')) {
+  if (primaryEngine && !(useGeminiBuiltInMultiSpeaker && usesGemRuntime)) {
     const totalSpeechText = studioSegments
       .filter((segment) => !segment.isSfx)
       .map((segment) => cleanText(segment.text))
@@ -2711,7 +2718,7 @@ export const generateSpeech = async (
   
   const useSegmentedGeneration = hasSfx || (
     multiSpeakerEnabled && (
-      activeEngine === 'GEM'
+      usesGemRuntime
         ? (hasTrueMultiSpeakerScript && !useGeminiBuiltInMultiSpeaker)
         : (
           (isMultiSpeaker && speakersList.length > 0) ||
@@ -2781,7 +2788,7 @@ export const generateSpeech = async (
                  effectiveVoiceId = mappedId;
                }
 
-               if (activeEngine === 'GEM') {
+               if (usesGemRuntime) {
                  const v = VOICES.find(x => x.id === mappedId) || availableClones.find(x => x.id === mappedId);
                  if (v) {
                    effectiveVoiceName = v.geminiVoiceName || v.name;
@@ -2841,8 +2848,8 @@ export const generateSpeech = async (
                  const selectedVoice = genderCandidates[idx];
                  if (selectedVoice) {
                      effectiveVoiceId = selectedVoice.id;
-                      if (activeEngine === 'GEM') effectiveVoiceName = selectedVoice.geminiVoiceName || selectedVoice.id;
-                      else effectiveVoiceName = selectedVoice.id;
+                     if (usesGemRuntime) effectiveVoiceName = selectedVoice.geminiVoiceName || selectedVoice.id;
+                     else effectiveVoiceName = selectedVoice.id;
                   }
                }
                autoSpeakerVoiceCache.set(cacheKey, {
@@ -2868,7 +2875,7 @@ export const generateSpeech = async (
             : baseEmotion;
 
           let textToGen = seg.text;
-          if (normalizedSegmentEmotion !== 'Neutral' && activeEngine === 'GEM') {
+          if (normalizedSegmentEmotion !== 'Neutral' && usesGemRuntime) {
                textToGen = `(Tone: ${normalizedSegmentEmotion}) ${seg.text}`;
            }
           
@@ -2928,14 +2935,14 @@ export const generateSpeech = async (
   enforceWordLimit(processedText);
 
   // --- LOCAL GEMINI RUNTIME ---
-  if (activeEngine === 'GEM') {
+  if (usesGemRuntime) {
     const runtimeUrl = normalizeRuntimeUrl(settings.geminiTtsServiceUrl, 'http://127.0.0.1:7810');
     const targetVoiceName = defaultGeminiVoice;
     const speakerHint = String(runtimeSettings.runtimeSpeakerHint || '').trim();
 
     try {
       const normalizedRequest = normalizeSynthesisRequest({
-        engine: 'GEM',
+        engine: runtimeEngine,
         text: processedText,
         voiceId: targetVoiceName,
         language: lang,
@@ -2945,7 +2952,7 @@ export const generateSpeech = async (
         traceId,
       });
       return await synthesizeViaBackendGateway(
-        'GEM',
+        runtimeEngine,
         runtimeUrl,
         '/synthesize',
         {

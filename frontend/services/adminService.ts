@@ -1,24 +1,24 @@
 import { authFetch } from './authHttpClient';
 import { AccountEntitlements } from './accountService';
 import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
-
-const FALLBACK_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 
 const toBaseUrl = (input?: string): string => {
-  const raw = String(input || FALLBACK_MEDIA_BACKEND_URL).trim();
-  return raw.replace(/\/+$/, '');
+  return resolveApiBaseUrl(input);
 };
 
 export interface AdminUserSummary {
   uid: string;
+  userId?: string;
   email: string;
   displayName: string;
   disabled: boolean;
   admin: boolean;
   role?: string;
   permissions?: string[];
+  status?: string;
   plan: 'Free' | 'Pro' | 'Plus';
-  status: string;
+  accountStatus?: string;
   wallet: {
     paidVfBalance: number;
     vffBalance: number;
@@ -173,7 +173,9 @@ export type AdminPermission =
   | 'analytics.read' | 'audit.read'
   | 'alerts.read' | 'alerts.write'
   | 'scheduler.read' | 'scheduler.write'
-  | 'rbac.read' | 'rbac.write';
+  | 'rbac.read' | 'rbac.write'
+  | 'teams.read' | 'teams.write'
+  | 'support.read' | 'support.reply' | 'support.ai.review' | 'support.ai.config';
 
 export interface AdminRoleCatalogPayload {
   ok: boolean;
@@ -184,6 +186,7 @@ export interface AdminRoleCatalogPayload {
 
 export interface AdminRoleAssignment {
   uid: string;
+  userId?: string;
   role: string;
   allowOverrides?: AdminPermission[];
   denyOverrides?: AdminPermission[];
@@ -204,7 +207,10 @@ export interface AuditEvent {
   eventId: string;
   ts: string;
   actorUid: string;
+  actorUserId?: string;
   actorRole?: string;
+  subjectUid?: string;
+  subjectUserId?: string;
   action: string;
   resourceType: string;
   resourceId: string;
@@ -326,6 +332,64 @@ export interface CouponAnalyticsPoint extends CouponAnalyticsSummary {
   couponCode?: string;
 }
 
+export interface AdminTeam {
+  teamId: string;
+  name: string;
+  slug: string;
+  status: string;
+  ownerUid: string;
+  ownerUserId?: string;
+  seatLimit: number;
+  memberCount?: number;
+  activeMembers?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AdminTeamMember {
+  id?: string;
+  teamId: string;
+  uid: string;
+  userId?: string;
+  role: 'owner' | 'admin' | 'member' | 'viewer' | string;
+  status: string;
+  joinedAt?: string;
+  invitedBy?: string;
+  updatedAt?: string;
+}
+
+export interface SupportConversation {
+  conversationId: string;
+  uid: string;
+  userId: string;
+  status: 'open' | 'ai_answered' | 'needs_human' | 'resolved' | string;
+  priority: 'green' | 'yellow' | 'red' | string;
+  lastMessageAt?: string;
+  assignedTo?: string;
+  updatedAt?: string;
+}
+
+export interface SupportMessage {
+  messageId: string;
+  conversationId: string;
+  fromType: 'user' | 'ai' | 'agent' | string;
+  uid?: string;
+  userId?: string;
+  text: string;
+  createdAt?: string;
+}
+
+export interface SupportAiPolicy {
+  enabled: boolean;
+  confidenceThreshold: number;
+  maxAutoRepliesPerConversation: number;
+  allowedActions: string[];
+  blockedTopics: string[];
+  requireHumanForTags: string[];
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export const fetchAdminUsers = async (
   baseUrl?: string,
   options?: { q?: string; limit?: number }
@@ -361,6 +425,26 @@ export const patchAdminUser = async (
     { requireAuth: true }
   ));
   return payload?.entitlements as AccountEntitlements;
+};
+
+export const forceAdminUserIdChange = async (
+  uid: string,
+  input: { userId: string; reason?: string },
+  baseUrl?: string
+): Promise<{ uid: string; userId: string }> => {
+  const payload = await readJsonOrThrow<{ profile?: { uid?: string; userId?: string } }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(uid)}/force-user-id`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return {
+    uid: String(payload?.profile?.uid || uid),
+    userId: String(payload?.profile?.userId || '').trim().toLowerCase(),
+  };
 };
 
 export const resetAdminUserPassword = async (uid: string, newPassword: string, baseUrl?: string): Promise<void> => {
@@ -677,6 +761,9 @@ export const fetchAdminAuditEvents = async (
   baseUrl?: string,
   options?: {
     actorUid?: string;
+    actorUserId?: string;
+    subjectUid?: string;
+    subjectUserId?: string;
     action?: string;
     resourceType?: string;
     from?: string;
@@ -687,6 +774,9 @@ export const fetchAdminAuditEvents = async (
 ): Promise<AuditEventsPayload> => {
   const query = new URLSearchParams();
   if (options?.actorUid) query.set('actorUid', String(options.actorUid));
+  if (options?.actorUserId) query.set('actorUserId', String(options.actorUserId));
+  if (options?.subjectUid) query.set('subjectUid', String(options.subjectUid));
+  if (options?.subjectUserId) query.set('subjectUserId', String(options.subjectUserId));
   if (options?.action) query.set('action', String(options.action));
   if (options?.resourceType) query.set('resourceType', String(options.resourceType));
   if (options?.from) query.set('from', String(options.from));
@@ -986,4 +1076,195 @@ export const fetchCouponAnalyticsImpact = async (
     { requireAuth: true }
   ));
   return payload;
+};
+
+export const fetchAdminTeams = async (
+  baseUrl?: string,
+  options?: { q?: string; limit?: number }
+): Promise<AdminTeam[]> => {
+  const query = new URLSearchParams();
+  if (options?.q) query.set('q', String(options.q));
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: AdminTeam[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const createAdminTeam = async (
+  input: { name: string; slug: string; ownerUid: string; seatLimit?: number; status?: string },
+  baseUrl?: string
+): Promise<AdminTeam> => {
+  const payload = await readJsonOrThrow<{ team: AdminTeam }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload.team;
+};
+
+export const patchAdminTeam = async (
+  teamId: string,
+  patch: { name?: string; slug?: string; ownerUid?: string; seatLimit?: number; status?: string },
+  baseUrl?: string
+): Promise<AdminTeam> => {
+  const payload = await readJsonOrThrow<{ team: AdminTeam }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.team;
+};
+
+export const fetchAdminTeamMembers = async (
+  teamId: string,
+  baseUrl?: string,
+  limit = 500
+): Promise<AdminTeamMember[]> => {
+  const payload = await readJsonOrThrow<{ items?: AdminTeamMember[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const createAdminTeamMember = async (
+  teamId: string,
+  input: { uid: string; role?: string; status?: string },
+  baseUrl?: string
+): Promise<AdminTeamMember> => {
+  const payload = await readJsonOrThrow<{ member: AdminTeamMember }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload.member;
+};
+
+export const patchAdminTeamMember = async (
+  teamId: string,
+  uid: string,
+  patch: { role?: string; status?: string },
+  baseUrl?: string
+): Promise<AdminTeamMember> => {
+  const payload = await readJsonOrThrow<{ member: AdminTeamMember }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(uid)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.member;
+};
+
+export const deleteAdminTeamMember = async (
+  teamId: string,
+  uid: string,
+  baseUrl?: string
+): Promise<void> => {
+  const response = await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(uid)}`,
+    { method: 'DELETE' },
+    { requireAuth: true }
+  );
+  if (!response.ok) throw await parseResponseError(response);
+};
+
+export const fetchAdminSupportConversations = async (
+  baseUrl?: string,
+  options?: { status?: string; q?: string; limit?: number }
+): Promise<SupportConversation[]> => {
+  const query = new URLSearchParams();
+  if (options?.status) query.set('status', String(options.status));
+  if (options?.q) query.set('q', String(options.q));
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: SupportConversation[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/conversations${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const fetchAdminSupportConversationById = async (
+  conversationId: string,
+  baseUrl?: string
+): Promise<{ conversation: SupportConversation; messages: SupportMessage[] }> => {
+  return readJsonOrThrow<{ conversation: SupportConversation; messages: SupportMessage[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(conversationId)}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const replyAdminSupportConversation = async (
+  conversationId: string,
+  text: string,
+  baseUrl?: string
+): Promise<{ conversation: SupportConversation; message: SupportMessage }> => (
+  readJsonOrThrow<{ conversation: SupportConversation; message: SupportMessage }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(conversationId)}/reply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    },
+    { requireAuth: true }
+  ))
+);
+
+export const resolveAdminSupportConversation = async (
+  conversationId: string,
+  baseUrl?: string
+): Promise<SupportConversation> => {
+  const payload = await readJsonOrThrow<{ conversation: SupportConversation }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(conversationId)}/resolve`,
+    {
+      method: 'POST',
+    },
+    { requireAuth: true }
+  ));
+  return payload.conversation;
+};
+
+export const fetchAdminSupportAiPolicy = async (baseUrl?: string): Promise<SupportAiPolicy> => {
+  const payload = await readJsonOrThrow<{ policy: SupportAiPolicy }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/ai-policy`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload.policy;
+};
+
+export const patchAdminSupportAiPolicy = async (
+  patch: Partial<SupportAiPolicy> & { adminToken: string },
+  baseUrl?: string
+): Promise<SupportAiPolicy> => {
+  const payload = await readJsonOrThrow<{ policy: SupportAiPolicy }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/support/ai-policy`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.policy;
 };

@@ -1,12 +1,10 @@
 import { authFetch } from './authHttpClient';
 import { readJsonOrThrow } from '../src/shared/api/httpClient';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { HistoryItem } from '../types';
 
-const FALLBACK_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
-
 const toBaseUrl = (input?: string): string => {
-  const raw = String(input || FALLBACK_MEDIA_BACKEND_URL).trim();
-  return raw.replace(/\/+$/, '');
+  return resolveApiBaseUrl(input);
 };
 
 export interface AccountEntitlements {
@@ -49,11 +47,42 @@ export interface AccountEntitlements {
     monthlyFreeLimit: number;
     vffBalance: number;
     paidVfBalance: number;
-    spendableNowByEngine: Record<'KOKORO' | 'GEM', number>;
+    spendableNowByEngine: Record<'KOKORO' | 'NEURAL2' | 'GEM', number>;
     adClaimsToday: number;
     adClaimsDailyLimit: number;
     vffMonthKey?: string;
   };
+}
+
+export interface AccountUserProfile {
+  uid: string;
+  userId: string;
+  displayName?: string;
+  email?: string;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SupportConversation {
+  conversationId: string;
+  uid: string;
+  userId: string;
+  status: 'open' | 'ai_answered' | 'needs_human' | 'resolved' | string;
+  priority: 'green' | 'yellow' | 'red' | string;
+  lastMessageAt?: string;
+  assignedTo?: string;
+  updatedAt?: string;
+}
+
+export interface SupportMessage {
+  messageId: string;
+  conversationId: string;
+  fromType: 'user' | 'ai' | 'agent' | string;
+  uid?: string;
+  userId?: string;
+  text: string;
+  createdAt?: string;
 }
 
 interface GenerationHistoryResponse {
@@ -68,6 +97,48 @@ export const fetchAccountEntitlements = async (baseUrl?: string): Promise<Accoun
     await authFetch(`${toBaseUrl(baseUrl)}/account/entitlements`, undefined, { requireAuth: true })
   );
   return payload?.entitlements as AccountEntitlements;
+};
+
+export const fetchAccountProfile = async (
+  baseUrl?: string
+): Promise<{ profile: AccountUserProfile; requiredUserId: boolean; suggestedUserId?: string }> => {
+  const payload = await readJsonOrThrow<{ profile: AccountUserProfile; requiredUserId?: boolean; suggestedUserId?: string }>(
+    await authFetch(`${toBaseUrl(baseUrl)}/account/profile`, undefined, { requireAuth: true })
+  );
+  return {
+    profile: payload.profile,
+    requiredUserId: Boolean(payload.requiredUserId),
+    ...(payload.suggestedUserId ? { suggestedUserId: payload.suggestedUserId } : {}),
+  };
+};
+
+export const bootstrapAccountProfile = async (baseUrl?: string): Promise<AccountUserProfile> => {
+  const payload = await readJsonOrThrow<{ profile: AccountUserProfile }>(
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/account/profile/bootstrap`,
+      { method: 'POST' },
+      { requireAuth: true }
+    )
+  );
+  return payload.profile;
+};
+
+export const upsertAccountProfile = async (
+  input: { userId: string; displayName?: string },
+  baseUrl?: string
+): Promise<AccountUserProfile> => {
+  const payload = await readJsonOrThrow<{ profile: AccountUserProfile }>(
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/account/profile`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+      { requireAuth: true }
+    )
+  );
+  return payload.profile;
 };
 
 export const createCheckoutSession = async (
@@ -178,4 +249,55 @@ export const clearGenerationHistory = async (baseUrl?: string): Promise<void> =>
     const detail = await response.text().catch(() => '');
     throw new Error(detail || 'Failed to clear generation history.');
   }
+};
+
+export const postSupportMessage = async (
+  input: { text: string; conversationId?: string },
+  baseUrl?: string
+): Promise<{ conversation: SupportConversation; messages: SupportMessage[]; aiMode?: string; aiReason?: string }> => {
+  const payload = await readJsonOrThrow<{
+    conversation: SupportConversation;
+    messages: SupportMessage[];
+    aiMode?: string;
+    aiReason?: string;
+  }>(
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/support/messages`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+      { requireAuth: true }
+    )
+  );
+  return payload;
+};
+
+export const fetchMySupportConversations = async (
+  baseUrl?: string,
+  limit = 100
+): Promise<SupportConversation[]> => {
+  const payload = await readJsonOrThrow<{ items?: SupportConversation[] }>(
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/support/conversations/me?limit=${encodeURIComponent(String(limit))}`,
+      undefined,
+      { requireAuth: true }
+    )
+  );
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const markSupportConversationUnresolved = async (
+  conversationId: string,
+  baseUrl?: string
+): Promise<SupportConversation> => {
+  const payload = await readJsonOrThrow<{ conversation: SupportConversation }>(
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/support/conversations/${encodeURIComponent(conversationId)}/still-unresolved`,
+      { method: 'POST' },
+      { requireAuth: true }
+    )
+  );
+  return payload.conversation;
 };

@@ -62,6 +62,7 @@ import {
   upsertAccountProfile,
 } from '../services/accountService';
 import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey } from '../src/shared/storage/localStore';
 
@@ -105,8 +106,7 @@ const BLANK_USER: UserProfile = {
 
 const readSettingsBackendUrl = (): string => {
   const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
-  const value = String(parsed?.mediaBackendUrl || '').trim();
-  return value || 'http://127.0.0.1:7800';
+  return resolveApiBaseUrl(parsed?.mediaBackendUrl);
 };
 
 const normalizeStoredStats = (stored: any): UserStats => {

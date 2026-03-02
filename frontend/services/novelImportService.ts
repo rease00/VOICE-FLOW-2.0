@@ -1,9 +1,9 @@
 import { NovelImportChapterPreview, NovelImportExtractDiagnostics, NovelImportPageStat } from '../types';
 import { authFetch } from './authHttpClient';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
 
 const toBaseUrl = (input?: string): string => {
-  const raw = String(input || 'http://127.0.0.1:7800').trim();
-  return raw.replace(/\/+$/, '');
+  return resolveApiBaseUrl(input);
 };
 
 const parseBackendError = async (response: Response): Promise<string> => {
