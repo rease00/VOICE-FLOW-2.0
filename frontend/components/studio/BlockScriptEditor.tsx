@@ -154,13 +154,13 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
 
   return (
     <div className={`vf-block-editor relative flex h-full min-h-0 flex-col ${className}`}>
-      <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/60 px-4 py-2">
-        <div className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1">
+      <div className="vf-block-editor__header flex items-center justify-between border-b px-4 py-2">
+        <div className="vf-block-editor__mode-toggle inline-flex items-center gap-1 rounded-xl border p-1">
           <button
             type="button"
             onClick={() => onModeChange('blocks')}
-            className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
-              mode === 'blocks' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-100'
+            className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
+              mode === 'blocks' ? 'vf-block-editor__mode-btn--active' : ''
             }`}
           >
             Blocks
@@ -168,8 +168,8 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
           <button
             type="button"
             onClick={() => onModeChange('raw')}
-            className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
-              mode === 'raw' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-100'
+            className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
+              mode === 'raw' ? 'vf-block-editor__mode-btn--active' : ''
             }`}
           >
             Raw
@@ -181,7 +181,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
             <button
               type="button"
               onClick={() => setMenuOpen((prev) => !prev)}
-              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100"
+              className="vf-block-editor__quick rounded-lg border px-2 py-1 text-[11px] font-bold"
               title="Add block (+)"
             >
               <Plus size={12} className="inline mr-1" />
@@ -190,14 +190,14 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
             <button
               type="button"
               onClick={() => setMenuOpen((prev) => !prev)}
-              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100"
+              className="vf-block-editor__quick rounded-lg border px-2 py-1 text-[11px] font-bold"
               title="Quick insert (/)"
             >
               <Slash size={12} className="inline mr-1" />
               /
             </button>
             {menuOpen && (
-              <div className="absolute right-0 top-9 z-20 w-40 rounded-xl border border-gray-200 bg-white p-1 shadow-xl">
+              <div className="vf-block-editor__menu absolute right-0 top-9 z-20 w-40 rounded-xl border p-1 shadow-xl">
                 {([
                   { type: 'dialogue', label: 'Dialogue' },
                   { type: 'sfx', label: 'SFX' },
@@ -207,10 +207,10 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                     key={option.type}
                     type="button"
                     onClick={() => addBlock(option.type, commandInsertIndex)}
-                    className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-gray-700 hover:bg-gray-100"
+                    className="vf-block-editor__menu-item flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs font-semibold"
                   >
                     <span>{option.label}</span>
-                    {option.type === 'dialogue' && <Sparkles size={12} className="text-indigo-500" />}
+                    {option.type === 'dialogue' && <Sparkles size={12} className="vf-block-editor__spark" />}
                   </button>
                 ))}
               </div>
@@ -247,29 +247,29 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                 }}
                 onClick={() => setActiveBlockId(block.id)}
                 className={`vf-script-block rounded-2xl border p-3 transition-all ${
-                  activeBlockId === block.id ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-200 bg-white'
+                  activeBlockId === block.id ? 'vf-script-block--active' : ''
                 }`}
               >
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1">
-                    <GripVertical size={14} className="text-gray-400" />
-                    <span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-600">
+                    <GripVertical size={14} className="vf-script-block__drag" />
+                    <span className="vf-script-block__type rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide">
                       {block.type}
                     </span>
-                    <span className="text-[10px] font-semibold text-gray-400">#{index + 1}</span>
+                    <span className="vf-script-block__index text-[10px] font-semibold">#{index + 1}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() => addBlock('dialogue', index + 1)}
-                      className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100"
+                      className="vf-block-action rounded-md border px-2 py-1 text-[11px] font-semibold"
                     >
                       + below
                     </button>
                     <button
                       type="button"
                       onClick={() => removeBlock(block.id)}
-                      className="rounded-md border border-red-200 bg-red-50 p-1 text-red-600 hover:bg-red-100"
+                      className="vf-block-action vf-block-action--danger rounded-md border p-1"
                     >
                       <Trash2 size={12} />
                     </button>
@@ -284,7 +284,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                         onChange={(event) => updateBlock(block.id, { speaker: event.target.value })}
                         list="vf-studio-speakers"
                         placeholder="Speaker"
-                        className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none focus:border-indigo-400"
+                        className="vf-block-field rounded-lg border px-2 py-2 text-xs outline-none"
                       />
                       <select
                         value={block.emotion?.primaryEmotion || 'Neutral'}
@@ -294,7 +294,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                             primaryEmotion: event.target.value,
                           },
                         })}
-                        className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none focus:border-indigo-400"
+                        className="vf-block-field rounded-lg border px-2 py-2 text-xs outline-none"
                       >
                         {emotionOptions.map((emotion) => (
                           <option key={`${block.id}_${emotion}`} value={emotion}>
@@ -306,14 +306,14 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                         value={cueValue}
                         onChange={(event) => updateCueTags(block.id, event.target.value)}
                         placeholder="Cue tags (comma separated)"
-                        className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none focus:border-indigo-400"
+                        className="vf-block-field rounded-lg border px-2 py-2 text-xs outline-none"
                       />
                     </div>
                     <textarea
                       value={block.text}
                       onChange={(event) => updateBlock(block.id, { text: event.target.value })}
                       placeholder={placeholder}
-                      className={`custom-scrollbar min-h-[72px] w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400 ${
+                      className={`vf-block-field custom-scrollbar min-h-[72px] w-full resize-y rounded-lg border px-3 py-2 text-sm outline-none ${
                         DEVANAGARI_REGEX.test(block.text || '') ? 'vf-devanagari' : ''
                       }`}
                     />
@@ -325,7 +325,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                     value={block.text}
                     onChange={(event) => updateBlock(block.id, { text: event.target.value })}
                     placeholder="SFX description"
-                    className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-indigo-400"
+                    className="vf-block-field w-full rounded-lg border px-3 py-2 text-xs outline-none"
                   />
                 )}
 
@@ -334,7 +334,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                     value={block.text}
                     onChange={(event) => updateBlock(block.id, { text: event.target.value })}
                     placeholder="Direction note"
-                    className="w-full min-h-[60px] rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-indigo-400"
+                    className="vf-block-field w-full min-h-[60px] rounded-lg border px-3 py-2 text-xs outline-none"
                   />
                 )}
               </div>

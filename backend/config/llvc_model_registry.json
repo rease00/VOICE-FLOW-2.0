@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "llvc_hq_cpu",
+      "checkpointPath": "",
+      "configPath": "",
+      "sampleRate": 40000,
+      "qualityTier": "hq",
+      "enabled": true
+    },
+    {
+      "id": "llvc_default",
+      "checkpointPath": "",
+      "configPath": "",
+      "sampleRate": 32000,
+      "qualityTier": "standard",
+      "enabled": true
+    }
+  ]
+}

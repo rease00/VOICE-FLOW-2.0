@@ -10,7 +10,7 @@ import type {
 } from './contracts';
 import { requestBlob, requestJson } from './httpClient';
 
-export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime';
+export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime' | 'llvc-runtime';
 
 const withBaseUrl = (baseUrl?: string): { baseUrl?: string } => (baseUrl ? { baseUrl } : {});
 

@@ -30,6 +30,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
 - Start backend services only: `npm run start:backend`
 - Start backend services in GPU mode: `npm run start:backend:gpu`
 
+`start:backend` is idempotent: it reuses healthy running services, reconciles PID files to active listeners, and only restarts when runtime code/dependencies changed.
+
 Run all frontend commands from one root command:
 - `npm run frontend -- <frontend-script>`
 - Example: `npm run frontend -- build`
@@ -37,6 +39,7 @@ Run all frontend commands from one root command:
 Run all backend commands from one root command:
 - `npm run backend -- <backend-script>`
 - Example: `npm run backend -- services:check`
+- Verify backend status at any time: `npm run backend -- services:check`
 
 Optional multi-key pool from file:
 - Set `GEMINI_API_KEYS_FILE` to a local text file path (for example `C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt`).
@@ -93,10 +96,10 @@ If `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64` (or related local admin env vars) is mis
 
 3. Restart the frontend dev server after `.env` changes.
 
-## Real RVC + Media Backend
+## Real LLVC + Media Backend
 
 The app now supports a real local media backend for:
-- RVC cover conversion (`rvc-python`)
+- LLVC cover conversion (`KoeAI/LLVC`)
 - FFmpeg-based media utilities
 
 ## Isolated Python Runtimes (Per-Engine venv)
@@ -105,7 +108,7 @@ All backends now run locally using Python, each in its own virtual environment:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
 - `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
-- `RVC runtime` on `7830` (isolated `rvc-python` inference service)
+- `LLVC runtime` on `7830` (isolated `KoeAI/LLVC` inference service)
 
 Runtime/backend URLs are wired internally to local defaults in the app.
 
@@ -143,14 +146,16 @@ Health checks include:
 - `http://127.0.0.1:7800/health` (media backend)
 - `http://127.0.0.1:7810/health` (Gemini runtime)
 - `http://127.0.0.1:7820/health` (Kokoro runtime)
-- `http://127.0.0.1:7830/v1/health` (RVC runtime)
+- `http://127.0.0.1:7830/v1/health` (LLVC runtime)
 
 Notes:
 - Each runtime gets an isolated venv under `backend/.venvs/`.
 - First bootstrap installs Python dependencies for each runtime.
 - `services:bootstrap:gpu` sets GPU-first runtime envs where available.
-- For isolated RVC runtime dependencies, install with `npm run backend:install:rvc`.
+- For isolated LLVC runtime dependencies, install with `npm run backend:install:llvc`.
 - Kokoro runtime includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and runs in strict no-fallback mode.
+- Runtime PID files are reconciled against live port listeners to avoid Windows launcher-PID drift.
+- Service logs auto-rotate on startup/restart.
 
 ### Per-service Python interpreters
 
@@ -158,17 +163,33 @@ Set these only when you need hard interpreter isolation:
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
 - `VF_PYTHON_BIN_KOKORO_RUNTIME`
-- `VF_PYTHON_BIN_RVC_RUNTIME`
+- `VF_PYTHON_BIN_LLVC_RUNTIME`
 
-`rvc-runtime` enforces Python `3.11.x` and bootstrap will fail fast on mismatch.
+`llvc-runtime` enforces Python `3.11.x` and bootstrap will fail fast on mismatch.
 
-### RVC model folder
+### Bootstrap Log Rotation
 
-Put your RVC model files under:
-- `backend/models/rvc/<model-name>/model.pth`
-- `backend/models/rvc/<model-name>/model.index` (optional)
+`services:bootstrap` rotates oversized runtime logs before spawning services.
 
-Then open Voice Lab -> `AI Covers (RVC)` -> `Refresh Models`.
+- `VF_SERVICE_LOG_ROTATE_MAX_BYTES` (default: `20971520`, i.e. 20 MB)
+- `VF_SERVICE_LOG_ROTATE_KEEP` (default: `3`)
+
+Set `VF_SERVICE_LOG_ROTATE_MAX_BYTES=0` to disable rotation.
+
+### Troubleshooting: PID vs Listener Drift (Windows)
+
+If a service appears to restart repeatedly, verify listeners directly:
+
+- `npm run backend -- services:check`
+- `npm run backend -- audit:bootstrap:idempotency`
+
+### LLVC model folder
+
+Put your LLVC model files under:
+- `backend/models/llvc/<model-name>/model.pth`
+- `backend/models/llvc/<model-name>/model.index` (optional)
+
+Then open Voice Lab -> `AI Covers (LLVC)` -> `Refresh Models`.
 
 ### Deep audit command
 
@@ -219,6 +240,84 @@ Notes:
   - `POST /admin/gemini/pool/reload`
 - Runtime pool reload endpoint:
   - `POST /v1/admin/api-pool/reload` on Gemini runtime (`7810`)
+
+## Admin SaaS Control Plane (Phase 1)
+
+- Admin panel layout is now priority-ordered and responsive:
+  - `Users Control`
+  - `Coupons`
+  - `Gemini Pool`
+  - `Ops / Usage`
+- Coupons now support:
+  - `wallet_credit` and `subscription_discount`
+  - usage policies: `single_global`, `single_per_user`, `max_redemptions`
+  - expiry default of 6 months (admin override supported)
+  - auto-generated secure code flow (`POST /admin/coupons/generate-code`) with manual override support
+- Subscription coupons:
+  - support `percent` and `fixed_inr`
+  - are constrained to first invoice (`duration=once`)
+  - support plan scoping (`pro`, `plus`, or both)
+  - are auto-synced to Stripe promotion artifacts on create
+- Checkout now supports internal coupon application:
+  - `POST /billing/checkout-session` accepts optional `couponCode`
+  - reservation/finalization flow is used for subscription coupons to keep policy enforcement safe under concurrency
+  - Stripe promotion-code entry remains enabled in hosted checkout as fallback
+- Security hardening:
+  - runtime-sensitive routes (`/runtime/logs/tail`, `/tts/engines/switch`, `/services/dubbing/prepare`, `/llvc/load-model`) are admin-gated
+  - mutating guardian operations are admin-gated
+  - Gemini runtime `/v1/admin/api-pool*` routes require `GEMINI_RUNTIME_ADMIN_TOKEN`
+  - production defaults should remain strict (`VF_AUTH_ENFORCE=1`, `VITE_ENABLE_DEV_UID_HEADER=0`)
+
+## Admin SaaS Control Plane (Phase 2)
+
+- RBAC tiers (Firestore-first):
+  - roles: `super_admin`, `billing_ops`, `support_ops`, `read_only_ops`
+  - source of truth: `admin_roles/{uid}`
+  - legacy `admin` flags/claims are bootstrap fallback when no RBAC doc exists
+- Immutable audit ledger:
+  - append-only chain in `admin_audit_ledger/{eventId}` with state in `admin_audit_state/current`
+  - SHA-256 hash chaining with chain verification endpoint
+- Alerts engine:
+  - policy store: `ops_alert_policies/{policyId}`
+  - destinations: `ops_alert_destinations/{destId}` (webhook supported in Phase 2)
+  - events: `ops_alert_events/{eventId}` with open/ack/resolved lifecycle
+- Scheduler:
+  - task store: `ops_scheduled_tasks/{taskId}`
+  - run log: `ops_task_runs/{runId}`
+  - distributed lock: `ops_scheduler_lock/current`
+- Coupon analytics v2:
+  - daily facts: `coupon_analytics_daily/{date_coupon_plan}`
+  - attribution: `coupon_subscription_attributions/{subscriptionId}`
+  - metrics: conversion, checkout completion, d30 churn, discount efficiency
+
+### Phase 2 API families
+
+- `GET /admin/rbac/roles`
+- `GET /admin/rbac/users`
+- `PUT /admin/rbac/users/{uid}`
+- `POST /admin/rbac/users/{uid}/disable`
+- `POST /admin/rbac/users/{uid}/enable`
+- `GET /admin/audit/events`
+- `GET /admin/audit/events/{eventId}`
+- `GET /admin/audit/verify-chain`
+- `GET /admin/alerts/policies`
+- `POST /admin/alerts/policies`
+- `PATCH /admin/alerts/policies/{policyId}`
+- `GET /admin/alerts/destinations`
+- `POST /admin/alerts/destinations`
+- `PATCH /admin/alerts/destinations/{destId}`
+- `GET /admin/alerts/events`
+- `POST /admin/alerts/events/{eventId}/ack`
+- `POST /admin/alerts/events/{eventId}/resolve`
+- `GET /admin/scheduler/tasks`
+- `POST /admin/scheduler/tasks`
+- `PATCH /admin/scheduler/tasks/{taskId}`
+- `POST /admin/scheduler/tasks/{taskId}/run`
+- `GET /admin/scheduler/runs`
+- `GET /admin/scheduler/runs/{runId}`
+- `GET /admin/analytics/coupons/summary`
+- `GET /admin/analytics/coupons/timeseries`
+- `GET /admin/analytics/coupons/{couponCode}/impact`
 
 ## Novel Workspace v1 (Google Drive Powered)
 

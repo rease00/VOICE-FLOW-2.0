@@ -276,6 +276,7 @@ def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
 def test_admin_wallet_coupon_redeem_bypasses_user_and_max_limits(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_COUPON_LIMIT_BYPASS", True)
     uid = "local_admin_coupon"
     backend_app._INMEMORY_COUPONS["coupon_admin"] = {
         "id": "coupon_admin",

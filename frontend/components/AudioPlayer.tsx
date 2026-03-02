@@ -112,7 +112,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         setPlayError('Playback blocked by browser. Tap Play once more.');
         return false;
       }
-      setPlayError(String(error?.message || 'Playback failed.'));
+      const fallback = mode === 'manual' ? 'Playback failed. Please try again.' : 'Unable to start playback automatically.';
+      setPlayError(String(error?.message || fallback));
       return false;
     }
   }, []);
@@ -265,6 +266,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         audio.pause();
       }
     } catch (error: any) {
+      if (isPlaybackInterruptedError(error)) return;
       setPlayError(error?.message || 'Playback failed.');
     }
   };

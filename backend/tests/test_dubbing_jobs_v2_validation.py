@@ -22,6 +22,7 @@ class _NoopThread:
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "ARTIFACTS_DIR", tmp_path)
     monkeypatch.setattr(backend_app.threading, "Thread", _NoopThread)
     with backend_app.DUBBING_JOB_LOCK:

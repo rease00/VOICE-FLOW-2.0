@@ -10,6 +10,7 @@ def _engine_by_health_url() -> dict[str, str]:
 
 
 def test_prepare_skips_switch_when_services_already_online(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(
         backend_app,
         "_probe_runtime_health",
@@ -22,7 +23,7 @@ def test_prepare_skips_switch_when_services_already_online(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "_run_tts_switch_with_retry", _no_switch)
 
     client = TestClient(backend_app.app)
-    response = client.post("/services/dubbing/prepare", json={"gpu": False})
+    response = client.post("/services/dubbing/prepare", json={"gpu": False}, headers={"x-dev-uid": "local_admin"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
@@ -33,6 +34,7 @@ def test_prepare_skips_switch_when_services_already_online(monkeypatch) -> None:
 
 
 def test_prepare_switches_offline_engine_once_and_polls(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     health_map = _engine_by_health_url()
     switch_calls: list[str] = []
     wait_calls: list[str] = []
@@ -59,7 +61,7 @@ def test_prepare_switches_offline_engine_once_and_polls(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "_wait_for_runtime_online", _wait)
 
     client = TestClient(backend_app.app)
-    response = client.post("/services/dubbing/prepare", json={"gpu": True})
+    response = client.post("/services/dubbing/prepare", json={"gpu": True}, headers={"x-dev-uid": "local_admin"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
@@ -78,6 +80,7 @@ def test_prepare_switches_offline_engine_once_and_polls(monkeypatch) -> None:
 
 
 def test_prepare_returns_starting_and_failed_states_consistently(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     health_map = _engine_by_health_url()
     switch_calls: list[str] = []
 
@@ -107,7 +110,7 @@ def test_prepare_returns_starting_and_failed_states_consistently(monkeypatch) ->
     monkeypatch.setattr(backend_app, "_wait_for_runtime_online", _wait)
 
     client = TestClient(backend_app.app)
-    response = client.post("/services/dubbing/prepare", json={"gpu": False})
+    response = client.post("/services/dubbing/prepare", json={"gpu": False}, headers={"x-dev-uid": "local_admin"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is False

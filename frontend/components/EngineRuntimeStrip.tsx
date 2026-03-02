@@ -98,7 +98,7 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
             disabled={switchLocked || pending}
             title={`${getEngineDisplayName(engine)} - ${pending ? 'Starting' : getRuntimeStateLabel(status.state)} - ${status.detail}`}
             aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}`}
-            className={`vf-runtime-chip group relative inline-flex h-9 min-w-[3.4rem] items-center justify-center gap-1.5 rounded-full border px-2 transition-all ${
+            className={`vf-runtime-chip group relative inline-flex h-9 min-w-[2.8rem] sm:min-w-[3.4rem] items-center justify-center gap-1 sm:gap-1.5 rounded-full border px-1.5 sm:px-2 transition-all ${
               resolvedTheme === 'dark'
                 ? 'bg-slate-950/35 hover:bg-slate-900/60'
                 : 'bg-white/70 hover:bg-white'

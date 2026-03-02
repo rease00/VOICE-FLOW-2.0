@@ -6,6 +6,7 @@ export const STORAGE_KEYS = {
   uiTheme: 'vf_ui_theme',
   uiDensity: 'vf_ui_density',
   uiFontScale: 'vf_ui_font_scale',
+  uiMotionLevel: 'vf_ui_motion_level',
   studioEditorMode: 'vf_studio_editor_mode',
   localAdminSession: 'vf_local_admin_session',
   driveGoogleTokenCache: 'vf_drive_google_token_cache',

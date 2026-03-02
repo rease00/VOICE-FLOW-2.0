@@ -31,6 +31,12 @@ def _make_key(seed: int) -> str:
     return f"AIza{seed:030d}"
 
 
+def _runtime_admin_client(runtime) -> TestClient:
+    token = "test_runtime_admin_token"
+    runtime.GEMINI_RUNTIME_ADMIN_TOKEN = token
+    return TestClient(runtime.app, headers={"x-admin-token": token})
+
+
 def test_parse_api_keys_dedupes_and_filters_invalid_tokens() -> None:
     runtime = _load_gemini_runtime_module()
     fake_valid_key = "AIza" + ("Z" * 35)
@@ -248,7 +254,7 @@ def test_admin_api_pool_exposes_model_level_usage() -> None:
         assert lease_result.lease is not None
         runtime._RUNTIME_ALLOCATOR.release(lease_result.lease, success=True, used_tokens=20)
 
-        client = TestClient(runtime.app)
+        client = _runtime_admin_client(runtime)
         response = client.get("/v1/admin/api-pool")
         assert response.status_code == 200
         payload = response.json()
@@ -275,7 +281,7 @@ def test_admin_api_pool_reload_refreshes_keys_from_file(monkeypatch, tmp_path: P
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
     runtime = _load_gemini_runtime_module()
-    client = TestClient(runtime.app)
+    client = _runtime_admin_client(runtime)
 
     initial = client.get("/v1/admin/api-pool")
     assert initial.status_code == 200
@@ -333,7 +339,7 @@ def test_admin_api_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path: Pa
     monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
     monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_file))
     runtime = _load_gemini_runtime_module()
-    client = TestClient(runtime.app)
+    client = _runtime_admin_client(runtime)
 
     response = client.get("/v1/admin/api-pools")
     assert response.status_code == 200
@@ -380,7 +386,7 @@ def test_admin_api_pools_update_ignores_free_edits_when_locked(monkeypatch, tmp_
     monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
     monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_file))
     runtime = _load_gemini_runtime_module()
-    client = TestClient(runtime.app)
+    client = _runtime_admin_client(runtime)
 
     warm = client.get("/v1/admin/api-pools")
     assert warm.status_code == 200
@@ -441,7 +447,7 @@ def test_admin_api_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
     monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_file))
     runtime = _load_gemini_runtime_module()
-    client = TestClient(runtime.app)
+    client = _runtime_admin_client(runtime)
 
     first = client.get("/v1/admin/api-pools")
     assert first.status_code == 200
@@ -670,7 +676,7 @@ def test_timeout_classification_distinguishes_upstream_vs_acquire() -> None:
 
 def test_admin_api_pool_includes_effective_limits_and_error_classes() -> None:
     runtime = _load_gemini_runtime_module()
-    client = TestClient(runtime.app)
+    client = _runtime_admin_client(runtime)
 
     runtime._record_error_classification(runtime.ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT)
     response = client.get("/v1/admin/api-pool")

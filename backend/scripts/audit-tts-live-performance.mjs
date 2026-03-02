@@ -11,7 +11,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
 const DEFAULT_JOB_TIMEOUT_MS = 120000;
 const DEFAULT_POLL_MS = 350;
 const DEFAULT_SEED = 20260301;
-const DEFAULT_STRICT_RVC = true;
+const DEFAULT_STRICT_LLVC = true;
 
 const ARTIFACT_PATH = path.join('artifacts', 'load', 'live_tts_performance_audit.json');
 const GEM_FALLBACK_RUNTIME_VOICES = ['achernar', 'charon', 'kore', 'fenrir', 'achird', 'aoede'];
@@ -77,7 +77,7 @@ const CONFIG = {
   ),
   pollMs: parseIntSafe(args.get('poll-ms') || process.env.VF_LIVE_AUDIT_POLL_MS, DEFAULT_POLL_MS, 100),
   seed: parseIntSafe(args.get('seed') || process.env.VF_LIVE_AUDIT_SEED, DEFAULT_SEED, 1),
-  strictRvc: parseBool(args.get('strict-rvc') ?? process.env.VF_LIVE_AUDIT_STRICT_RVC, DEFAULT_STRICT_RVC),
+  strictLlvc: parseBool(args.get('strict-llvc') ?? process.env.VF_LIVE_AUDIT_STRICT_LLVC, DEFAULT_STRICT_LLVC),
 };
 
 const nowIso = () => new Date().toISOString();
@@ -276,7 +276,7 @@ const buildGemMultiPayload = ({
     { lineIndex: 1, speaker: 'Guest', text: 'We are validating chunk delivery and conversion timings.' },
     { lineIndex: 2, speaker: 'Narrator', text: 'Each line should preserve order and speaker mapping.' },
     { lineIndex: 3, speaker: 'Guest', text: 'The queue metrics should reflect stable live playback readiness.' },
-    { lineIndex: 4, speaker: 'Narrator', text: 'Strict post TTS RVC must remain enabled for every completion.' },
+    { lineIndex: 4, speaker: 'Narrator', text: 'Strict post TTS LLVC must remain enabled for every completion.' },
     { lineIndex: 5, speaker: 'Guest', text: 'This closes the live audit scenario for multi-speaker mode.' },
   ];
 
@@ -361,7 +361,7 @@ const getPostTtsHeaders = (headersObj) => {
   };
 };
 
-const isStrictRvcPass = (headersObj) => {
+const isStrictLlvcPass = (headersObj) => {
   let post = { conversion: '', profile: '', model: '' };
   if (headersObj && typeof headersObj === 'object') {
     const directConversion = String(headersObj.conversion || '').trim();
@@ -379,7 +379,7 @@ const isStrictRvcPass = (headersObj) => {
   } else {
     post = getPostTtsHeaders(headersObj);
   }
-  return post.conversion === 'rvc' && Boolean(post.profile) && Boolean(post.model);
+  return post.conversion === 'llvc' && Boolean(post.profile) && Boolean(post.model);
 };
 
 const fetchJsonGet = async (url, timeoutMs = CONFIG.requestTimeoutMs, reqHeaders = authOnlyHeaders) => {
@@ -992,8 +992,8 @@ const buildReport = ({
   const completedWithLiveChunk = completed.filter((item) => item.liveChunkSeenBeforeComplete).length;
   const liveFirstChunkObservedRate = completed.length > 0 ? completedWithLiveChunk / completed.length : 0;
 
-  const rvcPassCompleted = completed.filter((item) => isStrictRvcPass(item.postTtsHeaders)).length;
-  const postTtsRvcRate = completed.length > 0 ? rvcPassCompleted / completed.length : 0;
+  const llvcPassCompleted = completed.filter((item) => isStrictLlvcPass(item.postTtsHeaders)).length;
+  const postTtsLlvcRate = completed.length > 0 ? llvcPassCompleted / completed.length : 0;
 
   const submitLatencies = results.map((item) => numeric(item.submitLatencyMs, NaN));
   const firstChunkLatencies = completed
@@ -1018,8 +1018,8 @@ const buildReport = ({
   if (failedOrCancelledRate > 0.03) {
     hardFails.push(`failedOrCancelledRate>0.03 (${failedOrCancelledRate.toFixed(4)})`);
   }
-  if (CONFIG.strictRvc && completed.length > 0 && postTtsRvcRate < 1.0) {
-    hardFails.push(`postTtsRvcRate<1.0 (${postTtsRvcRate.toFixed(4)})`);
+  if (CONFIG.strictLlvc && completed.length > 0 && postTtsLlvcRate < 1.0) {
+    hardFails.push(`postTtsLlvcRate<1.0 (${postTtsLlvcRate.toFixed(4)})`);
   }
 
   const firstChunkStats = summaryStats(firstChunkLatencies);
@@ -1048,7 +1048,7 @@ const buildReport = ({
       concurrency: CONFIG.concurrency,
       requests: CONFIG.requests,
       seed: CONFIG.seed,
-      strictRvc: CONFIG.strictRvc,
+      strictLlvc: CONFIG.strictLlvc,
       pollMs: CONFIG.pollMs,
       requestTimeoutMs: CONFIG.requestTimeoutMs,
       jobTimeoutMs: CONFIG.jobTimeoutMs,
@@ -1083,10 +1083,10 @@ const buildReport = ({
       liveFirstChunkObservedRate: Number(liveFirstChunkObservedRate.toFixed(4)),
       liveChunkCount: summaryStats(chunkCounts),
     },
-    rvcMetrics: {
-      strictMode: CONFIG.strictRvc,
-      completedWithRvcHeaders: rvcPassCompleted,
-      postTtsRvcRate: Number(postTtsRvcRate.toFixed(4)),
+    llvcMetrics: {
+      strictMode: CONFIG.strictLlvc,
+      completedWithLlvcHeaders: llvcPassCompleted,
+      postTtsLlvcRate: Number(postTtsLlvcRate.toFixed(4)),
     },
     queueSignals: {
       queueAgeMs: queueAgeStats,
@@ -1144,10 +1144,10 @@ const main = async () => {
   await fs.writeFile(ARTIFACT_PATH, JSON.stringify(report, null, 2), 'utf8');
 
   const completionRatePct = (report.totals.completionRate * 100).toFixed(2);
-  const rvcPct = (report.rvcMetrics.postTtsRvcRate * 100).toFixed(2);
+  const llvcPct = (report.llvcMetrics.postTtsLlvcRate * 100).toFixed(2);
   const oneLine =
     `[audit:tts:live] completion=${completionRatePct}% firstChunkP95=${report.latencyMs.firstChunk.p95}ms ` +
-    `completionP95=${report.latencyMs.completion.p95}ms strictRvc=${rvcPct}% verdict=${report.verdict.passed ? 'passed' : 'failed'}`;
+    `completionP95=${report.latencyMs.completion.p95}ms strictLlvc=${llvcPct}% verdict=${report.verdict.passed ? 'passed' : 'failed'}`;
   console.log(oneLine);
   console.log(`artifact=${ARTIFACT_PATH.replace(/\\/g, '/')}`);
 

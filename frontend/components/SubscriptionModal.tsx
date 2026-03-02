@@ -28,6 +28,7 @@ export const SubscriptionModal: React.FC = () => {
   const billingActions = useBillingActions({ baseUrl: resolveBackendUrl() });
   const [isLoading, setIsLoading] = useState<'pro' | 'plus' | 'portal' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [subscriptionCouponCode, setSubscriptionCouponCode] = useState('');
 
   const planBadge = useMemo(() => stats.planName, [stats.planName]);
   if (!showSubscriptionModal) return null;
@@ -79,7 +80,8 @@ export const SubscriptionModal: React.FC = () => {
     setError(null);
     setIsLoading(plan);
     try {
-      const { url } = await billingActions.startPlanCheckout(plan);
+      const code = subscriptionCouponCode.trim();
+      const { url } = await billingActions.startPlanCheckout(plan, code || undefined);
       if (!url) throw new Error('Checkout URL is missing.');
       window.location.href = url;
     } catch (checkoutError: any) {
@@ -135,6 +137,21 @@ export const SubscriptionModal: React.FC = () => {
               {error}
             </div>
           )}
+
+          <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-600">
+              Subscription Coupon (Optional)
+            </label>
+            <input
+              value={subscriptionCouponCode}
+              onChange={(event) => setSubscriptionCouponCode(event.target.value)}
+              placeholder="Enter coupon code"
+              className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none focus:border-gray-900"
+            />
+            <p className="mt-1 text-[11px] text-gray-500">
+              If valid, this applies to the first invoice. Stripe promotion codes still work at checkout.
+            </p>
+          </div>
 
           <div className="grid gap-4 lg:grid-cols-4 sm:grid-cols-2 grid-cols-1">
             {plans.map((plan) => {

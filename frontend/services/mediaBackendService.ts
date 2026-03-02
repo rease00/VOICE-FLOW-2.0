@@ -20,7 +20,7 @@ import { requestBlob, requestJson } from '../src/shared/api/httpClient';
 export interface MediaBackendHealth {
   ok: boolean;
   ffmpeg?: { available: boolean; path?: string | null; error?: string | null };
-  rvc?: { available: boolean; currentModel?: string | null; modelsDir?: string; error?: string | null };
+  llvc?: { available: boolean; currentModel?: string | null; modelsDir?: string; error?: string | null };
   whisper?: {
     loaded: boolean;
     model?: string;
@@ -56,8 +56,8 @@ export const checkMediaBackendHealth = async (baseUrl: string): Promise<MediaBac
   return requestJson<MediaBackendHealth>('/health', undefined, { baseUrl: toBaseUrl(baseUrl) });
 };
 
-export const listRvcModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {
-  const payload = await requestJson<{ models?: string[]; currentModel?: string }>('/rvc/models', undefined, {
+export const listLlvcModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {
+  const payload = await requestJson<{ models?: string[]; currentModel?: string }>('/llvc/models', undefined, {
     baseUrl: toBaseUrl(baseUrl),
   });
   const response: { models: string[]; currentModel?: string } = {
@@ -69,9 +69,9 @@ export const listRvcModels = async (baseUrl: string): Promise<{ models: string[]
   return response;
 };
 
-export const loadRvcModel = async (baseUrl: string, modelName: string): Promise<void> => {
+export const loadLlvcModel = async (baseUrl: string, modelName: string): Promise<void> => {
   await requestJson<{ ok: boolean }>(
-    '/rvc/load-model',
+    '/llvc/load-model',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -81,12 +81,12 @@ export const loadRvcModel = async (baseUrl: string, modelName: string): Promise<
   );
 };
 
-export const convertRvcCover = async (
+export const convertLlvcCover = async (
   baseUrl: string,
   sourceAudio: File,
   modelName: string,
   options?: {
-    preset?: 'tts_realtime' | 'cover_hq';
+    preset?: 'tts_realtime' | 'cover_hq' | 'llvc_hq_cpu';
     pitchShift?: number;
     indexRate?: number;
     filterRadius?: number;
@@ -98,7 +98,7 @@ export const convertRvcCover = async (
   const form = new FormData();
   form.append('file', sourceAudio);
   form.append('model_name', modelName);
-  form.append('preset', options?.preset || 'tts_realtime');
+  form.append('preset', options?.preset || 'llvc_hq_cpu');
   form.append('pitch_shift', String(Math.round(options?.pitchShift ?? 0)));
   form.append('index_rate', String(options?.indexRate ?? 0.5));
   form.append('filter_radius', String(options?.filterRadius ?? 3));
@@ -107,7 +107,7 @@ export const convertRvcCover = async (
   form.append('f0_method', options?.f0Method || 'rmvpe');
 
   return requestBlob(
-    '/rvc/convert',
+    '/llvc/convert',
     {
       method: 'POST',
       body: form,

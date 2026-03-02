@@ -8,21 +8,20 @@ const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), "..");
 const BACKEND_URL = (process.env.VF_BENCH_BACKEND_URL || "http://127.0.0.1:7800").replace(/\/+$/, "");
 const INPUT_PATH = process.env.VF_BENCH_AUDIO || "";
-const MODEL_NAME = process.env.VF_BENCH_MODEL || "vf_low_cpu_timbre";
-const OUT_FILE = path.join(ROOT, "artifacts", "lhq_svc_benchmark_report.json");
+const MODEL_NAME = process.env.VF_BENCH_MODEL || "llvc_hq_cpu";
+const OUT_FILE = path.join(ROOT, "artifacts", "llvc_benchmark_report.json");
 
-const POLICIES = ["AUTO_RELIABLE", "LHQ_PILOT"];
+const PRESETS = ["llvc_hq_cpu", "tts_realtime"];
 
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
-async function runOne(policy, inputBytes, inputName) {
+async function runOne(preset, inputBytes, inputName) {
   const form = new FormData();
   form.append("file", new Blob([inputBytes], { type: "audio/wav" }), inputName);
   form.append("model_name", MODEL_NAME);
-  form.append("engine_policy", policy);
-  form.append("clone_required", "false");
+  form.append("preset", preset);
   form.append("pitch_shift", "0");
   form.append("index_rate", "0.5");
   form.append("filter_radius", "3");
@@ -31,13 +30,13 @@ async function runOne(policy, inputBytes, inputName) {
   form.append("f0_method", "rmvpe");
 
   const started = Date.now();
-  const response = await fetch(`${BACKEND_URL}/rvc/convert`, { method: "POST", body: form });
+  const response = await fetch(`${BACKEND_URL}/llvc/convert`, { method: "POST", body: form });
   const elapsedMs = Date.now() - started;
   const payload = await response.arrayBuffer();
   const bytes = Buffer.from(payload);
 
   return {
-    policy,
+    preset,
     ok: response.ok,
     status: response.status,
     elapsedMs,
@@ -45,8 +44,8 @@ async function runOne(policy, inputBytes, inputName) {
     sha256: bytes.length > 0 ? sha256(bytes) : null,
     engineSelected: response.headers.get("x-vf-engine-selected"),
     engineExecuted: response.headers.get("x-vf-engine-executed"),
-    fallbackUsed: response.headers.get("x-vf-rvc-fallback"),
-    fallbackReason: response.headers.get("x-vf-rvc-fallback-reason"),
+    fallbackUsed: response.headers.get("x-vf-llvc-fallback"),
+    fallbackReason: response.headers.get("x-vf-llvc-fallback-reason"),
     supportsOneShotCloneAtDecision: response.headers.get("x-vf-supports-one-shot-clone-at-decision"),
   };
 }
@@ -60,12 +59,12 @@ async function main() {
   const inputName = path.basename(INPUT_PATH);
   const rows = [];
 
-  for (const policy of POLICIES) {
+  for (const preset of PRESETS) {
     try {
-      rows.push(await runOne(policy, inputBytes, inputName));
+      rows.push(await runOne(preset, inputBytes, inputName));
     } catch (error) {
       rows.push({
-        policy,
+        preset,
         ok: false,
         status: 0,
         elapsedMs: 0,

@@ -254,7 +254,12 @@ const readLocalSnapshot = (): LocalNovelWorkspaceSnapshot => {
 };
 
 const writeLocalSnapshot = (snapshot: LocalNovelWorkspaceSnapshot): void => {
-  window.localStorage.setItem(ACTIVE_LOCAL_NOVEL_STORAGE_KEY, JSON.stringify(snapshot));
+  try {
+    window.localStorage.setItem(ACTIVE_LOCAL_NOVEL_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch (error) {
+    // Ignore local persistence failures (quota/private mode) so editor interactions keep working.
+    console.warn('Failed to persist local novel snapshot.', error);
+  }
 };
 
 const patchChapterText = (

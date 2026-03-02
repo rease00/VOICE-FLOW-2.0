@@ -30,10 +30,11 @@ def _health_engine_by_url() -> dict[str, str]:
     return {url: engine for engine, url in backend_app.TTS_ENGINE_HEALTH_URLS.items()}
 
 
-def test_guardian_status_contract() -> None:
+def test_guardian_status_contract(monkeypatch) -> None:
     _reset_ai_ops_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     client = TestClient(backend_app.app)
-    response = client.get("/ops/guardian/status")
+    response = client.get("/ops/guardian/status", headers={"x-dev-uid": "local_admin"})
     assert response.status_code == 200
     payload = response.json()
     assert "ok" in payload
@@ -73,7 +74,11 @@ def test_guardian_scan_auto_fixes_single_offline_runtime(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "_run_tts_switch_with_retry", _switch)
 
     client = TestClient(backend_app.app)
-    response = client.post("/ops/guardian/scan", json={"autoFixMinor": True, "gpu": False})
+    response = client.post(
+        "/ops/guardian/scan",
+        json={"autoFixMinor": True, "gpu": False},
+        headers={"x-dev-uid": "local_admin"},
+    )
     assert response.status_code == 200
     payload = response.json()
     assert any(item.get("id") == "runtime_single_offline" for item in payload.get("detectedIssues", []))
@@ -81,7 +86,7 @@ def test_guardian_scan_auto_fixes_single_offline_runtime(monkeypatch) -> None:
     assert switch_calls == ["GEM"]
 
 
-def test_guardian_major_action_queues_approval_when_not_admin(monkeypatch) -> None:
+def test_guardian_major_action_queues_approval_when_admin_token_missing(monkeypatch) -> None:
     _reset_ai_ops_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVAL_TOKEN", "secret")
@@ -91,7 +96,7 @@ def test_guardian_major_action_queues_approval_when_not_admin(monkeypatch) -> No
     response = client.post(
         "/ops/guardian/actions",
         json={"action": "restart_all_runtimes"},
-        headers={"x-dev-uid": "non_admin"},
+        headers={"x-dev-uid": "local_admin"},
     )
     assert response.status_code == 202
     payload = response.json()
@@ -117,7 +122,7 @@ def test_guardian_major_approval_executes_with_valid_admin(monkeypatch) -> None:
     queued = client.post(
         "/ops/guardian/actions",
         json={"action": "restart_all_runtimes"},
-        headers={"x-dev-uid": "non_admin"},
+        headers={"x-dev-uid": "local_admin"},
     )
     assert queued.status_code == 202
     approval_id = queued.json()["approval"]["id"]
@@ -171,9 +176,37 @@ def test_guardian_frontend_error_ingestion_and_status(monkeypatch) -> None:
     report_payload = report.json()
     assert report_payload["accepted"] is True
 
-    status = client.get("/ops/guardian/status")
+    status = client.get("/ops/guardian/status", headers={"x-dev-uid": "local_admin"})
     assert status.status_code == 200
     payload = status.json()
     assert len(payload["recentFrontendErrors"]) >= 1
     assert payload["recentFrontendErrors"][-1]["message"] == "Unhandled promise rejection"
 
+
+def test_guardian_mutate_requires_guardian_mutate_permission(monkeypatch) -> None:
+    _reset_ai_ops_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+    backend_app._INMEMORY_ADMIN_ROLES.clear()
+    backend_app._INMEMORY_ADMIN_ROLES["rbac_read_only"] = {
+        "uid": "rbac_read_only",
+        "role": "read_only_ops",
+        "allowOverrides": [],
+        "denyOverrides": [],
+        "status": "active",
+        "version": 1,
+    }
+    backend_app._rbac_invalidate_cache("rbac_read_only")
+
+    client = TestClient(backend_app.app)
+    read_status = client.get("/ops/guardian/status", headers={"x-dev-uid": "rbac_read_only"})
+    assert read_status.status_code == 200
+
+    mutate_scan = client.post(
+        "/ops/guardian/scan",
+        json={"autoFixMinor": False},
+        headers={"x-dev-uid": "rbac_read_only"},
+    )
+    assert mutate_scan.status_code == 403
+    assert "guardian.mutate" in str(mutate_scan.json().get("detail"))

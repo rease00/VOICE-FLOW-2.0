@@ -1,14 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import csv
 import gzip
 import json
 import hashlib
+import hmac
+import math
 import mimetypes
 import os
 import calendar
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -16,7 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import wave
 from collections import defaultdict, deque
 from io import BytesIO, StringIO
@@ -25,6 +28,7 @@ from typing import Any, Optional, Dict, List
 from urllib import error as urllib_error
 from urllib.parse import urlparse
 from urllib import request as urllib_request
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -87,30 +91,19 @@ from services.queue.redis_queue import TtsJobQueue, normalize_lane
 load_backend_env_files(Path(__file__).resolve())
 ARTIFACTS_DIR = APP_ROOT / "artifacts"
 RUNTIME_LOG_DIR = PROJECT_ROOT / ".runtime" / "logs"
-MODELS_DIR = Path(os.getenv("VF_RVC_MODELS_DIR", str(APP_ROOT / "models" / "rvc"))).resolve()
+MODELS_DIR = Path(os.getenv("VF_LLVC_MODELS_DIR", str(APP_ROOT / "models" / "llvc"))).resolve()
 BOOTSTRAP_SCRIPT = PROJECT_ROOT / "scripts" / "bootstrap-services.mjs"
 WHISPER_MODEL_SIZE = os.getenv("VF_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("VF_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE = os.getenv("VF_WHISPER_COMPUTE", "int8")
 WHISPER_BEAM_SIZE = max(1, int((os.getenv("VF_WHISPER_BEAM_SIZE") or "5").strip() or "5"))
-RVC_DEVICE = os.getenv("VF_RVC_DEVICE", "cpu:0")
-ENABLE_RVC_FALLBACK = (
-    (os.getenv("VF_ENABLE_RVC_FALLBACK") or "1").strip().lower()
+LLVC_DEVICE = os.getenv("VF_LLVC_DEVICE", "cpu:0")
+ENABLE_LLVC_FALLBACK = (
+    (os.getenv("VF_ENABLE_LLVC_FALLBACK") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-RVC_FALLBACK_MODEL_ID = "vf_low_cpu_timbre"
-LHQ_SVC_PILOT_ENABLED = (
-    (os.getenv("VF_ENABLE_LHQ_SVC_PILOT") or "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-LHQ_SVC_PILOT_MODEL_ID = "lhq_svc_pilot"
-VOICE_CONVERSION_POLICIES = {"AUTO_RELIABLE", "LHQ_PILOT"}
-VOICE_CONVERSION_FALLBACK_REASONS = {
-    "lhq_missing_clone_parity",
-    "lhq_unhealthy",
-    "lhq_timeout",
-    "lhq_quality_gate_failed",
-}
+LLVC_FALLBACK_MODEL_ID = "vf_low_cpu_timbre"
+VOICE_CONVERSION_POLICIES = {"AUTO_RELIABLE", "LLVC_ONLY"}
 SEPARATION_MODEL = (os.getenv("VF_SOURCE_SEPARATION_MODEL") or "htdemucs_ft").strip() or "htdemucs_ft"
 SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() or "cpu"
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
@@ -144,20 +137,27 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
 )
 GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
 KOKORO_RUNTIME_URL = (os.getenv("VF_KOKORO_RUNTIME_URL") or "http://127.0.0.1:7820").strip().rstrip("/")
-RVC_RUNTIME_URL = (os.getenv("VF_RVC_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
-VF_TTS_POST_RVC_ENABLED = (
-    (os.getenv("VF_TTS_POST_RVC_ENABLED") or "1").strip().lower()
+LLVC_RUNTIME_URL = (os.getenv("VF_LLVC_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
+GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
+VF_TTS_POST_LLVC_ENABLED = (
+    (os.getenv("VF_TTS_POST_LLVC_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-VF_TTS_POST_RVC_REQUIRED = (
-    (os.getenv("VF_TTS_POST_RVC_REQUIRED") or "1").strip().lower()
+VF_TTS_POST_LLVC_REQUIRED = (
+    (os.getenv("VF_TTS_POST_LLVC_REQUIRED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-VF_TTS_POST_RVC_TIMEOUT_SEC = max(
+VF_TTS_POST_LLVC_TIMEOUT_SEC = max(
     15,
-    int((os.getenv("VF_TTS_POST_RVC_TIMEOUT_SEC") or "180").strip() or "180"),
+    int((os.getenv("VF_TTS_POST_LLVC_TIMEOUT_SEC") or "180").strip() or "180"),
 )
-VF_TTS_POST_RVC_PRESET = str(os.getenv("VF_TTS_POST_RVC_PRESET") or "tts_realtime").strip() or "tts_realtime"
+VF_TTS_POST_LLVC_PRESET = str(os.getenv("VF_TTS_POST_LLVC_PRESET") or "tts_realtime").strip() or "tts_realtime"
+VF_LLVC_PRESET_DEFAULT = str(os.getenv("VF_LLVC_PRESET_DEFAULT") or "llvc_hq_cpu").strip() or "llvc_hq_cpu"
+VF_LLVC_STREAM_DEFAULT = (
+    (os.getenv("VF_LLVC_STREAM_DEFAULT") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_LLVC_CHUNK_FACTOR = max(1, int((os.getenv("VF_LLVC_CHUNK_FACTOR") or "2").strip() or "2"))
 VF_TTS_LIVE_STREAM_ENABLED = (
     (os.getenv("VF_TTS_LIVE_STREAM_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -190,9 +190,9 @@ VF_TTS_LIVE_CHUNK_WORDS_MAX = max(
     VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
     int((os.getenv("VF_TTS_LIVE_CHUNK_WORDS_MAX") or "420").strip() or "420"),
 )
-VF_RVC_MODEL_CACHE_TTL_MS = max(
+VF_LLVC_MODEL_CACHE_TTL_MS = max(
     500,
-    int((os.getenv("VF_RVC_MODEL_CACHE_TTL_MS") or "5000").strip() or "5000"),
+    int((os.getenv("VF_LLVC_MODEL_CACHE_TTL_MS") or "5000").strip() or "5000"),
 )
 VOICE_PROFILE_BANK_FILE = Path(
     os.getenv("VF_VOICE_PROFILE_BANK_FILE", str(APP_ROOT / "config" / "voice_profile_bank.v1.json"))
@@ -203,7 +203,7 @@ VOICE_ID_MAP_FILE = Path(
 APP_BUILD_TIME = datetime.now(timezone.utc).isoformat()
 API_VERSION = "1.2.0"
 VF_AUTH_ENFORCE = (
-    (os.getenv("VF_AUTH_ENFORCE") or "0").strip().lower()
+    (os.getenv("VF_AUTH_ENFORCE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_DEV_BYPASS_UID = (os.getenv("VF_DEV_BYPASS_UID") or "dev_local_user").strip() or "dev_local_user"
@@ -437,20 +437,20 @@ ENGINE_DISPLAY_NAMES = {
 }
 CONVERSION_POLICY_DISPLAY_NAMES = {
     "AUTO_RELIABLE": "AUTO_RELIABLE",
-    "LHQ_PILOT": "LHQ_PILOT",
+    "LLVC_ONLY": "LLVC_ONLY",
 }
 EXECUTED_ENGINE_DISPLAY_NAMES = {
-    "LHQ_SVC": "LHQ-SVC (Pilot)",
     "GEM": "PRO",
     "KOKORO": "BASIC",
-    "RVC_FALLBACK": "RVC Fallback",
-    "RVC": "RVC",
+    "LLVC_FALLBACK": "LLVC Fallback",
+    "LLVC": "LLVC",
 }
 
 RUNTIME_LOG_FILES = {
     "media-backend": RUNTIME_LOG_DIR / "media-backend.log",
     "gemini-runtime": RUNTIME_LOG_DIR / "gemini-runtime.log",
     "kokoro-runtime": RUNTIME_LOG_DIR / "kokoro-runtime.log",
+    "llvc-runtime": RUNTIME_LOG_DIR / "llvc-runtime.log",
 }
 RUNTIME_LOG_ALIASES = {
     "backend": "media-backend",
@@ -461,6 +461,8 @@ RUNTIME_LOG_ALIASES = {
     "gemini-runtime": "gemini-runtime",
     "kokoro": "kokoro-runtime",
     "kokoro-runtime": "kokoro-runtime",
+    "llvc": "llvc-runtime",
+    "llvc-runtime": "llvc-runtime",
 }
 RUNTIME_LOG_MAX_BYTES = 262_144
 RUNTIME_LOG_MAX_LINES = 400
@@ -583,6 +585,142 @@ VF_ADMIN_APPROVER_UIDS = frozenset(
         if token
     }
 )
+VF_ADMIN_COUPON_LIMIT_BYPASS = (
+    (os.getenv("VF_ADMIN_COUPON_LIMIT_BYPASS") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_RBAC_ENABLED = (
+    (os.getenv("VF_RBAC_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_RBAC_ENFORCE = (
+    (os.getenv("VF_RBAC_ENFORCE") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_AUDIT_LEDGER_ENABLED = (
+    (os.getenv("VF_AUDIT_LEDGER_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_ALERT_ENGINE_ENABLED = (
+    (os.getenv("VF_ALERT_ENGINE_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_SCHEDULER_ENABLED = (
+    (os.getenv("VF_SCHEDULER_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_ANALYTICS_V2_ENABLED = (
+    (os.getenv("VF_ANALYTICS_V2_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_SCHEDULER_LOCK_TTL_SECONDS = max(
+    10,
+    int((os.getenv("VF_SCHEDULER_LOCK_TTL_SECONDS") or "45").strip() or "45"),
+)
+VF_SCHEDULER_TICK_SECONDS = max(
+    3,
+    int((os.getenv("VF_SCHEDULER_TICK_SECONDS") or "10").strip() or "10"),
+)
+VF_ALERT_EVAL_INTERVAL_SECONDS = max(
+    20,
+    int((os.getenv("VF_ALERT_EVAL_INTERVAL_SECONDS") or "60").strip() or "60"),
+)
+BILLING_PROVIDER_STRIPE = "stripe"
+ACTIVE_BILLING_PROVIDER = BILLING_PROVIDER_STRIPE
+RBAC_ROLE_SUPER_ADMIN = "super_admin"
+RBAC_ROLE_BILLING_OPS = "billing_ops"
+RBAC_ROLE_SUPPORT_OPS = "support_ops"
+RBAC_ROLE_READ_ONLY_OPS = "read_only_ops"
+RBAC_ROLES = {
+    RBAC_ROLE_SUPER_ADMIN,
+    RBAC_ROLE_BILLING_OPS,
+    RBAC_ROLE_SUPPORT_OPS,
+    RBAC_ROLE_READ_ONLY_OPS,
+}
+PERM_USERS_READ = "users.read"
+PERM_USERS_WRITE = "users.write"
+PERM_COUPONS_READ = "coupons.read"
+PERM_COUPONS_WRITE = "coupons.write"
+PERM_BILLING_READ = "billing.read"
+PERM_BILLING_WRITE = "billing.write"
+PERM_OPS_READ = "ops.read"
+PERM_OPS_MUTATE = "ops.mutate"
+PERM_GUARDIAN_READ = "guardian.read"
+PERM_GUARDIAN_MUTATE = "guardian.mutate"
+PERM_ANALYTICS_READ = "analytics.read"
+PERM_AUDIT_READ = "audit.read"
+PERM_ALERTS_READ = "alerts.read"
+PERM_ALERTS_WRITE = "alerts.write"
+PERM_SCHEDULER_READ = "scheduler.read"
+PERM_SCHEDULER_WRITE = "scheduler.write"
+PERM_RBAC_READ = "rbac.read"
+PERM_RBAC_WRITE = "rbac.write"
+RBAC_PERMISSIONS = {
+    PERM_USERS_READ,
+    PERM_USERS_WRITE,
+    PERM_COUPONS_READ,
+    PERM_COUPONS_WRITE,
+    PERM_BILLING_READ,
+    PERM_BILLING_WRITE,
+    PERM_OPS_READ,
+    PERM_OPS_MUTATE,
+    PERM_GUARDIAN_READ,
+    PERM_GUARDIAN_MUTATE,
+    PERM_ANALYTICS_READ,
+    PERM_AUDIT_READ,
+    PERM_ALERTS_READ,
+    PERM_ALERTS_WRITE,
+    PERM_SCHEDULER_READ,
+    PERM_SCHEDULER_WRITE,
+    PERM_RBAC_READ,
+    PERM_RBAC_WRITE,
+}
+RBAC_ROLE_PERMISSION_MAP: dict[str, set[str]] = {
+    RBAC_ROLE_SUPER_ADMIN: set(RBAC_PERMISSIONS),
+    RBAC_ROLE_BILLING_OPS: {
+        PERM_COUPONS_READ,
+        PERM_COUPONS_WRITE,
+        PERM_BILLING_READ,
+        PERM_BILLING_WRITE,
+        PERM_ANALYTICS_READ,
+        PERM_AUDIT_READ,
+        PERM_ALERTS_READ,
+    },
+    RBAC_ROLE_SUPPORT_OPS: {
+        PERM_USERS_READ,
+        PERM_USERS_WRITE,
+        PERM_COUPONS_READ,
+        PERM_BILLING_READ,
+        PERM_OPS_READ,
+        PERM_GUARDIAN_READ,
+        PERM_ANALYTICS_READ,
+        PERM_AUDIT_READ,
+        PERM_ALERTS_READ,
+    },
+    RBAC_ROLE_READ_ONLY_OPS: {perm for perm in RBAC_PERMISSIONS if perm.endswith(".read")},
+}
+ADMIN_ROLES_COLLECTION = "admin_roles"
+AUDIT_LEDGER_COLLECTION = "admin_audit_ledger"
+AUDIT_LEDGER_STATE_COLLECTION = "admin_audit_state"
+ALERT_POLICIES_COLLECTION = "ops_alert_policies"
+ALERT_DESTINATIONS_COLLECTION = "ops_alert_destinations"
+ALERT_EVENTS_COLLECTION = "ops_alert_events"
+SCHEDULER_TASKS_COLLECTION = "ops_scheduled_tasks"
+SCHEDULER_RUNS_COLLECTION = "ops_task_runs"
+SCHEDULER_LOCK_COLLECTION = "ops_scheduler_lock"
+COUPON_ANALYTICS_DAILY_COLLECTION = "coupon_analytics_daily"
+COUPON_SUBSCRIPTION_ATTRIBUTIONS_COLLECTION = "coupon_subscription_attributions"
+AUDIT_HASH_ALGO = "sha256"
+AUDIT_GENESIS_HASH = "GENESIS"
+ALERT_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
+ALERT_STATUSES = {"open", "ack", "resolved"}
+SCHEDULER_TASK_TYPES = {
+    "usage_reset_daily",
+    "guardian_scan",
+    "usage_export_daily",
+    "coupon_abuse_scan",
+}
+SCHEDULER_CONCURRENCY_POLICIES = {"forbid", "replace", "allow"}
 
 
 class _TtsGatewayLease:
@@ -769,11 +907,11 @@ def _safe_upload_name(filename: Optional[str], fallback: str) -> str:
 
 _VOICE_PROFILE_BANK_CACHE: dict[str, Any] = {"mtime": 0.0, "payload": {}}
 _VOICE_ID_MAP_CACHE: dict[str, Any] = {"mtime": 0.0, "payload": {}}
-_RVC_MODEL_CACHE_LOCK = threading.Lock()
-_RVC_MODEL_CACHE: dict[str, Any] = {
+_LLVC_MODEL_CACHE_LOCK = threading.Lock()
+_LLVC_MODEL_CACHE: dict[str, Any] = {
     "updatedAtMs": 0,
     "models": [],
-    "fallbackAvailable": bool(ENABLE_RVC_FALLBACK),
+    "fallbackAvailable": bool(ENABLE_LLVC_FALLBACK),
 }
 
 
@@ -821,7 +959,7 @@ def _load_voice_profile_bank() -> dict[str, Any]:
                 "gender": str(row.get("gender") or "Unknown").strip() or "Unknown",
                 "ageGroup": str(row.get("ageGroup") or "Unknown").strip() or "Unknown",
                 "styleTag": str(row.get("styleTag") or "").strip(),
-                "rvcModelName": str(row.get("rvcModelName") or "").strip(),
+                "llvcModelName": str(row.get("llvcModelName") or "").strip(),
             }
         )
     return {"version": payload.get("version") or "0", "profiles": normalized_profiles}
@@ -960,61 +1098,65 @@ def _resolve_mapped_model_name(engine: str, voice_id: str, *, voice_name: str = 
     if not isinstance(profile, dict):
         return None, None
     profile_id = str(profile.get("profileId") or "").strip() or None
-    mapped_model_name = str(profile.get("rvcModelName") or "").strip() or profile_id or ""
-    resolved_model_name = _resolve_rvc_model_name_for_runtime(mapped_model_name)
+    mapped_model_name = str(profile.get("llvcModelName") or "").strip() or profile_id or ""
+    resolved_model_name = _resolve_llvc_model_name_for_runtime(mapped_model_name)
     if not resolved_model_name:
         return None, profile_id
     return resolved_model_name, profile_id
 
 
-def _rvc_runtime_model_snapshot(*, force_refresh: bool = False) -> tuple[set[str], bool]:
+def _llvc_runtime_model_snapshot(*, force_refresh: bool = False) -> tuple[set[str], bool]:
     now_ms = int(time.time() * 1000)
-    with _RVC_MODEL_CACHE_LOCK:
-        updated_at_ms = int(_RVC_MODEL_CACHE.get("updatedAtMs") or 0)
+    with _LLVC_MODEL_CACHE_LOCK:
+        updated_at_ms = int(_LLVC_MODEL_CACHE.get("updatedAtMs") or 0)
         if (
             not force_refresh
             and updated_at_ms > 0
-            and (now_ms - updated_at_ms) < VF_RVC_MODEL_CACHE_TTL_MS
+            and (now_ms - updated_at_ms) < VF_LLVC_MODEL_CACHE_TTL_MS
         ):
-            cached_models = _RVC_MODEL_CACHE.get("models")
-            cached_fallback = bool(_RVC_MODEL_CACHE.get("fallbackAvailable"))
+            cached_models = _LLVC_MODEL_CACHE.get("models")
+            cached_fallback = bool(_LLVC_MODEL_CACHE.get("fallbackAvailable"))
             model_set = {str(item).strip() for item in list(cached_models or []) if str(item).strip()}
             return model_set, cached_fallback
 
-    fallback_available = bool(ENABLE_RVC_FALLBACK)
+    fallback_available = bool(ENABLE_LLVC_FALLBACK)
     models: list[str] = []
     try:
-        payload = rvc_runtime.health_payload()
-        nested = payload.get("rvc") if isinstance(payload.get("rvc"), dict) else {}
+        payload = llvc_runtime.health_payload()
+        nested = payload.get("llvc") if isinstance(payload.get("llvc"), dict) else {}
         if isinstance(nested, dict):
             fallback_available = bool(nested.get("fallbackAvailable")) or fallback_available
     except Exception:
-        fallback_available = bool(ENABLE_RVC_FALLBACK)
+        fallback_available = bool(ENABLE_LLVC_FALLBACK)
 
     try:
-        models = [str(item).strip() for item in rvc_runtime.list_models() if str(item).strip()]
+        models = [str(item).strip() for item in llvc_runtime.list_models() if str(item).strip()]
     except Exception:
         models = []
 
-    if fallback_available and RVC_FALLBACK_MODEL_ID not in models:
-        models = [RVC_FALLBACK_MODEL_ID, *models]
+    if fallback_available and LLVC_FALLBACK_MODEL_ID not in models:
+        models = [LLVC_FALLBACK_MODEL_ID, *models]
 
-    with _RVC_MODEL_CACHE_LOCK:
-        _RVC_MODEL_CACHE["updatedAtMs"] = now_ms
-        _RVC_MODEL_CACHE["models"] = list(models)
-        _RVC_MODEL_CACHE["fallbackAvailable"] = bool(fallback_available)
+    with _LLVC_MODEL_CACHE_LOCK:
+        _LLVC_MODEL_CACHE["updatedAtMs"] = now_ms
+        _LLVC_MODEL_CACHE["models"] = list(models)
+        _LLVC_MODEL_CACHE["fallbackAvailable"] = bool(fallback_available)
 
     return set(models), bool(fallback_available)
 
 
-def _resolve_rvc_model_name_for_runtime(mapped_model_name: str) -> str:
+def _resolve_llvc_model_name_for_runtime(mapped_model_name: str) -> str:
     desired = str(mapped_model_name or "").strip()
-    available_models, fallback_available = _rvc_runtime_model_snapshot()
-    if desired:
-        if not available_models or desired in available_models:
-            return desired
+    available_models, fallback_available = _llvc_runtime_model_snapshot()
+    if desired and desired in available_models:
+        return desired
+    if available_models:
+        preferred = str(VF_LLVC_PRESET_DEFAULT or "").strip()
+        if preferred and preferred in available_models:
+            return preferred
+        return sorted(available_models)[0]
     if fallback_available:
-        return RVC_FALLBACK_MODEL_ID
+        return LLVC_FALLBACK_MODEL_ID
     return desired
 
 
@@ -1210,50 +1352,6 @@ def _convert_with_low_cpu_timbre(
     )
 
 
-def _convert_with_lhq_pilot_timbre(
-    input_wav: str,
-    output_wav: str,
-    *,
-    pitch_shift: int = 0,
-    sample_rate: int = 40000,
-) -> None:
-    ffmpeg = _get_ffmpeg_path()
-    shift = max(-12, min(12, int(pitch_shift)))
-    pitch_factor = pow(2.0, shift / 12.0)
-    tempo_rate = 1.0 / pitch_factor
-    atempo = _build_atempo_filter_chain(tempo_rate)
-    # LHQ pilot flavor: stronger presence + mild stereo-like widening illusion collapsed to mono.
-    audio_filter = (
-        f"asetrate={sample_rate * pitch_factor:.4f},"
-        f"aresample={sample_rate},"
-        f"{atempo},"
-        "highpass=f=60,"
-        "lowpass=f=14000,"
-        "equalizer=f=1800:t=q:w=1.1:g=2.0,"
-        "equalizer=f=5200:t=q:w=1.2:g=1.4,"
-        "acompressor=threshold=-16dB:ratio=2.0:attack=8:release=130"
-    )
-    _run(
-        [
-            ffmpeg,
-            "-y",
-            "-i",
-            input_wav,
-            "-vn",
-            "-af",
-            audio_filter,
-            "-ac",
-            "1",
-            "-ar",
-            str(sample_rate),
-            "-sample_fmt",
-            "s16",
-            output_wav,
-        ],
-        timeout=60,
-    )
-
-
 def _normalize_transcribe_language(raw_language: str) -> Optional[str]:
     token = str(raw_language or "").strip().lower()
     if not token:
@@ -1352,21 +1450,21 @@ def _infer_emotion_from_text(text: str) -> str:
 
     if "!" in value and re.search(r"\b(no|stop|run|now|help|nah)\b", value):
         return "Shouting"
-    if re.search(r"\b(cry|sob|tears|à¤°à¥‹|à¤°à¥‹à¤¨à¤¾|crying)\b", value):
+    if re.search(r"\b(cry|sob|tears|रो|रोना|crying)\b", value):
         return "Crying"
-    if re.search(r"\b(laugh|haha|lol|à¤¹à¤à¤¸|à¤¹à¤‚à¤¸|laughing)\b", value):
+    if re.search(r"\b(laugh|haha|lol|हँस|हंस|laughing)\b", value):
         return "Laughing"
-    if re.search(r"\b(angry|furious|mad|gussa|à¤—à¥à¤¸à¥à¤¸à¤¾)\b", value):
+    if re.search(r"\b(angry|furious|mad|gussa|गुस्सा)\b", value):
         return "Angry"
-    if re.search(r"\b(sad|hurt|broken|à¤¦à¥à¤–|à¤‰à¤¦à¤¾à¤¸)\b", value):
+    if re.search(r"\b(sad|hurt|broken|दुख|उदास)\b", value):
         return "Sad"
-    if re.search(r"\b(worried|afraid|scared|à¤¡à¤°|à¤­à¤¯)\b", value):
+    if re.search(r"\b(worried|afraid|scared|डर|भय)\b", value):
         return "Anxious"
-    if re.search(r"\b(whisper|slowly|à¤§à¥€à¤°à¥‡|à¤«à¥à¤¸à¤«à¥à¤¸)\b", value):
+    if re.search(r"\b(whisper|slowly|धीरे|फुसफुस)\b", value):
         return "Whispering"
-    if re.search(r"\b(excited|awesome|great|à¤µà¤¾à¤¹|à¤•à¤®à¤¾à¤²)\b", value):
+    if re.search(r"\b(excited|awesome|great|वाह|कमाल)\b", value):
         return "Excited"
-    if re.search(r"\b(please|kindly|thanks|thank you|à¤§à¤¨à¥à¤¯à¤µà¤¾à¤¦)\b", value):
+    if re.search(r"\b(please|kindly|thanks|thank you|धन्यवाद)\b", value):
         return "Calm"
     return "Neutral"
 
@@ -1717,9 +1815,9 @@ def _mix_audio_arrays(speech: Any, background: Optional[Any]) -> Any:
         return speech
 
 
-class RvcRuntime:
+class LlvcRuntime:
     def __init__(self) -> None:
-        self.base_url = RVC_RUNTIME_URL
+        self.base_url = LLVC_RUNTIME_URL
         self.import_error: Optional[str] = None
         self._current_model: Optional[str] = None
         self._health_payload: dict[str, Any] = {}
@@ -1732,25 +1830,25 @@ class RvcRuntime:
             else:
                 response = requests.post(url, json=payload or {}, timeout=30)
         except Exception as exc:  # noqa: BLE001
-            self.import_error = f"rvc-runtime unreachable: {exc}"
+            self.import_error = f"llvc-runtime unreachable: {exc}"
             raise RuntimeError(self.import_error) from exc
         if not response.ok:
             detail = response.text[:220] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"rvc-runtime {path} failed: {detail}")
+            raise RuntimeError(f"llvc-runtime {path} failed: {detail}")
         try:
             parsed = response.json()
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"rvc-runtime {path} returned invalid JSON: {exc}") from exc
+            raise RuntimeError(f"llvc-runtime {path} returned invalid JSON: {exc}") from exc
         return parsed if isinstance(parsed, dict) else {}
 
     def ensure_engine(self) -> Any:
         payload = self._request_json("GET", "/v1/health")
         self._health_payload = payload
-        rvc_payload = payload.get("rvc") if isinstance(payload.get("rvc"), dict) else {}
-        available = bool(rvc_payload.get("available"))
-        self._current_model = str(rvc_payload.get("currentModel") or "").strip() or self._current_model
-        if not available and not bool(rvc_payload.get("fallbackAvailable")):
-            detail = str(rvc_payload.get("error") or payload.get("detail") or "rvc_runtime_unavailable")
+        llvc_payload = payload.get("llvc") if isinstance(payload.get("llvc"), dict) else {}
+        available = bool(llvc_payload.get("available"))
+        self._current_model = str(llvc_payload.get("currentModel") or "").strip() or self._current_model
+        if not available and not bool(llvc_payload.get("fallbackAvailable")):
+            detail = str(llvc_payload.get("error") or payload.get("detail") or "llvc_runtime_unavailable")
             self.import_error = detail
             raise RuntimeError(detail)
         self.import_error = None
@@ -1787,12 +1885,12 @@ class RvcRuntime:
     def convert_file(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
         model_name = str(kwargs.get("model_name") or "").strip()
         if not model_name:
-            raise RuntimeError("rvc_model_required")
-        preset = _normalize_rvc_preset(str(kwargs.get("preset") or VF_TTS_POST_RVC_PRESET))
+            raise RuntimeError("llvc_model_required")
+        preset = _normalize_llvc_preset(str(kwargs.get("preset") or VF_TTS_POST_LLVC_PRESET))
         with Path(input_wav).open("rb") as handle:
             response = requests.post(
                 f"{self.base_url}/v1/convert",
-                files={"file": ("input.wav", handle, "audio/wav")},
+                files={"file": ("source.wav", handle, "audio/wav")},
                 data={
                     "model_name": model_name,
                     "preset": preset,
@@ -1803,11 +1901,15 @@ class RvcRuntime:
                     "protect": str(float(kwargs.get("protect") or 0.33)),
                     "f0_method": str(kwargs.get("f0_method") or "rmvpe"),
                 },
-                timeout=VF_TTS_POST_RVC_TIMEOUT_SEC,
+                timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
             )
         if not response.ok:
-            detail = response.text[:240] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"rvc-runtime /v1/convert failed: {detail}")
+            detail = (response.text or "").strip()
+            if detail:
+                detail = detail[:4000]
+            else:
+                detail = f"HTTP {response.status_code}"
+            raise RuntimeError(f"llvc-runtime /v1/convert failed: {detail}")
         Path(output_wav).write_bytes(bytes(response.content or b""))
 
 
@@ -1837,43 +1939,21 @@ class KokoroCloneAdapter(VoiceConversionAdapter):
         return _probe_runtime_health(TTS_ENGINE_HEALTH_URLS["KOKORO"], timeout_sec=2.5)
 
 
-class RvcAdapter(VoiceConversionAdapter):
-    name = "RVC"
+class LlvcAdapter(VoiceConversionAdapter):
+    name = "LLVC"
     supports_one_shot_clone = False
     supports_realtime = True
     recommended_use_cases = ["covers", "voice_conversion"]
 
     def health(self) -> tuple[bool, str]:
         try:
-            rvc_runtime.ensure_engine()
-            return True, "rvc_ready"
+            llvc_runtime.ensure_engine()
+            return True, "llvc_ready"
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
     def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
-        rvc_runtime.convert_file(input_wav, output_wav, **kwargs)
-
-
-class LhqSvcAdapter(VoiceConversionAdapter):
-    name = "LHQ_SVC"
-    supports_one_shot_clone = False
-    supports_realtime = False
-    recommended_use_cases = ["covers_pilot", "non_clone_conversion"]
-
-    def health(self) -> tuple[bool, str]:
-        if not LHQ_SVC_PILOT_ENABLED:
-            return False, "lhq_pilot_disabled"
-        return True, "lhq_pilot_ready"
-
-    def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
-        if not LHQ_SVC_PILOT_ENABLED:
-            raise RuntimeError("lhq_pilot_disabled")
-        _convert_with_lhq_pilot_timbre(
-            input_wav,
-            output_wav,
-            pitch_shift=int(kwargs.get("pitch_shift") or 0),
-            sample_rate=int(kwargs.get("sample_rate") or 40000),
-        )
+        llvc_runtime.convert_file(input_wav, output_wav, **kwargs)
 
 
 class WhisperRuntime:
@@ -1955,13 +2035,12 @@ class SourceSeparationRuntime:
             return model
 
 
-rvc_runtime = RvcRuntime()
+llvc_runtime = LlvcRuntime()
 whisper_runtime = WhisperRuntime()
 source_separation_runtime = SourceSeparationRuntime()
 source_separation_lock = threading.Lock()
 kokoro_clone_adapter = KokoroCloneAdapter()
-rvc_adapter = RvcAdapter()
-lhq_svc_adapter = LhqSvcAdapter()
+llvc_adapter = LlvcAdapter()
 app = FastAPI(title="VoiceFlow Media Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -1982,10 +2061,23 @@ _INMEMORY_STRIPE_CUSTOMERS: dict[str, str] = {}
 _INMEMORY_WALLET_DAILY: dict[str, dict[str, Any]] = {}
 _INMEMORY_WALLET_TRANSACTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_COUPON_CODE_INDEX: dict[str, str] = {}
 _INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_GENERATION_HISTORY: dict[str, dict[str, Any]] = {}
 _INMEMORY_DAILY_USAGE_RESET_STATUS: dict[str, Any] = {}
-_INMEMORY_LOCK = threading.Lock()
+_INMEMORY_ADMIN_ROLES: dict[str, dict[str, Any]] = {}
+_INMEMORY_AUDIT_LEDGER_EVENTS: dict[str, dict[str, Any]] = {}
+_INMEMORY_AUDIT_LEDGER_ORDER: list[str] = []
+_INMEMORY_AUDIT_LEDGER_STATE: dict[str, Any] = {}
+_INMEMORY_ALERT_POLICIES: dict[str, dict[str, Any]] = {}
+_INMEMORY_ALERT_DESTINATIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_ALERT_EVENTS: dict[str, dict[str, Any]] = {}
+_INMEMORY_SCHEDULER_TASKS: dict[str, dict[str, Any]] = {}
+_INMEMORY_SCHEDULER_RUNS: dict[str, dict[str, Any]] = {}
+_INMEMORY_SCHEDULER_LOCK: dict[str, Any] = {}
+_INMEMORY_COUPON_ANALYTICS_DAILY: dict[str, dict[str, Any]] = {}
+_INMEMORY_COUPON_SUB_ATTRIBUTIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_LOCK = threading.RLock()
 _TTS_SUCCESS_LIMITER = SuccessQuotaLimiter(
     redis_url=VF_REDIS_URL,
     plan_limits=TTS_SUCCESS_PLAN_LIMITS,
@@ -2033,7 +2125,7 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
     "engineSemaphoreWaitMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "liveFirstChunkLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "liveChunkCount": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-    "liveChunkRvcLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "liveChunkLlvcLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "terminalEvents": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "runtimeLatencyByEngine": {
         "GEM": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
@@ -2050,6 +2142,11 @@ _GEMINI_POOLS_META: dict[str, Any] = {}
 _ADMIN_USAGE_LOCK = threading.Lock()
 _ADMIN_USAGE_RECENT_EVENTS: deque[dict[str, Any]] = deque()
 _ADMIN_USAGE_TOTALS: dict[str, dict[str, Any]] = {}
+_RBAC_CACHE_LOCK = threading.Lock()
+_RBAC_ACTOR_CACHE: dict[str, dict[str, Any]] = {}
+_SCHEDULER_THREAD_LOCK = threading.Lock()
+_SCHEDULER_THREAD: Optional[threading.Thread] = None
+_SCHEDULER_STOP_EVENT = threading.Event()
 
 
 def _init_firebase_clients() -> None:
@@ -2474,6 +2571,16 @@ def _as_positive_int(value: Any) -> int:
     return max(0, number)
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        number = float(default)
+    if not math.isfinite(number):
+        return float(default)
+    return number
+
+
 def _auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip()
     if normalized in {
@@ -2616,6 +2723,304 @@ def _require_admin_uid(request: Request) -> str:
     if _request_is_admin(request, uid):
         return uid
     raise HTTPException(status_code=403, detail="Admin access required.")
+
+
+def _rbac_default_permissions_for_role(role: str) -> set[str]:
+    safe_role = str(role or "").strip().lower()
+    return set(RBAC_ROLE_PERMISSION_MAP.get(safe_role) or set())
+
+
+def _rbac_normalize_role(role: str) -> str:
+    safe_role = str(role or "").strip().lower()
+    if safe_role in RBAC_ROLES:
+        return safe_role
+    return RBAC_ROLE_READ_ONLY_OPS
+
+
+def _rbac_normalize_status(status: str) -> str:
+    safe = str(status or "").strip().lower()
+    if safe in {"active", "disabled"}:
+        return safe
+    return "active"
+
+
+def _rbac_normalize_overrides(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    for token in values:
+        item = str(token or "").strip().lower()
+        if item in RBAC_PERMISSIONS and item not in normalized:
+            normalized.append(item)
+    return normalized
+
+
+def _rbac_cache_get(uid: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    now = _ai_ops_now_ms()
+    with _RBAC_CACHE_LOCK:
+        item = _RBAC_ACTOR_CACHE.get(safe_uid)
+        if not isinstance(item, dict):
+            return None
+        expires_at = int(item.get("expiresAtMs") or 0)
+        if expires_at <= now:
+            _RBAC_ACTOR_CACHE.pop(safe_uid, None)
+            return None
+        return dict(item)
+
+
+def _rbac_cache_put(uid: str, actor: dict[str, Any]) -> None:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return
+    payload = dict(actor or {})
+    payload["expiresAtMs"] = _ai_ops_now_ms() + 60_000
+    with _RBAC_CACHE_LOCK:
+        _RBAC_ACTOR_CACHE[safe_uid] = payload
+
+
+def _rbac_invalidate_cache(uid: str) -> None:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return
+    with _RBAC_CACHE_LOCK:
+        _RBAC_ACTOR_CACHE.pop(safe_uid, None)
+
+
+def _rbac_load_assignment(uid: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    collection = _firestore_collection(ADMIN_ROLES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_ADMIN_ROLES.get(safe_uid)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_uid).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    payload = doc.to_dict() or {}
+    payload["uid"] = safe_uid
+    return payload
+
+
+def _rbac_write_assignment(uid: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing target uid.")
+    current = _rbac_load_assignment(safe_uid) or {}
+    now_iso = _utc_now().isoformat()
+    version = int(current.get("version") or 0) + 1
+    row = {
+        "uid": safe_uid,
+        "role": _rbac_normalize_role(str(payload.get("role") or current.get("role") or RBAC_ROLE_READ_ONLY_OPS)),
+        "allowOverrides": _rbac_normalize_overrides(
+            payload.get("allowOverrides") if payload.get("allowOverrides") is not None else current.get("allowOverrides")
+        ),
+        "denyOverrides": _rbac_normalize_overrides(
+            payload.get("denyOverrides") if payload.get("denyOverrides") is not None else current.get("denyOverrides")
+        ),
+        "status": _rbac_normalize_status(str(payload.get("status") or current.get("status") or "active")),
+        "version": version,
+        "updatedAt": now_iso,
+        "updatedBy": str(payload.get("updatedBy") or current.get("updatedBy") or "").strip(),
+    }
+    collection = _firestore_collection(ADMIN_ROLES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ADMIN_ROLES[safe_uid] = dict(row)
+    else:
+        try:
+            collection.document(safe_uid).set(row, merge=True)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Failed to write RBAC assignment: {exc}") from exc
+    _rbac_invalidate_cache(safe_uid)
+    return row
+
+
+def _rbac_bootstrap_actor(uid: str, request: Request) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    if _request_claim_is_admin(request) or safe_uid in VF_ADMIN_APPROVER_UIDS or _firestore_user_is_admin(safe_uid):
+        role = RBAC_ROLE_SUPER_ADMIN
+    elif not VF_AUTH_ENFORCE and safe_uid.startswith("local_admin"):
+        role = RBAC_ROLE_SUPER_ADMIN
+    else:
+        return None
+    return {
+        "uid": safe_uid,
+        "role": role,
+        "permissions": sorted(_rbac_default_permissions_for_role(role)),
+        "status": "active",
+        "version": 0,
+        "source": "legacy_bootstrap",
+    }
+
+
+def _resolve_actor(uid: str, request: Request) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    if not VF_RBAC_ENABLED:
+        if _request_is_admin(request, safe_uid):
+            return {
+                "uid": safe_uid,
+                "role": RBAC_ROLE_SUPER_ADMIN,
+                "permissions": sorted(RBAC_PERMISSIONS),
+                "status": "active",
+                "version": 0,
+                "source": "rbac_disabled_admin",
+            }
+        return {
+            "uid": safe_uid,
+            "role": RBAC_ROLE_READ_ONLY_OPS,
+            "permissions": [],
+            "status": "disabled",
+            "version": 0,
+            "source": "rbac_disabled_non_admin",
+        }
+    cached = _rbac_cache_get(safe_uid)
+    if isinstance(cached, dict):
+        return {key: value for key, value in cached.items() if key != "expiresAtMs"}
+    assignment = _rbac_load_assignment(safe_uid)
+    if isinstance(assignment, dict):
+        role = _rbac_normalize_role(str(assignment.get("role") or ""))
+        deny = _rbac_normalize_overrides(assignment.get("denyOverrides"))
+        allow = _rbac_normalize_overrides(assignment.get("allowOverrides"))
+        permissions = _rbac_default_permissions_for_role(role)
+        permissions.update(allow)
+        permissions.difference_update(set(deny))
+        actor = {
+            "uid": safe_uid,
+            "role": role,
+            "permissions": sorted(permissions),
+            "status": _rbac_normalize_status(str(assignment.get("status") or "active")),
+            "version": int(assignment.get("version") or 0),
+            "source": "admin_roles",
+            "allowOverrides": allow,
+            "denyOverrides": deny,
+        }
+        _rbac_cache_put(safe_uid, actor)
+        return actor
+    bootstrap = _rbac_bootstrap_actor(safe_uid, request)
+    if bootstrap is not None:
+        _rbac_cache_put(safe_uid, bootstrap)
+        return bootstrap
+    actor = {
+        "uid": safe_uid,
+        "role": RBAC_ROLE_READ_ONLY_OPS,
+        "permissions": [],
+        "status": "disabled",
+        "version": 0,
+        "source": "unassigned",
+    }
+    _rbac_cache_put(safe_uid, actor)
+    return actor
+
+
+def _has_permission(actor: dict[str, Any], permission: str) -> bool:
+    safe_permission = str(permission or "").strip().lower()
+    if safe_permission not in RBAC_PERMISSIONS:
+        return False
+    if str(actor.get("status") or "active").strip().lower() == "disabled":
+        return False
+    role = _rbac_normalize_role(str(actor.get("role") or ""))
+    if role == RBAC_ROLE_SUPER_ADMIN:
+        return True
+    deny = set(_rbac_normalize_overrides(actor.get("denyOverrides")))
+    if safe_permission in deny:
+        return False
+    allow = set(_rbac_normalize_overrides(actor.get("allowOverrides")))
+    permissions = set(actor.get("permissions") or [])
+    if safe_permission in allow:
+        return True
+    return safe_permission in permissions
+
+
+def _require_permission(request: Request, permission: str) -> tuple[str, dict[str, Any]]:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    if _has_permission(actor, permission):
+        request.state.actor = actor
+        return uid, actor
+    if not VF_RBAC_ENFORCE and _request_is_admin(request, uid):
+        fallback_actor = {
+            "uid": uid,
+            "role": RBAC_ROLE_SUPER_ADMIN,
+            "permissions": sorted(RBAC_PERMISSIONS),
+            "status": "active",
+            "version": int(actor.get("version") or 0),
+            "source": "legacy_admin_fallback",
+        }
+        request.state.actor = fallback_actor
+        return uid, fallback_actor
+    raise HTTPException(status_code=403, detail=f"Missing permission: {permission}")
+
+
+def _rbac_roles_payload() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "roles": sorted(RBAC_ROLES),
+        "permissions": sorted(RBAC_PERMISSIONS),
+        "matrix": {
+            role: sorted(_rbac_default_permissions_for_role(role))
+            for role in sorted(RBAC_ROLES)
+        },
+    }
+
+
+def _rbac_list_assignments(limit: int = 100, cursor: str = "", q: str = "") -> tuple[list[dict[str, Any]], Optional[str]]:
+    safe_limit = max(1, min(200, int(limit)))
+    safe_cursor = str(cursor or "").strip()
+    needle = str(q or "").strip().lower()
+    rows: list[dict[str, Any]] = []
+    next_cursor: Optional[str] = None
+    collection = _firestore_collection(ADMIN_ROLES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            keys = sorted(_INMEMORY_ADMIN_ROLES.keys())
+            if safe_cursor:
+                keys = [key for key in keys if key > safe_cursor]
+            for uid in keys:
+                row = _INMEMORY_ADMIN_ROLES.get(uid)
+                if not isinstance(row, dict):
+                    continue
+                if needle and needle not in uid.lower() and needle not in str(row.get("role") or "").lower():
+                    continue
+                rows.append(dict(row))
+                if len(rows) >= safe_limit:
+                    break
+            if len(rows) == safe_limit:
+                next_cursor = str(rows[-1].get("uid") or "")
+        return rows, next_cursor
+    try:
+        docs = list(collection.limit(max(20, safe_limit * 3)).stream())
+    except Exception:
+        docs = []
+    docs.sort(key=lambda doc: str(doc.id or ""))
+    for doc in docs:
+        uid = str(doc.id or "").strip()
+        if not uid:
+            continue
+        if safe_cursor and uid <= safe_cursor:
+            continue
+        row = doc.to_dict() or {}
+        row["uid"] = uid
+        role_token = str(row.get("role") or "").lower()
+        if needle and needle not in uid.lower() and needle not in role_token:
+            continue
+        rows.append(row)
+        if len(rows) >= safe_limit:
+            break
+    if len(rows) == safe_limit:
+        next_cursor = str(rows[-1].get("uid") or "")
+    return rows, next_cursor
 
 
 def _firestore_collection(name: str) -> Any:
@@ -3309,7 +3714,7 @@ class FrontendErrorReportRequest(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
-class LoadRvcModelRequest(BaseModel):
+class LoadLlvcModelRequest(BaseModel):
     modelName: str
     version: str = "v2"
 
@@ -3337,6 +3742,7 @@ class BillingCheckoutSessionRequest(BaseModel):
     plan: str
     successUrl: Optional[str] = None
     cancelUrl: Optional[str] = None
+    couponCode: Optional[str] = None
 
 
 class BillingPortalSessionRequest(BaseModel):
@@ -3349,18 +3755,36 @@ class BillingTokenPackCheckoutSessionRequest(BaseModel):
 
 
 class CouponCreateRequest(BaseModel):
-    code: str
-    creditVf: int
+    code: Optional[str] = None
+    couponType: Optional[str] = None
+    creditVf: Optional[int] = None
     expiresAt: Optional[str] = None
-    maxRedemptions: Optional[int] = None
+    usagePolicy: Optional[str] = None
+    usageLimit: Optional[int] = None
+    maxRedemptions: Optional[int] = None  # legacy alias
+    discountType: Optional[str] = None
+    percentOff: Optional[float] = None
+    amountOffInr: Optional[int] = None
+    appliesToPlans: Optional[list[str]] = None
+    planDiscounts: Optional[list[dict[str, Any]]] = None
     active: bool = True
     note: Optional[str] = None
 
 
 class CouponPatchRequest(BaseModel):
+    code: Optional[str] = None
+    couponType: Optional[str] = None
+    creditVf: Optional[int] = None
     active: Optional[bool] = None
     expiresAt: Optional[str] = None
+    usagePolicy: Optional[str] = None
+    usageLimit: Optional[int] = None
     maxRedemptions: Optional[int] = None
+    discountType: Optional[str] = None
+    percentOff: Optional[float] = None
+    amountOffInr: Optional[int] = None
+    appliesToPlans: Optional[list[str]] = None
+    planDiscounts: Optional[list[dict[str, Any]]] = None
     note: Optional[str] = None
 
 
@@ -3377,6 +3801,85 @@ class AdminUserPatchRequest(BaseModel):
 
 class AdminResetPasswordRequest(BaseModel):
     newPassword: str
+
+
+class AdminRoleAssignmentRequest(BaseModel):
+    role: str
+    allowOverrides: Optional[list[str]] = None
+    denyOverrides: Optional[list[str]] = None
+    status: Optional[str] = None
+
+
+class AdminRoleStatusRequest(BaseModel):
+    note: Optional[str] = None
+
+
+class AlertPolicyCreateRequest(BaseModel):
+    name: str
+    metricKey: str
+    operator: str = "gt"
+    threshold: float
+    windowSec: int = 300
+    cooldownSec: int = 300
+    severity: str = "warning"
+    enabled: bool = True
+    channels: Optional[list[str]] = None
+
+
+class AlertPolicyPatchRequest(BaseModel):
+    name: Optional[str] = None
+    metricKey: Optional[str] = None
+    operator: Optional[str] = None
+    threshold: Optional[float] = None
+    windowSec: Optional[int] = None
+    cooldownSec: Optional[int] = None
+    severity: Optional[str] = None
+    enabled: Optional[bool] = None
+    channels: Optional[list[str]] = None
+
+
+class AlertDestinationCreateRequest(BaseModel):
+    type: str = "webhook"
+    name: str
+    url: str
+    secretRef: Optional[str] = None
+    enabled: bool = True
+
+
+class AlertDestinationPatchRequest(BaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    secretRef: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class AlertEventDecisionRequest(BaseModel):
+    adminToken: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ScheduledTaskCreateRequest(BaseModel):
+    taskType: str
+    cronExpr: str
+    timezone: str = "UTC"
+    enabled: bool = True
+    dryRun: bool = False
+    payload: Optional[dict[str, Any]] = None
+    concurrencyPolicy: str = "forbid"
+
+
+class ScheduledTaskPatchRequest(BaseModel):
+    cronExpr: Optional[str] = None
+    timezone: Optional[str] = None
+    enabled: Optional[bool] = None
+    dryRun: Optional[bool] = None
+    payload: Optional[dict[str, Any]] = None
+    concurrencyPolicy: Optional[str] = None
+
+
+class ScheduledTaskRunRequest(BaseModel):
+    dryRun: Optional[bool] = None
+    adminToken: Optional[str] = None
 
 
 class GeminiApiPoolsUpdateRequest(BaseModel):
@@ -3981,6 +4484,334 @@ def _admin_usage_export_csv_rows(summary: dict[str, Any], window_name: str) -> s
                 ]
             )
     return text_buffer.getvalue()
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+
+
+def _hash_sha256_hex(value: str) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _request_ip_hash(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    forwarded = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    raw_ip = forwarded or str(request.client.host if request.client else "")
+    if not raw_ip:
+        return ""
+    return _hash_sha256_hex(raw_ip)
+
+
+def _request_ua_hash(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    ua = str(request.headers.get("user-agent") or "").strip()
+    if not ua:
+        return ""
+    return _hash_sha256_hex(ua)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _truncate_text(value: Any, max_len: int = 320) -> str:
+    return str(value or "").strip()[:max(0, int(max_len))]
+
+
+def _normalize_iso_datetime(value: str, *, fallback: Optional[datetime] = None) -> datetime:
+    parsed = _parse_optional_datetime(value)
+    if parsed is not None:
+        return parsed
+    return fallback or _utc_now()
+
+
+def _audit_state_read() -> dict[str, Any]:
+    if not VF_AUDIT_LEDGER_ENABLED:
+        return {"sequence": 0, "lastHash": AUDIT_GENESIS_HASH, "updatedAt": _utc_now().isoformat()}
+    collection = _firestore_collection(AUDIT_LEDGER_STATE_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            state = dict(_INMEMORY_AUDIT_LEDGER_STATE or {})
+        if not state:
+            state = {"sequence": 0, "lastHash": AUDIT_GENESIS_HASH, "updatedAt": _utc_now().isoformat()}
+        return state
+    try:
+        doc = collection.document("current").get()
+    except Exception:
+        return {"sequence": 0, "lastHash": AUDIT_GENESIS_HASH, "updatedAt": _utc_now().isoformat()}
+    if not doc.exists:
+        return {"sequence": 0, "lastHash": AUDIT_GENESIS_HASH, "updatedAt": _utc_now().isoformat()}
+    payload = doc.to_dict() or {}
+    return {
+        "sequence": _safe_int(payload.get("sequence"), 0),
+        "lastHash": str(payload.get("lastHash") or AUDIT_GENESIS_HASH),
+        "updatedAt": str(payload.get("updatedAt") or _utc_now().isoformat()),
+    }
+
+
+def _audit_hash(payload_without_event_hash: dict[str, Any]) -> str:
+    canonical = _canonical_json(payload_without_event_hash)
+    return _hash_sha256_hex(canonical)
+
+
+def _audit_append_event(
+    *,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    before: Optional[dict[str, Any]] = None,
+    after: Optional[dict[str, Any]] = None,
+    meta: Optional[dict[str, Any]] = None,
+    request: Optional[Request] = None,
+    actor_uid: Optional[str] = None,
+    actor_role: Optional[str] = None,
+    request_id: str = "",
+) -> dict[str, Any]:
+    if not VF_AUDIT_LEDGER_ENABLED:
+        return {"ok": True, "disabled": True}
+    safe_action = _truncate_text(action, 120)
+    safe_resource_type = _truncate_text(resource_type, 80)
+    safe_resource_id = _truncate_text(resource_id, 160)
+    safe_actor_uid = _truncate_text(actor_uid or (_require_request_uid(request) if request is not None else ""), 160)
+    safe_actor_role = _truncate_text(actor_role or "", 80)
+    if not safe_actor_role and request is not None:
+        actor = getattr(request.state, "actor", None)
+        if isinstance(actor, dict):
+            safe_actor_role = _truncate_text(actor.get("role"), 80)
+    event_id = f"audit_{uuid.uuid4().hex}"
+    now_iso = _utc_now().isoformat()
+    safe_request_id = _truncate_text(request_id, 160) or _truncate_text(
+        str(request.headers.get("x-request-id") or "") if request is not None else "", 160
+    )
+
+    collection = _firestore_collection(AUDIT_LEDGER_COLLECTION)
+    state_collection = _firestore_collection(AUDIT_LEDGER_STATE_COLLECTION)
+    if collection is None or state_collection is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            state = dict(_INMEMORY_AUDIT_LEDGER_STATE or {})
+            sequence = _safe_int(state.get("sequence"), 0) + 1
+            prev_hash = str(state.get("lastHash") or AUDIT_GENESIS_HASH)
+            payload = {
+                "eventId": event_id,
+                "ts": now_iso,
+                "actorUid": safe_actor_uid,
+                "actorRole": safe_actor_role,
+                "action": safe_action,
+                "resourceType": safe_resource_type,
+                "resourceId": safe_resource_id,
+                "requestId": safe_request_id,
+                "ipHash": _request_ip_hash(request),
+                "uaHash": _request_ua_hash(request),
+                "before": before if isinstance(before, dict) else {},
+                "after": after if isinstance(after, dict) else {},
+                "meta": meta if isinstance(meta, dict) else {},
+                "prevHash": prev_hash,
+                "hashAlgo": AUDIT_HASH_ALGO,
+                "sequence": sequence,
+            }
+            payload["eventHash"] = _audit_hash(payload)
+            _INMEMORY_AUDIT_LEDGER_EVENTS[event_id] = dict(payload)
+            _INMEMORY_AUDIT_LEDGER_ORDER.append(event_id)
+            _INMEMORY_AUDIT_LEDGER_STATE.clear()
+            _INMEMORY_AUDIT_LEDGER_STATE.update(
+                {
+                    "sequence": sequence,
+                    "lastHash": payload["eventHash"],
+                    "updatedAt": now_iso,
+                }
+            )
+            return {"ok": True, "event": payload}
+
+    state_ref = state_collection.document("current")
+    event_ref = collection.document(event_id)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> dict[str, Any]:
+        state_doc = state_ref.get(transaction=transaction_obj)
+        state_payload = state_doc.to_dict() if state_doc.exists else {}
+        sequence = _safe_int(state_payload.get("sequence"), 0) + 1
+        prev_hash = str(state_payload.get("lastHash") or AUDIT_GENESIS_HASH)
+        payload = {
+            "eventId": event_id,
+            "ts": now_iso,
+            "actorUid": safe_actor_uid,
+            "actorRole": safe_actor_role,
+            "action": safe_action,
+            "resourceType": safe_resource_type,
+            "resourceId": safe_resource_id,
+            "requestId": safe_request_id,
+            "ipHash": _request_ip_hash(request),
+            "uaHash": _request_ua_hash(request),
+            "before": before if isinstance(before, dict) else {},
+            "after": after if isinstance(after, dict) else {},
+            "meta": meta if isinstance(meta, dict) else {},
+            "prevHash": prev_hash,
+            "hashAlgo": AUDIT_HASH_ALGO,
+            "sequence": sequence,
+        }
+        payload["eventHash"] = _audit_hash(payload)
+        transaction_obj.set(event_ref, payload, merge=False)
+        transaction_obj.set(
+            state_ref,
+            {
+                "sequence": sequence,
+                "lastHash": payload["eventHash"],
+                "updatedAt": now_iso,
+            },
+            merge=False,
+        )
+        return payload
+
+    try:
+        written = _apply(transaction)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "event": written}
+
+
+def _audit_list_events(
+    *,
+    actor_uid: str = "",
+    action: str = "",
+    resource_type: str = "",
+    from_iso: str = "",
+    to_iso: str = "",
+    cursor: str = "",
+    limit: int = 100,
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    safe_limit = max(1, min(500, int(limit)))
+    safe_actor_uid = str(actor_uid or "").strip()
+    safe_action = str(action or "").strip().lower()
+    safe_resource_type = str(resource_type or "").strip().lower()
+    from_dt = _parse_optional_datetime(from_iso) if from_iso else None
+    to_dt = _parse_optional_datetime(to_iso) if to_iso else None
+    safe_cursor = str(cursor or "").strip()
+    rows: list[dict[str, Any]] = []
+    next_cursor: Optional[str] = None
+
+    collection = _firestore_collection(AUDIT_LEDGER_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            ordered = [
+                _INMEMORY_AUDIT_LEDGER_EVENTS.get(event_id)
+                for event_id in _INMEMORY_AUDIT_LEDGER_ORDER
+            ]
+        for item in ordered:
+            if not isinstance(item, dict):
+                continue
+            event_id = str(item.get("eventId") or "")
+            if safe_cursor and event_id <= safe_cursor:
+                continue
+            if safe_actor_uid and str(item.get("actorUid") or "").strip() != safe_actor_uid:
+                continue
+            if safe_action and str(item.get("action") or "").strip().lower() != safe_action:
+                continue
+            if safe_resource_type and str(item.get("resourceType") or "").strip().lower() != safe_resource_type:
+                continue
+            ts = _parse_optional_datetime(str(item.get("ts") or ""))
+            if from_dt and ts and ts < from_dt:
+                continue
+            if to_dt and ts and ts > to_dt:
+                continue
+            rows.append(dict(item))
+            if len(rows) >= safe_limit:
+                break
+        if len(rows) == safe_limit:
+            next_cursor = str(rows[-1].get("eventId") or "")
+        return rows, next_cursor
+
+    try:
+        docs = list(collection.limit(max(1000, safe_limit * 4)).stream())
+    except Exception:
+        docs = []
+    mapped = [{**(doc.to_dict() or {}), "eventId": str(doc.id or "")} for doc in docs]
+    mapped.sort(key=lambda item: _safe_int(item.get("sequence"), 0))
+    for item in mapped:
+        event_id = str(item.get("eventId") or "")
+        if not event_id:
+            continue
+        if safe_cursor and event_id <= safe_cursor:
+            continue
+        if safe_actor_uid and str(item.get("actorUid") or "").strip() != safe_actor_uid:
+            continue
+        if safe_action and str(item.get("action") or "").strip().lower() != safe_action:
+            continue
+        if safe_resource_type and str(item.get("resourceType") or "").strip().lower() != safe_resource_type:
+            continue
+        ts = _parse_optional_datetime(str(item.get("ts") or ""))
+        if from_dt and ts and ts < from_dt:
+            continue
+        if to_dt and ts and ts > to_dt:
+            continue
+        rows.append(item)
+        if len(rows) >= safe_limit:
+            break
+    if len(rows) == safe_limit:
+        next_cursor = str(rows[-1].get("eventId") or "")
+    return rows, next_cursor
+
+
+def _audit_verify_chain(*, from_seq: int = 0, to_seq: int = 0, limit: int = 1000) -> dict[str, Any]:
+    safe_limit = max(1, min(5000, int(limit)))
+    safe_from = max(0, int(from_seq))
+    safe_to = max(0, int(to_seq))
+    collection = _firestore_collection(AUDIT_LEDGER_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [
+                dict(_INMEMORY_AUDIT_LEDGER_EVENTS.get(event_id) or {})
+                for event_id in _INMEMORY_AUDIT_LEDGER_ORDER
+            ]
+    else:
+        try:
+            docs = list(collection.limit(safe_limit * 2).stream())
+        except Exception:
+            docs = []
+        rows = [{**(doc.to_dict() or {}), "eventId": str(doc.id or "")} for doc in docs]
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: _safe_int(item.get("sequence"), 0))
+    if safe_from > 0:
+        rows = [row for row in rows if _safe_int(row.get("sequence"), 0) >= safe_from]
+    if safe_to > 0:
+        rows = [row for row in rows if _safe_int(row.get("sequence"), 0) <= safe_to]
+    rows = rows[:safe_limit]
+
+    checked = 0
+    mismatch_seq = None
+    mismatch_event_id = None
+    prev_hash = AUDIT_GENESIS_HASH
+    for row in rows:
+        checked += 1
+        payload = dict(row)
+        event_hash = str(payload.pop("eventHash", "") or "")
+        expected_hash = _audit_hash(payload)
+        if str(row.get("prevHash") or "") != prev_hash or event_hash != expected_hash:
+            mismatch_seq = _safe_int(row.get("sequence"), 0)
+            mismatch_event_id = str(row.get("eventId") or "")
+            break
+        prev_hash = event_hash
+
+    return {
+        "ok": mismatch_seq is None,
+        "checked": checked,
+        "mismatchAtSequence": mismatch_seq,
+        "mismatchEventId": mismatch_event_id,
+    }
 
 
 def _ai_ops_is_exempt_path(path: str) -> bool:
@@ -4720,6 +5551,1017 @@ def _ai_ops_build_status(*, include_route_stats: bool = False) -> dict[str, Any]
     return response
 
 
+def _alert_normalize_channels(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return ["in_app"]
+    channels: list[str] = []
+    for token in values:
+        safe = str(token or "").strip().lower()
+        if safe in {"in_app", "webhook"} and safe not in channels:
+            channels.append(safe)
+    return channels or ["in_app"]
+
+
+def _alert_normalize_operator(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if token in ALERT_OPERATORS:
+        return token
+    return "gt"
+
+
+def _alert_compare(operator: str, current: float, threshold: float) -> bool:
+    op = _alert_normalize_operator(operator)
+    if op == "gt":
+        return current > threshold
+    if op == "gte":
+        return current >= threshold
+    if op == "lt":
+        return current < threshold
+    if op == "lte":
+        return current <= threshold
+    if op == "eq":
+        return abs(current - threshold) < 1e-9
+    if op == "neq":
+        return abs(current - threshold) >= 1e-9
+    return False
+
+
+def _alert_collection(name: str) -> Any:
+    return _firestore_collection(name)
+
+
+def _alert_metric_sample(metric_key: str) -> float:
+    token = str(metric_key or "").strip().lower()
+    if token in {"queue_depth", "tts_queue_depth"}:
+        depth = _TTS_JOB_QUEUE.depth_snapshot()
+        return float(_safe_int((depth or {}).get("total"), 0))
+    if token in {"error_rate_last24h", "http_error_rate_last24h"}:
+        usage = _admin_usage_summary_payload()
+        metric = ((usage.get("windows") or {}).get("last24h") or {})
+        return float(_safe_float(metric.get("errorRatePct"), 0.0))
+    if token in {"guardian_pending_approvals", "pending_approvals"}:
+        status = _ai_ops_build_status(include_route_stats=False)
+        return float(_safe_int(status.get("pendingApprovalCount"), 0))
+    if token in {"guardian_major_issues", "major_issues"}:
+        status = _ai_ops_build_status(include_route_stats=False)
+        issues = list(status.get("issues") or [])
+        count = sum(1 for issue in issues if str((issue or {}).get("severity") or "") == "major")
+        return float(count)
+    if token in {"coupon_release_ratio_last24h", "coupon_abuse_ratio"}:
+        now = _utc_now()
+        cutoff = now - timedelta(hours=24)
+        total = 0
+        released = 0
+        collection = _firestore_collection("coupon_redemptions")
+        if collection is None:
+            with _INMEMORY_LOCK:
+                items = list(_INMEMORY_COUPON_REDEMPTIONS.values())
+        else:
+            try:
+                items = [doc.to_dict() or {} for doc in collection.limit(3000).stream()]
+            except Exception:
+                items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            created = _parse_optional_datetime(str(item.get("createdAt") or ""))
+            if created and created < cutoff:
+                continue
+            total += 1
+            if str(item.get("status") or "").strip().lower() == "released":
+                released += 1
+        if total <= 0:
+            return 0.0
+        return round((float(released) / float(total)) * 100.0, 4)
+    return 0.0
+
+
+def _alert_list_policies(limit: int = 200) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    collection = _alert_collection(ALERT_POLICIES_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_ALERT_POLICIES.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit).stream()]
+        except Exception:
+            rows = []
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    return rows[:safe_limit]
+
+
+def _alert_list_destinations(limit: int = 200) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    collection = _alert_collection(ALERT_DESTINATIONS_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_ALERT_DESTINATIONS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit).stream()]
+        except Exception:
+            rows = []
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    return rows[:safe_limit]
+
+
+def _alert_list_events(limit: int = 200) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    collection = _alert_collection(ALERT_EVENTS_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_ALERT_EVENTS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit).stream()]
+        except Exception:
+            rows = []
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: str(item.get("lastTriggeredAt") or item.get("openedAt") or ""), reverse=True)
+    return rows[:safe_limit]
+
+
+def _alert_upsert_policy(policy_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(policy_id or "").strip()
+    if not safe_id:
+        safe_id = f"apol_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["id"] = safe_id
+    collection = _alert_collection(ALERT_POLICIES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ALERT_POLICIES[safe_id] = dict(payload)
+        return payload
+    collection.document(safe_id).set(payload, merge=True)
+    return payload
+
+
+def _alert_upsert_destination(destination_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(destination_id or "").strip()
+    if not safe_id:
+        safe_id = f"adst_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["id"] = safe_id
+    collection = _alert_collection(ALERT_DESTINATIONS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ALERT_DESTINATIONS[safe_id] = dict(payload)
+        return payload
+    collection.document(safe_id).set(payload, merge=True)
+    return payload
+
+
+def _alert_upsert_event(event_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(event_id or "").strip()
+    if not safe_id:
+        safe_id = f"aevt_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["id"] = safe_id
+    collection = _alert_collection(ALERT_EVENTS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ALERT_EVENTS[safe_id] = dict(payload)
+        return payload
+    collection.document(safe_id).set(payload, merge=True)
+    return payload
+
+
+def _alert_get_policy(policy_id: str) -> Optional[dict[str, Any]]:
+    safe_id = str(policy_id or "").strip()
+    if not safe_id:
+        return None
+    collection = _alert_collection(ALERT_POLICIES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_ALERT_POLICIES.get(safe_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "id": safe_id}
+
+
+def _alert_get_destination(destination_id: str) -> Optional[dict[str, Any]]:
+    safe_id = str(destination_id or "").strip()
+    if not safe_id:
+        return None
+    collection = _alert_collection(ALERT_DESTINATIONS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_ALERT_DESTINATIONS.get(safe_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "id": safe_id}
+
+
+def _alert_get_event(event_id: str) -> Optional[dict[str, Any]]:
+    safe_id = str(event_id or "").strip()
+    if not safe_id:
+        return None
+    collection = _alert_collection(ALERT_EVENTS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_ALERT_EVENTS.get(safe_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "id": safe_id}
+
+
+def _alert_find_open_event(policy_id: str) -> Optional[dict[str, Any]]:
+    safe_policy_id = str(policy_id or "").strip()
+    if not safe_policy_id:
+        return None
+    events = _alert_list_events(limit=500)
+    for item in events:
+        if str(item.get("policyId") or "").strip() != safe_policy_id:
+            continue
+        if str(item.get("status") or "").strip().lower() == "open":
+            return item
+    return None
+
+
+def _alert_dispatch_webhooks(event: dict[str, Any]) -> dict[str, Any]:
+    destinations = [item for item in _alert_list_destinations(limit=200) if _as_bool(item.get("enabled"))]
+    deliveries = list(event.get("delivery") or [])
+    delivery_by_dest = {
+        str(item.get("destinationId") or ""): dict(item)
+        for item in deliveries
+        if isinstance(item, dict)
+    }
+    now_ms = _ai_ops_now_ms()
+    backoff_steps = [30_000, 120_000, 600_000]
+    event_payload = {
+        "eventId": str(event.get("id") or event.get("eventId") or ""),
+        "policyId": str(event.get("policyId") or ""),
+        "status": str(event.get("status") or ""),
+        "severity": str(event.get("severity") or ""),
+        "openedAt": str(event.get("openedAt") or ""),
+        "lastTriggeredAt": str(event.get("lastTriggeredAt") or ""),
+        "samples": list(event.get("samples") or []),
+    }
+    for destination in destinations:
+        if str(destination.get("type") or "webhook").strip().lower() != "webhook":
+            continue
+        if "webhook" not in _alert_normalize_channels(event.get("channels")):
+            continue
+        destination_id = str(destination.get("id") or "").strip()
+        if not destination_id:
+            continue
+        state = dict(delivery_by_dest.get(destination_id) or {})
+        attempts = _safe_int(state.get("attempts"), 0)
+        next_attempt_at_ms = _safe_int(state.get("nextAttemptAtMs"), 0)
+        status = str(state.get("status") or "").strip().lower()
+        if status == "delivered":
+            continue
+        if attempts >= len(backoff_steps):
+            continue
+        if attempts > 0 and now_ms < next_attempt_at_ms:
+            continue
+        url = str(destination.get("url") or "").strip()
+        if not url:
+            continue
+        secret = str(destination.get("secretRef") or "").strip()
+        body_text = _canonical_json(event_payload)
+        signature = hmac.new(secret.encode("utf-8"), body_text.encode("utf-8"), hashlib.sha256).hexdigest() if secret else ""
+        idempotency_key = f"{event_payload['eventId']}:{destination_id}:{int(now_ms // 30_000)}"
+        try:
+            response = requests.post(
+                url,
+                data=body_text.encode("utf-8"),
+                headers={
+                    "content-type": "application/json",
+                    "x-vf-signature-sha256": signature,
+                    "x-vf-idempotency-key": idempotency_key,
+                },
+                timeout=8,
+            )
+            if response.ok:
+                state.update(
+                    {
+                        "destinationId": destination_id,
+                        "attempts": attempts + 1,
+                        "status": "delivered",
+                        "lastAttemptAtMs": now_ms,
+                        "nextAttemptAtMs": 0,
+                        "code": int(response.status_code),
+                    }
+                )
+            else:
+                retry_after = backoff_steps[min(attempts, len(backoff_steps) - 1)]
+                state.update(
+                    {
+                        "destinationId": destination_id,
+                        "attempts": attempts + 1,
+                        "status": "retry",
+                        "lastAttemptAtMs": now_ms,
+                        "nextAttemptAtMs": now_ms + retry_after,
+                        "code": int(response.status_code),
+                        "error": _truncate_text(response.text, 280),
+                    }
+                )
+        except Exception as exc:
+            retry_after = backoff_steps[min(attempts, len(backoff_steps) - 1)]
+            state.update(
+                {
+                    "destinationId": destination_id,
+                    "attempts": attempts + 1,
+                    "status": "retry",
+                    "lastAttemptAtMs": now_ms,
+                    "nextAttemptAtMs": now_ms + retry_after,
+                    "error": _truncate_text(str(exc), 280),
+                }
+            )
+        delivery_by_dest[destination_id] = state
+    event["delivery"] = list(delivery_by_dest.values())
+    return event
+
+
+def _alert_evaluate_once() -> dict[str, Any]:
+    if not VF_ALERT_ENGINE_ENABLED:
+        return {"ok": True, "disabled": True, "evaluated": 0}
+    policies = [item for item in _alert_list_policies(limit=500) if _as_bool(item.get("enabled"))]
+    evaluated = 0
+    opened = 0
+    resolved = 0
+    now_iso = _utc_now().isoformat()
+    now_ms = _ai_ops_now_ms()
+    for policy in policies:
+        policy_id = str(policy.get("id") or "").strip()
+        if not policy_id:
+            continue
+        evaluated += 1
+        metric_key = str(policy.get("metricKey") or "").strip()
+        current_value = _alert_metric_sample(metric_key)
+        threshold = _safe_float(policy.get("threshold"), 0.0)
+        operator = _alert_normalize_operator(str(policy.get("operator") or "gt"))
+        cooldown_sec = max(0, _safe_int(policy.get("cooldownSec"), 0))
+        trigger = _alert_compare(operator, current_value, threshold)
+        existing = _alert_find_open_event(policy_id)
+        if trigger:
+            if existing is not None:
+                last_triggered = _parse_optional_datetime(str(existing.get("lastTriggeredAt") or ""))
+                if last_triggered and (_utc_now() - last_triggered).total_seconds() < cooldown_sec:
+                    continue
+                samples = list(existing.get("samples") or [])
+                samples.append({"ts": now_iso, "value": current_value})
+                samples = samples[-40:]
+                existing["lastTriggeredAt"] = now_iso
+                existing["samples"] = samples
+                existing["channels"] = _alert_normalize_channels(policy.get("channels"))
+                existing["severity"] = str(policy.get("severity") or "warning")
+                existing = _alert_dispatch_webhooks(existing)
+                _alert_upsert_event(str(existing.get("id") or ""), existing)
+            else:
+                opened += 1
+                event = {
+                    "policyId": policy_id,
+                    "status": "open",
+                    "severity": str(policy.get("severity") or "warning"),
+                    "openedAt": now_iso,
+                    "lastTriggeredAt": now_iso,
+                    "resolvedAt": None,
+                    "samples": [{"ts": now_iso, "value": current_value}],
+                    "channels": _alert_normalize_channels(policy.get("channels")),
+                    "delivery": [],
+                }
+                event = _alert_dispatch_webhooks(event)
+                _alert_upsert_event("", event)
+        else:
+            if existing is not None:
+                resolved += 1
+                existing["status"] = "resolved"
+                existing["resolvedAt"] = now_iso
+                existing["updatedAt"] = now_iso
+                _alert_upsert_event(str(existing.get("id") or ""), existing)
+    return {
+        "ok": True,
+        "evaluated": evaluated,
+        "opened": opened,
+        "resolved": resolved,
+        "timestampMs": now_ms,
+    }
+
+
+def _scheduler_parse_field(field: str, value: int, *, min_value: int, max_value: int) -> bool:
+    token = str(field or "").strip()
+    if token == "*":
+        return True
+    parts = [item.strip() for item in token.split(",") if item.strip()]
+    if not parts:
+        return False
+    for part in parts:
+        if part == "*":
+            return True
+        if part.startswith("*/"):
+            step = _safe_int(part[2:], 0)
+            if step > 0 and value % step == 0:
+                return True
+            continue
+        if "-" in part:
+            try:
+                start_token, end_token = part.split("-", 1)
+                start = _safe_int(start_token, min_value)
+                end = _safe_int(end_token, max_value)
+            except Exception:
+                continue
+            if start <= value <= end:
+                return True
+            continue
+        if _safe_int(part, min_value - 1) == value:
+            return True
+    return False
+
+
+def _scheduler_cron_matches(dt_local: datetime, cron_expr: str) -> bool:
+    parts = [item for item in str(cron_expr or "").strip().split(" ") if item]
+    if len(parts) != 5:
+        return False
+    minute, hour, day, month, weekday = parts
+    weekday_value = (dt_local.weekday() + 1) % 7
+    return (
+        _scheduler_parse_field(minute, dt_local.minute, min_value=0, max_value=59)
+        and _scheduler_parse_field(hour, dt_local.hour, min_value=0, max_value=23)
+        and _scheduler_parse_field(day, dt_local.day, min_value=1, max_value=31)
+        and _scheduler_parse_field(month, dt_local.month, min_value=1, max_value=12)
+        and _scheduler_parse_field(weekday, weekday_value, min_value=0, max_value=6)
+    )
+
+
+def _scheduler_next_run_at(cron_expr: str, timezone_name: str, *, after: Optional[datetime] = None) -> datetime:
+    safe_after = after or _utc_now()
+    try:
+        tz = ZoneInfo(str(timezone_name or "UTC").strip() or "UTC")
+    except Exception:
+        try:
+            tz = ZoneInfo("Etc/UTC")
+        except Exception:
+            tz = timezone.utc
+    local = safe_after.astimezone(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    for _ in range(0, 60 * 24 * 370):
+        if _scheduler_cron_matches(local, cron_expr):
+            return local.astimezone(timezone.utc)
+        local += timedelta(minutes=1)
+    return (safe_after + timedelta(minutes=5)).astimezone(timezone.utc)
+
+
+def _scheduler_acquire_lock(owner: str) -> bool:
+    safe_owner = str(owner or "").strip() or "scheduler"
+    now = _utc_now()
+    expires_at = now + timedelta(seconds=VF_SCHEDULER_LOCK_TTL_SECONDS)
+    collection = _firestore_collection(SCHEDULER_LOCK_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            current_owner = str(_INMEMORY_SCHEDULER_LOCK.get("owner") or "")
+            current_expires = _parse_optional_datetime(str(_INMEMORY_SCHEDULER_LOCK.get("expiresAt") or ""))
+            if current_owner and current_owner != safe_owner and current_expires and current_expires > now:
+                return False
+            _INMEMORY_SCHEDULER_LOCK.clear()
+            _INMEMORY_SCHEDULER_LOCK.update(
+                {
+                    "owner": safe_owner,
+                    "expiresAt": expires_at.isoformat(),
+                    "updatedAt": now.isoformat(),
+                }
+            )
+            return True
+    if _FIRESTORE_DB is None or firebase_firestore is None:
+        return False
+    lock_ref = _FIRESTORE_DB.collection(SCHEDULER_LOCK_COLLECTION).document("current")
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> bool:
+        current_doc = lock_ref.get(transaction=transaction_obj)
+        payload = current_doc.to_dict() if current_doc.exists else {}
+        current_owner = str(payload.get("owner") or "")
+        current_expires = _parse_optional_datetime(str(payload.get("expiresAt") or ""))
+        if current_owner and current_owner != safe_owner and current_expires and current_expires > now:
+            return False
+        transaction_obj.set(
+            lock_ref,
+            {
+                "owner": safe_owner,
+                "expiresAt": expires_at.isoformat(),
+                "updatedAt": now.isoformat(),
+            },
+            merge=False,
+        )
+        return True
+
+    try:
+        return bool(_apply(transaction))
+    except Exception:
+        return False
+
+
+def _scheduler_release_lock(owner: str) -> None:
+    safe_owner = str(owner or "").strip() or "scheduler"
+    now_iso = _utc_now().isoformat()
+    collection = _firestore_collection(SCHEDULER_LOCK_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            if str(_INMEMORY_SCHEDULER_LOCK.get("owner") or "") == safe_owner:
+                _INMEMORY_SCHEDULER_LOCK.clear()
+        return
+    if _FIRESTORE_DB is None:
+        return
+    try:
+        ref = _FIRESTORE_DB.collection(SCHEDULER_LOCK_COLLECTION).document("current")
+        doc = ref.get()
+        if doc.exists and str((doc.to_dict() or {}).get("owner") or "") == safe_owner:
+            ref.set({"owner": "", "expiresAt": now_iso, "updatedAt": now_iso}, merge=False)
+    except Exception:
+        return
+
+
+def _scheduler_list_tasks(limit: int = 200) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    collection = _firestore_collection(SCHEDULER_TASKS_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_SCHEDULER_TASKS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit).stream()]
+        except Exception:
+            rows = []
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: str(item.get("nextRunAt") or ""), reverse=False)
+    return rows[:safe_limit]
+
+
+def _scheduler_get_task(task_id: str) -> Optional[dict[str, Any]]:
+    safe_task_id = str(task_id or "").strip()
+    if not safe_task_id:
+        return None
+    collection = _firestore_collection(SCHEDULER_TASKS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_SCHEDULER_TASKS.get(safe_task_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_task_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "id": safe_task_id}
+
+
+def _scheduler_upsert_task(task_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_task_id = str(task_id or "").strip()
+    if not safe_task_id:
+        safe_task_id = f"task_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["id"] = safe_task_id
+    collection = _firestore_collection(SCHEDULER_TASKS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_SCHEDULER_TASKS[safe_task_id] = dict(payload)
+        return payload
+    collection.document(safe_task_id).set(payload, merge=True)
+    return payload
+
+
+def _scheduler_list_runs(limit: int = 300, task_id: str = "") -> list[dict[str, Any]]:
+    safe_limit = max(1, min(1000, int(limit)))
+    safe_task_id = str(task_id or "").strip()
+    collection = _firestore_collection(SCHEDULER_RUNS_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_SCHEDULER_RUNS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit * 2).stream()]
+        except Exception:
+            rows = []
+    if safe_task_id:
+        rows = [row for row in rows if str(row.get("taskId") or "").strip() == safe_task_id]
+    rows.sort(key=lambda item: str(item.get("startedAt") or item.get("scheduledAt") or ""), reverse=True)
+    return rows[:safe_limit]
+
+
+def _scheduler_upsert_run(run_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_run_id = str(run_id or "").strip()
+    if not safe_run_id:
+        safe_run_id = f"run_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["id"] = safe_run_id
+    collection = _firestore_collection(SCHEDULER_RUNS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_SCHEDULER_RUNS[safe_run_id] = dict(payload)
+        return payload
+    collection.document(safe_run_id).set(payload, merge=True)
+    return payload
+
+
+def _scheduler_task_payload_validate(
+    *,
+    task_type: str,
+    cron_expr: str,
+    timezone_name: str,
+    concurrency_policy: str,
+) -> tuple[str, str, str, str]:
+    safe_task_type = str(task_type or "").strip().lower()
+    if safe_task_type not in SCHEDULER_TASK_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported taskType.")
+    safe_cron = str(cron_expr or "").strip()
+    parts = [item for item in safe_cron.split(" ") if item]
+    if len(parts) != 5:
+        raise HTTPException(status_code=400, detail="cronExpr must have 5 fields.")
+    safe_timezone = str(timezone_name or "UTC").strip() or "UTC"
+    try:
+        ZoneInfo(safe_timezone)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid timezone.") from None
+    safe_policy = str(concurrency_policy or "forbid").strip().lower()
+    if safe_policy not in SCHEDULER_CONCURRENCY_POLICIES:
+        raise HTTPException(status_code=400, detail="Invalid concurrencyPolicy.")
+    return safe_task_type, safe_cron, safe_timezone, safe_policy
+
+
+def _coupon_abuse_scan_snapshot() -> dict[str, Any]:
+    now = _utc_now()
+    cutoff = now - timedelta(hours=24)
+    total = 0
+    released = 0
+    reserved = 0
+    redeemed = 0
+    collection = _firestore_collection("coupon_redemptions")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            items = list(_INMEMORY_COUPON_REDEMPTIONS.values())
+    else:
+        try:
+            items = [doc.to_dict() or {} for doc in collection.limit(3000).stream()]
+        except Exception:
+            items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        created = _parse_optional_datetime(str(item.get("createdAt") or ""))
+        if created and created < cutoff:
+            continue
+        total += 1
+        status = str(item.get("status") or "").strip().lower()
+        if status == "released":
+            released += 1
+        elif status == "reserved":
+            reserved += 1
+        elif status == "redeemed":
+            redeemed += 1
+    ratio = round((float(released) / float(total) * 100.0) if total > 0 else 0.0, 3)
+    return {
+        "windowHours": 24,
+        "totalEvents": total,
+        "released": released,
+        "reserved": reserved,
+        "redeemed": redeemed,
+        "releaseRatioPct": ratio,
+    }
+
+
+def _scheduler_execute_task(task: dict[str, Any], *, requested_by: str, dry_run: bool) -> dict[str, Any]:
+    task_type = str(task.get("taskType") or "").strip().lower()
+    if task_type == "usage_reset_daily":
+        return _reset_daily_usage_all(dry_run=bool(dry_run), requested_by=requested_by)
+    if task_type == "guardian_scan":
+        status_payload = _ai_ops_build_status(include_route_stats=True)
+        return {
+            "ok": True,
+            "dryRun": bool(dry_run),
+            "issuesDetected": len(list(status_payload.get("issues") or [])),
+            "pendingApprovals": _safe_int(status_payload.get("pendingApprovalCount"), 0),
+        }
+    if task_type == "usage_export_daily":
+        summary = _admin_usage_summary_payload()
+        return {
+            "ok": True,
+            "dryRun": bool(dry_run),
+            "generatedAtMs": _safe_int(summary.get("generatedAtMs"), _ai_ops_now_ms()),
+            "requestsTotal": _safe_int((((summary.get("windows") or {}).get("total") or {}).get("requests")), 0),
+        }
+    if task_type == "coupon_abuse_scan":
+        snapshot = _coupon_abuse_scan_snapshot()
+        return {"ok": True, "dryRun": bool(dry_run), **snapshot}
+    raise RuntimeError("Unsupported task type.")
+
+
+def _scheduler_run_task(task_id: str, *, requested_by: str, dry_run_override: Optional[bool] = None) -> dict[str, Any]:
+    task = _scheduler_get_task(task_id)
+    if not isinstance(task, dict):
+        raise HTTPException(status_code=404, detail="Task not found.")
+    now = _utc_now()
+    policy = str(task.get("concurrencyPolicy") or "forbid").strip().lower()
+    active_runs = [
+        row for row in _scheduler_list_runs(limit=200, task_id=str(task.get("id") or ""))
+        if str(row.get("status") or "").strip().lower() == "running"
+    ]
+    if policy == "forbid" and active_runs:
+        raise HTTPException(status_code=409, detail="Task already running.")
+
+    run_id = f"run_{uuid.uuid4().hex[:12]}"
+    dry_run = bool(task.get("dryRun")) if dry_run_override is None else bool(dry_run_override)
+    run = {
+        "id": run_id,
+        "taskId": str(task.get("id") or ""),
+        "taskType": str(task.get("taskType") or ""),
+        "scheduledAt": now.isoformat(),
+        "startedAt": now.isoformat(),
+        "finishedAt": None,
+        "status": "running",
+        "result": {},
+        "error": "",
+        "dryRun": dry_run,
+        "idempotencyKey": f"{str(task.get('id') or '')}:{now.strftime('%Y%m%dT%H%M')}",
+        "requestedBy": str(requested_by or "").strip(),
+    }
+    _scheduler_upsert_run(run_id, run)
+    try:
+        result = _scheduler_execute_task(task, requested_by=requested_by, dry_run=dry_run)
+        run["status"] = "completed"
+        run["result"] = result
+        run["error"] = ""
+    except Exception as exc:
+        run["status"] = "failed"
+        run["result"] = {}
+        run["error"] = _truncate_text(str(exc), 500)
+    run["finishedAt"] = _utc_now().isoformat()
+    _scheduler_upsert_run(run_id, run)
+
+    next_run = _scheduler_next_run_at(
+        str(task.get("cronExpr") or "* * * * *"),
+        str(task.get("timezone") or "UTC"),
+        after=_utc_now(),
+    )
+    task["lastRunAt"] = run["finishedAt"]
+    task["lastResult"] = {"status": run["status"], "runId": run_id}
+    task["nextRunAt"] = next_run.isoformat()
+    task["updatedAt"] = _utc_now().isoformat()
+    _scheduler_upsert_task(str(task.get("id") or ""), task)
+    return run
+
+
+def _scheduler_tick(owner: str) -> dict[str, Any]:
+    if not VF_SCHEDULER_ENABLED:
+        return {"ok": True, "disabled": True}
+    if not _scheduler_acquire_lock(owner):
+        return {"ok": True, "locked": False}
+    processed = 0
+    now = _utc_now()
+    try:
+        tasks = _scheduler_list_tasks(limit=500)
+        for task in tasks:
+            if not _as_bool(task.get("enabled")):
+                continue
+            next_run = _parse_optional_datetime(str(task.get("nextRunAt") or ""))
+            if next_run and next_run > now:
+                continue
+            try:
+                _scheduler_run_task(str(task.get("id") or ""), requested_by=owner, dry_run_override=None)
+                processed += 1
+            except Exception:
+                continue
+        _alert_evaluate_once()
+        return {"ok": True, "locked": True, "processed": processed}
+    finally:
+        _scheduler_release_lock(owner)
+
+
+def _scheduler_loop(owner: str) -> None:
+    while not _SCHEDULER_STOP_EVENT.is_set():
+        try:
+            _scheduler_tick(owner)
+        except Exception:
+            pass
+        _SCHEDULER_STOP_EVENT.wait(timeout=max(3, VF_SCHEDULER_TICK_SECONDS))
+
+
+def _ensure_scheduler_started() -> None:
+    global _SCHEDULER_THREAD
+    if not VF_SCHEDULER_ENABLED:
+        return
+    with _SCHEDULER_THREAD_LOCK:
+        if _SCHEDULER_THREAD is not None and _SCHEDULER_THREAD.is_alive():
+            return
+        _SCHEDULER_STOP_EVENT.clear()
+        owner = f"scheduler-{uuid.uuid4().hex[:6]}"
+        thread = threading.Thread(target=_scheduler_loop, args=(owner,), daemon=True, name="phase2-scheduler")
+        thread.start()
+        _SCHEDULER_THREAD = thread
+
+
+def _scheduler_stop() -> None:
+    _SCHEDULER_STOP_EVENT.set()
+
+
+def _coupon_analytics_daily_key(date_token: str, coupon_code: str, plan_token: str) -> str:
+    safe_date = str(date_token or "").strip() or _utc_now().strftime("%Y-%m-%d")
+    safe_coupon = _normalize_coupon_code(coupon_code) or "UNKNOWN"
+    safe_plan = str(plan_token or "").strip().lower() or "unknown"
+    return f"{safe_date}_{safe_coupon}_{safe_plan}"
+
+
+def _coupon_analytics_write_daily(key: str, patch: dict[str, Any]) -> dict[str, Any]:
+    safe_key = str(key or "").strip()
+    if not safe_key:
+        raise RuntimeError("Invalid analytics key.")
+    collection = _firestore_collection(COUPON_ANALYTICS_DAILY_COLLECTION)
+    now_iso = _utc_now().isoformat()
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = dict(_INMEMORY_COUPON_ANALYTICS_DAILY.get(safe_key) or {})
+            row.update(patch or {})
+            row["id"] = safe_key
+            row["updatedAt"] = now_iso
+            _INMEMORY_COUPON_ANALYTICS_DAILY[safe_key] = row
+            return dict(row)
+    ref = collection.document(safe_key)
+    doc = ref.get()
+    existing = doc.to_dict() if doc.exists else {}
+    row = dict(existing or {})
+    row.update(patch or {})
+    row["id"] = safe_key
+    row["updatedAt"] = now_iso
+    ref.set(row, merge=True)
+    return row
+
+
+def _analytics_record_coupon_event(
+    event_type: str,
+    provider: str,
+    coupon_code: str,
+    coupon_kind: str,
+    plan: str,
+    amounts: Optional[dict[str, Any]] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if not VF_ANALYTICS_V2_ENABLED:
+        return {"ok": True, "disabled": True}
+    safe_event_type = str(event_type or "").strip().lower()
+    safe_provider = str(provider or ACTIVE_BILLING_PROVIDER).strip().lower() or ACTIVE_BILLING_PROVIDER
+    safe_coupon_code = _normalize_coupon_code(coupon_code)
+    safe_kind = _normalize_coupon_type(coupon_kind)
+    safe_plan = str(plan or "").strip().lower()
+    if safe_plan not in {"pro", "plus"}:
+        safe_plan = "unknown"
+    date_token = _utc_now().strftime("%Y-%m-%d")
+    key = _coupon_analytics_daily_key(date_token, safe_coupon_code or "UNKNOWN", safe_plan)
+    gross = _safe_float((amounts or {}).get("grossAmount"), 0.0)
+    discount = _safe_float((amounts or {}).get("discountAmount"), 0.0)
+    net = _safe_float((amounts or {}).get("netAmount"), max(0.0, gross - discount))
+    patch = {
+        "date": date_token,
+        "couponCode": safe_coupon_code or "UNKNOWN",
+        "couponKind": safe_kind,
+        "plan": safe_plan,
+        "provider": safe_provider,
+        "checkoutsStarted": 0,
+        "checkoutsCompleted": 0,
+        "subscriptionsActivated": 0,
+        "cancellationsWithin30d": 0,
+        "grossAmount": 0.0,
+        "discountAmount": 0.0,
+        "netAmount": 0.0,
+        "lastMeta": metadata if isinstance(metadata, dict) else {},
+    }
+    current = _coupon_analytics_write_daily(key, patch)
+    current["checkoutsStarted"] = _safe_int(current.get("checkoutsStarted"), 0)
+    current["checkoutsCompleted"] = _safe_int(current.get("checkoutsCompleted"), 0)
+    current["subscriptionsActivated"] = _safe_int(current.get("subscriptionsActivated"), 0)
+    current["cancellationsWithin30d"] = _safe_int(current.get("cancellationsWithin30d"), 0)
+    current["grossAmount"] = _safe_float(current.get("grossAmount"), 0.0)
+    current["discountAmount"] = _safe_float(current.get("discountAmount"), 0.0)
+    current["netAmount"] = _safe_float(current.get("netAmount"), 0.0)
+    if safe_event_type == "checkout_started":
+        current["checkoutsStarted"] += 1
+    elif safe_event_type == "checkout_completed":
+        current["checkoutsCompleted"] += 1
+        current["grossAmount"] += gross
+        current["discountAmount"] += discount
+        current["netAmount"] += net
+    elif safe_event_type == "subscription_activated":
+        current["subscriptionsActivated"] += 1
+    elif safe_event_type == "cancellation_within_30d":
+        current["cancellationsWithin30d"] += 1
+    current["lastEventType"] = safe_event_type
+    current["lastMeta"] = metadata if isinstance(metadata, dict) else {}
+    saved = _coupon_analytics_write_daily(key, current)
+    return {"ok": True, "row": saved}
+
+
+def _analytics_write_subscription_attribution(subscription_id: str, payload: dict[str, Any]) -> None:
+    safe_subscription_id = str(subscription_id or "").strip()
+    if not safe_subscription_id:
+        return
+    collection = _firestore_collection(COUPON_SUBSCRIPTION_ATTRIBUTIONS_COLLECTION)
+    row = dict(payload or {})
+    row["id"] = safe_subscription_id
+    row["updatedAt"] = _utc_now().isoformat()
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_COUPON_SUB_ATTRIBUTIONS[safe_subscription_id] = row
+        return
+    collection.document(safe_subscription_id).set(row, merge=True)
+
+
+def _analytics_read_subscription_attribution(subscription_id: str) -> Optional[dict[str, Any]]:
+    safe_subscription_id = str(subscription_id or "").strip()
+    if not safe_subscription_id:
+        return None
+    collection = _firestore_collection(COUPON_SUBSCRIPTION_ATTRIBUTIONS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_COUPON_SUB_ATTRIBUTIONS.get(safe_subscription_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_subscription_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "id": safe_subscription_id}
+
+
+def _analytics_list_coupon_daily(
+    *,
+    from_dt: datetime,
+    to_dt: datetime,
+    plan: str = "",
+    coupon_kind: str = "",
+    coupon_code: str = "",
+) -> list[dict[str, Any]]:
+    safe_plan = str(plan or "").strip().lower()
+    safe_kind = str(coupon_kind or "").strip().lower()
+    safe_code = _normalize_coupon_code(coupon_code)
+    collection = _firestore_collection(COUPON_ANALYTICS_DAILY_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_COUPON_ANALYTICS_DAILY.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(4000).stream()]
+        except Exception:
+            rows = []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        day = _parse_optional_datetime(f"{str(row.get('date') or '')}T00:00:00+00:00")
+        if day is None:
+            continue
+        if day < from_dt or day > to_dt:
+            continue
+        if safe_plan and str(row.get("plan") or "").strip().lower() != safe_plan:
+            continue
+        if safe_kind and str(row.get("couponKind") or "").strip().lower() != safe_kind:
+            continue
+        if safe_code and _normalize_coupon_code(str(row.get("couponCode") or "")) != safe_code:
+            continue
+        result.append(row)
+    return result
+
+
+def _analytics_compute_rates(row: dict[str, Any]) -> dict[str, Any]:
+    started = max(0, _safe_int(row.get("checkoutsStarted"), 0))
+    completed = max(0, _safe_int(row.get("checkoutsCompleted"), 0))
+    activated = max(0, _safe_int(row.get("subscriptionsActivated"), 0))
+    cancelled = max(0, _safe_int(row.get("cancellationsWithin30d"), 0))
+    gross = max(0.0, _safe_float(row.get("grossAmount"), 0.0))
+    discount = max(0.0, _safe_float(row.get("discountAmount"), 0.0))
+    net = max(0.0, _safe_float(row.get("netAmount"), 0.0))
+    row["conversionRate"] = round((float(activated) / float(started)) if started > 0 else 0.0, 6)
+    row["checkoutCompletionRate"] = round((float(completed) / float(started)) if started > 0 else 0.0, 6)
+    row["d30ChurnRate"] = round((float(cancelled) / float(activated)) if activated > 0 else 0.0, 6)
+    row["discountEfficiency"] = round((float(net) / float(discount)) if discount > 0 else 0.0, 6)
+    row["grossAmount"] = gross
+    row["discountAmount"] = discount
+    row["netAmount"] = net
+    return row
+
+
 def _normalize_engine_name(raw_engine: str) -> str:
     normalized = "".join(ch if ch.isalnum() else "_" for ch in (raw_engine or "").strip().upper())
     while "__" in normalized:
@@ -4790,6 +6632,482 @@ def _token_pack_amount_inr_for_plan(plan_name: str) -> int:
     return _round_inr(VF_TOKEN_PACK_BASE_INR * (1.0 - discount))
 
 
+COUPON_TYPE_WALLET_CREDIT = "wallet_credit"
+COUPON_TYPE_SUBSCRIPTION_DISCOUNT = "subscription_discount"
+COUPON_TYPES = {COUPON_TYPE_WALLET_CREDIT, COUPON_TYPE_SUBSCRIPTION_DISCOUNT}
+COUPON_USAGE_SINGLE_GLOBAL = "single_global"
+COUPON_USAGE_SINGLE_PER_USER = "single_per_user"
+COUPON_USAGE_MAX_REDEMPTIONS = "max_redemptions"
+COUPON_USAGE_POLICIES = {
+    COUPON_USAGE_SINGLE_GLOBAL,
+    COUPON_USAGE_SINGLE_PER_USER,
+    COUPON_USAGE_MAX_REDEMPTIONS,
+}
+COUPON_DISCOUNT_PERCENT = "percent"
+COUPON_DISCOUNT_FIXED_INR = "fixed_inr"
+COUPON_DISCOUNT_TYPES = {COUPON_DISCOUNT_PERCENT, COUPON_DISCOUNT_FIXED_INR}
+COUPON_PLAN_SCOPE_VALUES = {
+    str(plan_key or "").strip().lower()
+    for plan_key in PLAN_LIMITS.keys()
+    if str(plan_key or "").strip() and str(plan_key or "").strip().lower() != "free"
+} or {"pro", "plus"}
+COUPON_DEFAULT_VALIDITY_MONTHS = max(
+    1,
+    int((os.getenv("VF_COUPON_DEFAULT_VALIDITY_MONTHS") or "6").strip() or "6"),
+)
+COUPON_RESERVATION_TTL_MINUTES = max(
+    5,
+    int((os.getenv("VF_COUPON_RESERVATION_TTL_MINUTES") or "45").strip() or "45"),
+)
+COUPON_CODE_INDEX_COLLECTION = "coupon_code_index"
+
+
+def _add_months_utc(base: datetime, months: int) -> datetime:
+    safe_months = max(0, int(months))
+    if safe_months <= 0:
+        return base
+    month_index = (base.month - 1) + safe_months
+    year = base.year + (month_index // 12)
+    month = (month_index % 12) + 1
+    last_day = calendar.monthrange(year, month)[1]
+    day = min(base.day, last_day)
+    return base.replace(year=year, month=month, day=day)
+
+
+def _coupon_default_expires_at(now: Optional[datetime] = None) -> datetime:
+    base = now or _utc_now()
+    return _add_months_utc(base, COUPON_DEFAULT_VALIDITY_MONTHS)
+
+
+def _normalize_coupon_type(raw_type: Optional[str]) -> str:
+    token = str(raw_type or "").strip().lower()
+    if token in {"wallet", "wallet_credit"}:
+        return COUPON_TYPE_WALLET_CREDIT
+    if token in {"subscription", "subscription_discount"}:
+        return COUPON_TYPE_SUBSCRIPTION_DISCOUNT
+    return COUPON_TYPE_WALLET_CREDIT
+
+
+def _normalize_coupon_usage_policy(raw_policy: Optional[str]) -> str:
+    token = str(raw_policy or "").strip().lower()
+    if token in COUPON_USAGE_POLICIES:
+        return token
+    if token in {"one_time", "single"}:
+        return COUPON_USAGE_SINGLE_GLOBAL
+    if token in {"per_user", "single_user"}:
+        return COUPON_USAGE_SINGLE_PER_USER
+    return COUPON_USAGE_SINGLE_PER_USER
+
+
+def _normalize_coupon_discount_type(raw_type: Optional[str]) -> str:
+    token = str(raw_type or "").strip().lower()
+    if token in COUPON_DISCOUNT_TYPES:
+        return token
+    return COUPON_DISCOUNT_PERCENT
+
+
+def _normalize_coupon_plan_scope(raw_scope: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(raw_scope, str):
+        values = [item.strip().lower() for item in raw_scope.split(",") if item.strip()]
+    elif isinstance(raw_scope, list):
+        values = [str(item or "").strip().lower() for item in raw_scope if str(item or "").strip()]
+    elif raw_scope is not None:
+        values = [str(raw_scope).strip().lower()]
+    normalized: list[str] = []
+    for value in values:
+        token = re.sub(r"[^a-z0-9_-]", "", str(value or "").strip().lower())
+        if not token:
+            continue
+        normalized.append(token)
+    unique = sorted(set(normalized))
+    if unique:
+        return unique
+    return sorted(COUPON_PLAN_SCOPE_VALUES) or ["pro", "plus"]
+
+
+def _coupon_plan_discount_entry(
+    *,
+    plan: str,
+    discount_type: str,
+    percent_off: float,
+    amount_off_inr: int,
+    stripe_coupon_id: str = "",
+    stripe_promotion_code_id: str = "",
+) -> dict[str, Any]:
+    safe_plan = str(plan or "").strip().lower()
+    safe_discount_type = _normalize_coupon_discount_type(discount_type)
+    safe_percent = round(float(percent_off or 0.0), 4)
+    safe_amount = _as_positive_int(amount_off_inr)
+    if safe_discount_type == COUPON_DISCOUNT_PERCENT:
+        safe_amount = 0
+    else:
+        safe_percent = 0.0
+    return {
+        "plan": safe_plan,
+        "discountType": safe_discount_type,
+        "percentOff": safe_percent,
+        "amountOffInr": safe_amount,
+        "stripeCouponId": str(stripe_coupon_id or "").strip(),
+        "stripePromotionCodeId": str(stripe_promotion_code_id or "").strip(),
+    }
+
+
+def _normalize_coupon_plan_discounts(
+    raw_plan_discounts: Any,
+    *,
+    fallback_discount_type: str = "",
+    fallback_percent_off: float = 0.0,
+    fallback_amount_off_inr: int = 0,
+    fallback_plans: Optional[list[str]] = None,
+    stripe_coupons_by_plan: Optional[dict[str, Any]] = None,
+) -> dict[str, dict[str, Any]]:
+    mapping: dict[str, dict[str, Any]] = {}
+
+    def _upsert_from_values(
+        plan_token: str,
+        discount_type_token: str,
+        percent_value: float,
+        amount_value: int,
+        stripe_coupon_id: str = "",
+        stripe_promotion_code_id: str = "",
+    ) -> None:
+        safe_plan = str(plan_token or "").strip().lower()
+        if not safe_plan:
+            return
+        entry = _coupon_plan_discount_entry(
+            plan=safe_plan,
+            discount_type=discount_type_token,
+            percent_off=percent_value,
+            amount_off_inr=amount_value,
+            stripe_coupon_id=stripe_coupon_id,
+            stripe_promotion_code_id=stripe_promotion_code_id,
+        )
+        if entry["discountType"] == COUPON_DISCOUNT_PERCENT:
+            if float(entry.get("percentOff") or 0.0) <= 0.0:
+                return
+        else:
+            if _as_positive_int(entry.get("amountOffInr")) <= 0:
+                return
+        mapping[safe_plan] = entry
+
+    if isinstance(raw_plan_discounts, dict):
+        for plan_key, payload in raw_plan_discounts.items():
+            safe_plan = re.sub(r"[^a-z0-9_-]", "", str(plan_key or "").strip().lower())
+            if not safe_plan:
+                continue
+            row = payload if isinstance(payload, dict) else {}
+            _upsert_from_values(
+                safe_plan,
+                str(row.get("discountType") or fallback_discount_type or COUPON_DISCOUNT_PERCENT),
+                _as_float(row.get("percentOff"), fallback_percent_off),
+                _as_positive_int(row.get("amountOffInr") if row.get("amountOffInr") is not None else fallback_amount_off_inr),
+                stripe_coupon_id=str(row.get("stripeCouponId") or ""),
+                stripe_promotion_code_id=str(row.get("stripePromotionCodeId") or ""),
+            )
+    elif isinstance(raw_plan_discounts, list):
+        for item in raw_plan_discounts:
+            if not isinstance(item, dict):
+                continue
+            safe_plan = re.sub(r"[^a-z0-9_-]", "", str(item.get("plan") or "").strip().lower())
+            if not safe_plan:
+                continue
+            _upsert_from_values(
+                safe_plan,
+                str(item.get("discountType") or fallback_discount_type or COUPON_DISCOUNT_PERCENT),
+                _as_float(item.get("percentOff"), fallback_percent_off),
+                _as_positive_int(item.get("amountOffInr") if item.get("amountOffInr") is not None else fallback_amount_off_inr),
+                stripe_coupon_id=str(item.get("stripeCouponId") or ""),
+                stripe_promotion_code_id=str(item.get("stripePromotionCodeId") or ""),
+            )
+
+    if not mapping:
+        safe_plans = _normalize_coupon_plan_scope(fallback_plans or [])
+        for safe_plan in safe_plans:
+            _upsert_from_values(
+                safe_plan,
+                fallback_discount_type or COUPON_DISCOUNT_PERCENT,
+                float(fallback_percent_off or 0.0),
+                _as_positive_int(fallback_amount_off_inr),
+            )
+
+    if stripe_coupons_by_plan and isinstance(stripe_coupons_by_plan, dict):
+        for plan_key, stripe_coupon_id in stripe_coupons_by_plan.items():
+            safe_plan = str(plan_key or "").strip().lower()
+            if not safe_plan:
+                continue
+            existing = mapping.get(safe_plan) or _coupon_plan_discount_entry(
+                plan=safe_plan,
+                discount_type=fallback_discount_type or COUPON_DISCOUNT_PERCENT,
+                percent_off=fallback_percent_off,
+                amount_off_inr=fallback_amount_off_inr,
+            )
+            existing["stripeCouponId"] = str(stripe_coupon_id or "").strip()
+            mapping[safe_plan] = existing
+
+    return {plan: mapping[plan] for plan in sorted(mapping.keys())}
+
+
+def _coupon_primary_plan_discount(plan_discounts: dict[str, dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not isinstance(plan_discounts, dict) or not plan_discounts:
+        return None
+    if "pro" in plan_discounts:
+        return dict(plan_discounts.get("pro") or {})
+    first_key = sorted(plan_discounts.keys())[0]
+    return dict(plan_discounts.get(first_key) or {})
+
+
+def _coupon_resolved_stripe_coupon_id_for_plan(coupon: dict[str, Any], plan_token: str) -> str:
+    safe_plan = str(plan_token or "").strip().lower()
+    if not safe_plan:
+        return ""
+    by_plan = coupon.get("stripeCouponsByPlan")
+    if isinstance(by_plan, dict):
+        direct = str(by_plan.get(safe_plan) or "").strip()
+        if direct:
+            return direct
+    plan_discounts = _normalize_coupon_plan_discounts(
+        coupon.get("planDiscounts"),
+        fallback_discount_type=str(coupon.get("discountType") or COUPON_DISCOUNT_PERCENT),
+        fallback_percent_off=_as_float(coupon.get("percentOff"), 0.0),
+        fallback_amount_off_inr=_as_positive_int(coupon.get("amountOffInr")),
+        fallback_plans=_normalize_coupon_plan_scope(coupon.get("appliesToPlans")),
+        stripe_coupons_by_plan=by_plan if isinstance(by_plan, dict) else None,
+    )
+    row = plan_discounts.get(safe_plan) or {}
+    plan_coupon_id = str(row.get("stripeCouponId") or "").strip()
+    if plan_coupon_id:
+        return plan_coupon_id
+    return str(coupon.get("stripeCouponId") or "").strip()
+
+
+def _stripe_cleanup_subscription_coupon_artifacts(
+    *,
+    stripe_promotion_ids: list[str],
+    stripe_coupon_ids: list[str],
+) -> None:
+    if not _stripe_available():
+        return
+    for promotion_id in stripe_promotion_ids:
+        safe_promotion_id = str(promotion_id or "").strip()
+        if not safe_promotion_id:
+            continue
+        try:
+            stripe.PromotionCode.modify(safe_promotion_id, active=False)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    for coupon_id in stripe_coupon_ids:
+        safe_coupon_id = str(coupon_id or "").strip()
+        if not safe_coupon_id:
+            continue
+        try:
+            stripe.Coupon.delete(safe_coupon_id)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+def _stripe_sync_subscription_coupon_artifacts(
+    *,
+    code: str,
+    coupon_id: str,
+    active: bool,
+    plan_discounts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if stripe is None:
+        raise HTTPException(status_code=503, detail="Stripe SDK is not available.")
+    normalized = _normalize_coupon_plan_discounts(plan_discounts)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Missing plan discounts.")
+
+    stripe_coupons_by_plan: dict[str, str] = {}
+    created_coupon_ids: list[str] = []
+    created_promotion_ids: list[str] = []
+    updated_plan_discounts: dict[str, dict[str, Any]] = {}
+
+    for plan_token, entry in sorted(normalized.items(), key=lambda item: item[0]):
+        discount_type = _normalize_coupon_discount_type(str(entry.get("discountType") or COUPON_DISCOUNT_PERCENT))
+        stripe_coupon_payload: dict[str, Any] = {
+            "duration": "once",
+            "metadata": {
+                "couponCode": code,
+                "couponType": COUPON_TYPE_SUBSCRIPTION_DISCOUNT,
+                "plan": plan_token,
+                "couponId": coupon_id,
+            },
+        }
+        if discount_type == COUPON_DISCOUNT_PERCENT:
+            percent_off = _as_float(entry.get("percentOff"), 0.0)
+            if percent_off <= 0.0 or percent_off > 100.0:
+                raise HTTPException(status_code=400, detail=f"Invalid percentOff for plan {plan_token}.")
+            stripe_coupon_payload["percent_off"] = percent_off
+        else:
+            amount_off_inr = _as_positive_int(entry.get("amountOffInr"))
+            if amount_off_inr <= 0:
+                raise HTTPException(status_code=400, detail=f"Invalid amountOffInr for plan {plan_token}.")
+            stripe_coupon_payload["amount_off"] = amount_off_inr * 100
+            stripe_coupon_payload["currency"] = "inr"
+
+        stripe_coupon = stripe.Coupon.create(**stripe_coupon_payload)  # type: ignore[attr-defined]
+        stripe_coupon_id = str(stripe_coupon.get("id") or "").strip()
+        if not stripe_coupon_id:
+            raise HTTPException(status_code=502, detail=f"Stripe coupon create failed for plan {plan_token}.")
+        created_coupon_ids.append(stripe_coupon_id)
+        stripe_coupons_by_plan[plan_token] = stripe_coupon_id
+        updated_plan_discounts[plan_token] = _coupon_plan_discount_entry(
+            plan=plan_token,
+            discount_type=discount_type,
+            percent_off=_as_float(entry.get("percentOff"), 0.0),
+            amount_off_inr=_as_positive_int(entry.get("amountOffInr")),
+            stripe_coupon_id=stripe_coupon_id,
+        )
+
+    primary_plan = "pro" if "pro" in stripe_coupons_by_plan else sorted(stripe_coupons_by_plan.keys())[0]
+    primary_coupon_id = str(stripe_coupons_by_plan.get(primary_plan) or "")
+    primary_promotion_id = ""
+
+    # Keep promotion code mapping only for single-plan discounts.
+    if len(stripe_coupons_by_plan) == 1 and primary_coupon_id:
+        promotion_payload = {
+            "coupon": primary_coupon_id,
+            "code": code,
+            "active": bool(active),
+            "metadata": {
+                "couponCode": code,
+                "couponType": COUPON_TYPE_SUBSCRIPTION_DISCOUNT,
+                "couponId": coupon_id,
+                "plan": primary_plan,
+            },
+        }
+        promotion = stripe.PromotionCode.create(**promotion_payload)  # type: ignore[attr-defined]
+        primary_promotion_id = str(promotion.get("id") or "").strip()
+        if primary_promotion_id:
+            created_promotion_ids.append(primary_promotion_id)
+            updated_entry = dict(updated_plan_discounts.get(primary_plan) or {})
+            updated_entry["stripePromotionCodeId"] = primary_promotion_id
+            updated_plan_discounts[primary_plan] = updated_entry
+
+    return {
+        "planDiscounts": updated_plan_discounts,
+        "stripeCouponsByPlan": stripe_coupons_by_plan,
+        "stripeCouponId": primary_coupon_id,
+        "stripePromotionCodeId": primary_promotion_id,
+        "createdCouponIds": created_coupon_ids,
+        "createdPromotionIds": created_promotion_ids,
+    }
+
+
+def _coupon_effective_usage_limit(policy: str, requested_limit: int) -> int:
+    safe_policy = _normalize_coupon_usage_policy(policy)
+    safe_limit = max(0, int(requested_limit))
+    if safe_policy == COUPON_USAGE_SINGLE_GLOBAL:
+        return 1
+    if safe_policy == COUPON_USAGE_MAX_REDEMPTIONS:
+        return max(1, safe_limit)
+    return max(0, safe_limit)
+
+
+def _is_coupon_discount_record(coupon: dict[str, Any]) -> bool:
+    return _normalize_coupon_type(str(coupon.get("couponType") or coupon.get("kind") or "")) == COUPON_TYPE_SUBSCRIPTION_DISCOUNT
+
+
+def _coupon_backfill_fields(coupon: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
+    current = dict(coupon or {})
+    created_at = _parse_optional_datetime(str(current.get("createdAt") or "")) or (now or _utc_now())
+    updated_at = _parse_optional_datetime(str(current.get("updatedAt") or "")) or created_at
+    coupon_type = _normalize_coupon_type(str(current.get("couponType") or current.get("kind") or ""))
+    usage_policy = _normalize_coupon_usage_policy(str(current.get("usagePolicy") or ""))
+    legacy_limit = _as_positive_int(current.get("maxRedemptions"))
+    requested_limit = _as_positive_int(current.get("usageLimit") or legacy_limit)
+    usage_limit = _coupon_effective_usage_limit(usage_policy, requested_limit)
+
+    expires = _parse_optional_datetime(str(current.get("expiresAt") or ""))
+    if expires is None:
+        expires = _coupon_default_expires_at(created_at)
+
+    normalized: dict[str, Any] = {
+        **current,
+        "id": str(current.get("id") or ""),
+        "code": _normalize_coupon_code(str(current.get("code") or "")),
+        "couponType": coupon_type,
+        "active": _as_bool(current.get("active") if "active" in current else True),
+        "usagePolicy": usage_policy,
+        "usageLimit": usage_limit,
+        "maxRedemptions": usage_limit,
+        "redeemedCount": _as_positive_int(current.get("redeemedCount")),
+        "reservedCount": _as_positive_int(current.get("reservedCount")),
+        "expiresAt": expires.isoformat() if expires else None,
+        "note": str(current.get("note") or "")[:240],
+        "createdBy": str(current.get("createdBy") or ""),
+        "createdAt": created_at.isoformat(),
+        "updatedAt": updated_at.isoformat(),
+    }
+    if coupon_type == COUPON_TYPE_WALLET_CREDIT:
+        normalized["creditVf"] = _as_positive_int(current.get("creditVf"))
+    else:
+        plan_scope = _normalize_coupon_plan_scope(current.get("appliesToPlans"))
+        plan_discounts = _normalize_coupon_plan_discounts(
+            current.get("planDiscounts"),
+            fallback_discount_type=str(current.get("discountType") or COUPON_DISCOUNT_PERCENT),
+            fallback_percent_off=_as_float(current.get("percentOff"), 0.0),
+            fallback_amount_off_inr=_as_positive_int(current.get("amountOffInr")),
+            fallback_plans=plan_scope,
+            stripe_coupons_by_plan=(current.get("stripeCouponsByPlan") if isinstance(current.get("stripeCouponsByPlan"), dict) else None),
+        )
+        primary_discount = _coupon_primary_plan_discount(plan_discounts) or {}
+        discount_type = _normalize_coupon_discount_type(str(primary_discount.get("discountType") or current.get("discountType") or ""))
+        normalized["discountType"] = discount_type
+        normalized["percentOff"] = _as_float(primary_discount.get("percentOff"), _as_float(current.get("percentOff"), 0.0))
+        normalized["amountOffInr"] = _as_positive_int(primary_discount.get("amountOffInr") if primary_discount.get("amountOffInr") is not None else current.get("amountOffInr"))
+        normalized["appliesToPlans"] = sorted(plan_discounts.keys()) or plan_scope
+        normalized["planDiscounts"] = plan_discounts
+        normalized["stripeCouponsByPlan"] = {
+            plan: str((entry or {}).get("stripeCouponId") or "").strip()
+            for plan, entry in sorted(plan_discounts.items(), key=lambda item: item[0])
+            if str((entry or {}).get("stripeCouponId") or "").strip()
+        }
+        normalized["subscriptionDuration"] = "first_invoice_only"
+        normalized["stripeCouponId"] = str(
+            current.get("stripeCouponId")
+            or primary_discount.get("stripeCouponId")
+            or next(iter((normalized.get("stripeCouponsByPlan") or {}).values()), "")
+            or ""
+        )
+        normalized["stripePromotionCodeId"] = str(current.get("stripePromotionCodeId") or "")
+    return normalized
+
+
+def _coupon_user_key(coupon_id: str, uid: str) -> str:
+    return f"{str(coupon_id or '').strip()}::{str(uid or '').strip()}"
+
+
+def _coupon_usage_limit_reached(coupon: dict[str, Any]) -> bool:
+    redeemed = _as_positive_int(coupon.get("redeemedCount"))
+    reserved = _as_positive_int(coupon.get("reservedCount"))
+    policy = _normalize_coupon_usage_policy(str(coupon.get("usagePolicy") or ""))
+    usage_limit = _coupon_effective_usage_limit(policy, _as_positive_int(coupon.get("usageLimit")))
+    if policy == COUPON_USAGE_SINGLE_GLOBAL:
+        return (redeemed + reserved) >= 1
+    if usage_limit <= 0:
+        return False
+    return (redeemed + reserved) >= usage_limit
+
+
+def _coupon_is_expired(coupon: dict[str, Any], at_time: Optional[datetime] = None) -> bool:
+    current_time = at_time or _utc_now()
+    expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
+    if not expires:
+        return False
+    return expires <= current_time
+
+
+def _generate_coupon_code(length: int = 12, *, prefix: str = "") -> str:
+    safe_length = max(6, min(32, int(length)))
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    body = "".join(alphabet[secrets.randbelow(len(alphabet))] for _ in range(safe_length))
+    candidate = f"{str(prefix or '').strip().upper()}{body}"
+    return _normalize_coupon_code(candidate)
+
+
 def _parse_optional_datetime(raw: Optional[str]) -> Optional[datetime]:
     token = str(raw or "").strip()
     if not token:
@@ -4808,6 +7126,148 @@ def _normalize_coupon_code(raw_code: str) -> str:
     token = str(raw_code or "").strip().upper()
     token = re.sub(r"[^A-Z0-9_-]", "", token)
     return token[:64]
+
+
+def _coupon_sort_key(item: dict[str, Any]) -> str:
+    return str(item.get("createdAt") or "")
+
+
+def _coupon_store_ref(code: str) -> str:
+    return str(code or "").strip().upper()
+
+
+def _inmemory_rebuild_coupon_index_locked() -> None:
+    _INMEMORY_COUPON_CODE_INDEX.clear()
+    for coupon_id, row in _INMEMORY_COUPONS.items():
+        safe_code = _coupon_store_ref(_normalize_coupon_code(str((row or {}).get("code") or "")))
+        if safe_code:
+            _INMEMORY_COUPON_CODE_INDEX[safe_code] = str(coupon_id or "")
+
+
+def _coupon_get_inmemory_by_id(coupon_id: str) -> Optional[dict[str, Any]]:
+    with _INMEMORY_LOCK:
+        row = _INMEMORY_COUPONS.get(str(coupon_id or "").strip())
+        if not isinstance(row, dict):
+            return None
+        normalized = _coupon_backfill_fields(row)
+        _INMEMORY_COUPONS[str(coupon_id or "").strip()] = dict(normalized)
+        safe_code = _coupon_store_ref(str(normalized.get("code") or ""))
+        if safe_code:
+            _INMEMORY_COUPON_CODE_INDEX[safe_code] = str(coupon_id or "").strip()
+        return dict(normalized)
+
+
+def _coupon_get_inmemory_by_code(code: str) -> tuple[str, Optional[dict[str, Any]]]:
+    safe_code = _coupon_store_ref(_normalize_coupon_code(code))
+    if not safe_code:
+        return "", None
+    with _INMEMORY_LOCK:
+        coupon_id = str(_INMEMORY_COUPON_CODE_INDEX.get(safe_code) or "").strip()
+        if not coupon_id:
+            _inmemory_rebuild_coupon_index_locked()
+            coupon_id = str(_INMEMORY_COUPON_CODE_INDEX.get(safe_code) or "").strip()
+        if not coupon_id:
+            return "", None
+        row = _INMEMORY_COUPONS.get(coupon_id)
+        if not isinstance(row, dict):
+            return "", None
+        normalized = _coupon_backfill_fields(row)
+        _INMEMORY_COUPONS[coupon_id] = dict(normalized)
+        _INMEMORY_COUPON_CODE_INDEX[safe_code] = coupon_id
+        return coupon_id, dict(normalized)
+
+
+def _coupon_index_collection() -> Any:
+    return _firestore_collection(COUPON_CODE_INDEX_COLLECTION)
+
+
+def _coupon_get_firestore_by_code(code: str) -> tuple[str, Optional[dict[str, Any]]]:
+    if _FIRESTORE_DB is None:
+        return "", None
+    safe_code = _coupon_store_ref(_normalize_coupon_code(code))
+    if not safe_code:
+        return "", None
+    index_collection = _coupon_index_collection()
+    coupon_collection = _firestore_collection("coupons")
+    if index_collection is None or coupon_collection is None:
+        return "", None
+    coupon_id = ""
+    try:
+        index_doc = index_collection.document(safe_code).get()
+        if index_doc.exists:
+            index_payload = index_doc.to_dict() or {}
+            coupon_id = str(index_payload.get("couponId") or "").strip()
+    except Exception:
+        coupon_id = ""
+
+    if coupon_id:
+        try:
+            coupon_doc = coupon_collection.document(coupon_id).get()
+            if coupon_doc.exists:
+                row = _coupon_backfill_fields({**(coupon_doc.to_dict() or {}), "id": coupon_id})
+                return coupon_id, row
+        except Exception:
+            return "", None
+
+    # Legacy fallback path and self-heal index.
+    try:
+        docs = list(coupon_collection.where("code", "==", safe_code).limit(1).stream())
+    except Exception:
+        docs = []
+    if not docs:
+        return "", None
+    doc = docs[0]
+    coupon_id = str(doc.id or "").strip()
+    row = _coupon_backfill_fields({**(doc.to_dict() or {}), "id": coupon_id})
+    try:
+        index_collection.document(safe_code).set(
+            {
+                "code": safe_code,
+                "couponId": coupon_id,
+                "updatedAt": _utc_now().isoformat(),
+            },
+            merge=True,
+        )
+    except Exception:
+        pass
+    return coupon_id, row
+
+
+def _coupon_generate_unique_code(prefix: str = "", length: int = 12, attempts: int = 10) -> str:
+    safe_attempts = max(1, int(attempts))
+    total_attempts = max(safe_attempts, safe_attempts + 24)
+    last_candidate = ""
+    for _ in range(total_attempts):
+        candidate = _generate_coupon_code(length=length, prefix=prefix)
+        if not candidate:
+            continue
+        last_candidate = candidate
+        if _firestore_collection("coupons") is None or _FIRESTORE_DB is None:
+            with _INMEMORY_LOCK:
+                if candidate not in _INMEMORY_COUPON_CODE_INDEX:
+                    return candidate
+        else:
+            index_collection = _coupon_index_collection()
+            if index_collection is None:
+                return candidate
+            try:
+                exists = index_collection.document(candidate).get().exists
+            except Exception:
+                exists = False
+            if not exists:
+                return candidate
+    if last_candidate:
+        return last_candidate
+    return _generate_coupon_code(length=length, prefix=prefix)
+
+
+def _coupon_policy_blocks_user(coupon: dict[str, Any], uid: str, redemptions_by_user: set[str]) -> bool:
+    policy = _normalize_coupon_usage_policy(str(coupon.get("usagePolicy") or ""))
+    if policy == COUPON_USAGE_SINGLE_GLOBAL:
+        return False
+    if policy == COUPON_USAGE_SINGLE_PER_USER:
+        return _coupon_user_key(str(coupon.get("id") or ""), uid) in redemptions_by_user
+    return False
 
 
 def _credit_paid_vf(
@@ -4877,7 +7337,7 @@ def _credit_paid_vf(
 
 def _normalize_conversion_policy(raw_policy: str, default: str = "AUTO_RELIABLE") -> str:
     token = str(raw_policy or "").strip().upper().replace("-", "_")
-    if token in {"AUTO_ROUTE", "LHQ_PILOT"}:
+    if token == "AUTO_ROUTE":
         token = "AUTO_RELIABLE"
     if token not in VOICE_CONVERSION_POLICIES:
         return default
@@ -5610,14 +8070,22 @@ def _backend_gemini_pool_usage_snapshot() -> dict[str, Any]:
     }
 
 
+def _gemini_runtime_admin_headers() -> dict[str, str]:
+    token = str(GEMINI_RUNTIME_ADMIN_TOKEN or "").strip()
+    if not token:
+        return {}
+    return {"x-admin-token": token}
+
+
 def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
+    runtime_headers = _gemini_runtime_admin_headers()
     endpoints = [
         f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools",
         f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool",
     ]
     for endpoint in endpoints:
         try:
-            response = requests.get(endpoint, timeout=timeout_sec)
+            response = requests.get(endpoint, timeout=timeout_sec, headers=runtime_headers or None)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
         try:
@@ -5635,13 +8103,14 @@ def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
 
 
 def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
+    runtime_headers = _gemini_runtime_admin_headers()
     endpoints = [
         f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/reload",
         f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool/reload",
     ]
     for endpoint in endpoints:
         try:
-            response = requests.post(endpoint, timeout=timeout_sec)
+            response = requests.post(endpoint, timeout=timeout_sec, headers=runtime_headers or None)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
         try:
@@ -5660,8 +8129,9 @@ def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
 
 def _runtime_gemini_pool_usage(timeout_sec: float = 8.0) -> dict[str, Any]:
     endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/usage"
+    runtime_headers = _gemini_runtime_admin_headers()
     try:
-        response = requests.get(endpoint, timeout=timeout_sec)
+        response = requests.get(endpoint, timeout=timeout_sec, headers=runtime_headers or None)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
     try:
@@ -6193,27 +8663,26 @@ def health() -> JSONResponse:
     except Exception as exc:
         ffmpeg_error = str(exc)
 
-    rvc_available = False
-    rvc_error = rvc_runtime.import_error
-    current_model = rvc_runtime.current_model()
-    rvc_models_dir = str(MODELS_DIR)
+    llvc_available = False
+    llvc_error = llvc_runtime.import_error
+    current_model = llvc_runtime.current_model()
+    llvc_models_dir = str(MODELS_DIR)
     try:
-        rvc_runtime.ensure_engine()
-        rvc_payload = rvc_runtime.health_payload()
-        nested = rvc_payload.get("rvc") if isinstance(rvc_payload.get("rvc"), dict) else {}
-        rvc_available = bool(nested.get("available"))
+        llvc_runtime.ensure_engine()
+        llvc_payload = llvc_runtime.health_payload()
+        nested = llvc_payload.get("llvc") if isinstance(llvc_payload.get("llvc"), dict) else {}
+        llvc_available = bool(nested.get("available"))
         current_model = str(nested.get("currentModel") or current_model or "").strip() or current_model
-        rvc_models_dir = str(nested.get("modelsDir") or rvc_models_dir)
-        rvc_error = str(nested.get("error") or "").strip() or None
+        llvc_models_dir = str(nested.get("modelsDir") or llvc_models_dir)
+        llvc_error = str(nested.get("error") or "").strip() or None
     except Exception as exc:
-        rvc_available = False
-        rvc_error = str(exc)
+        llvc_available = False
+        llvc_error = str(exc)
 
     source_separation_available = source_separation_runtime.ensure_available()
     source_separation_error = source_separation_runtime.import_error
-    lhq_healthy, lhq_detail = lhq_svc_adapter.health()
 
-    fallback_available = bool(ENABLE_RVC_FALLBACK and ffmpeg_ok)
+    fallback_available = bool(ENABLE_LLVC_FALLBACK and ffmpeg_ok)
     response = {
         "ok": ffmpeg_ok and (source_separation_available or not ENABLE_SOURCE_SEPARATION),
         "ffmpeg": {
@@ -6221,16 +8690,15 @@ def health() -> JSONResponse:
             "path": ffmpeg_path,
             "error": ffmpeg_error,
         },
-        "rvc": {
-            "available": rvc_available or fallback_available,
-            "currentModel": current_model or (RVC_FALLBACK_MODEL_ID if fallback_available else None),
-            "modelsDir": rvc_models_dir,
-            "error": rvc_error,
+        "llvc": {
+            "available": llvc_available or fallback_available,
+            "currentModel": current_model or (LLVC_FALLBACK_MODEL_ID if fallback_available else None),
+            "modelsDir": llvc_models_dir,
+            "error": llvc_error,
             "fallbackAvailable": fallback_available,
-            "fallbackModel": RVC_FALLBACK_MODEL_ID if fallback_available else None,
+            "fallbackModel": LLVC_FALLBACK_MODEL_ID if fallback_available else None,
             "conversionPolicies": sorted(VOICE_CONVERSION_POLICIES),
-            "lhqPilot": {"healthy": lhq_healthy, "detail": lhq_detail, "model": LHQ_SVC_PILOT_MODEL_ID},
-            "runtimeUrl": RVC_RUNTIME_URL,
+            "runtimeUrl": LLVC_RUNTIME_URL,
         },
         "whisper": {
             "loaded": whisper_runtime.model is not None,
@@ -6266,7 +8734,7 @@ def system_version() -> JSONResponse:
                 "ttsSwitch": True,
                 "runtimeLogs": True,
                 "voiceConversionPolicy": True,
-                "lhqSvcPilot": False,
+                "llvcRuntime": True,
                 "firebaseAuth": True,
                 "stripeBilling": True,
                 "usageQuota": True,
@@ -6278,14 +8746,15 @@ def system_version() -> JSONResponse:
 
 
 @app.get("/ops/guardian/status")
-def ops_guardian_status(include_route_stats: bool = False) -> JSONResponse:
+def ops_guardian_status(request: Request, include_route_stats: bool = False) -> JSONResponse:
+    _require_permission(request, PERM_GUARDIAN_READ)
     payload = _ai_ops_build_status(include_route_stats=bool(include_route_stats))
     return JSONResponse(payload)
 
 
 @app.post("/ops/guardian/scan")
 def ops_guardian_scan(payload: AiOpsScanRequest, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
+    uid, actor = _require_permission(request, PERM_GUARDIAN_MUTATE)
     status_payload = _ai_ops_build_status(include_route_stats=True)
     detected_issues = list(status_payload.get("issues") or [])
     auto_fix_actions: list[dict[str, Any]] = []
@@ -6343,26 +8812,46 @@ def ops_guardian_scan(payload: AiOpsScanRequest, request: Request) -> JSONRespon
         "createdApprovals": created_approvals,
         "autoFixEnabled": bool(VF_AI_OPS_ENABLE_AUTOFIX_MINOR),
     }
+    _audit_append_event(
+        action="guardian_scan",
+        resource_type="guardian",
+        resource_id="scan",
+        after={"issues": len(detected_issues), "createdApprovals": len(created_approvals)},
+        meta={"autoFixMinor": bool(payload.autoFixMinor), "includeRouteStats": bool(payload.includeRouteStats)},
+        request=request,
+        actor_uid=uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse(response_payload)
 
 
 @app.post("/ops/guardian/actions")
 def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
+    uid, actor = _require_permission(request, PERM_GUARDIAN_MUTATE)
     try:
         action = _ai_ops_validate_action(payload.action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     severity = _ai_ops_action_severity(action)
+    authorized, auth_uid, auth_reason = _ai_ops_admin_authorized(request, payload.adminToken)
     if severity == "major":
-        authorized, auth_uid, auth_reason = _ai_ops_admin_authorized(request, payload.adminToken)
         if not authorized:
             approval, created = _ai_ops_create_approval(
                 action=action,
                 payload=payload.payload if isinstance(payload.payload, dict) else {},
                 requested_by=uid,
                 reason=auth_reason,
+            )
+            _audit_append_event(
+                action="guardian_action_approval_created",
+                resource_type="guardian_action",
+                resource_id=action,
+                after={"approvalId": str(approval.get("id") or ""), "created": bool(created)},
+                meta={"reason": auth_reason},
+                request=request,
+                actor_uid=uid,
+                actor_role=str(actor.get("role") or ""),
             )
             return JSONResponse(
                 status_code=202,
@@ -6379,6 +8868,16 @@ def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONR
             gpu=bool(payload.gpu),
             initiator=f"admin:{auth_uid}",
         )
+        _audit_append_event(
+            action="guardian_action_execute",
+            resource_type="guardian_action",
+            resource_id=action,
+            after={"ok": bool(execution.get("ok")), "severity": severity},
+            meta={"approvalRequired": True},
+            request=request,
+            actor_uid=uid,
+            actor_role=str(actor.get("role") or ""),
+        )
         return JSONResponse(
             {
                 "ok": bool(execution.get("ok")),
@@ -6388,11 +8887,24 @@ def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONR
             }
         )
 
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {auth_reason}")
+
     execution = _ai_ops_execute_action(
         action=action,
         payload=payload.payload if isinstance(payload.payload, dict) else {},
         gpu=bool(payload.gpu),
-        initiator=f"user:{uid}",
+        initiator=f"admin:{auth_uid}",
+    )
+    _audit_append_event(
+        action="guardian_action_execute",
+        resource_type="guardian_action",
+        resource_id=action,
+        after={"ok": bool(execution.get("ok")), "severity": severity},
+        meta={"approvalRequired": False},
+        request=request,
+        actor_uid=uid,
+        actor_role=str(actor.get("role") or ""),
     )
     return JSONResponse(
         {
@@ -6405,7 +8917,8 @@ def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONR
 
 
 @app.get("/ops/guardian/approvals")
-def ops_guardian_approvals(status: str = "pending") -> JSONResponse:
+def ops_guardian_approvals(request: Request, status: str = "pending") -> JSONResponse:
+    _require_permission(request, PERM_GUARDIAN_READ)
     filter_token = str(status or "pending").strip().lower()
     if filter_token not in {"pending", "approved", "rejected", "executed", "failed", "all"}:
         raise HTTPException(status_code=400, detail="Invalid status filter.")
@@ -6426,6 +8939,7 @@ def ops_guardian_approval_decision(
     payload: AiOpsApprovalDecisionRequest,
     request: Request,
 ) -> JSONResponse:
+    uid_actor, actor = _require_permission(request, PERM_GUARDIAN_MUTATE)
     authorized, uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
     if not authorized:
         raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
@@ -6449,6 +8963,16 @@ def ops_guardian_approval_decision(
                 item["status"] = "rejected"
                 item["updatedAtMs"] = _ai_ops_now_ms()
                 approval = dict(item)
+        _audit_append_event(
+            action="guardian_approval_rejected",
+            resource_type="guardian_approval",
+            resource_id=str(approval_id),
+            after={"status": "rejected"},
+            meta={"note": str(payload.note or "")},
+            request=request,
+            actor_uid=uid_actor,
+            actor_role=str(actor.get("role") or ""),
+        )
         return JSONResponse({"ok": True, "approval": approval})
 
     approval_data = _ai_ops_get_approval(approval_id)
@@ -6468,6 +8992,16 @@ def ops_guardian_approval_decision(
             item["updatedAtMs"] = _ai_ops_now_ms()
             item["execution"] = execution
             approval_data = dict(item)
+    _audit_append_event(
+        action="guardian_approval_decided",
+        resource_type="guardian_approval",
+        resource_id=str(approval_id),
+        after={"status": str((approval_data or {}).get("status") or "")},
+        meta={"executionOk": bool(execution.get("ok"))},
+        request=request,
+        actor_uid=uid_actor,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse({"ok": True, "approval": approval_data, "execution": execution})
 
 
@@ -6751,7 +9285,7 @@ def wallet_ad_reward_claim(request: Request) -> JSONResponse:
 @app.post("/wallet/coupons/redeem")
 def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
-    admin_limit_bypass = _request_is_admin(request, uid)
+    admin_limit_bypass = bool(VF_ADMIN_COUPON_LIMIT_BYPASS and _request_is_admin(request, uid))
     code = _normalize_coupon_code(payload.code)
     if not code:
         raise HTTPException(status_code=400, detail="Coupon code is required.")
@@ -6764,49 +9298,62 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
 
     if coupons is None or redemptions is None or entitlements is None or transactions is None or _FIRESTORE_DB is None or firebase_firestore is None:
         with _INMEMORY_LOCK:
-            coupon_id = ""
-            coupon: dict[str, Any] = {}
-            for item_id, row in _INMEMORY_COUPONS.items():
-                if str(row.get("code") or "").upper() == code:
-                    coupon_id = item_id
-                    coupon = dict(row)
-                    break
+            safe_code = _coupon_store_ref(code)
+            coupon_id = str(_INMEMORY_COUPON_CODE_INDEX.get(safe_code) or "").strip()
+            if not coupon_id:
+                _inmemory_rebuild_coupon_index_locked()
+                coupon_id = str(_INMEMORY_COUPON_CODE_INDEX.get(safe_code) or "").strip()
             if not coupon_id:
                 raise HTTPException(status_code=404, detail="Coupon not found.")
+            coupon_row = _INMEMORY_COUPONS.get(coupon_id) or {}
+            coupon = _coupon_backfill_fields(coupon_row or {}, now)
             if not _as_bool(coupon.get("active")):
                 raise HTTPException(status_code=400, detail="Coupon is inactive.")
-            expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
-            if expires and expires <= now:
+            if _coupon_is_expired(coupon, now):
                 raise HTTPException(status_code=400, detail="Coupon has expired.")
-            redemption_key = (
-                f"{coupon_id}_{uid}_{uuid.uuid4().hex}"
-                if admin_limit_bypass
-                else f"{coupon_id}_{uid}"
+            if _normalize_coupon_type(str(coupon.get("couponType") or "")) != COUPON_TYPE_WALLET_CREDIT:
+                raise HTTPException(status_code=400, detail="Coupon is not redeemable as wallet credit.")
+            policy = _normalize_coupon_usage_policy(str(coupon.get("usagePolicy") or ""))
+            user_coupon_key = _coupon_user_key(coupon_id, uid)
+            has_user_redeemed = any(
+                str((entry or {}).get("couponId") or "").strip() == coupon_id
+                and str((entry or {}).get("uid") or "").strip() == uid
+                and str((entry or {}).get("channel") or "wallet").strip().lower() == "wallet"
+                and str((entry or {}).get("status") or "redeemed").strip().lower() in {"reserved", "redeemed"}
+                for entry in _INMEMORY_COUPON_REDEMPTIONS.values()
             )
-            if not admin_limit_bypass and redemption_key in _INMEMORY_COUPON_REDEMPTIONS:
+            if not admin_limit_bypass and policy == COUPON_USAGE_SINGLE_PER_USER and has_user_redeemed:
                 raise HTTPException(status_code=409, detail="Coupon already redeemed by this user.")
-            redeemed_count = _as_positive_int(coupon.get("redeemedCount"))
-            max_redemptions = _as_positive_int(coupon.get("maxRedemptions"))
-            if not admin_limit_bypass and max_redemptions > 0 and redeemed_count >= max_redemptions:
+            if not admin_limit_bypass and _coupon_usage_limit_reached(coupon):
                 raise HTTPException(status_code=400, detail="Coupon redemption limit reached.")
             credit_vf = _as_positive_int(coupon.get("creditVf"))
             if credit_vf <= 0:
                 raise HTTPException(status_code=400, detail="Coupon has no redeemable value.")
 
-            coupon["redeemedCount"] = redeemed_count + 1
+            coupon["redeemedCount"] = _as_positive_int(coupon.get("redeemedCount")) + 1
             coupon["updatedAt"] = now.isoformat()
-            _INMEMORY_COUPONS[coupon_id] = coupon
+            _INMEMORY_COUPONS[coupon_id] = dict(coupon)
+            redemption_key = (
+                f"{coupon_id}_{uid}_{uuid.uuid4().hex}"
+                if policy in {COUPON_USAGE_SINGLE_GLOBAL, COUPON_USAGE_MAX_REDEMPTIONS} or admin_limit_bypass
+                else user_coupon_key
+            )
             _INMEMORY_COUPON_REDEMPTIONS[redemption_key] = {
+                "id": redemption_key,
                 "couponId": coupon_id,
                 "uid": uid,
                 "code": code,
                 "creditedVf": credit_vf,
+                "channel": "wallet",
+                "status": "redeemed",
+                "usagePolicy": policy,
+                "couponType": COUPON_TYPE_WALLET_CREDIT,
                 "createdAt": now.isoformat(),
             }
         coupon_tx_id = (
-            f"coupon_{coupon_id}_{uid}_{uuid.uuid4().hex}"
-            if admin_limit_bypass
-            else f"coupon_{coupon_id}_{uid}"
+            f"coupon_wallet_{coupon_id}_{uid}_{uuid.uuid4().hex}"
+            if policy in {COUPON_USAGE_SINGLE_GLOBAL, COUPON_USAGE_MAX_REDEMPTIONS} or admin_limit_bypass
+            else f"coupon_wallet_{coupon_id}_{uid}"
         )
         _credit_paid_vf(
             uid=uid,
@@ -6816,25 +9363,29 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
             metadata={
                 "couponId": coupon_id,
                 "code": code,
+                "channel": "wallet",
+                "usagePolicy": policy,
                 "adminLimitBypass": bool(admin_limit_bypass),
             },
         )
         return JSONResponse({"ok": True, "creditedVf": credit_vf, "entitlements": _entitlement_usage_payload(uid)})
 
-    coupon_docs = list(_FIRESTORE_DB.collection("coupons").where("code", "==", code).limit(1).stream())
-    if not coupon_docs:
+    coupon_id, coupon_lookup = _coupon_get_firestore_by_code(code)
+    if not coupon_id or not coupon_lookup:
         raise HTTPException(status_code=404, detail="Coupon not found.")
-    coupon_doc = coupon_docs[0]
-    coupon_id = str(coupon_doc.id)
+    coupon_lookup = _coupon_backfill_fields(coupon_lookup, now)
+    if _normalize_coupon_type(str(coupon_lookup.get("couponType") or "")) != COUPON_TYPE_WALLET_CREDIT:
+        raise HTTPException(status_code=400, detail="Coupon is not redeemable as wallet credit.")
+    policy = _normalize_coupon_usage_policy(str(coupon_lookup.get("usagePolicy") or ""))
     redemption_doc_id = (
         f"{coupon_id}_{uid}_{uuid.uuid4().hex}"
-        if admin_limit_bypass
-        else f"{coupon_id}_{uid}"
+        if policy in {COUPON_USAGE_SINGLE_GLOBAL, COUPON_USAGE_MAX_REDEMPTIONS} or admin_limit_bypass
+        else f"{coupon_id}::{uid}::wallet"
     )
     tx_doc_id = (
-        f"coupon_{coupon_id}_{uid}_{uuid.uuid4().hex}"
-        if admin_limit_bypass
-        else f"coupon_{coupon_id}_{uid}"
+        f"coupon_wallet_{coupon_id}_{uid}_{uuid.uuid4().hex}"
+        if policy in {COUPON_USAGE_SINGLE_GLOBAL, COUPON_USAGE_MAX_REDEMPTIONS} or admin_limit_bypass
+        else f"coupon_wallet_{coupon_id}_{uid}"
     )
     coupon_ref = _FIRESTORE_DB.collection("coupons").document(coupon_id)
     redemption_ref = _FIRESTORE_DB.collection("coupon_redemptions").document(redemption_doc_id)
@@ -6847,19 +9398,16 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
         fresh_coupon_doc = coupon_ref.get(transaction=transaction_obj)
         if not fresh_coupon_doc.exists:
             raise RuntimeError("Coupon not found.")
-        coupon = fresh_coupon_doc.to_dict() or {}
+        coupon = _coupon_backfill_fields({**(fresh_coupon_doc.to_dict() or {}), "id": coupon_id}, now)
         if not _as_bool(coupon.get("active")):
             raise RuntimeError("Coupon is inactive.")
-        expires = _parse_optional_datetime(str(coupon.get("expiresAt") or ""))
-        if expires and expires <= now:
+        if _coupon_is_expired(coupon, now):
             raise RuntimeError("Coupon has expired.")
-        if not admin_limit_bypass:
+        if not admin_limit_bypass and policy == COUPON_USAGE_SINGLE_PER_USER:
             redemption_doc = redemption_ref.get(transaction=transaction_obj)
             if redemption_doc.exists:
                 raise RuntimeError("Coupon already redeemed by this user.")
-        redeemed_count = _as_positive_int(coupon.get("redeemedCount"))
-        max_redemptions = _as_positive_int(coupon.get("maxRedemptions"))
-        if not admin_limit_bypass and max_redemptions > 0 and redeemed_count >= max_redemptions:
+        if not admin_limit_bypass and _coupon_usage_limit_reached(coupon):
             raise RuntimeError("Coupon redemption limit reached.")
         credit_vf = _as_positive_int(coupon.get("creditVf"))
         if credit_vf <= 0:
@@ -6869,17 +9417,22 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
         entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
         entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_vf
         entitlement["updatedAt"] = now.isoformat()
-        coupon["redeemedCount"] = redeemed_count + 1
+        coupon["redeemedCount"] = _as_positive_int(coupon.get("redeemedCount")) + 1
         coupon["updatedAt"] = now.isoformat()
 
         transaction_obj.set(coupon_ref, coupon, merge=True)
         transaction_obj.set(
             redemption_ref,
             {
+                "id": redemption_ref.id,
                 "couponId": coupon_id,
                 "uid": uid,
                 "code": code,
                 "creditedVf": credit_vf,
+                "channel": "wallet",
+                "status": "redeemed",
+                "usagePolicy": policy,
+                "couponType": COUPON_TYPE_WALLET_CREDIT,
                 "createdAt": now.isoformat(),
             },
             merge=True,
@@ -6897,6 +9450,8 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
                 "metadata": {
                     "couponId": coupon_id,
                     "code": code,
+                    "channel": "wallet",
+                    "usagePolicy": policy,
                     "adminLimitBypass": bool(admin_limit_bypass),
                 },
                 "createdAt": now.isoformat(),
@@ -7017,7 +9572,7 @@ def _reset_daily_usage_all(*, dry_run: bool, requested_by: str) -> dict[str, Any
 
 @app.get("/admin/usage/reset-daily-all/status")
 def admin_daily_usage_reset_status(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     payload = _load_daily_usage_reset_status()
     if not payload:
         return JSONResponse({"ok": True, "status": "never_run"})
@@ -7026,14 +9581,24 @@ def admin_daily_usage_reset_status(request: Request) -> JSONResponse:
 
 @app.post("/admin/usage/reset-daily-all")
 def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONResponse:
-    admin_uid = _require_admin_uid(request)
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     summary = _reset_daily_usage_all(dry_run=bool(dryRun), requested_by=admin_uid)
+    _audit_append_event(
+        action="daily_usage_reset",
+        resource_type="usage",
+        resource_id="daily_all",
+        after=summary if isinstance(summary, dict) else {},
+        meta={"dryRun": bool(dryRun)},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse(summary)
 
 
 @app.get("/admin/tts/gateway/status")
 def admin_tts_gateway_status(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     return JSONResponse(
         {
             "ok": True,
@@ -7045,13 +9610,13 @@ def admin_tts_gateway_status(request: Request) -> JSONResponse:
 
 @app.get("/admin/tts/queue/metrics")
 def admin_tts_queue_metrics(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     return JSONResponse(_tts_queue_metrics_snapshot())
 
 
 @app.get("/admin/integrations/usage")
 def admin_integrations_usage(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     return JSONResponse(_admin_usage_summary_payload())
 
 
@@ -7061,7 +9626,7 @@ def admin_integrations_usage_export(
     format: str = "json",
     window: str = "total",
 ) -> Response:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     safe_format = str(format or "json").strip().lower()
     safe_window = str(window or "total").strip().lower()
     if safe_window in {"24h", "last_24h", "day"}:
@@ -7098,18 +9663,19 @@ def admin_integrations_usage_export(
 
 @app.get("/admin/users")
 def admin_list_users(request: Request, q: str = "", limit: int = 50) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_USERS_READ)
     rows = _admin_list_users(limit=limit, search=q)
     return JSONResponse({"ok": True, "users": rows, "count": len(rows)})
 
 
 @app.patch("/admin/users/{target_uid}")
 def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
     entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    before_entitlement = dict(entitlement)
 
     patch: dict[str, Any] = {}
     if payload.plan is not None:
@@ -7132,33 +9698,61 @@ def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: R
 
     if payload.disabled is not None:
         _admin_set_user_disabled(uid, bool(payload.disabled))
-
-    return JSONResponse({"ok": True, "uid": uid, "entitlements": _entitlement_usage_payload(uid)})
+    response_payload = {"ok": True, "uid": uid, "entitlements": _entitlement_usage_payload(uid)}
+    _audit_append_event(
+        action="admin_user_patch",
+        resource_type="user",
+        resource_id=uid,
+        before={"entitlements": before_entitlement},
+        after={"patch": patch, "disabled": payload.disabled},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(response_payload)
 
 
 @app.post("/admin/users/{target_uid}/reset-password")
 def admin_reset_user_password(target_uid: str, payload: AdminResetPasswordRequest, request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
     _admin_set_user_password(uid, payload.newPassword)
+    _audit_append_event(
+        action="admin_user_reset_password",
+        resource_type="user",
+        resource_id=uid,
+        after={"reset": True},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse({"ok": True, "uid": uid})
 
 
 @app.post("/admin/users/{target_uid}/revoke-sessions")
 def admin_revoke_user_sessions(target_uid: str, request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
     _admin_revoke_user_sessions(uid)
+    _audit_append_event(
+        action="admin_user_revoke_sessions",
+        resource_type="user",
+        resource_id=uid,
+        after={"revoked": True},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse({"ok": True, "uid": uid})
 
 
 @app.delete("/admin/users/{target_uid}")
 def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -7207,85 +9801,438 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
                 _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
             _INMEMORY_GENERATION_HISTORY.pop(uid, None)
     _TTS_SUCCESS_LIMITER.clear_uid(uid)
-
+    _audit_append_event(
+        action="admin_user_delete",
+        resource_type="user",
+        resource_id=uid,
+        after={"deleted": True},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse({"ok": True, "uid": uid})
+
+
+@app.get("/admin/rbac/roles")
+def admin_rbac_roles(request: Request) -> JSONResponse:
+    _require_permission(request, PERM_RBAC_READ)
+    return JSONResponse(_rbac_roles_payload())
+
+
+@app.get("/admin/rbac/users")
+def admin_rbac_users(
+    request: Request,
+    limit: int = 100,
+    cursor: str = "",
+    q: str = "",
+) -> JSONResponse:
+    _require_permission(request, PERM_RBAC_READ)
+    rows, next_cursor = _rbac_list_assignments(limit=limit, cursor=cursor, q=q)
+    return JSONResponse(
+        {
+            "ok": True,
+            "items": rows,
+            "count": len(rows),
+            "nextCursor": next_cursor,
+        }
+    )
+
+
+@app.put("/admin/rbac/users/{target_uid}")
+def admin_rbac_assign_user(target_uid: str, payload: AdminRoleAssignmentRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_RBAC_WRITE)
+    safe_target_uid = str(target_uid or "").strip()
+    if not safe_target_uid:
+        raise HTTPException(status_code=400, detail="Missing target uid.")
+    safe_role = _rbac_normalize_role(payload.role)
+    if safe_role not in RBAC_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role.")
+    before = _rbac_load_assignment(safe_target_uid) or {}
+    row = _rbac_write_assignment(
+        safe_target_uid,
+        {
+            "role": safe_role,
+            "allowOverrides": payload.allowOverrides or [],
+            "denyOverrides": payload.denyOverrides or [],
+            "status": payload.status or "active",
+            "updatedBy": actor_uid,
+        },
+    )
+    _audit_append_event(
+        action="rbac_assign_user",
+        resource_type="rbac_user",
+        resource_id=safe_target_uid,
+        before=before,
+        after=row,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "assignment": row})
+
+
+@app.post("/admin/rbac/users/{target_uid}/disable")
+def admin_rbac_disable_user(target_uid: str, payload: AdminRoleStatusRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_RBAC_WRITE)
+    safe_target_uid = str(target_uid or "").strip()
+    if not safe_target_uid:
+        raise HTTPException(status_code=400, detail="Missing target uid.")
+    before = _rbac_load_assignment(safe_target_uid) or {}
+    current = dict(before)
+    if not current:
+        current = {
+            "uid": safe_target_uid,
+            "role": RBAC_ROLE_READ_ONLY_OPS,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "version": 0,
+        }
+    row = _rbac_write_assignment(
+        safe_target_uid,
+        {
+            **current,
+            "status": "disabled",
+            "updatedBy": actor_uid,
+        },
+    )
+    _audit_append_event(
+        action="rbac_disable_user",
+        resource_type="rbac_user",
+        resource_id=safe_target_uid,
+        before=before,
+        after={**row, "note": str(payload.note or "")[:280]},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "assignment": row})
+
+
+@app.post("/admin/rbac/users/{target_uid}/enable")
+def admin_rbac_enable_user(target_uid: str, payload: AdminRoleStatusRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_RBAC_WRITE)
+    safe_target_uid = str(target_uid or "").strip()
+    if not safe_target_uid:
+        raise HTTPException(status_code=400, detail="Missing target uid.")
+    before = _rbac_load_assignment(safe_target_uid) or {}
+    current = dict(before)
+    if not current:
+        current = {
+            "uid": safe_target_uid,
+            "role": RBAC_ROLE_READ_ONLY_OPS,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "disabled",
+            "version": 0,
+        }
+    row = _rbac_write_assignment(
+        safe_target_uid,
+        {
+            **current,
+            "status": "active",
+            "updatedBy": actor_uid,
+        },
+    )
+    _audit_append_event(
+        action="rbac_enable_user",
+        resource_type="rbac_user",
+        resource_id=safe_target_uid,
+        before=before,
+        after={**row, "note": str(payload.note or "")[:280]},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "assignment": row})
+
+
+@app.get("/admin/audit/events")
+def admin_audit_events(
+    request: Request,
+    actorUid: str = "",
+    action: str = "",
+    resourceType: str = "",
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    cursor: str = "",
+    limit: int = 100,
+) -> JSONResponse:
+    _require_permission(request, PERM_AUDIT_READ)
+    items, next_cursor = _audit_list_events(
+        actor_uid=actorUid,
+        action=action,
+        resource_type=resourceType,
+        from_iso=fromIso,
+        to_iso=toIso,
+        cursor=cursor,
+        limit=limit,
+    )
+    return JSONResponse({"ok": True, "items": items, "count": len(items), "nextCursor": next_cursor})
+
+
+@app.get("/admin/audit/events/{event_id}")
+def admin_audit_event_by_id(event_id: str, request: Request) -> JSONResponse:
+    _require_permission(request, PERM_AUDIT_READ)
+    safe_event_id = str(event_id or "").strip()
+    if not safe_event_id:
+        raise HTTPException(status_code=400, detail="Missing event id.")
+    collection = _firestore_collection(AUDIT_LEDGER_COLLECTION)
+    item: Optional[dict[str, Any]] = None
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_AUDIT_LEDGER_EVENTS.get(safe_event_id)
+            if isinstance(row, dict):
+                item = dict(row)
+    else:
+        try:
+            doc = collection.document(safe_event_id).get()
+            if doc.exists:
+                item = {**(doc.to_dict() or {}), "eventId": safe_event_id}
+        except Exception:
+            item = None
+    if item is None:
+        raise HTTPException(status_code=404, detail="Audit event not found.")
+    return JSONResponse({"ok": True, "event": item})
+
+
+@app.get("/admin/audit/verify-chain")
+def admin_audit_verify_chain(
+    request: Request,
+    fromSeq: int = 0,
+    toSeq: int = 0,
+    limit: int = 1000,
+) -> JSONResponse:
+    _require_permission(request, PERM_AUDIT_READ)
+    payload = _audit_verify_chain(from_seq=fromSeq, to_seq=toSeq, limit=limit)
+    return JSONResponse({"ok": bool(payload.get("ok")), **payload})
 
 
 @app.post("/admin/coupons")
 def admin_create_coupon(payload: CouponCreateRequest, request: Request) -> JSONResponse:
-    admin_uid = _require_admin_uid(request)
+    admin_uid, actor = _require_permission(request, PERM_COUPONS_WRITE)
+    now_dt = _utc_now()
     code = _normalize_coupon_code(payload.code)
     if not code:
+        code = _coupon_generate_unique_code(prefix="", length=12, attempts=24)
+    if not code:
         raise HTTPException(status_code=400, detail="Invalid coupon code.")
-    credit_vf = _as_positive_int(payload.creditVf)
-    if credit_vf <= 0:
-        raise HTTPException(status_code=400, detail="creditVf must be positive.")
-    max_redemptions = _as_positive_int(payload.maxRedemptions)
-    expires_dt = _parse_optional_datetime(payload.expiresAt)
+    coupon_type = _normalize_coupon_type(payload.couponType)
+    usage_policy = _normalize_coupon_usage_policy(payload.usagePolicy)
+    usage_limit = _coupon_effective_usage_limit(
+        usage_policy,
+        _as_positive_int(payload.usageLimit if payload.usageLimit is not None else payload.maxRedemptions),
+    )
+    expires_dt = _parse_optional_datetime(payload.expiresAt) or _coupon_default_expires_at(now_dt)
+
     coupon_id = f"coupon_{uuid.uuid4().hex[:12]}"
-    now = _utc_now().isoformat()
+    now = now_dt.isoformat()
     row = {
         "id": coupon_id,
         "code": code,
-        "creditVf": credit_vf,
+        "couponType": coupon_type,
         "active": bool(payload.active),
-        "maxRedemptions": max_redemptions,
+        "usagePolicy": usage_policy,
+        "usageLimit": usage_limit,
+        "maxRedemptions": usage_limit,
         "redeemedCount": 0,
-        "expiresAt": expires_dt.isoformat() if expires_dt else None,
+        "reservedCount": 0,
+        "expiresAt": expires_dt.isoformat(),
         "note": str(payload.note or "")[:240],
         "createdBy": admin_uid,
         "createdAt": now,
         "updatedAt": now,
     }
+    if coupon_type == COUPON_TYPE_WALLET_CREDIT:
+        credit_vf = _as_positive_int(payload.creditVf)
+        if credit_vf <= 0:
+            raise HTTPException(status_code=400, detail="creditVf must be positive for wallet_credit coupons.")
+        row["creditVf"] = credit_vf
+    else:
+        _require_stripe_ready()
+        discount_type = _normalize_coupon_discount_type(payload.discountType)
+        percent_off = float(payload.percentOff or 0.0)
+        amount_off_inr = _as_positive_int(payload.amountOffInr)
+        has_explicit_plan_discounts = isinstance(payload.planDiscounts, list) and len(payload.planDiscounts) > 0
+        if not has_explicit_plan_discounts:
+            if discount_type == COUPON_DISCOUNT_PERCENT:
+                if percent_off <= 0.0 or percent_off > 100.0:
+                    raise HTTPException(status_code=400, detail="percentOff must be in (0, 100] for percent discounts.")
+                amount_off_inr = 0
+            else:
+                if amount_off_inr <= 0:
+                    raise HTTPException(status_code=400, detail="amountOffInr must be positive for fixed_inr discounts.")
+                percent_off = 0.0
+        plan_discounts = _normalize_coupon_plan_discounts(
+            payload.planDiscounts,
+            fallback_discount_type=discount_type,
+            fallback_percent_off=percent_off,
+            fallback_amount_off_inr=amount_off_inr,
+            fallback_plans=_normalize_coupon_plan_scope(payload.appliesToPlans),
+        )
+        if not plan_discounts:
+            raise HTTPException(status_code=400, detail="At least one valid plan discount is required.")
+        primary_discount = _coupon_primary_plan_discount(plan_discounts) or {}
+        row["discountType"] = _normalize_coupon_discount_type(str(primary_discount.get("discountType") or discount_type))
+        row["percentOff"] = round(_as_float(primary_discount.get("percentOff"), percent_off), 4)
+        row["amountOffInr"] = _as_positive_int(primary_discount.get("amountOffInr") if primary_discount.get("amountOffInr") is not None else amount_off_inr)
+        row["appliesToPlans"] = sorted(plan_discounts.keys()) or _normalize_coupon_plan_scope(payload.appliesToPlans)
+        row["planDiscounts"] = plan_discounts
+        row["stripeCouponsByPlan"] = {}
+        row["subscriptionDuration"] = "first_invoice_only"
 
     collection = _firestore_collection("coupons")
+    index_collection = _coupon_index_collection()
+    stripe_coupon_id = ""
+    stripe_promotion_code_id = ""
+    created_stripe_coupon_ids: list[str] = []
+    created_stripe_promotion_ids: list[str] = []
     if collection is None:
         with _INMEMORY_LOCK:
-            for existing in _INMEMORY_COUPONS.values():
-                if str(existing.get("code") or "").upper() == code:
-                    raise HTTPException(status_code=409, detail="Coupon code already exists.")
-            _INMEMORY_COUPONS[coupon_id] = row
+            if code in _INMEMORY_COUPON_CODE_INDEX:
+                raise HTTPException(status_code=409, detail="Coupon code already exists.")
+            if coupon_type == COUPON_TYPE_SUBSCRIPTION_DISCOUNT:
+                try:
+                    stripe_sync = _stripe_sync_subscription_coupon_artifacts(
+                        code=code,
+                        coupon_id=coupon_id,
+                        active=bool(row.get("active")),
+                        plan_discounts=(row.get("planDiscounts") if isinstance(row.get("planDiscounts"), dict) else {}),
+                    )
+                    row["planDiscounts"] = stripe_sync["planDiscounts"]
+                    row["stripeCouponsByPlan"] = stripe_sync["stripeCouponsByPlan"]
+                    stripe_coupon_id = str(stripe_sync.get("stripeCouponId") or "")
+                    stripe_promotion_code_id = str(stripe_sync.get("stripePromotionCodeId") or "")
+                    row["stripeCouponId"] = stripe_coupon_id
+                    row["stripePromotionCodeId"] = stripe_promotion_code_id
+                    created_stripe_coupon_ids = list(stripe_sync.get("createdCouponIds") or [])
+                    created_stripe_promotion_ids = list(stripe_sync.get("createdPromotionIds") or [])
+                except Exception as exc:  # noqa: BLE001
+                    _stripe_cleanup_subscription_coupon_artifacts(
+                        stripe_promotion_ids=created_stripe_promotion_ids,
+                        stripe_coupon_ids=created_stripe_coupon_ids,
+                    )
+                    raise HTTPException(status_code=502, detail=f"Failed to sync Stripe coupon: {exc}") from exc
+            _INMEMORY_COUPONS[coupon_id] = dict(row)
+            _INMEMORY_COUPON_CODE_INDEX[code] = coupon_id
     else:
-        existing = list(collection.where("code", "==", code).limit(1).stream())
-        if existing:
-            raise HTTPException(status_code=409, detail="Coupon code already exists.")
-        collection.document(coupon_id).set(row, merge=True)
+        if _FIRESTORE_DB is None or firebase_firestore is None or index_collection is None:
+            raise HTTPException(status_code=503, detail="Coupon storage is unavailable.")
+        try:
+            if index_collection.document(code).get().exists:
+                raise HTTPException(status_code=409, detail="Coupon code already exists.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        if coupon_type == COUPON_TYPE_SUBSCRIPTION_DISCOUNT:
+            try:
+                stripe_sync = _stripe_sync_subscription_coupon_artifacts(
+                    code=code,
+                    coupon_id=coupon_id,
+                    active=bool(row.get("active")),
+                    plan_discounts=(row.get("planDiscounts") if isinstance(row.get("planDiscounts"), dict) else {}),
+                )
+                row["planDiscounts"] = stripe_sync["planDiscounts"]
+                row["stripeCouponsByPlan"] = stripe_sync["stripeCouponsByPlan"]
+                stripe_coupon_id = str(stripe_sync.get("stripeCouponId") or "")
+                stripe_promotion_code_id = str(stripe_sync.get("stripePromotionCodeId") or "")
+                row["stripeCouponId"] = stripe_coupon_id
+                row["stripePromotionCodeId"] = stripe_promotion_code_id
+                created_stripe_coupon_ids = list(stripe_sync.get("createdCouponIds") or [])
+                created_stripe_promotion_ids = list(stripe_sync.get("createdPromotionIds") or [])
+            except Exception as exc:  # noqa: BLE001
+                _stripe_cleanup_subscription_coupon_artifacts(
+                    stripe_promotion_ids=created_stripe_promotion_ids,
+                    stripe_coupon_ids=created_stripe_coupon_ids,
+                )
+                raise HTTPException(status_code=502, detail=f"Failed to sync Stripe coupon: {exc}") from exc
 
-    return JSONResponse({"ok": True, "coupon": row})
+        coupon_ref = collection.document(coupon_id)
+        code_ref = index_collection.document(code)
+        transaction = _FIRESTORE_DB.transaction()
+
+        @firebase_firestore.transactional
+        def _apply(transaction_obj: Any) -> None:
+            index_doc = code_ref.get(transaction=transaction_obj)
+            if index_doc.exists:
+                raise RuntimeError("Coupon code already exists.")
+            transaction_obj.set(coupon_ref, row, merge=True)
+            transaction_obj.set(
+                code_ref,
+                {
+                    "code": code,
+                    "couponId": coupon_id,
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+                merge=True,
+            )
+
+        try:
+            _apply(transaction)
+        except RuntimeError as exc:
+            _stripe_cleanup_subscription_coupon_artifacts(
+                stripe_promotion_ids=created_stripe_promotion_ids,
+                stripe_coupon_ids=created_stripe_coupon_ids,
+            )
+            raise HTTPException(status_code=409, detail="Coupon code already exists.")
+    normalized = _coupon_backfill_fields(row, now_dt)
+    _audit_append_event(
+        action="admin_coupon_create",
+        resource_type="coupon",
+        resource_id=str(normalized.get("id") or ""),
+        after=normalized,
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "coupon": normalized})
+
+
+@app.post("/admin/coupons/generate-code")
+def admin_generate_coupon_code(
+    request: Request,
+    prefix: str = "",
+    length: int = 12,
+) -> JSONResponse:
+    _require_permission(request, PERM_COUPONS_WRITE)
+    code = _coupon_generate_unique_code(prefix=prefix, length=length, attempts=20)
+    return JSONResponse({"ok": True, "code": code})
 
 
 @app.get("/admin/coupons")
-def admin_list_coupons(request: Request, limit: int = 100) -> JSONResponse:
-    _ = _require_admin_uid(request)
+def admin_list_coupons(
+    request: Request,
+    limit: int = 100,
+    couponType: str = "",
+) -> JSONResponse:
+    _require_permission(request, PERM_COUPONS_READ)
     safe_limit = max(1, min(300, int(limit)))
+    safe_type = _normalize_coupon_type(couponType) if str(couponType or "").strip() else ""
     coupons: list[dict[str, Any]] = []
     collection = _firestore_collection("coupons")
     if collection is None:
         with _INMEMORY_LOCK:
-            coupons = list(_INMEMORY_COUPONS.values())[:safe_limit]
+            _inmemory_rebuild_coupon_index_locked()
+            coupons = [dict(_coupon_backfill_fields(row)) for row in list(_INMEMORY_COUPONS.values())]
     else:
         docs = collection.limit(safe_limit).stream()
-        coupons = [{**(doc.to_dict() or {}), "id": doc.id} for doc in docs]
-    coupons.sort(key=lambda row: str(row.get("createdAt") or ""), reverse=True)
-    return JSONResponse({"ok": True, "coupons": coupons})
+        coupons = [_coupon_backfill_fields({**(doc.to_dict() or {}), "id": doc.id}) for doc in docs]
+    if safe_type:
+        coupons = [row for row in coupons if _normalize_coupon_type(str(row.get("couponType") or "")) == safe_type]
+    coupons.sort(key=_coupon_sort_key, reverse=True)
+    return JSONResponse({"ok": True, "coupons": coupons[:safe_limit]})
 
 
 @app.patch("/admin/coupons/{coupon_id}")
 def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_COUPONS_WRITE)
     safe_coupon_id = str(coupon_id or "").strip()
     if not safe_coupon_id:
         raise HTTPException(status_code=400, detail="Missing coupon id.")
-    patch: dict[str, Any] = {"updatedAt": _utc_now().isoformat()}
-    if payload.active is not None:
-        patch["active"] = bool(payload.active)
-    if payload.maxRedemptions is not None:
-        patch["maxRedemptions"] = _as_positive_int(payload.maxRedemptions)
-    if payload.expiresAt is not None:
-        expires = _parse_optional_datetime(payload.expiresAt)
-        patch["expiresAt"] = expires.isoformat() if expires else None
-    if payload.note is not None:
-        patch["note"] = str(payload.note)[:240]
+    if payload.code is not None:
+        raise HTTPException(status_code=400, detail="Coupon code cannot be changed after creation.")
 
     collection = _firestore_collection("coupons")
     if collection is None:
@@ -7293,22 +10240,137 @@ def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Req
             current = _INMEMORY_COUPONS.get(safe_coupon_id)
             if not current:
                 raise HTTPException(status_code=404, detail="Coupon not found.")
-            current.update(patch)
-            _INMEMORY_COUPONS[safe_coupon_id] = current
-            return JSONResponse({"ok": True, "coupon": current})
+            row = _coupon_backfill_fields(current)
+            patch: dict[str, Any] = {"updatedAt": _utc_now().isoformat()}
+            if payload.active is not None:
+                patch["active"] = bool(payload.active)
+            if payload.expiresAt is not None:
+                expires = _parse_optional_datetime(payload.expiresAt) or _coupon_default_expires_at()
+                patch["expiresAt"] = expires.isoformat()
+            if payload.note is not None:
+                patch["note"] = str(payload.note)[:240]
+            if payload.usagePolicy is not None or payload.usageLimit is not None or payload.maxRedemptions is not None:
+                usage_policy = _normalize_coupon_usage_policy(
+                    payload.usagePolicy if payload.usagePolicy is not None else str(row.get("usagePolicy") or "")
+                )
+                limit_input = payload.usageLimit if payload.usageLimit is not None else payload.maxRedemptions
+                if limit_input is None:
+                    limit_input = _as_positive_int(row.get("usageLimit"))
+                usage_limit = _coupon_effective_usage_limit(usage_policy, _as_positive_int(limit_input))
+                patch["usagePolicy"] = usage_policy
+                patch["usageLimit"] = usage_limit
+                patch["maxRedemptions"] = usage_limit
+            coupon_type = _normalize_coupon_type(str(row.get("couponType") or ""))
+            if coupon_type == COUPON_TYPE_WALLET_CREDIT and payload.creditVf is not None:
+                credit_vf = _as_positive_int(payload.creditVf)
+                if credit_vf <= 0:
+                    raise HTTPException(status_code=400, detail="creditVf must be positive.")
+                patch["creditVf"] = credit_vf
+            if coupon_type == COUPON_TYPE_SUBSCRIPTION_DISCOUNT:
+                if payload.discountType is not None or payload.percentOff is not None or payload.amountOffInr is not None or payload.planDiscounts is not None:
+                    raise HTTPException(status_code=400, detail="Discount amounts cannot be modified after creation.")
+                if payload.appliesToPlans is not None:
+                    patch["appliesToPlans"] = _normalize_coupon_plan_scope(payload.appliesToPlans)
+
+            row.update(patch)
+            normalized = _coupon_backfill_fields(row)
+            _INMEMORY_COUPONS[safe_coupon_id] = dict(normalized)
+            safe_code = _coupon_store_ref(str(normalized.get("code") or ""))
+            if safe_code:
+                _INMEMORY_COUPON_CODE_INDEX[safe_code] = safe_coupon_id
+            if (
+                _normalize_coupon_type(str(normalized.get("couponType") or "")) == COUPON_TYPE_SUBSCRIPTION_DISCOUNT
+                and payload.active is not None
+                and str(normalized.get("stripePromotionCodeId") or "").strip()
+                and _stripe_available()
+            ):
+                try:
+                    stripe.PromotionCode.modify(  # type: ignore[attr-defined]
+                        str(normalized.get("stripePromotionCodeId") or "").strip(),
+                        active=bool(normalized.get("active")),
+                    )
+                except Exception:
+                    pass
+            _audit_append_event(
+                action="admin_coupon_patch",
+                resource_type="coupon",
+                resource_id=safe_coupon_id,
+                before=_coupon_backfill_fields(current),
+                after=normalized,
+                request=request,
+                actor_uid=actor_uid,
+                actor_role=str(actor.get("role") or ""),
+            )
+            return JSONResponse({"ok": True, "coupon": normalized})
 
     ref = collection.document(safe_coupon_id)
     doc = ref.get()
     if not doc.exists:
         raise HTTPException(status_code=404, detail="Coupon not found.")
+    current = _coupon_backfill_fields({**(doc.to_dict() or {}), "id": safe_coupon_id})
+    patch = {"updatedAt": _utc_now().isoformat()}
+    if payload.active is not None:
+        patch["active"] = bool(payload.active)
+    if payload.expiresAt is not None:
+        expires = _parse_optional_datetime(payload.expiresAt) or _coupon_default_expires_at()
+        patch["expiresAt"] = expires.isoformat()
+    if payload.note is not None:
+        patch["note"] = str(payload.note)[:240]
+    if payload.usagePolicy is not None or payload.usageLimit is not None or payload.maxRedemptions is not None:
+        usage_policy = _normalize_coupon_usage_policy(
+            payload.usagePolicy if payload.usagePolicy is not None else str(current.get("usagePolicy") or "")
+        )
+        limit_input = payload.usageLimit if payload.usageLimit is not None else payload.maxRedemptions
+        if limit_input is None:
+            limit_input = _as_positive_int(current.get("usageLimit"))
+        usage_limit = _coupon_effective_usage_limit(usage_policy, _as_positive_int(limit_input))
+        patch["usagePolicy"] = usage_policy
+        patch["usageLimit"] = usage_limit
+        patch["maxRedemptions"] = usage_limit
+
+    coupon_type = _normalize_coupon_type(str(current.get("couponType") or ""))
+    if coupon_type == COUPON_TYPE_WALLET_CREDIT and payload.creditVf is not None:
+        credit_vf = _as_positive_int(payload.creditVf)
+        if credit_vf <= 0:
+            raise HTTPException(status_code=400, detail="creditVf must be positive.")
+        patch["creditVf"] = credit_vf
+    if coupon_type == COUPON_TYPE_SUBSCRIPTION_DISCOUNT:
+        if payload.discountType is not None or payload.percentOff is not None or payload.amountOffInr is not None or payload.planDiscounts is not None:
+            raise HTTPException(status_code=400, detail="Discount amounts cannot be modified after creation.")
+        if payload.appliesToPlans is not None:
+            patch["appliesToPlans"] = _normalize_coupon_plan_scope(payload.appliesToPlans)
+
     ref.set(patch, merge=True)
-    fresh = ref.get().to_dict() or {}
-    return JSONResponse({"ok": True, "coupon": {**fresh, "id": safe_coupon_id}})
+    fresh = _coupon_backfill_fields({**(ref.get().to_dict() or {}), "id": safe_coupon_id})
+    if (
+        coupon_type == COUPON_TYPE_SUBSCRIPTION_DISCOUNT
+        and payload.active is not None
+        and str(fresh.get("stripePromotionCodeId") or "").strip()
+        and _stripe_available()
+    ):
+        try:
+            stripe.PromotionCode.modify(  # type: ignore[attr-defined]
+                str(fresh.get("stripePromotionCodeId") or "").strip(),
+                active=bool(fresh.get("active")),
+            )
+        except Exception:
+            pass
+    _audit_append_event(
+        action="admin_coupon_patch",
+        resource_type="coupon",
+        resource_id=safe_coupon_id,
+        before=current,
+        after=fresh,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "coupon": fresh})
 
 
 @app.get("/admin/gemini/pools")
 def admin_gemini_pools(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     config, meta = _load_gemini_api_pools(force=True)
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
@@ -7330,7 +10392,7 @@ def admin_gemini_pools(request: Request) -> JSONResponse:
 
 @app.put("/admin/gemini/pools")
 def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     current_config, _current_meta = _load_gemini_api_pools(force=True)
     current_source_policy = dict(current_config.get("sourcePolicy") or {})
     free_pool_locked = bool(current_source_policy.get("freePoolLocked"))
@@ -7361,25 +10423,37 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
         BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
     runtime_reload = _runtime_gemini_pool_reload()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
+    response_payload = {
+        "ok": bool(runtime_reload.get("ok")),
+        "detail": "Gemini API pools updated.",
+        "config": saved,
+        "validation": _gemini_pools_validation(saved),
+        "warnings": list(sync_warnings),
+        "sourcePolicy": dict(saved.get("sourcePolicy") or {}),
+        "appliedOverrides": applied_overrides,
+        "backend": _backend_gemini_pool_snapshot(),
+        "runtimeReload": runtime_reload,
+        "runtime": runtime_snapshot,
+    }
+    _audit_append_event(
+        action="gemini_pools_update",
+        resource_type="gemini_pool",
+        resource_id="global",
+        after={"appliedOverrides": applied_overrides, "warnings": list(sync_warnings)},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse(
         {
-            "ok": bool(runtime_reload.get("ok")),
-            "detail": "Gemini API pools updated.",
-            "config": saved,
-            "validation": _gemini_pools_validation(saved),
-            "warnings": list(sync_warnings),
-            "sourcePolicy": dict(saved.get("sourcePolicy") or {}),
-            "appliedOverrides": applied_overrides,
-            "backend": _backend_gemini_pool_snapshot(),
-            "runtimeReload": runtime_reload,
-            "runtime": runtime_snapshot,
+            **response_payload,
         }
     )
 
 
 @app.post("/admin/gemini/pools/reload")
 def admin_gemini_pools_reload(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     _config, meta = _load_gemini_api_pools(force=True)
     key_pool = _resolve_gemini_fallback_key_pool()
     if not key_pool:
@@ -7388,21 +10462,33 @@ def admin_gemini_pools_reload(request: Request) -> JSONResponse:
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_reload = _runtime_gemini_pool_reload()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
+    payload = {
+        "ok": bool(backend_snapshot.get("ok")) and bool(runtime_reload.get("ok")),
+        "detail": "Gemini API pools reloaded.",
+        "warnings": list((meta or {}).get("warnings") or []),
+        "backend": backend_snapshot,
+        "runtimeReload": runtime_reload,
+        "runtime": runtime_snapshot,
+    }
+    _audit_append_event(
+        action="gemini_pools_reload",
+        resource_type="gemini_pool",
+        resource_id="global",
+        after={"ok": bool(payload.get("ok"))},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
     return JSONResponse(
         {
-            "ok": bool(backend_snapshot.get("ok")) and bool(runtime_reload.get("ok")),
-            "detail": "Gemini API pools reloaded.",
-            "warnings": list((meta or {}).get("warnings") or []),
-            "backend": backend_snapshot,
-            "runtimeReload": runtime_reload,
-            "runtime": runtime_snapshot,
+            **payload,
         }
     )
 
 
 @app.get("/admin/gemini/pools/usage")
 def admin_gemini_pools_usage(request: Request) -> JSONResponse:
-    _ = _require_admin_uid(request)
+    _require_permission(request, PERM_OPS_READ)
     backend_usage = _backend_gemini_pool_usage_snapshot()
     runtime_usage = _runtime_gemini_pool_usage()
     return JSONResponse(
@@ -7426,6 +10512,973 @@ def admin_gemini_pool_reload(request: Request) -> JSONResponse:
     return admin_gemini_pools_reload(request)
 
 
+@app.get("/admin/alerts/policies")
+def admin_alerts_policies(request: Request, limit: int = 100) -> JSONResponse:
+    _require_permission(request, PERM_ALERTS_READ)
+    _ensure_scheduler_started()
+    rows = _alert_list_policies(limit=limit)
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.post("/admin/alerts/policies")
+def admin_alerts_create_policy(
+    payload: AlertPolicyCreateRequest,
+    request: Request,
+    adminToken: str = "",
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    now_iso = _utc_now().isoformat()
+    row = {
+        "name": _truncate_text(payload.name, 120),
+        "metricKey": _truncate_text(payload.metricKey, 80).lower(),
+        "operator": _alert_normalize_operator(payload.operator),
+        "threshold": float(payload.threshold),
+        "windowSec": max(30, _safe_int(payload.windowSec, 300)),
+        "cooldownSec": max(0, _safe_int(payload.cooldownSec, 300)),
+        "severity": _truncate_text(payload.severity, 40).lower() or "warning",
+        "enabled": bool(payload.enabled),
+        "channels": _alert_normalize_channels(payload.channels),
+        "createdBy": actor_uid,
+        "updatedBy": actor_uid,
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    written = _alert_upsert_policy("", row)
+    _audit_append_event(
+        action="alert_policy_create",
+        resource_type="alert_policy",
+        resource_id=str(written.get("id") or ""),
+        after=written,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "policy": written})
+
+
+@app.patch("/admin/alerts/policies/{policy_id}")
+def admin_alerts_patch_policy(
+    policy_id: str,
+    payload: AlertPolicyPatchRequest,
+    request: Request,
+    adminToken: str = "",
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    current = _alert_get_policy(policy_id)
+    if not isinstance(current, dict):
+        raise HTTPException(status_code=404, detail="Alert policy not found.")
+    before = dict(current)
+    patch: dict[str, Any] = {"updatedAt": _utc_now().isoformat(), "updatedBy": actor_uid}
+    if payload.name is not None:
+        patch["name"] = _truncate_text(payload.name, 120)
+    if payload.metricKey is not None:
+        patch["metricKey"] = _truncate_text(payload.metricKey, 80).lower()
+    if payload.operator is not None:
+        patch["operator"] = _alert_normalize_operator(payload.operator)
+    if payload.threshold is not None:
+        patch["threshold"] = float(payload.threshold)
+    if payload.windowSec is not None:
+        patch["windowSec"] = max(30, _safe_int(payload.windowSec, 300))
+    if payload.cooldownSec is not None:
+        patch["cooldownSec"] = max(0, _safe_int(payload.cooldownSec, 300))
+    if payload.severity is not None:
+        patch["severity"] = _truncate_text(payload.severity, 40).lower() or "warning"
+    if payload.enabled is not None:
+        patch["enabled"] = bool(payload.enabled)
+    if payload.channels is not None:
+        patch["channels"] = _alert_normalize_channels(payload.channels)
+    current.update(patch)
+    written = _alert_upsert_policy(str(current.get("id") or policy_id), current)
+    _audit_append_event(
+        action="alert_policy_patch",
+        resource_type="alert_policy",
+        resource_id=str(written.get("id") or ""),
+        before=before,
+        after=written,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "policy": written})
+
+
+@app.get("/admin/alerts/destinations")
+def admin_alerts_destinations(request: Request, limit: int = 100) -> JSONResponse:
+    _require_permission(request, PERM_ALERTS_READ)
+    rows = _alert_list_destinations(limit=limit)
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.post("/admin/alerts/destinations")
+def admin_alerts_create_destination(
+    payload: AlertDestinationCreateRequest,
+    request: Request,
+    adminToken: str = "",
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    now_iso = _utc_now().isoformat()
+    safe_type = str(payload.type or "webhook").strip().lower()
+    if safe_type != "webhook":
+        raise HTTPException(status_code=400, detail="Only webhook destinations are supported.")
+    row = {
+        "type": safe_type,
+        "name": _truncate_text(payload.name, 120),
+        "url": _truncate_text(payload.url, 800),
+        "secretRef": _truncate_text(payload.secretRef, 200),
+        "enabled": bool(payload.enabled),
+        "createdBy": actor_uid,
+        "updatedBy": actor_uid,
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    written = _alert_upsert_destination("", row)
+    _audit_append_event(
+        action="alert_destination_create",
+        resource_type="alert_destination",
+        resource_id=str(written.get("id") or ""),
+        after={**written, "secretRef": "***" if str(written.get("secretRef") or "") else ""},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "destination": written})
+
+
+@app.patch("/admin/alerts/destinations/{destination_id}")
+def admin_alerts_patch_destination(
+    destination_id: str,
+    payload: AlertDestinationPatchRequest,
+    request: Request,
+    adminToken: str = "",
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    current = _alert_get_destination(destination_id)
+    if not isinstance(current, dict):
+        raise HTTPException(status_code=404, detail="Alert destination not found.")
+    before = dict(current)
+    patch: dict[str, Any] = {"updatedAt": _utc_now().isoformat(), "updatedBy": actor_uid}
+    if payload.name is not None:
+        patch["name"] = _truncate_text(payload.name, 120)
+    if payload.url is not None:
+        patch["url"] = _truncate_text(payload.url, 800)
+    if payload.secretRef is not None:
+        patch["secretRef"] = _truncate_text(payload.secretRef, 200)
+    if payload.enabled is not None:
+        patch["enabled"] = bool(payload.enabled)
+    current.update(patch)
+    written = _alert_upsert_destination(str(current.get("id") or destination_id), current)
+    _audit_append_event(
+        action="alert_destination_patch",
+        resource_type="alert_destination",
+        resource_id=str(written.get("id") or ""),
+        before={**before, "secretRef": "***" if str(before.get("secretRef") or "") else ""},
+        after={**written, "secretRef": "***" if str(written.get("secretRef") or "") else ""},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "destination": written})
+
+
+@app.get("/admin/alerts/events")
+def admin_alerts_events(request: Request, status: str = "", limit: int = 200) -> JSONResponse:
+    _require_permission(request, PERM_ALERTS_READ)
+    rows = _alert_list_events(limit=limit)
+    safe_status = str(status or "").strip().lower()
+    if safe_status:
+        rows = [row for row in rows if str(row.get("status") or "").strip().lower() == safe_status]
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.post("/admin/alerts/events/{event_id}/ack")
+def admin_alerts_event_ack(event_id: str, payload: AlertEventDecisionRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    event = _alert_get_event(event_id)
+    if not isinstance(event, dict):
+        raise HTTPException(status_code=404, detail="Alert event not found.")
+    before = dict(event)
+    event["status"] = "ack"
+    event["ackBy"] = actor_uid
+    event["ackAt"] = _utc_now().isoformat()
+    event["note"] = _truncate_text(payload.note, 300)
+    written = _alert_upsert_event(str(event.get("id") or event_id), event)
+    _audit_append_event(
+        action="alert_event_ack",
+        resource_type="alert_event",
+        resource_id=str(written.get("id") or ""),
+        before=before,
+        after=written,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "event": written})
+
+
+@app.post("/admin/alerts/events/{event_id}/resolve")
+def admin_alerts_event_resolve(event_id: str, payload: AlertEventDecisionRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    event = _alert_get_event(event_id)
+    if not isinstance(event, dict):
+        raise HTTPException(status_code=404, detail="Alert event not found.")
+    before = dict(event)
+    event["status"] = "resolved"
+    event["resolvedAt"] = _utc_now().isoformat()
+    event["resolvedBy"] = actor_uid
+    event["note"] = _truncate_text(payload.note, 300)
+    written = _alert_upsert_event(str(event.get("id") or event_id), event)
+    _audit_append_event(
+        action="alert_event_resolve",
+        resource_type="alert_event",
+        resource_id=str(written.get("id") or ""),
+        before=before,
+        after=written,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "event": written})
+
+
+@app.get("/admin/scheduler/tasks")
+def admin_scheduler_tasks(request: Request, limit: int = 200) -> JSONResponse:
+    _require_permission(request, PERM_SCHEDULER_READ)
+    _ensure_scheduler_started()
+    rows = _scheduler_list_tasks(limit=limit)
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.post("/admin/scheduler/tasks")
+def admin_scheduler_create_task(payload: ScheduledTaskCreateRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_SCHEDULER_WRITE)
+    safe_task_type, safe_cron, safe_timezone, safe_policy = _scheduler_task_payload_validate(
+        task_type=payload.taskType,
+        cron_expr=payload.cronExpr,
+        timezone_name=payload.timezone,
+        concurrency_policy=payload.concurrencyPolicy,
+    )
+    now = _utc_now()
+    row = {
+        "taskType": safe_task_type,
+        "cronExpr": safe_cron,
+        "timezone": safe_timezone,
+        "enabled": bool(payload.enabled),
+        "dryRun": bool(payload.dryRun),
+        "payload": payload.payload if isinstance(payload.payload, dict) else {},
+        "concurrencyPolicy": safe_policy,
+        "nextRunAt": _scheduler_next_run_at(safe_cron, safe_timezone, after=now).isoformat(),
+        "lastRunAt": None,
+        "lastResult": {},
+        "createdAt": now.isoformat(),
+        "updatedAt": now.isoformat(),
+        "updatedBy": actor_uid,
+    }
+    written = _scheduler_upsert_task("", row)
+    _audit_append_event(
+        action="scheduler_task_create",
+        resource_type="scheduler_task",
+        resource_id=str(written.get("id") or ""),
+        after=written,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    _ensure_scheduler_started()
+    return JSONResponse({"ok": True, "task": written})
+
+
+@app.patch("/admin/scheduler/tasks/{task_id}")
+def admin_scheduler_patch_task(task_id: str, payload: ScheduledTaskPatchRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_SCHEDULER_WRITE)
+    current = _scheduler_get_task(task_id)
+    if not isinstance(current, dict):
+        raise HTTPException(status_code=404, detail="Task not found.")
+    before = dict(current)
+    task_type = str(current.get("taskType") or "")
+    cron_expr = payload.cronExpr if payload.cronExpr is not None else str(current.get("cronExpr") or "")
+    timezone_name = payload.timezone if payload.timezone is not None else str(current.get("timezone") or "UTC")
+    concurrency_policy = (
+        payload.concurrencyPolicy
+        if payload.concurrencyPolicy is not None
+        else str(current.get("concurrencyPolicy") or "forbid")
+    )
+    _safe_task_type, safe_cron, safe_timezone, safe_policy = _scheduler_task_payload_validate(
+        task_type=task_type,
+        cron_expr=cron_expr,
+        timezone_name=timezone_name,
+        concurrency_policy=concurrency_policy,
+    )
+    patch: dict[str, Any] = {
+        "cronExpr": safe_cron,
+        "timezone": safe_timezone,
+        "concurrencyPolicy": safe_policy,
+        "updatedAt": _utc_now().isoformat(),
+        "updatedBy": actor_uid,
+    }
+    if payload.enabled is not None:
+        patch["enabled"] = bool(payload.enabled)
+    if payload.dryRun is not None:
+        patch["dryRun"] = bool(payload.dryRun)
+    if payload.payload is not None:
+        patch["payload"] = payload.payload if isinstance(payload.payload, dict) else {}
+    patch["nextRunAt"] = _scheduler_next_run_at(safe_cron, safe_timezone, after=_utc_now()).isoformat()
+    current.update(patch)
+    written = _scheduler_upsert_task(str(current.get("id") or task_id), current)
+    _audit_append_event(
+        action="scheduler_task_patch",
+        resource_type="scheduler_task",
+        resource_id=str(written.get("id") or ""),
+        before=before,
+        after=written,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "task": written})
+
+
+@app.post("/admin/scheduler/tasks/{task_id}/run")
+def admin_scheduler_run_task(task_id: str, payload: ScheduledTaskRunRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_SCHEDULER_WRITE)
+    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
+    if not authorized:
+        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    run = _scheduler_run_task(
+        str(task_id or "").strip(),
+        requested_by=actor_uid,
+        dry_run_override=payload.dryRun if payload.dryRun is not None else None,
+    )
+    _audit_append_event(
+        action="scheduler_task_run",
+        resource_type="scheduler_task",
+        resource_id=str(task_id or ""),
+        after={"runId": str(run.get("id") or ""), "status": str(run.get("status") or "")},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "run": run})
+
+
+@app.get("/admin/scheduler/runs")
+def admin_scheduler_runs(request: Request, taskId: str = "", limit: int = 200) -> JSONResponse:
+    _require_permission(request, PERM_SCHEDULER_READ)
+    rows = _scheduler_list_runs(limit=limit, task_id=taskId)
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.get("/admin/scheduler/runs/{run_id}")
+def admin_scheduler_run_by_id(run_id: str, request: Request) -> JSONResponse:
+    _require_permission(request, PERM_SCHEDULER_READ)
+    safe_run_id = str(run_id or "").strip()
+    if not safe_run_id:
+        raise HTTPException(status_code=400, detail="Missing run id.")
+    collection = _firestore_collection(SCHEDULER_RUNS_COLLECTION)
+    row: Optional[dict[str, Any]] = None
+    if collection is None:
+        with _INMEMORY_LOCK:
+            item = _INMEMORY_SCHEDULER_RUNS.get(safe_run_id)
+            if isinstance(item, dict):
+                row = dict(item)
+    else:
+        try:
+            doc = collection.document(safe_run_id).get()
+            if doc.exists:
+                row = {**(doc.to_dict() or {}), "id": safe_run_id}
+        except Exception:
+            row = None
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return JSONResponse({"ok": True, "run": row})
+
+
+@app.get("/admin/analytics/coupons/summary")
+def admin_coupon_analytics_summary(
+    request: Request,
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    plan: str = "",
+    couponKind: str = "",
+) -> JSONResponse:
+    _require_permission(request, PERM_ANALYTICS_READ)
+    end_dt = _normalize_iso_datetime(toIso) if str(toIso or "").strip() else _utc_now()
+    start_dt = _normalize_iso_datetime(fromIso, fallback=end_dt - timedelta(days=30)) if str(fromIso or "").strip() else (end_dt - timedelta(days=30))
+    rows = _analytics_list_coupon_daily(
+        from_dt=start_dt,
+        to_dt=end_dt,
+        plan=plan,
+        coupon_kind=couponKind,
+        coupon_code="",
+    )
+    agg = {
+        "checkoutsStarted": 0,
+        "checkoutsCompleted": 0,
+        "subscriptionsActivated": 0,
+        "cancellationsWithin30d": 0,
+        "grossAmount": 0.0,
+        "discountAmount": 0.0,
+        "netAmount": 0.0,
+    }
+    for row in rows:
+        agg["checkoutsStarted"] += _safe_int(row.get("checkoutsStarted"), 0)
+        agg["checkoutsCompleted"] += _safe_int(row.get("checkoutsCompleted"), 0)
+        agg["subscriptionsActivated"] += _safe_int(row.get("subscriptionsActivated"), 0)
+        agg["cancellationsWithin30d"] += _safe_int(row.get("cancellationsWithin30d"), 0)
+        agg["grossAmount"] += _safe_float(row.get("grossAmount"), 0.0)
+        agg["discountAmount"] += _safe_float(row.get("discountAmount"), 0.0)
+        agg["netAmount"] += _safe_float(row.get("netAmount"), 0.0)
+    payload = _analytics_compute_rates(agg)
+    return JSONResponse({"ok": True, "summary": payload, "count": len(rows)})
+
+
+@app.get("/admin/analytics/coupons/timeseries")
+def admin_coupon_analytics_timeseries(
+    request: Request,
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    groupBy: str = "day",
+    plan: str = "",
+    couponKind: str = "",
+) -> JSONResponse:
+    _require_permission(request, PERM_ANALYTICS_READ)
+    safe_group = str(groupBy or "day").strip().lower()
+    if safe_group not in {"day", "week"}:
+        raise HTTPException(status_code=400, detail="groupBy must be day or week.")
+    end_dt = _normalize_iso_datetime(toIso) if str(toIso or "").strip() else _utc_now()
+    start_dt = _normalize_iso_datetime(fromIso, fallback=end_dt - timedelta(days=30)) if str(fromIso or "").strip() else (end_dt - timedelta(days=30))
+    rows = _analytics_list_coupon_daily(
+        from_dt=start_dt,
+        to_dt=end_dt,
+        plan=plan,
+        coupon_kind=couponKind,
+        coupon_code="",
+    )
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        date_token = str(row.get("date") or "")
+        parsed = _parse_optional_datetime(f"{date_token}T00:00:00+00:00")
+        if parsed is None:
+            continue
+        if safe_group == "week":
+            iso_year, iso_week, _iso_weekday = parsed.isocalendar()
+            key = f"{iso_year}-W{iso_week:02d}"
+        else:
+            key = parsed.strftime("%Y-%m-%d")
+        bucket = buckets.setdefault(
+            key,
+            {
+                "bucket": key,
+                "checkoutsStarted": 0,
+                "checkoutsCompleted": 0,
+                "subscriptionsActivated": 0,
+                "cancellationsWithin30d": 0,
+                "grossAmount": 0.0,
+                "discountAmount": 0.0,
+                "netAmount": 0.0,
+            },
+        )
+        bucket["checkoutsStarted"] += _safe_int(row.get("checkoutsStarted"), 0)
+        bucket["checkoutsCompleted"] += _safe_int(row.get("checkoutsCompleted"), 0)
+        bucket["subscriptionsActivated"] += _safe_int(row.get("subscriptionsActivated"), 0)
+        bucket["cancellationsWithin30d"] += _safe_int(row.get("cancellationsWithin30d"), 0)
+        bucket["grossAmount"] += _safe_float(row.get("grossAmount"), 0.0)
+        bucket["discountAmount"] += _safe_float(row.get("discountAmount"), 0.0)
+        bucket["netAmount"] += _safe_float(row.get("netAmount"), 0.0)
+    series = [_analytics_compute_rates(value) for key, value in sorted(buckets.items(), key=lambda item: item[0])]
+    return JSONResponse({"ok": True, "groupBy": safe_group, "series": series, "count": len(series)})
+
+
+@app.get("/admin/analytics/coupons/{coupon_code}/impact")
+def admin_coupon_analytics_impact(
+    coupon_code: str,
+    request: Request,
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+) -> JSONResponse:
+    _require_permission(request, PERM_ANALYTICS_READ)
+    safe_code = _normalize_coupon_code(coupon_code)
+    if not safe_code:
+        raise HTTPException(status_code=400, detail="Invalid coupon code.")
+    end_dt = _normalize_iso_datetime(toIso) if str(toIso or "").strip() else _utc_now()
+    start_dt = _normalize_iso_datetime(fromIso, fallback=end_dt - timedelta(days=30)) if str(fromIso or "").strip() else (end_dt - timedelta(days=30))
+    rows = _analytics_list_coupon_daily(
+        from_dt=start_dt,
+        to_dt=end_dt,
+        plan="",
+        coupon_kind="",
+        coupon_code=safe_code,
+    )
+    per_plan: dict[str, dict[str, Any]] = {}
+    overall = {
+        "checkoutsStarted": 0,
+        "checkoutsCompleted": 0,
+        "subscriptionsActivated": 0,
+        "cancellationsWithin30d": 0,
+        "grossAmount": 0.0,
+        "discountAmount": 0.0,
+        "netAmount": 0.0,
+    }
+    for row in rows:
+        plan_token = str(row.get("plan") or "unknown").strip().lower()
+        bucket = per_plan.setdefault(
+            plan_token,
+            {
+                "plan": plan_token,
+                "checkoutsStarted": 0,
+                "checkoutsCompleted": 0,
+                "subscriptionsActivated": 0,
+                "cancellationsWithin30d": 0,
+                "grossAmount": 0.0,
+                "discountAmount": 0.0,
+                "netAmount": 0.0,
+            },
+        )
+        for key in ["checkoutsStarted", "checkoutsCompleted", "subscriptionsActivated", "cancellationsWithin30d"]:
+            inc = _safe_int(row.get(key), 0)
+            bucket[key] += inc
+            overall[key] += inc
+        for key in ["grossAmount", "discountAmount", "netAmount"]:
+            incf = _safe_float(row.get(key), 0.0)
+            bucket[key] += incf
+            overall[key] += incf
+    overall = _analytics_compute_rates(overall)
+    plan_rows = [_analytics_compute_rates(value) for _k, value in sorted(per_plan.items(), key=lambda item: item[0])]
+    return JSONResponse({"ok": True, "couponCode": safe_code, "overall": overall, "byPlan": plan_rows})
+
+
+def _coupon_plan_allowed_for_checkout(coupon: dict[str, Any], plan_token: str) -> bool:
+    plan_discounts = _normalize_coupon_plan_discounts(
+        coupon.get("planDiscounts"),
+        fallback_discount_type=str(coupon.get("discountType") or COUPON_DISCOUNT_PERCENT),
+        fallback_percent_off=_as_float(coupon.get("percentOff"), 0.0),
+        fallback_amount_off_inr=_as_positive_int(coupon.get("amountOffInr")),
+        fallback_plans=_normalize_coupon_plan_scope(coupon.get("appliesToPlans")),
+        stripe_coupons_by_plan=(coupon.get("stripeCouponsByPlan") if isinstance(coupon.get("stripeCouponsByPlan"), dict) else None),
+    )
+    applies_to = sorted(plan_discounts.keys()) or _normalize_coupon_plan_scope(coupon.get("appliesToPlans"))
+    safe_plan = str(plan_token or "").strip().lower()
+    return safe_plan in set(applies_to)
+
+
+def _cleanup_expired_subscription_reservations(
+    coupon_id: str,
+    *,
+    now: Optional[datetime] = None,
+    limit: int = 120,
+) -> int:
+    safe_coupon_id = str(coupon_id or "").strip()
+    if not safe_coupon_id:
+        return 0
+    current = now or _utc_now()
+    safe_limit = max(1, min(1000, int(limit)))
+
+    coupons = _firestore_collection("coupons")
+    redemptions = _firestore_collection("coupon_redemptions")
+    if coupons is None or redemptions is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        released_count = 0
+        with _INMEMORY_LOCK:
+            coupon = _coupon_backfill_fields(_INMEMORY_COUPONS.get(safe_coupon_id) or {}, current)
+            for reservation_id, row in list(_INMEMORY_COUPON_REDEMPTIONS.items()):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("couponId") or "").strip() != safe_coupon_id:
+                    continue
+                if str(row.get("channel") or "").strip().lower() != "subscription":
+                    continue
+                if str(row.get("status") or "").strip().lower() != "reserved":
+                    continue
+                expires_at = _parse_optional_datetime(str(row.get("expiresAt") or ""))
+                if not expires_at or expires_at > current:
+                    continue
+                row["status"] = "released"
+                row["releasedAt"] = current.isoformat()
+                row["releaseReason"] = "reservation_ttl_expired"
+                _INMEMORY_COUPON_REDEMPTIONS[reservation_id] = row
+                released_count += 1
+            if released_count > 0:
+                coupon["reservedCount"] = max(0, _as_positive_int(coupon.get("reservedCount")) - released_count)
+                coupon["updatedAt"] = current.isoformat()
+                _INMEMORY_COUPONS[safe_coupon_id] = dict(coupon)
+        return released_count
+
+    try:
+        docs = list(
+            _FIRESTORE_DB.collection("coupon_redemptions")
+            .where("couponId", "==", safe_coupon_id)
+            .where("channel", "==", "subscription")
+            .where("status", "==", "reserved")
+            .limit(safe_limit)
+            .stream()
+        )
+    except Exception:
+        return 0
+
+    released_count = 0
+    for doc in docs:
+        row = doc.to_dict() or {}
+        expires_at = _parse_optional_datetime(str(row.get("expiresAt") or ""))
+        if not expires_at or expires_at > current:
+            continue
+        _release_subscription_coupon_reservation(str(doc.id or ""), reason="reservation_ttl_expired")
+        released_count += 1
+    return released_count
+
+
+def _coupon_reservation_expires_at(now: Optional[datetime] = None) -> datetime:
+    base = now or _utc_now()
+    return base + timedelta(minutes=COUPON_RESERVATION_TTL_MINUTES)
+
+
+def _reserve_subscription_coupon_for_checkout(uid: str, code: str, plan_token: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_code = _normalize_coupon_code(code)
+    safe_plan = str(plan_token or "").strip().lower()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    if not safe_code:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+    checkout_coupon_plans = _normalize_coupon_plan_scope(
+        [plan for plan in PLAN_LIMITS.keys() if str(plan or "").strip().lower() != "free"]
+    )
+    if safe_plan not in set(checkout_coupon_plans):
+        raise HTTPException(status_code=400, detail="Unsupported plan for coupon checkout.")
+    now = _utc_now()
+    expires_at = _coupon_reservation_expires_at(now)
+
+    coupons = _firestore_collection("coupons")
+    redemptions = _firestore_collection("coupon_redemptions")
+    if coupons is None or redemptions is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            lookup_code = _coupon_store_ref(safe_code)
+            coupon_id = str(_INMEMORY_COUPON_CODE_INDEX.get(lookup_code) or "").strip()
+            if not coupon_id:
+                _inmemory_rebuild_coupon_index_locked()
+                coupon_id = str(_INMEMORY_COUPON_CODE_INDEX.get(lookup_code) or "").strip()
+            if not coupon_id:
+                raise HTTPException(status_code=404, detail="Coupon not found.")
+            coupon = _coupon_backfill_fields(_INMEMORY_COUPONS.get(coupon_id) or {}, now)
+            if _normalize_coupon_type(str(coupon.get("couponType") or "")) != COUPON_TYPE_SUBSCRIPTION_DISCOUNT:
+                raise HTTPException(status_code=400, detail="Coupon is not valid for subscription checkout.")
+            if not _as_bool(coupon.get("active")):
+                raise HTTPException(status_code=400, detail="Coupon is inactive.")
+            if _coupon_is_expired(coupon, now):
+                raise HTTPException(status_code=400, detail="Coupon has expired.")
+            if not _coupon_plan_allowed_for_checkout(coupon, safe_plan):
+                raise HTTPException(status_code=400, detail="Coupon is not applicable for this plan.")
+            _cleanup_expired_subscription_reservations(coupon_id, now=now)
+            coupon = _coupon_backfill_fields(_INMEMORY_COUPONS.get(coupon_id) or coupon, now)
+            policy = _normalize_coupon_usage_policy(str(coupon.get("usagePolicy") or ""))
+            if policy == COUPON_USAGE_SINGLE_PER_USER:
+                has_existing = any(
+                    str((entry or {}).get("couponId") or "").strip() == coupon_id
+                    and str((entry or {}).get("uid") or "").strip() == safe_uid
+                    and str((entry or {}).get("channel") or "").strip().lower() == "subscription"
+                    and str((entry or {}).get("status") or "").strip().lower() in {"reserved", "redeemed"}
+                    for entry in _INMEMORY_COUPON_REDEMPTIONS.values()
+                )
+                if has_existing:
+                    raise HTTPException(status_code=409, detail="Coupon already used by this user.")
+            if _coupon_usage_limit_reached(coupon):
+                raise HTTPException(status_code=400, detail="Coupon redemption limit reached.")
+            reservation_id = (
+                f"sub::{coupon_id}::{safe_uid}"
+                if policy == COUPON_USAGE_SINGLE_PER_USER
+                else f"sub_{coupon_id}_{safe_uid}_{uuid.uuid4().hex}"
+            )
+            reservation = {
+                "id": reservation_id,
+                "couponId": coupon_id,
+                "uid": safe_uid,
+                "code": safe_code,
+                "channel": "subscription",
+                "status": "reserved",
+                "usagePolicy": policy,
+                "couponType": COUPON_TYPE_SUBSCRIPTION_DISCOUNT,
+                "plan": safe_plan,
+                "createdAt": now.isoformat(),
+                "expiresAt": expires_at.isoformat(),
+            }
+            coupon["reservedCount"] = _as_positive_int(coupon.get("reservedCount")) + 1
+            coupon["updatedAt"] = now.isoformat()
+            _INMEMORY_COUPONS[coupon_id] = dict(coupon)
+            _INMEMORY_COUPON_REDEMPTIONS[reservation_id] = reservation
+            _analytics_record_coupon_event(
+                "reservation",
+                ACTIVE_BILLING_PROVIDER,
+                safe_code,
+                str(coupon.get("couponType") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT),
+                safe_plan,
+                metadata={"reservationId": reservation_id},
+            )
+            return {"coupon": coupon, "reservationId": reservation_id}
+
+    coupon_id, coupon_lookup = _coupon_get_firestore_by_code(safe_code)
+    if not coupon_id or not coupon_lookup:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
+    _cleanup_expired_subscription_reservations(coupon_id, now=now)
+
+    coupon_ref = _FIRESTORE_DB.collection("coupons").document(coupon_id)
+    reservation_doc_id = (
+        f"sub::{coupon_id}::{safe_uid}"
+        if _normalize_coupon_usage_policy(str(coupon_lookup.get("usagePolicy") or "")) == COUPON_USAGE_SINGLE_PER_USER
+        else f"sub_{coupon_id}_{safe_uid}_{uuid.uuid4().hex}"
+    )
+    reservation_ref = _FIRESTORE_DB.collection("coupon_redemptions").document(reservation_doc_id)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> dict[str, Any]:
+        coupon_doc = coupon_ref.get(transaction=transaction_obj)
+        if not coupon_doc.exists:
+            raise RuntimeError("Coupon not found.")
+        coupon = _coupon_backfill_fields({**(coupon_doc.to_dict() or {}), "id": coupon_id}, now)
+        if _normalize_coupon_type(str(coupon.get("couponType") or "")) != COUPON_TYPE_SUBSCRIPTION_DISCOUNT:
+            raise RuntimeError("Coupon is not valid for subscription checkout.")
+        if not _as_bool(coupon.get("active")):
+            raise RuntimeError("Coupon is inactive.")
+        if _coupon_is_expired(coupon, now):
+            raise RuntimeError("Coupon has expired.")
+        if not _coupon_plan_allowed_for_checkout(coupon, safe_plan):
+            raise RuntimeError("Coupon is not applicable for this plan.")
+        policy = _normalize_coupon_usage_policy(str(coupon.get("usagePolicy") or ""))
+        if policy == COUPON_USAGE_SINGLE_PER_USER:
+            existing = reservation_ref.get(transaction=transaction_obj)
+            if existing.exists:
+                existing_payload = existing.to_dict() or {}
+                if str(existing_payload.get("status") or "").strip().lower() in {"reserved", "redeemed"}:
+                    raise RuntimeError("Coupon already used by this user.")
+        if _coupon_usage_limit_reached(coupon):
+            raise RuntimeError("Coupon redemption limit reached.")
+        coupon["reservedCount"] = _as_positive_int(coupon.get("reservedCount")) + 1
+        coupon["updatedAt"] = now.isoformat()
+        reservation_payload = {
+            "id": reservation_ref.id,
+            "couponId": coupon_id,
+            "uid": safe_uid,
+            "code": safe_code,
+            "channel": "subscription",
+            "status": "reserved",
+            "usagePolicy": policy,
+            "couponType": COUPON_TYPE_SUBSCRIPTION_DISCOUNT,
+            "plan": safe_plan,
+            "createdAt": now.isoformat(),
+            "expiresAt": expires_at.isoformat(),
+        }
+        transaction_obj.set(coupon_ref, coupon, merge=True)
+        transaction_obj.set(reservation_ref, reservation_payload, merge=True)
+        return {"coupon": coupon, "reservationId": reservation_ref.id}
+
+    try:
+        result = _apply(transaction)
+        _analytics_record_coupon_event(
+            "reservation",
+            ACTIVE_BILLING_PROVIDER,
+            safe_code,
+            str((result.get("coupon") or {}).get("couponType") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT),
+            safe_plan,
+            metadata={"reservationId": str(result.get("reservationId") or "")},
+        )
+        return result
+    except RuntimeError as exc:
+        detail = str(exc)
+        status = 400
+        if "already used" in detail.lower():
+            status = 409
+        if "not found" in detail.lower():
+            status = 404
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+def _release_subscription_coupon_reservation(reservation_id: str, reason: str = "checkout_failed") -> None:
+    safe_reservation_id = str(reservation_id or "").strip()
+    if not safe_reservation_id:
+        return
+    now = _utc_now()
+    coupons = _firestore_collection("coupons")
+    redemptions = _firestore_collection("coupon_redemptions")
+    if coupons is None or redemptions is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_COUPON_REDEMPTIONS.get(safe_reservation_id)
+            if not isinstance(row, dict):
+                return
+            if str(row.get("status") or "").strip().lower() != "reserved":
+                return
+            coupon_id = str(row.get("couponId") or "").strip()
+            coupon = _coupon_backfill_fields(_INMEMORY_COUPONS.get(coupon_id) or {}, now)
+            coupon["reservedCount"] = max(0, _as_positive_int(coupon.get("reservedCount")) - 1)
+            coupon["updatedAt"] = now.isoformat()
+            _INMEMORY_COUPONS[coupon_id] = dict(coupon)
+            row["status"] = "released"
+            row["releasedAt"] = now.isoformat()
+            row["releaseReason"] = str(reason or "checkout_failed")[:80]
+            _INMEMORY_COUPON_REDEMPTIONS[safe_reservation_id] = row
+        return
+
+    reservation_ref = _FIRESTORE_DB.collection("coupon_redemptions").document(safe_reservation_id)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> None:
+        reservation_doc = reservation_ref.get(transaction=transaction_obj)
+        if not reservation_doc.exists:
+            return
+        reservation = reservation_doc.to_dict() or {}
+        if str(reservation.get("status") or "").strip().lower() != "reserved":
+            return
+        coupon_id = str(reservation.get("couponId") or "").strip()
+        if not coupon_id:
+            return
+        coupon_ref = _FIRESTORE_DB.collection("coupons").document(coupon_id)
+        coupon_doc = coupon_ref.get(transaction=transaction_obj)
+        if coupon_doc.exists:
+            coupon = _coupon_backfill_fields({**(coupon_doc.to_dict() or {}), "id": coupon_id}, now)
+            coupon["reservedCount"] = max(0, _as_positive_int(coupon.get("reservedCount")) - 1)
+            coupon["updatedAt"] = now.isoformat()
+            transaction_obj.set(coupon_ref, coupon, merge=True)
+        reservation["status"] = "released"
+        reservation["releasedAt"] = now.isoformat()
+        reservation["releaseReason"] = str(reason or "checkout_failed")[:80]
+        transaction_obj.set(reservation_ref, reservation, merge=True)
+
+    try:
+        _apply(transaction)
+    except Exception:
+        return
+
+
+def _finalize_subscription_coupon_redemption(
+    *,
+    session_id: str,
+    reservation_id: str,
+    uid: str,
+) -> dict[str, Any]:
+    safe_reservation_id = str(reservation_id or "").strip()
+    if not safe_reservation_id:
+        return {"ok": False, "reason": "missing_reservation"}
+    now = _utc_now()
+
+    coupons = _firestore_collection("coupons")
+    redemptions = _firestore_collection("coupon_redemptions")
+    if coupons is None or redemptions is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            reservation = _INMEMORY_COUPON_REDEMPTIONS.get(safe_reservation_id)
+            if not isinstance(reservation, dict):
+                return {"ok": False, "reason": "reservation_not_found"}
+            status = str(reservation.get("status") or "").strip().lower()
+            if status == "redeemed":
+                return {"ok": True, "alreadyFinalized": True}
+            if status != "reserved":
+                return {"ok": False, "reason": f"invalid_status:{status or 'unknown'}"}
+            if str(reservation.get("uid") or "").strip() != str(uid or "").strip():
+                return {"ok": False, "reason": "uid_mismatch"}
+            coupon_id = str(reservation.get("couponId") or "").strip()
+            coupon = _coupon_backfill_fields(_INMEMORY_COUPONS.get(coupon_id) or {}, now)
+            coupon["reservedCount"] = max(0, _as_positive_int(coupon.get("reservedCount")) - 1)
+            coupon["redeemedCount"] = _as_positive_int(coupon.get("redeemedCount")) + 1
+            coupon["updatedAt"] = now.isoformat()
+            _INMEMORY_COUPONS[coupon_id] = dict(coupon)
+            reservation["status"] = "redeemed"
+            reservation["redeemedAt"] = now.isoformat()
+            reservation["checkoutSessionId"] = str(session_id or "").strip()
+            _INMEMORY_COUPON_REDEMPTIONS[safe_reservation_id] = reservation
+            _analytics_record_coupon_event(
+                "final_redemption",
+                ACTIVE_BILLING_PROVIDER,
+                str(reservation.get("code") or ""),
+                str(reservation.get("couponType") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT),
+                str(reservation.get("plan") or ""),
+                metadata={"reservationId": safe_reservation_id, "sessionId": str(session_id or "")},
+            )
+            return {"ok": True, "couponId": coupon_id}
+
+    reservation_ref = _FIRESTORE_DB.collection("coupon_redemptions").document(safe_reservation_id)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> dict[str, Any]:
+        reservation_doc = reservation_ref.get(transaction=transaction_obj)
+        if not reservation_doc.exists:
+            return {"ok": False, "reason": "reservation_not_found"}
+        reservation = reservation_doc.to_dict() or {}
+        status = str(reservation.get("status") or "").strip().lower()
+        if status == "redeemed":
+            return {"ok": True, "alreadyFinalized": True}
+        if status != "reserved":
+            return {"ok": False, "reason": f"invalid_status:{status or 'unknown'}"}
+        if str(reservation.get("uid") or "").strip() != str(uid or "").strip():
+            return {"ok": False, "reason": "uid_mismatch"}
+        coupon_id = str(reservation.get("couponId") or "").strip()
+        if not coupon_id:
+            return {"ok": False, "reason": "coupon_missing"}
+        coupon_ref = _FIRESTORE_DB.collection("coupons").document(coupon_id)
+        coupon_doc = coupon_ref.get(transaction=transaction_obj)
+        if not coupon_doc.exists:
+            return {"ok": False, "reason": "coupon_not_found"}
+        coupon = _coupon_backfill_fields({**(coupon_doc.to_dict() or {}), "id": coupon_id}, now)
+        coupon["reservedCount"] = max(0, _as_positive_int(coupon.get("reservedCount")) - 1)
+        coupon["redeemedCount"] = _as_positive_int(coupon.get("redeemedCount")) + 1
+        coupon["updatedAt"] = now.isoformat()
+        reservation["status"] = "redeemed"
+        reservation["redeemedAt"] = now.isoformat()
+        reservation["checkoutSessionId"] = str(session_id or "").strip()
+        transaction_obj.set(coupon_ref, coupon, merge=True)
+        transaction_obj.set(reservation_ref, reservation, merge=True)
+        return {"ok": True, "couponId": coupon_id}
+
+    try:
+        result = _apply(transaction)
+        if bool(result.get("ok")):
+            reservation = _firestore_collection("coupon_redemptions")
+            code_value = ""
+            plan_value = ""
+            coupon_type = COUPON_TYPE_SUBSCRIPTION_DISCOUNT
+            if reservation is None:
+                with _INMEMORY_LOCK:
+                    row = _INMEMORY_COUPON_REDEMPTIONS.get(safe_reservation_id) or {}
+                    code_value = str(row.get("code") or "")
+                    plan_value = str(row.get("plan") or "")
+                    coupon_type = str(row.get("couponType") or coupon_type)
+            else:
+                try:
+                    doc = _FIRESTORE_DB.collection("coupon_redemptions").document(safe_reservation_id).get() if _FIRESTORE_DB is not None else None
+                    if doc is not None and doc.exists:
+                        row = doc.to_dict() or {}
+                        code_value = str(row.get("code") or "")
+                        plan_value = str(row.get("plan") or "")
+                        coupon_type = str(row.get("couponType") or coupon_type)
+                except Exception:
+                    pass
+            _analytics_record_coupon_event(
+                "final_redemption",
+                ACTIVE_BILLING_PROVIDER,
+                code_value,
+                coupon_type,
+                plan_value,
+                metadata={"reservationId": safe_reservation_id, "sessionId": str(session_id or "")},
+            )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": str(exc)}
+
+
 @app.post("/billing/checkout-session")
 def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Request) -> JSONResponse:
     _require_stripe_ready()
@@ -7436,6 +11489,24 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
         raise HTTPException(status_code=400, detail="Unsupported plan. Use pro or plus.")
     if not STRIPE_PRICE_PRO_INR or not STRIPE_PRICE_PLUS_INR:
         raise HTTPException(status_code=503, detail="Stripe prices are not configured.")
+
+    reserved_coupon: dict[str, Any] = {}
+    reservation_id = ""
+    coupon_code = _normalize_coupon_code(str(payload.couponCode or ""))
+    if coupon_code:
+        reservation = _reserve_subscription_coupon_for_checkout(uid, coupon_code, plan_token)
+        reserved_coupon = dict(reservation.get("coupon") or {})
+        reservation_id = str(reservation.get("reservationId") or "").strip()
+        if not reservation_id:
+            raise HTTPException(status_code=500, detail="Coupon reservation failed.")
+        _analytics_record_coupon_event(
+            "checkout_started",
+            ACTIVE_BILLING_PROVIDER,
+            coupon_code,
+            str(reserved_coupon.get("couponType") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT),
+            plan_token,
+            metadata={"uid": uid, "reservationId": reservation_id},
+        )
 
     entitlement = _load_entitlement(uid)
     customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
@@ -7453,21 +11524,66 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
 
     success_url = _resolve_checkout_url_override(payload.successUrl, STRIPE_CHECKOUT_SUCCESS_URL)
     cancel_url = _resolve_checkout_url_override(payload.cancelUrl, STRIPE_CHECKOUT_CANCEL_URL)
-    try:
-        session = stripe.checkout.Session.create(  # type: ignore[attr-defined]
-            mode="subscription",
-            customer=customer_id,
-            line_items=[{"price": price_id, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            allow_promotion_codes=True,
-            metadata={"uid": uid, "plan": plan_token},
-            subscription_data={"metadata": {"uid": uid, "plan": plan_token}},
+    session_metadata: dict[str, Any] = {"uid": uid, "plan": plan_token}
+    subscription_metadata: dict[str, Any] = {"uid": uid, "plan": plan_token}
+    discounts_payload: list[dict[str, Any]] = []
+    if reservation_id:
+        coupon_id = _coupon_resolved_stripe_coupon_id_for_plan(reserved_coupon, plan_token)
+        promotion_code_id = str(reserved_coupon.get("stripePromotionCodeId") or "").strip()
+        if coupon_id:
+            discounts_payload = [{"coupon": coupon_id}]
+        elif promotion_code_id:
+            discounts_payload = [{"promotion_code": promotion_code_id}]
+        else:
+            _release_subscription_coupon_reservation(reservation_id, reason="stripe_mapping_missing")
+            raise HTTPException(status_code=400, detail="Coupon is missing Stripe mapping.")
+        session_metadata.update(
+            {
+                "couponCode": coupon_code,
+                "couponId": str(reserved_coupon.get("id") or ""),
+                "couponReservationId": reservation_id,
+                "couponType": COUPON_TYPE_SUBSCRIPTION_DISCOUNT,
+            }
         )
+        subscription_metadata.update(
+            {
+                "couponCode": coupon_code,
+                "couponId": str(reserved_coupon.get("id") or ""),
+                "couponReservationId": reservation_id,
+            }
+        )
+    try:
+        session_payload: dict[str, Any] = {
+            "mode": "subscription",
+            "customer": customer_id,
+            "line_items": [{"price": price_id, "quantity": 1}],
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "allow_promotion_codes": True,
+            "metadata": session_metadata,
+            "subscription_data": {"metadata": subscription_metadata},
+        }
+        if discounts_payload:
+            session_payload["discounts"] = discounts_payload
+        session = stripe.checkout.Session.create(**session_payload)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
+        if reservation_id:
+            _release_subscription_coupon_reservation(reservation_id, reason="checkout_create_failed")
         raise HTTPException(status_code=502, detail=f"Failed to create checkout session: {exc}") from exc
 
-    return JSONResponse({"ok": True, "url": session.get("url"), "sessionId": session.get("id")})
+    if reservation_id:
+        # Keep reservation status reserved; webhook completion finalizes redemption.
+        pass
+    return JSONResponse(
+        {
+            "ok": True,
+            "url": session.get("url"),
+            "sessionId": session.get("id"),
+            "couponApplied": bool(reservation_id),
+            "couponCode": coupon_code if reservation_id else None,
+            "couponReservationId": reservation_id or None,
+        }
+    )
 
 
 @app.post("/billing/token-pack/checkout-session")
@@ -7597,6 +11713,8 @@ async def billing_webhook(request: Request) -> JSONResponse:
                 customer_id = str(data_obj.get("customer") or "")
                 subscription_id = str(data_obj.get("subscription") or "")
                 billing_country = ((data_obj.get("customer_details") or {}).get("address") or {}).get("country")
+                session_id = str(data_obj.get("id") or "")
+                coupon_reservation_id = str(metadata.get("couponReservationId") or "").strip()
                 if subscription_id and stripe is not None:
                     sub = stripe.Subscription.retrieve(subscription_id)  # type: ignore[attr-defined]
                     sub_status = str(sub.get("status") or "active")
@@ -7617,6 +11735,53 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         price_id=price_id,
                         billing_country=billing_country,
                     )
+                    if coupon_reservation_id:
+                        _finalize_subscription_coupon_redemption(
+                            session_id=session_id,
+                            reservation_id=coupon_reservation_id,
+                            uid=uid,
+                        )
+                    coupon_code = _normalize_coupon_code(str(metadata.get("couponCode") or ""))
+                    if coupon_code:
+                        gross_amount = max(0.0, _safe_float(data_obj.get("amount_subtotal"), 0.0) / 100.0)
+                        net_amount = max(0.0, _safe_float(data_obj.get("amount_total"), 0.0) / 100.0)
+                        discount_amount = max(0.0, gross_amount - net_amount)
+                        coupon_kind = str(metadata.get("couponType") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT)
+                        plan_token = str(metadata.get("plan") or "unknown")
+                        _analytics_record_coupon_event(
+                            "checkout_completed",
+                            BILLING_PROVIDER_STRIPE,
+                            coupon_code,
+                            coupon_kind,
+                            plan_token,
+                            amounts={
+                                "grossAmount": gross_amount,
+                                "discountAmount": discount_amount,
+                                "netAmount": net_amount,
+                            },
+                            metadata={"sessionId": session_id, "uid": uid},
+                        )
+                        _analytics_record_coupon_event(
+                            "subscription_activated",
+                            BILLING_PROVIDER_STRIPE,
+                            coupon_code,
+                            coupon_kind,
+                            plan_token,
+                            metadata={"subscriptionId": subscription_id, "uid": uid},
+                        )
+                        if subscription_id:
+                            _analytics_write_subscription_attribution(
+                                subscription_id,
+                                {
+                                    "subscriptionId": subscription_id,
+                                    "couponCode": coupon_code,
+                                    "couponKind": coupon_kind,
+                                    "plan": plan_token,
+                                    "provider": BILLING_PROVIDER_STRIPE,
+                                    "activatedAt": _utc_now().isoformat(),
+                                    "uid": uid,
+                                },
+                            )
         elif event_type in {"customer.subscription.updated", "customer.subscription.deleted"}:
             customer_id = str(data_obj.get("customer") or "")
             uid = str((data_obj.get("metadata") or {}).get("uid") or "") or _resolve_uid_from_customer(customer_id)
@@ -7635,6 +11800,22 @@ async def billing_webhook(request: Request) -> JSONResponse:
                     subscription_status=subscription_status,
                     price_id=price_id,
                 )
+            cancelled = event_type == "customer.subscription.deleted" or subscription_status in {"canceled", "cancelled"}
+            if cancelled:
+                subscription_id = str(data_obj.get("id") or "")
+                attribution = _analytics_read_subscription_attribution(subscription_id)
+                if isinstance(attribution, dict):
+                    activated_at = _parse_optional_datetime(str(attribution.get("activatedAt") or ""))
+                    within_30d = bool(activated_at and (_utc_now() - activated_at) <= timedelta(days=30))
+                    if within_30d:
+                        _analytics_record_coupon_event(
+                            "cancellation_within_30d",
+                            str(attribution.get("provider") or BILLING_PROVIDER_STRIPE),
+                            str(attribution.get("couponCode") or ""),
+                            str(attribution.get("couponKind") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT),
+                            str(attribution.get("plan") or ""),
+                            metadata={"subscriptionId": subscription_id, "uid": uid},
+                        )
         elif event_type in {"invoice.payment_failed", "invoice.paid"}:
             customer_id = str(data_obj.get("customer") or "")
             uid = _resolve_uid_from_customer(customer_id)
@@ -7645,6 +11826,14 @@ async def billing_webhook(request: Request) -> JSONResponse:
                     entitlement = _load_entitlement(uid)
                     if str(entitlement.get("plan") or "Free") != "Free":
                         _write_entitlement(uid, {"status": "active"})
+        elif event_type in {"checkout.session.expired", "checkout.session.async_payment_failed"}:
+            metadata = data_obj.get("metadata") if isinstance(data_obj.get("metadata"), dict) else {}
+            reservation_id = str(metadata.get("couponReservationId") or "").strip()
+            if reservation_id:
+                _release_subscription_coupon_reservation(
+                    reservation_id,
+                    reason="checkout_session_expired" if event_type == "checkout.session.expired" else "checkout_payment_failed",
+                )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {exc}") from exc
 
@@ -8014,10 +12203,10 @@ def _record_tts_live_chunk_count(*, chunk_count: int) -> None:
             source.append(safe_count)
 
 
-def _record_tts_live_chunk_rvc_latency(*, elapsed_ms: int) -> None:
+def _record_tts_live_chunk_llvc_latency(*, elapsed_ms: int) -> None:
     safe_elapsed = max(0, int(elapsed_ms))
     with _TTS_ENGINE_METRICS_LOCK:
-        source = _TTS_QUEUE_TELEMETRY.get("liveChunkRvcLatencyMs")
+        source = _TTS_QUEUE_TELEMETRY.get("liveChunkLlvcLatencyMs")
         if isinstance(source, deque):
             source.append(safe_elapsed)
 
@@ -8084,7 +12273,7 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
         semaphore_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY["engineSemaphoreWaitMs"])]
         live_first_chunk_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveFirstChunkLatencyMs") or [])]
         live_chunk_count_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkCount") or [])]
-        live_chunk_rvc_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkRvcLatencyMs") or [])]
+        live_chunk_llvc_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkLlvcLatencyMs") or [])]
         terminal_events = list(_TTS_QUEUE_TELEMETRY["terminalEvents"])
         runtime_by_engine = _TTS_QUEUE_TELEMETRY.get("runtimeLatencyByEngine")
         waits_by_engine = _TTS_QUEUE_TELEMETRY.get("semaphoreWaitByEngine")
@@ -8150,7 +12339,7 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
             "engineSemaphoreWaitMs": _sample_stats(semaphore_samples),
             "liveFirstChunkLatencyMs": _sample_stats(live_first_chunk_samples),
             "liveChunkCount": _sample_stats(live_chunk_count_samples),
-            "liveChunkRvcLatencyMs": _sample_stats(live_chunk_rvc_samples),
+            "liveChunkLlvcLatencyMs": _sample_stats(live_chunk_llvc_samples),
             "terminalStatusesByReason": {
                 "byStatus": dict(terminal_by_status),
                 "byReason": dict(terminal_by_reason),
@@ -8185,11 +12374,13 @@ def _mark_job_failed_and_revert_usage(
     )
 
 
-def _normalize_rvc_preset(value: str) -> str:
+def _normalize_llvc_preset(value: str) -> str:
     token = str(value or "").strip().lower()
-    if token in {"cover_hq", "cover", "hq"}:
-        return "cover_hq"
-    return "tts_realtime"
+    if token in {"llvc_hq_cpu", "cover_hq", "cover", "hq"}:
+        return "llvc_hq_cpu"
+    if token in {"tts_realtime", "live"}:
+        return "tts_realtime"
+    return VF_LLVC_PRESET_DEFAULT
 
 
 def _safe_bounded_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -8233,7 +12424,7 @@ def _split_plain_text_live_chunks(text: str, *, max_chars: int, max_words: int) 
         return []
     raw_segments = [
         re.sub(r"\s+", " ", part).strip()
-        for part in re.split(r"(?:\n+|(?<=[.!?।])\s+)", normalized_text)
+        for part in re.split(r"(?:\n+|(?<=[.!??])\s+)", normalized_text)
         if str(part or "").strip()
     ]
     segments: list[str] = []
@@ -8590,7 +12781,7 @@ def _load_live_chunk_audio_base64(chunk: dict[str, Any]) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _convert_tts_audio_with_rvc_runtime(
+def _convert_tts_audio_with_llvc_runtime(
     *,
     audio_bytes: bytes,
     engine: str,
@@ -8599,9 +12790,9 @@ def _convert_tts_audio_with_rvc_runtime(
 ) -> tuple[bytes, dict[str, str]]:
     model_name, profile_id = _resolve_mapped_model_name(engine, voice_id, voice_name=voice_name)
     if not model_name:
-        raise RuntimeError(f"No mapped RVC model for {engine}:{voice_id or voice_name}.")
+        raise RuntimeError(f"No mapped LLVC model for {engine}:{voice_id or voice_name}.")
 
-    temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_rvc_")
+    temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_llvc_")
     input_path = Path(temp_dir) / "tts_input.wav"
     output_headers: dict[str, str] = {
         "x-vf-post-tts-profile": str(profile_id or ""),
@@ -8611,18 +12802,18 @@ def _convert_tts_audio_with_rvc_runtime(
         input_path.write_bytes(audio_bytes)
         with input_path.open("rb") as handle:
             response = requests.post(
-                f"{RVC_RUNTIME_URL}/v1/convert",
+                f"{LLVC_RUNTIME_URL}/v1/convert",
                 files={"file": ("tts_input.wav", handle, "audio/wav")},
                 data={
                     "model_name": str(model_name),
-                    "preset": _normalize_rvc_preset(VF_TTS_POST_RVC_PRESET),
+                    "preset": _normalize_llvc_preset(VF_TTS_POST_LLVC_PRESET),
                 },
-                timeout=VF_TTS_POST_RVC_TIMEOUT_SEC,
+                timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
             )
         if not response.ok:
             detail = response.text[:260] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"RVC runtime conversion failed: {detail}")
-        output_headers["x-vf-post-tts-conversion"] = "rvc"
+            raise RuntimeError(f"LLVC runtime conversion failed: {detail}")
+        output_headers["x-vf-post-tts-conversion"] = "llvc"
         return bytes(response.content or b""), output_headers
     finally:
         _cleanup_paths(temp_dir)
@@ -8774,7 +12965,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             post_conversion_headers: dict[str, str] = {}
             if post_tts_disable:
                 post_conversion_headers["x-vf-post-tts-conversion"] = "disabled_by_request"
-            elif not VF_TTS_POST_RVC_ENABLED:
+            elif not VF_TTS_POST_LLVC_ENABLED:
                 post_conversion_headers["x-vf-post-tts-conversion"] = "disabled"
 
             live_started_ms = int(time.time() * 1000)
@@ -8881,25 +13072,25 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     )
                     return
 
-                if VF_TTS_POST_RVC_ENABLED and not post_tts_disable:
+                if VF_TTS_POST_LLVC_ENABLED and not post_tts_disable:
                     conversion_started_ms = int(time.time() * 1000)
                     try:
-                        converted_audio_bytes, conversion_headers = _convert_tts_audio_with_rvc_runtime(
+                        converted_audio_bytes, conversion_headers = _convert_tts_audio_with_llvc_runtime(
                             audio_bytes=chunk_audio,
                             engine=engine,
                             voice_id=voice_id,
                             voice_name=voice_name or str(chunk_payload.get("voiceName") or ""),
                         )
                         conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
-                        _record_tts_live_chunk_rvc_latency(elapsed_ms=conversion_elapsed_ms)
+                        _record_tts_live_chunk_llvc_latency(elapsed_ms=conversion_elapsed_ms)
                         if len(converted_audio_bytes) < 100:
                             raise RuntimeError("Converted live chunk is empty.")
                         chunk_audio = converted_audio_bytes
                         post_conversion_headers.update(conversion_headers)
                     except Exception as exc:
                         conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
-                        _record_tts_live_chunk_rvc_latency(elapsed_ms=conversion_elapsed_ms)
-                        if VF_TTS_POST_RVC_REQUIRED:
+                        _record_tts_live_chunk_llvc_latency(elapsed_ms=conversion_elapsed_ms)
+                        if VF_TTS_POST_LLVC_REQUIRED:
                             detail = {
                                 "error": f"Post-TTS conversion failed: {exc}",
                                 "errorCode": ENGINE_OVERLOADED,
@@ -9168,9 +13359,9 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
         post_tts_disable = bool(current.get("postTtsDisable"))
         synthesized_audio_bytes = bytes(runtime_response.content or b"")
         post_conversion_headers: dict[str, str] = {}
-        if VF_TTS_POST_RVC_ENABLED and not post_tts_disable:
+        if VF_TTS_POST_LLVC_ENABLED and not post_tts_disable:
             try:
-                converted_audio_bytes, conversion_headers = _convert_tts_audio_with_rvc_runtime(
+                converted_audio_bytes, conversion_headers = _convert_tts_audio_with_llvc_runtime(
                     audio_bytes=synthesized_audio_bytes,
                     engine=engine,
                     voice_id=voice_id,
@@ -9181,7 +13372,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 synthesized_audio_bytes = converted_audio_bytes
                 post_conversion_headers.update(conversion_headers)
             except Exception as exc:
-                if VF_TTS_POST_RVC_REQUIRED:
+                if VF_TTS_POST_LLVC_REQUIRED:
                     detail = {
                         "error": f"Post-TTS conversion failed: {exc}",
                         "errorCode": ENGINE_OVERLOADED,
@@ -9757,11 +13948,13 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
 
 @app.get("/runtime/logs/tail", response_model=RuntimeLogTailResponse)
 def tail_runtime_logs(
+    request: Request,
     service: str,
     cursor: Optional[int] = None,
     max_bytes: int = 24_576,
     line_limit: int = 80,
 ) -> JSONResponse:
+    _require_permission(request, PERM_OPS_READ)
     try:
         normalized_service = _resolve_runtime_log_service(service)
     except ValueError as exc:
@@ -9832,7 +14025,8 @@ def tail_runtime_logs(
 
 
 @app.post("/tts/engines/switch", response_model=TtsEngineSwitchResponse)
-def switch_tts_engine(payload: SwitchTtsEngineRequest) -> JSONResponse:
+def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     try:
         engine = _normalize_engine_name(payload.engine)
         health_url = TTS_ENGINE_HEALTH_URLS[engine]
@@ -9858,17 +14052,25 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS engine switch failed: {exc}") from exc
 
-    return JSONResponse(
-        {
-            "ok": True,
-            "engine": engine,
-            "state": "online" if is_online else "starting",
-            "detail": detail if is_online else "Runtime starting in background",
-            "healthUrl": health_url,
-            "gpuMode": payload.gpu,
-            "commandOutput": command_output[-500:],
-        }
+    response_payload = {
+        "ok": True,
+        "engine": engine,
+        "state": "online" if is_online else "starting",
+        "detail": detail if is_online else "Runtime starting in background",
+        "healthUrl": health_url,
+        "gpuMode": payload.gpu,
+        "commandOutput": command_output[-500:],
+    }
+    _audit_append_event(
+        action="tts_engine_switch",
+        resource_type="runtime",
+        resource_id=engine,
+        after={"state": response_payload["state"], "gpuMode": bool(payload.gpu)},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
     )
+    return JSONResponse(response_payload)
 
 
 @app.post("/audio/extract-from-video")
@@ -9945,7 +14147,8 @@ async def extract_audio_from_video(
 
 
 @app.post("/services/dubbing/prepare")
-def prepare_dubbing_services(payload: PrepareDubbingServicesRequest) -> JSONResponse:
+def prepare_dubbing_services(payload: PrepareDubbingServicesRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     engines = ["GEM", "KOKORO"]
     results: list[dict[str, Any]] = []
     overall_ok = True
@@ -10022,14 +14225,22 @@ def prepare_dubbing_services(payload: PrepareDubbingServicesRequest) -> JSONResp
         message = "Dubbing services are ready."
     else:
         message = "Some dubbing services failed to start."
-    return JSONResponse(
-        {
-            "ok": overall_ok,
-            "services": results,
-            "message": message,
-            "traceId": trace_id,
-        }
+    response_payload = {
+        "ok": overall_ok,
+        "services": results,
+        "message": message,
+        "traceId": trace_id,
+    }
+    _audit_append_event(
+        action="dubbing_prepare_services",
+        resource_type="runtime",
+        resource_id="dubbing",
+        after={"ok": bool(overall_ok), "serviceCount": len(results)},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
     )
+    return JSONResponse(response_payload)
 
 
 @app.get("/tts/engines/capabilities", response_model=TtsEngineCapabilitiesResponse)
@@ -10041,7 +14252,7 @@ def tts_engines_capabilities() -> JSONResponse:
         payload[engine] = engine_payload
 
     conversion_adapters = {
-        "RVC": rvc_adapter,
+        "LLVC": llvc_adapter,
     }
     conversion_payload: dict[str, Any] = {}
     for key, adapter in conversion_adapters.items():
@@ -10657,16 +14868,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         _ = multispeaker_policy
         _ = clone_scope
         clone_required = clone_scope == "job_only" or bool(input_voice_map)
-        lhq_healthy, _ = lhq_svc_adapter.health()
-        supports_one_shot_clone_at_decision = engine_selected != "LHQ_PILOT"
-        if engine_selected == "LHQ_PILOT":
-            fallback_used = True
-            if clone_required:
-                fallback_reason = "lhq_missing_clone_parity"
-            elif not lhq_healthy:
-                fallback_reason = "lhq_unhealthy"
-            else:
-                fallback_reason = "lhq_quality_gate_failed"
+        _ = clone_required
+        supports_one_shot_clone_at_decision = False
 
         stage_map = {
             "stage1_preprocess": ("preprocess", 12),
@@ -11347,9 +15550,9 @@ async def create_dubbing_job_v2(
             "engineExecuted": default_engine_executed,
             "engineSelectedDisplay": _conversion_policy_display_name(selected_policy),
             "engineExecutedDisplay": _executed_engine_display_name(default_engine_executed),
-            "fallbackUsed": selected_policy == "LHQ_PILOT",
-            "fallbackReason": "lhq_missing_clone_parity" if selected_policy == "LHQ_PILOT" else None,
-            "supportsOneShotCloneAtDecision": selected_policy != "LHQ_PILOT",
+            "fallbackUsed": False,
+            "fallbackReason": None,
+            "supportsOneShotCloneAtDecision": False,
         }
 
     thread = threading.Thread(target=_run_dubbing_job_v2, args=(job_id, job_payload), daemon=True)
@@ -11409,80 +15612,47 @@ def download_dubbing_report(job_id: str) -> FileResponse:
     return FileResponse(str(path), media_type="application/json", filename=f"{job_id}_report.json")
 
 
-@app.get("/rvc/models")
-def list_rvc_models() -> JSONResponse:
-    lhq_healthy, lhq_detail = lhq_svc_adapter.health()
+@app.get("/llvc/models")
+def list_llvc_models() -> JSONResponse:
     try:
-        models = rvc_runtime.list_models()
-        if ENABLE_RVC_FALLBACK and RVC_FALLBACK_MODEL_ID not in models:
-            models = [RVC_FALLBACK_MODEL_ID, *models]
-        if lhq_healthy and LHQ_SVC_PILOT_MODEL_ID not in models:
-            models = [LHQ_SVC_PILOT_MODEL_ID, *models]
-        current_model = rvc_runtime.current_model()
-        if not current_model and ENABLE_RVC_FALLBACK:
-            current_model = RVC_FALLBACK_MODEL_ID
+        models = llvc_runtime.list_models()
+        current_model = llvc_runtime.current_model()
+        if not current_model and models:
+            current_model = str(models[0])
         return JSONResponse(
             {
                 "models": models,
                 "currentModel": current_model,
-                "lhqPilot": {"healthy": lhq_healthy, "detail": lhq_detail},
             }
         )
     except Exception as exc:
-        fallback_models = [RVC_FALLBACK_MODEL_ID] if ENABLE_RVC_FALLBACK else []
-        if lhq_healthy:
-            fallback_models = [LHQ_SVC_PILOT_MODEL_ID, *fallback_models]
-        if ENABLE_RVC_FALLBACK:
-            return JSONResponse(
-                {
-                    "models": fallback_models,
-                    "currentModel": RVC_FALLBACK_MODEL_ID,
-                    "fallback": True,
-                    "detail": f"RVC unavailable; using low-CPU fallback ({exc})",
-                    "lhqPilot": {"healthy": lhq_healthy, "detail": lhq_detail},
-                }
-            )
-        raise HTTPException(status_code=503, detail=f"RVC unavailable: {exc}") from exc
+        raise HTTPException(status_code=503, detail=f"LLVC unavailable: {exc}") from exc
 
 
-@app.post("/rvc/load-model")
-def load_rvc_model(payload: LoadRvcModelRequest) -> JSONResponse:
-    if payload.modelName == LHQ_SVC_PILOT_MODEL_ID:
-        healthy, detail = lhq_svc_adapter.health()
-        if not healthy:
-            raise HTTPException(status_code=400, detail=f"LHQ-SVC pilot unavailable: {detail}")
-        return JSONResponse(
-            {
-                "ok": True,
-                "currentModel": LHQ_SVC_PILOT_MODEL_ID,
-                "fallback": False,
-                "detail": "LHQ-SVC pilot model selected.",
-            }
-        )
-    if payload.modelName == RVC_FALLBACK_MODEL_ID and ENABLE_RVC_FALLBACK:
-        return JSONResponse(
-            {
-                "ok": True,
-                "currentModel": RVC_FALLBACK_MODEL_ID,
-                "fallback": True,
-                "detail": "Low-CPU timbre fallback selected.",
-            }
-        )
+@app.post("/llvc/load-model")
+def load_llvc_model(payload: LoadLlvcModelRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     try:
-        rvc_runtime.load_model(payload.modelName, payload.version)
+        llvc_runtime.load_model(payload.modelName, payload.version)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to load model: {exc}") from exc
+    _audit_append_event(
+        action="llvc_load_model",
+        resource_type="runtime",
+        resource_id=str(payload.modelName or ""),
+        after={"version": str(payload.version or "v2")},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "currentModel": llvc_runtime.current_model()})
 
-    return JSONResponse({"ok": True, "currentModel": rvc_runtime.current_model()})
 
-
-@app.post("/rvc/convert")
-async def convert_rvc(
+@app.post("/llvc/convert")
+async def convert_llvc(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     model_name: str = Form(...),
-    engine_policy: str = Form("AUTO_RELIABLE"),
-    clone_required: bool = Form(False),
     preset: str = Form("tts_realtime"),
     pitch_shift: int = Form(0),
     index_rate: float = Form(0.5),
@@ -11491,14 +15661,12 @@ async def convert_rvc(
     protect: float = Form(0.33),
     f0_method: str = Form("rmvpe"),
 ) -> FileResponse:
-    policy = _normalize_conversion_policy(engine_policy, default="AUTO_RELIABLE")
-    safe_preset = _normalize_rvc_preset(preset)
-    selected_engine = "RVC"
-    executed_engine = "RVC"
+    safe_preset = _normalize_llvc_preset(preset)
+    selected_engine = "LLVC"
+    executed_engine = "LLVC"
     fallback_used = False
-    fallback_reason: Optional[str] = None
 
-    temp_dir = tempfile.mkdtemp(prefix="vf_rvc_")
+    temp_dir = tempfile.mkdtemp(prefix="vf_llvc_")
     source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source_audio")
     normalized_wav = Path(temp_dir) / "input.wav"
     output_path = Path(temp_dir) / "output.wav"
@@ -11509,90 +15677,51 @@ async def convert_rvc(
 
         _convert_media_to_wav(str(source_path), str(normalized_wav), sample_rate=40000)
 
-        if policy == "LHQ_PILOT":
-            selected_engine = "LHQ_SVC"
-            lhq_ok, lhq_detail = lhq_svc_adapter.health()
-            if clone_required:
-                fallback_used = True
-                fallback_reason = "lhq_missing_clone_parity"
-            elif not lhq_ok:
-                fallback_used = True
-                fallback_reason = "lhq_unhealthy"
-            else:
-                try:
-                    lhq_svc_adapter.convert(
-                        str(normalized_wav),
-                        str(output_path),
-                        pitch_shift=pitch_shift,
-                        sample_rate=40000,
-                    )
-                    executed_engine = "LHQ_SVC"
-                except Exception:
-                    fallback_used = True
-                    fallback_reason = "lhq_quality_gate_failed"
-
-        if not output_path.exists():
-            if model_name == RVC_FALLBACK_MODEL_ID:
-                fallback_used = True
-                fallback_reason = fallback_reason or "selected_model"
-                _convert_with_low_cpu_timbre(
-                    str(normalized_wav),
-                    str(output_path),
-                    pitch_shift=pitch_shift,
-                    sample_rate=40000,
-                )
-                executed_engine = "RVC_FALLBACK"
-            else:
-                rvc_ok, rvc_detail = rvc_adapter.health()
-                if rvc_ok:
-                    rvc_adapter.convert(
-                        str(normalized_wav),
-                        str(output_path),
-                        model_name=model_name,
-                        preset=safe_preset,
-                        f0_method=f0_method,
-                        pitch_shift=pitch_shift,
-                        index_rate=index_rate,
-                        filter_radius=filter_radius,
-                        rms_mix_rate=rms_mix_rate,
-                        protect=protect,
-                    )
-                    executed_engine = "RVC"
-                elif ENABLE_RVC_FALLBACK:
-                    fallback_used = True
-                    if not fallback_reason:
-                        fallback_reason = "lhq_timeout" if policy == "LHQ_PILOT" else "selected_model"
-                    _convert_with_low_cpu_timbre(
-                        str(normalized_wav),
-                        str(output_path),
-                        pitch_shift=pitch_shift,
-                        sample_rate=40000,
-                    )
-                    executed_engine = "RVC_FALLBACK"
-                else:
-                    raise RuntimeError(f"RVC unavailable: {rvc_detail}")
+        llvc_ok, llvc_detail = llvc_adapter.health()
+        if not llvc_ok:
+            raise RuntimeError(f"LLVC unavailable: {llvc_detail}")
+        llvc_adapter.convert(
+            str(normalized_wav),
+            str(output_path),
+            model_name=model_name,
+            preset=safe_preset,
+            f0_method=f0_method,
+            pitch_shift=pitch_shift,
+            index_rate=index_rate,
+            filter_radius=filter_radius,
+            rms_mix_rate=rms_mix_rate,
+            protect=protect,
+        )
 
     except Exception as exc:
         _cleanup_paths(temp_dir)
-        raise HTTPException(status_code=500, detail=f"RVC conversion failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"LLVC conversion failed: {exc}") from exc
 
     background_tasks.add_task(_cleanup_paths, temp_dir)
     safe_model = _safe_upload_name(model_name, "model")
     return FileResponse(
         str(output_path),
         media_type="audio/wav",
-        filename=f"rvc_{safe_model}.wav",
+        filename=f"llvc_{safe_model}.wav",
         headers={
             "x-vf-engine-selected": selected_engine,
             "x-vf-engine-executed": executed_engine,
-            "x-vf-rvc-preset": safe_preset,
-            "x-vf-rvc-fallback": "1" if fallback_used else "0",
-            "x-vf-rvc-fallback-reason": (fallback_reason or "")
-            .replace("\r", " ")
-            .replace("\n", " ")[:180],
-            "x-vf-supports-one-shot-clone-at-decision": "1" if selected_engine != "LHQ_SVC" else "0",
+            "x-vf-llvc-preset": safe_preset,
+            "x-vf-llvc-fallback": "1" if fallback_used else "0",
+            "x-vf-llvc-fallback-reason": "",
+            "x-vf-supports-one-shot-clone-at-decision": "0",
         },
     )
+
+
+@app.on_event("startup")
+def _phase2_startup() -> None:
+    _ensure_scheduler_started()
+
+
+@app.on_event("shutdown")
+def _phase2_shutdown() -> None:
+    _scheduler_stop()
 
 
 if __name__ == "__main__":

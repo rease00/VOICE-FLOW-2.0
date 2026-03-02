@@ -35,6 +35,8 @@ npm run start:backend
 npm run start:backend:gpu
 ```
 
+`npm run start:backend` is idempotent: it reconciles PID files with active listener PIDs and avoids unnecessary restarts unless runtime code/dependencies changed.
+
 Unified command entrypoints:
 
 ```powershell
@@ -66,6 +68,12 @@ Check service health only:
 npm run services:check
 ```
 
+Quick verification:
+
+```powershell
+npm run backend -- services:check
+```
+
 Stop all servers:
 
 ```powershell
@@ -81,6 +89,13 @@ $env:VF_DEV_RETRY_BASE_MS="1500"
 $env:VF_DEV_RETRY_MAX_MS="10000"
 $env:VF_DEV_SERVICE_RESTART_MAX="3"
 $env:VF_DEV_CRASH_WINDOW_MS="120000"
+```
+
+Log rotation knobs for bootstrap:
+
+```powershell
+$env:VF_SERVICE_LOG_ROTATE_MAX_BYTES="20971520"  # 20 MB default
+$env:VF_SERVICE_LOG_ROTATE_KEEP="3"
 ```
 
 ## Local Encrypted Admin Login (Frontend + Dev Backend)
@@ -146,6 +161,7 @@ python -m uvicorn app:app --app-dir backend/engines/gemini-runtime --host 127.0.
 Gemini runtime env vars (optional, for multi-key rate-limit fallback):
 
 ```powershell
+$env:GEMINI_RUNTIME_ADMIN_TOKEN="<shared-admin-token>"
 $env:GEMINI_API_KEYS="AIzaKey1,AIzaKey2,AIzaKey3"
 $env:GEMINI_API_KEYS_FILE="C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt"
 $env:GEMINI_KEY_COOLDOWN_BASE_MS="8000"
@@ -207,6 +223,13 @@ $env:VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS="30000"
   - `GET http://127.0.0.1:7800/admin/integrations/usage`
   - `GET http://127.0.0.1:7800/admin/integrations/usage/export?format=json|csv&window=total|24h|7d`
   - `GET http://127.0.0.1:7800/admin/tts/gateway/status`
+- Admin coupons:
+  - `POST http://127.0.0.1:7800/admin/coupons/generate-code`
+  - `POST http://127.0.0.1:7800/admin/coupons`
+  - `GET http://127.0.0.1:7800/admin/coupons?couponType=wallet_credit|subscription_discount`
+  - `PATCH http://127.0.0.1:7800/admin/coupons/{coupon_id}`
+- Billing checkout (internal + Stripe fallback promotions):
+  - `POST http://127.0.0.1:7800/billing/checkout-session` with optional `couponCode`
 
 ## Useful Commands
 
@@ -216,10 +239,10 @@ Install backend requirements:
 npm run backend:install
 ```
 
-Install optional RVC requirements:
+Install optional LLVC requirements:
 
 ```powershell
-npm run backend:install:rvc
+npm run backend:install:llvc
 ```
 
 Switch active TTS engine (bootstrap helper):
@@ -247,9 +270,17 @@ npm run audit:gemini-stack
 - PID files: `backend/.runtime/pids/`
 - Venvs used by bootstrap: `backend/.venvs/`
 - Legacy root `.runtime/` can contain stale logs from old startup paths; treat `backend/.runtime/` as canonical.
+- Bootstrap reconciles tracked PID files to live listener PIDs on each run.
+- Oversized logs are rotated to `.log.1`, `.log.2`, etc before service spawn.
+
+Bootstrap idempotency audit:
+
+```powershell
+npm run backend -- audit:bootstrap:idempotency
+```
 
 Per-service Python interpreter env vars (optional):
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
 - `VF_PYTHON_BIN_KOKORO_RUNTIME`
-- `VF_PYTHON_BIN_RVC_RUNTIME` (must resolve to Python `3.11.x`)
+- `VF_PYTHON_BIN_LLVC_RUNTIME` (must resolve to Python `3.11.x`)

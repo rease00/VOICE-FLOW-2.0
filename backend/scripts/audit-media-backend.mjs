@@ -4,7 +4,7 @@ import path from 'node:path';
 const baseUrl = (process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
 const videoSample = process.env.VF_AUDIT_VIDEO || '';
 const audioSample = process.env.VF_AUDIT_AUDIO || '';
-const requireRvc = ['1', 'true', 'yes'].includes((process.env.VF_AUDIT_REQUIRE_RVC || '').trim().toLowerCase());
+const requireLlvc = ['1', 'true', 'yes'].includes((process.env.VF_AUDIT_REQUIRE_LLVC || '').trim().toLowerCase());
 
 async function getJson(url, options = {}) {
   const res = await fetch(url, options);
@@ -31,7 +31,7 @@ async function main() {
     timestamp: new Date().toISOString(),
     baseUrl,
     config: {
-      requireRvc,
+      requireLlvc,
     },
     checks: [],
     passed: false,
@@ -42,17 +42,17 @@ async function main() {
     report.checks.push({ name: 'health', ok: true, detail: health });
 
     try {
-      const models = await getJson(`${baseUrl}/rvc/models`);
-      report.checks.push({ name: 'rvc_models', ok: true, detail: models });
+      const models = await getJson(`${baseUrl}/llvc/models`);
+      report.checks.push({ name: 'llvc_models', ok: true, detail: models });
     } catch (error) {
-      if (requireRvc) {
+      if (requireLlvc) {
         throw error;
       }
       report.checks.push({
-        name: 'rvc_models',
+        name: 'llvc_models',
         ok: false,
         skipped: true,
-        reason: `RVC optional for this audit: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `LLVC optional for this audit: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
 

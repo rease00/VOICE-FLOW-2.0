@@ -14,7 +14,7 @@ const DEFAULT_FIX = true;
 
 const PROFILE_BANK_PATH = path.join(BACKEND_ROOT, 'config', 'voice_profile_bank.v1.json');
 const VOICE_MAP_PATH = path.join(BACKEND_ROOT, 'config', 'voice_id_map.v1.json');
-const ARTIFACT_PATH = path.join(BACKEND_ROOT, 'artifacts', 'load', 'rvc_voice_mapping_audit.json');
+const ARTIFACT_PATH = path.join(BACKEND_ROOT, 'artifacts', 'load', 'llvc_voice_mapping_audit.json');
 
 const KOKORO_CANONICAL_PROFILE_MAP = Object.freeze({
   af_heart: 'p02_india_f_adult',
@@ -82,8 +82,8 @@ const args = parseArgs(process.argv.slice(2));
 const CONFIG = {
   baseUrl: String(args.get('base-url') || process.env.VF_MEDIA_BACKEND_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''),
   uid: String(args.get('uid') || process.env.VF_LIVE_AUDIT_UID || DEFAULT_UID).trim() || DEFAULT_UID,
-  timeoutMs: parseIntSafe(args.get('timeout-ms') || process.env.VF_RVC_MAPPING_AUDIT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1000),
-  fix: parseBool(args.get('fix') ?? process.env.VF_RVC_MAPPING_AUDIT_FIX, DEFAULT_FIX),
+  timeoutMs: parseIntSafe(args.get('timeout-ms') || process.env.VF_LLVC_MAPPING_AUDIT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1000),
+  fix: parseBool(args.get('fix') ?? process.env.VF_LLVC_MAPPING_AUDIT_FIX, DEFAULT_FIX),
 };
 
 const normalizeGender = (value) => {
@@ -530,14 +530,14 @@ const main = async () => {
   await fs.writeFile(ARTIFACT_PATH, JSON.stringify(report, null, 2), 'utf8');
 
   const summary =
-    `[audit:rvc:mapping] gemVoices=${runtimeGemVoices.length} kokoroVoices=${runtimeKokoroVoices.length} ` +
+    `[audit:llvc:mapping] gemVoices=${runtimeGemVoices.length} kokoroVoices=${runtimeKokoroVoices.length} ` +
     `issues=${postFixIssues.length} fixed=${dedupFixedEntries.length} verdict=${report.verdict.passed ? 'passed' : 'failed'}`;
   console.log(summary);
   console.log(`artifact=${ARTIFACT_PATH.replace(/\\/g, '/')}`);
   if (postFixIssues.length > 0) {
     for (const item of postFixIssues.slice(0, 20)) {
       console.error(
-        `[audit:rvc:mapping][FAIL] ${item.engine}:${item.voiceId} ${item.issue}` +
+        `[audit:llvc:mapping][FAIL] ${item.engine}:${item.voiceId} ${item.issue}` +
         `${item.expected ? ` expected=${item.expected}` : ''}` +
         `${item.actual ? ` actual=${item.actual}` : ''}` +
         `${item.profileId ? ` profile=${item.profileId}` : ''}`,

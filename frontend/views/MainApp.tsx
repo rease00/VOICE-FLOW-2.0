@@ -1,4 +1,4 @@
-﻿
+
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { 
@@ -19,7 +19,7 @@ import { AudioPlayer } from '../components/AudioPlayer';
 import { useUser } from '../contexts/UserContext';
 import { AdModal } from '../components/AdModal';
 import { applyStudioAudioMix } from '../services/studioMixService';
-import { checkMediaBackendHealth, convertRvcCover, listRvcModels, loadRvcModel, muxDubbedVideo, resolveMediaBackendUrl, switchTtsEngineRuntime, transcribeVideoWithBackend } from '../services/mediaBackendService';
+import { checkMediaBackendHealth, convertLlvcCover, listLlvcModels, loadLlvcModel, muxDubbedVideo, resolveMediaBackendUrl, switchTtsEngineRuntime, transcribeVideoWithBackend } from '../services/mediaBackendService';
 import { fetchEngineRuntimeVoices, getStaticVoiceFallback } from '../services/ttsVoiceRegistryService';
 import { normalizeEmotionTag } from '../services/emotionTagRules';
 import { getEngineDisplayName } from '../services/engineDisplay';
@@ -28,6 +28,7 @@ import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
 import { DubbingTranslateBar } from '../components/DubbingTranslateBar';
 import { SectionCard } from '../components/SectionCard';
+import { BrandLogo } from '../components/BrandLogo';
 import { BlockScriptEditor } from '../components/studio/BlockScriptEditor';
 import { MorphingGenerateButton } from '../components/studio/MorphingGenerateButton';
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
@@ -52,6 +53,7 @@ interface MainAppProps {
 type LabMode = 'CLONING' | 'COVERS';
 type UiTheme = 'light' | 'dark' | 'system';
 type UiDensity = 'comfortable' | 'compact';
+type UiMotionLevel = 'off' | 'balanced' | 'rich';
 type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
 
 interface EngineRuntimeStatus {
@@ -159,9 +161,10 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   geminiApiKey: '',
   mediaBackendUrl: 'http://127.0.0.1:7800',
   backendApiKey: '',
-  rvcModel: '',
+  llvcModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.GEM,
-  kokoroTtsServiceUrl: FALLBACK_RUNTIME_URLS.KOKORO,
+  kokoroTtsServiceUrl: FALLBACK_RUNTIME_URLS.KOKORO,
+
   musicTrackId: 'm_none',
   musicVolume: 0.3,
   speechVolume: 1.0,
@@ -171,6 +174,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   dubbingSourceLanguage: 'auto',
   multiSpeakerEnabled: true,
   speakerMapping: {},
+  uiMotionLevel: 'balanced',
 };
 
 const normalizeServiceSetting = (value: unknown, fallback: string): string => (
@@ -222,6 +226,10 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     dubbingSourceLanguage: typeof value.dubbingSourceLanguage === 'string' && value.dubbingSourceLanguage.trim()
       ? value.dubbingSourceLanguage.trim()
       : DEFAULT_SETTINGS.dubbingSourceLanguage,
+    uiMotionLevel:
+      value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
+        ? value.uiMotionLevel
+        : (DEFAULT_SETTINGS.uiMotionLevel || 'balanced'),
     multiSpeakerEnabled: typeof value.multiSpeakerEnabled === 'boolean'
       ? value.multiSpeakerEnabled
       : DEFAULT_SETTINGS.multiSpeakerEnabled,
@@ -229,14 +237,15 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
       ? value.mediaBackendUrl.trim()
       : DEFAULT_SETTINGS.mediaBackendUrl,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
-    rvcModel: typeof value.rvcModel === 'string' ? value.rvcModel : DEFAULT_SETTINGS.rvcModel,
+    llvcModel: typeof value.llvcModel === 'string' ? value.llvcModel : DEFAULT_SETTINGS.llvcModel,
     geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.GEM),
     kokoroTtsServiceUrl: normalizeServiceSetting(value.kokoroTtsServiceUrl, DEFAULT_SETTINGS.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO),
   };
 
   const validVoiceIds = new Set([
     ...VOICES.map(v => v.id),
-    ...KOKORO_VOICES.map(v => v.id),
+    ...KOKORO_VOICES.map(v => v.id),
+
     ...((value.clonedVoices || []) as any[]).map(v => v?.id).filter(Boolean),
   ]);
 
@@ -503,6 +512,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = parseFloat(readStorageString(STORAGE_KEYS.uiFontScale) || '1');
     return Number.isFinite(saved) ? Math.min(1.15, Math.max(0.9, saved)) : 1;
   });
+  const [uiMotionLevel, setUiMotionLevel] = useState<UiMotionLevel>(() => {
+    const saved = readStorageString(STORAGE_KEYS.uiMotionLevel);
+    if (saved === 'off' || saved === 'rich' || saved === 'balanced') return saved;
+    const normalized = normalizeSettings(readStorageJson(STORAGE_KEYS.settings));
+    if (normalized.uiMotionLevel === 'off' || normalized.uiMotionLevel === 'rich' || normalized.uiMotionLevel === 'balanced') {
+      return normalized.uiMotionLevel;
+    }
+    return 'balanced';
+  });
 
   // Editor Tools
   const [isAiWriting, setIsAiWriting] = useState(false);
@@ -548,15 +566,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [renderedDubVideoUrl, setRenderedDubVideoUrl] = useState<string | null>(null);
   const [isRenderingDubVideo, setIsRenderingDubVideo] = useState(false);
 
-  // --- Real Media Backend State (RVC + Video Tools) ---
+  // --- Real Media Backend State (LLVC + Video Tools) ---
   const [backendHealth, setBackendHealth] = useState<BackendHealthState | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
-  const [rvcModels, setRvcModels] = useState<string[]>([]);
-  const [isLoadingRvcModels, setIsLoadingRvcModels] = useState(false);
-  const [rvcSourceFile, setRvcSourceFile] = useState<File | null>(null);
-  const [rvcPitchShift, setRvcPitchShift] = useState(0);
-  const [isGeneratingRvcCover, setIsGeneratingRvcCover] = useState(false);
-  const [rvcCoverUrl, setRvcCoverUrl] = useState<string | null>(null);
+  const [llvcModels, setLlvcModels] = useState<string[]>([]);
+  const [isLoadingLlvcModels, setIsLoadingLlvcModels] = useState(false);
+  const [llvcSourceFile, setLlvcSourceFile] = useState<File | null>(null);
+  const [llvcPitchShift, setLlvcPitchShift] = useState(0);
+  const [isGeneratingLlvcCover, setIsGeneratingLlvcCover] = useState(false);
+  const [llvcCoverUrl, setLlvcCoverUrl] = useState<string | null>(null);
   const [dubbingUiState, setDubbingUiState] = useState<DubbingUiState>({
       phase: 'idle',
       progress: 0,
@@ -582,6 +600,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const dubbingStemsRef = useRef<CachedDubbingStems | null>(null);
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
+  const studioMainRef = useRef<HTMLDivElement>(null);
 
   // --- PREVIEW STATE ---
   const [previewState, setPreviewState] = useState<{ id: string, status: 'loading' | 'playing' } | null>(null);
@@ -590,11 +609,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [managedActiveEngine, setManagedActiveEngine] = useState<GenerationSettings['engine'] | null>(null);
   const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<GenerationSettings['engine'], EngineRuntimeStatus>>({
     GEM: { state: 'checking', detail: 'Checking...' },
-    KOKORO: { state: 'checking', detail: 'Checking...' },
+    KOKORO: { state: 'checking', detail: 'Checking...' },
+
   });
   const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<GenerationSettings['engine'], VoiceOption[]>>(
     EMPTY_RUNTIME_CATALOG
-  );
+  );
+
   const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !hasUnlimitedAccess;
   const currentEngineSpendable = settings.engine === 'KOKORO'
     ? Math.max(0, Number(stats.wallet?.spendableNowByEngine?.KOKORO || 0))
@@ -879,7 +900,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           meta.includes('devanagari') ||
           meta.includes('india') ||
           id.startsWith('hf_') ||
-          id.startsWith('hm_') ||
+          id.startsWith('hm_') ||
+
+
           id.includes('_hi_');
       if (hindiLike) return 'hi';
 
@@ -894,7 +917,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           id.startsWith('af_') ||
           id.startsWith('am_') ||
           id.startsWith('bf_') ||
-          id.startsWith('bm_') ||
+          id.startsWith('bm_') ||
+
+
+
+
+
           /^v\d+$/.test(id);
       if (englishLike) return 'en';
       return 'other';
@@ -1171,33 +1199,54 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ]);
 
   const dubbingStatusAppearance = useMemo(() => {
+      const darkTheme = resolvedTheme === 'dark';
       if (dubbingUiState.phase === 'running') {
           return {
-              badge: 'Running',
-              tone: 'border-indigo-200 bg-indigo-50 text-indigo-700',
-              bar: 'bg-indigo-500',
+              badge: 'Generating',
+              tone: darkTheme
+                ? 'border-indigo-400/45 bg-indigo-500/12 text-indigo-200'
+                : 'border-indigo-200 bg-indigo-50 text-indigo-700',
+              bar: darkTheme ? 'bg-indigo-400' : 'bg-indigo-500',
+              title: 'Generating dub track',
+              subtitle: 'Processing your media with studio voice mapping.',
+              progressPct: Math.max(14, Math.min(94, Number(dubbingUiState.progress || 0))),
           };
       }
       if (dubbingUiState.phase === 'error') {
           return {
-              badge: 'Error',
-              tone: 'border-red-200 bg-red-50 text-red-700',
-              bar: 'bg-red-500',
+              badge: 'Retry',
+              tone: darkTheme
+                ? 'border-rose-400/45 bg-rose-500/12 text-rose-200'
+                : 'border-red-200 bg-red-50 text-red-700',
+              bar: darkTheme ? 'bg-rose-400' : 'bg-red-500',
+              title: 'Could not generate dub',
+              subtitle: 'Please retry after checking your source media.',
+              progressPct: 100,
           };
       }
       if (dubbingUiState.phase === 'done') {
           return {
               badge: 'Ready',
-              tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-              bar: 'bg-emerald-500',
+              tone: darkTheme
+                ? 'border-emerald-400/45 bg-emerald-500/12 text-emerald-200'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-700',
+              bar: darkTheme ? 'bg-emerald-400' : 'bg-emerald-500',
+              title: 'Dub track is ready',
+              subtitle: 'Preview, export, or continue editing your script.',
+              progressPct: 100,
           };
       }
       return {
           badge: 'Idle',
-          tone: 'border-gray-200 bg-gray-50 text-gray-600',
-          bar: 'bg-gray-300',
+          tone: darkTheme
+            ? 'border-slate-600 bg-slate-900/80 text-slate-200'
+            : 'border-gray-200 bg-gray-50 text-gray-600',
+          bar: darkTheme ? 'bg-slate-400' : 'bg-gray-300',
+          title: 'Ready for dubbing',
+          subtitle: 'Upload a source video and press Generate Dub Track.',
+          progressPct: 0,
       };
-  }, [dubbingUiState.phase]);
+  }, [dubbingUiState.phase, dubbingUiState.progress, resolvedTheme]);
 
   const refreshEngineVoiceCatalog = useCallback(
       async (engine: GenerationSettings['engine'], _runtimeUrl?: string): Promise<VoiceOption[]> => {
@@ -1405,10 +1454,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       try {
           const health = await checkMediaBackendHealth(mediaBackendUrl);
           const ffmpegMissing = !health.ffmpeg?.available;
-          const rvcError = Boolean(health.rvc?.error);
+          const llvcError = Boolean(health.llvc?.error);
           const whisperError = Boolean(health.whisper?.error);
           const separationError = Boolean(health.sourceSeparation?.enabled && !health.sourceSeparation?.available);
-          const hasSubsystemError = ffmpegMissing || rvcError || whisperError || separationError;
+          const hasSubsystemError = ffmpegMissing || llvcError || whisperError || separationError;
           const severity: HealthSeverity = ffmpegMissing || !health.ok
             ? 'error'
             : hasSubsystemError
@@ -1422,7 +1471,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             : 'n/a';
           const summary = [
               health.ffmpeg?.available ? 'FFmpeg OK' : 'FFmpeg Missing',
-              health.rvc?.error ? 'RVC Error' : 'RVC Ready',
+              health.llvc?.error ? 'LLVC Error' : 'LLVC Ready',
               health.whisper?.error ? 'Whisper Error' : `Whisper ${health.whisper?.loaded ? 'Loaded' : 'Idle'} (${languageHint})`,
               separationState,
           ].join(' | ');
@@ -1437,23 +1486,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
-  const refreshRvcModels = async (silent: boolean = false) => {
-      setIsLoadingRvcModels(true);
+  const refreshLlvcModels = async (silent: boolean = false) => {
+      setIsLoadingLlvcModels(true);
       try {
-          const payload = await listRvcModels(mediaBackendUrl);
-          setRvcModels(payload.models);
+          const payload = await listLlvcModels(mediaBackendUrl);
+          setLlvcModels(payload.models);
           setSettings(prev => {
-              const preferred = prev.rvcModel && payload.models.includes(prev.rvcModel) ? prev.rvcModel : '';
+              const preferred = prev.llvcModel && payload.models.includes(prev.llvcModel) ? prev.llvcModel : '';
               const nextModel = preferred || payload.currentModel || payload.models[0] || '';
-              return { ...prev, rvcModel: nextModel };
+              return { ...prev, llvcModel: nextModel };
           });
       } catch (e: any) {
-          setRvcModels([]);
+          setLlvcModels([]);
           if (!silent) {
-              showToast(e?.message || 'Failed to load RVC models', 'error');
+              showToast(e?.message || 'Failed to load LLVC models', 'error');
           }
       } finally {
-          setIsLoadingRvcModels(false);
+          setIsLoadingLlvcModels(false);
       }
   };
 
@@ -1461,7 +1510,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiTheme, uiTheme); }, [uiTheme]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiDensity, uiDensity); }, [uiDensity]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiFontScale, String(uiFontScale)); }, [uiFontScale]);
+  useEffect(() => { writeStorageString(STORAGE_KEYS.uiMotionLevel, uiMotionLevel); }, [uiMotionLevel]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.studioEditorMode, studioEditorMode); }, [studioEditorMode]);
+  useEffect(() => {
+      setSettings((prev) => (prev.uiMotionLevel === uiMotionLevel ? prev : { ...prev, uiMotionLevel }));
+  }, [uiMotionLevel]);
   useEffect(() => {
       setSettings((prev) => {
           const next = {
@@ -1496,7 +1549,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       if (activeTab === Tab.LAB && labMode === 'COVERS') {
           void refreshBackendHealth(true);
-          void refreshRvcModels(true);
+          void refreshLlvcModels(true);
       }
   }, [activeTab, labMode, mediaBackendUrl]);
 
@@ -1757,7 +1810,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   useEffect(() => {
       return () => {
-          if (rvcCoverUrl) URL.revokeObjectURL(rvcCoverUrl);
+          if (llvcCoverUrl) URL.revokeObjectURL(llvcCoverUrl);
           if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
           if (dubbingStemsRef.current) {
               URL.revokeObjectURL(dubbingStemsRef.current.speechObjectUrl);
@@ -1765,7 +1818,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               dubbingStemsRef.current = null;
           }
       };
-  }, [rvcCoverUrl, renderedDubVideoUrl]);
+  }, [llvcCoverUrl, renderedDubVideoUrl]);
 
   useEffect(() => {
       document.body.classList.toggle('theme-dark', resolvedTheme === 'dark');
@@ -1782,10 +1835,38 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [uiDensity]);
 
   useEffect(() => {
+      const previousMotion = document.body.dataset.motion;
+      document.body.dataset.motion = uiMotionLevel;
+      document.body.classList.toggle('vf-motion-off', uiMotionLevel === 'off');
+      document.body.classList.toggle('vf-motion-balanced', uiMotionLevel === 'balanced');
+      document.body.classList.toggle('vf-motion-rich', uiMotionLevel === 'rich');
+      return () => {
+          if (previousMotion) document.body.dataset.motion = previousMotion;
+          else delete document.body.dataset.motion;
+          document.body.classList.remove('vf-motion-off', 'vf-motion-balanced', 'vf-motion-rich');
+      };
+  }, [uiMotionLevel]);
+
+  useEffect(() => {
       const previousFontSize = document.documentElement.style.fontSize;
       document.documentElement.style.fontSize = `${16 * uiFontScale}px`;
       return () => { document.documentElement.style.fontSize = previousFontSize; };
   }, [uiFontScale]);
+
+  useEffect(() => {
+      if (activeTab !== Tab.STUDIO) return;
+      const applyDockCenter = () => {
+          const studioMainRect = studioMainRef.current?.getBoundingClientRect();
+          const fallback = Math.round(window.innerWidth / 2);
+          const centerX = studioMainRect ? Math.round(studioMainRect.left + (studioMainRect.width / 2)) : fallback;
+          document.documentElement.style.setProperty('--vf-studio-dock-center-x', `${centerX}px`);
+      };
+      applyDockCenter();
+      window.addEventListener('resize', applyDockCenter, { passive: true });
+      return () => {
+          window.removeEventListener('resize', applyDockCenter);
+      };
+  }, [activeTab, uiDensity, uiFontScale]);
 
   useEffect(() => {
       if (isChatOpen && chatEndRef.current) {
@@ -2309,14 +2390,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       let engineState: { runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string };
       let stemCache: CachedDubbingStems | null = null;
       const wantsTonePreservation = Boolean(settings.preserveDubVoiceTone);
-      if (wantsTonePreservation && !settings.rvcModel) {
+      if (wantsTonePreservation && !settings.llvcModel) {
           patchDubbingUiState({
               phase: 'error',
               progress: 100,
               stage: 'Tone model required',
-              error: 'Enable tone preservation requires selecting an RVC model in AI Covers.',
+              error: 'Enable tone preservation requires selecting an LLVC model in AI Covers.',
           });
-          return showToast('Enable tone preservation requires selecting an RVC model in AI Covers.', 'info');
+          return showToast('Enable tone preservation requires selecting an LLVC model in AI Covers.', 'info');
       }
       try {
           if (videoFile) {
@@ -2330,15 +2411,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               stemCache = await ensureDubbingStemCache(videoFile);
           }
           engineState = await ensureEngineOnline(settings.engine, { silent: true, timeoutMs: 60000, syncVoiceId: settings.voiceId });
-          if (wantsTonePreservation && settings.rvcModel) {
-              setProcessingStage(`Loading RVC tone model (${settings.rvcModel})...`);
+          if (wantsTonePreservation && settings.llvcModel) {
+              setProcessingStage(`Loading LLVC tone model (${settings.llvcModel})...`);
               patchDubbingUiState({
                   phase: 'running',
                   progress: 18,
-                  stage: `Loading RVC model (${settings.rvcModel})...`,
+                  stage: `Loading LLVC model (${settings.llvcModel})...`,
                   error: '',
               });
-              await loadRvcModel(mediaBackendUrl, settings.rvcModel);
+              await loadLlvcModel(mediaBackendUrl, settings.llvcModel);
           }
       } catch (error: any) {
           patchDubbingUiState({
@@ -2394,7 +2475,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const processedSegments: DubSegment[] = [];
           const alignmentEntries: Array<{ speaker: string; targetDuration: number; generatedDuration: number }> = [];
           const BATCH_SIZE = settings.engine === 'KOKORO' ? 2 : 4;
-          const applyTonePreservation = Boolean(wantsTonePreservation && settings.rvcModel);
+          const applyTonePreservation = Boolean(wantsTonePreservation && settings.llvcModel);
           
           for (let i = 0; i < segmentsRaw.length; i += BATCH_SIZE) {
                if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -2446,10 +2527,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                        const generationText = isSfx ? `[SFX: ${seg.text}]` : seg.text;
                        const buffer = await generateSpeech(generationText, effectiveVoiceName, segSettings, 'speech', controller.signal);
                        let outputBlob = audioBufferToWav(buffer);
-                       if (applyTonePreservation && !isSfx && settings.rvcModel) {
+                       if (applyTonePreservation && !isSfx && settings.llvcModel) {
                            try {
                                const sourceVoiceFile = new File([outputBlob], `dub_segment_${Math.round(seg.startTime * 1000)}.wav`, { type: 'audio/wav' });
-                               outputBlob = await convertRvcCover(mediaBackendUrl, sourceVoiceFile, settings.rvcModel, {
+                               outputBlob = await convertLlvcCover(mediaBackendUrl, sourceVoiceFile, settings.llvcModel, {
                                    pitchShift: 0,
                                    indexRate: 0.55,
                                    filterRadius: 3,
@@ -2787,26 +2868,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
-  const handleGenerateRvcCover = async () => {
-      if (!rvcSourceFile) return showToast('Upload a source vocal first.', 'info');
-      if (!settings.rvcModel) return showToast('Select an RVC model.', 'info');
+  const handleGenerateLlvcCover = async () => {
+      if (!llvcSourceFile) return showToast('Upload a source vocal first.', 'info');
+      if (!settings.llvcModel) return showToast('Select an LLVC model.', 'info');
 
-      setIsGeneratingRvcCover(true);
+      setIsGeneratingLlvcCover(true);
       try {
-          await loadRvcModel(mediaBackendUrl, settings.rvcModel);
-          const coverBlob = await convertRvcCover(mediaBackendUrl, rvcSourceFile, settings.rvcModel, {
+          await loadLlvcModel(mediaBackendUrl, settings.llvcModel);
+          const coverBlob = await convertLlvcCover(mediaBackendUrl, llvcSourceFile, settings.llvcModel, {
               preset: 'cover_hq',
-              pitchShift: rvcPitchShift,
+              pitchShift: llvcPitchShift,
           });
 
-          if (rvcCoverUrl) URL.revokeObjectURL(rvcCoverUrl);
+          if (llvcCoverUrl) URL.revokeObjectURL(llvcCoverUrl);
           const nextUrl = URL.createObjectURL(coverBlob);
-          setRvcCoverUrl(nextUrl);
-          showToast('RVC cover generated.', 'success');
+          setLlvcCoverUrl(nextUrl);
+          showToast('LLVC cover generated.', 'success');
       } catch (e: any) {
-          showToast(e?.message || 'RVC conversion failed.', 'error');
+          showToast(e?.message || 'LLVC conversion failed.', 'error');
       } finally {
-          setIsGeneratingRvcCover(false);
+          setIsGeneratingLlvcCover(false);
       }
   };
 
@@ -3045,14 +3126,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } flex h-full flex-col overflow-hidden backdrop-blur-xl`}
     >
       <div className={`flex items-center gap-3 border-b px-5 py-5 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
-        <div className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-teal-500 via-cyan-500 to-blue-500 text-white shadow-lg shadow-cyan-500/25">
-          <div className="absolute inset-0 -translate-x-2 -translate-y-2 rounded-full bg-white/20 blur-md" />
-          <Bot size={20} strokeWidth={2.5} />
-        </div>
-        <div>
-          <h1 className={`text-xl font-bold tracking-tight ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>VoiceFlow</h1>
-          <p className={`text-[10px] font-mono font-bold uppercase tracking-[0.22em] ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>AI Studio</p>
-        </div>
+        <BrandLogo size="md" tone={isDarkUi ? 'light' : 'dark'} />
       </div>
 
       <nav className={`space-y-1 border-b px-3 py-3 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
@@ -3294,43 +3368,53 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       return (
       <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/35 backdrop-blur-[1px]"
+          className="fixed inset-0 z-50 flex justify-end bg-black/45 backdrop-blur-[2px]"
           onClick={() => setShowSettings(false)}
           role="dialog"
           aria-modal="true"
           aria-label="Configuration panel"
       >
           <div
-              className="h-full w-full max-w-md bg-white shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col"
+              className={`h-full w-full max-w-md shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col ${
+                isDarkUi
+                  ? 'bg-slate-950/95 border-l border-slate-700/70'
+                  : 'bg-white border-l border-gray-100'
+              }`}
               onClick={(event) => event.stopPropagation()}
               ref={settingsPanelRef}
               tabIndex={-1}
           >
-              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white z-10">
-                  <h2 className="text-lg font-bold flex items-center gap-2"><Settings size={18} className="text-indigo-600"/> Configuration</h2>
+              <div className={`p-6 border-b flex items-center justify-between z-10 ${
+                isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-gray-100 bg-white'
+              }`}>
+                  <h2 className={`text-lg font-bold flex items-center gap-2 ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}><Settings size={18} className="text-indigo-600"/> Configuration</h2>
                   <button
                     onClick={() => setShowSettings(false)}
-                    className="p-2 hover:bg-gray-100 rounded-full"
+                    className={`p-2 rounded-full transition-colors ${isDarkUi ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-gray-100 text-gray-700'}`}
                     aria-label="Close settings panel"
                   >
                     <X size={18}/>
                   </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-6 space-y-8 bg-gray-50/50">
+              <div className={`flex-1 overflow-y-auto p-6 space-y-8 ${isDarkUi ? 'bg-slate-950/90' : 'bg-gray-50/50'}`}>
                   {/* Appearance */}
                   <section>
-                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 block">Appearance</label>
-                      <div className="space-y-4 bg-white p-4 rounded-xl border border-gray-200">
+                      <label className={`text-xs font-bold uppercase tracking-wider mb-3 block ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Appearance</label>
+                      <div className={`space-y-4 p-4 rounded-xl border ${isDarkUi ? 'bg-slate-900/70 border-slate-700' : 'bg-white border-gray-200'}`}>
                           <div>
-                              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2 flex items-center gap-1">
+                              <div className={`text-[10px] font-bold uppercase mb-2 flex items-center gap-1 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
                                   <Palette size={12} /> Theme
                               </div>
                               <div className="grid grid-cols-3 gap-2">
                                   <button
                                       onClick={() => setUiTheme('light')}
                                       className={`px-3 py-2 rounded-lg text-xs font-bold border transition-colors flex items-center justify-center gap-1.5 ${
-                                          uiTheme === 'light' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                                          uiTheme === 'light'
+                                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                            : isDarkUi
+                                              ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                                              : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
                                       }`}
                                   >
                                       <Sun size={12} /> Light
@@ -3338,7 +3422,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   <button
                                       onClick={() => setUiTheme('dark')}
                                       className={`px-3 py-2 rounded-lg text-xs font-bold border transition-colors flex items-center justify-center gap-1.5 ${
-                                          uiTheme === 'dark' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                                          uiTheme === 'dark'
+                                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                            : isDarkUi
+                                              ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                                              : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
                                       }`}
                                   >
                                       <Moon size={12} /> Dark
@@ -3346,17 +3434,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   <button
                                       onClick={() => setUiTheme('system')}
                                       className={`px-3 py-2 rounded-lg text-xs font-bold border transition-colors flex items-center justify-center gap-1.5 ${
-                                          uiTheme === 'system' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                                          uiTheme === 'system'
+                                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                            : isDarkUi
+                                              ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                                              : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
                                       }`}
                                   >
                                       <Laptop size={12} /> System
                                   </button>
                               </div>
-                              <div className="text-[10px] text-gray-400 mt-2">Active: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}</div>
+                              <div className={`text-[10px] mt-2 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>Active: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}</div>
                           </div>
 
-                          <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-                              <span className="text-xs font-medium text-gray-700 flex items-center gap-2">
+                          <div className={`flex items-center justify-between p-3 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
+                              <span className={`text-xs font-medium flex items-center gap-2 ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>
                                   {uiDensity === 'compact' ? <Minimize2 size={12} /> : <Maximize2 size={12} />} Density
                               </span>
                               <button
@@ -3369,8 +3461,35 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               </button>
                           </div>
 
+                          <div className={`p-3 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
+                              <div className={`text-xs font-medium mb-2 ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>Motion</div>
+                              <div className="grid grid-cols-3 gap-2">
+                                  {(['off', 'balanced', 'rich'] as const).map((level) => {
+                                      const active = uiMotionLevel === level;
+                                      return (
+                                          <button
+                                              key={level}
+                                              type="button"
+                                              onClick={() => setUiMotionLevel(level)}
+                                              className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold capitalize transition-colors ${
+                                                  active
+                                                    ? isDarkUi
+                                                      ? 'border-indigo-400 bg-indigo-500/15 text-indigo-300'
+                                                      : 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                                    : isDarkUi
+                                                      ? 'border-slate-600 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                                                      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100'
+                                              }`}
+                                          >
+                                              {level}
+                                          </button>
+                                      );
+                                  })}
+                              </div>
+                          </div>
+
                           <div>
-                              <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
+                              <div className={`flex justify-between text-xs mb-1 font-bold ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>
                                   <span className="flex items-center gap-1"><Type size={12}/> UI Scale</span>
                                   <span>{uiFontScale.toFixed(2)}x</span>
                               </div>
@@ -3381,7 +3500,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   step="0.05"
                                   value={uiFontScale}
                                   onChange={(e) => setUiFontScale(parseFloat(e.target.value))}
-                                  className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
+                                  className={`w-full accent-indigo-600 h-1.5 rounded-lg appearance-none ${isDarkUi ? 'bg-slate-700' : 'bg-gray-100'}`}
                               />
                           </div>
                       </div>
@@ -3566,7 +3685,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
               </div>
 
-              <div className="p-4 border-t border-gray-100 bg-white">
+              <div className={`p-4 border-t ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-gray-100 bg-white'}`}>
                   <Button fullWidth onClick={() => setShowSettings(false)}>Save Changes</Button>
               </div>
           </div>
@@ -3575,7 +3694,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   return (
-    <div className={`relative min-h-screen ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
+    <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
       <div className="vf-live-wallpaper" aria-hidden />
       <div className={`vf-app-shell flex min-h-screen bg-transparent font-sans text-gray-900 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
       {/* Mobile Overlay */}
@@ -3613,6 +3732,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                  >
                     <Menu />
                  </button>
+                 <div className="sm:hidden flex shrink-0 items-center">
+                   <BrandLogo size="sm" showWordmark={false} />
+                 </div>
 
                  <div className={`hidden sm:flex h-9 shrink-0 items-center gap-2 rounded-lg border px-2.5 ${
                    resolvedTheme === 'dark'
@@ -3628,48 +3750,72 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     <span className="text-sm font-semibold">{activeTabLabel}</span>
                  </div>
 
-                 <div className="min-w-0 flex-1 overflow-x-auto no-scrollbar">
-                    <EngineRuntimeStrip
-                      engineOrder={ENGINE_ORDER}
-                      statuses={ttsRuntimeStatus}
-                      activeEngine={settings.engine}
-                      switchingEngine={engineSwitchInProgress}
-                      resolvedTheme={resolvedTheme}
-                      onActivate={(engine) => { void activateTtsEngine(engine); }}
-                    />
-                 </div>
+                 <div className="hidden sm:block min-w-0 flex-1 overflow-x-auto no-scrollbar">
+                     <EngineRuntimeStrip
+                       engineOrder={ENGINE_ORDER}
+                       statuses={ttsRuntimeStatus}
+                       activeEngine={settings.engine}
+                       switchingEngine={engineSwitchInProgress}
+                       resolvedTheme={resolvedTheme}
+                       onActivate={(engine) => { void activateTtsEngine(engine); }}
+                     />
+                  </div>
+                  <div className="sm:hidden min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextEngine: GenerationSettings['engine'] = settings.engine === 'GEM' ? 'KOKORO' : 'GEM';
+                        void activateTtsEngine(nextEngine);
+                      }}
+                      className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-[10px] font-bold uppercase tracking-wide ${
+                        resolvedTheme === 'dark'
+                          ? 'border-slate-700 bg-slate-900/85 text-slate-200'
+                          : 'border-slate-200 bg-white text-slate-700'
+                      }`}
+                      title={`Active: ${getEngineDisplayName(settings.engine)}. Tap to switch engine.`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${
+                        ttsRuntimeStatus[settings.engine]?.state === 'online'
+                          ? 'bg-emerald-400'
+                          : ttsRuntimeStatus[settings.engine]?.state === 'starting'
+                            ? 'bg-amber-400'
+                            : 'bg-rose-400'
+                      }`} />
+                      {getEngineDisplayName(settings.engine)}
+                    </button>
+                  </div>
 
-                 <div className="ml-auto flex shrink-0 items-center gap-1.5 md:gap-2">
-                     <div className={`hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                  <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
+                      <div className={`hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                         resolvedTheme === 'dark'
+                           ? 'bg-slate-900/85 border-slate-700 text-slate-300'
+                           : 'bg-gray-100 border-gray-200 text-gray-600'
+                       }`}>
+                           <Box size={14} />
+                           {`${currentEngineSpendable.toLocaleString()} VF (${getEngineDisplayName(settings.engine).toUpperCase()})`}
+                       </div>
+                     <div className={`hidden sm:flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
                         resolvedTheme === 'dark'
                           ? 'bg-slate-900/85 border-slate-700 text-slate-300'
                           : 'bg-gray-100 border-gray-200 text-gray-600'
                       }`}>
-                          <Box size={14} />
-                          {`${currentEngineSpendable.toLocaleString()} VF (${getEngineDisplayName(settings.engine).toUpperCase()})`}
+                        <Timer size={12} />
+                        {`Daily ${Math.max(0, Number(stats.generationsUsed || 0))}/${Math.max(1, Number(stats.generationsLimit || 30))}`}
                       </div>
-                     <div className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
-                       resolvedTheme === 'dark'
-                         ? 'bg-slate-900/85 border-slate-700 text-slate-300'
-                         : 'bg-gray-100 border-gray-200 text-gray-600'
-                     }`}>
-                       <Timer size={12} />
-                       {`Daily ${Math.max(0, Number(stats.generationsUsed || 0))}/${Math.max(1, Number(stats.generationsLimit || 30))}`}
-                     </div>
-                     <div className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
-                       resolvedTheme === 'dark'
-                         ? 'bg-slate-900/85 border-slate-700 text-slate-300'
-                         : 'bg-gray-100 border-gray-200 text-gray-600'
-                     }`}>
-                       <Gift size={12} />
-                       {`VFF Left ${walletVff.toLocaleString()}`}
-                     </div>
+                     <div className={`hidden md:flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
+                        resolvedTheme === 'dark'
+                          ? 'bg-slate-900/85 border-slate-700 text-slate-300'
+                          : 'bg-gray-100 border-gray-200 text-gray-600'
+                      }`}>
+                        <Gift size={12} />
+                        {`VFF Left ${walletVff.toLocaleString()}`}
+                      </div>
 
-                     {!stats.isPremium && (
-                         <button onClick={() => setShowSubscriptionModal(true)} className="px-2.5 py-1 bg-gradient-to-r from-amber-400 to-orange-500 text-white text-[11px] font-bold rounded-full shadow-md shadow-orange-200 transition-transform hover:scale-105">
-                             Upgrade
-                         </button>
-                     )}
+                      {!stats.isPremium && (
+                          <button onClick={() => setShowSubscriptionModal(true)} className="hidden sm:inline-flex px-2.5 py-1 bg-gradient-to-r from-amber-400 to-orange-500 text-white text-[11px] font-bold rounded-full shadow-md shadow-orange-200 transition-transform hover:scale-105">
+                              Upgrade
+                          </button>
+                      )}
 
                      <button
                         ref={settingsTriggerRef}
@@ -3697,16 +3843,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-center justify-center">
                     <div className="vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_22rem] gap-5 xl:gap-6 animate-in fade-in duration-300">
                         {/* Editor Section */}
-                        <div className="vf-studio-main min-w-0 space-y-4">
+                        <div ref={studioMainRef} className="vf-studio-main min-w-0 space-y-4">
                             {/* Reduced Height Editor */}
-                            <SectionCard className="vf-editor-shell rounded-3xl overflow-hidden flex flex-col h-[clamp(25rem,58vh,42rem)] relative group transition-all hover:shadow-md">
+                            <SectionCard className="vf-editor-shell rounded-3xl overflow-hidden flex flex-col min-h-[23rem] h-[min(42rem,calc(100dvh-11rem))] relative group transition-all hover:shadow-md">
                                 {/* Toolbar */}
-                                <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+                                <div className="vf-studio-toolbar vf-toolbar-scroll px-4 py-3 border-b flex items-center justify-between gap-2 overflow-x-auto custom-scrollbar">
                                     <div className="flex items-center gap-1">
-                                        <button onClick={() => setText(t => t + ' [pause] ')} className="p-1.5 text-xs font-bold text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg flex items-center gap-1 transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
-                                        <button onClick={() => setText(t => t + ' (Whisper): ')} className="p-1.5 text-xs font-bold text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg flex items-center gap-1 transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
+                                        <button onClick={() => setText(t => t + ' [pause] ')} className="vf-toolbar-action p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
+                                        <button onClick={() => setText(t => t + ' (Whisper): ')} className="vf-toolbar-action p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
                                         
-                                        <div className="w-px h-4 bg-gray-300 mx-1 opacity-50"></div>
+                                        <div className="vf-toolbar-divider"></div>
                                         
                                         <ProofreadCluster
                                             isBusy={isAiWriting}
@@ -3715,15 +3861,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         />
                                         
                                         {/* MAGIC SCRIPT BUTTON */}
-                                        <button onClick={handleSmartPrep} disabled={isAiWriting} className="ml-1 p-1.5 text-xs font-bold text-white bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 rounded-lg flex items-center gap-1 transition-all shadow-sm" title="Auto Grammar + Format + Cast">
-                                            <Sparkles size={14} fill="currentColor" className="text-yellow-200"/> <span className="hidden sm:inline">Magic Script</span>
+                                        <button onClick={handleSmartPrep} disabled={isAiWriting} className="vf-toolbar-magic ml-1 p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-all shadow-sm" title="Auto Grammar + Format + Cast">
+                                            <Sparkles size={14} fill="currentColor" className="vf-toolbar-magic-icon"/> <span className="hidden sm:inline">Magic Script</span>
                                         </button>
                                         
-                                        <div className="w-px h-4 bg-gray-300 mx-1 opacity-50"></div>
+                                        <div className="vf-toolbar-divider"></div>
 
                                         <button
                                             onClick={() => { setText(''); setGeneratedAudioUrl(null); }}
-                                            className="p-1.5 text-xs font-bold text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                            className="vf-toolbar-action vf-toolbar-action--danger p-1.5 text-xs font-bold rounded-lg transition-colors"
                                             title="Clear"
                                             aria-label="Clear studio script"
                                         >
@@ -3732,8 +3878,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </div>
                                     
                                     <div className="flex items-center gap-2 shrink-0">
-                                         {detectedLang && <span className="text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200 px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
-                                         <button onClick={() => handleDirectorAI(text, setText, 'audio_drama')} disabled={isAiWriting} className="text-xs font-bold bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 hover:bg-indigo-200 disabled:opacity-50 transition-colors shadow-sm shadow-indigo-200/50">
+                                         {detectedLang && <span className="vf-toolbar-tag text-[10px] font-bold border px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
+                                         <button onClick={() => handleDirectorAI(text, setText, 'audio_drama')} disabled={isAiWriting} className="vf-toolbar-ai text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm">
                                             {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>} 
                                             <span>AI Director</span>
                                          </button>
@@ -3761,10 +3907,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     onTranslate={() => { void handleTranslate(); }}
                                 />
 
-                                <div className="px-6 py-3 border-t border-gray-50 text-xs text-gray-400 flex justify-between bg-white">
-                                    <span>{text.length} chars</span>
+                                <div className="vf-editor-footer px-6 py-3 border-t text-xs flex justify-between">
+                                    <span className="vf-editor-count">{text.length} chars</span>
                                     <div className="flex items-center gap-2">
-                                         <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="hover:text-indigo-600 flex items-center gap-1"><Save size={12}/> Save Draft</button>
+                                         <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex items-center gap-1"><Save size={12}/> Save Draft</button>
                                     </div>
                                 </div>
                             </SectionCard>
@@ -4120,7 +4266,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                      <div className="flex-1">
                                                          <h3 className="font-bold text-lg text-gray-900 leading-tight">{char.name}</h3>
                                                          <span className="inline-block mt-1 px-2 py-0.5 rounded-md bg-gray-100 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
-                                                             {char.age || 'Adult'} â€¢ {char.gender || 'Unknown'}
+                                                             {char.age || 'Adult'} • {char.gender || 'Unknown'}
                                                          </span>
                                                      </div>
                                                      
@@ -4442,7 +4588,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                          <div className="flex justify-center mb-8">
                              <div className="bg-gray-100 p-1 rounded-xl flex">
                                  <button onClick={() => setLabMode('CLONING')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${labMode === 'CLONING' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>Voice Cloning</button>
-                                 <button onClick={() => setLabMode('COVERS')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${labMode === 'COVERS' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>AI Covers (RVC)</button>
+                                 <button onClick={() => setLabMode('COVERS')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${labMode === 'COVERS' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>AI Covers (LLVC)</button>
                              </div>
                          </div>
                          {labMode === 'CLONING' && (
@@ -4493,41 +4639,41 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                              <div className="space-y-5">
                                  <div className="text-center">
                                      <div className="w-16 h-16 bg-purple-100 text-purple-600 rounded-2xl mx-auto flex items-center justify-center mb-4"><Music size={32}/></div>
-                                     <h2 className="text-xl font-bold">AI Covers (RVC)</h2>
-                                     <p className="text-sm text-gray-500 mt-2">Real RVC inference via local media backend.</p>
+                                     <h2 className="text-xl font-bold">AI Covers (LLVC)</h2>
+                                     <p className="text-sm text-gray-500 mt-2">Real LLVC inference via local media backend.</p>
                                  </div>
 
                                  <div className="space-y-2">
-                                     <label className="text-xs font-bold text-gray-500 uppercase">RVC Model</label>
+                                     <label className="text-xs font-bold text-gray-500 uppercase">LLVC Model</label>
                                      <select
-                                         value={settings.rvcModel || ''}
-                                         onChange={(e) => setSettings(s => ({ ...s, rvcModel: e.target.value }))}
+                                         value={settings.llvcModel || ''}
+                                         onChange={(e) => setSettings(s => ({ ...s, llvcModel: e.target.value }))}
                                          className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                                      >
                                          <option value="">Select model...</option>
-                                         {rvcModels.map(modelName => (
+                                         {llvcModels.map(modelName => (
                                              <option key={modelName} value={modelName}>{modelName}</option>
                                          ))}
                                      </select>
                                      <div>
-                                         <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Pitch Shift ({rvcPitchShift})</label>
+                                         <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Pitch Shift ({llvcPitchShift})</label>
                                          <input
                                             type="range"
                                             min={-12}
                                             max={12}
                                             step={1}
-                                            value={rvcPitchShift}
-                                            onChange={(e) => setRvcPitchShift(parseInt(e.target.value, 10))}
+                                            value={llvcPitchShift}
+                                            onChange={(e) => setLlvcPitchShift(parseInt(e.target.value, 10))}
                                             className="w-full accent-purple-600"
                                          />
                                      </div>
                                  </div>
 
                                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:bg-gray-50 transition-colors relative cursor-pointer">
-                                     <input type="file" accept="audio/*" onChange={(e) => setRvcSourceFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                     {rvcSourceFile ? (
+                                     <input type="file" accept="audio/*" onChange={(e) => setLlvcSourceFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                     {llvcSourceFile ? (
                                          <div className="flex items-center justify-center gap-2 text-purple-700 font-bold">
-                                             <FileAudio size={20} /> {rvcSourceFile.name}
+                                             <FileAudio size={20} /> {llvcSourceFile.name}
                                          </div>
                                      ) : (
                                          <div className="text-gray-400">
@@ -4538,16 +4684,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                      )}
                                  </div>
 
-                                 <Button fullWidth onClick={handleGenerateRvcCover} disabled={isGeneratingRvcCover || !rvcSourceFile || !settings.rvcModel}>
-                                     {isGeneratingRvcCover ? <><Loader2 className="animate-spin mr-2" /> Converting...</> : 'Generate RVC Cover'}
+                                 <Button fullWidth onClick={handleGenerateLlvcCover} disabled={isGeneratingLlvcCover || !llvcSourceFile || !settings.llvcModel}>
+                                     {isGeneratingLlvcCover ? <><Loader2 className="animate-spin mr-2" /> Converting...</> : 'Generate LLVC Cover'}
                                  </Button>
 
-                                 {rvcCoverUrl && (
+                                 {llvcCoverUrl && (
                                      <div className="p-4 rounded-xl border border-purple-200 bg-purple-50 space-y-3">
-                                         <audio controls src={rvcCoverUrl} className="w-full" />
+                                         <audio controls src={llvcCoverUrl} className="w-full" />
                                          <a
-                                            href={rvcCoverUrl}
-                                            download={`rvc_cover_${settings.rvcModel || 'output'}.wav`}
+                                            href={llvcCoverUrl}
+                                            download={`llvc_cover_${settings.llvcModel || 'output'}.wav`}
                                             className="inline-flex items-center gap-2 text-xs font-bold text-purple-700 hover:text-purple-900"
                                          >
                                             <Download size={14} /> Download cover WAV
@@ -4564,9 +4710,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         {/* ... Dubbing UI ... */}
                         <div className="space-y-4">
                              {/* ... Video Player ... */}
-                             <div className="bg-slate-950 rounded-3xl shadow-sm border border-slate-700/80 overflow-hidden flex flex-col h-[340px] sm:h-[420px] xl:h-[500px] relative group">
+                             <div className={`rounded-3xl overflow-hidden flex flex-col h-[340px] sm:h-[420px] xl:h-[500px] relative group ${
+                               isDarkUi
+                                 ? 'bg-slate-950 border border-slate-700/80 shadow-sm'
+                                 : 'bg-white border border-slate-200/90 shadow-[0_12px_34px_rgba(15,23,42,0.08)]'
+                             }`}>
                                 {videoUrl ? (
-                                    <div className="relative w-full h-full bg-gradient-to-br from-slate-950 via-indigo-950/35 to-slate-900 flex flex-col justify-center">
+                                    <div className={`relative w-full h-full flex flex-col justify-center ${
+                                      isDarkUi
+                                        ? 'bg-gradient-to-br from-slate-950 via-indigo-950/35 to-slate-900'
+                                        : 'bg-gradient-to-br from-slate-100 via-indigo-100/30 to-slate-50'
+                                    }`}>
                                         <video ref={videoRef} src={videoUrl} className="max-h-full max-w-full mx-auto object-contain" controls={false} />
                                         <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent flex flex-col gap-3 opacity-0 group-hover:opacity-100 transition-opacity z-20">
                                             <div className="flex justify-center items-center gap-6">
@@ -4606,22 +4760,34 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         {dubAudioUrl && <audio ref={dubAudioRef} src={dubAudioUrl} className="hidden" />}
                                     </div>
                                 ) : (
-                                    <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 p-8 bg-gray-900">
-                                        <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4 animate-pulse"><UploadCloud size={32} className="text-indigo-400"/></div>
-                                        <p className="font-bold text-gray-300">Upload Video Source</p>
+                                    <div className={`w-full h-full flex flex-col items-center justify-center p-8 ${
+                                      isDarkUi
+                                        ? 'text-slate-300 bg-slate-900'
+                                        : 'text-slate-500 bg-gradient-to-br from-slate-50 to-indigo-50/60'
+                                    }`}>
+                                        <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-4 ${
+                                          isDarkUi ? 'bg-slate-800' : 'bg-slate-200/70'
+                                        }`}><UploadCloud size={32} className={isDarkUi ? 'text-indigo-400' : 'text-indigo-500'}/></div>
+                                        <p className={`font-bold ${isDarkUi ? 'text-slate-200' : 'text-slate-700'}`}>Upload Video Source</p>
                                         <div className="relative group/btn mt-6"><input type="file" accept="video/*" onChange={handleVideoUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10" /><Button variant="secondary">Select File</Button></div>
                                     </div>
                                 )}
                             </div>
                             {dubAudioUrl && (
-                                <div className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-wrap items-center gap-3">
+                                <div className={`rounded-2xl p-4 flex flex-wrap items-center gap-3 ${
+                                  isDarkUi
+                                    ? 'bg-slate-900/75 border border-slate-700 text-slate-200'
+                                    : 'bg-white border border-gray-200 text-slate-700'
+                                }`}>
                                     <Button onClick={handleRenderDubbedVideo} disabled={isRenderingDubVideo || !videoFile}>
                                         {isRenderingDubVideo ? <><Loader2 className="animate-spin mr-2" /> Rendering...</> : <><Video size={16} className="mr-2" /> Render Dubbed Video</>}
                                     </Button>
                                     <a
                                         href={dubAudioUrl}
                                         download="dub_track.wav"
-                                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1.5"
+                                        className={`text-xs font-bold inline-flex items-center gap-1.5 ${
+                                          isDarkUi ? 'text-indigo-300 hover:text-indigo-200' : 'text-indigo-600 hover:text-indigo-800'
+                                        }`}
                                     >
                                         <Download size={12} /> Download Dub Track
                                     </a>
@@ -4629,7 +4795,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         <a
                                             href={renderedDubVideoUrl}
                                             download="dubbed_output.mp4"
-                                            className="text-xs font-bold text-emerald-600 hover:text-emerald-800 inline-flex items-center gap-1.5"
+                                            className={`text-xs font-bold inline-flex items-center gap-1.5 ${
+                                              isDarkUi ? 'text-emerald-300 hover:text-emerald-200' : 'text-emerald-600 hover:text-emerald-800'
+                                            }`}
                                         >
                                             <Download size={12} /> Download Dubbed Video
                                         </a>
@@ -4641,51 +4809,67 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
                         {/* Right Column: Scripting & Generation */}
                         <div className="space-y-4 h-full flex flex-col">
-                                 <SectionCard className={`rounded-2xl border p-4 ${dubbingStatusAppearance.tone}`}>
-                                     <div className="flex items-center justify-between gap-2">
-                                         <div>
-                                             <p className="text-[10px] font-black uppercase tracking-widest">Dubbing Status</p>
-                                             <p className="text-xs font-semibold">{dubbingUiState.stage}</p>
+                                 <SectionCard className={`vf-dub-status rounded-2xl border p-4 ${dubbingStatusAppearance.tone}`}>
+                                     <div className="flex items-start justify-between gap-2">
+                                         <div className="min-w-0 flex items-start gap-2.5">
+                                             <span className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-full border ${
+                                               isDarkUi ? 'border-indigo-400/40 bg-indigo-500/15' : 'border-indigo-200 bg-indigo-100/70'
+                                             }`}>
+                                               {dubbingUiState.phase === 'running'
+                                                 ? <Loader2 size={13} className="animate-spin" />
+                                                 : <Activity size={13} />}
+                                             </span>
+                                             <div className="min-w-0">
+                                                 <p className="text-[11px] font-black uppercase tracking-widest opacity-80">Dubbing</p>
+                                                 <p className="text-sm font-semibold leading-tight">{dubbingStatusAppearance.title}</p>
+                                                 <p className={`mt-1 text-[11px] leading-tight ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>{dubbingStatusAppearance.subtitle}</p>
+                                             </div>
                                          </div>
-                                         <span className="rounded-full border border-current/20 px-2 py-0.5 text-[10px] font-bold uppercase">
+                                         <span className="shrink-0 rounded-full border border-current/20 px-2 py-0.5 text-[10px] font-bold uppercase">
                                            {dubbingStatusAppearance.badge}
                                          </span>
                                      </div>
-                                     <div className="mt-2 h-1.5 w-full rounded-full bg-black/10">
+                                     <div className={`mt-3 h-1.5 w-full rounded-full ${isDarkUi ? 'bg-white/10' : 'bg-black/10'}`}>
                                        <div
-                                         className={`h-full rounded-full transition-all duration-300 ${dubbingStatusAppearance.bar}`}
-                                         style={{ width: `${Math.max(0, Math.min(100, dubbingUiState.progress))}%` }}
+                                         className={`vf-dub-status__fill h-full rounded-full transition-all duration-300 ${dubbingStatusAppearance.bar} ${dubbingUiState.phase === 'running' ? 'vf-dub-status__fill--running' : ''}`}
+                                         style={{ width: `${dubbingStatusAppearance.progressPct}%` }}
                                        />
                                      </div>
-                                     <div className="mt-1.5 flex items-center justify-between text-[10px] font-semibold">
-                                       <span>{Math.round(dubbingUiState.progress)}%</span>
-                                       <span>{new Date(dubbingUiState.updatedAt).toLocaleTimeString()}</span>
-                                     </div>
                                      {dubbingUiState.phase === 'error' && dubbingUiState.error && (
-                                       <p className="mt-2 rounded-lg border border-red-200/70 bg-red-100/70 px-2 py-1 text-[10px] font-semibold text-red-800">
+                                       <p className={`mt-2 rounded-lg border px-2 py-1 text-[10px] font-semibold ${
+                                         isDarkUi ? 'border-rose-400/40 bg-rose-500/15 text-rose-100' : 'border-red-200/70 bg-red-100/70 text-red-800'
+                                       }`}>
                                          {dubbingUiState.error}
                                        </p>
                                      )}
                                  </SectionCard>
- 	                             <SectionCard className="rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[420px]">
-                                 <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/70 space-y-2.5">
+  	                             <SectionCard className={`rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[420px] ${isDarkUi ? 'bg-slate-950/70 border-slate-700' : ''}`}>
+                                 <div className={`px-4 py-3 border-b space-y-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-900/70' : 'border-gray-100 bg-gray-50/70'}`}>
                                       <div className="flex flex-wrap items-center justify-between gap-2">
                                           <div className="flex flex-wrap items-center gap-2">
                                           <button
                                             onClick={() => handleTranslateVideo('transcribe')}
                                             disabled={!videoFile || isProcessingVideo}
-                                            className="h-8 px-3 text-[11px] font-bold text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg border border-gray-200 bg-white inline-flex items-center gap-1.5 transition-colors disabled:opacity-60"
+                                            className={`h-8 px-3 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors disabled:opacity-60 ${
+                                              isDarkUi
+                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                            }`}
                                             title="Transcribe Video (Original Language)"
                                           >
                                               {isProcessingVideo ? <Loader2 size={14} className="animate-spin"/> : <FileText size={14}/>}
                                               <span>Transcribe</span>
                                           </button>
-                                          <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-0.5">
-                                              <Type size={12} className="text-gray-500" />
+                                          <div className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 ${
+                                            isDarkUi ? 'border-slate-600 bg-slate-800' : 'border-gray-200 bg-white'
+                                          }`}>
+                                              <Type size={12} className={isDarkUi ? 'text-slate-400' : 'text-gray-500'} />
                                               <select
                                                   value={settings.dubbingSourceLanguage || 'auto'}
                                                   onChange={(e) => setSettings((s) => ({ ...s, dubbingSourceLanguage: e.target.value }))}
-                                                  className="h-7 bg-transparent text-[11px] font-semibold text-gray-700 outline-none min-w-[8.25rem]"
+                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-[8.25rem] vf-theme-select ${
+                                                    isDarkUi ? 'text-slate-200' : 'text-gray-700'
+                                                  }`}
                                                   title="Source language hint for transcription"
                                               >
                                                   {DUBBING_SOURCE_LANGUAGE_OPTIONS.map((langOption) => (
@@ -4698,14 +4882,22 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                               <button
                                                 onClick={() => handleDirectorAI(dubScript, setDubScript, 'video_dub')}
                                                 disabled={isAiWriting}
-                                                className="h-8 text-[11px] font-bold bg-indigo-100 text-indigo-700 px-3 rounded-lg flex items-center gap-1.5 hover:bg-indigo-200 disabled:opacity-50 transition-colors shadow-sm shadow-indigo-200/50"
+                                                className={`h-8 text-[11px] font-bold px-3 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors ${
+                                                  isDarkUi
+                                                    ? 'bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30 border border-indigo-400/40'
+                                                    : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 shadow-sm shadow-indigo-200/50'
+                                                }`}
                                               >
                                                   {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>}
                                                   <span>Auto Format</span>
                                               </button>
                                               <button
                                                 onClick={() => setDubScript('')}
-                                                className="h-8 w-8 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors inline-flex items-center justify-center"
+                                                className={`h-8 w-8 rounded-lg transition-colors inline-flex items-center justify-center ${
+                                                  isDarkUi
+                                                    ? 'text-slate-400 hover:text-rose-300 hover:bg-rose-500/10'
+                                                    : 'text-gray-400 hover:text-red-600 hover:bg-red-50'
+                                                }`}
                                                 title="Clear"
                                               >
                                                 <Trash2 size={14}/>
@@ -4714,31 +4906,47 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       </div>
 
                                       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-                                          <span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-gray-500">Tools</span>
+                                          <span className={`shrink-0 text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Tools</span>
                                           <button
                                             onClick={() => handleDubbingEditorTool('clean')}
-                                            className="shrink-0 h-8 px-2.5 text-[11px] font-semibold text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg border border-gray-200 bg-white transition-colors"
+                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
+                                              isDarkUi
+                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                            }`}
                                             title="Normalize punctuation and spacing"
                                           >
                                             Clean
                                           </button>
                                           <button
                                             onClick={() => handleDubbingEditorTool('speakerize')}
-                                            className="shrink-0 h-8 px-2.5 text-[11px] font-semibold text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg border border-gray-200 bg-white transition-colors"
+                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
+                                              isDarkUi
+                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                            }`}
                                             title="Ensure Speaker labels in each dialogue line"
                                           >
                                             Speakerize
                                           </button>
                                           <button
                                             onClick={() => handleDubbingEditorTool('dedupe')}
-                                            className="shrink-0 h-8 px-2.5 text-[11px] font-semibold text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg border border-gray-200 bg-white transition-colors"
+                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
+                                              isDarkUi
+                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                            }`}
                                             title="Remove duplicate consecutive lines"
                                           >
                                             Dedupe
                                           </button>
                                           <button
                                             onClick={() => handleDubbingEditorTool('compact')}
-                                            className="shrink-0 h-8 px-2.5 text-[11px] font-semibold text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg border border-gray-200 bg-white transition-colors"
+                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
+                                              isDarkUi
+                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                            }`}
                                             title="Compact to non-empty lines"
                                           >
                                             Compact
@@ -4751,36 +4959,29 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                  </div>
                                  
                                  <DubbingTranslateBar
-                                    targetLang={targetLang}
-                                    isBusy={isAiWriting || isProcessingVideo}
-                                    hasDubScript={Boolean(dubScript.trim())}
-                                    hasVideoFile={Boolean(videoFile)}
-                                    languages={LANGUAGES}
-                                    onTargetLang={setTargetLang}
-                                    onTranslateText={() => { void handleTranslate(); }}
-                                    onTranslateAudio={() => { void handleTranslateVideo('translate'); }}
-                                 />
+                                     targetLang={targetLang}
+                                     isBusy={isAiWriting || isProcessingVideo}
+                                     hasDubScript={Boolean(dubScript.trim())}
+                                     hasVideoFile={Boolean(videoFile)}
+                                     isDarkUi={isDarkUi}
+                                     languages={LANGUAGES}
+                                     onTargetLang={setTargetLang}
+                                     onTranslateText={() => { void handleTranslate(); }}
+                                     onTranslateAudio={() => { void handleTranslateVideo('translate'); }}
+                                  />
 
-                                 <div className="px-4 py-2 border-b border-gray-100 bg-white/80 text-[11px] text-gray-500 flex flex-wrap items-center gap-2">
-                                    <span className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5">
-                                      Source Lang: <strong className="text-gray-700">{(settings.dubbingSourceLanguage || 'auto').toUpperCase()}</strong>
-                                    </span>
-                                    <span className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5">
-                                      Stems: <strong className="text-gray-700">{settings.useModelSourceSeparation !== false ? 'Demucs Model' : 'Fast Local'}</strong>
-                                    </span>
-                                    <span className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5">
-                                      Tone: <strong className="text-gray-700">{settings.preserveDubVoiceTone ? (settings.rvcModel || 'RVC required') : 'Off'}</strong>
-                                    </span>
-                                 </div>
-
-                                 <textarea 
+                                  <textarea 
                                     value={dubScript} 
                                     onChange={(e) => setDubScript(e.target.value)} 
                                     placeholder="Enter script or transcribe video..." 
-                                    className="flex-1 p-5 sm:p-6 resize-none outline-none text-sm sm:text-base text-gray-700 leading-relaxed font-mono bg-transparent custom-scrollbar" 
+                                    className={`flex-1 p-5 sm:p-6 resize-none outline-none text-sm sm:text-base leading-relaxed font-mono bg-transparent custom-scrollbar ${
+                                      isDarkUi ? 'text-slate-200 placeholder:text-slate-400' : 'text-gray-700'
+                                    }`} 
                                  />
-                                 
-	                                 <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                                  
+	                                 <div className={`px-4 py-3 border-t flex items-center justify-between ${
+                                     isDarkUi ? 'bg-slate-900/75 border-slate-700' : 'bg-gray-50 border-gray-100'
+                                   }`}>
 	                                     <div className="w-full">
 	                                         <Button 
 	                                            onClick={handleGenerateDub} 
@@ -4800,7 +5001,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         </div>
 
         {activeTab === Tab.STUDIO && (
-            <div className="vf-studio-generate-anchor fixed z-[47] w-[min(20.5rem,calc(100vw-1.25rem))] md:w-[min(23rem,calc(100vw-18rem))] xl:w-[min(24rem,calc(100vw-24rem))] animate-in slide-in-from-bottom-4 fade-in duration-200">
+            <div className="vf-studio-generate-anchor fixed z-[47] w-[min(18rem,calc(100vw-6.25rem))] md:w-[min(22.5rem,calc(100vw-24rem))] lg:w-[min(23rem,calc(100vw-28rem))]">
                 <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
                     <MorphingGenerateButton
                       onClick={handleGenerate}
@@ -4820,7 +5021,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       <div
         className={`fixed right-4 md:right-6 z-50 flex flex-col items-end gap-4 ${
           activeTab === Tab.STUDIO
-            ? 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)] md:bottom-28 lg:bottom-32'
+            ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] md:bottom-28 lg:bottom-32'
             : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-6'
         }`}
       >

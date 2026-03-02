@@ -126,9 +126,9 @@ def _reset_inmemory_state() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _disable_post_tts_rvc(monkeypatch):
-    monkeypatch.setattr(backend_app, "VF_TTS_POST_RVC_ENABLED", False)
-    monkeypatch.setattr(backend_app, "VF_TTS_POST_RVC_REQUIRED", False)
+def _disable_post_tts_llvc(monkeypatch):
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_REQUIRED", False)
 
 
 def test_tts_synthesize_writes_compressed_history_blob(monkeypatch) -> None:

@@ -14,9 +14,11 @@ const SERVICES = [
   { id: "media-backend", name: "Media Backend", logFile: ".runtime/logs/media-backend.log" },
   { id: "gemini-runtime", name: "Gemini Runtime", logFile: ".runtime/logs/gemini-runtime.log" },
   { id: "kokoro-runtime", name: "Kokoro Runtime", logFile: ".runtime/logs/kokoro-runtime.log" },
+  { id: "llvc-runtime", name: "LLVC Runtime", logFile: ".runtime/logs/llvc-runtime.log" },
 ];
 
 const BOOTSTRAP_MODE = String(process.env.VF_DEV_BOOTSTRAP_MODE || "cpu").trim().toLowerCase() === "gpu" ? "gpu" : "cpu";
+const KEEP_SERVICES = toBool(process.env.VF_DEV_KEEP_SERVICES, false);
 const BOOTSTRAP_RETRIES = sanitizePositiveInt(process.env.VF_DEV_BOOTSTRAP_RETRIES, 3);
 const RETRY_BASE_MS = sanitizePositiveInt(process.env.VF_DEV_RETRY_BASE_MS, 1500);
 const RETRY_MAX_MS = sanitizePositiveInt(process.env.VF_DEV_RETRY_MAX_MS, 10000);
@@ -39,6 +41,14 @@ function sanitizePositiveInt(raw, fallback) {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
+}
+
+function toBool(raw, fallback) {
+  const token = String(raw || "").trim().toLowerCase();
+  if (!token) return fallback;
+  if (["1", "true", "yes", "on"].includes(token)) return true;
+  if (["0", "false", "no", "off"].includes(token)) return false;
+  return fallback;
 }
 
 function isPidAlive(pid) {
@@ -212,6 +222,27 @@ function runServiceRestart(serviceId) {
   });
 }
 
+function runServicesDown() {
+  return new Promise((resolve) => {
+    const args = buildBootstrapArgs("down");
+    const child = spawn(process.execPath, args, {
+      cwd: ROOT,
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve({ ok: true });
+        return;
+      }
+      resolve({ ok: false, cause: describeBootstrapError(code, signal) });
+    });
+    child.on("error", (error) => {
+      resolve({ ok: false, cause: error instanceof Error ? error.message : String(error) });
+    });
+  });
+}
+
 async function monitorServicesTick() {
   if (shuttingDown) return;
   if (monitorBusy) return;
@@ -346,7 +377,18 @@ async function shutdown(exitCode = 0) {
     }
   }
   await cleanupSessionServices();
-  console.log("[dev-all] info=services remain active. Use `npm run services:down` to stop them.");
+  if (KEEP_SERVICES) {
+    console.log("[dev-all] info=services remain active (VF_DEV_KEEP_SERVICES=1). Use `npm run services:down` to stop them.");
+  } else {
+    console.log("[dev-all] info=stopping local services (default auto-stop behavior).");
+    const downResult = await runServicesDown();
+    if (!downResult.ok) {
+      console.error(
+        `[dev-all] stage=shutdown status=warn cause="${downResult.cause || "services:down failed"}"`
+      );
+      printNextSteps();
+    }
+  }
   process.exit(exitCode);
 }
 

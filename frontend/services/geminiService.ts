@@ -563,7 +563,11 @@ interface ChatMessage {
 }
 
 // --- PERPLEXITY SERVICE ---
+const PERPLEXITY_REQUEST_TIMEOUT_MS = 65000;
+
 async function callPerplexityChat(messages: ChatMessage[], apiKey: string): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PERPLEXITY_REQUEST_TIMEOUT_MS);
   const options = {
     method: 'POST',
     headers: {
@@ -574,21 +578,31 @@ async function callPerplexityChat(messages: ChatMessage[], apiKey: string): Prom
       model: "sonar-pro",
       messages: messages,
       temperature: 0.7
-    })
+    }),
+    signal: controller.signal,
   };
-  
-  const response = await fetch('https://api.perplexity.ai/chat/completions', options);
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Perplexity API Error: ${response.status} - ${err}`);
+
+  try {
+    const response = await fetch('https://api.perplexity.ai/chat/completions', options);
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Perplexity API Error: ${response.status} - ${err}`);
+    }
+
+    const data = await response.json();
+    const content = String(data?.choices?.[0]?.message?.content || '').trim();
+    if (!content) {
+      throw new Error('Perplexity returned an empty response.');
+    }
+    return content;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Perplexity request timed out after ${Math.round(PERPLEXITY_REQUEST_TIMEOUT_MS / 1000)}s.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  
-  const data = await response.json();
-  const content = String(data?.choices?.[0]?.message?.content || '').trim();
-  if (!content) {
-    throw new Error('Perplexity returned an empty response.');
-  }
-  return content;
 }
 
 // --- UNIFIED GENERATION DISPATCHER ---

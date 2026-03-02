@@ -6,8 +6,8 @@ const loadGateEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.V
 const liveAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_LIVE_AUDIT_GATE || '').trim().toLowerCase(),
 );
-const rvcMappingAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
-  String(process.env.VF_ENABLE_RVC_MAPPING_AUDIT_GATE || '').trim().toLowerCase(),
+const llvcMappingAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.VF_ENABLE_LLVC_MAPPING_AUDIT_GATE || '').trim().toLowerCase(),
 );
 
 const run = (command, args, env = {}) =>
@@ -78,11 +78,11 @@ if (liveAuditGateEnabled) {
   });
 }
 
-if (rvcMappingAuditGateEnabled) {
+if (llvcMappingAuditGateEnabled) {
   steps.push({
-    name: 'RVC voice mapping audit gate',
+    name: 'LLVC voice mapping audit gate',
     command: npmBin,
-    args: ['run', 'audit:rvc:mapping'],
+    args: ['run', 'audit:llvc:mapping'],
   });
 }
 

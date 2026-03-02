@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Facebook, Lock, Mail, ShieldCheck, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, Eye, EyeOff, Facebook, Lock, Mail, User } from 'lucide-react';
 import { AppScreen } from '../types';
 import { useAuthSession } from '../src/features/auth/hooks/useAuthSession';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { removeStorageKey, readStorageString } from '../src/shared/storage/localStore';
 import { isLocalAdminUsername } from '../services/localAdminAuth';
+import { BrandLogo } from '../components/BrandLogo';
 
 interface LoginProps {
   setScreen: (screen: AppScreen) => void;
@@ -122,11 +123,10 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(70%_60%_at_0%_0%,rgba(99,102,241,0.12),transparent_60%),radial-gradient(75%_65%_at_100%_20%,rgba(14,165,233,0.12),transparent_62%)]" />
       <div className="vf-surface-card relative mx-auto my-4 w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl animate-in fade-in zoom-in duration-300 md:my-8 md:p-10">
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-xl shadow-indigo-200">
-            <ShieldCheck size={30} />
+          <div className="mx-auto flex justify-center">
+            <BrandLogo size="lg" tone="dark" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Welcome to VoiceFlow</h1>
-          <p className="mt-1 text-sm text-gray-500">Firebase-powered login and account security.</p>
+          <p className="mt-3 text-sm text-gray-500">Secure sign-in for your VoiceFlow workspace.</p>
         </div>
 
         <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl bg-gray-100 p-1">

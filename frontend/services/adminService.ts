@@ -15,6 +15,8 @@ export interface AdminUserSummary {
   displayName: string;
   disabled: boolean;
   admin: boolean;
+  role?: string;
+  permissions?: string[];
   plan: 'Free' | 'Pro' | 'Plus';
   status: string;
   wallet: {
@@ -30,11 +32,31 @@ export interface AdminUserSummary {
 export interface AdminCoupon {
   id: string;
   code: string;
-  creditVf: number;
+  couponType?: 'wallet_credit' | 'subscription_discount';
+  creditVf?: number;
+  usagePolicy?: 'single_global' | 'single_per_user' | 'max_redemptions';
+  usageLimit?: number;
   active: boolean;
   maxRedemptions?: number;
   redeemedCount?: number;
+  reservedCount?: number;
   expiresAt?: string | null;
+  discountType?: 'percent' | 'fixed_inr';
+  percentOff?: number;
+  amountOffInr?: number;
+  appliesToPlans?: string[];
+  planDiscounts?: Record<string, {
+    plan?: string;
+    discountType?: 'percent' | 'fixed_inr';
+    percentOff?: number;
+    amountOffInr?: number;
+    stripeCouponId?: string;
+    stripePromotionCodeId?: string;
+  }>;
+  stripeCouponsByPlan?: Record<string, string>;
+  subscriptionDuration?: 'first_invoice_only' | string;
+  stripeCouponId?: string;
+  stripePromotionCodeId?: string;
   note?: string;
   createdBy?: string;
   createdAt?: string;
@@ -94,6 +116,214 @@ export interface DailyUsageResetStatusPayload {
   ok: boolean;
   status: 'never_run' | 'available';
   lastRun?: DailyUsageResetSummary;
+}
+
+export interface AdminIntegrationsUsagePayload {
+  ok: boolean;
+  windows?: Record<string, {
+    requests?: number;
+    success?: number;
+    clientErrors?: number;
+    serverErrors?: number;
+    errorRatePct?: number;
+    avgLatencyMs?: number;
+    p95LatencyMs?: number;
+    maxLatencyMs?: number;
+  }>;
+  integrations?: Array<{
+    integration: string;
+    windows?: Record<string, {
+      requests?: number;
+      success?: number;
+      clientErrors?: number;
+      serverErrors?: number;
+      errorRatePct?: number;
+      avgLatencyMs?: number;
+      p95LatencyMs?: number;
+      maxLatencyMs?: number;
+    }>;
+  }>;
+  gateway?: Record<string, unknown>;
+  jobQueue?: Record<string, unknown>;
+}
+
+export interface OpsGuardianStatusPayload {
+  ok: boolean;
+  pendingApprovalCount?: number;
+  issues?: Array<Record<string, unknown>>;
+  concurrency?: Record<string, unknown>;
+  runtimes?: Record<string, unknown>;
+  geminiPool?: Record<string, unknown>;
+  routeStats?: Record<string, unknown>;
+}
+
+export interface OpsGuardianApprovalsPayload {
+  ok: boolean;
+  status: string;
+  count: number;
+  approvals: Array<Record<string, unknown>>;
+}
+
+export type AdminPermission =
+  | 'users.read' | 'users.write'
+  | 'coupons.read' | 'coupons.write'
+  | 'billing.read' | 'billing.write'
+  | 'ops.read' | 'ops.mutate'
+  | 'guardian.read' | 'guardian.mutate'
+  | 'analytics.read' | 'audit.read'
+  | 'alerts.read' | 'alerts.write'
+  | 'scheduler.read' | 'scheduler.write'
+  | 'rbac.read' | 'rbac.write';
+
+export interface AdminRoleCatalogPayload {
+  ok: boolean;
+  roles: string[];
+  permissions: AdminPermission[];
+  matrix: Record<string, AdminPermission[]>;
+}
+
+export interface AdminRoleAssignment {
+  uid: string;
+  role: string;
+  allowOverrides?: AdminPermission[];
+  denyOverrides?: AdminPermission[];
+  status: 'active' | 'disabled' | string;
+  version?: number;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export interface AdminRoleAssignmentsPayload {
+  ok: boolean;
+  items: AdminRoleAssignment[];
+  count: number;
+  nextCursor?: string | null;
+}
+
+export interface AuditEvent {
+  eventId: string;
+  ts: string;
+  actorUid: string;
+  actorRole?: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  requestId?: string;
+  sequence?: number;
+  prevHash?: string;
+  eventHash?: string;
+  meta?: Record<string, unknown>;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+}
+
+export interface AuditEventsPayload {
+  ok: boolean;
+  items: AuditEvent[];
+  count: number;
+  nextCursor?: string | null;
+}
+
+export interface AuditVerifyPayload {
+  ok: boolean;
+  checked: number;
+  mismatchAtSequence?: number | null;
+  mismatchEventId?: string | null;
+}
+
+export interface AlertPolicy {
+  id: string;
+  name: string;
+  metricKey: string;
+  operator: string;
+  threshold: number;
+  windowSec: number;
+  cooldownSec: number;
+  severity: string;
+  enabled: boolean;
+  channels: string[];
+  createdBy?: string;
+  updatedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AlertDestination {
+  id: string;
+  type: 'webhook' | string;
+  name: string;
+  url: string;
+  secretRef?: string;
+  enabled: boolean;
+  createdBy?: string;
+  updatedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AlertEvent {
+  id: string;
+  policyId: string;
+  status: 'open' | 'ack' | 'resolved' | string;
+  severity?: string;
+  openedAt?: string;
+  lastTriggeredAt?: string;
+  resolvedAt?: string | null;
+  samples?: Array<Record<string, unknown>>;
+  delivery?: Array<Record<string, unknown>>;
+  note?: string;
+}
+
+export interface ScheduledTask {
+  id: string;
+  taskType: string;
+  cronExpr: string;
+  timezone: string;
+  enabled: boolean;
+  dryRun: boolean;
+  payload?: Record<string, unknown>;
+  concurrencyPolicy: 'forbid' | 'replace' | 'allow' | string;
+  nextRunAt?: string;
+  lastRunAt?: string | null;
+  lastResult?: Record<string, unknown>;
+  updatedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ScheduledTaskRun {
+  id: string;
+  taskId: string;
+  taskType?: string;
+  scheduledAt?: string;
+  startedAt?: string;
+  finishedAt?: string | null;
+  status: string;
+  result?: Record<string, unknown>;
+  error?: string;
+  dryRun?: boolean;
+  requestedBy?: string;
+}
+
+export interface CouponAnalyticsSummary {
+  checkoutsStarted: number;
+  checkoutsCompleted: number;
+  subscriptionsActivated: number;
+  cancellationsWithin30d: number;
+  grossAmount: number;
+  discountAmount: number;
+  netAmount: number;
+  conversionRate: number;
+  checkoutCompletionRate: number;
+  d30ChurnRate: number;
+  discountEfficiency: number;
+}
+
+export interface CouponAnalyticsPoint extends CouponAnalyticsSummary {
+  bucket?: string;
+  date?: string;
+  plan?: string;
+  couponCode?: string;
 }
 
 export const fetchAdminUsers = async (
@@ -167,9 +397,22 @@ export const deleteAdminUser = async (uid: string, baseUrl?: string): Promise<vo
 export const createAdminCoupon = async (
   input: {
     code: string;
-    creditVf: number;
-    maxRedemptions?: number;
+    couponType?: 'wallet_credit' | 'subscription_discount';
+    creditVf?: number;
+    usagePolicy?: 'single_global' | 'single_per_user' | 'max_redemptions';
+    usageLimit?: number;
+    maxRedemptions?: number; // legacy alias
     expiresAt?: string;
+    discountType?: 'percent' | 'fixed_inr';
+    percentOff?: number;
+    amountOffInr?: number;
+    appliesToPlans?: string[];
+    planDiscounts?: Array<{
+      plan: string;
+      discountType?: 'percent' | 'fixed_inr';
+      percentOff?: number;
+      amountOffInr?: number;
+    }>;
     active?: boolean;
     note?: string;
   },
@@ -187,9 +430,32 @@ export const createAdminCoupon = async (
   return payload?.coupon as AdminCoupon;
 };
 
-export const fetchAdminCoupons = async (baseUrl?: string, limit = 100): Promise<AdminCoupon[]> => {
+export const generateAdminCouponCode = async (
+  baseUrl?: string,
+  options?: { prefix?: string; length?: number }
+): Promise<string> => {
+  const query = new URLSearchParams();
+  if (options?.prefix?.trim()) query.set('prefix', options.prefix.trim());
+  if (Number.isFinite(options?.length)) query.set('length', String(options?.length));
+  const payload = await readJsonOrThrow<{ code?: string }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/coupons/generate-code${query.toString() ? `?${query.toString()}` : ''}`,
+    { method: 'POST' },
+    { requireAuth: true }
+  ));
+  return String(payload?.code || '').trim();
+};
+
+export const fetchAdminCoupons = async (
+  baseUrl?: string,
+  options?: number | { limit?: number; couponType?: 'wallet_credit' | 'subscription_discount' | string }
+): Promise<AdminCoupon[]> => {
+  const limit = typeof options === 'number' ? options : options?.limit ?? 100;
+  const couponType = typeof options === 'number' ? '' : String(options?.couponType || '').trim();
+  const query = new URLSearchParams();
+  query.set('limit', String(limit));
+  if (couponType) query.set('couponType', couponType);
   const payload = await readJsonOrThrow<{ coupons?: AdminCoupon[] }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/admin/coupons?limit=${encodeURIComponent(String(limit))}`,
+    `${toBaseUrl(baseUrl)}/admin/coupons?${query.toString()}`,
     undefined,
     { requireAuth: true }
   ));
@@ -198,7 +464,22 @@ export const fetchAdminCoupons = async (baseUrl?: string, limit = 100): Promise<
 
 export const patchAdminCoupon = async (
   couponId: string,
-  patch: { active?: boolean; maxRedemptions?: number; expiresAt?: string; note?: string },
+  patch: {
+    active?: boolean;
+    creditVf?: number;
+    usagePolicy?: 'single_global' | 'single_per_user' | 'max_redemptions';
+    usageLimit?: number;
+    maxRedemptions?: number;
+    expiresAt?: string;
+    note?: string;
+    appliesToPlans?: string[];
+    planDiscounts?: Array<{
+      plan: string;
+      discountType?: 'percent' | 'fixed_inr';
+      percentOff?: number;
+      amountOffInr?: number;
+    }>;
+  },
   baseUrl?: string
 ): Promise<AdminCoupon> => {
   const payload = await readJsonOrThrow<{ coupon: AdminCoupon }>(await authFetch(
@@ -244,3 +525,465 @@ export const fetchDailyUsageResetStatus = async (baseUrl?: string): Promise<Dail
     { requireAuth: true }
   ))
 );
+
+export const fetchAdminIntegrationsUsage = async (baseUrl?: string): Promise<AdminIntegrationsUsagePayload> => (
+  readJsonOrThrow<AdminIntegrationsUsagePayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/integrations/usage`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const fetchAdminTtsGatewayStatus = async (baseUrl?: string): Promise<Record<string, unknown>> => (
+  readJsonOrThrow<Record<string, unknown>>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/tts/gateway/status`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const fetchAdminTtsQueueMetrics = async (baseUrl?: string): Promise<Record<string, unknown>> => (
+  readJsonOrThrow<Record<string, unknown>>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/tts/queue/metrics`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const fetchOpsGuardianStatus = async (
+  baseUrl?: string,
+  includeRouteStats = false
+): Promise<OpsGuardianStatusPayload> => (
+  readJsonOrThrow<OpsGuardianStatusPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/ops/guardian/status${includeRouteStats ? '?include_route_stats=1' : ''}`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const fetchOpsGuardianApprovals = async (
+  baseUrl?: string,
+  status = 'pending'
+): Promise<OpsGuardianApprovalsPayload> => (
+  readJsonOrThrow<OpsGuardianApprovalsPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/ops/guardian/approvals?status=${encodeURIComponent(status)}`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const runOpsGuardianAction = async (
+  action: string,
+  options?: { payload?: Record<string, unknown>; adminToken?: string; gpu?: boolean; requireApproval?: boolean },
+  baseUrl?: string
+): Promise<Record<string, unknown>> => (
+  readJsonOrThrow<Record<string, unknown>>(await authFetch(
+    `${toBaseUrl(baseUrl)}/ops/guardian/actions`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        payload: options?.payload || {},
+        adminToken: options?.adminToken || '',
+        gpu: Boolean(options?.gpu),
+        requireApproval: options?.requireApproval !== false,
+      }),
+    },
+    { requireAuth: true }
+  ))
+);
+
+export const fetchAdminRbacRoles = async (baseUrl?: string): Promise<AdminRoleCatalogPayload> => (
+  readJsonOrThrow<AdminRoleCatalogPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/rbac/roles`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const fetchAdminRbacUsers = async (
+  baseUrl?: string,
+  options?: { limit?: number; cursor?: string; q?: string }
+): Promise<AdminRoleAssignmentsPayload> => {
+  const query = new URLSearchParams();
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  if (options?.cursor) query.set('cursor', String(options.cursor));
+  if (options?.q) query.set('q', String(options.q));
+  return readJsonOrThrow<AdminRoleAssignmentsPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/rbac/users${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const assignAdminRbacUser = async (
+  uid: string,
+  input: {
+    role: string;
+    allowOverrides?: string[];
+    denyOverrides?: string[];
+    status?: string;
+  },
+  baseUrl?: string
+): Promise<AdminRoleAssignment> => {
+  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/rbac/users/${encodeURIComponent(uid)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload.assignment;
+};
+
+export const disableAdminRbacUser = async (
+  uid: string,
+  note: string,
+  baseUrl?: string
+): Promise<AdminRoleAssignment> => {
+  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/rbac/users/${encodeURIComponent(uid)}/disable`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    },
+    { requireAuth: true }
+  ));
+  return payload.assignment;
+};
+
+export const enableAdminRbacUser = async (
+  uid: string,
+  note: string,
+  baseUrl?: string
+): Promise<AdminRoleAssignment> => {
+  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/rbac/users/${encodeURIComponent(uid)}/enable`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    },
+    { requireAuth: true }
+  ));
+  return payload.assignment;
+};
+
+export const fetchAdminAuditEvents = async (
+  baseUrl?: string,
+  options?: {
+    actorUid?: string;
+    action?: string;
+    resourceType?: string;
+    from?: string;
+    to?: string;
+    cursor?: string;
+    limit?: number;
+  }
+): Promise<AuditEventsPayload> => {
+  const query = new URLSearchParams();
+  if (options?.actorUid) query.set('actorUid', String(options.actorUid));
+  if (options?.action) query.set('action', String(options.action));
+  if (options?.resourceType) query.set('resourceType', String(options.resourceType));
+  if (options?.from) query.set('from', String(options.from));
+  if (options?.to) query.set('to', String(options.to));
+  if (options?.cursor) query.set('cursor', String(options.cursor));
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  return readJsonOrThrow<AuditEventsPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/audit/events${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const fetchAdminAuditEventById = async (eventId: string, baseUrl?: string): Promise<AuditEvent> => {
+  const payload = await readJsonOrThrow<{ event: AuditEvent }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/audit/events/${encodeURIComponent(eventId)}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload.event;
+};
+
+export const verifyAdminAuditChain = async (
+  baseUrl?: string,
+  options?: { fromSeq?: number; toSeq?: number; limit?: number }
+): Promise<AuditVerifyPayload> => {
+  const query = new URLSearchParams();
+  if (Number.isFinite(options?.fromSeq)) query.set('fromSeq', String(options?.fromSeq));
+  if (Number.isFinite(options?.toSeq)) query.set('toSeq', String(options?.toSeq));
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  return readJsonOrThrow<AuditVerifyPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/audit/verify-chain${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const fetchAlertPolicies = async (baseUrl?: string, limit = 100): Promise<AlertPolicy[]> => {
+  const payload = await readJsonOrThrow<{ items?: AlertPolicy[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/policies?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const createAlertPolicy = async (
+  input: Omit<AlertPolicy, 'id'>,
+  adminToken: string,
+  baseUrl?: string
+): Promise<AlertPolicy> => {
+  const payload = await readJsonOrThrow<{ policy: AlertPolicy }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/policies?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload.policy;
+};
+
+export const patchAlertPolicy = async (
+  policyId: string,
+  patch: Partial<Omit<AlertPolicy, 'id'>>,
+  adminToken: string,
+  baseUrl?: string
+): Promise<AlertPolicy> => {
+  const payload = await readJsonOrThrow<{ policy: AlertPolicy }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/policies/${encodeURIComponent(policyId)}?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.policy;
+};
+
+export const fetchAlertDestinations = async (baseUrl?: string, limit = 100): Promise<AlertDestination[]> => {
+  const payload = await readJsonOrThrow<{ items?: AlertDestination[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/destinations?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const createAlertDestination = async (
+  input: Omit<AlertDestination, 'id'>,
+  adminToken: string,
+  baseUrl?: string
+): Promise<AlertDestination> => {
+  const payload = await readJsonOrThrow<{ destination: AlertDestination }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/destinations?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload.destination;
+};
+
+export const patchAlertDestination = async (
+  destinationId: string,
+  patch: Partial<Omit<AlertDestination, 'id'>>,
+  adminToken: string,
+  baseUrl?: string
+): Promise<AlertDestination> => {
+  const payload = await readJsonOrThrow<{ destination: AlertDestination }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/destinations/${encodeURIComponent(destinationId)}?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.destination;
+};
+
+export const fetchAlertEvents = async (
+  baseUrl?: string,
+  options?: { status?: string; limit?: number }
+): Promise<AlertEvent[]> => {
+  const query = new URLSearchParams();
+  if (options?.status) query.set('status', options.status);
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: AlertEvent[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/events${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const ackAlertEvent = async (eventId: string, adminToken: string, note = '', baseUrl?: string): Promise<AlertEvent> => {
+  const payload = await readJsonOrThrow<{ event: AlertEvent }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/events/${encodeURIComponent(eventId)}/ack`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminToken, note }),
+    },
+    { requireAuth: true }
+  ));
+  return payload.event;
+};
+
+export const resolveAlertEvent = async (eventId: string, adminToken: string, note = '', baseUrl?: string): Promise<AlertEvent> => {
+  const payload = await readJsonOrThrow<{ event: AlertEvent }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/events/${encodeURIComponent(eventId)}/resolve`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminToken, note }),
+    },
+    { requireAuth: true }
+  ));
+  return payload.event;
+};
+
+export const fetchSchedulerTasks = async (baseUrl?: string, limit = 200): Promise<ScheduledTask[]> => {
+  const payload = await readJsonOrThrow<{ items?: ScheduledTask[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/scheduler/tasks?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const createSchedulerTask = async (
+  input: Omit<ScheduledTask, 'id' | 'lastRunAt' | 'lastResult' | 'nextRunAt' | 'createdAt' | 'updatedAt'>,
+  baseUrl?: string
+): Promise<ScheduledTask> => {
+  const payload = await readJsonOrThrow<{ task: ScheduledTask }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/scheduler/tasks`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload.task;
+};
+
+export const patchSchedulerTask = async (
+  taskId: string,
+  patch: Partial<Omit<ScheduledTask, 'id' | 'taskType'>>,
+  baseUrl?: string
+): Promise<ScheduledTask> => {
+  const payload = await readJsonOrThrow<{ task: ScheduledTask }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/scheduler/tasks/${encodeURIComponent(taskId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.task;
+};
+
+export const runSchedulerTask = async (
+  taskId: string,
+  adminToken: string,
+  dryRun?: boolean,
+  baseUrl?: string
+): Promise<ScheduledTaskRun> => {
+  const payload = await readJsonOrThrow<{ run: ScheduledTaskRun }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/scheduler/tasks/${encodeURIComponent(taskId)}/run`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminToken, dryRun }),
+    },
+    { requireAuth: true }
+  ));
+  return payload.run;
+};
+
+export const fetchSchedulerRuns = async (
+  baseUrl?: string,
+  options?: { taskId?: string; limit?: number }
+): Promise<ScheduledTaskRun[]> => {
+  const query = new URLSearchParams();
+  if (options?.taskId) query.set('taskId', String(options.taskId));
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: ScheduledTaskRun[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/scheduler/runs${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : [];
+};
+
+export const fetchSchedulerRunById = async (runId: string, baseUrl?: string): Promise<ScheduledTaskRun> => {
+  const payload = await readJsonOrThrow<{ run: ScheduledTaskRun }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/scheduler/runs/${encodeURIComponent(runId)}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload.run;
+};
+
+export const fetchCouponAnalyticsSummary = async (
+  baseUrl?: string,
+  options?: { from?: string; to?: string; plan?: string; couponKind?: string }
+): Promise<{ summary: CouponAnalyticsSummary; count: number }> => {
+  const query = new URLSearchParams();
+  if (options?.from) query.set('from', options.from);
+  if (options?.to) query.set('to', options.to);
+  if (options?.plan) query.set('plan', options.plan);
+  if (options?.couponKind) query.set('couponKind', options.couponKind);
+  const payload = await readJsonOrThrow<{ summary: CouponAnalyticsSummary; count: number }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/analytics/coupons/summary${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload;
+};
+
+export const fetchCouponAnalyticsTimeseries = async (
+  baseUrl?: string,
+  options?: { from?: string; to?: string; groupBy?: 'day' | 'week'; plan?: string; couponKind?: string }
+): Promise<{ groupBy: string; series: CouponAnalyticsPoint[]; count: number }> => {
+  const query = new URLSearchParams();
+  if (options?.from) query.set('from', options.from);
+  if (options?.to) query.set('to', options.to);
+  if (options?.groupBy) query.set('groupBy', options.groupBy);
+  if (options?.plan) query.set('plan', options.plan);
+  if (options?.couponKind) query.set('couponKind', options.couponKind);
+  const payload = await readJsonOrThrow<{ groupBy: string; series: CouponAnalyticsPoint[]; count: number }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/analytics/coupons/timeseries${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload;
+};
+
+export const fetchCouponAnalyticsImpact = async (
+  couponCode: string,
+  baseUrl?: string,
+  options?: { from?: string; to?: string }
+): Promise<{ couponCode: string; overall: CouponAnalyticsSummary; byPlan: CouponAnalyticsPoint[] }> => {
+  const query = new URLSearchParams();
+  if (options?.from) query.set('from', options.from);
+  if (options?.to) query.set('to', options.to);
+  const payload = await readJsonOrThrow<{ couponCode: string; overall: CouponAnalyticsSummary; byPlan: CouponAnalyticsPoint[] }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/analytics/coupons/${encodeURIComponent(couponCode)}/impact${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload;
+};

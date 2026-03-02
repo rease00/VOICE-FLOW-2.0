@@ -5,8 +5,8 @@ import path from 'node:path';
 
 const ROOT = process.cwd();
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts');
-const REPORT_PATH = path.join(ARTIFACT_DIR, 'tts_rvc_multispeaker_report.json');
-const AUDIO_DIR = path.join(ARTIFACT_DIR, 'tts_rvc_multispeaker_audio');
+const REPORT_PATH = path.join(ARTIFACT_DIR, 'tts_llvc_multispeaker_report.json');
+const AUDIO_DIR = path.join(ARTIFACT_DIR, 'tts_llvc_multispeaker_audio');
 
 const BACKEND_URL = String(process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
 const TEST_UID = String(process.env.VF_MULTI_TEST_UID || 'local_admin').trim() || 'local_admin';
@@ -17,7 +17,7 @@ const JOB_POLL_INTERVAL_MS = parsePositiveInt(process.env.VF_MULTI_TEST_JOB_POLL
 const GEM_SAMPLE_COUNT = parsePositiveInt(process.env.VF_MULTI_TEST_GEM_COUNT, 6, 1, 30);
 const KOKORO_SAMPLE_COUNT = parsePositiveInt(process.env.VF_MULTI_TEST_KOKORO_COUNT, 6, 1, 30);
 const SAVE_AUDIO = parseBool(process.env.VF_MULTI_TEST_SAVE_AUDIO, false);
-const REQUIRE_POST_RVC = parseBool(process.env.VF_MULTI_TEST_REQUIRE_POST_RVC, false);
+const REQUIRE_POST_LLVC = parseBool(process.env.VF_MULTI_TEST_REQUIRE_POST_LLVC, false);
 const MIN_AUDIO_BYTES = parsePositiveInt(process.env.VF_MULTI_TEST_MIN_AUDIO_BYTES, 512, 64, 32_000);
 const GEM_FALLBACK_RUNTIME_VOICES = ['achernar', 'charon', 'kore', 'fenrir', 'achird', 'aoede'];
 
@@ -265,14 +265,14 @@ function evaluatePostRvcHeaders(headers, report, label) {
   const conversion = String(headers['x-vf-post-tts-conversion'] || '').trim();
   const profile = String(headers['x-vf-post-tts-profile'] || '').trim();
   const model = String(headers['x-vf-post-tts-model'] || '').trim();
-  if (REQUIRE_POST_RVC && conversion !== 'rvc') {
-    report.failures.push(`${label}: expected x-vf-post-tts-conversion=rvc but got "${conversion || 'missing'}"`);
+  if (REQUIRE_POST_LLVC && conversion !== 'llvc') {
+    report.failures.push(`${label}: expected x-vf-post-tts-conversion=llvc but got "${conversion || 'missing'}"`);
   } else if (!conversion) {
     report.warnings.push(`${label}: x-vf-post-tts-conversion header missing`);
   }
-  if (conversion === 'rvc') {
-    if (!profile) report.failures.push(`${label}: missing x-vf-post-tts-profile for rvc conversion`);
-    if (!model) report.failures.push(`${label}: missing x-vf-post-tts-model for rvc conversion`);
+  if (conversion === 'llvc') {
+    if (!profile) report.failures.push(`${label}: missing x-vf-post-tts-profile for llvc conversion`);
+    if (!model) report.failures.push(`${label}: missing x-vf-post-tts-model for llvc conversion`);
   }
   return { conversion, profile, model };
 }
@@ -349,7 +349,7 @@ async function main() {
       gemSampleCount: GEM_SAMPLE_COUNT,
       kokoroSampleCount: KOKORO_SAMPLE_COUNT,
       saveAudio: SAVE_AUDIO,
-      requirePostRvc: REQUIRE_POST_RVC,
+      requirePostLlvc: REQUIRE_POST_LLVC,
     },
     checks: {},
     singleSpeaker: [],
@@ -380,18 +380,18 @@ async function main() {
       fetchJson(`${BACKEND_URL}/tts/engines/voices?engine=GEM`),
       fetchJson(`${BACKEND_URL}/tts/engines/voices?engine=KOKORO`),
     ]);
-    let rvcModelsPayload = { models: [] };
+    let llvcModelsPayload = { models: [] };
     try {
-      rvcModelsPayload = await fetchJson(`${BACKEND_URL}/rvc/models`);
+      llvcModelsPayload = await fetchJson(`${BACKEND_URL}/llvc/models`);
     } catch (error) {
       report.warnings.push(
-        `/rvc/models unavailable; direct /rvc/convert gateway check may be skipped (${error instanceof Error ? error.message : String(error)})`
+        `/llvc/models unavailable; direct /llvc/convert gateway check may be skipped (${error instanceof Error ? error.message : String(error)})`
       );
     }
 
     report.checks.healthOk = Boolean(health?.ok);
     report.checks.engineStatusOk = Boolean(status?.ok);
-    report.checks.rvcModels = Array.isArray(rvcModelsPayload?.models) ? rvcModelsPayload.models : [];
+    report.checks.llvcModels = Array.isArray(llvcModelsPayload?.models) ? llvcModelsPayload.models : [];
     report.checks.voiceMappingVersion = catalog?.version || null;
 
     const hasCatalog = Boolean(catalog && typeof catalog === 'object' && catalog.engines && typeof catalog.engines === 'object');
@@ -543,7 +543,7 @@ async function main() {
         engine: 'GEM',
         request_id: requestId,
         text: [
-          'Narrator: Welcome to the multi-speaker RVC verification.',
+          'Narrator: Welcome to the multi-speaker LLVC verification.',
           'Guest: We are testing alternating speaker lines.',
           'Narrator: The output should remain coherent and mapped.',
           'Guest: Conversion should be applied after synthesis.',
@@ -558,7 +558,7 @@ async function main() {
         multi_speaker_max_concurrency: 2,
         multi_speaker_retry_once: true,
         multi_speaker_line_map: [
-          { lineIndex: 0, speaker: 'Narrator', text: 'Welcome to the multi-speaker RVC verification.' },
+          { lineIndex: 0, speaker: 'Narrator', text: 'Welcome to the multi-speaker LLVC verification.' },
           { lineIndex: 1, speaker: 'Guest', text: 'We are testing alternating speaker lines.' },
           { lineIndex: 2, speaker: 'Narrator', text: 'The output should remain coherent and mapped.' },
           { lineIndex: 3, speaker: 'Guest', text: 'Conversion should be applied after synthesis.' },
@@ -598,7 +598,7 @@ async function main() {
     }
 
     if (firstAudioForRvc) {
-      const models = Array.isArray(rvcModelsPayload?.models) ? rvcModelsPayload.models.map((item) => String(item)) : [];
+      const models = Array.isArray(llvcModelsPayload?.models) ? llvcModelsPayload.models.map((item) => String(item)) : [];
       const fallbackModel = models.includes('vf_low_cpu_timbre') ? 'vf_low_cpu_timbre' : models[0];
       if (fallbackModel) {
         const form = new FormData();
@@ -606,7 +606,7 @@ async function main() {
         form.set('model_name', fallbackModel);
         form.set('preset', 'tts_realtime');
         const response = await fetchWithTimeout(
-          `${BACKEND_URL}/rvc/convert`,
+          `${BACKEND_URL}/llvc/convert`,
           {
             method: 'POST',
             headers: { 'x-dev-uid': TEST_UID },
@@ -617,7 +617,7 @@ async function main() {
         const headers = responseHeadersToObject(response.headers);
         if (!response.ok) {
           const text = await response.text();
-          report.failures.push(`/rvc/convert failed (${response.status}) ${text.slice(0, 260)}`);
+          report.failures.push(`/llvc/convert failed (${response.status}) ${text.slice(0, 260)}`);
           report.directRvcGateway = {
             ok: false,
             statusCode: response.status,
@@ -626,7 +626,7 @@ async function main() {
           };
         } else {
           const bytes = Buffer.from(await response.arrayBuffer());
-          ensureAudioBytes(bytes, '/rvc/convert');
+          ensureAudioBytes(bytes, '/llvc/convert');
           report.directRvcGateway = {
             ok: true,
             statusCode: response.status,
@@ -635,18 +635,18 @@ async function main() {
             headers: {
               selected: headers['x-vf-engine-selected'] || '',
               executed: headers['x-vf-engine-executed'] || '',
-              preset: headers['x-vf-rvc-preset'] || '',
-              fallback: headers['x-vf-rvc-fallback'] || '',
-              fallbackReason: headers['x-vf-rvc-fallback-reason'] || '',
+              preset: headers['x-vf-llvc-preset'] || '',
+              fallback: headers['x-vf-llvc-fallback'] || '',
+              fallbackReason: headers['x-vf-llvc-fallback-reason'] || '',
             },
           };
-          await maybeWriteAudio('rvc_gateway_convert.wav', bytes);
+          await maybeWriteAudio('llvc_gateway_convert.wav', bytes);
         }
       } else {
-        report.warnings.push('Skipped /rvc/convert direct check: no models returned from /rvc/models');
+        report.warnings.push('Skipped /llvc/convert direct check: no models returned from /llvc/models');
       }
     } else {
-      report.warnings.push('Skipped /rvc/convert direct check: no successful synthesis output available.');
+      report.warnings.push('Skipped /llvc/convert direct check: no successful synthesis output available.');
     }
 
     const gemSuccessCount = report.singleSpeaker.filter((item) => item.engine === 'GEM' && item.ok).length;

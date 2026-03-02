@@ -73,7 +73,7 @@ export const fetchAccountEntitlements = async (baseUrl?: string): Promise<Accoun
 export const createCheckoutSession = async (
   plan: 'pro' | 'plus',
   baseUrl?: string,
-  options?: { successUrl?: string; cancelUrl?: string }
+  options?: { successUrl?: string; cancelUrl?: string; couponCode?: string }
 ): Promise<{ url: string; sessionId?: string }> => {
   const payload = await readJsonOrThrow<{ url?: string; sessionId?: string }>(await authFetch(
     `${toBaseUrl(baseUrl)}/billing/checkout-session`,
@@ -84,6 +84,7 @@ export const createCheckoutSession = async (
         plan,
         successUrl: options?.successUrl,
         cancelUrl: options?.cancelUrl,
+        couponCode: options?.couponCode,
       }),
     },
     { requireAuth: true }

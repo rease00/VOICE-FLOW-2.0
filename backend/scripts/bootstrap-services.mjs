@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -67,6 +68,28 @@ const PID_DIR = path.join(RUNTIME_DIR, "pids");
 const LOG_DIR = path.join(RUNTIME_DIR, "logs");
 const STATE_DIR = path.join(RUNTIME_DIR, "state");
 
+const VALID_CONCURRENCY_PROFILES = new Set(["balanced", "max", "cool"]);
+const AUTO_TUNE_WORKERS = toBoolEnv(process.env.VF_AUTO_TUNE_WORKERS, true);
+const CONCURRENCY_PROFILE = resolveConcurrencyProfile(process.env.VF_CONCURRENCY_PROFILE);
+const LOGICAL_CPU_COUNT = resolveLogicalCpuCount();
+const HOST_RESERVED_CPUS = clampInt(toIntEnv(process.env.VF_HOST_RESERVED_CPUS, 2), 0, Math.max(0, LOGICAL_CPU_COUNT - 1));
+const USABLE_CPU_COUNT = Math.max(1, LOGICAL_CPU_COUNT - HOST_RESERVED_CPUS);
+const AUTO_TUNED_CONCURRENCY = computeConcurrencyPlan(CONCURRENCY_PROFILE, USABLE_CPU_COUNT);
+const RUNTIME_CONCURRENCY_ENV = AUTO_TUNE_WORKERS
+  ? {
+      VF_AUTO_TUNE_WORKERS: "1",
+      VF_CONCURRENCY_PROFILE: CONCURRENCY_PROFILE,
+      VF_HOST_RESERVED_CPUS: String(HOST_RESERVED_CPUS),
+      VF_TTS_QUEUE_WORKER_COUNT: String(AUTO_TUNED_CONCURRENCY.queueWorkers),
+      VF_TTS_ENGINE_CONCURRENCY_GEM: String(AUTO_TUNED_CONCURRENCY.gemConcurrency),
+      VF_TTS_ENGINE_CONCURRENCY_KOKORO: String(AUTO_TUNED_CONCURRENCY.kokoroConcurrency),
+      GEMINI_BATCH_DEFAULT_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel),
+      GEMINI_BATCH_MAX_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel),
+      KOKORO_BATCH_DEFAULT_PARALLEL: String(AUTO_TUNED_CONCURRENCY.kokoroBatchDefaultParallel),
+      KOKORO_BATCH_MAX_PARALLEL: String(AUTO_TUNED_CONCURRENCY.kokoroBatchMaxParallel),
+    }
+  : {};
+
 const RETRY_INTERVAL_MS = Number(process.env.VF_BOOTSTRAP_RETRY_INTERVAL_MS || 4000);
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_REQUEST_TIMEOUT_MS || 15000);
 const DEFAULT_CHECK_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_CHECK_TIMEOUT_MS || 60000);
@@ -74,6 +97,108 @@ const FAST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_TIMEOUT_FAST_MS || DEFAU
 const KOKORO_TIMEOUT_MS = Number(
   process.env.VF_BOOTSTRAP_TIMEOUT_KOKORO_MS || Math.max(DEFAULT_CHECK_TIMEOUT_MS, 90000)
 );
+const STARTUP_PID_WAIT_TIMEOUT_MS = Math.max(1000, toIntEnv(process.env.VF_STARTUP_PID_WAIT_TIMEOUT_MS, 12000));
+const STARTUP_PID_WAIT_POLL_MS = clampInt(toIntEnv(process.env.VF_STARTUP_PID_WAIT_POLL_MS, 250), 100, 2000);
+const LOG_ROTATE_MAX_BYTES = Math.max(0, toIntEnv(process.env.VF_SERVICE_LOG_ROTATE_MAX_BYTES, 20 * 1024 * 1024));
+const LOG_ROTATE_KEEP = clampInt(toIntEnv(process.env.VF_SERVICE_LOG_ROTATE_KEEP, 3), 0, 10);
+const serviceStartStates = new Map();
+
+function toIntEnv(raw, fallback) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.trunc(parsed);
+}
+
+function toBoolEnv(raw, fallback) {
+  const token = String(raw || "").trim().toLowerCase();
+  if (!token) return fallback;
+  if (["1", "true", "yes", "on"].includes(token)) return true;
+  if (["0", "false", "no", "off"].includes(token)) return false;
+  return fallback;
+}
+
+function clampInt(value, min, max) {
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function resolveLogicalCpuCount() {
+  try {
+    if (typeof os.availableParallelism === "function") {
+      const value = Number(os.availableParallelism());
+      if (Number.isFinite(value) && value > 0) return Math.trunc(value);
+    }
+  } catch {
+    // ignore
+  }
+  const fallback = Number((os.cpus() || []).length);
+  if (Number.isFinite(fallback) && fallback > 0) return Math.trunc(fallback);
+  return 1;
+}
+
+function resolveConcurrencyProfile(rawValue) {
+  const token = String(rawValue || "balanced").trim().toLowerCase();
+  if (VALID_CONCURRENCY_PROFILES.has(token)) return token;
+  return "balanced";
+}
+
+function computeConcurrencyPlan(profile, usableCpu) {
+  const safeUsableCpu = Math.max(1, Math.trunc(usableCpu || 1));
+  if (profile === "max") {
+    const queueWorkers = clampInt(safeUsableCpu + 1, 4, 12);
+    const gemConcurrency = clampInt(queueWorkers + 6, 6, 24);
+    const kokoroConcurrency = clampInt(Math.round(queueWorkers * 1.0), 3, 12);
+    const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 2, 8);
+    const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 3, gemBatchDefaultParallel, 12);
+    const kokoroBatchDefaultParallel = clampInt(Math.round(kokoroConcurrency / 2), 1, 6);
+    const kokoroBatchMaxParallel = clampInt(kokoroBatchDefaultParallel + 2, kokoroBatchDefaultParallel, 8);
+    return {
+      queueWorkers,
+      gemConcurrency,
+      kokoroConcurrency,
+      gemBatchDefaultParallel,
+      gemBatchMaxParallel,
+      kokoroBatchDefaultParallel,
+      kokoroBatchMaxParallel,
+    };
+  }
+
+  if (profile === "cool") {
+    const queueWorkers = clampInt(Math.floor((safeUsableCpu + 1) / 2), 1, 4);
+    const gemConcurrency = clampInt(queueWorkers + 2, 3, 8);
+    const kokoroConcurrency = clampInt(Math.round(queueWorkers * 0.75), 1, 4);
+    const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 1, 3);
+    const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 1, gemBatchDefaultParallel, 4);
+    const kokoroBatchDefaultParallel = clampInt(Math.round(kokoroConcurrency / 2), 1, 2);
+    const kokoroBatchMaxParallel = clampInt(kokoroBatchDefaultParallel + 1, kokoroBatchDefaultParallel, 3);
+    return {
+      queueWorkers,
+      gemConcurrency,
+      kokoroConcurrency,
+      gemBatchDefaultParallel,
+      gemBatchMaxParallel,
+      kokoroBatchDefaultParallel,
+      kokoroBatchMaxParallel,
+    };
+  }
+
+  // balanced profile
+  const queueWorkers = clampInt(safeUsableCpu, 2, 8);
+  const gemConcurrency = clampInt(queueWorkers + 4, 4, 16);
+  const kokoroConcurrency = clampInt(Math.round(queueWorkers * 0.85), 2, 8);
+  const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 2, 6);
+  const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 2, gemBatchDefaultParallel, 8);
+  const kokoroBatchDefaultParallel = clampInt(Math.round(kokoroConcurrency / 2), 1, 4);
+  const kokoroBatchMaxParallel = clampInt(kokoroBatchDefaultParallel + 1, kokoroBatchDefaultParallel, 6);
+  return {
+    queueWorkers,
+    gemConcurrency,
+    kokoroConcurrency,
+    gemBatchDefaultParallel,
+    gemBatchMaxParallel,
+    kokoroBatchDefaultParallel,
+    kokoroBatchMaxParallel,
+  };
+}
 
 const argv = process.argv.slice(2);
 const POSITIONAL_ARGS = argv.filter((arg) => !arg.startsWith("-"));
@@ -114,9 +239,12 @@ const SERVICES = [
       VF_BACKEND_PORT: "7800",
       VF_WHISPER_DEVICE: gpu ? "cuda" : "cpu",
       VF_WHISPER_COMPUTE: gpu ? "float16" : "int8",
-      VF_RVC_DEVICE: process.env.VF_RVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
-      VF_RVC_MODELS_DIR: process.env.VF_RVC_MODELS_DIR || path.join(ROOT, "models/rvc"),
-      VF_RVC_RUNTIME_URL: process.env.VF_RVC_RUNTIME_URL || "http://127.0.0.1:7830",
+      VF_LLVC_DEVICE: process.env.VF_LLVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
+      VF_LLVC_MODELS_DIR: process.env.VF_LLVC_MODELS_DIR || path.join(ROOT, "models/llvc"),
+      VF_LLVC_RUNTIME_URL: process.env.VF_LLVC_RUNTIME_URL || "http://127.0.0.1:7830",
+      VF_LLVC_MODEL_REGISTRY_FILE:
+        process.env.VF_LLVC_MODEL_REGISTRY_FILE || path.join(ROOT, "config/llvc_model_registry.json"),
+      ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
   {
@@ -139,7 +267,9 @@ const SERVICES = [
       "--port",
       "7810",
     ],
-    env: () => ({}),
+    env: () => ({
+      ...RUNTIME_CONCURRENCY_ENV,
+    }),
   },
   {
     id: "kokoro-runtime",
@@ -163,34 +293,38 @@ const SERVICES = [
     ],
     env: (gpu) => ({
       KOKORO_DEVICE: gpu ? "cuda" : "cpu",
+      ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
   {
-    id: "rvc-runtime",
-    name: "RVC Runtime",
+    id: "llvc-runtime",
+    name: "LLVC Runtime",
     port: 7830,
-    venv: "rvc-runtime",
-    pythonEnvVar: "VF_PYTHON_BIN_RVC_RUNTIME",
+    venv: "llvc-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_LLVC_RUNTIME",
     requiredPython: { major: 3, minor: 11 },
-    requirements: ["engines/rvc-runtime/requirements.txt"],
-    sourceFiles: ["engines/rvc-runtime/app.py", "scripts/bootstrap-services.mjs"],
+    requirements: ["engines/llvc-runtime/requirements.txt"],
+    sourceFiles: ["engines/llvc-runtime/app.py", "scripts/bootstrap-services.mjs"],
     command: (pythonBin) => [
       pythonBin,
       "-m",
       "uvicorn",
       "app:app",
       "--app-dir",
-      "engines/rvc-runtime",
+      "engines/llvc-runtime",
       "--host",
       "127.0.0.1",
       "--port",
       "7830",
     ],
     env: (gpu) => ({
-      VF_RVC_RUNTIME_HOST: "127.0.0.1",
-      VF_RVC_RUNTIME_PORT: "7830",
-      VF_RVC_DEVICE: process.env.VF_RVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
-      VF_RVC_MODELS_DIR: process.env.VF_RVC_MODELS_DIR || path.join(ROOT, "models/rvc"),
+      VF_LLVC_RUNTIME_HOST: "127.0.0.1",
+      VF_LLVC_RUNTIME_PORT: "7830",
+      VF_LLVC_DEVICE: process.env.VF_LLVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
+      VF_LLVC_MODELS_DIR: process.env.VF_LLVC_MODELS_DIR || path.join(ROOT, "models/llvc"),
+      VF_LLVC_MODEL_REGISTRY_FILE:
+        process.env.VF_LLVC_MODEL_REGISTRY_FILE || path.join(ROOT, "config/llvc_model_registry.json"),
+      ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
 ];
@@ -221,7 +355,7 @@ const CHECKS = [
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
   {
-    name: "RVC Runtime",
+    name: "LLVC Runtime",
     url: "http://127.0.0.1:7830/v1/health",
     timeoutMs: FAST_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
@@ -429,12 +563,7 @@ function ensureVenv(service, servicePythonBin, desiredHash) {
     return pyPath;
   }
 
-  if (service.id === "rvc-runtime") {
-    // rvc-python pins omegaconf metadata incompatible with newer pip (>=24.1).
-    runCommand(pyPath, ["-m", "pip", "install", "--upgrade", "pip<24.1", "setuptools", "wheel"]);
-  } else {
-    runCommand(pyPath, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"]);
-  }
+  runCommand(pyPath, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"]);
   for (const reqPath of service.requirements) {
     runCommand(pyPath, ["-m", "pip", "install", "-r", reqPath]);
   }
@@ -522,6 +651,36 @@ function listListeningPidsOnPort(port) {
   return [];
 }
 
+function waitForListeningPid(service, timeoutMs = STARTUP_PID_WAIT_TIMEOUT_MS, pollMs = STARTUP_PID_WAIT_POLL_MS) {
+  if (!service?.port) return null;
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const listeners = listListeningPidsOnPort(service.port);
+    if (listeners.length > 0) return listeners[0];
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pollMs);
+  }
+  return null;
+}
+
+function rotateServiceLog(logFile) {
+  if (LOG_ROTATE_KEEP <= 0 || LOG_ROTATE_MAX_BYTES <= 0) return;
+  if (!fs.existsSync(logFile)) return;
+  const logSize = fs.statSync(logFile).size;
+  if (!Number.isFinite(logSize) || logSize < LOG_ROTATE_MAX_BYTES) return;
+
+  const oldest = `${logFile}.${LOG_ROTATE_KEEP}`;
+  fs.rmSync(oldest, { force: true });
+  for (let index = LOG_ROTATE_KEEP - 1; index >= 1; index -= 1) {
+    const src = `${logFile}.${index}`;
+    const dst = `${logFile}.${index + 1}`;
+    if (!fs.existsSync(src)) continue;
+    fs.rmSync(dst, { force: true });
+    fs.renameSync(src, dst);
+  }
+  fs.renameSync(logFile, `${logFile}.1`);
+  console.log(`Rotated log file: ${path.relative(ROOT, logFile)}`);
+}
+
 function terminatePid(pid, label) {
   if (!pid || !isPidAlive(pid)) return;
   if (label) {
@@ -582,33 +741,36 @@ function startService(service, gpuMode) {
   const statePath = serviceStatePath(service.id);
   const currentFingerprint = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "";
   const serviceStale = desiredFingerprint !== currentFingerprint;
-  const existingPid = readPid(service.id);
-  const existingAlive = existingPid && isPidAlive(existingPid);
+  const trackedPid = readPid(service.id);
+  const trackedAlive = trackedPid && isPidAlive(trackedPid);
+  const listeningPids = service.port ? listListeningPidsOnPort(service.port) : [];
+  const listeningPid = listeningPids[0] || null;
 
-  stopPortListeners(service, existingAlive ? existingPid : null);
-
-  if (existingAlive) {
-    if (service.port) {
-      const listeners = listListeningPidsOnPort(service.port);
-      if (listeners.includes(existingPid)) {
-        if (serviceStale) {
-          terminatePid(existingPid, `${service.name} source updated`);
-          fs.rmSync(servicePidPath(service.id), { force: true });
-          stopPortListeners(service, existingPid);
-        } else {
-          console.log(`${service.name} already running (PID ${existingPid}).`);
-          return;
-        }
-      } else {
-        terminatePid(existingPid, `${service.name} stale process`);
-        fs.rmSync(servicePidPath(service.id), { force: true });
-      }
+  if (!serviceStale && listeningPid) {
+    if (trackedPid !== listeningPid) {
+      fs.writeFileSync(servicePidPath(service.id), `${listeningPid}\n`, "utf8");
+      serviceStartStates.set(service.id, "adopted");
+      console.log(`${service.name} PID reconciled to listener PID ${listeningPid}.`);
     } else {
-      console.log(`${service.name} already running (PID ${existingPid}).`);
-      return;
+      serviceStartStates.set(service.id, "running");
     }
+    console.log(`${service.name} already running (PID ${listeningPid}).`);
+    return;
   }
 
+  if (!serviceStale && !service.port && trackedAlive) {
+    serviceStartStates.set(service.id, "running");
+    console.log(`${service.name} already running (PID ${trackedPid}).`);
+    return;
+  }
+
+  if (trackedAlive) {
+    terminatePid(
+      trackedPid,
+      serviceStale ? `${service.name} source updated` : `${service.name} stale process`
+    );
+  }
+  fs.rmSync(servicePidPath(service.id), { force: true });
   stopPortListeners(service);
 
   const pyPath = ensureVenv(service, servicePythonBin, desiredFingerprint);
@@ -618,6 +780,7 @@ function startService(service, gpuMode) {
   );
   const [cmd, ...args] = service.command(pyPath);
   const logFile = serviceLogPath(service.id);
+  rotateServiceLog(logFile);
   const outFd = fs.openSync(logFile, "a");
 
   const child = spawn(cmd, args, {
@@ -634,8 +797,17 @@ function startService(service, gpuMode) {
 
   child.unref();
   fs.closeSync(outFd);
-  fs.writeFileSync(servicePidPath(service.id), `${child.pid}\n`, "utf8");
-  console.log(`Started ${service.name} (PID ${child.pid}) -> ${logFile}`);
+  const resolvedListeningPid = waitForListeningPid(service);
+  const stablePid = resolvedListeningPid || child.pid;
+  fs.writeFileSync(servicePidPath(service.id), `${stablePid}\n`, "utf8");
+  serviceStartStates.set(service.id, "restarted");
+  if (resolvedListeningPid && resolvedListeningPid !== child.pid) {
+    console.log(
+      `Started ${service.name} (launcher PID ${child.pid}, listener PID ${resolvedListeningPid}) -> ${logFile}`
+    );
+    return;
+  }
+  console.log(`Started ${service.name} (PID ${stablePid}) -> ${logFile}`);
 }
 
 function resolveSwitchTarget(rawEngine) {
@@ -754,8 +926,42 @@ async function runChecks() {
   }
 }
 
+function printServiceStatusSummary() {
+  const rows = SERVICES.map((service) => {
+    const trackedPid = readPid(service.id);
+    const listeningPid = service.port ? listListeningPidsOnPort(service.port)[0] || null : trackedPid;
+    let state = serviceStartStates.get(service.id);
+    if (!state) {
+      if (listeningPid) state = trackedPid && trackedPid !== listeningPid ? "adopted" : "running";
+      else state = "missing";
+    }
+    return {
+      service: service.id,
+      port: service.port || "-",
+      trackedPid: trackedPid || "-",
+      listeningPid: listeningPid || "-",
+      state,
+      log: path.relative(ROOT, serviceLogPath(service.id)),
+    };
+  });
+  console.log("\nService status summary:");
+  console.table(rows);
+}
+
 async function main() {
   ensureDirs();
+  serviceStartStates.clear();
+
+  if (AUTO_TUNE_WORKERS) {
+    console.log(
+      `Concurrency autotune enabled: profile=${CONCURRENCY_PROFILE} logicalCpu=${LOGICAL_CPU_COUNT} reserved=${HOST_RESERVED_CPUS} usable=${USABLE_CPU_COUNT}`
+    );
+    console.log(
+      `Autotune result: queueWorkers=${AUTO_TUNED_CONCURRENCY.queueWorkers} gemConcurrency=${AUTO_TUNED_CONCURRENCY.gemConcurrency} kokoroConcurrency=${AUTO_TUNED_CONCURRENCY.kokoroConcurrency} gemBatch=${AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel} kokoroBatch=${AUTO_TUNED_CONCURRENCY.kokoroBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.kokoroBatchMaxParallel}`
+    );
+  } else {
+    console.log("Concurrency autotune disabled (VF_AUTO_TUNE_WORKERS=0).");
+  }
 
   if (GPU_MODE) {
     console.log("GPU mode enabled for local runtimes.");
@@ -793,6 +999,7 @@ async function main() {
       }
     }
     await runChecks();
+    printServiceStatusSummary();
     console.log("\nRestart completed and endpoint checks passed.");
     return;
   }
@@ -804,6 +1011,9 @@ async function main() {
   }
 
   await runChecks();
+  if (COMMAND === "up") {
+    printServiceStatusSummary();
+  }
   console.log("\nAll endpoint checks passed.");
 }
 

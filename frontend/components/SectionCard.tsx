@@ -7,7 +7,7 @@ interface SectionCardProps extends React.HTMLAttributes<HTMLDivElement> {
 export const SectionCard: React.FC<SectionCardProps> = ({ children, className = '', ...props }) => {
   return (
     <div
-      className={`vf-surface-card bg-white rounded-2xl shadow-sm border border-gray-200 ${className}`}
+      className={`vf-surface-card rounded-2xl border ${className}`}
       {...props}
     >
       {children}

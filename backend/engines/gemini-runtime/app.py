@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -66,6 +66,22 @@ except Exception:
     types = None
 
 APP_NAME = "gemini-runtime"
+GEMINI_RUNTIME_ADMIN_TOKEN = str(os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
+
+
+def _require_runtime_admin(request: Request) -> None:
+    expected = str(GEMINI_RUNTIME_ADMIN_TOKEN or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Runtime admin token is not configured.")
+    provided_header = str(request.headers.get("x-admin-token") or "").strip()
+    if provided_header and provided_header == expected:
+        return
+    auth_header = str(request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        bearer = auth_header.split(" ", 1)[1].strip()
+        if bearer and bearer == expected:
+            return
+    raise HTTPException(status_code=403, detail="Admin authorization failed.")
 
 
 def _read_positive_int_env(name: str) -> Optional[int]:
@@ -2666,7 +2682,8 @@ def capabilities() -> JSONResponse:
 
 
 @app.get("/v1/admin/api-pool")
-def admin_api_pool() -> JSONResponse:
+def admin_api_pool(request: Request) -> JSONResponse:
+    _require_runtime_admin(request)
     key_pool = resolve_request_api_key_pool("", pool_hint="pro_plus")
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
     payload = dict(snapshot)
@@ -2686,7 +2703,8 @@ def admin_api_pool() -> JSONResponse:
 
 
 @app.post("/v1/admin/api-pool/reload")
-def admin_api_pool_reload() -> JSONResponse:
+def admin_api_pool_reload(request: Request) -> JSONResponse:
+    _require_runtime_admin(request)
     refreshed_pool = list(_refresh_server_api_key_pool())
     _load_api_pool_config(force=True)
     key_pool = list(resolve_request_api_key_pool("", pool_hint="pro_plus"))
@@ -2712,12 +2730,14 @@ def admin_api_pool_reload() -> JSONResponse:
 
 
 @app.get("/v1/admin/api-pools")
-def admin_api_pools() -> JSONResponse:
+def admin_api_pools(request: Request) -> JSONResponse:
+    _require_runtime_admin(request)
     return JSONResponse(_admin_api_pools_payload())
 
 
 @app.put("/v1/admin/api-pools")
-def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest) -> JSONResponse:
+def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Request) -> JSONResponse:
+    _require_runtime_admin(request)
     current_config, _current_meta = _load_api_pool_config(force=True)
     current_source_policy = dict(current_config.get("sourcePolicy") or {})
     free_pool_locked = bool(current_source_policy.get("freePoolLocked"))
@@ -2770,7 +2790,8 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest) -> JSONResponse
 
 
 @app.post("/v1/admin/api-pools/reload")
-def admin_api_pools_reload() -> JSONResponse:
+def admin_api_pools_reload(request: Request) -> JSONResponse:
+    _require_runtime_admin(request)
     _load_api_pool_config(force=True)
     key_pool = resolve_request_api_key_pool("", pool_hint="pro_plus")
     if key_pool:
@@ -2781,7 +2802,8 @@ def admin_api_pools_reload() -> JSONResponse:
 
 
 @app.get("/v1/admin/api-pools/usage")
-def admin_api_pools_usage() -> JSONResponse:
+def admin_api_pools_usage(request: Request) -> JSONResponse:
+    _require_runtime_admin(request)
     return JSONResponse(_admin_api_pools_usage_payload())
 
 

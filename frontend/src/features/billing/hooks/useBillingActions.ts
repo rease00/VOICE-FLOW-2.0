@@ -11,11 +11,16 @@ interface UseBillingActionsArgs {
 }
 
 export const useBillingActions = ({ baseUrl }: UseBillingActionsArgs) => {
-  const startPlanCheckout = useCallback(async (plan: 'pro' | 'plus') => {
-    return createCheckoutSession(plan, baseUrl, {
+  const startPlanCheckout = useCallback(async (plan: 'pro' | 'plus', couponCode?: string) => {
+    const options: { successUrl: string; cancelUrl: string; couponCode?: string } = {
       successUrl: `${window.location.origin}${window.location.pathname}?billing=success`,
       cancelUrl: `${window.location.origin}${window.location.pathname}?billing=cancel`,
-    });
+    };
+    const normalizedCoupon = couponCode ? String(couponCode).trim() : '';
+    if (normalizedCoupon) {
+      options.couponCode = normalizedCoupon;
+    }
+    return createCheckoutSession(plan, baseUrl, options);
   }, [baseUrl]);
 
   const openBillingPortal = useCallback(async () => {

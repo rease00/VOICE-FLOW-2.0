@@ -35,7 +35,8 @@ def test_admin_endpoint_rejects_non_admin_bearer(monkeypatch) -> None:
     client = TestClient(backend_app.app)
     response = client.get("/admin/users", headers={"Authorization": "Bearer token_plain"})
     assert response.status_code == 403
-    assert "Admin access required." in str(response.json().get("detail"))
+    detail = str(response.json().get("detail") or "")
+    assert "Missing permission: users.read" in detail
 
 
 def test_admin_endpoint_accepts_admin_claim_bearer(monkeypatch) -> None:

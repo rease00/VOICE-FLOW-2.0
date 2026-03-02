@@ -3,6 +3,7 @@ import {
   type AdminCoupon,
   createAdminCoupon,
   fetchAdminCoupons,
+  generateAdminCouponCode,
   patchAdminCoupon,
 } from '../api/adminApi';
 
@@ -30,6 +31,7 @@ export const useAdminCoupons = ({ baseUrl }: UseAdminCouponsArgs) => {
     isLoadingCoupons,
     reloadCoupons,
     createAdminCoupon: (input: Parameters<typeof createAdminCoupon>[0]) => createAdminCoupon(input, baseUrl),
+    generateAdminCouponCode: (options?: Parameters<typeof generateAdminCouponCode>[1]) => generateAdminCouponCode(baseUrl, options),
     patchAdminCoupon: (couponId: string, patch: Parameters<typeof patchAdminCoupon>[1]) =>
       patchAdminCoupon(couponId, patch, baseUrl),
   };

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app as backend_app
 
 
 client = TestClient(backend_app.app)
+
+
+@pytest.fixture(autouse=True)
+def _disable_auth_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
 
 
 def test_tts_engines_status_contract(monkeypatch) -> None:

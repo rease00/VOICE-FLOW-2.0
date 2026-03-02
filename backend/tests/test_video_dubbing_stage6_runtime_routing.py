@@ -40,6 +40,10 @@ class _FakeResponse:
         self._json_payload = json_payload
         self.headers = headers or {}
 
+    @property
+    def ok(self) -> bool:
+        return 200 <= int(self.status_code) < 300
+
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise RuntimeError(f"upstream failed: {self.status_code}")

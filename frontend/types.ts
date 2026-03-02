@@ -97,8 +97,8 @@ export interface GenerationSettings {
   // Local backend / runtime wiring
   mediaBackendUrl?: string | undefined;
   backendApiKey?: string | undefined;
-  rvcModel?: string | undefined;
-  conversionPolicy?: 'AUTO_RELIABLE' | 'LHQ_PILOT' | undefined;
+  llvcModel?: string | undefined;
+  conversionPolicy?: 'AUTO_RELIABLE' | 'LLVC_ONLY' | undefined;
   geminiTtsServiceUrl?: string | undefined;
   kokoroTtsServiceUrl?: string | undefined;
 
@@ -114,6 +114,9 @@ export interface GenerationSettings {
   useModelSourceSeparation?: boolean | undefined;
   preserveDubVoiceTone?: boolean | undefined;
   dubbingSourceLanguage?: string | undefined;
+
+  // Frontend UI preferences
+  uiMotionLevel?: 'off' | 'balanced' | 'rich' | undefined;
 }
 
 export type ScriptBlockType = 'dialogue' | 'sfx' | 'direction';

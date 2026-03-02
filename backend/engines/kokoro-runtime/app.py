@@ -57,6 +57,7 @@ KOKORO_BATCH_MAX_PARALLEL = max(
         )
     ),
 )
+KOKORO_SYNTH_MAX_MS = max(10_000, int(os.getenv("KOKORO_SYNTH_MAX_MS", "180000")))
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -179,6 +180,12 @@ class InputValidationError(RuntimeError):
     def __init__(self, detail: Dict[str, object] | str):
         self.detail = detail
         super().__init__(detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=True))
+
+
+class SynthesisTimeoutError(RuntimeError):
+    def __init__(self, detail: Dict[str, object]):
+        self.detail = detail
+        super().__init__(json.dumps(detail, ensure_ascii=True))
 
 
 class KokoroFullRuntime:
@@ -339,6 +346,38 @@ class KokoroFullRuntime:
             raise RuntimeError(self.error or "kokoro runtime unavailable")
 
         safe_trace_id = _normalize_trace_id(trace_id)
+        synth_started_ms = int(time.monotonic() * 1000)
+
+        def ensure_runtime_budget(
+            *,
+            stage: str,
+            chunk_index: Optional[int] = None,
+            chunk_total: Optional[int] = None,
+            part_index: Optional[int] = None,
+            part_total: Optional[int] = None,
+        ) -> None:
+            elapsed_ms = max(0, int(time.monotonic() * 1000) - synth_started_ms)
+            if elapsed_ms <= KOKORO_SYNTH_MAX_MS:
+                return
+            detail: Dict[str, object] = {
+                "error": "Kokoro synthesis timed out.",
+                "errorCode": "KOKORO_SYNTH_TIMEOUT",
+                "classification": "timeout",
+                "trace_id": safe_trace_id,
+                "maxMs": int(KOKORO_SYNTH_MAX_MS),
+                "elapsedMs": int(elapsed_ms),
+                "stage": str(stage or "synthesis"),
+            }
+            if chunk_index is not None:
+                detail["chunkIndex"] = int(chunk_index)
+            if chunk_total is not None:
+                detail["chunkTotal"] = int(chunk_total)
+            if part_index is not None:
+                detail["partIndex"] = int(part_index)
+            if part_total is not None:
+                detail["partTotal"] = int(part_total)
+            raise SynthesisTimeoutError(detail)
+
         lang_code = self.resolve_lang(text, voice_id, language_hint)
         selected_voice = self.resolve_voice(voice_id, lang_code)
         normalized_text = self.normalize_text(text, lang_code)
@@ -373,7 +412,23 @@ class KokoroFullRuntime:
         pause_insertions = 0
         join_crossfade_ms = int(chunk_profile.get("join_crossfade_ms", 0))
 
-        def synthesize_piece(piece_text: str, split_pattern: str = r"\n+") -> Tuple[List[object], int]:
+        def synthesize_piece(
+            piece_text: str,
+            *,
+            stage_label: str,
+            split_pattern: str = r"\n+",
+            chunk_index: Optional[int] = None,
+            chunk_total: Optional[int] = None,
+            part_index: Optional[int] = None,
+            part_total: Optional[int] = None,
+        ) -> Tuple[List[object], int]:
+            ensure_runtime_budget(
+                stage=stage_label,
+                chunk_index=chunk_index,
+                chunk_total=chunk_total,
+                part_index=part_index,
+                part_total=part_total,
+            )
             local_audio_chunks: List[object] = []
             local_phoneme_chars = 0
             generator = pipeline(
@@ -383,6 +438,13 @@ class KokoroFullRuntime:
                 split_pattern=split_pattern,
             )
             for _, phonemes, audio in generator:
+                ensure_runtime_budget(
+                    stage=stage_label,
+                    chunk_index=chunk_index,
+                    chunk_total=chunk_total,
+                    part_index=part_index,
+                    part_total=part_total,
+                )
                 if phonemes is not None:
                     local_phoneme_chars += len(str(phonemes))
                 arr = self._np.asarray(audio, dtype=self._np.float32).reshape(-1)
@@ -393,6 +455,11 @@ class KokoroFullRuntime:
             return local_audio_chunks, local_phoneme_chars
 
         for chunk_index, segment in enumerate(segments, start=1):
+            ensure_runtime_budget(
+                stage="chunk_synthesis",
+                chunk_index=chunk_index,
+                chunk_total=len(segments),
+            )
             _emit_stage_event(
                 safe_trace_id,
                 "chunk_synthesis",
@@ -406,7 +473,13 @@ class KokoroFullRuntime:
             )
             used_fallback = False
             try:
-                chunk_audio, chunk_phoneme_chars = synthesize_piece(segment, split_pattern=r"\n+")
+                chunk_audio, chunk_phoneme_chars = synthesize_piece(
+                    segment,
+                    stage_label="chunk_synthesis",
+                    split_pattern=r"\n+",
+                    chunk_index=chunk_index,
+                    chunk_total=len(segments),
+                )
                 audio_chunks.extend((item, False) for item in chunk_audio)
                 phoneme_chars += chunk_phoneme_chars
             except Exception as exc:  # noqa: BLE001
@@ -429,9 +502,24 @@ class KokoroFullRuntime:
                     },
                 )
                 for part_index, part in enumerate(fallback_parts, start=1):
+                    ensure_runtime_budget(
+                        stage="chunk_fallback",
+                        chunk_index=chunk_index,
+                        chunk_total=len(segments),
+                        part_index=part_index,
+                        part_total=len(fallback_parts),
+                    )
                     if not part:
                         continue
-                    chunk_audio, chunk_phoneme_chars = synthesize_piece(part, split_pattern=r"[.!?,;:]+")
+                    chunk_audio, chunk_phoneme_chars = synthesize_piece(
+                        part,
+                        stage_label="chunk_fallback",
+                        split_pattern=r"[.!?,;:]+",
+                        chunk_index=chunk_index,
+                        chunk_total=len(segments),
+                        part_index=part_index,
+                        part_total=len(fallback_parts),
+                    )
                     audio_chunks.extend((item, False) for item in chunk_audio)
                     phoneme_chars += chunk_phoneme_chars
                     pause_ms = self._pause_ms_for_text(part, lang_code)
@@ -462,7 +550,9 @@ class KokoroFullRuntime:
         if not audio_chunks:
             raise RuntimeError("Kokoro full runtime returned empty audio.")
 
+        ensure_runtime_budget(stage="merge")
         merged, merge_strategy = self._merge_with_crossfade(audio_chunks, join_crossfade_ms)
+        ensure_runtime_budget(stage="serialize")
         buffer = io.BytesIO()
         self._sf.write(buffer, merged, KOKORO_SAMPLE_RATE, format="WAV", subtype="PCM_16")
 
@@ -622,6 +712,10 @@ def _synthesize_item(payload: SynthesizeRequest) -> Tuple[bytes, Dict[str, objec
         detail_payload = exc.detail
         _emit_stage_event(trace_id, "failed", "error", {"error": detail_payload})
         raise HTTPException(status_code=400, detail=detail_payload) from exc
+    except SynthesisTimeoutError as exc:
+        detail_payload = exc.detail
+        _emit_stage_event(trace_id, "failed", "error", {"error": detail_payload})
+        raise HTTPException(status_code=504, detail=detail_payload) from exc
     except Exception as exc:  # noqa: BLE001
         detail = f"Kokoro synthesis failed: {exc}"
         _emit_stage_event(trace_id, "failed", "error", {"error": detail})
