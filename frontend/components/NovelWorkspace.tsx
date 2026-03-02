@@ -333,7 +333,7 @@ export const NovelWorkspace: React.FC<NovelWorkspaceProps> = ({
 
     setDriveToken(auth.token);
     setDriveState(buildDriveState('connected', 'Google Drive connected for folder upload/download.'));
-  }, [user.googleId]);
+  }, []);
 
   useEffect(() => {
     const snapshot = readLocalSnapshot();

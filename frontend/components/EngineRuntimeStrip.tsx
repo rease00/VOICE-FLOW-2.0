@@ -2,6 +2,7 @@ import React from 'react';
 import { GenerationSettings } from '../types';
 import { getEngineDisplayName } from '../services/engineDisplay';
 import { EngineLogo } from './EngineLogo';
+import { sanitizeUiText } from '../src/shared/ui/terminology';
 
 type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
 
@@ -68,7 +69,8 @@ const getDotClasses = (tone: 'green' | 'orange' | 'red', resolvedTheme: 'light' 
 };
 
 const getEngineAbbrev = (engine: GenerationSettings['engine']): string => {
-  if (engine === 'GEM') return 'PL';
+  if (engine === 'GEM') return 'PR';
+  if (engine === 'NEURAL2') return 'HD';
   return 'BS';
 };
 
@@ -90,13 +92,14 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
         const indicatorTone = getIndicatorTone(status.state);
         const indicatorClass = getIndicatorClasses(indicatorTone, resolvedTheme);
         const dotClass = getDotClasses(indicatorTone, resolvedTheme);
+        const runtimeDetail = sanitizeUiText(status.detail || '');
 
         return (
           <button
             key={engine}
             onClick={() => onActivate(engine)}
             disabled={switchLocked || pending}
-            title={`${getEngineDisplayName(engine)} - ${pending ? 'Starting' : getRuntimeStateLabel(status.state)} - ${status.detail}`}
+            title={`${getEngineDisplayName(engine)} - ${pending ? 'Starting' : getRuntimeStateLabel(status.state)} - ${runtimeDetail}`}
             aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}`}
             className={`vf-runtime-chip group relative inline-flex h-9 min-w-[2.8rem] sm:min-w-[3.4rem] items-center justify-center gap-1 sm:gap-1.5 rounded-full border px-1.5 sm:px-2 transition-all ${
               resolvedTheme === 'dark'

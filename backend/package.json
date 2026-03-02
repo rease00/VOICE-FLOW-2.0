@@ -8,9 +8,10 @@
     "backend:start": "python app.py",
     "backend:install": "python -m pip install -r requirements.txt",
     "backend:install:llvc": "python -m pip install -r engines/llvc-runtime/requirements.txt",
-    "services:bootstrap": "node scripts/bootstrap-services.mjs up",
-    "services:bootstrap:gpu": "node scripts/bootstrap-services.mjs up --gpu",
+    "services:bootstrap": "node scripts/bootstrap-services.mjs doctor",
+    "services:bootstrap:gpu": "node scripts/bootstrap-services.mjs doctor --gpu",
     "services:check": "node scripts/bootstrap-services.mjs check",
+    "services:doctor": "node scripts/bootstrap-services.mjs doctor",
     "services:restart": "node scripts/bootstrap-services.mjs restart",
     "services:down": "node scripts/bootstrap-services.mjs down",
     "audit:gemini-stack": "node scripts/audit-gemini-stack.mjs",
@@ -37,6 +38,7 @@
     "audit:function-manifests": "node scripts/generate-function-manifests.mjs",
     "audit:stress:matrix": "node scripts/run-stress-matrix.mjs",
     "audit:bootstrap:idempotency": "node scripts/audit-bootstrap-idempotency.mjs",
+    "backfill:engine-display:prime": "node scripts/backfill-engine-display-prime.mjs",
     "pytest": "python -m pytest tests -q"
   }
 }

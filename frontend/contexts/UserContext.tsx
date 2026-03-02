@@ -56,8 +56,10 @@ import {
   AccountEntitlements,
   claimAdReward,
   clearGenerationHistory,
+  fetchAccountProfile,
   fetchAccountEntitlements,
   fetchGenerationHistory,
+  upsertAccountProfile,
 } from '../services/accountService';
 import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
@@ -123,11 +125,24 @@ const normalizeStoredStats = (stored: any): UserStats => {
       ...(stored?.wallet || {}),
       spendableNowByEngine: {
         GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
+        NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
         KOKORO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.KOKORO ?? walletFallback.spendableNowByEngine.KOKORO)),
       },
     },
   };
   return ensureStatsUsageWindows(merged);
+};
+
+const mapEntitlementRatesToUsage = (
+  entitlements: AccountEntitlements,
+  fallback: UserStats['vfUsage']['rates']
+): UserStats['vfUsage']['rates'] => {
+  const vfRates = entitlements?.limits?.vfRates || {};
+  return {
+    GEM: Number.isFinite(vfRates.GEM) ? Math.max(0, Number(vfRates.GEM)) : fallback.GEM,
+    NEURAL2: Number.isFinite(vfRates.NEURAL2) ? Math.max(0, Number(vfRates.NEURAL2)) : fallback.NEURAL2,
+    KOKORO: Number.isFinite(vfRates.KOKORO) ? Math.max(0, Number(vfRates.KOKORO)) : fallback.KOKORO,
+  };
 };
 
 const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserStats): UserStats => {
@@ -149,6 +164,7 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
     lastResetDate: entitlements.daily?.periodKey,
     vfUsage: {
       ...usage,
+      rates: mapEntitlementRatesToUsage(entitlements, usage.rates),
       daily: {
         ...usage.daily,
         key: entitlements.daily?.periodKey || usage.daily.key,
@@ -159,6 +175,10 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
           GEM: {
             chars: Math.max(0, Number(dailyByEngine?.GEM?.chars || 0)),
             vf: Math.max(0, Number(dailyByEngine?.GEM?.vf || 0)),
+          },
+          NEURAL2: {
+            chars: Math.max(0, Number(dailyByEngine?.NEURAL2?.chars || 0)),
+            vf: Math.max(0, Number(dailyByEngine?.NEURAL2?.vf || 0)),
           },
           KOKORO: {
             chars: Math.max(0, Number(dailyByEngine?.KOKORO?.chars || 0)),
@@ -177,6 +197,10 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
             chars: Math.max(0, Number(monthlyByEngine?.GEM?.chars || 0)),
             vf: Math.max(0, Number(monthlyByEngine?.GEM?.vf || 0)),
           },
+          NEURAL2: {
+            chars: Math.max(0, Number(monthlyByEngine?.NEURAL2?.chars || 0)),
+            vf: Math.max(0, Number(monthlyByEngine?.NEURAL2?.vf || 0)),
+          },
           KOKORO: {
             chars: Math.max(0, Number(monthlyByEngine?.KOKORO?.chars || 0)),
             vf: Math.max(0, Number(monthlyByEngine?.KOKORO?.vf || 0)),
@@ -191,6 +215,7 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
       spendableNowByEngine: {
         GEM: Math.max(0, Number(wallet.spendableNowByEngine?.GEM || 0)),
+        NEURAL2: Math.max(0, Number(wallet.spendableNowByEngine?.NEURAL2 || 0)),
         KOKORO: Math.max(0, Number(wallet.spendableNowByEngine?.KOKORO || 0)),
       },
       adClaimsToday: Math.max(0, Number(wallet.adClaimsToday || 0)),
@@ -244,11 +269,19 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   const providerIds = (current.providerData || [])
     .map((provider) => String(provider?.providerId || '').trim())
     .filter(Boolean);
+  let userId = '';
+  try {
+    const accountProfile = await fetchAccountProfile(readSettingsBackendUrl());
+    userId = String(accountProfile?.profile?.userId || '').trim().toLowerCase();
+  } catch {
+    // Profile setup can be completed later; auth should remain usable.
+  }
   return {
     uid: current.uid,
     googleId: current.uid,
     name: current.displayName || current.email || current.phoneNumber || 'VoiceFlow User',
     email: current.email || `${current.uid}@firebase.voiceflow`,
+    userId: userId || undefined,
     avatarUrl: current.photoURL || undefined,
     phoneNumber: current.phoneNumber || undefined,
     role: 'user',
@@ -520,7 +553,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName) => {
+  const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName, userId) => {
     if (isLocalAdminUsername(String(email || '').trim())) {
       return {
         ok: false,
@@ -541,10 +574,22 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: 'Use a full email address to create an account.',
         };
       }
+      const normalizedUserId = String(userId || '').trim().toLowerCase();
+      if (!normalizedUserId) {
+        return { ok: false, error: 'Choose a user ID.' };
+      }
       const credential = await createUserWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
       if (displayName?.trim()) {
         await updateProfile(credential.user, { displayName: displayName.trim() });
       }
+      await upsertAccountProfile(
+        {
+          userId: normalizedUserId,
+          ...(displayName?.trim() ? { displayName: displayName.trim() } : {}),
+        },
+        readSettingsBackendUrl()
+      );
+      setUser((prev) => ({ ...prev, userId: normalizedUserId }));
       await refreshEntitlements();
       return { ok: true };
     } catch (error: any) {

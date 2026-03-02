@@ -220,14 +220,17 @@ STRIPE_CHECKOUT_CANCEL_URL = (
     (os.getenv("STRIPE_CHECKOUT_CANCEL_URL") or "http://127.0.0.1:3000?billing=cancel").strip()
 )
 VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
+ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
+    "KOKORO": {"label": "BASIC", "rate": 1.0},
+    "NEURAL2": {"label": "HD", "rate": 1.2},
+    "GEM": {"label": "PRIME", "rate": 1.5},
+}
 VF_ENGINE_RATES = {
-    "GEM": 1,
-    "KOKORO": 1,
+    engine: max(0.0, float(meta.get("rate") or 0.0)) or 1.0
+    for engine, meta in ENGINE_TIER_REGISTRY.items()
 }
-VF_ENGINE_PLAN_RATES: dict[str, dict[str, int]] = {
-    "KOKORO": {"free": 1, "pro": 1, "plus": 1},
-    "GEM": {"free": 1, "pro": 1, "plus": 1},
-}
+TTS_ENGINE_KEYS: tuple[str, ...] = tuple(VF_ENGINE_RATES.keys())
+GEM_RUNTIME_ENGINE_KEYS = frozenset({"GEM", "NEURAL2"})
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 10000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
     "pro": {"plan": "Pro", "monthlyVfLimit": 200000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
@@ -412,6 +415,7 @@ TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 TTS_ENGINE_HEALTH_URLS = {
     "GEM": "http://127.0.0.1:7810/health",
+    "NEURAL2": "http://127.0.0.1:7810/health",
     "KOKORO": "http://127.0.0.1:7820/health",
 }
 TTS_ENGINE_CAPABILITIES_URLS = {
@@ -420,6 +424,7 @@ TTS_ENGINE_CAPABILITIES_URLS = {
 }
 DUBBING_PREPARE_ENGINE_WAIT_MS = {
     "GEM": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
+    "NEURAL2": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
     "KOKORO": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_KOKORO_MS") or "90000").strip() or "90000")),
 }
 DUBBING_PREPARE_POLL_INTERVAL_MS = max(
@@ -429,19 +434,22 @@ DUBBING_PREPARE_POLL_INTERVAL_MS = max(
 TTS_ENGINE_ALIASES = {
     "GEM": "GEM",
     "GEMINI": "GEM",
+    "NEURAL2": "NEURAL2",
+    "NEURAL_2": "NEURAL2",
+    "NURAL2": "NEURAL2",
+    "NURAL_2": "NEURAL2",
     "KOKORO": "KOKORO",
 }
 ENGINE_DISPLAY_NAMES = {
-    "GEM": "PRO",
-    "KOKORO": "BASIC",
+    engine: str(meta.get("label") or engine).strip().upper() or engine
+    for engine, meta in ENGINE_TIER_REGISTRY.items()
 }
 CONVERSION_POLICY_DISPLAY_NAMES = {
     "AUTO_RELIABLE": "AUTO_RELIABLE",
     "LLVC_ONLY": "LLVC_ONLY",
 }
 EXECUTED_ENGINE_DISPLAY_NAMES = {
-    "GEM": "PRO",
-    "KOKORO": "BASIC",
+    **ENGINE_DISPLAY_NAMES,
     "LLVC_FALLBACK": "LLVC Fallback",
     "LLVC": "LLVC",
 }
@@ -613,6 +621,30 @@ VF_ANALYTICS_V2_ENABLED = (
     (os.getenv("VF_ANALYTICS_V2_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+VF_USER_ID_REQUIRED = (
+    (os.getenv("VF_USER_ID_REQUIRED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TEAMS_ENABLED = (
+    (os.getenv("VF_TEAMS_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_SUPPORT_INBOX_ENABLED = (
+    (os.getenv("VF_SUPPORT_INBOX_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_SUPPORT_AI_ENABLED = (
+    (os.getenv("VF_SUPPORT_AI_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_SUPPORT_AI_AUTOREPLY_ENABLED = (
+    (os.getenv("VF_SUPPORT_AI_AUTOREPLY_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_SUPPORT_AI_CONFIDENCE_THRESHOLD = max(
+    0.0,
+    min(1.0, float((os.getenv("VF_SUPPORT_AI_CONFIDENCE_THRESHOLD") or "0.78").strip() or "0.78")),
+)
 VF_SCHEDULER_LOCK_TTL_SECONDS = max(
     10,
     int((os.getenv("VF_SCHEDULER_LOCK_TTL_SECONDS") or "45").strip() or "45"),
@@ -655,6 +687,12 @@ PERM_SCHEDULER_READ = "scheduler.read"
 PERM_SCHEDULER_WRITE = "scheduler.write"
 PERM_RBAC_READ = "rbac.read"
 PERM_RBAC_WRITE = "rbac.write"
+PERM_TEAMS_READ = "teams.read"
+PERM_TEAMS_WRITE = "teams.write"
+PERM_SUPPORT_READ = "support.read"
+PERM_SUPPORT_REPLY = "support.reply"
+PERM_SUPPORT_AI_REVIEW = "support.ai.review"
+PERM_SUPPORT_AI_CONFIG = "support.ai.config"
 RBAC_PERMISSIONS = {
     PERM_USERS_READ,
     PERM_USERS_WRITE,
@@ -674,6 +712,12 @@ RBAC_PERMISSIONS = {
     PERM_SCHEDULER_WRITE,
     PERM_RBAC_READ,
     PERM_RBAC_WRITE,
+    PERM_TEAMS_READ,
+    PERM_TEAMS_WRITE,
+    PERM_SUPPORT_READ,
+    PERM_SUPPORT_REPLY,
+    PERM_SUPPORT_AI_REVIEW,
+    PERM_SUPPORT_AI_CONFIG,
 }
 RBAC_ROLE_PERMISSION_MAP: dict[str, set[str]] = {
     RBAC_ROLE_SUPER_ADMIN: set(RBAC_PERMISSIONS),
@@ -685,6 +729,8 @@ RBAC_ROLE_PERMISSION_MAP: dict[str, set[str]] = {
         PERM_ANALYTICS_READ,
         PERM_AUDIT_READ,
         PERM_ALERTS_READ,
+        PERM_TEAMS_READ,
+        PERM_SUPPORT_READ,
     },
     RBAC_ROLE_SUPPORT_OPS: {
         PERM_USERS_READ,
@@ -696,6 +742,11 @@ RBAC_ROLE_PERMISSION_MAP: dict[str, set[str]] = {
         PERM_ANALYTICS_READ,
         PERM_AUDIT_READ,
         PERM_ALERTS_READ,
+        PERM_TEAMS_READ,
+        PERM_TEAMS_WRITE,
+        PERM_SUPPORT_READ,
+        PERM_SUPPORT_REPLY,
+        PERM_SUPPORT_AI_REVIEW,
     },
     RBAC_ROLE_READ_ONLY_OPS: {perm for perm in RBAC_PERMISSIONS if perm.endswith(".read")},
 }
@@ -710,6 +761,15 @@ SCHEDULER_RUNS_COLLECTION = "ops_task_runs"
 SCHEDULER_LOCK_COLLECTION = "ops_scheduler_lock"
 COUPON_ANALYTICS_DAILY_COLLECTION = "coupon_analytics_daily"
 COUPON_SUBSCRIPTION_ATTRIBUTIONS_COLLECTION = "coupon_subscription_attributions"
+USER_PROFILES_COLLECTION = "user_profiles"
+USER_ID_INDEX_COLLECTION = "user_id_index"
+TEAMS_COLLECTION = "teams"
+TEAM_MEMBERS_COLLECTION = "team_members"
+TEAM_INVITES_COLLECTION = "team_invites"
+SUPPORT_CONVERSATIONS_COLLECTION = "support_conversations"
+SUPPORT_MESSAGES_COLLECTION = "support_messages"
+SUPPORT_AI_RUNS_COLLECTION = "support_ai_runs"
+SUPPORT_AI_POLICY_COLLECTION = "support_ai_policy"
 AUDIT_HASH_ALGO = "sha256"
 AUDIT_GENESIS_HASH = "GENESIS"
 ALERT_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
@@ -721,6 +781,29 @@ SCHEDULER_TASK_TYPES = {
     "coupon_abuse_scan",
 }
 SCHEDULER_CONCURRENCY_POLICIES = {"forbid", "replace", "allow"}
+TEAM_MEMBER_ROLES = {"owner", "admin", "member", "viewer"}
+SUPPORT_CONVERSATION_STATUSES = {"open", "ai_answered", "needs_human", "resolved"}
+SUPPORT_PRIORITIES = {"green", "yellow", "red"}
+USER_ID_HANDLE_PATTERN = re.compile(r"^[a-z0-9_]{4,24}$")
+USER_ID_RESERVED_WORDS = frozenset(
+    {
+        "admin",
+        "root",
+        "support",
+        "system",
+        "help",
+        "api",
+        "billing",
+        "owner",
+        "team",
+        "teams",
+        "ops",
+        "voiceflow",
+        "null",
+        "undefined",
+        "me",
+    }
+)
 
 
 class _TtsGatewayLease:
@@ -863,6 +946,10 @@ class TtsGatewayController:
 def _engine_display_name(engine: str) -> str:
     key = str(engine or "").strip().upper()
     return ENGINE_DISPLAY_NAMES.get(key, key)
+
+
+def _is_gem_runtime_engine(engine: str) -> bool:
+    return str(engine or "").strip().upper() in GEM_RUNTIME_ENGINE_KEYS
 
 
 def _conversion_policy_display_name(policy: str) -> str:
@@ -1072,7 +1159,8 @@ def _resolve_mapped_profile(
     mapping = _load_voice_id_map()
     engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
     safe_engine = _normalize_engine_name(engine)
-    engine_payload = engines.get(safe_engine) if isinstance(engines.get(safe_engine), dict) else {}
+    mapping_engine = "GEM" if _is_gem_runtime_engine(safe_engine) else safe_engine
+    engine_payload = engines.get(mapping_engine) if isinstance(engines.get(mapping_engine), dict) else {}
     voice_to_profile = engine_payload.get("voiceToProfile") if isinstance(engine_payload.get("voiceToProfile"), dict) else {}
     candidates = [
         str(voice_id or "").strip(),
@@ -2077,6 +2165,15 @@ _INMEMORY_SCHEDULER_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SCHEDULER_LOCK: dict[str, Any] = {}
 _INMEMORY_COUPON_ANALYTICS_DAILY: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPON_SUB_ATTRIBUTIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_USER_PROFILES: dict[str, dict[str, Any]] = {}
+_INMEMORY_USER_ID_INDEX: dict[str, dict[str, Any]] = {}
+_INMEMORY_TEAMS: dict[str, dict[str, Any]] = {}
+_INMEMORY_TEAM_MEMBERS: dict[str, dict[str, Any]] = {}
+_INMEMORY_TEAM_INVITES: dict[str, dict[str, Any]] = {}
+_INMEMORY_SUPPORT_CONVERSATIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_SUPPORT_MESSAGES: dict[str, dict[str, Any]] = {}
+_INMEMORY_SUPPORT_AI_RUNS: dict[str, dict[str, Any]] = {}
+_INMEMORY_SUPPORT_AI_POLICY: dict[str, Any] = {}
 _INMEMORY_LOCK = threading.RLock()
 _TTS_SUCCESS_LIMITER = SuccessQuotaLimiter(
     redis_url=VF_REDIS_URL,
@@ -2387,8 +2484,8 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "subscriptionId": None,
         "currencyMode": "INR_BASE_AUTO_FX",
         "billingCountry": None,
-        "paidVfBalance": 0,
-        "vffBalance": 0,
+        "paidVfBalance": 0.0,
+        "vffBalance": 0.0,
         "vffMonthKey": _wallet_month_key(),
         "updatedAt": _safe_now_iso(),
     }
@@ -2499,13 +2596,15 @@ def _commit_tts_success_quota(
     raise HTTPException(status_code=429, detail=detail, headers=headers)
 
 
-def _engine_rate_for_plan(plan_name: str, engine: str) -> int:
-    plan_key = _plan_key_from_name(plan_name)
+def _engine_rate(engine: str) -> float:
     engine_key = str(engine or "").strip().upper()
-    rates = VF_ENGINE_PLAN_RATES.get(engine_key) or {}
-    if plan_key in rates:
-        return _as_positive_int(rates[plan_key]) or 1
-    return _as_positive_int(VF_ENGINE_RATES.get(engine_key)) or 1
+    return _as_positive_number(VF_ENGINE_RATES.get(engine_key)) or 1.0
+
+
+def _engine_rate_for_plan(plan_name: str, engine: str) -> float:
+    # Kept as a compatibility wrapper while all pricing is engine-tier based.
+    _ = plan_name
+    return _engine_rate(engine)
 
 
 def _round_inr(value: float) -> int:
@@ -2571,6 +2670,20 @@ def _as_positive_int(value: Any) -> int:
     return max(0, number)
 
 
+VF_DECIMAL_PRECISION = 4
+VF_EPSILON = 1e-6
+
+
+def _as_positive_number(value: Any) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        number = 0.0
+    if not math.isfinite(number):
+        number = 0.0
+    return round(max(0.0, number), VF_DECIMAL_PRECISION)
+
+
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
         number = float(value)
@@ -2587,6 +2700,10 @@ def _auth_exempt_path(path: str) -> bool:
         "/health",
         "/system/version",
         "/billing/webhook",
+        "/tts/engines/status",
+        "/tts/engines/capabilities",
+        "/tts/engines/voices",
+        "/tts/voice-mapping/catalog",
         "/openapi.json",
         "/docs",
         "/docs/oauth2-redirect",
@@ -2594,6 +2711,28 @@ def _auth_exempt_path(path: str) -> bool:
     }:
         return True
     return normalized.startswith("/docs")
+
+
+def _user_id_requirement_exempt_path(path: str) -> bool:
+    normalized = str(path or "").strip()
+    if not normalized:
+        return True
+    if normalized in {
+        "/health",
+        "/system/version",
+        "/account/profile",
+        "/account/profile/bootstrap",
+        "/openapi.json",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+    }:
+        return True
+    if normalized.startswith("/admin"):
+        return True
+    if normalized.startswith("/ops/guardian"):
+        return True
+    return False
 
 
 @app.middleware("http")
@@ -2624,6 +2763,28 @@ async def _firebase_auth_middleware(request: Request, call_next: Any) -> Respons
     request.state.uid = uid
     request.state.auth_claims = claims
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _user_id_requirement_middleware(request: Request, call_next: Any) -> Response:
+    if not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE:
+        return await call_next(request)
+    path = str(request.url.path or "/")
+    if _auth_exempt_path(path) or _user_id_requirement_exempt_path(path):
+        return await call_next(request)
+    uid = str(getattr(request.state, "uid", "") or "").strip()
+    if not uid:
+        return await call_next(request)
+    profile = _user_profile_read(uid)
+    if isinstance(profile, dict):
+        user_id = str(profile.get("userId") or "").strip().lower()
+        if user_id:
+            request.state.user_id = user_id
+            return await call_next(request)
+    return JSONResponse(
+        status_code=428,
+        content={"detail": "Complete your userId before using this feature."},
+    )
 
 
 @app.middleware("http")
@@ -2662,6 +2823,310 @@ def _require_request_uid(request: Request) -> str:
         header_uid = str(request.headers.get("x-dev-uid") or "").strip()
         return header_uid or VF_DEV_BYPASS_UID
     raise HTTPException(status_code=401, detail="Authentication required.")
+
+
+def _request_claim_email(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    claims = getattr(request.state, "auth_claims", None)
+    if not isinstance(claims, dict):
+        return ""
+    return str(claims.get("email") or "").strip().lower()
+
+
+def _normalize_user_id_handle(raw_user_id: str) -> str:
+    token = str(raw_user_id or "").strip().lower()
+    token = re.sub(r"[^a-z0-9_]", "", token)
+    if token.startswith("_"):
+        token = token.lstrip("_")
+    if not token:
+        raise HTTPException(status_code=400, detail="userId is required.")
+    if token in USER_ID_RESERVED_WORDS:
+        raise HTTPException(status_code=400, detail="This userId is reserved.")
+    if not USER_ID_HANDLE_PATTERN.fullmatch(token):
+        raise HTTPException(
+            status_code=400,
+            detail="userId must match [a-z0-9_]{4,24} and cannot start with underscore.",
+        )
+    return token
+
+
+def _user_profile_backfill_candidate(uid: str, email: str = "", display_name: str = "") -> str:
+    safe_uid = str(uid or "").strip().lower()
+    raw_email = str(email or "").strip().lower()
+    raw_display = str(display_name or "").strip().lower()
+    base = ""
+    if raw_email and "@" in raw_email:
+        base = raw_email.split("@", 1)[0]
+    elif raw_display:
+        base = raw_display.replace(" ", "_")
+    if not base:
+        base = f"user_{safe_uid[:12] or 'acct'}"
+    base = re.sub(r"[^a-z0-9_]", "", base)
+    base = base.lstrip("_")
+    if len(base) < 4:
+        base = f"user_{safe_uid[:12] or 'acct'}"
+    if len(base) > 24:
+        base = base[:24]
+    if base in USER_ID_RESERVED_WORDS:
+        base = f"{base}_id"
+    base = re.sub(r"[^a-z0-9_]", "", base).lstrip("_")
+    if len(base) < 4:
+        base = f"user{safe_uid[:6]}".ljust(4, "0")
+    if len(base) > 24:
+        base = base[:24]
+    return base
+
+
+def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    collection = _firestore_collection(USER_PROFILES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_PROFILES.get(safe_uid)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_uid).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    payload = doc.to_dict() or {}
+    payload["uid"] = safe_uid
+    return payload
+
+
+def _user_profile_find_by_user_id(user_id: str) -> Optional[dict[str, Any]]:
+    safe_user_id = str(user_id or "").strip().lower()
+    if not safe_user_id:
+        return None
+    index_collection = _firestore_collection(USER_ID_INDEX_COLLECTION)
+    if index_collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_ID_INDEX.get(safe_user_id)
+            if not isinstance(row, dict):
+                return None
+            uid = str(row.get("uid") or "").strip()
+        if not uid:
+            return None
+        return _user_profile_read(uid)
+    try:
+        index_doc = index_collection.document(safe_user_id).get()
+    except Exception:
+        return None
+    if not index_doc.exists:
+        return None
+    idx = index_doc.to_dict() or {}
+    uid = str(idx.get("uid") or "").strip()
+    if not uid:
+        return None
+    return _user_profile_read(uid)
+
+
+def _user_id_for_uid(uid: str) -> str:
+    profile = _user_profile_read(uid)
+    if isinstance(profile, dict):
+        return str(profile.get("userId") or "").strip().lower()
+    return ""
+
+
+def _user_profile_upsert(
+    uid: str,
+    *,
+    user_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    email: Optional[str] = None,
+    created_by: str = "",
+    updated_by: str = "",
+    force_change: bool = False,
+    allow_existing_immutable: bool = False,
+) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    current = _user_profile_read(safe_uid) or {}
+    now_iso = _utc_now().isoformat()
+    current_user_id = str(current.get("userId") or "").strip().lower()
+    next_user_id = _normalize_user_id_handle(
+        str(user_id or current_user_id or _user_profile_backfill_candidate(safe_uid, str(email or ""), str(display_name or "")))
+    )
+    if current_user_id and next_user_id != current_user_id and not force_change and not allow_existing_immutable:
+        raise HTTPException(status_code=409, detail="userId is immutable once set.")
+
+    next_display_name = str(
+        display_name
+        if display_name is not None
+        else current.get("displayName") or current.get("name") or ""
+    ).strip()[:120]
+    next_email = str(email if email is not None else current.get("email") or "").strip().lower()[:240]
+    created_at = str(current.get("createdAt") or now_iso)
+    row = {
+        "uid": safe_uid,
+        "userId": next_user_id,
+        "displayName": next_display_name,
+        "email": next_email,
+        "status": str(current.get("status") or "active"),
+        "createdAt": created_at,
+        "updatedAt": now_iso,
+        "createdBy": str(current.get("createdBy") or created_by or safe_uid)[:160],
+        "updatedBy": str(updated_by or created_by or safe_uid)[:160],
+    }
+
+    profiles_collection = _firestore_collection(USER_PROFILES_COLLECTION)
+    index_collection = _firestore_collection(USER_ID_INDEX_COLLECTION)
+    if (
+        profiles_collection is None
+        or index_collection is None
+        or _FIRESTORE_DB is None
+        or firebase_firestore is None
+    ):
+        with _INMEMORY_LOCK:
+            existing = dict(_INMEMORY_USER_PROFILES.get(safe_uid) or {})
+            existing_user_id = str(existing.get("userId") or "").strip().lower()
+            if existing_user_id and existing_user_id != next_user_id and not force_change and not allow_existing_immutable:
+                raise HTTPException(status_code=409, detail="userId is immutable once set.")
+            owner = _INMEMORY_USER_ID_INDEX.get(next_user_id) or {}
+            owner_uid = str(owner.get("uid") or "").strip()
+            if owner_uid and owner_uid != safe_uid:
+                raise HTTPException(status_code=409, detail="userId already exists.")
+            if existing_user_id and existing_user_id != next_user_id:
+                _INMEMORY_USER_ID_INDEX.pop(existing_user_id, None)
+            _INMEMORY_USER_ID_INDEX[next_user_id] = {
+                "userId": next_user_id,
+                "uid": safe_uid,
+                "createdAt": str(owner.get("createdAt") or now_iso),
+                "updatedAt": now_iso,
+            }
+            _INMEMORY_USER_PROFILES[safe_uid] = dict(row)
+            return dict(row)
+
+    profile_ref = _FIRESTORE_DB.collection(USER_PROFILES_COLLECTION).document(safe_uid)
+    new_index_ref = _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(next_user_id)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> dict[str, Any]:
+        profile_doc = profile_ref.get(transaction=transaction_obj)
+        existing = profile_doc.to_dict() if profile_doc.exists else {}
+        existing_user_id = str((existing or {}).get("userId") or "").strip().lower()
+        if existing_user_id and existing_user_id != next_user_id and not force_change and not allow_existing_immutable:
+            raise RuntimeError("userId is immutable once set.")
+        index_doc = new_index_ref.get(transaction=transaction_obj)
+        if index_doc.exists:
+            owner_uid = str((index_doc.to_dict() or {}).get("uid") or "").strip()
+            if owner_uid and owner_uid != safe_uid:
+                raise RuntimeError("userId already exists.")
+        old_index_ref = None
+        if existing_user_id and existing_user_id != next_user_id:
+            old_index_ref = _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(existing_user_id)
+        payload = {
+            "uid": safe_uid,
+            "userId": next_user_id,
+            "displayName": next_display_name,
+            "email": next_email,
+            "status": str((existing or {}).get("status") or "active"),
+            "createdAt": str((existing or {}).get("createdAt") or now_iso),
+            "updatedAt": now_iso,
+            "createdBy": str((existing or {}).get("createdBy") or created_by or safe_uid)[:160],
+            "updatedBy": str(updated_by or created_by or safe_uid)[:160],
+        }
+        transaction_obj.set(profile_ref, payload, merge=True)
+        transaction_obj.set(
+            new_index_ref,
+            {
+                "userId": next_user_id,
+                "uid": safe_uid,
+                "createdAt": str((index_doc.to_dict() or {}).get("createdAt") if index_doc.exists else now_iso),
+                "updatedAt": now_iso,
+            },
+            merge=True,
+        )
+        if old_index_ref is not None:
+            transaction_obj.delete(old_index_ref)
+        return payload
+
+    try:
+        return _apply(transaction)
+    except RuntimeError as exc:
+        detail = str(exc)
+        status = 409 if "exists" in detail.lower() or "immutable" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to save user profile: {exc}") from exc
+
+
+def _ensure_user_profile(
+    uid: str,
+    *,
+    request: Optional[Request] = None,
+    allow_auto_backfill: bool = True,
+) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    existing = _user_profile_read(safe_uid)
+    if isinstance(existing, dict):
+        return existing
+    if not allow_auto_backfill:
+        return None
+    email = _request_claim_email(request)
+    display_name = ""
+    if _firebase_ready() and firebase_auth is not None:
+        try:
+            record = firebase_auth.get_user(safe_uid)  # type: ignore[attr-defined]
+            display_name = str(getattr(record, "display_name", "") or "").strip()
+            if not email:
+                email = str(getattr(record, "email", "") or "").strip().lower()
+        except Exception:
+            pass
+    return _user_profile_upsert(
+        safe_uid,
+        user_id=_user_profile_backfill_candidate(safe_uid, email, display_name),
+        display_name=display_name or None,
+        email=email or None,
+        created_by="system_backfill",
+        updated_by="system_backfill",
+        force_change=False,
+        allow_existing_immutable=True,
+    )
+
+
+def _resolve_request_user_id(request: Optional[Request], uid: str) -> str:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return ""
+    allow_auto_backfill = (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE)
+    if request is not None and _request_is_admin(request, safe_uid):
+        allow_auto_backfill = True
+    profile = _ensure_user_profile(
+        safe_uid,
+        request=request,
+        allow_auto_backfill=allow_auto_backfill,
+    )
+    if isinstance(profile, dict):
+        return str(profile.get("userId") or "").strip().lower()
+    return ""
+
+
+def _require_user_id_ready(request: Request, uid: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    profile = _user_profile_read(safe_uid)
+    if isinstance(profile, dict) and str(profile.get("userId") or "").strip():
+        return profile
+    if not VF_USER_ID_REQUIRED:
+        return _ensure_user_profile(safe_uid, request=request, allow_auto_backfill=True)
+    if not VF_AUTH_ENFORCE:
+        return _ensure_user_profile(safe_uid, request=request, allow_auto_backfill=True)
+    raise HTTPException(
+        status_code=428,
+        detail="Complete your userId before using this feature.",
+    )
 
 
 def _firestore_user_is_admin(uid: str) -> bool:
@@ -2867,27 +3332,31 @@ def _resolve_actor(uid: str, request: Request) -> dict[str, Any]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         raise HTTPException(status_code=401, detail="Authentication required.")
+    def _with_identity(actor_payload: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(actor_payload or {})
+        payload["userId"] = _resolve_request_user_id(request, safe_uid)
+        return payload
     if not VF_RBAC_ENABLED:
         if _request_is_admin(request, safe_uid):
-            return {
+            return _with_identity({
                 "uid": safe_uid,
                 "role": RBAC_ROLE_SUPER_ADMIN,
                 "permissions": sorted(RBAC_PERMISSIONS),
                 "status": "active",
                 "version": 0,
                 "source": "rbac_disabled_admin",
-            }
-        return {
+            })
+        return _with_identity({
             "uid": safe_uid,
             "role": RBAC_ROLE_READ_ONLY_OPS,
             "permissions": [],
             "status": "disabled",
             "version": 0,
             "source": "rbac_disabled_non_admin",
-        }
+        })
     cached = _rbac_cache_get(safe_uid)
     if isinstance(cached, dict):
-        return {key: value for key, value in cached.items() if key != "expiresAtMs"}
+        return _with_identity({key: value for key, value in cached.items() if key != "expiresAtMs"})
     assignment = _rbac_load_assignment(safe_uid)
     if isinstance(assignment, dict):
         role = _rbac_normalize_role(str(assignment.get("role") or ""))
@@ -2907,11 +3376,11 @@ def _resolve_actor(uid: str, request: Request) -> dict[str, Any]:
             "denyOverrides": deny,
         }
         _rbac_cache_put(safe_uid, actor)
-        return actor
+        return _with_identity(actor)
     bootstrap = _rbac_bootstrap_actor(safe_uid, request)
     if bootstrap is not None:
         _rbac_cache_put(safe_uid, bootstrap)
-        return bootstrap
+        return _with_identity(bootstrap)
     actor = {
         "uid": safe_uid,
         "role": RBAC_ROLE_READ_ONLY_OPS,
@@ -2921,7 +3390,7 @@ def _resolve_actor(uid: str, request: Request) -> dict[str, Any]:
         "source": "unassigned",
     }
     _rbac_cache_put(safe_uid, actor)
-    return actor
+    return _with_identity(actor)
 
 
 def _has_permission(actor: dict[str, Any], permission: str) -> bool:
@@ -2991,9 +3460,12 @@ def _rbac_list_assignments(limit: int = 100, cursor: str = "", q: str = "") -> t
                 row = _INMEMORY_ADMIN_ROLES.get(uid)
                 if not isinstance(row, dict):
                     continue
-                if needle and needle not in uid.lower() and needle not in str(row.get("role") or "").lower():
+                user_id = _user_id_for_uid(uid).lower()
+                if needle and needle not in uid.lower() and needle not in str(row.get("role") or "").lower() and needle not in user_id:
                     continue
-                rows.append(dict(row))
+                item = dict(row)
+                item["userId"] = user_id
+                rows.append(item)
                 if len(rows) >= safe_limit:
                     break
             if len(rows) == safe_limit:
@@ -3013,8 +3485,10 @@ def _rbac_list_assignments(limit: int = 100, cursor: str = "", q: str = "") -> t
         row = doc.to_dict() or {}
         row["uid"] = uid
         role_token = str(row.get("role") or "").lower()
-        if needle and needle not in uid.lower() and needle not in role_token:
+        user_id = _user_id_for_uid(uid).lower()
+        if needle and needle not in uid.lower() and needle not in role_token and needle not in user_id:
             continue
+        row["userId"] = user_id
         rows.append(row)
         if len(rows) >= safe_limit:
             break
@@ -3033,56 +3507,56 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
     current = now or _utc_now()
     month_key = _wallet_month_key(current)
     normalized = dict(entitlement or {})
-    normalized["paidVfBalance"] = _as_positive_int(normalized.get("paidVfBalance"))
+    normalized["paidVfBalance"] = _as_positive_number(normalized.get("paidVfBalance"))
     saved_month = str(normalized.get("vffMonthKey") or "").strip()
     if saved_month != month_key:
-        normalized["vffBalance"] = 0
+        normalized["vffBalance"] = 0.0
         normalized["vffMonthKey"] = month_key
     else:
-        normalized["vffBalance"] = _as_positive_int(normalized.get("vffBalance"))
+        normalized["vffBalance"] = _as_positive_number(normalized.get("vffBalance"))
         normalized["vffMonthKey"] = saved_month or month_key
     return normalized
 
 
-def _monthly_free_remaining(entitlement: dict[str, Any], monthly: dict[str, Any]) -> int:
-    monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit"))
-    monthly_free_used = _as_positive_int(monthly.get("monthlyFreeVfUsed"))
-    return max(0, monthly_limit - monthly_free_used)
+def _monthly_free_remaining(entitlement: dict[str, Any], monthly: dict[str, Any]) -> float:
+    monthly_limit = _as_positive_number(entitlement.get("monthlyVfLimit"))
+    monthly_free_used = _as_positive_number(monthly.get("monthlyFreeVfUsed"))
+    return _as_positive_number(monthly_limit - monthly_free_used)
 
 
-def _wallet_spendable_now(entitlement: dict[str, Any], monthly: dict[str, Any], engine: str) -> int:
+def _wallet_spendable_now(entitlement: dict[str, Any], monthly: dict[str, Any], engine: str) -> float:
     safe_engine = str(engine or "").strip().upper()
     monthly_remaining = _monthly_free_remaining(entitlement, monthly)
-    paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
-    vff_balance = _as_positive_int(entitlement.get("vffBalance"))
-    if safe_engine not in {"GEM", "KOKORO"}:
-        return monthly_remaining + paid_balance
-    return monthly_remaining + vff_balance + paid_balance
+    paid_balance = _as_positive_number(entitlement.get("paidVfBalance"))
+    vff_balance = _as_positive_number(entitlement.get("vffBalance"))
+    if safe_engine not in TTS_ENGINE_KEYS:
+        return _as_positive_number(monthly_remaining + paid_balance)
+    return _as_positive_number(monthly_remaining + vff_balance + paid_balance)
 
 
 def _wallet_charge_breakdown(
     entitlement: dict[str, Any],
     monthly: dict[str, Any],
     engine: str,
-    vf_cost: int,
-) -> dict[str, int]:
-    remaining = _as_positive_int(vf_cost)
-    breakdown = {"vff": 0, "monthlyVf": 0, "paidVf": 0}
+    vf_cost: float,
+) -> dict[str, float]:
+    remaining = _as_positive_number(vf_cost)
+    breakdown: dict[str, float] = {"vff": 0.0, "monthlyVf": 0.0, "paidVf": 0.0}
     if remaining <= 0:
         return breakdown
     monthly_remaining = _monthly_free_remaining(entitlement, monthly)
-    paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
-    vff_balance = _as_positive_int(entitlement.get("vffBalance"))
+    paid_balance = _as_positive_number(entitlement.get("paidVfBalance"))
+    vff_balance = _as_positive_number(entitlement.get("vffBalance"))
 
-    def spend(bucket: str, available: int) -> None:
+    def spend(bucket: str, available: float) -> None:
         nonlocal remaining
         if remaining <= 0:
             return
-        use = min(max(0, available), remaining)
+        use = min(_as_positive_number(available), remaining)
         if use <= 0:
             return
-        breakdown[bucket] = use
-        remaining -= use
+        breakdown[bucket] = _as_positive_number(use)
+        remaining = _as_positive_number(remaining - use)
 
     # Unified cross-engine spending order: monthly free -> VFF -> paid VF.
     spend("monthlyVf", monthly_remaining)
@@ -3146,9 +3620,9 @@ def _write_entitlement(uid: str, payload: dict[str, Any]) -> None:
     if "dailyGenerationLimit" in patch:
         patch["dailyGenerationLimit"] = _as_positive_int(patch.get("dailyGenerationLimit"))
     if "paidVfBalance" in patch:
-        patch["paidVfBalance"] = _as_positive_int(patch.get("paidVfBalance"))
+        patch["paidVfBalance"] = _as_positive_number(patch.get("paidVfBalance"))
     if "vffBalance" in patch:
-        patch["vffBalance"] = _as_positive_int(patch.get("vffBalance"))
+        patch["vffBalance"] = _as_positive_number(patch.get("vffBalance"))
     if "vffMonthKey" in patch:
         patch["vffMonthKey"] = str(patch.get("vffMonthKey") or _wallet_month_key()).strip() or _wallet_month_key()
 
@@ -3192,27 +3666,26 @@ def _resolve_uid_from_customer(customer_id: str) -> str:
 
 def _usage_defaults(uid: str, now: Optional[datetime] = None) -> tuple[dict[str, Any], dict[str, Any]]:
     current = now or _utc_now()
+    def _empty_by_engine() -> dict[str, dict[str, Any]]:
+        return {
+            engine: {"chars": 0, "vf": 0.0}
+            for engine in TTS_ENGINE_KEYS
+        }
     monthly = {
         "uid": uid,
         "periodKey": _usage_month_period_label(current),
-        "vfUsed": 0,
-        "monthlyFreeVfUsed": 0,
+        "vfUsed": 0.0,
+        "monthlyFreeVfUsed": 0.0,
         "generationCount": 0,
-        "byEngine": {
-            "GEM": {"chars": 0, "vf": 0},
-            "KOKORO": {"chars": 0, "vf": 0},
-        },
+        "byEngine": _empty_by_engine(),
         "updatedAt": current.isoformat(),
     }
     daily = {
         "uid": uid,
         "periodKey": _usage_day_period_label(current),
-        "vfUsed": 0,
+        "vfUsed": 0.0,
         "generationCount": 0,
-        "byEngine": {
-            "GEM": {"chars": 0, "vf": 0},
-            "KOKORO": {"chars": 0, "vf": 0},
-        },
+        "byEngine": _empty_by_engine(),
         "updatedAt": current.isoformat(),
     }
     return monthly, daily
@@ -3274,43 +3747,49 @@ def _reserve_usage(
             if event and str(event.get("status")) in {"reserved", "committed"}:
                 return {"ok": True, "alreadyReserved": True, "event": event, "monthly": monthly, "daily": daily, "entitlement": entitlement}
 
-            monthly.setdefault("monthlyFreeVfUsed", _as_positive_int(monthly.get("monthlyFreeVfUsed")))
+            monthly.setdefault("monthlyFreeVfUsed", _as_positive_number(monthly.get("monthlyFreeVfUsed")))
 
             plan_cfg = _plan_config(_normalize_plan_name(str(entitlement.get("plan") or "Free")))
             daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"])
-            rate = _engine_rate_for_plan(str(entitlement.get("plan") or "Free"), safe_engine)
-            vf_cost = safe_chars * rate
+            rate = _engine_rate(safe_engine)
+            vf_cost = _as_positive_number(float(safe_chars) * float(rate))
 
             if not bypass_limits and _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
                 raise HTTPException(status_code=429, detail="Daily generation limit reached.")
 
             charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
             covered = (
-                _as_positive_int(charge_breakdown.get("vff"))
-                + _as_positive_int(charge_breakdown.get("monthlyVf"))
-                + _as_positive_int(charge_breakdown.get("paidVf"))
+                _as_positive_number(charge_breakdown.get("vff"))
+                + _as_positive_number(charge_breakdown.get("monthlyVf"))
+                + _as_positive_number(charge_breakdown.get("paidVf"))
             )
-            if not bypass_limits and covered < vf_cost:
+            if not bypass_limits and covered + VF_EPSILON < vf_cost:
                 raise HTTPException(status_code=429, detail="Insufficient VF balance for this generation.")
 
-            entitlement["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) - _as_positive_int(charge_breakdown.get("vff")))
-            entitlement["paidVfBalance"] = max(0, _as_positive_int(entitlement.get("paidVfBalance")) - _as_positive_int(charge_breakdown.get("paidVf")))
+            entitlement["vffBalance"] = _as_positive_number(
+                _as_positive_number(entitlement.get("vffBalance")) - _as_positive_number(charge_breakdown.get("vff"))
+            )
+            entitlement["paidVfBalance"] = _as_positive_number(
+                _as_positive_number(entitlement.get("paidVfBalance")) - _as_positive_number(charge_breakdown.get("paidVf"))
+            )
             entitlement["updatedAt"] = now.isoformat()
 
-            monthly["vfUsed"] = _as_positive_int(monthly.get("vfUsed")) + vf_cost
-            monthly["monthlyFreeVfUsed"] = _as_positive_int(monthly.get("monthlyFreeVfUsed")) + _as_positive_int(charge_breakdown.get("monthlyVf"))
+            monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) + vf_cost)
+            monthly["monthlyFreeVfUsed"] = _as_positive_number(
+                _as_positive_number(monthly.get("monthlyFreeVfUsed")) + _as_positive_number(charge_breakdown.get("monthlyVf"))
+            )
             monthly["generationCount"] = _as_positive_int(monthly.get("generationCount")) + 1
             monthly_engine = dict((monthly.get("byEngine") or {}).get(safe_engine) or {})
             monthly_engine["chars"] = _as_positive_int(monthly_engine.get("chars")) + safe_chars
-            monthly_engine["vf"] = _as_positive_int(monthly_engine.get("vf")) + vf_cost
+            monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) + vf_cost)
             monthly.setdefault("byEngine", {})[safe_engine] = monthly_engine
             monthly["updatedAt"] = now.isoformat()
 
-            daily["vfUsed"] = _as_positive_int(daily.get("vfUsed")) + vf_cost
+            daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) + vf_cost)
             daily["generationCount"] = _as_positive_int(daily.get("generationCount")) + 1
             daily_engine = dict((daily.get("byEngine") or {}).get(safe_engine) or {})
             daily_engine["chars"] = _as_positive_int(daily_engine.get("chars")) + safe_chars
-            daily_engine["vf"] = _as_positive_int(daily_engine.get("vf")) + vf_cost
+            daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) + vf_cost)
             daily.setdefault("byEngine", {})[safe_engine] = daily_engine
             daily["updatedAt"] = now.isoformat()
 
@@ -3325,9 +3804,9 @@ def _reserve_usage(
                 "monthDocId": monthly_doc_id,
                 "dayDocId": daily_doc_id,
                 "chargeBreakdown": {
-                    "vff": _as_positive_int(charge_breakdown.get("vff")),
-                    "monthlyVf": _as_positive_int(charge_breakdown.get("monthlyVf")),
-                    "paidVf": _as_positive_int(charge_breakdown.get("paidVf")),
+                    "vff": _as_positive_number(charge_breakdown.get("vff")),
+                    "monthlyVf": _as_positive_number(charge_breakdown.get("monthlyVf")),
+                    "paidVf": _as_positive_number(charge_breakdown.get("paidVf")),
                 },
                 "limitBypass": {
                     "enabled": bool(bypass_limits),
@@ -3360,15 +3839,15 @@ def _reserve_usage(
         entitlement = _normalize_entitlement_wallet(entitlement, now)
         plan_cfg = _plan_config(_normalize_plan_name(str(entitlement.get("plan") or "Free")))
         daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"])
-        rate = _engine_rate_for_plan(str(entitlement.get("plan") or "Free"), safe_engine)
-        vf_cost = safe_chars * rate
+        rate = _engine_rate(safe_engine)
+        vf_cost = _as_positive_number(float(safe_chars) * float(rate))
 
         monthly_doc = monthly_ref.get(transaction=transaction_obj)
         daily_doc = daily_ref.get(transaction=transaction_obj)
         default_monthly, default_daily = _usage_defaults(uid, now)
         monthly = {**default_monthly, **(monthly_doc.to_dict() or {})} if monthly_doc.exists else {**default_monthly}
         daily = {**default_daily, **(daily_doc.to_dict() or {})} if daily_doc.exists else {**default_daily}
-        monthly.setdefault("monthlyFreeVfUsed", _as_positive_int(monthly.get("monthlyFreeVfUsed")))
+        monthly.setdefault("monthlyFreeVfUsed", _as_positive_number(monthly.get("monthlyFreeVfUsed")))
 
         event_doc = event_ref.get(transaction=transaction_obj)
         if event_doc.exists:
@@ -3380,31 +3859,37 @@ def _reserve_usage(
 
         charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
         covered = (
-            _as_positive_int(charge_breakdown.get("vff"))
-            + _as_positive_int(charge_breakdown.get("monthlyVf"))
-            + _as_positive_int(charge_breakdown.get("paidVf"))
+            _as_positive_number(charge_breakdown.get("vff"))
+            + _as_positive_number(charge_breakdown.get("monthlyVf"))
+            + _as_positive_number(charge_breakdown.get("paidVf"))
         )
-        if not bypass_limits and covered < vf_cost:
+        if not bypass_limits and covered + VF_EPSILON < vf_cost:
             raise RuntimeError("Insufficient VF balance for this generation.")
 
-        entitlement["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) - _as_positive_int(charge_breakdown.get("vff")))
-        entitlement["paidVfBalance"] = max(0, _as_positive_int(entitlement.get("paidVfBalance")) - _as_positive_int(charge_breakdown.get("paidVf")))
+        entitlement["vffBalance"] = _as_positive_number(
+            _as_positive_number(entitlement.get("vffBalance")) - _as_positive_number(charge_breakdown.get("vff"))
+        )
+        entitlement["paidVfBalance"] = _as_positive_number(
+            _as_positive_number(entitlement.get("paidVfBalance")) - _as_positive_number(charge_breakdown.get("paidVf"))
+        )
         entitlement["updatedAt"] = now.isoformat()
 
-        monthly["vfUsed"] = _as_positive_int(monthly.get("vfUsed")) + vf_cost
-        monthly["monthlyFreeVfUsed"] = _as_positive_int(monthly.get("monthlyFreeVfUsed")) + _as_positive_int(charge_breakdown.get("monthlyVf"))
+        monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) + vf_cost)
+        monthly["monthlyFreeVfUsed"] = _as_positive_number(
+            _as_positive_number(monthly.get("monthlyFreeVfUsed")) + _as_positive_number(charge_breakdown.get("monthlyVf"))
+        )
         monthly["generationCount"] = _as_positive_int(monthly.get("generationCount")) + 1
         monthly_engine = dict((monthly.get("byEngine") or {}).get(safe_engine) or {})
         monthly_engine["chars"] = _as_positive_int(monthly_engine.get("chars")) + safe_chars
-        monthly_engine["vf"] = _as_positive_int(monthly_engine.get("vf")) + vf_cost
+        monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) + vf_cost)
         monthly.setdefault("byEngine", {})[safe_engine] = monthly_engine
         monthly["updatedAt"] = now.isoformat()
 
-        daily["vfUsed"] = _as_positive_int(daily.get("vfUsed")) + vf_cost
+        daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) + vf_cost)
         daily["generationCount"] = _as_positive_int(daily.get("generationCount")) + 1
         daily_engine = dict((daily.get("byEngine") or {}).get(safe_engine) or {})
         daily_engine["chars"] = _as_positive_int(daily_engine.get("chars")) + safe_chars
-        daily_engine["vf"] = _as_positive_int(daily_engine.get("vf")) + vf_cost
+        daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) + vf_cost)
         daily.setdefault("byEngine", {})[safe_engine] = daily_engine
         daily["updatedAt"] = now.isoformat()
 
@@ -3419,9 +3904,9 @@ def _reserve_usage(
             "monthDocId": monthly_doc_id,
             "dayDocId": daily_doc_id,
             "chargeBreakdown": {
-                "vff": _as_positive_int(charge_breakdown.get("vff")),
-                "monthlyVf": _as_positive_int(charge_breakdown.get("monthlyVf")),
-                "paidVf": _as_positive_int(charge_breakdown.get("paidVf")),
+                "vff": _as_positive_number(charge_breakdown.get("vff")),
+                "monthlyVf": _as_positive_number(charge_breakdown.get("monthlyVf")),
+                "paidVf": _as_positive_number(charge_breakdown.get("paidVf")),
             },
             "limitBypass": {
                 "enabled": bool(bypass_limits),
@@ -3465,32 +3950,36 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
                 daily = _INMEMORY_USAGE_DAILY.get(str(event.get("dayDocId") or ""))
                 entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
                 engine = str(event.get("engine") or "GEM").upper()
-                vf_cost = _as_positive_int(event.get("vfCost"))
+                vf_cost = _as_positive_number(event.get("vfCost"))
                 chars = _as_positive_int(event.get("chars"))
                 charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
-                refund_vff = _as_positive_int(charge_breakdown.get("vff"))
-                refund_paid = _as_positive_int(charge_breakdown.get("paidVf"))
-                refund_monthly = _as_positive_int(charge_breakdown.get("monthlyVf"))
+                refund_vff = _as_positive_number(charge_breakdown.get("vff"))
+                refund_paid = _as_positive_number(charge_breakdown.get("paidVf"))
+                refund_monthly = _as_positive_number(charge_breakdown.get("monthlyVf"))
                 if monthly is not None:
-                    monthly["vfUsed"] = max(0, _as_positive_int(monthly.get("vfUsed")) - vf_cost)
-                    monthly["monthlyFreeVfUsed"] = max(0, _as_positive_int(monthly.get("monthlyFreeVfUsed")) - refund_monthly)
+                    monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - vf_cost)
+                    monthly["monthlyFreeVfUsed"] = _as_positive_number(
+                        _as_positive_number(monthly.get("monthlyFreeVfUsed")) - refund_monthly
+                    )
                     monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
                     monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
-                    monthly_engine["vf"] = max(0, _as_positive_int(monthly_engine.get("vf")) - vf_cost)
+                    monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) - vf_cost)
                     monthly_engine["chars"] = max(0, _as_positive_int(monthly_engine.get("chars")) - chars)
                     monthly.setdefault("byEngine", {})[engine] = monthly_engine
                     monthly["updatedAt"] = now
                 if daily is not None:
-                    daily["vfUsed"] = max(0, _as_positive_int(daily.get("vfUsed")) - vf_cost)
+                    daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) - vf_cost)
                     daily["generationCount"] = max(0, _as_positive_int(daily.get("generationCount")) - 1)
                     daily_engine = dict((daily.get("byEngine") or {}).get(engine) or {})
-                    daily_engine["vf"] = max(0, _as_positive_int(daily_engine.get("vf")) - vf_cost)
+                    daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) - vf_cost)
                     daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - chars)
                     daily.setdefault("byEngine", {})[engine] = daily_engine
                     daily["updatedAt"] = now
                 if refund_vff > 0 or refund_paid > 0:
-                    entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + refund_vff
-                    entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + refund_paid
+                    entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refund_vff)
+                    entitlement["paidVfBalance"] = _as_positive_number(
+                        _as_positive_number(entitlement.get("paidVfBalance")) + refund_paid
+                    )
                     entitlement["updatedAt"] = now
                     _INMEMORY_ENTITLEMENTS[uid] = entitlement
             event["status"] = "reverted"
@@ -3529,36 +4018,40 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
             entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
         )
         engine = str(event.get("engine") or "GEM").upper()
-        vf_cost = _as_positive_int(event.get("vfCost"))
+        vf_cost = _as_positive_number(event.get("vfCost"))
         chars = _as_positive_int(event.get("chars"))
         charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
-        refund_vff = _as_positive_int(charge_breakdown.get("vff"))
-        refund_paid = _as_positive_int(charge_breakdown.get("paidVf"))
-        refund_monthly = _as_positive_int(charge_breakdown.get("monthlyVf"))
+        refund_vff = _as_positive_number(charge_breakdown.get("vff"))
+        refund_paid = _as_positive_number(charge_breakdown.get("paidVf"))
+        refund_monthly = _as_positive_number(charge_breakdown.get("monthlyVf"))
         if monthly_doc.exists:
             monthly = monthly_doc.to_dict() or {}
-            monthly["vfUsed"] = max(0, _as_positive_int(monthly.get("vfUsed")) - vf_cost)
-            monthly["monthlyFreeVfUsed"] = max(0, _as_positive_int(monthly.get("monthlyFreeVfUsed")) - refund_monthly)
+            monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - vf_cost)
+            monthly["monthlyFreeVfUsed"] = _as_positive_number(
+                _as_positive_number(monthly.get("monthlyFreeVfUsed")) - refund_monthly
+            )
             monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
             monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
-            monthly_engine["vf"] = max(0, _as_positive_int(monthly_engine.get("vf")) - vf_cost)
+            monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) - vf_cost)
             monthly_engine["chars"] = max(0, _as_positive_int(monthly_engine.get("chars")) - chars)
             monthly.setdefault("byEngine", {})[engine] = monthly_engine
             monthly["updatedAt"] = now
             transaction_obj.set(monthly_ref, monthly, merge=True)
         if daily_doc.exists:
             daily = daily_doc.to_dict() or {}
-            daily["vfUsed"] = max(0, _as_positive_int(daily.get("vfUsed")) - vf_cost)
+            daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) - vf_cost)
             daily["generationCount"] = max(0, _as_positive_int(daily.get("generationCount")) - 1)
             daily_engine = dict((daily.get("byEngine") or {}).get(engine) or {})
-            daily_engine["vf"] = max(0, _as_positive_int(daily_engine.get("vf")) - vf_cost)
+            daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) - vf_cost)
             daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - chars)
             daily.setdefault("byEngine", {})[engine] = daily_engine
             daily["updatedAt"] = now
             transaction_obj.set(daily_ref, daily, merge=True)
         if refund_vff > 0 or refund_paid > 0:
-            entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + refund_vff
-            entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + refund_paid
+            entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refund_vff)
+            entitlement["paidVfBalance"] = _as_positive_number(
+                _as_positive_number(entitlement.get("paidVfBalance")) + refund_paid
+            )
             entitlement["updatedAt"] = now
             transaction_obj.set(entitlements_ref, entitlement, merge=True)
         transaction_obj.set(event_ref, {"status": "reverted", "updatedAt": now, "error": str(error_detail)}, merge=True)
@@ -3569,20 +4062,19 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
 def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
     entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
     monthly, daily = _load_usage_windows(uid)
-    monthly_used = _as_positive_int(monthly.get("vfUsed"))
+    monthly_used = _as_positive_number(monthly.get("vfUsed"))
     monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit"))
-    monthly_free_used = _as_positive_int(monthly.get("monthlyFreeVfUsed"))
+    monthly_free_used = _as_positive_number(monthly.get("monthlyFreeVfUsed"))
     daily_used = _as_positive_int(daily.get("generationCount"))
     daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit"))
     plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
-    plan_key = _plan_key_from_name(plan_name)
     month_key = _wallet_month_key()
     if str(entitlement.get("vffMonthKey") or "") != month_key:
-        entitlement["vffBalance"] = 0
+        entitlement["vffBalance"] = 0.0
         entitlement["vffMonthKey"] = month_key
-    vff_balance = _as_positive_int(entitlement.get("vffBalance"))
-    paid_balance = _as_positive_int(entitlement.get("paidVfBalance"))
-    monthly_free_remaining = max(0, monthly_limit - monthly_free_used)
+    vff_balance = _as_positive_number(entitlement.get("vffBalance"))
+    paid_balance = _as_positive_number(entitlement.get("paidVfBalance"))
+    monthly_free_remaining = _as_positive_number(float(monthly_limit) - monthly_free_used)
     ad_claims_today = _ad_claims_today(uid)
     month_start, month_end = _month_window_bounds()
     day_start, day_end = _day_window_bounds()
@@ -3605,7 +4097,7 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             "generationLimit": daily_limit,
             "generationUsed": daily_used,
             "generationRemaining": max(0, daily_limit - daily_used),
-            "vfUsed": _as_positive_int(daily.get("vfUsed")),
+            "vfUsed": _as_positive_number(daily.get("vfUsed")),
             "periodKey": str(daily.get("periodKey") or _usage_day_period_label()),
             "windowStartUtc": day_start,
             "windowEndUtc": day_end,
@@ -3623,8 +4115,8 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             "vffBalance": vff_balance,
             "paidVfBalance": paid_balance,
             "spendableNowByEngine": {
-                "KOKORO": monthly_free_remaining + vff_balance + paid_balance,
-                "GEM": monthly_free_remaining + vff_balance + paid_balance,
+                engine: _wallet_spendable_now(entitlement, monthly, engine)
+                for engine in TTS_ENGINE_KEYS
             },
             "adClaimsToday": ad_claims_today,
             "adClaimsDailyLimit": VF_AD_REWARD_CLAIM_LIMIT_PER_DAY,
@@ -3632,8 +4124,8 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
         },
         "limits": {
             "vfRates": {
-                "KOKORO": _engine_rate_for_plan(plan_key, "KOKORO"),
-                "GEM": _engine_rate_for_plan(plan_key, "GEM"),
+                engine: _engine_rate(engine)
+                for engine in TTS_ENGINE_KEYS
             },
             "monthlyPlanCaps": {
                 "Free": PLAN_LIMITS["free"]["monthlyVfLimit"],
@@ -3794,8 +4286,8 @@ class CouponRedeemRequest(BaseModel):
 
 class AdminUserPatchRequest(BaseModel):
     plan: Optional[str] = None
-    paidVfDelta: Optional[int] = None
-    vffDelta: Optional[int] = None
+    paidVfDelta: Optional[float] = None
+    vffDelta: Optional[float] = None
     disabled: Optional[bool] = None
 
 
@@ -3812,6 +4304,63 @@ class AdminRoleAssignmentRequest(BaseModel):
 
 class AdminRoleStatusRequest(BaseModel):
     note: Optional[str] = None
+
+
+class UserProfileUpsertRequest(BaseModel):
+    userId: str
+    displayName: Optional[str] = None
+
+
+class AdminForceUserIdChangeRequest(BaseModel):
+    userId: str
+    reason: Optional[str] = None
+
+
+class TeamCreateRequest(BaseModel):
+    name: str
+    slug: str
+    ownerUid: str
+    seatLimit: int = 5
+    status: str = "active"
+
+
+class TeamPatchRequest(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    ownerUid: Optional[str] = None
+    seatLimit: Optional[int] = None
+    status: Optional[str] = None
+
+
+class TeamMemberCreateRequest(BaseModel):
+    uid: str
+    role: str = "member"
+    status: str = "active"
+
+
+class TeamMemberPatchRequest(BaseModel):
+    role: Optional[str] = None
+    status: Optional[str] = None
+
+
+class SupportMessageCreateRequest(BaseModel):
+    text: str
+    conversationId: Optional[str] = None
+    attachmentsMeta: Optional[list[dict[str, Any]]] = None
+
+
+class SupportReplyRequest(BaseModel):
+    text: str
+
+
+class SupportAiPolicyPatchRequest(BaseModel):
+    enabled: Optional[bool] = None
+    confidenceThreshold: Optional[float] = None
+    maxAutoRepliesPerConversation: Optional[int] = None
+    allowedActions: Optional[list[str]] = None
+    blockedTopics: Optional[list[str]] = None
+    requireHumanForTags: Optional[list[str]] = None
+    adminToken: Optional[str] = None
 
 
 class AlertPolicyCreateRequest(BaseModel):
@@ -4244,7 +4793,7 @@ def _admin_usage_record_runtime_call(
     elapsed_ms: int,
 ) -> None:
     engine_key = str(engine or "").strip().upper()
-    integration = "gemini-runtime" if engine_key == "GEM" else "kokoro-runtime" if engine_key == "KOKORO" else "tts-runtime"
+    integration = "gemini-runtime" if _is_gem_runtime_engine(engine_key) else "kokoro-runtime" if engine_key == "KOKORO" else "tts-runtime"
     _admin_usage_record_event(
         integration=integration,
         endpoint=str(endpoint or "/synthesize"),
@@ -4578,6 +5127,9 @@ def _audit_append_event(
     request: Optional[Request] = None,
     actor_uid: Optional[str] = None,
     actor_role: Optional[str] = None,
+    actor_user_id: Optional[str] = None,
+    subject_uid: str = "",
+    subject_user_id: str = "",
     request_id: str = "",
 ) -> dict[str, Any]:
     if not VF_AUDIT_LEDGER_ENABLED:
@@ -4587,10 +5139,22 @@ def _audit_append_event(
     safe_resource_id = _truncate_text(resource_id, 160)
     safe_actor_uid = _truncate_text(actor_uid or (_require_request_uid(request) if request is not None else ""), 160)
     safe_actor_role = _truncate_text(actor_role or "", 80)
+    safe_actor_user_id = _truncate_text(actor_user_id or "", 64).lower()
     if not safe_actor_role and request is not None:
         actor = getattr(request.state, "actor", None)
         if isinstance(actor, dict):
             safe_actor_role = _truncate_text(actor.get("role"), 80)
+    if not safe_actor_user_id:
+        if request is not None:
+            claim_uid = str(getattr(request.state, "uid", "") or "").strip()
+            if claim_uid:
+                safe_actor_user_id = _truncate_text(_resolve_request_user_id(request, claim_uid), 64).lower()
+        if not safe_actor_user_id and safe_actor_uid:
+            safe_actor_user_id = _truncate_text(_user_id_for_uid(safe_actor_uid), 64).lower()
+    safe_subject_uid = _truncate_text(subject_uid, 160)
+    safe_subject_user_id = _truncate_text(subject_user_id, 64).lower()
+    if safe_subject_uid and not safe_subject_user_id:
+        safe_subject_user_id = _truncate_text(_user_id_for_uid(safe_subject_uid), 64).lower()
     event_id = f"audit_{uuid.uuid4().hex}"
     now_iso = _utc_now().isoformat()
     safe_request_id = _truncate_text(request_id, 160) or _truncate_text(
@@ -4608,7 +5172,10 @@ def _audit_append_event(
                 "eventId": event_id,
                 "ts": now_iso,
                 "actorUid": safe_actor_uid,
+                "actorUserId": safe_actor_user_id,
                 "actorRole": safe_actor_role,
+                "subjectUid": safe_subject_uid,
+                "subjectUserId": safe_subject_user_id,
                 "action": safe_action,
                 "resourceType": safe_resource_type,
                 "resourceId": safe_resource_id,
@@ -4649,7 +5216,10 @@ def _audit_append_event(
             "eventId": event_id,
             "ts": now_iso,
             "actorUid": safe_actor_uid,
+            "actorUserId": safe_actor_user_id,
             "actorRole": safe_actor_role,
+            "subjectUid": safe_subject_uid,
+            "subjectUserId": safe_subject_user_id,
             "action": safe_action,
             "resourceType": safe_resource_type,
             "resourceId": safe_resource_id,
@@ -4686,6 +5256,9 @@ def _audit_append_event(
 def _audit_list_events(
     *,
     actor_uid: str = "",
+    actor_user_id: str = "",
+    subject_uid: str = "",
+    subject_user_id: str = "",
     action: str = "",
     resource_type: str = "",
     from_iso: str = "",
@@ -4695,6 +5268,9 @@ def _audit_list_events(
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
     safe_limit = max(1, min(500, int(limit)))
     safe_actor_uid = str(actor_uid or "").strip()
+    safe_actor_user_id = str(actor_user_id or "").strip().lower()
+    safe_subject_uid = str(subject_uid or "").strip()
+    safe_subject_user_id = str(subject_user_id or "").strip().lower()
     safe_action = str(action or "").strip().lower()
     safe_resource_type = str(resource_type or "").strip().lower()
     from_dt = _parse_optional_datetime(from_iso) if from_iso else None
@@ -4717,6 +5293,12 @@ def _audit_list_events(
             if safe_cursor and event_id <= safe_cursor:
                 continue
             if safe_actor_uid and str(item.get("actorUid") or "").strip() != safe_actor_uid:
+                continue
+            if safe_actor_user_id and str(item.get("actorUserId") or "").strip().lower() != safe_actor_user_id:
+                continue
+            if safe_subject_uid and str(item.get("subjectUid") or "").strip() != safe_subject_uid:
+                continue
+            if safe_subject_user_id and str(item.get("subjectUserId") or "").strip().lower() != safe_subject_user_id:
                 continue
             if safe_action and str(item.get("action") or "").strip().lower() != safe_action:
                 continue
@@ -4747,6 +5329,12 @@ def _audit_list_events(
         if safe_cursor and event_id <= safe_cursor:
             continue
         if safe_actor_uid and str(item.get("actorUid") or "").strip() != safe_actor_uid:
+            continue
+        if safe_actor_user_id and str(item.get("actorUserId") or "").strip().lower() != safe_actor_user_id:
+            continue
+        if safe_subject_uid and str(item.get("subjectUid") or "").strip() != safe_subject_uid:
+            continue
+        if safe_subject_user_id and str(item.get("subjectUserId") or "").strip().lower() != safe_subject_user_id:
             continue
         if safe_action and str(item.get("action") or "").strip().lower() != safe_action:
             continue
@@ -5451,6 +6039,14 @@ def _ai_ops_admin_authorized(request: Request, admin_token: Optional[str]) -> tu
     if provided_token != VF_ADMIN_APPROVAL_TOKEN:
         return False, uid, "invalid_admin_token"
     return True, uid, "authorized"
+
+
+def _require_admin_approval_token(admin_token: Optional[str]) -> None:
+    if not VF_ADMIN_APPROVAL_TOKEN:
+        return
+    provided = str(admin_token or "").strip()
+    if provided != VF_ADMIN_APPROVAL_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid or missing admin approval token.")
 
 
 def _ai_ops_list_approvals(status: str = "pending") -> list[dict[str, Any]]:
@@ -6569,13 +7165,13 @@ def _normalize_engine_name(raw_engine: str) -> str:
     normalized = normalized.strip("_")
     engine = TTS_ENGINE_ALIASES.get(normalized)
     if not engine:
-        raise ValueError("Invalid engine. Use GEM or KOKORO.")
+        raise ValueError("Invalid engine. Use KOKORO, NEURAL2, or GEM.")
     return engine
 
 
 def _runtime_url_for_engine(engine: str) -> str:
     normalized = _normalize_engine_name(engine)
-    if normalized == "GEM":
+    if _is_gem_runtime_engine(normalized):
         return GEMINI_RUNTIME_URL
     return KOKORO_RUNTIME_URL
 
@@ -7273,13 +7869,13 @@ def _coupon_policy_blocks_user(coupon: dict[str, Any], uid: str, redemptions_by_
 def _credit_paid_vf(
     *,
     uid: str,
-    amount: int,
+    amount: float,
     reason: str,
     transaction_id: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, dict[str, Any]]:
     safe_uid = str(uid or "").strip()
-    credit_amount = _as_positive_int(amount)
+    credit_amount = _as_positive_number(amount)
     if not safe_uid or credit_amount <= 0:
         return False, _load_entitlement(safe_uid or "")
     now = _utc_now()
@@ -7301,7 +7897,8 @@ def _credit_paid_vf(
             if tx_id and tx_id in _INMEMORY_WALLET_TRANSACTIONS:
                 return False, _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid))
             entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid), now)
-            entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_amount
+            entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance")) + credit_amount
+            entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
             entitlement["updatedAt"] = now.isoformat()
             _INMEMORY_ENTITLEMENTS[safe_uid] = entitlement
             if tx_id:
@@ -7326,7 +7923,8 @@ def _credit_paid_vf(
 
         ent_doc = ent_ref.get(transaction=transaction_obj)
         entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(safe_uid), now)
-        entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_amount
+        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance")) + credit_amount
+        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
         entitlement["updatedAt"] = now.isoformat()
         transaction_obj.set(ent_ref, entitlement, merge=True)
         transaction_obj.set(tx_ref, {**tx_payload, "id": tx_ref.id}, merge=True)
@@ -9057,6 +9655,564 @@ def _sync_entitlement_from_subscription(
     return payload
 
 
+def _team_slug_normalize(value: str) -> str:
+    token = str(value or "").strip().lower()
+    token = re.sub(r"[^a-z0-9_-]", "-", token)
+    token = re.sub(r"-{2,}", "-", token).strip("-")
+    if len(token) < 3 or len(token) > 48:
+        raise HTTPException(status_code=400, detail="team slug must be 3-48 characters.")
+    return token
+
+
+def _team_status_normalize(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if token in {"active", "disabled", "archived"}:
+        return token
+    return "active"
+
+
+def _team_member_role_normalize(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if token in TEAM_MEMBER_ROLES:
+        return token
+    return "member"
+
+
+def _team_member_doc_id(team_id: str, uid: str) -> str:
+    return f"{str(team_id or '').strip()}::{str(uid or '').strip()}"
+
+
+def _team_get(team_id: str) -> Optional[dict[str, Any]]:
+    safe_team_id = str(team_id or "").strip()
+    if not safe_team_id:
+        return None
+    collection = _firestore_collection(TEAMS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_TEAMS.get(safe_team_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_team_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "teamId": safe_team_id}
+
+
+def _team_upsert(team_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_team_id = str(team_id or "").strip() or f"team_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["teamId"] = safe_team_id
+    collection = _firestore_collection(TEAMS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_TEAMS[safe_team_id] = dict(payload)
+        return payload
+    collection.document(safe_team_id).set(payload, merge=True)
+    return payload
+
+
+def _team_list(limit: int = 200, q: str = "") -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    needle = str(q or "").strip().lower()
+    collection = _firestore_collection(TEAMS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_TEAMS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "teamId": str(doc.id or "")} for doc in collection.limit(safe_limit * 2).stream()]
+        except Exception:
+            rows = []
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if needle:
+            slug = str(row.get("slug") or "").lower()
+            name = str(row.get("name") or "").lower()
+            owner = str(row.get("ownerUserId") or "").lower()
+            if needle not in slug and needle not in name and needle not in owner:
+                continue
+        filtered.append(row)
+    filtered.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    return filtered[:safe_limit]
+
+
+def _team_member_get(team_id: str, uid: str) -> Optional[dict[str, Any]]:
+    safe_doc_id = _team_member_doc_id(team_id, uid)
+    collection = _firestore_collection(TEAM_MEMBERS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_TEAM_MEMBERS.get(safe_doc_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_doc_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "id": safe_doc_id}
+
+
+def _team_member_upsert(team_id: str, uid: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_doc_id = _team_member_doc_id(team_id, uid)
+    payload = dict(row or {})
+    payload["id"] = safe_doc_id
+    payload["teamId"] = str(team_id or "").strip()
+    payload["uid"] = str(uid or "").strip()
+    collection = _firestore_collection(TEAM_MEMBERS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_TEAM_MEMBERS[safe_doc_id] = dict(payload)
+        return payload
+    collection.document(safe_doc_id).set(payload, merge=True)
+    return payload
+
+
+def _team_member_delete(team_id: str, uid: str) -> bool:
+    safe_doc_id = _team_member_doc_id(team_id, uid)
+    collection = _firestore_collection(TEAM_MEMBERS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            existed = safe_doc_id in _INMEMORY_TEAM_MEMBERS
+            _INMEMORY_TEAM_MEMBERS.pop(safe_doc_id, None)
+            return existed
+    try:
+        collection.document(safe_doc_id).delete()
+    except Exception:
+        return False
+    return True
+
+
+def _team_list_members(team_id: str, limit: int = 500) -> list[dict[str, Any]]:
+    safe_team_id = str(team_id or "").strip()
+    safe_limit = max(1, min(2000, int(limit)))
+    collection = _firestore_collection(TEAM_MEMBERS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [
+                dict(item)
+                for item in _INMEMORY_TEAM_MEMBERS.values()
+                if str((item or {}).get("teamId") or "").strip() == safe_team_id
+            ]
+    else:
+        try:
+            rows = [
+                {**(doc.to_dict() or {}), "id": str(doc.id or "")}
+                for doc in collection.where("teamId", "==", safe_team_id).limit(safe_limit).stream()
+            ]
+        except Exception:
+            rows = []
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: str(item.get("joinedAt") or item.get("updatedAt") or ""), reverse=False)
+    return rows[:safe_limit]
+
+
+def _support_ai_default_policy() -> dict[str, Any]:
+    return {
+        "enabled": bool(VF_SUPPORT_AI_ENABLED),
+        "confidenceThreshold": float(VF_SUPPORT_AI_CONFIDENCE_THRESHOLD),
+        "maxAutoRepliesPerConversation": 2,
+        "allowedActions": ["classify_message", "retrieve_kb_snippets", "emit_support_reply"],
+        "blockedTopics": ["legal_notice", "fraud", "chargeback"],
+        "requireHumanForTags": ["billing_dispute", "account_lock", "security"],
+        "updatedAt": _utc_now().isoformat(),
+        "updatedBy": "system",
+    }
+
+
+def _support_ai_policy_get() -> dict[str, Any]:
+    collection = _firestore_collection(SUPPORT_AI_POLICY_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            if not _INMEMORY_SUPPORT_AI_POLICY:
+                _INMEMORY_SUPPORT_AI_POLICY.update(_support_ai_default_policy())
+            return dict(_INMEMORY_SUPPORT_AI_POLICY)
+    try:
+        doc = collection.document("current").get()
+    except Exception:
+        return _support_ai_default_policy()
+    if not doc.exists:
+        payload = _support_ai_default_policy()
+        try:
+            collection.document("current").set(payload, merge=True)
+        except Exception:
+            pass
+        return payload
+    payload = doc.to_dict() or {}
+    merged = _support_ai_default_policy()
+    merged.update(payload)
+    return merged
+
+
+def _support_ai_policy_patch(patch: dict[str, Any], *, updated_by: str) -> dict[str, Any]:
+    current = _support_ai_policy_get()
+    next_policy = dict(current)
+    if "enabled" in patch:
+        next_policy["enabled"] = bool(patch.get("enabled"))
+    if patch.get("confidenceThreshold") is not None:
+        next_policy["confidenceThreshold"] = max(0.0, min(1.0, float(patch.get("confidenceThreshold") or 0.0)))
+    if patch.get("maxAutoRepliesPerConversation") is not None:
+        next_policy["maxAutoRepliesPerConversation"] = max(0, int(patch.get("maxAutoRepliesPerConversation") or 0))
+    if isinstance(patch.get("allowedActions"), list):
+        next_policy["allowedActions"] = [str(item or "").strip() for item in patch.get("allowedActions") if str(item or "").strip()]
+    if isinstance(patch.get("blockedTopics"), list):
+        next_policy["blockedTopics"] = [str(item or "").strip().lower() for item in patch.get("blockedTopics") if str(item or "").strip()]
+    if isinstance(patch.get("requireHumanForTags"), list):
+        next_policy["requireHumanForTags"] = [str(item or "").strip().lower() for item in patch.get("requireHumanForTags") if str(item or "").strip()]
+    next_policy["updatedAt"] = _utc_now().isoformat()
+    next_policy["updatedBy"] = str(updated_by or "")[:160]
+    collection = _firestore_collection(SUPPORT_AI_POLICY_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_SUPPORT_AI_POLICY.clear()
+            _INMEMORY_SUPPORT_AI_POLICY.update(next_policy)
+        return next_policy
+    collection.document("current").set(next_policy, merge=True)
+    return next_policy
+
+
+def _support_conversation_get(conversation_id: str) -> Optional[dict[str, Any]]:
+    safe_id = str(conversation_id or "").strip()
+    if not safe_id:
+        return None
+    collection = _firestore_collection(SUPPORT_CONVERSATIONS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_SUPPORT_CONVERSATIONS.get(safe_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    return {**(doc.to_dict() or {}), "conversationId": safe_id}
+
+
+def _support_conversation_upsert(conversation_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(conversation_id or "").strip() or f"supc_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["conversationId"] = safe_id
+    collection = _firestore_collection(SUPPORT_CONVERSATIONS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_SUPPORT_CONVERSATIONS[safe_id] = dict(payload)
+        return payload
+    collection.document(safe_id).set(payload, merge=True)
+    return payload
+
+
+def _support_message_upsert(message_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(message_id or "").strip() or f"supm_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["messageId"] = safe_id
+    collection = _firestore_collection(SUPPORT_MESSAGES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_SUPPORT_MESSAGES[safe_id] = dict(payload)
+        return payload
+    collection.document(safe_id).set(payload, merge=True)
+    return payload
+
+
+def _support_ai_run_upsert(run_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(run_id or "").strip() or f"supai_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["runId"] = safe_id
+    collection = _firestore_collection(SUPPORT_AI_RUNS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_SUPPORT_AI_RUNS[safe_id] = dict(payload)
+        return payload
+    collection.document(safe_id).set(payload, merge=True)
+    return payload
+
+
+def _support_list_messages(conversation_id: str, limit: int = 500) -> list[dict[str, Any]]:
+    safe_id = str(conversation_id or "").strip()
+    safe_limit = max(1, min(2000, int(limit)))
+    collection = _firestore_collection(SUPPORT_MESSAGES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [
+                dict(item)
+                for item in _INMEMORY_SUPPORT_MESSAGES.values()
+                if str((item or {}).get("conversationId") or "").strip() == safe_id
+            ]
+    else:
+        try:
+            rows = [
+                {**(doc.to_dict() or {}), "messageId": str(doc.id or "")}
+                for doc in collection.where("conversationId", "==", safe_id).limit(safe_limit).stream()
+            ]
+        except Exception:
+            rows = []
+    rows = [row for row in rows if isinstance(row, dict)]
+    rows.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=False)
+    return rows[:safe_limit]
+
+
+def _support_list_conversations(*, status: str = "", limit: int = 200, q: str = "") -> list[dict[str, Any]]:
+    safe_status = str(status or "").strip().lower()
+    safe_limit = max(1, min(500, int(limit)))
+    needle = str(q or "").strip().lower()
+    collection = _firestore_collection(SUPPORT_CONVERSATIONS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_SUPPORT_CONVERSATIONS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "conversationId": str(doc.id or "")} for doc in collection.limit(safe_limit * 2).stream()]
+        except Exception:
+            rows = []
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if safe_status and str(row.get("status") or "").strip().lower() != safe_status:
+            continue
+        if needle:
+            user_id = str(row.get("userId") or "").strip().lower()
+            uid = str(row.get("uid") or "").strip().lower()
+            if needle not in user_id and needle not in uid:
+                continue
+        filtered.append(row)
+    filtered.sort(key=lambda item: str(item.get("lastMessageAt") or item.get("updatedAt") or ""), reverse=True)
+    return filtered[:safe_limit]
+
+
+def _support_open_or_touch_yellow_alert(conversation_id: str, *, reason: str) -> dict[str, Any]:
+    now_iso = _utc_now().isoformat()
+    existing = None
+    for row in _alert_list_events(limit=500):
+        if str(row.get("resourceType") or "").strip().lower() != "support_conversation":
+            continue
+        if str(row.get("resourceId") or "").strip() != str(conversation_id or "").strip():
+            continue
+        if str(row.get("status") or "").strip().lower() == "open":
+            existing = row
+            break
+    if existing is None:
+        event = {
+            "policyId": "support_unresolved",
+            "resourceType": "support_conversation",
+            "resourceId": str(conversation_id or "").strip(),
+            "status": "open",
+            "severity": "warning",
+            "openedAt": now_iso,
+            "lastTriggeredAt": now_iso,
+            "resolvedAt": None,
+            "samples": [{"ts": now_iso, "reason": reason}],
+            "channels": ["in_app"],
+            "delivery": [],
+        }
+        return _alert_upsert_event("", event)
+    samples = list(existing.get("samples") or [])
+    samples.append({"ts": now_iso, "reason": reason})
+    existing["samples"] = samples[-40:]
+    existing["lastTriggeredAt"] = now_iso
+    existing["severity"] = "warning"
+    return _alert_upsert_event(str(existing.get("id") or ""), existing)
+
+
+def _support_resolve_alert_if_open(conversation_id: str) -> None:
+    for row in _alert_list_events(limit=500):
+        if str(row.get("resourceType") or "").strip().lower() != "support_conversation":
+            continue
+        if str(row.get("resourceId") or "").strip() != str(conversation_id or "").strip():
+            continue
+        if str(row.get("status") or "").strip().lower() != "open":
+            continue
+        row["status"] = "resolved"
+        row["resolvedAt"] = _utc_now().isoformat()
+        _alert_upsert_event(str(row.get("id") or ""), row)
+        return
+
+
+def _support_ai_confidence_score(text: str) -> float:
+    content = str(text or "").strip().lower()
+    if not content:
+        return 0.0
+    keywords = [
+        "coupon",
+        "plan",
+        "billing",
+        "invoice",
+        "payment",
+        "login",
+        "password",
+        "voice",
+        "audio",
+        "error",
+        "failed",
+        "subscription",
+    ]
+    hits = sum(1 for token in keywords if token in content)
+    base = 0.32 + min(0.52, hits * 0.08)
+    if len(content) >= 24:
+        base += 0.05
+    if "?" in content:
+        base += 0.04
+    return max(0.0, min(0.98, round(base, 4)))
+
+
+def _support_ai_reply_text(user_text: str) -> str:
+    text = str(user_text or "").strip()
+    if not text:
+        return "I could not read your message clearly. Please share more details so I can help."
+    return (
+        "Thanks for reporting this. I checked your query and suggested quick steps: "
+        "verify plan/coupon settings, refresh session, and retry once. "
+        "If the issue continues, reply \"still unresolved\" and a human agent will take over."
+    )
+
+
+def _support_ai_count_messages(conversation_id: str, from_type: str) -> int:
+    safe_conv = str(conversation_id or "").strip()
+    safe_from_type = str(from_type or "").strip().lower()
+    if not safe_conv or not safe_from_type:
+        return 0
+    count = 0
+    for row in _support_list_messages(safe_conv, limit=1000):
+        if str(row.get("fromType") or "").strip().lower() == safe_from_type:
+            count += 1
+    return count
+
+
+def _support_ai_action_allowed(policy: dict[str, Any], action: str) -> bool:
+    allowed = [str(item or "").strip().lower() for item in list(policy.get("allowedActions") or [])]
+    return str(action or "").strip().lower() in set(allowed)
+
+
+def _support_try_ai_autoreply(
+    *,
+    conversation: dict[str, Any],
+    user_message: dict[str, Any],
+    request: Optional[Request],
+) -> dict[str, Any]:
+    now_iso = _utc_now().isoformat()
+    conversation_id = str(conversation.get("conversationId") or "").strip()
+    uid = str(conversation.get("uid") or "").strip()
+    user_id = str(conversation.get("userId") or "").strip().lower()
+    text = str(user_message.get("text") or "").strip()
+    policy = _support_ai_policy_get()
+    run = {
+        "conversationId": conversation_id,
+        "messageId": str(user_message.get("messageId") or ""),
+        "uid": uid,
+        "userId": user_id,
+        "status": "evaluating",
+        "reason": "",
+        "confidence": 0.0,
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    blocked_topics = [str(item or "").strip().lower() for item in list(policy.get("blockedTopics") or [])]
+    text_lc = text.lower()
+    blocked_hit = next((topic for topic in blocked_topics if topic and topic in text_lc), "")
+    max_auto = max(0, int(policy.get("maxAutoRepliesPerConversation") or 0))
+    sent_ai_count = _support_ai_count_messages(conversation_id, "ai")
+    confidence = _support_ai_confidence_score(text)
+    threshold = max(0.0, min(1.0, float(policy.get("confidenceThreshold") or VF_SUPPORT_AI_CONFIDENCE_THRESHOLD)))
+    run["confidence"] = confidence
+
+    def _escalate(reason: str) -> dict[str, Any]:
+        conversation["status"] = "needs_human"
+        conversation["priority"] = "yellow"
+        conversation["lastMessageAt"] = now_iso
+        conversation["updatedAt"] = now_iso
+        _support_conversation_upsert(conversation_id, conversation)
+        run["status"] = "escalated"
+        run["reason"] = reason
+        run["updatedAt"] = now_iso
+        written_run = _support_ai_run_upsert("", run)
+        _support_open_or_touch_yellow_alert(conversation_id, reason=reason)
+        _audit_append_event(
+            action="support_ai_escalated",
+            resource_type="support_conversation",
+            resource_id=conversation_id,
+            after={"reason": reason, "confidence": confidence},
+            request=request,
+            actor_uid=uid,
+            actor_role="user",
+            subject_uid=uid,
+            subject_user_id=user_id,
+        )
+        return {
+            "ok": True,
+            "mode": "escalated",
+            "reason": reason,
+            "conversation": conversation,
+            "run": written_run,
+        }
+
+    if not VF_SUPPORT_AI_ENABLED or not VF_SUPPORT_AI_AUTOREPLY_ENABLED:
+        return _escalate("support_ai_disabled")
+    if not _as_bool(policy.get("enabled")):
+        return _escalate("policy_disabled")
+    if not _support_ai_action_allowed(policy, "emit_support_reply"):
+        run["status"] = "blocked"
+        run["reason"] = "blocked_by_policy"
+        run["updatedAt"] = now_iso
+        written_run = _support_ai_run_upsert("", run)
+        _audit_append_event(
+            action="support_ai_blocked_by_policy",
+            resource_type="support_conversation",
+            resource_id=conversation_id,
+            after={"reason": "blocked_by_policy"},
+            request=request,
+            actor_uid=uid,
+            actor_role="user",
+            subject_uid=uid,
+            subject_user_id=user_id,
+        )
+        return _escalate("blocked_by_policy")
+    if blocked_hit:
+        return _escalate(f"blocked_topic:{blocked_hit}")
+    if sent_ai_count >= max_auto:
+        return _escalate("max_auto_replies_reached")
+    if confidence < threshold:
+        return _escalate("low_confidence")
+
+    ai_reply = _support_message_upsert(
+        "",
+        {
+            "conversationId": conversation_id,
+            "fromType": "ai",
+            "uid": uid,
+            "userId": user_id,
+            "text": _support_ai_reply_text(text),
+            "attachmentsMeta": [],
+            "resolutionFlag": "ai_answered",
+            "createdAt": now_iso,
+        },
+    )
+    conversation["status"] = "ai_answered"
+    conversation["priority"] = "green"
+    conversation["lastMessageAt"] = now_iso
+    conversation["updatedAt"] = now_iso
+    _support_conversation_upsert(conversation_id, conversation)
+    run["status"] = "reply_sent"
+    run["reason"] = "ok"
+    run["updatedAt"] = now_iso
+    written_run = _support_ai_run_upsert("", run)
+    _audit_append_event(
+        action="support_ai_reply_sent",
+        resource_type="support_conversation",
+        resource_id=conversation_id,
+        after={"confidence": confidence},
+        request=request,
+        actor_uid=uid,
+        actor_role="user",
+        subject_uid=uid,
+        subject_user_id=user_id,
+    )
+    return {"ok": True, "mode": "ai_reply", "conversation": conversation, "aiMessage": ai_reply, "run": written_run}
+
+
 def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
     safe_limit = max(1, min(200, int(limit)))
     needle = str(search or "").strip().lower()
@@ -9069,16 +10225,22 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
             email = str(getattr(record, "email", "") or "")
             display_name = str(getattr(record, "display_name", "") or "")
             disabled = bool(getattr(record, "disabled", False))
-            if needle:
-                haystack = f"{uid} {email} {display_name}".lower()
-                if needle not in haystack:
-                    continue
             entitlement = _load_entitlement(uid)
             monthly, daily = _load_usage_windows(uid)
             custom_claims = getattr(record, "custom_claims", None) or {}
+            profile = _ensure_user_profile(
+                uid,
+                allow_auto_backfill=True,
+            ) or {}
+            user_id = str(profile.get("userId") or "").strip().lower()
+            if needle:
+                haystack = f"{uid} {email} {display_name} {user_id}".lower()
+                if needle not in haystack:
+                    continue
             users.append(
                 {
                     "uid": uid,
+                    "userId": user_id,
                     "email": email,
                     "displayName": display_name,
                     "disabled": disabled,
@@ -9086,11 +10248,11 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                     "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
                     "status": str(entitlement.get("status") or "free_active"),
                     "wallet": {
-                        "paidVfBalance": _as_positive_int(entitlement.get("paidVfBalance")),
-                        "vffBalance": _as_positive_int(entitlement.get("vffBalance")),
+                        "paidVfBalance": _as_positive_number(entitlement.get("paidVfBalance")),
+                        "vffBalance": _as_positive_number(entitlement.get("vffBalance")),
                     },
                     "usage": {
-                        "monthlyVfUsed": _as_positive_int(monthly.get("vfUsed")),
+                        "monthlyVfUsed": _as_positive_number(monthly.get("vfUsed")),
                         "dailyGenerationUsed": _as_positive_int(daily.get("generationCount")),
                     },
                 }
@@ -9106,9 +10268,16 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                 if needle and needle not in uid.lower():
                     continue
                 entitlement = _normalize_entitlement_wallet(payload)
+                profile = _ensure_user_profile(uid, allow_auto_backfill=True) or {}
+                user_id = str(profile.get("userId") or "").strip().lower()
+                if needle:
+                    haystack = f"{uid} {user_id}".lower()
+                    if needle not in haystack:
+                        continue
                 users.append(
                     {
                         "uid": uid,
+                        "userId": user_id,
                         "email": "",
                         "displayName": uid,
                         "disabled": False,
@@ -9116,8 +10285,8 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                         "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
                         "status": str(entitlement.get("status") or "free_active"),
                         "wallet": {
-                            "paidVfBalance": _as_positive_int(entitlement.get("paidVfBalance")),
-                            "vffBalance": _as_positive_int(entitlement.get("vffBalance")),
+                            "paidVfBalance": _as_positive_number(entitlement.get("paidVfBalance")),
+                            "vffBalance": _as_positive_number(entitlement.get("vffBalance")),
                         },
                         "usage": {"monthlyVfUsed": 0, "dailyGenerationUsed": 0},
                     }
@@ -9132,9 +10301,16 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
         if needle and needle not in uid.lower():
             continue
         entitlement = _normalize_entitlement_wallet(doc.to_dict() or {})
+        profile = _ensure_user_profile(uid, allow_auto_backfill=True) or {}
+        user_id = str(profile.get("userId") or "").strip().lower()
+        if needle:
+            haystack = f"{uid} {user_id}".lower()
+            if needle not in haystack:
+                continue
         users.append(
             {
                 "uid": uid,
+                "userId": user_id,
                 "email": "",
                 "displayName": uid,
                 "disabled": False,
@@ -9142,8 +10318,8 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                 "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
                 "status": str(entitlement.get("status") or "free_active"),
                 "wallet": {
-                    "paidVfBalance": _as_positive_int(entitlement.get("paidVfBalance")),
-                    "vffBalance": _as_positive_int(entitlement.get("vffBalance")),
+                    "paidVfBalance": _as_positive_number(entitlement.get("paidVfBalance")),
+                    "vffBalance": _as_positive_number(entitlement.get("vffBalance")),
                 },
                 "usage": {"monthlyVfUsed": 0, "dailyGenerationUsed": 0},
             }
@@ -9183,9 +10359,63 @@ def _admin_revoke_user_sessions(uid: str) -> None:
         raise HTTPException(status_code=502, detail=f"Failed to revoke sessions: {exc}") from exc
 
 
+@app.get("/account/profile")
+def account_profile(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    profile = _user_profile_read(uid)
+    if profile is None and (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE):
+        profile = _ensure_user_profile(uid, request=request, allow_auto_backfill=True)
+    required = bool(VF_USER_ID_REQUIRED and VF_AUTH_ENFORCE and not str((profile or {}).get("userId") or "").strip())
+    suggested = _user_profile_backfill_candidate(uid, _request_claim_email(request), "")
+    return JSONResponse(
+        {
+            "ok": True,
+            "requiredUserId": required,
+            "suggestedUserId": suggested,
+            "profile": profile or {"uid": uid, "userId": "", "status": "pending"},
+        }
+    )
+
+
+@app.post("/account/profile")
+def account_profile_upsert(payload: UserProfileUpsertRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    before = _user_profile_read(uid) or {}
+    row = _user_profile_upsert(
+        uid,
+        user_id=payload.userId,
+        display_name=payload.displayName,
+        email=_request_claim_email(request) or str(before.get("email") or ""),
+        created_by=uid,
+        updated_by=uid,
+        force_change=False,
+        allow_existing_immutable=False,
+    )
+    _audit_append_event(
+        action="user_profile_set",
+        resource_type="user_profile",
+        resource_id=str(uid),
+        before=before,
+        after=row,
+        request=request,
+        actor_uid=uid,
+        actor_role="user",
+        subject_uid=uid,
+    )
+    return JSONResponse({"ok": True, "profile": row})
+
+
+@app.post("/account/profile/bootstrap")
+def account_profile_bootstrap(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    profile = _ensure_user_profile(uid, request=request, allow_auto_backfill=True)
+    return JSONResponse({"ok": True, "profile": profile or {"uid": uid, "userId": ""}})
+
+
 @app.get("/account/entitlements")
 def account_entitlements(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    _require_user_id_ready(request, uid)
     payload = _entitlement_usage_payload(uid)
     return JSONResponse({"ok": True, "entitlements": payload})
 
@@ -9238,9 +10468,10 @@ def wallet_ad_reward_claim(request: Request) -> JSONResponse:
             _INMEMORY_WALLET_DAILY[day_doc_id] = row
             entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid), now)
             if str(entitlement.get("vffMonthKey") or "") != month_key:
-                entitlement["vffBalance"] = 0
+                entitlement["vffBalance"] = 0.0
                 entitlement["vffMonthKey"] = month_key
-            entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + VF_AD_REWARD_VFF_AMOUNT
+            entitlement["vffBalance"] = _as_positive_number(entitlement.get("vffBalance")) + float(VF_AD_REWARD_VFF_AMOUNT)
+            entitlement["vffBalance"] = _as_positive_number(entitlement.get("vffBalance"))
             entitlement["updatedAt"] = now.isoformat()
             _INMEMORY_ENTITLEMENTS[uid] = entitlement
         return JSONResponse({"ok": True, "entitlements": _entitlement_usage_payload(uid)})
@@ -9266,9 +10497,10 @@ def wallet_ad_reward_claim(request: Request) -> JSONResponse:
         ent_doc = ent_ref.get(transaction=transaction_obj)
         entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
         if str(entitlement.get("vffMonthKey") or "") != month_key:
-            entitlement["vffBalance"] = 0
+            entitlement["vffBalance"] = 0.0
             entitlement["vffMonthKey"] = month_key
-        entitlement["vffBalance"] = _as_positive_int(entitlement.get("vffBalance")) + VF_AD_REWARD_VFF_AMOUNT
+        entitlement["vffBalance"] = _as_positive_number(entitlement.get("vffBalance")) + float(VF_AD_REWARD_VFF_AMOUNT)
+        entitlement["vffBalance"] = _as_positive_number(entitlement.get("vffBalance"))
         entitlement["updatedAt"] = now.isoformat()
 
         transaction_obj.set(daily_ref, row, merge=True)
@@ -9368,6 +10600,16 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
                 "adminLimitBypass": bool(admin_limit_bypass),
             },
         )
+        _audit_append_event(
+            action="wallet_coupon_redeem",
+            resource_type="coupon_redemption",
+            resource_id=f"{coupon_id}:{uid}",
+            after={"couponId": coupon_id, "code": code, "creditedVf": credit_vf, "channel": "wallet"},
+            request=request,
+            actor_uid=uid,
+            actor_role="user",
+            subject_uid=uid,
+        )
         return JSONResponse({"ok": True, "creditedVf": credit_vf, "entitlements": _entitlement_usage_payload(uid)})
 
     coupon_id, coupon_lookup = _coupon_get_firestore_by_code(code)
@@ -9415,7 +10657,8 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
 
         ent_doc = entitlement_ref.get(transaction=transaction_obj)
         entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
-        entitlement["paidVfBalance"] = _as_positive_int(entitlement.get("paidVfBalance")) + credit_vf
+        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance")) + _as_positive_number(credit_vf)
+        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
         entitlement["updatedAt"] = now.isoformat()
         coupon["redeemedCount"] = _as_positive_int(coupon.get("redeemedCount")) + 1
         coupon["updatedAt"] = now.isoformat()
@@ -9469,6 +10712,16 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
             status = 404
         raise HTTPException(status_code=status, detail=detail) from exc
 
+    _audit_append_event(
+        action="wallet_coupon_redeem",
+        resource_type="coupon_redemption",
+        resource_id=f"{coupon_id}:{uid}",
+        after={"couponId": coupon_id, "code": code, "creditedVf": credited_vf, "channel": "wallet"},
+        request=request,
+        actor_uid=uid,
+        actor_role="user",
+        subject_uid=uid,
+    )
     return JSONResponse({"ok": True, "creditedVf": credited_vf, "entitlements": _entitlement_usage_payload(uid)})
 
 
@@ -9686,11 +10939,11 @@ def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: R
         patch["dailyGenerationLimit"] = plan_cfg["dailyGenerationLimit"]
 
     if payload.paidVfDelta is not None:
-        delta = int(payload.paidVfDelta)
-        patch["paidVfBalance"] = max(0, _as_positive_int(entitlement.get("paidVfBalance")) + delta)
+        delta = _as_float(payload.paidVfDelta, 0.0)
+        patch["paidVfBalance"] = _as_positive_number(_as_positive_number(entitlement.get("paidVfBalance")) + delta)
     if payload.vffDelta is not None:
-        delta = int(payload.vffDelta)
-        patch["vffBalance"] = max(0, _as_positive_int(entitlement.get("vffBalance")) + delta)
+        delta = _as_float(payload.vffDelta, 0.0)
+        patch["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + delta)
         patch["vffMonthKey"] = _wallet_month_key()
 
     if patch:
@@ -9708,6 +10961,7 @@ def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: R
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+        subject_uid=uid,
     )
     return JSONResponse(response_payload)
 
@@ -9727,6 +10981,7 @@ def admin_reset_user_password(target_uid: str, payload: AdminResetPasswordReques
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+        subject_uid=uid,
     )
     return JSONResponse({"ok": True, "uid": uid})
 
@@ -9746,8 +11001,44 @@ def admin_revoke_user_sessions(target_uid: str, request: Request) -> JSONRespons
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+        subject_uid=uid,
     )
     return JSONResponse({"ok": True, "uid": uid})
+
+
+@app.post("/admin/users/{target_uid}/force-user-id")
+def admin_force_change_user_id(
+    target_uid: str,
+    payload: AdminForceUserIdChangeRequest,
+    request: Request,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
+    uid = str(target_uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    before = _user_profile_read(uid) or {}
+    row = _user_profile_upsert(
+        uid,
+        user_id=payload.userId,
+        display_name=None,
+        email=None,
+        created_by=actor_uid,
+        updated_by=actor_uid,
+        force_change=True,
+        allow_existing_immutable=True,
+    )
+    _audit_append_event(
+        action="admin_force_user_id_change",
+        resource_type="user_profile",
+        resource_id=uid,
+        before=before,
+        after={**row, "reason": str(payload.reason or "")[:280]},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=uid,
+    )
+    return JSONResponse({"ok": True, "profile": row})
 
 
 @app.delete("/admin/users/{target_uid}")
@@ -9756,6 +11047,8 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
+    profile_before = _user_profile_read(uid) or {}
+    user_id_before = str(profile_before.get("userId") or "").strip().lower()
 
     if _firebase_ready() and firebase_auth is not None:
         try:
@@ -9767,6 +11060,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
     collection_names = [
         "entitlements",
         "users",
+        USER_PROFILES_COLLECTION,
         "generation_history",
         "usage_monthly",
         "usage_daily",
@@ -9778,7 +11072,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
         for name in collection_names:
             try:
                 coll = _FIRESTORE_DB.collection(name)
-                if name in {"entitlements", "users", "generation_history"}:
+                if name in {"entitlements", "users", USER_PROFILES_COLLECTION, "generation_history"}:
                     coll.document(uid).delete()
                     continue
                 docs = coll.where("uid", "==", uid).stream()
@@ -9786,9 +11080,17 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
                     doc.reference.delete()
             except Exception:
                 continue
+        if user_id_before:
+            try:
+                _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(user_id_before).delete()
+            except Exception:
+                pass
     else:
         with _INMEMORY_LOCK:
             _INMEMORY_ENTITLEMENTS.pop(uid, None)
+            _INMEMORY_USER_PROFILES.pop(uid, None)
+            if user_id_before:
+                _INMEMORY_USER_ID_INDEX.pop(user_id_before, None)
             for key in [k for k in _INMEMORY_USAGE_MONTHLY.keys() if k.startswith(f"{uid}_")]:
                 _INMEMORY_USAGE_MONTHLY.pop(key, None)
             for key in [k for k in _INMEMORY_USAGE_DAILY.keys() if k.startswith(f"{uid}_")]:
@@ -9805,12 +11107,577 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
         action="admin_user_delete",
         resource_type="user",
         resource_id=uid,
-        after={"deleted": True},
+        before={"profile": profile_before},
+        after={"deleted": True, "profileRemoved": bool(profile_before)},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=uid,
+    )
+    return JSONResponse({"ok": True, "uid": uid})
+
+
+@app.get("/admin/teams")
+def admin_list_teams(
+    request: Request,
+    q: str = "",
+    limit: int = 100,
+) -> JSONResponse:
+    _require_permission(request, PERM_TEAMS_READ)
+    if not VF_TEAMS_ENABLED:
+        return JSONResponse({"ok": True, "items": [], "count": 0})
+    rows = _team_list(limit=limit, q=q)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        team_id = str(row.get("teamId") or "").strip()
+        members = _team_list_members(team_id, limit=2000)
+        active_members = [
+            member
+            for member in members
+            if str((member or {}).get("status") or "active").strip().lower() == "active"
+        ]
+        item = dict(row)
+        item["memberCount"] = len(members)
+        item["activeMembers"] = len(active_members)
+        items.append(item)
+    return JSONResponse({"ok": True, "items": items, "count": len(items)})
+
+
+@app.post("/admin/teams")
+def admin_create_team(payload: TeamCreateRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    if not VF_TEAMS_ENABLED:
+        raise HTTPException(status_code=404, detail="Teams feature is disabled.")
+    owner_uid = str(payload.ownerUid or "").strip()
+    if not owner_uid:
+        raise HTTPException(status_code=400, detail="ownerUid is required.")
+    owner_profile = _ensure_user_profile(owner_uid, allow_auto_backfill=True)
+    if not isinstance(owner_profile, dict):
+        raise HTTPException(status_code=404, detail="Owner profile not found.")
+    safe_slug = _team_slug_normalize(payload.slug or payload.name)
+    existing = _team_list(limit=5000, q="")
+    if any(str(item.get("slug") or "").strip().lower() == safe_slug for item in existing):
+        raise HTTPException(status_code=409, detail="Team slug already exists.")
+    now_iso = _utc_now().isoformat()
+    team = _team_upsert(
+        "",
+        {
+            "name": str(payload.name or "").strip()[:120] or safe_slug,
+            "slug": safe_slug,
+            "status": _team_status_normalize(payload.status),
+            "ownerUid": owner_uid,
+            "ownerUserId": str(owner_profile.get("userId") or "").strip().lower(),
+            "seatLimit": max(1, min(10_000, int(payload.seatLimit or 1))),
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "updatedBy": actor_uid,
+        },
+    )
+    _team_member_upsert(
+        str(team.get("teamId") or ""),
+        owner_uid,
+        {
+            "teamId": str(team.get("teamId") or ""),
+            "uid": owner_uid,
+            "userId": str(owner_profile.get("userId") or "").strip().lower(),
+            "role": "owner",
+            "status": "active",
+            "joinedAt": now_iso,
+            "invitedBy": actor_uid,
+            "updatedAt": now_iso,
+        },
+    )
+    _audit_append_event(
+        action="admin_team_create",
+        resource_type="team",
+        resource_id=str(team.get("teamId") or ""),
+        after=team,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=owner_uid,
+    )
+    return JSONResponse({"ok": True, "team": team})
+
+
+@app.patch("/admin/teams/{team_id}")
+def admin_patch_team(team_id: str, payload: TeamPatchRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    if not VF_TEAMS_ENABLED:
+        raise HTTPException(status_code=404, detail="Teams feature is disabled.")
+    safe_team_id = str(team_id or "").strip()
+    current = _team_get(safe_team_id)
+    if not isinstance(current, dict):
+        raise HTTPException(status_code=404, detail="Team not found.")
+    before = dict(current)
+    if payload.name is not None:
+        current["name"] = str(payload.name or "").strip()[:120]
+    if payload.slug is not None:
+        safe_slug = _team_slug_normalize(payload.slug)
+        existing = _team_list(limit=5000, q="")
+        if any(
+            str(item.get("teamId") or "").strip() != safe_team_id
+            and str(item.get("slug") or "").strip().lower() == safe_slug
+            for item in existing
+        ):
+            raise HTTPException(status_code=409, detail="Team slug already exists.")
+        current["slug"] = safe_slug
+    if payload.status is not None:
+        current["status"] = _team_status_normalize(payload.status)
+    if payload.seatLimit is not None:
+        current["seatLimit"] = max(1, min(10_000, int(payload.seatLimit or 1)))
+    if payload.ownerUid is not None:
+        next_owner_uid = str(payload.ownerUid or "").strip()
+        if not next_owner_uid:
+            raise HTTPException(status_code=400, detail="ownerUid cannot be empty.")
+        owner_profile = _ensure_user_profile(next_owner_uid, allow_auto_backfill=True)
+        if not isinstance(owner_profile, dict):
+            raise HTTPException(status_code=404, detail="Owner profile not found.")
+        current["ownerUid"] = next_owner_uid
+        current["ownerUserId"] = str(owner_profile.get("userId") or "").strip().lower()
+        existing_owner_member = _team_member_get(safe_team_id, next_owner_uid) or {}
+        owner_joined_at = str(existing_owner_member.get("joinedAt") or _utc_now().isoformat())
+        _team_member_upsert(
+            safe_team_id,
+            next_owner_uid,
+            {
+                "teamId": safe_team_id,
+                "uid": next_owner_uid,
+                "userId": str(owner_profile.get("userId") or "").strip().lower(),
+                "role": "owner",
+                "status": "active",
+                "joinedAt": owner_joined_at,
+                "invitedBy": actor_uid,
+                "updatedAt": _utc_now().isoformat(),
+            },
+        )
+    current["updatedAt"] = _utc_now().isoformat()
+    current["updatedBy"] = actor_uid
+    saved = _team_upsert(safe_team_id, current)
+    _audit_append_event(
+        action="admin_team_patch",
+        resource_type="team",
+        resource_id=safe_team_id,
+        before=before,
+        after=saved,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=str(saved.get("ownerUid") or ""),
+    )
+    return JSONResponse({"ok": True, "team": saved})
+
+
+@app.get("/admin/teams/{team_id}/members")
+def admin_team_members(team_id: str, request: Request, limit: int = 500) -> JSONResponse:
+    _require_permission(request, PERM_TEAMS_READ)
+    if not VF_TEAMS_ENABLED:
+        raise HTTPException(status_code=404, detail="Teams feature is disabled.")
+    safe_team_id = str(team_id or "").strip()
+    team = _team_get(safe_team_id)
+    if not isinstance(team, dict):
+        raise HTTPException(status_code=404, detail="Team not found.")
+    items = _team_list_members(safe_team_id, limit=limit)
+    return JSONResponse({"ok": True, "team": team, "items": items, "count": len(items)})
+
+
+@app.post("/admin/teams/{team_id}/members")
+def admin_team_add_member(
+    team_id: str,
+    payload: TeamMemberCreateRequest,
+    request: Request,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    if not VF_TEAMS_ENABLED:
+        raise HTTPException(status_code=404, detail="Teams feature is disabled.")
+    safe_team_id = str(team_id or "").strip()
+    team = _team_get(safe_team_id)
+    if not isinstance(team, dict):
+        raise HTTPException(status_code=404, detail="Team not found.")
+    member_uid = str(payload.uid or "").strip()
+    if not member_uid:
+        raise HTTPException(status_code=400, detail="uid is required.")
+    member_profile = _ensure_user_profile(member_uid, allow_auto_backfill=True)
+    if not isinstance(member_profile, dict):
+        raise HTTPException(status_code=404, detail="Member profile not found.")
+    existing = _team_member_get(safe_team_id, member_uid) or {}
+    members = _team_list_members(safe_team_id, limit=3000)
+    active_count = len(
+        [row for row in members if str((row or {}).get("status") or "active").strip().lower() == "active"]
+    )
+    is_new_member = not bool(existing)
+    if is_new_member and active_count >= max(1, int(team.get("seatLimit") or 1)):
+        raise HTTPException(status_code=409, detail="Team seat limit reached.")
+    now_iso = _utc_now().isoformat()
+    member = _team_member_upsert(
+        safe_team_id,
+        member_uid,
+        {
+            "teamId": safe_team_id,
+            "uid": member_uid,
+            "userId": str(member_profile.get("userId") or "").strip().lower(),
+            "role": _team_member_role_normalize(payload.role),
+            "status": _team_status_normalize(payload.status),
+            "joinedAt": str(existing.get("joinedAt") or now_iso),
+            "invitedBy": str(existing.get("invitedBy") or actor_uid),
+            "updatedAt": now_iso,
+        },
+    )
+    _audit_append_event(
+        action="admin_team_member_add",
+        resource_type="team_member",
+        resource_id=f"{safe_team_id}:{member_uid}",
+        after=member,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=member_uid,
+    )
+    return JSONResponse({"ok": True, "member": member})
+
+
+@app.patch("/admin/teams/{team_id}/members/{member_uid}")
+def admin_team_patch_member(
+    team_id: str,
+    member_uid: str,
+    payload: TeamMemberPatchRequest,
+    request: Request,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    if not VF_TEAMS_ENABLED:
+        raise HTTPException(status_code=404, detail="Teams feature is disabled.")
+    safe_team_id = str(team_id or "").strip()
+    safe_member_uid = str(member_uid or "").strip()
+    team = _team_get(safe_team_id)
+    if not isinstance(team, dict):
+        raise HTTPException(status_code=404, detail="Team not found.")
+    before = _team_member_get(safe_team_id, safe_member_uid)
+    if not isinstance(before, dict):
+        raise HTTPException(status_code=404, detail="Team member not found.")
+    role = _team_member_role_normalize(payload.role) if payload.role is not None else str(before.get("role") or "member")
+    status = _team_status_normalize(payload.status) if payload.status is not None else str(before.get("status") or "active")
+    if str(team.get("ownerUid") or "").strip() == safe_member_uid and role != "owner":
+        raise HTTPException(status_code=409, detail="Transfer owner before changing owner role.")
+    next_member = dict(before)
+    next_member["role"] = role
+    next_member["status"] = status
+    next_member["updatedAt"] = _utc_now().isoformat()
+    saved = _team_member_upsert(safe_team_id, safe_member_uid, next_member)
+    if role == "owner":
+        team["ownerUid"] = safe_member_uid
+        team["ownerUserId"] = str(saved.get("userId") or "").strip().lower()
+        team["updatedAt"] = _utc_now().isoformat()
+        team["updatedBy"] = actor_uid
+        _team_upsert(safe_team_id, team)
+    _audit_append_event(
+        action="admin_team_member_patch",
+        resource_type="team_member",
+        resource_id=f"{safe_team_id}:{safe_member_uid}",
+        before=before,
+        after=saved,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=safe_member_uid,
+    )
+    return JSONResponse({"ok": True, "member": saved})
+
+
+@app.delete("/admin/teams/{team_id}/members/{member_uid}")
+def admin_team_remove_member(team_id: str, member_uid: str, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    if not VF_TEAMS_ENABLED:
+        raise HTTPException(status_code=404, detail="Teams feature is disabled.")
+    safe_team_id = str(team_id or "").strip()
+    safe_member_uid = str(member_uid or "").strip()
+    team = _team_get(safe_team_id)
+    if not isinstance(team, dict):
+        raise HTTPException(status_code=404, detail="Team not found.")
+    if str(team.get("ownerUid") or "").strip() == safe_member_uid:
+        raise HTTPException(status_code=409, detail="Owner cannot be removed from team.")
+    before = _team_member_get(safe_team_id, safe_member_uid)
+    if not isinstance(before, dict):
+        raise HTTPException(status_code=404, detail="Team member not found.")
+    _team_member_delete(safe_team_id, safe_member_uid)
+    _audit_append_event(
+        action="admin_team_member_remove",
+        resource_type="team_member",
+        resource_id=f"{safe_team_id}:{safe_member_uid}",
+        before=before,
+        after={"removed": True},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=safe_member_uid,
+    )
+    return JSONResponse({"ok": True, "teamId": safe_team_id, "uid": safe_member_uid})
+
+
+@app.post("/support/messages")
+def support_post_message(payload: SupportMessageCreateRequest, request: Request) -> JSONResponse:
+    if not VF_SUPPORT_INBOX_ENABLED:
+        raise HTTPException(status_code=404, detail="Support inbox is disabled.")
+    uid = _require_request_uid(request)
+    profile = _require_user_id_ready(request, uid) or {}
+    user_id = str(profile.get("userId") or "").strip().lower()
+    text = str(payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message text is required.")
+    now_iso = _utc_now().isoformat()
+    conversation_id = str(payload.conversationId or "").strip()
+    conversation = _support_conversation_get(conversation_id) if conversation_id else None
+    if conversation is not None and str(conversation.get("uid") or "").strip() != uid:
+        raise HTTPException(status_code=403, detail="Conversation does not belong to current user.")
+    if conversation is None:
+        conversation = _support_conversation_upsert(
+            "",
+            {
+                "uid": uid,
+                "userId": user_id,
+                "status": "open",
+                "priority": "green",
+                "lastMessageAt": now_iso,
+                "assignedTo": "",
+                "createdAt": now_iso,
+                "updatedAt": now_iso,
+            },
+        )
+        conversation_id = str(conversation.get("conversationId") or "")
+    user_message = _support_message_upsert(
+        "",
+        {
+            "conversationId": conversation_id,
+            "fromType": "user",
+            "uid": uid,
+            "userId": user_id,
+            "text": text[:5000],
+            "attachmentsMeta": list(payload.attachmentsMeta or []),
+            "resolutionFlag": "",
+            "createdAt": now_iso,
+        },
+    )
+    conversation["status"] = "open"
+    conversation["priority"] = "green"
+    conversation["lastMessageAt"] = now_iso
+    conversation["updatedAt"] = now_iso
+    conversation = _support_conversation_upsert(conversation_id, conversation)
+    _audit_append_event(
+        action="support_user_message",
+        resource_type="support_conversation",
+        resource_id=conversation_id,
+        after={"messageId": str(user_message.get("messageId") or "")},
+        request=request,
+        actor_uid=uid,
+        actor_role="user",
+        subject_uid=uid,
+        subject_user_id=user_id,
+    )
+    ai_result = _support_try_ai_autoreply(conversation=conversation, user_message=user_message, request=request)
+    messages = [user_message]
+    ai_message = ai_result.get("aiMessage")
+    if isinstance(ai_message, dict):
+        messages.append(ai_message)
+    return JSONResponse(
+        {
+            "ok": True,
+            "conversation": ai_result.get("conversation") or conversation,
+            "messages": messages,
+            "aiMode": str(ai_result.get("mode") or ""),
+            "aiReason": str(ai_result.get("reason") or ""),
+        }
+    )
+
+
+@app.get("/support/conversations/me")
+def support_my_conversations(request: Request, limit: int = 100) -> JSONResponse:
+    if not VF_SUPPORT_INBOX_ENABLED:
+        raise HTTPException(status_code=404, detail="Support inbox is disabled.")
+    uid = _require_request_uid(request)
+    _require_user_id_ready(request, uid)
+    rows = [row for row in _support_list_conversations(limit=max(1, min(300, int(limit))), q="") if str(row.get("uid") or "").strip() == uid]
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.post("/support/conversations/{conversation_id}/still-unresolved")
+def support_mark_unresolved(conversation_id: str, request: Request) -> JSONResponse:
+    if not VF_SUPPORT_INBOX_ENABLED:
+        raise HTTPException(status_code=404, detail="Support inbox is disabled.")
+    uid = _require_request_uid(request)
+    profile = _require_user_id_ready(request, uid) or {}
+    user_id = str(profile.get("userId") or "").strip().lower()
+    safe_id = str(conversation_id or "").strip()
+    conversation = _support_conversation_get(safe_id)
+    if not isinstance(conversation, dict):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if str(conversation.get("uid") or "").strip() != uid:
+        raise HTTPException(status_code=403, detail="Conversation does not belong to current user.")
+    conversation["status"] = "needs_human"
+    conversation["priority"] = "yellow"
+    conversation["lastMessageAt"] = _utc_now().isoformat()
+    conversation["updatedAt"] = _utc_now().isoformat()
+    saved = _support_conversation_upsert(safe_id, conversation)
+    _support_open_or_touch_yellow_alert(safe_id, reason="user_marked_unresolved")
+    _audit_append_event(
+        action="support_user_unresolved",
+        resource_type="support_conversation",
+        resource_id=safe_id,
+        after={"status": "needs_human"},
+        request=request,
+        actor_uid=uid,
+        actor_role="user",
+        subject_uid=uid,
+        subject_user_id=user_id,
+    )
+    return JSONResponse({"ok": True, "conversation": saved})
+
+
+@app.get("/admin/support/conversations")
+def admin_support_list_conversations(
+    request: Request,
+    status: str = "needs_human",
+    q: str = "",
+    limit: int = 200,
+) -> JSONResponse:
+    _require_permission(request, PERM_SUPPORT_READ)
+    if not VF_SUPPORT_INBOX_ENABLED:
+        return JSONResponse({"ok": True, "items": [], "count": 0})
+    safe_status = str(status or "").strip().lower()
+    rows = _support_list_conversations(
+        status=safe_status if safe_status in SUPPORT_CONVERSATION_STATUSES else "",
+        limit=limit,
+        q=q,
+    )
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.get("/admin/support/conversations/{conversation_id}")
+def admin_support_conversation_detail(conversation_id: str, request: Request) -> JSONResponse:
+    _require_permission(request, PERM_SUPPORT_READ)
+    if not VF_SUPPORT_INBOX_ENABLED:
+        raise HTTPException(status_code=404, detail="Support inbox is disabled.")
+    safe_id = str(conversation_id or "").strip()
+    conversation = _support_conversation_get(safe_id)
+    if not isinstance(conversation, dict):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages = _support_list_messages(safe_id, limit=1000)
+    return JSONResponse({"ok": True, "conversation": conversation, "messages": messages, "count": len(messages)})
+
+
+@app.post("/admin/support/conversations/{conversation_id}/reply")
+def admin_support_reply(
+    conversation_id: str,
+    payload: SupportReplyRequest,
+    request: Request,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_SUPPORT_REPLY)
+    if not VF_SUPPORT_INBOX_ENABLED:
+        raise HTTPException(status_code=404, detail="Support inbox is disabled.")
+    safe_id = str(conversation_id or "").strip()
+    text = str(payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Reply text is required.")
+    conversation = _support_conversation_get(safe_id)
+    if not isinstance(conversation, dict):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    now_iso = _utc_now().isoformat()
+    actor_user_id = _resolve_request_user_id(request, actor_uid)
+    message = _support_message_upsert(
+        "",
+        {
+            "conversationId": safe_id,
+            "fromType": "agent",
+            "uid": actor_uid,
+            "userId": actor_user_id,
+            "text": text[:5000],
+            "attachmentsMeta": [],
+            "resolutionFlag": "",
+            "createdAt": now_iso,
+        },
+    )
+    conversation["status"] = "open"
+    conversation["priority"] = "green"
+    conversation["lastMessageAt"] = now_iso
+    conversation["updatedAt"] = now_iso
+    if not str(conversation.get("assignedTo") or "").strip():
+        conversation["assignedTo"] = actor_uid
+    saved = _support_conversation_upsert(safe_id, conversation)
+    _audit_append_event(
+        action="admin_support_reply",
+        resource_type="support_conversation",
+        resource_id=safe_id,
+        after={"messageId": str(message.get("messageId") or "")},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=str(conversation.get("uid") or ""),
+        subject_user_id=str(conversation.get("userId") or ""),
+    )
+    return JSONResponse({"ok": True, "conversation": saved, "message": message})
+
+
+@app.post("/admin/support/conversations/{conversation_id}/resolve")
+def admin_support_resolve(conversation_id: str, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_SUPPORT_REPLY)
+    if not VF_SUPPORT_INBOX_ENABLED:
+        raise HTTPException(status_code=404, detail="Support inbox is disabled.")
+    safe_id = str(conversation_id or "").strip()
+    conversation = _support_conversation_get(safe_id)
+    if not isinstance(conversation, dict):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    conversation["status"] = "resolved"
+    conversation["priority"] = "green"
+    conversation["updatedAt"] = _utc_now().isoformat()
+    conversation["resolvedAt"] = _utc_now().isoformat()
+    saved = _support_conversation_upsert(safe_id, conversation)
+    _support_resolve_alert_if_open(safe_id)
+    _audit_append_event(
+        action="admin_support_resolve",
+        resource_type="support_conversation",
+        resource_id=safe_id,
+        after={"status": "resolved"},
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+        subject_uid=str(conversation.get("uid") or ""),
+        subject_user_id=str(conversation.get("userId") or ""),
+    )
+    return JSONResponse({"ok": True, "conversation": saved})
+
+
+@app.get("/admin/support/ai-policy")
+def admin_support_ai_policy(request: Request) -> JSONResponse:
+    _require_permission(request, PERM_SUPPORT_AI_REVIEW)
+    policy = _support_ai_policy_get()
+    return JSONResponse({"ok": True, "policy": policy})
+
+
+@app.patch("/admin/support/ai-policy")
+def admin_patch_support_ai_policy(payload: SupportAiPolicyPatchRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_SUPPORT_AI_CONFIG)
+    _require_admin_approval_token(payload.adminToken)
+    before = _support_ai_policy_get()
+    after = _support_ai_policy_patch(
+        {
+            "enabled": payload.enabled if payload.enabled is not None else before.get("enabled"),
+            "confidenceThreshold": payload.confidenceThreshold if payload.confidenceThreshold is not None else before.get("confidenceThreshold"),
+            "maxAutoRepliesPerConversation": payload.maxAutoRepliesPerConversation if payload.maxAutoRepliesPerConversation is not None else before.get("maxAutoRepliesPerConversation"),
+            "allowedActions": payload.allowedActions if payload.allowedActions is not None else before.get("allowedActions"),
+            "blockedTopics": payload.blockedTopics if payload.blockedTopics is not None else before.get("blockedTopics"),
+            "requireHumanForTags": payload.requireHumanForTags if payload.requireHumanForTags is not None else before.get("requireHumanForTags"),
+        },
+        updated_by=actor_uid,
+    )
+    _audit_append_event(
+        action="support_ai_policy_patch",
+        resource_type="support_ai_policy",
+        resource_id="current",
+        before=before,
+        after=after,
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
     )
-    return JSONResponse({"ok": True, "uid": uid})
+    return JSONResponse({"ok": True, "policy": after})
 
 
 @app.get("/admin/rbac/roles")
@@ -9867,6 +11734,7 @@ def admin_rbac_assign_user(target_uid: str, payload: AdminRoleAssignmentRequest,
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+        subject_uid=safe_target_uid,
     )
     return JSONResponse({"ok": True, "assignment": row})
 
@@ -9905,6 +11773,7 @@ def admin_rbac_disable_user(target_uid: str, payload: AdminRoleStatusRequest, re
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+        subject_uid=safe_target_uid,
     )
     return JSONResponse({"ok": True, "assignment": row})
 
@@ -9943,6 +11812,7 @@ def admin_rbac_enable_user(target_uid: str, payload: AdminRoleStatusRequest, req
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+        subject_uid=safe_target_uid,
     )
     return JSONResponse({"ok": True, "assignment": row})
 
@@ -9951,6 +11821,9 @@ def admin_rbac_enable_user(target_uid: str, payload: AdminRoleStatusRequest, req
 def admin_audit_events(
     request: Request,
     actorUid: str = "",
+    actorUserId: str = "",
+    subjectUid: str = "",
+    subjectUserId: str = "",
     action: str = "",
     resourceType: str = "",
     fromIso: str = Query("", alias="from"),
@@ -9961,6 +11834,9 @@ def admin_audit_events(
     _require_permission(request, PERM_AUDIT_READ)
     items, next_cursor = _audit_list_events(
         actor_uid=actorUid,
+        actor_user_id=actorUserId,
+        subject_uid=subjectUid,
+        subject_user_id=subjectUserId,
         action=action,
         resource_type=resourceType,
         from_iso=fromIso,
@@ -11925,7 +13801,7 @@ def _is_gemini_upstream_timeout_error(detail: Any) -> bool:
 
 def _map_runtime_failure_status(engine: str, status_code: int, detail: Any) -> int:
     safe_status = int(status_code)
-    if engine == "GEM" and safe_status >= 500:
+    if _is_gem_runtime_engine(engine) and safe_status >= 500:
         if _is_gemini_upstream_timeout_error(detail):
             return 504
         if _is_gemini_capacity_pressure_error(detail):
@@ -11937,7 +13813,7 @@ def _is_retryable_runtime_failure(engine: str, status_code: int, detail: Any) ->
     safe_status = int(status_code)
     if safe_status in {429, 500, 502, 503, 504}:
         return True
-    if engine == "GEM":
+    if _is_gem_runtime_engine(engine):
         if _is_gemini_capacity_pressure_error(detail):
             return True
         if _is_gemini_upstream_timeout_error(detail):
@@ -11972,7 +13848,7 @@ def _build_tts_upstream_payload(
         upstream_payload["voice_id"] = voice_id
         upstream_payload["voiceId"] = voice_id
 
-    if engine == "GEM":
+    if _is_gem_runtime_engine(engine):
         if not upstream_payload.get("voiceName"):
             upstream_payload["voiceName"] = voice_id or str(payload.voiceName or "Fenrir")
         upstream_payload["poolHint"] = plan_key_to_pool_hint(plan_key)
@@ -14246,7 +16122,7 @@ def prepare_dubbing_services(payload: PrepareDubbingServicesRequest, request: Re
 @app.get("/tts/engines/capabilities", response_model=TtsEngineCapabilitiesResponse)
 def tts_engines_capabilities() -> JSONResponse:
     payload: dict[str, Any] = {}
-    for engine in ["GEM", "KOKORO"]:
+    for engine in TTS_ENGINE_KEYS:
         engine_payload = _probe_runtime_capabilities(engine, timeout_sec=3.2)
         engine_payload["displayName"] = _engine_display_name(engine)
         payload[engine] = engine_payload
@@ -14280,7 +16156,7 @@ def tts_engines_status(engine: Optional[str] = Query(None)) -> JSONResponse:
     if engine is not None and str(engine).strip():
         selected_engines = [_normalize_engine_name(str(engine))]
     else:
-        selected_engines = ["GEM", "KOKORO"]
+        selected_engines = list(TTS_ENGINE_KEYS)
 
     items: dict[str, dict[str, Any]] = {}
     for normalized_engine in selected_engines:
@@ -14298,7 +16174,7 @@ def tts_engines_status(engine: Optional[str] = Query(None)) -> JSONResponse:
             state = "offline"
 
         runtime_detail = str(detail or "").strip() or ("Runtime online" if state == "online" else "Runtime offline")
-        if normalized_engine == "GEM" and isinstance(capability_payload, dict):
+        if _is_gem_runtime_engine(normalized_engine) and isinstance(capability_payload, dict):
             metadata = capability_payload.get("metadata")
             if isinstance(metadata, dict):
                 probe_error = str(metadata.get("capabilityProbeError") or "").strip()
@@ -14430,7 +16306,7 @@ def _fetch_runtime_voice_ids(engine: str) -> list[str]:
 
 def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
     normalized_engine = _normalize_engine_name(engine)
-    if normalized_engine == "GEM":
+    if _is_gem_runtime_engine(normalized_engine):
         mapping = _load_voice_id_map()
         engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
         engine_payload = engines.get("GEM") if isinstance(engines.get("GEM"), dict) else {}
@@ -14588,7 +16464,7 @@ def _select_voice_for_engine(engine: str, requested: str = "") -> Optional[str]:
         if voices:
             return voices[0]
         return "hf_alpha"
-    if engine == "GEM":
+    if _is_gem_runtime_engine(engine):
         return requested or "alloy"
     return None
 
@@ -14679,22 +16555,30 @@ def _default_engine_for_tts_route(tts_route: str) -> str:
 
 
 def _resolve_engine_executed_from_requests(tts_requests: list[dict[str, Any]]) -> str:
-    counts: dict[str, int] = {"GEM": 0, "KOKORO": 0}
+    counts: dict[str, int] = {"GEM": 0, "NEURAL2": 0, "KOKORO": 0}
     first_seen = ""
     for request_item in tts_requests:
-        engine = str(request_item.get("engine") or "").strip().upper()
+        raw_engine = str(request_item.get("engine") or "").strip()
+        if not raw_engine:
+            continue
+        try:
+            engine = _normalize_engine_name(raw_engine)
+        except Exception:
+            continue
         if engine not in counts:
             continue
         counts[engine] += 1
         if not first_seen:
             first_seen = engine
 
-    total = counts["GEM"] + counts["KOKORO"]
+    total = sum(counts.values())
     if total <= 0:
         return "GEM"
-    if counts["GEM"] == counts["KOKORO"] and first_seen:
+    max_count = max(counts.values())
+    winners = [engine for engine, count in counts.items() if count == max_count]
+    if len(winners) > 1 and first_seen:
         return first_seen
-    return "GEM" if counts["GEM"] > counts["KOKORO"] else "KOKORO"
+    return winners[0] if winners else "GEM"
 
 
 def _build_dubbing_output_files(result: dict[str, Any]) -> dict[str, Any]:
@@ -15717,6 +17601,11 @@ async def convert_llvc(
 @app.on_event("startup")
 def _phase2_startup() -> None:
     _ensure_scheduler_started()
+    if VF_SUPPORT_INBOX_ENABLED:
+        try:
+            _support_ai_policy_get()
+        except Exception:
+            pass
 
 
 @app.on_event("shutdown")

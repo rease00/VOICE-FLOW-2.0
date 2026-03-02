@@ -26,8 +26,24 @@ def _reset_ai_ops_state() -> None:
         )
 
 
-def _health_engine_by_url() -> dict[str, str]:
-    return {url: engine for engine, url in backend_app.TTS_ENGINE_HEALTH_URLS.items()}
+def _health_engines_by_url() -> dict[str, list[str]]:
+    mapping: dict[str, list[str]] = {}
+    for engine, url in backend_app.TTS_ENGINE_HEALTH_URLS.items():
+        mapping.setdefault(url, []).append(engine)
+    return mapping
+
+
+def _next_engine_for_health_url(
+    health_map: dict[str, list[str]],
+    call_counts: dict[str, int],
+    url: str,
+) -> str:
+    engines = list(health_map.get(url) or [])
+    if not engines:
+        return "GEM"
+    seen = int(call_counts.get(url) or 0)
+    call_counts[url] = seen + 1
+    return engines[seen % len(engines)]
 
 
 def test_guardian_status_contract(monkeypatch) -> None:
@@ -53,13 +69,14 @@ def test_guardian_scan_auto_fixes_single_offline_runtime(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_AI_OPS_ENABLE_AUTOFIX_MINOR", True)
 
-    health_map = _health_engine_by_url()
+    health_map = _health_engines_by_url()
+    call_counts: dict[str, int] = {}
     switch_calls: list[str] = []
     switched: set[str] = set()
 
     def _probe(url: str, timeout_sec: float = 2.5):
         _ = timeout_sec
-        engine = health_map[url]
+        engine = _next_engine_for_health_url(health_map, call_counts, url)
         if engine == "GEM" and engine not in switched:
             return False, "offline"
         return True, "Runtime online"

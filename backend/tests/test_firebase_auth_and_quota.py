@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -36,6 +38,39 @@ def _reset_inmemory_state() -> None:
     backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
 
 
+def _submit_tts_and_wait_status(
+    client: TestClient,
+    *,
+    payload: dict,
+    headers: dict[str, str],
+    timeout_seconds: float = 8.0,
+) -> tuple[int, object]:
+    submit = client.post("/tts/synthesize", json=payload, headers=headers)
+    if submit.status_code != 202:
+        return submit.status_code, submit
+
+    submit_payload = submit.json() if submit.headers.get("content-type", "").startswith("application/json") else {}
+    job_id = str((submit_payload or {}).get("jobId") or (submit_payload or {}).get("requestId") or "").strip()
+    if not job_id:
+        return submit.status_code, submit
+
+    deadline = time.time() + max(1.0, float(timeout_seconds))
+    while time.time() < deadline:
+        poll = client.get(f"/tts/jobs/{job_id}", headers=headers)
+        if poll.status_code != 200:
+            return poll.status_code, poll
+        status_payload = poll.json()
+        status = str(status_payload.get("status") or "").strip().lower()
+        if status == "completed":
+            return 200, poll
+        if status == "failed":
+            return int(status_payload.get("statusCode") or 500), poll
+        if status == "cancelled":
+            return 409, poll
+        time.sleep(0.05)
+    return submit.status_code, submit
+
+
 def test_auth_enforcement_blocks_missing_token(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
@@ -47,6 +82,7 @@ def test_auth_enforcement_blocks_missing_token(monkeypatch) -> None:
 def test_auth_enforcement_accepts_valid_token(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
     monkeypatch.setattr(backend_app, "_verify_firebase_id_token", lambda token: {"uid": "firebase_user_1"})
     client = TestClient(backend_app.app)
     response = client.get("/account/entitlements", headers={"Authorization": "Bearer valid_token"})
@@ -54,6 +90,16 @@ def test_auth_enforcement_accepts_valid_token(monkeypatch) -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["entitlements"]["uid"] == "firebase_user_1"
+
+
+def test_runtime_status_endpoint_is_auth_exempt(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    client = TestClient(backend_app.app)
+    response = client.get("/tts/engines/status", params={"engine": "GEM"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("engines", {}).get("GEM", {}).get("engine") == "GEM"
 
 
 def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
@@ -70,12 +116,20 @@ def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
 
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
-    first = client.post("/tts/synthesize", json={"engine": "GEM", "text": "hello"}, headers=headers)
-    second = client.post("/tts/synthesize", json={"engine": "GEM", "text": "again"}, headers=headers)
+    first_code, _ = _submit_tts_and_wait_status(
+        client,
+        payload={"engine": "GEM", "text": "hello"},
+        headers=headers,
+    )
+    second_code, _ = _submit_tts_and_wait_status(
+        client,
+        payload={"engine": "GEM", "text": "again"},
+        headers=headers,
+    )
     third = client.post("/tts/synthesize", json={"engine": "GEM", "text": "blocked"}, headers=headers)
 
-    assert first.status_code == 200
-    assert second.status_code == 200
+    assert first_code == 200
+    assert second_code == 200
     assert third.status_code == 429
     assert "Daily generation limit reached" in str(third.json()["detail"])
 
@@ -97,8 +151,12 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
 
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
-    failed = client.post("/tts/synthesize", json={"engine": "GEM", "text": "runtime fail"}, headers=headers)
-    assert failed.status_code == 500
+    failed_code, _ = _submit_tts_and_wait_status(
+        client,
+        payload={"engine": "GEM", "text": "runtime fail"},
+        headers=headers,
+    )
+    assert failed_code == 500
 
     ent = client.get("/account/entitlements", headers=headers)
     assert ent.status_code == 200
@@ -123,12 +181,12 @@ def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> 
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
     for i in range(3):
-        response = client.post(
-            "/tts/synthesize",
-            json={"engine": "GEM", "text": f"admin run {i}", "request_id": f"admin_req_{i}"},
+        response_code, _ = _submit_tts_and_wait_status(
+            client,
+            payload={"engine": "GEM", "text": f"admin run {i}", "request_id": f"admin_req_{i}"},
             headers=headers,
         )
-        assert response.status_code == 200
+        assert response_code == 200
 
     ent = client.get("/account/entitlements", headers=headers)
     assert ent.status_code == 200
@@ -238,14 +296,13 @@ def test_admin_wallet_ad_reward_bypasses_daily_cap(monkeypatch) -> None:
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
     claims = backend_app.VF_AD_REWARD_CLAIM_LIMIT_PER_DAY + 3
+    latest_wallet = {}
     for _ in range(claims):
         ok = client.post("/wallet/ad-reward/claim", headers=headers)
         assert ok.status_code == 200
-    ent = client.get("/account/entitlements", headers=headers)
-    assert ent.status_code == 200
-    payload = ent.json()["entitlements"]
-    assert payload["wallet"]["adClaimsToday"] == claims
-    assert payload["wallet"]["vffBalance"] == claims * backend_app.VF_AD_REWARD_VFF_AMOUNT
+        latest_wallet = ((ok.json() or {}).get("entitlements") or {}).get("wallet") or {}
+    assert int(latest_wallet.get("adClaimsToday") or 0) == claims
+    assert float(latest_wallet.get("vffBalance") or 0) == claims * backend_app.VF_AD_REWARD_VFF_AMOUNT
 
 
 def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:

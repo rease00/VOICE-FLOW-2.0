@@ -443,7 +443,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     }
     setDriveToken(auth.token);
     setDriveState(buildDriveState('connected', 'Google Drive connected for folder upload/download.'));
-  }, [user.googleId]);
+  }, []);
 
   useEffect(() => {
     const snapshot = readLocalSnapshot();
@@ -529,6 +529,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   useEffect(() => {
     if (!isImportModalOpen) return;
     const modal = importModalRef.current;
+    const importTriggerElement = importTriggerRef.current;
     const previousActive = document.activeElement as HTMLElement | null;
     const focusableSelector = [
       'button:not([disabled])',
@@ -577,8 +578,8 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       window.removeEventListener('keydown', onKeydown);
       if (previousActive && typeof previousActive.focus === 'function') {
         previousActive.focus();
-      } else if (importTriggerRef.current) {
-        importTriggerRef.current.focus();
+      } else if (importTriggerElement) {
+        importTriggerElement.focus();
       }
     };
   }, [isImportModalOpen]);

@@ -3,12 +3,20 @@ import { ArrowLeft, ShieldCheck, Sparkles } from 'lucide-react';
 import { AppScreen, GenerationSettings, VfUsageWindow } from '../types';
 import { useUser } from '../contexts/UserContext';
 import { getEngineDisplayName } from '../services/engineDisplay';
-import { VF_ENGINE_RATES } from '../services/usageMetering';
 import { EngineLogo } from '../components/EngineLogo';
+import { BrandLogo } from '../components/BrandLogo';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageString } from '../src/shared/storage/localStore';
+import { readStorageJson, readStorageString } from '../src/shared/storage/localStore';
+import {
+  fetchAccountProfile,
+  fetchMySupportConversations,
+  markSupportConversationUnresolved,
+  postSupportMessage,
+  upsertAccountProfile,
+  type SupportConversation,
+} from '../services/accountService';
 
-const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'GEM'];
+const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM'];
 
 const readSavedUiTheme = (): 'dark' | 'light' | 'system' | '' => {
   const raw = String(readStorageString(STORAGE_KEYS.uiTheme) || '').trim().toLowerCase();
@@ -25,6 +33,12 @@ const detectDarkTheme = (): boolean => {
   const rootDark = document.documentElement.classList.contains('theme-dark');
   const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
   return Boolean(bodyDark || rootDark || prefersDark);
+};
+
+const readSettingsBackendUrl = (): string => {
+  const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
+  const value = String(parsed?.mediaBackendUrl || '').trim();
+  return value || 'http://127.0.0.1:7800';
 };
 
 const WindowCard: React.FC<{ title: string; data: VfUsageWindow; isDarkUi: boolean }> = ({ title, data, isDarkUi }) => (
@@ -54,10 +68,41 @@ const WindowCard: React.FC<{ title: string; data: VfUsageWindow; isDarkUi: boole
 );
 
 export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setScreen }) => {
-  const { user, stats, isAdmin, hasUnlimitedAccess, signOutUser } = useUser();
+  const { user, stats, isAdmin, hasUnlimitedAccess, signOutUser, updateUser } = useUser();
   const usage = stats.vfUsage;
   const [isDarkUi, setIsDarkUi] = useState<boolean>(() => detectDarkTheme());
   const initialBodyDarkRef = useRef<boolean | null>(null);
+  const [accountUserId, setAccountUserId] = useState<string>(() => String(user.userId || '').trim().toLowerCase());
+  const [accountUserIdDraft, setAccountUserIdDraft] = useState<string>(() => String(user.userId || '').trim().toLowerCase());
+  const [suggestedUserId, setSuggestedUserId] = useState<string>('');
+  const [supportText, setSupportText] = useState('');
+  const [supportConversations, setSupportConversations] = useState<SupportConversation[]>([]);
+  const [isLoadingSupport, setIsLoadingSupport] = useState(false);
+  const [isSendingSupport, setIsSendingSupport] = useState(false);
+  const [profileNote, setProfileNote] = useState('');
+
+  const loadAccountAndSupport = async () => {
+    const baseUrl = readSettingsBackendUrl();
+    try {
+      const profilePayload = await fetchAccountProfile(baseUrl);
+      const resolvedUserId = String(profilePayload.profile?.userId || '').trim().toLowerCase();
+      setAccountUserId(resolvedUserId);
+      setAccountUserIdDraft(resolvedUserId);
+      setSuggestedUserId(String(profilePayload.suggestedUserId || '').trim().toLowerCase());
+      if (resolvedUserId) updateUser({ userId: resolvedUserId });
+    } catch {
+      // Keep profile screen available even when backend is unavailable.
+    }
+    setIsLoadingSupport(true);
+    try {
+      const rows = await fetchMySupportConversations(baseUrl, 60);
+      setSupportConversations(rows);
+    } catch {
+      setSupportConversations([]);
+    } finally {
+      setIsLoadingSupport(false);
+    }
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -101,6 +146,11 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
     };
   }, []);
 
+  useEffect(() => {
+    void loadAccountAndSupport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="min-h-[100dvh] w-full overflow-y-auto bg-transparent p-4 sm:p-6">
       <div className={`pointer-events-none fixed inset-0 ${isDarkUi ? 'bg-[radial-gradient(80%_70%_at_10%_0%,rgba(34,211,238,0.14),transparent_55%),radial-gradient(76%_65%_at_90%_16%,rgba(99,102,241,0.16),transparent_58%),linear-gradient(180deg,rgba(2,6,23,0.95),rgba(2,6,23,0.92))]' : 'bg-[radial-gradient(80%_65%_at_10%_0%,rgba(99,102,241,0.12),transparent_58%),radial-gradient(76%_65%_at_90%_16%,rgba(56,189,248,0.12),transparent_62%)]'}`} />
@@ -118,7 +168,11 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
           Sign Out
         </button>
 
-        <div className="mt-8 grid gap-5 md:grid-cols-[1.05fr_1fr]">
+        <div className="mt-8 mb-6 flex justify-center">
+          <BrandLogo size="md" tone={isDarkUi ? 'light' : 'dark'} />
+        </div>
+
+        <div className="grid gap-5 md:grid-cols-[1.05fr_1fr]">
           <div>
             <div className="mb-4 flex items-center gap-3">
               <div className={`flex h-14 w-14 items-center justify-center rounded-full font-bold ${isDarkUi ? 'bg-indigo-500/20 text-indigo-300' : 'bg-indigo-100 text-indigo-600'}`}>
@@ -145,13 +199,115 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
                   <span>Ads</span>
                   <span className={`font-bold ${isDarkUi ? 'text-indigo-200' : 'text-indigo-700'}`}>{isAdmin ? 'Disabled' : 'Enabled'}</span>
                 </div>
+                <div className="flex items-center justify-between">
+                  <span>User ID</span>
+                  <span className={`font-mono font-bold ${isDarkUi ? 'text-indigo-200' : 'text-indigo-700'}`}>{accountUserId || '-'}</span>
+                </div>
               </div>
+              {!accountUserId && (
+                <div className={`mt-3 rounded-lg border p-2 ${isDarkUi ? 'border-slate-700 bg-slate-900/70' : 'border-white bg-white'}`}>
+                  <div className={`mb-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Set your immutable user ID</div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={accountUserIdDraft}
+                      onChange={(event) => setAccountUserIdDraft(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                      placeholder={suggestedUserId || 'artist_01'}
+                      className={`h-8 flex-1 rounded-md border px-2 text-xs ${isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-gray-200 bg-white text-gray-900'}`}
+                    />
+                    <button
+                      onClick={() => {
+                        const next = accountUserIdDraft.trim().toLowerCase();
+                        if (!next) return;
+                        void (async () => {
+                          try {
+                            const profile = await upsertAccountProfile({
+                              userId: next,
+                              ...(user.name ? { displayName: user.name } : {}),
+                            }, readSettingsBackendUrl());
+                            const resolved = String(profile.userId || '').trim().toLowerCase();
+                            setAccountUserId(resolved);
+                            setAccountUserIdDraft(resolved);
+                            updateUser({ userId: resolved });
+                            setProfileNote('User ID saved.');
+                          } catch (error) {
+                            setProfileNote(error instanceof Error ? error.message : 'Could not save user ID.');
+                          }
+                        })();
+                      }}
+                      className={`h-8 rounded-md border px-2 text-[11px] font-semibold ${isDarkUi ? 'border-indigo-400/60 bg-indigo-500/20 text-indigo-100' : 'border-indigo-200 bg-indigo-50 text-indigo-700'}`}
+                    >
+                      Save
+                    </button>
+                  </div>
+                  {!!profileNote && <div className={`mt-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{profileNote}</div>}
+                </div>
+              )}
               {isAdmin && (
                 <div className={`mt-3 flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs font-semibold ${isDarkUi ? 'border-slate-700 bg-slate-900/70 text-slate-200' : 'border-white bg-white text-gray-700'}`}>
                   <ShieldCheck size={14} className="text-emerald-600" />
                   Admin account has full access and no usage cap.
                 </div>
               )}
+            </div>
+
+            <div className={`mt-4 rounded-xl border p-4 ${isDarkUi ? 'border-slate-700 bg-slate-900/65' : 'border-gray-200 bg-gray-50'}`}>
+              <h3 className={`mb-2 text-xs font-bold uppercase tracking-wider ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Support Inbox</h3>
+              <div className="space-y-2">
+                <textarea
+                  value={supportText}
+                  onChange={(event) => setSupportText(event.target.value)}
+                  placeholder="Describe your issue. AI will try first, then route to human if unresolved."
+                  className={`min-h-[72px] w-full rounded-lg border px-3 py-2 text-xs ${isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500' : 'border-gray-200 bg-white text-gray-900 placeholder:text-gray-400'}`}
+                />
+                <button
+                  onClick={() => {
+                    const text = supportText.trim();
+                    if (!text) return;
+                    setIsSendingSupport(true);
+                    void (async () => {
+                      try {
+                        await postSupportMessage({ text }, readSettingsBackendUrl());
+                        setSupportText('');
+                        await loadAccountAndSupport();
+                      } finally {
+                        setIsSendingSupport(false);
+                      }
+                    })();
+                  }}
+                  disabled={isSendingSupport || !supportText.trim()}
+                  className={`h-8 rounded-md border px-3 text-[11px] font-semibold disabled:opacity-60 ${isDarkUi ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-700'}`}
+                >
+                  {isSendingSupport ? 'Sending...' : 'Send Query'}
+                </button>
+              </div>
+              <div className="mt-3 max-h-28 space-y-1 overflow-auto">
+                {isLoadingSupport && <div className={`text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading conversations...</div>}
+                {!isLoadingSupport && supportConversations.length === 0 && (
+                  <div className={`text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>No support threads yet.</div>
+                )}
+                {!isLoadingSupport && supportConversations.map((item) => (
+                  <div key={item.conversationId} className={`rounded-md border px-2 py-1 ${isDarkUi ? 'border-slate-700 bg-slate-950/80' : 'border-gray-200 bg-white'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-200' : 'text-gray-800'}`}>
+                        {item.status} • {item.priority}
+                      </div>
+                      {item.status !== 'resolved' && (
+                        <button
+                          onClick={() => {
+                            void (async () => {
+                              await markSupportConversationUnresolved(item.conversationId, readSettingsBackendUrl());
+                              await loadAccountAndSupport();
+                            })();
+                          }}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${isDarkUi ? 'border-amber-400/60 bg-amber-500/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-700'}`}
+                        >
+                          Still unresolved
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className={`mt-4 rounded-xl border p-4 ${isDarkUi ? 'border-slate-700 bg-slate-900/65' : 'border-gray-200 bg-gray-50'}`}>
@@ -163,7 +319,7 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
                       <EngineLogo engine={engine} size="sm" variant="ringed" />
                       <span>{getEngineDisplayName(engine)}</span>
                     </div>
-                    <span className={`font-mono ${isDarkUi ? 'text-cyan-300' : 'text-indigo-700'}`}>1 char = {VF_ENGINE_RATES[engine]} VF</span>
+                    <span className={`font-mono ${isDarkUi ? 'text-cyan-300' : 'text-indigo-700'}`}>1 char = {usage.rates[engine]} VF</span>
                   </div>
                 ))}
               </div>

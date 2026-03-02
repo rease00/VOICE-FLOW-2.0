@@ -5,8 +5,24 @@ from fastapi.testclient import TestClient
 import app as backend_app
 
 
-def _engine_by_health_url() -> dict[str, str]:
-    return {url: engine for engine, url in backend_app.TTS_ENGINE_HEALTH_URLS.items()}
+def _engines_by_health_url() -> dict[str, list[str]]:
+    mapping: dict[str, list[str]] = {}
+    for engine, url in backend_app.TTS_ENGINE_HEALTH_URLS.items():
+        mapping.setdefault(url, []).append(engine)
+    return mapping
+
+
+def _next_engine_for_health_url(
+    health_map: dict[str, list[str]],
+    call_counts: dict[str, int],
+    url: str,
+) -> str:
+    engines = list(health_map.get(url) or [])
+    if not engines:
+        return "GEM"
+    seen = int(call_counts.get(url) or 0)
+    call_counts[url] = seen + 1
+    return engines[seen % len(engines)]
 
 
 def test_prepare_skips_switch_when_services_already_online(monkeypatch) -> None:
@@ -35,13 +51,14 @@ def test_prepare_skips_switch_when_services_already_online(monkeypatch) -> None:
 
 def test_prepare_switches_offline_engine_once_and_polls(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    health_map = _engine_by_health_url()
+    health_map = _engines_by_health_url()
+    call_counts: dict[str, int] = {}
     switch_calls: list[str] = []
     wait_calls: list[str] = []
 
     def _probe(url: str, timeout_sec: float = 2.5):
         del timeout_sec
-        engine = health_map[url]
+        engine = _next_engine_for_health_url(health_map, call_counts, url)
         if engine == "GEM":
             return False, "offline"
         return True, "Runtime online"
@@ -81,12 +98,13 @@ def test_prepare_switches_offline_engine_once_and_polls(monkeypatch) -> None:
 
 def test_prepare_returns_starting_and_failed_states_consistently(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    health_map = _engine_by_health_url()
+    health_map = _engines_by_health_url()
+    call_counts: dict[str, int] = {}
     switch_calls: list[str] = []
 
     def _probe(url: str, timeout_sec: float = 2.5):
         del timeout_sec
-        engine = health_map[url]
+        engine = _next_engine_for_health_url(health_map, call_counts, url)
         if engine in {"GEM", "KOKORO"}:
             return False, "offline"
         return True, "Runtime online"
@@ -99,8 +117,8 @@ def test_prepare_returns_starting_and_failed_states_consistently(monkeypatch) ->
         return f"switched:{engine}"
 
     def _wait(url: str, timeout_ms: int, poll_interval_ms: int = 1200):
-        del timeout_ms, poll_interval_ms
-        engine = health_map[url]
+        del url, timeout_ms, poll_interval_ms
+        engine = switch_calls[-1] if switch_calls else "GEM"
         if engine == "GEM":
             return False, "Runtime is still starting.", 2000
         return True, "Runtime online", 0

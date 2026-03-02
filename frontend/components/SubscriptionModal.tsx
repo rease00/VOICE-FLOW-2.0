@@ -57,7 +57,7 @@ export const SubscriptionModal: React.FC = () => {
       title: 'Pro',
       priceLabel: 'INR 699 / month',
       description: 'Mapped to your current Pro checkout plan.',
-      bullets: ['200,000 VF / month', 'Lower VF rate than Free', 'Live checkout enabled'],
+      bullets: ['200,000 VF / month', 'Higher monthly capacity and burst limits', 'Live checkout enabled'],
       actionPlan: 'pro',
     },
     {
@@ -65,7 +65,7 @@ export const SubscriptionModal: React.FC = () => {
       title: 'Scale',
       priceLabel: 'INR 2,000 / month',
       description: 'Large capacity visual tier mapped to current Plus checkout.',
-      bullets: ['500,000 VF / month', 'Best current VF rate', 'Live checkout enabled'],
+      bullets: ['500,000 VF / month', 'Highest monthly capacity and burst limits', 'Live checkout enabled'],
       actionPlan: 'plus',
       note: 'Uses current Plus checkout under the hood.',
     },

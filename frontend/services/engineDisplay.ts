@@ -1,12 +1,14 @@
 import { GenerationSettings } from '../types';
 
 export const ENGINE_DISPLAY_NAMES: Record<GenerationSettings['engine'], string> = {
-  GEM: 'Plus',
+  GEM: 'Prime',
+  NEURAL2: 'HD',
   KOKORO: 'Basic',
 };
 
 export const ENGINE_RUNTIME_SUBLABELS: Record<GenerationSettings['engine'], string> = {
   GEM: 'Runtime',
+  NEURAL2: 'Runtime',
   KOKORO: 'Runtime',
 };
 

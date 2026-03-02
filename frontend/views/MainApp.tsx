@@ -45,6 +45,7 @@ import {
   normalizePreferUserGeminiKey,
   resolveAssistantProviderRouting,
 } from '../src/shared/settings/assistantProvider';
+import { ASSISTANT_PROVIDER_UI_LABELS, sanitizeUiText } from '../src/shared/ui/terminology';
 
 interface MainAppProps {
   setScreen: (screen: AppScreen) => void;
@@ -130,14 +131,16 @@ interface DubbingUiState {
   updatedAt: number;
 }
 
-const ENGINE_ORDER: GenerationSettings['engine'][] = ['GEM', 'KOKORO'];
+const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM'];
 const FALLBACK_RUNTIME_URLS: Record<GenerationSettings['engine'], string> = {
   GEM: 'http://127.0.0.1:7810',
+  NEURAL2: 'http://127.0.0.1:7810',
   KOKORO: 'http://127.0.0.1:7820',
 };
 
 const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]> = {
   GEM: [],
+  NEURAL2: [],
   KOKORO: [],
 };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
@@ -184,7 +187,7 @@ const normalizeServiceSetting = (value: unknown, fallback: string): string => (
 const normalizeSettings = (input: unknown): GenerationSettings => {
   const value = (input && typeof input === 'object') ? input as Record<string, any> : {};
   const legacyEngine = typeof value.engine === 'string' ? value.engine : DEFAULT_SETTINGS.engine;
-  const engine = (legacyEngine === 'GEM' || legacyEngine === 'KOKORO') ? legacyEngine : 'GEM';
+  const engine = (legacyEngine === 'GEM' || legacyEngine === 'NEURAL2' || legacyEngine === 'KOKORO') ? legacyEngine : 'GEM';
   const defaultVoice = engine === 'KOKORO'
     ? DEFAULT_KOKORO_VOICE_ID
     : DEFAULT_GEM_VOICE_ID;
@@ -609,6 +612,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [managedActiveEngine, setManagedActiveEngine] = useState<GenerationSettings['engine'] | null>(null);
   const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<GenerationSettings['engine'], EngineRuntimeStatus>>({
     GEM: { state: 'checking', detail: 'Checking...' },
+    NEURAL2: { state: 'checking', detail: 'Checking...' },
     KOKORO: { state: 'checking', detail: 'Checking...' },
 
   });
@@ -617,9 +621,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
 
   const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !hasUnlimitedAccess;
-  const currentEngineSpendable = settings.engine === 'KOKORO'
-    ? Math.max(0, Number(stats.wallet?.spendableNowByEngine?.KOKORO || 0))
-    : Math.max(0, Number(stats.wallet?.spendableNowByEngine?.GEM || 0));
+  const currentEngineSpendable = Math.max(
+    0,
+    Number(stats.wallet?.spendableNowByEngine?.[settings.engine] || 0)
+  );
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
   const hasAdClaimsRemaining =
     Math.max(0, Number(stats.wallet?.adClaimsToday || 0)) < Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3));
@@ -630,7 +635,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const walletMonthlyLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
   const balanceTotalLabel = hasUnlimitedAccess ? 'Unlimited' : `${walletMonthlyLimit.toLocaleString()} credits`;
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
-  const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => setToast({ msg, type });
+  const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info') =>
+    setToast({ msg: sanitizeUiText(msg), type });
   useEffect(() => {
       const params = new URLSearchParams(window.location.search);
       const billingState = String(params.get('billing') || '').trim().toLowerCase();
@@ -662,19 +668,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ...prev,
           ...patch,
           progress: Math.max(0, Math.min(100, Number.isFinite(Number(patch.progress)) ? Number(patch.progress) : prev.progress)),
-          stage: typeof patch.stage === 'string' && patch.stage.trim() ? patch.stage : prev.stage,
-          error: typeof patch.error === 'string' ? patch.error : prev.error,
+          stage: typeof patch.stage === 'string' && patch.stage.trim() ? sanitizeUiText(patch.stage) : prev.stage,
+          error: typeof patch.error === 'string' ? sanitizeUiText(patch.error) : prev.error,
           updatedAt: Date.now(),
       }));
   }, []);
   const mediaBackendUrl = resolveMediaBackendUrl(settings);
   const billingActions = useBillingActions({ baseUrl: mediaBackendUrl });
+  const isGemRuntimeEngine = useCallback(
+    (engine: GenerationSettings['engine']) => engine === 'GEM' || engine === 'NEURAL2',
+    []
+  );
   const normalizeRuntimeUrl = (url?: string): string => (url || '').trim().replace(/\/+$/, '');
   const getDefaultRuntimeUrlForEngine = (engine: GenerationSettings['engine']): string => {
       return FALLBACK_RUNTIME_URLS[engine] || '';
   };
   const getRuntimeUrlForEngine = (engine: GenerationSettings['engine']): string => {
-      const configured = engine === 'GEM'
+      const configured = isGemRuntimeEngine(engine)
         ? settings.geminiTtsServiceUrl
         : settings.kokoroTtsServiceUrl;
       const normalized = normalizeRuntimeUrl(configured);
@@ -708,7 +718,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           backendUrl: mediaBackendUrl,
           preferBackendModel: settings.useModelSourceSeparation !== false,
           onStatus: (message) => {
-              setProcessingStage(message);
+              setProcessingStage(sanitizeUiText(message));
               patchDubbingUiState({
                   phase: 'running',
                   stage: message,
@@ -767,9 +777,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }), [resolveVoiceAgeGroup, resolveVoiceCountry]);
 
   const getStaticVoicesForEngine = useCallback((engine: GenerationSettings['engine']): VoiceOption[] => {
-      if (engine === 'GEM') {
+      if (isGemRuntimeEngine(engine)) {
           return [
-              ...getStaticVoiceFallback('GEM').map((voice) => withVoiceMeta(voice, 'GEM')),
+              ...getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine)),
               ...clonedVoices.map((voice) =>
                   withVoiceMeta(
                       {
@@ -777,13 +787,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           country: voice.country || 'Unknown',
                           ageGroup: voice.ageGroup || 'Unknown',
                       },
-                      'GEM'
+                      engine
                   )
               ),
           ];
       }
       return getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine));
-  }, [clonedVoices, withVoiceMeta]);
+  }, [clonedVoices, isGemRuntimeEngine, withVoiceMeta]);
 
   const mergeVoiceCatalogs = useCallback((primary: VoiceOption[], fallback: VoiceOption[]): VoiceOption[] => {
       const out: VoiceOption[] = [];
@@ -801,9 +811,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const getEngineVoiceCatalog = useCallback((engine: GenerationSettings['engine']): VoiceOption[] => {
       const runtimeVoices = runtimeVoiceCatalogs[engine] || [];
-      if (engine === 'GEM') {
-          const runtimeBase = runtimeVoices.map((voice) => withVoiceMeta(voice, 'GEM'));
-          const staticBase = getStaticVoiceFallback('GEM').map((voice) => withVoiceMeta(voice, 'GEM'));
+      if (isGemRuntimeEngine(engine)) {
+          const runtimeBase = runtimeVoices.map((voice) => withVoiceMeta(voice, engine));
+          const staticBase = getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine));
           const baseVoices = mergeVoiceCatalogs(runtimeBase, staticBase);
           const cloneVoices = clonedVoices.map((voice) =>
               withVoiceMeta(
@@ -812,7 +822,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       country: voice.country || 'Unknown',
                       ageGroup: voice.ageGroup || 'Unknown',
                   },
-                  'GEM'
+                  engine
               )
           );
           return [...baseVoices, ...cloneVoices];
@@ -820,7 +830,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const runtimeCatalog = runtimeVoices.map((voice) => withVoiceMeta(voice, engine));
       const staticCatalog = getStaticVoicesForEngine(engine);
       return mergeVoiceCatalogs(runtimeCatalog, staticCatalog);
-  }, [clonedVoices, getStaticVoicesForEngine, mergeVoiceCatalogs, runtimeVoiceCatalogs, withVoiceMeta]);
+  }, [clonedVoices, getStaticVoicesForEngine, isGemRuntimeEngine, mergeVoiceCatalogs, runtimeVoiceCatalogs, withVoiceMeta]);
 
   const getVoiceById = useCallback((voiceId: string): VoiceOption | undefined => {
       if (!voiceId) return undefined;
@@ -930,7 +940,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const voiceMatchesLanguage = useCallback(
       (voice: VoiceOption, engine: GenerationSettings['engine'], languageCode: string): boolean => {
-          if (engine === 'GEM') return true;
+          if (isGemRuntimeEngine(engine)) return true;
           const bucket = resolveVoiceLanguageBucket(voice);
           if (bucket === 'multi') return true;
           const normalized = normalizeLanguageCode(languageCode);
@@ -938,7 +948,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (normalized === 'en') return bucket === 'en';
           return bucket === 'en' || bucket === 'other';
       },
-      [isHindiFamilyLanguage, normalizeLanguageCode, resolveVoiceLanguageBucket]
+      [isGemRuntimeEngine, isHindiFamilyLanguage, normalizeLanguageCode, resolveVoiceLanguageBucket]
   );
 
   const getLanguageScopedVoiceCatalog = useCallback(
@@ -950,11 +960,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const catalog = getEngineVoiceCatalog(engine);
           if (!catalog.length) return [];
           const filtered =
-              engine === 'GEM'
+              isGemRuntimeEngine(engine)
                   ? catalog
                   : catalog.filter((voice) => voiceMatchesLanguage(voice, engine, languageCode));
           let scoped: VoiceOption[] = [];
-          if (engine === 'GEM') {
+          if (isGemRuntimeEngine(engine)) {
               scoped = catalog;
           } else if (filtered.length > 0 && filtered.length < catalog.length) {
               const preferred = new Set(filtered.map((voice) => voice.id));
@@ -975,7 +985,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               });
           return [...preserved, ...scoped];
       },
-      [getEngineVoiceCatalog, voiceMatchesLanguage]
+      [getEngineVoiceCatalog, isGemRuntimeEngine, voiceMatchesLanguage]
   );
 
   const studioTextLanguageCode = useMemo(
@@ -1271,14 +1281,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const payload = await fetchTtsEnginesStatus(_engine, mediaBackendUrl);
           const engineItem = payload.engines?.[_engine];
           if (!engineItem) {
-              return { state: 'offline', detail: 'Gateway did not return runtime status.' };
+              return { state: 'offline', detail: sanitizeUiText('Gateway did not return runtime status.') };
           }
           if (engineItem.state === 'online' || engineItem.state === 'starting' || engineItem.state === 'offline') {
-              return { state: engineItem.state, detail: engineItem.detail || 'Runtime status updated.' };
+              return { state: engineItem.state, detail: sanitizeUiText(engineItem.detail || 'Runtime status updated.') };
           }
-          return { state: 'offline', detail: engineItem.detail || 'Runtime status unavailable.' };
+          return { state: 'offline', detail: sanitizeUiText(engineItem.detail || 'Runtime status unavailable.') };
       } catch (error: unknown) {
-          const detail = error instanceof Error ? error.message : 'Runtime offline';
+          const detail = sanitizeUiText(error instanceof Error ? error.message : 'Runtime offline');
           return { state: 'offline', detail };
       }
   }, [mediaBackendUrl]);
@@ -1298,10 +1308,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           })
       );
 
-      setTtsRuntimeStatus({
-          GEM: statuses.find(([engine]) => engine === 'GEM')?.[1] || { state: 'offline', detail: 'Unknown' },
-          KOKORO: statuses.find(([engine]) => engine === 'KOKORO')?.[1] || { state: 'offline', detail: 'Unknown' },
-      });
+      setTtsRuntimeStatus(
+          ENGINE_ORDER.reduce((acc, engine) => {
+              acc[engine] = statuses.find(([name]) => name === engine)?.[1] || { state: 'offline', detail: 'Unknown' };
+              return acc;
+          }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>)
+      );
 
   };
 
@@ -1331,11 +1343,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const currentStatus = await probeRuntimeStatus(engine);
       if (
-          engine === 'GEM' &&
+          isGemRuntimeEngine(engine) &&
           currentStatus.state === 'offline' &&
           String(currentStatus.detail || '').toLowerCase().includes('key pool')
       ) {
-          throw new Error(currentStatus.detail || 'Gemini key pool is not configured.');
+          throw new Error(currentStatus.detail || 'Primary AI key pool is not configured.');
       }
       if (currentStatus.state === 'online') {
           const cachedCatalog = runtimeVoiceCatalogs[engine] || [];
@@ -1396,7 +1408,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('networkerror') ||
                   detail.includes('econnrefused')
               ) {
-                  throw new Error(`Media backend is unreachable at ${mediaBackendUrl}. Start services with "npm run services:bootstrap" and retry.`);
+                  throw new Error(`Media backend is unreachable at ${mediaBackendUrl}. Run "npm run services:doctor" and retry.`);
               }
               throw new Error(switchError?.message || `Failed to switch ${engineLabel} runtime.`);
           }
@@ -1475,9 +1487,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               health.whisper?.error ? 'Whisper Error' : `Whisper ${health.whisper?.loaded ? 'Loaded' : 'Idle'} (${languageHint})`,
               separationState,
           ].join(' | ');
-          setBackendHealth({ ok: Boolean(health.ok) && !ffmpegMissing, summary, severity });
+          setBackendHealth({ ok: Boolean(health.ok) && !ffmpegMissing, summary: sanitizeUiText(summary), severity });
       } catch (e: any) {
-          setBackendHealth({ ok: false, summary: e?.message || 'Backend unreachable', severity: 'error' });
+          setBackendHealth({ ok: false, summary: sanitizeUiText(e?.message || 'Backend unreachable'), severity: 'error' });
           if (!silent) {
               showToast(e?.message || 'Backend unreachable', 'error');
           }
@@ -1676,7 +1688,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
           const engineLabel = String(detail.engine || detail.runtimeLabel || 'TTS Runtime').trim();
           setToast({
-              msg: `${engineLabel} recovery: ${retryChunks} retry chunk(s), ${qualityGuardRecoveries} quality-guard recoveries, ${splitChunks} split fallback chunk(s).`,
+              msg: sanitizeUiText(`${engineLabel} recovery: ${retryChunks} retry chunk(s), ${qualityGuardRecoveries} quality-guard recoveries, ${splitChunks} split fallback chunk(s).`),
               type: 'info',
           });
       };
@@ -1701,9 +1713,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (Number.isFinite(pct) && pct > 0) {
               const safe = Math.max(6, Math.min(98, Math.round(pct)));
               setProgress((prev) => Math.max(prev, safe));
-              if (stage) setProcessingStage(stage);
+              if (stage) setProcessingStage(sanitizeUiText(stage));
           } else if (stage) {
-              setProcessingStage(stage);
+              setProcessingStage(sanitizeUiText(stage));
           }
       };
       window.addEventListener(TTS_GATEWAY_JOB_PROGRESS_EVENT, handleGatewayProgress as EventListener);
@@ -1970,7 +1982,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const setLiveProgress = useCallback((nextProgress: number, stageMessage?: string) => {
       const safe = Math.max(0, Math.min(99, Math.round(nextProgress)));
       setProgress((prev) => Math.max(prev, safe));
-      if (stageMessage) setProcessingStage(stageMessage);
+      if (stageMessage) setProcessingStage(sanitizeUiText(stageMessage));
   }, []);
 
   // Helper to start simulated progress
@@ -1983,7 +1995,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
      
      setProgress(0);
      setTimeLeft(mode === 'simulated' ? estSeconds : 0);
-     setProcessingStage(startMsg);
+     setProcessingStage(sanitizeUiText(startMsg));
      setIsGenerating(true);
      if (mode === 'live') {
          setProgress(6);
@@ -2045,7 +2057,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? engineState.catalog
           : getEngineVoiceCatalog(settings.engine);
       const requestedVoiceId = engineState.syncedVoiceId || settings.voiceId;
-      const scopedCatalog = settings.engine === 'GEM'
+      const scopedCatalog = isGemRuntimeEngine(settings.engine)
           ? freshCatalog
           : getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode, [requestedVoiceId]);
       const voiceId = selectVoiceIdFromCatalog(
@@ -2207,7 +2219,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           
           // Use the correct voice name parameter expected by generateSpeech
           let voiceParam = name;
-          if (engine === 'GEM') {
+          if (isGemRuntimeEngine(engine)) {
             voiceParam = getVoiceById(voiceId)?.geminiVoiceName || clonedVoices.find(v => v.id === voiceId)?.geminiVoiceName || 'Fenrir';
           } else {
             voiceParam = voiceId;
@@ -2333,7 +2345,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               const lang = mode === 'translate' ? targetLang : 'Original';
               const fallback = await translateVideoContent(videoFile, lang, settings);
               setDubScript(fallback);
-              showToast('Used Gemini fallback for transcription.', 'info');
+              showToast('Used fallback transcription path.', 'info');
               patchDubbingUiState({
                   phase: 'done',
                   progress: 100,
@@ -2450,7 +2462,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const mappedVoiceIds = Object.values(settings.speakerMapping || {})
           .map((voiceId) => String(voiceId || '').trim())
           .filter((voiceId) => Boolean(voiceId));
-      const dubbingVoiceCatalog = settings.engine === 'GEM'
+      const dubbingVoiceCatalog = isGemRuntimeEngine(settings.engine)
           ? freshCatalog
           : getLanguageScopedVoiceCatalog(settings.engine, dubbingTextLanguageCode, [baseVoiceId, ...mappedVoiceIds]);
       const dubbingValidVoiceIds = new Set(freshCatalog.map((voice) => voice.id));
@@ -2819,7 +2831,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const response = await generateTextContent(userText, context, settings);
           setChatHistory(prev => [...prev, { role: 'ai', text: response }]);
       } catch (e: any) {
-          const message = e?.message || 'Assistant request failed.';
+          const message = sanitizeUiText(e?.message || 'Assistant request failed.');
           setChatHistory(prev => [...prev, { role: 'ai', text: `[Assistant error] ${message}` }]);
           showToast(message, 'error');
       } finally {
@@ -2955,9 +2967,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const getEngineLabel = (engine: GenerationSettings['engine']) => getEngineDisplayName(engine);
   const getEngineSubLabel = (engine: GenerationSettings['engine']) => (
-    engine === 'GEM'
-      ? 'Gemini Runtime'
-      : 'Kokoro Runtime'
+    isGemRuntimeEngine(engine)
+      ? 'Cloud Runtime'
+      : 'Basic Runtime'
   );
   const getRuntimeStateLabel = (state: EngineRuntimeState) => {
     if (state === 'online') return 'Online';
@@ -3048,7 +3060,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   const handleStartServices = () => {
-      showToast('Run "npm run services:bootstrap" in a terminal to start backend services.', 'info');
+      showToast('Run "npm run services:doctor" in a terminal to auto-heal backend services.', 'info');
       void refreshBackendHealth(true);
       void refreshTtsRuntimeStatus();
   };
@@ -3527,6 +3539,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       } ${(switchLocked || pending) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
                                   >
                                       {engine === 'GEM' && <Sparkles size={20} className={`shrink-0 ${isActive ? 'text-indigo-600' : 'text-gray-400'}`} />}
+                                      {engine === 'NEURAL2' && <Zap size={20} className={`shrink-0 ${isActive ? 'text-amber-600' : 'text-gray-400'}`} />}
                                       {engine === 'KOKORO' && <Cpu size={20} className={`shrink-0 ${isActive ? 'text-cyan-600' : 'text-gray-400'}`} />}
                                       <div className="flex-1 min-w-0">
                                           <div className="font-bold text-sm">{getEngineLabel(engine)} Runtime</div>
@@ -3549,8 +3562,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               <p className="text-[11px] font-bold text-gray-700">Provider Controls</p>
                               <p className="text-[10px] text-gray-500">
                                   {providerControlsEnabled
-                                      ? 'Use GEMINI / PERPLEXITY / LOCAL selector.'
-                                      : 'Forced to Gemini runtime path.'}
+                                      ? 'Use Primary AI / Perplexity / Local selector.'
+                                      : 'Forced to Primary AI runtime path.'}
                               </p>
                           </div>
                           <button
@@ -3587,7 +3600,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                   : 'text-gray-400 hover:text-gray-600'
                                       }`}
                                   >
-                                      {p}
+                                      {ASSISTANT_PROVIDER_UI_LABELS[p]}
                                   </button>
                               );
                           })}
@@ -3603,7 +3616,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           {activeAssistantProvider === 'GEMINI' && (
                               <div>
                                   <div className="flex items-center justify-between gap-2 mb-1">
-                                      <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-1"><Key size={10}/> Gemini API Key</label>
+                                      <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-1"><Key size={10}/> Primary AI API Key</label>
                                       <button
                                           type="button"
                                           onClick={async () => {
@@ -3615,7 +3628,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                       return;
                                                   }
                                                   setSettings((s) => ({ ...s, geminiApiKey: nextKey }));
-                                                  showToast('Gemini API key pasted.', 'success');
+                                                  showToast('Primary AI API key pasted.', 'success');
                                               } catch {
                                                   showToast('Clipboard access failed. Paste manually.', 'error');
                                               }
@@ -3634,14 +3647,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   />
                                   <div className="mt-2 flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-2.5">
                                       <div className="pr-2">
-                                          <p className="text-[10px] font-bold text-gray-600 uppercase">Use Personal Gemini Key</p>
+                                          <p className="text-[10px] font-bold text-gray-600 uppercase">Use Personal API Key</p>
                                           <p className="text-[10px] text-gray-500">When OFF, requests use backend runtime key-pool.</p>
                                       </div>
                                       <button
                                           type="button"
                                           onClick={() => setSettings((s) => ({ ...s, preferUserGeminiKey: !(s.preferUserGeminiKey === true) }))}
                                           className={`relative h-5 w-10 rounded-full transition-colors ${settings.preferUserGeminiKey === true ? 'bg-indigo-500' : 'bg-gray-300'}`}
-                                          aria-label="Toggle personal Gemini key preference"
+                                          aria-label="Toggle personal API key preference"
                                           aria-pressed={settings.preferUserGeminiKey === true}
                                       >
                                           <span
@@ -3649,7 +3662,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           />
                                       </button>
                                   </div>
-                                  <p className="text-[10px] text-gray-400 mt-1">Used by AI Assistant and Gemini fallback tasks.</p>
+                                  <p className="text-[10px] text-gray-400 mt-1">Used by AI Assistant and cloud fallback tasks.</p>
                               </div>
                           )}
 
@@ -3764,7 +3777,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     <button
                       type="button"
                       onClick={() => {
-                        const nextEngine: GenerationSettings['engine'] = settings.engine === 'GEM' ? 'KOKORO' : 'GEM';
+                        const activeIndex = ENGINE_ORDER.indexOf(settings.engine);
+                        const nextEngine: GenerationSettings['engine'] = ENGINE_ORDER[(activeIndex + 1) % ENGINE_ORDER.length] ?? 'KOKORO';
                         void activateTtsEngine(nextEngine);
                       }}
                       className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-[10px] font-bold uppercase tracking-wide ${
@@ -3942,7 +3956,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                <div className="flex justify-between items-center mb-4">
 	                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speaker</h3>
                                         <div className="flex items-center gap-2">
-	                                        <span className={`text-xs font-bold ${settings.engine === 'KOKORO' ? 'text-cyan-600' : 'text-indigo-600'}`}>
+	                                        <span className={`text-xs font-bold ${
+                                                    settings.engine === 'KOKORO'
+                                                      ? 'text-cyan-600'
+                                                      : settings.engine === 'NEURAL2'
+                                                        ? 'text-amber-600'
+                                                        : 'text-indigo-600'
+                                                }`}>
 	                                            {getEngineDisplayName(settings.engine)}
 	                                        </span>
                                             <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
@@ -3969,7 +3989,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        )
 	                                    })}
 	                                    {/* Add Clones */}
-	                                    {settings.engine === 'GEM' && clonedVoices.map(v => (
+	                                    {isGemRuntimeEngine(settings.engine) && clonedVoices.map(v => (
 	                                        <button
 	                                            key={v.id}
 	                                            onClick={() => setSettings(s => ({...s, voiceId: v.id}))}
@@ -3982,7 +4002,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                 
                                 {/* Emotion/Speed Selector */}
                                 <div className="pt-4 border-t border-gray-100 space-y-3">
-                                    {settings.engine === 'GEM' && (
+                                    {isGemRuntimeEngine(settings.engine) && (
                                         <div>
                                             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Emotion</h3>
                                             <select 
@@ -4085,7 +4105,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         <div>
                                             <h3 className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Multi-Speaker Mode</h3>
                                             <p className="text-[11px] text-indigo-600 mt-1">
-                                                Apply cast mapping for Plus and Basic in Studio generation.
+                                                Apply cast mapping for {getEngineDisplayName('GEM')} and {getEngineDisplayName('KOKORO')} in Studio generation.
                                             </p>
                                         </div>
                                         <button
@@ -4486,7 +4506,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             {history.map((item, index) => {
                               const itemKey = `${item.id || 'history'}_${index}`;
                               const isExpanded = expandedHistoryItemKey === itemKey;
-                              const historyEngine: GenerationSettings['engine'] = item.engine === 'KOKORO' ? 'KOKORO' : 'GEM';
+                              const historyEngine: GenerationSettings['engine'] = item.engine === 'KOKORO'
+                                ? 'KOKORO'
+                                : item.engine === 'NEURAL2'
+                                  ? 'NEURAL2'
+                                  : 'GEM';
                               const voiceLabel = item.voiceName || 'AI Voice';
                               const normalizedPreview = String(item.text || '').replace(/\s+/g, ' ').trim();
                               const previewText = normalizedPreview || 'No text preview.';
@@ -4511,6 +4535,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         ? isDarkUi
                                           ? 'bg-emerald-500/20 text-emerald-200'
                                           : 'bg-emerald-100 text-emerald-700'
+                                        : historyEngine === 'NEURAL2'
+                                          ? isDarkUi
+                                            ? 'bg-amber-500/20 text-amber-100'
+                                            : 'bg-amber-100 text-amber-700'
                                         : isDarkUi
                                           ? 'bg-cyan-500/20 text-cyan-100'
                                           : 'bg-cyan-100 text-cyan-700'
@@ -4630,7 +4658,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                  <div className="bg-blue-50 p-3 rounded-xl text-xs text-blue-800 flex items-start gap-2">
                                      <Sparkles size={14} className="shrink-0 mt-0.5"/>
                                      <span>
-	                                         <strong>Pro Tip:</strong> Voice samples help AI analysis and cast consistency, while playback uses Plus or Basic voices.
+	                                         <strong>Pro Tip:</strong> Voice samples help AI analysis and cast consistency, while playback uses {getEngineDisplayName('GEM')} or {getEngineDisplayName('KOKORO')} voices.
 	                                     </span>
 	                                 </div>
                              </div>

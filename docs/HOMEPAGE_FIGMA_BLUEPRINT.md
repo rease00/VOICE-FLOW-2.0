@@ -49,7 +49,7 @@ From current app token system:
   - Secondary CTA: `Start Video Dub`
 - Right:
   - Runtime health mini panel:
-    - `Plus Runtime`, `Basic Runtime`, `Queue`
+    - `Prime Runtime`, `Basic Runtime`, `Queue`
     - status chips (`online/warn/offline`)
 
 ## B. KPI Row
@@ -153,4 +153,3 @@ This matches the recent responsive anchor logic already implemented in code.
 - `RecentGenerationList`
 - `RecentDraftList`
 - `EmptyStateCard`
-
