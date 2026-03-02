@@ -1,1 +1,0 @@
-{"ok":true,"apiVersion":"1.2.0","buildTime":"2026-02-28T08:33:46.998918+00:00","gitSha":"9e7b04f","features":{"dubbingPrepare":true,"ttsSwitch":true,"runtimeLogs":true,"voiceConversionPolicy":true,"lhqSvcPilot":false,"firebaseAuth":true,"stripeBilling":true,"usageQuota":true,"ttsSynthesizeProxy":true,"aiOpsGuardian":true}}

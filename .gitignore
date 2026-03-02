@@ -35,6 +35,16 @@ artifacts/**
 !artifacts/.gitkeep
 backend/artifacts/**
 !backend/artifacts/.gitkeep
+output/
+backend/output/
+frontend/playwright-report/
+test-results/
+mcp-before-revert/
+mcp-after-revert/
+docs/audits/artifacts/
+frontend-pre-revert.patch
+tsc-errors-lines.txt
+tsc-errors.txt
 
 # Local secrets and credentials (never commit)
 API.txt

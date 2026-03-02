@@ -7,7 +7,7 @@ Target state: current dirty working tree (no reverts)
 - Run timestamp (local): `2026-02-28T15:36:04+05:30`
 - Git HEAD: `9e7b04f5b1987e5d2bb50ed73a9f92a44b93e5ad`
 - Worktree: dirty (tracked + untracked changes pre-existing)
-- Evidence bundle: `docs/audits/artifacts/2026-02-28-deep-audit-run/`
+- Evidence bundle: archived externally (local runtime artifacts are not committed in this repository).
 
 ## Executive Summary
 - Total findings: **9**
