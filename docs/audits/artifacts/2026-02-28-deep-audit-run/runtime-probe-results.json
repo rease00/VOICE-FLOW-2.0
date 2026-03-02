@@ -1,0 +1,114 @@
+﻿[
+    {
+        "name":  "health_noauth",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/health",
+        "snippet":  "{\"ok\":true,\"ffmpeg\":{\"available\":true,\"path\":\"C:\\\\Users\\\\1wasi\\\\OneDrive\\\\Desktop\\\\voice-Flow\\\\backend\\\\.venvs\\\\media-backend\\\\Lib\\\\site-packages\\\\imageio_ffmpeg\\\\binaries\\\\ffmpeg-win-x86_64-v7.1.exe\""
+    },
+    {
+        "name":  "system_version_noauth",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/system/version",
+        "snippet":  "{\"ok\":true,\"apiVersion\":\"1.2.0\",\"buildTime\":\"2026-02-28T10:25:44.071919+00:00\",\"gitSha\":\"9e7b04f\",\"features\":{\"dubbingPrepare\":true,\"ttsSwitch\":true,\"runtimeLogs\":true,\"voiceConversionPolicy\":true,\"lh"
+    },
+    {
+        "name":  "entitlements_noauth",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/account/entitlements",
+        "snippet":  "{\"ok\":true,\"entitlements\":{\"uid\":\"dev_local_user\",\"plan\":\"Free\",\"status\":\"free_active\",\"monthly\":{\"vfLimit\":10000,\"vfUsed\":0,\"monthlyFreeVfUsed\":0,\"vfRemaining\":10000,\"generationCount\":0,\"periodKey\":\""
+    },
+    {
+        "name":  "tts_noauth",
+        "method":  "POST",
+        "status":  422,
+        "url":  "http://127.0.0.1:7800/tts/synthesize",
+        "snippet":  "{\"detail\":[{\"type\":\"json_invalid\",\"loc\":[\"body\",1],\"msg\":\"JSON decode error\",\"input\":{},\"ctx\":{\"error\":\"Expecting property name enclosed in double quotes\"}}]}"
+    },
+    {
+        "name":  "admin_users_noauth",
+        "method":  "GET",
+        "status":  403,
+        "url":  "http://127.0.0.1:7800/admin/users",
+        "snippet":  "{\"detail\":\"Admin access required.\"}"
+    },
+    {
+        "name":  "pool_status_noauth",
+        "method":  "GET",
+        "status":  403,
+        "url":  "http://127.0.0.1:7800/admin/gemini/pool/status",
+        "snippet":  "{\"detail\":\"Admin access required.\"}"
+    },
+    {
+        "name":  "admin_usage_noauth",
+        "method":  "GET",
+        "status":  403,
+        "url":  "http://127.0.0.1:7800/admin/integrations/usage",
+        "snippet":  "{\"detail\":\"Admin access required.\"}"
+    },
+    {
+        "name":  "runtime_logs_noauth",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/runtime/logs/tail?service=gemini-runtime",
+        "snippet":  "{\"ok\":true,\"service\":\"gemini-runtime\",\"exists\":true,\"file\":\"C:\\\\Users\\\\1wasi\\\\OneDrive\\\\Desktop\\\\voice-Flow\\\\backend\\\\.runtime\\\\logs\\\\gemini-runtime.log\",\"cursor\":10279682,\"nextCursor\":10304258,\"size\""
+    },
+    {
+        "name":  "guardian_status_noauth",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/ops/guardian/status",
+        "snippet":  "{\"ok\":true,\"timestampMs\":1772274868472,\"mode\":\"observe\",\"concurrency\":{\"mode\":\"observe\",\"inFlight\":1,\"peakInFlight\":1,\"softLimit\":24,\"hardLimit\":32,\"maintenanceMode\":false,\"temporarySheddingUntilMs\":0"
+    },
+    {
+        "name":  "entitlements_devuid_user",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/account/entitlements",
+        "snippet":  "{\"ok\":true,\"entitlements\":{\"uid\":\"audit_user\",\"plan\":\"Free\",\"status\":\"free_active\",\"monthly\":{\"vfLimit\":10000,\"vfUsed\":0,\"monthlyFreeVfUsed\":0,\"vfRemaining\":10000,\"generationCount\":0,\"periodKey\":\"2026"
+    },
+    {
+        "name":  "tts_devuid_user",
+        "method":  "POST",
+        "status":  422,
+        "url":  "http://127.0.0.1:7800/tts/synthesize",
+        "snippet":  "{\"detail\":[{\"type\":\"json_invalid\",\"loc\":[\"body\",1],\"msg\":\"JSON decode error\",\"input\":{},\"ctx\":{\"error\":\"Expecting property name enclosed in double quotes\"}}]}"
+    },
+    {
+        "name":  "admin_users_devuid_user",
+        "method":  "GET",
+        "status":  403,
+        "url":  "http://127.0.0.1:7800/admin/users",
+        "snippet":  "{\"detail\":\"Admin access required.\"}"
+    },
+    {
+        "name":  "admin_users_devuid_admin",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/admin/users",
+        "snippet":  "{\"ok\":true,\"users\":[{\"uid\":\"dev_local_user\",\"email\":\"\",\"displayName\":\"dev_local_user\",\"disabled\":false,\"admin\":false,\"plan\":\"Free\",\"status\":\"free_active\",\"wallet\":{\"paidVfBalance\":0,\"vffBalance\":0},\"u"
+    },
+    {
+        "name":  "pool_status_devuid_admin",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/admin/gemini/pool/status",
+        "snippet":  "{\"ok\":true,\"backend\":{\"ok\":true,\"window\":{\"type\":\"rolling_seconds\",\"seconds\":60,\"timestampMs\":1772274868792},\"allocator\":{\"version\":\"2026-02-27\",\"defaultWaitTimeoutMs\":90000,\"windowSeconds\":60},\"pool\""
+    },
+    {
+        "name":  "admin_usage_devuid_admin",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/admin/integrations/usage",
+        "snippet":  "{\"ok\":true,\"generatedAtMs\":1772274868952,\"windows\":{\"total\":{\"requests\":33,\"success\":21,\"clientErrors\":12,\"serverErrors\":0,\"errorRatePct\":36.36,\"statusClassCounts\":{\"1xx\":0,\"2xx\":21,\"3xx\":0,\"4xx\":12,\""
+    },
+    {
+        "name":  "guardian_status_devuid_admin",
+        "method":  "GET",
+        "status":  200,
+        "url":  "http://127.0.0.1:7800/ops/guardian/status?include_route_stats=true",
+        "snippet":  "{\"ok\":true,\"timestampMs\":1772274869033,\"mode\":\"observe\",\"concurrency\":{\"mode\":\"observe\",\"inFlight\":1,\"peakInFlight\":1,\"softLimit\":24,\"hardLimit\":32,\"maintenanceMode\":false,\"temporarySheddingUntilMs\":0"
+    }
+]

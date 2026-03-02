@@ -36,10 +36,10 @@ export interface VoiceSampleAnalysis {
   description: string;
   emotionHint?: {
     emotion: string;
-    style?: string;
-    emotionRefId?: string;
-    confidence?: number;
-    nonLinguistic?: boolean;
+    style?: string | undefined;
+    emotionRefId?: string | undefined;
+    confidence?: number | undefined;
+    nonLinguistic?: boolean | undefined;
   };
 }
 
@@ -78,41 +78,42 @@ export interface GenerationSettings {
   speed: number;
   pitch: 'Low' | 'Medium' | 'High';
   language: string;
-  emotion?: string;
-  style?: string;
-  emotionRefId?: string;
-  emotionStrength?: number;
+  emotion?: string | undefined;
+  style?: string | undefined;
+  emotionRefId?: string | undefined;
+  emotionStrength?: number | undefined;
 
   // TTS engine (two-engine contract only)
   engine: 'GEM' | 'KOKORO';
 
   // Assistant provider
   helperProvider: 'GEMINI' | 'PERPLEXITY' | 'LOCAL';
-  perplexityApiKey?: string;
-  localLlmUrl?: string;
-  geminiApiKey?: string;
-  preferUserGeminiKey?: boolean;
+  assistantProviderControlsEnabled?: boolean | undefined;
+  perplexityApiKey?: string | undefined;
+  localLlmUrl?: string | undefined;
+  geminiApiKey?: string | undefined;
+  preferUserGeminiKey?: boolean | undefined;
 
   // Local backend / runtime wiring
-  mediaBackendUrl?: string;
-  backendApiKey?: string;
-  rvcModel?: string;
-  conversionPolicy?: 'AUTO_RELIABLE' | 'LHQ_PILOT';
-  geminiTtsServiceUrl?: string;
-  kokoroTtsServiceUrl?: string;
+  mediaBackendUrl?: string | undefined;
+  backendApiKey?: string | undefined;
+  rvcModel?: string | undefined;
+  conversionPolicy?: 'AUTO_RELIABLE' | 'LHQ_PILOT' | undefined;
+  geminiTtsServiceUrl?: string | undefined;
+  kokoroTtsServiceUrl?: string | undefined;
 
   // Studio controls
-  musicTrackId?: string;
-  musicVolume?: number;
-  speechVolume?: number;
-  autoEnhance?: boolean;
-  multiSpeakerEnabled?: boolean;
-  speakerMapping?: Record<string, string>;
+  musicTrackId?: string | undefined;
+  musicVolume?: number | undefined;
+  speechVolume?: number | undefined;
+  autoEnhance?: boolean | undefined;
+  multiSpeakerEnabled?: boolean | undefined;
+  speakerMapping?: Record<string, string> | undefined;
 
   // Dubbing options
-  useModelSourceSeparation?: boolean;
-  preserveDubVoiceTone?: boolean;
-  dubbingSourceLanguage?: string;
+  useModelSourceSeparation?: boolean | undefined;
+  preserveDubVoiceTone?: boolean | undefined;
+  dubbingSourceLanguage?: string | undefined;
 }
 
 export type ScriptBlockType = 'dialogue' | 'sfx' | 'direction';
@@ -147,9 +148,9 @@ export interface NovelProject {
   id: string;
   name: string;
   rootFolderId: string;
-  exportsFolderId?: string;
-  createdTime?: string;
-  modifiedTime?: string;
+  exportsFolderId?: string | undefined;
+  createdTime?: string | undefined;
+  modifiedTime?: string | undefined;
 }
 
 export interface NovelChapter {
@@ -158,8 +159,8 @@ export interface NovelChapter {
   title: string;
   name: string;
   index: number;
-  createdTime?: string;
-  modifiedTime?: string;
+  createdTime?: string | undefined;
+  modifiedTime?: string | undefined;
 }
 
 export type MemoryEntryKind = 'character' | 'place';
@@ -170,8 +171,8 @@ export interface MemoryEntry {
   sourceName: string;
   adaptedName: string;
   locked: boolean;
-  confidence?: number;
-  notes?: string;
+  confidence?: number | undefined;
+  notes?: string | undefined;
   updatedAt: string;
 }
 
@@ -312,7 +313,7 @@ export interface VfUsageStats {
   daily: VfUsageWindow;
   monthly: VfUsageWindow;
   lifetime: VfUsageWindow;
-  lastRecordedAt?: number;
+  lastRecordedAt?: number | undefined;
 }
 
 export interface UserWalletStats {
@@ -323,7 +324,7 @@ export interface UserWalletStats {
   spendableNowByEngine: Record<GenerationSettings['engine'], number>;
   adClaimsToday: number;
   adClaimsDailyLimit: number;
-  vffMonthKey?: string;
+  vffMonthKey?: string | undefined;
 }
 
 export interface UserStats {
@@ -331,7 +332,7 @@ export interface UserStats {
   generationsLimit: number;
   isPremium: boolean;
   planName: 'Free' | 'Pro' | 'Plus' | 'Enterprise';
-  lastResetDate?: string;
+  lastResetDate?: string | undefined;
   vfUsage: VfUsageStats;
   wallet: UserWalletStats;
 }
@@ -340,27 +341,27 @@ export interface UserProfile {
   googleId: string;
   name: string;
   email: string;
-  avatarUrl?: string;
-  username?: string;
-  role?: 'user' | 'admin';
-  isAdmin?: boolean;
-  uid?: string;
-  phoneNumber?: string;
-  providers?: string[];
+  avatarUrl?: string | undefined;
+  username?: string | undefined;
+  role?: 'user' | 'admin' | undefined;
+  isAdmin?: boolean | undefined;
+  uid?: string | undefined;
+  phoneNumber?: string | undefined;
+  providers?: string[] | undefined;
 }
 
 export interface HistoryItem {
   id: string;
   text: string;
-  audioUrl?: string;
+  audioUrl?: string | undefined;
   voiceName: string;
   timestamp: number;
-  duration?: string;
-  engine?: 'GEM' | 'KOKORO';
-  chars?: number;
-  requestId?: string;
-  traceId?: string;
-  status?: 'completed' | 'failed' | 'cancelled' | string;
+  duration?: string | undefined;
+  engine?: 'GEM' | 'KOKORO' | undefined;
+  chars?: number | undefined;
+  requestId?: string | undefined;
+  traceId?: string | undefined;
+  status?: 'completed' | 'failed' | 'cancelled' | string | undefined;
 }
 
 export interface UserContextType {
@@ -425,21 +426,21 @@ export interface RuntimeCapabilities {
   supportsEmotion: boolean;
   supportsStyle: boolean;
   supportsSpeakerWav: boolean;
-  model?: string;
-  voiceCount?: number;
-  emotionCount?: number;
-  displayName?: string;
-  metadata?: Record<string, unknown>;
+  model?: string | undefined;
+  voiceCount?: number | undefined;
+  emotionCount?: number | undefined;
+  displayName?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface SynthesisTrace {
   traceId: string;
   engine: GenerationSettings['engine'];
   state: 'idle' | 'preparing' | 'synthesizing' | 'mixing' | 'completed' | 'failed' | 'cancelled';
-  stage?: string;
+  stage?: string | undefined;
   startedAt: number;
   updatedAt: number;
-  detail?: string;
+  detail?: string | undefined;
 }
 
 export interface NormalizedSynthesisRequest {
@@ -447,20 +448,20 @@ export interface NormalizedSynthesisRequest {
   voice_id: string;
   language: string;
   speed: number;
-  emotion?: string;
-  style?: string;
-  trace_id?: string;
+  emotion?: string | undefined;
+  style?: string | undefined;
+  trace_id?: string | undefined;
 }
 
 export interface DubbingSegment {
   id?: string;
   startTime: number;
-  endTime?: number;
+  endTime?: number | undefined;
   speaker: string;
   text: string;
-  emotion?: string;
-  crewTags?: string[];
-  emotionTags?: string[];
+  emotion?: string | undefined;
+  crewTags?: string[] | undefined;
+  emotionTags?: string[] | undefined;
 }
 
 export interface DubbingJobRequest {

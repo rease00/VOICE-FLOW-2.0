@@ -59,7 +59,8 @@ for (const envPath of ENV_FILES) {
   loadDotEnv(envPath);
 }
 
-const PYTHON_BIN = process.env.VF_PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+const DEFAULT_PYTHON_BIN = process.platform === "win32" ? "python" : "python3";
+const GLOBAL_PYTHON_BIN = process.env.VF_PYTHON_BIN || DEFAULT_PYTHON_BIN;
 const VENV_DIR = path.join(ROOT, ".venvs");
 const RUNTIME_DIR = path.join(ROOT, ".runtime");
 const PID_DIR = path.join(RUNTIME_DIR, "pids");
@@ -104,6 +105,7 @@ const SERVICES = [
     name: "Media Backend",
     port: 7800,
     venv: "media-backend",
+    pythonEnvVar: "VF_PYTHON_BIN_MEDIA_BACKEND",
     requirements: ["requirements.txt"],
     sourceFiles: ["app.py", "scripts/bootstrap-services.mjs"],
     command: (pythonBin) => [pythonBin, "app.py"],
@@ -114,6 +116,7 @@ const SERVICES = [
       VF_WHISPER_COMPUTE: gpu ? "float16" : "int8",
       VF_RVC_DEVICE: process.env.VF_RVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
       VF_RVC_MODELS_DIR: process.env.VF_RVC_MODELS_DIR || path.join(ROOT, "models/rvc"),
+      VF_RVC_RUNTIME_URL: process.env.VF_RVC_RUNTIME_URL || "http://127.0.0.1:7830",
     }),
   },
   {
@@ -121,6 +124,7 @@ const SERVICES = [
     name: "Gemini Runtime",
     port: 7810,
     venv: "gemini-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_GEMINI_RUNTIME",
     requirements: ["engines/gemini-runtime/requirements.txt"],
     sourceFiles: ["engines/gemini-runtime/app.py", "scripts/bootstrap-services.mjs"],
     command: (pythonBin) => [
@@ -142,6 +146,7 @@ const SERVICES = [
     name: "Kokoro Runtime",
     port: 7820,
     venv: "kokoro-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_KOKORO_RUNTIME",
     requirements: ["engines/kokoro-runtime/requirements.txt"],
     sourceFiles: ["engines/kokoro-runtime/app.py", "scripts/bootstrap-services.mjs"],
     command: (pythonBin) => [
@@ -158,6 +163,34 @@ const SERVICES = [
     ],
     env: (gpu) => ({
       KOKORO_DEVICE: gpu ? "cuda" : "cpu",
+    }),
+  },
+  {
+    id: "rvc-runtime",
+    name: "RVC Runtime",
+    port: 7830,
+    venv: "rvc-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_RVC_RUNTIME",
+    requiredPython: { major: 3, minor: 11 },
+    requirements: ["engines/rvc-runtime/requirements.txt"],
+    sourceFiles: ["engines/rvc-runtime/app.py", "scripts/bootstrap-services.mjs"],
+    command: (pythonBin) => [
+      pythonBin,
+      "-m",
+      "uvicorn",
+      "app:app",
+      "--app-dir",
+      "engines/rvc-runtime",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "7830",
+    ],
+    env: (gpu) => ({
+      VF_RVC_RUNTIME_HOST: "127.0.0.1",
+      VF_RVC_RUNTIME_PORT: "7830",
+      VF_RVC_DEVICE: process.env.VF_RVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
+      VF_RVC_MODELS_DIR: process.env.VF_RVC_MODELS_DIR || path.join(ROOT, "models/rvc"),
     }),
   },
 ];
@@ -187,6 +220,12 @@ const CHECKS = [
     timeoutMs: KOKORO_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
+  {
+    name: "RVC Runtime",
+    url: "http://127.0.0.1:7830/v1/health",
+    timeoutMs: FAST_TIMEOUT_MS,
+    validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
+  },
 ];
 
 function ensureDirs() {
@@ -200,7 +239,45 @@ function sha256(content) {
   return crypto.createHash("sha256").update(content).digest("hex");
 }
 
-function fileSha(service) {
+function resolveServicePythonBin(service) {
+  const byService = service?.pythonEnvVar ? String(process.env[service.pythonEnvVar] || "").trim() : "";
+  if (byService) return byService;
+  const byGlobal = String(process.env.VF_PYTHON_BIN || "").trim();
+  if (byGlobal) return byGlobal;
+  return GLOBAL_PYTHON_BIN;
+}
+
+function getPythonVersionTuple(pythonBin) {
+  const probe = spawnSync(
+    pythonBin,
+    ["-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')"],
+    { cwd: ROOT, encoding: "utf8" }
+  );
+  if (probe.status !== 0) {
+    throw new Error(`Python binary is not usable: ${pythonBin}`);
+  }
+  const token = String(probe.stdout || "").trim();
+  const [major, minor, patch] = token.split(".").map((item) => Number(item));
+  if (![major, minor, patch].every((item) => Number.isFinite(item))) {
+    throw new Error(`Failed to parse Python version from ${pythonBin}: ${token || "<empty>"}`);
+  }
+  return { major, minor, patch, token };
+}
+
+function ensureServicePythonVersion(service, pythonBin) {
+  if (!service?.requiredPython) return;
+  const current = getPythonVersionTuple(pythonBin);
+  const required = service.requiredPython;
+  const expected = `${required.major}.${required.minor}.x`;
+  if (current.major !== required.major || current.minor !== required.minor) {
+    throw new Error(
+      `${service.name} requires Python ${expected} but resolved ${pythonBin} -> ${current.token}. ` +
+      `Set ${service.pythonEnvVar || "VF_PYTHON_BIN"} to a compatible interpreter.`
+    );
+  }
+}
+
+function fileSha(service, pythonBin) {
   const requirementSource = service.requirements
     .map((reqPath) => {
       const abs = path.join(ROOT, reqPath);
@@ -219,7 +296,8 @@ function fileSha(service) {
       return `# ${sourcePath}\n${fs.readFileSync(abs, "utf8")}`;
     })
     .join("\n\n");
-  return sha256(`${requirementSource}\n\n${sourceFileSource}`);
+  const pyVersion = getPythonVersionTuple(pythonBin).token;
+  return sha256(`${pythonBin}\n${pyVersion}\n${requirementSource}\n\n${sourceFileSource}`);
 }
 
 function resolveServiceTarget(rawTarget) {
@@ -312,7 +390,19 @@ function isPythonUsable(pythonBin) {
   return probe.status === 0;
 }
 
-function ensureVenv(service) {
+function writePipFreeze(pyPath, serviceId) {
+  const freeze = spawnSync(pyPath, ["-m", "pip", "freeze"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  if (freeze.status !== 0) {
+    return;
+  }
+  const freezePath = path.join(STATE_DIR, `${serviceId}.pip-freeze.txt`);
+  fs.writeFileSync(freezePath, String(freeze.stdout || ""), "utf8");
+}
+
+function ensureVenv(service, servicePythonBin, desiredHash) {
   const venvName = service.venv;
   const venvRoot = path.join(VENV_DIR, venvName);
   const pyPath = pythonPathFor(venvName);
@@ -323,22 +413,28 @@ function ensureVenv(service) {
   }
 
   if (!fs.existsSync(pyPath)) {
-    runCommand(PYTHON_BIN, ["-m", "venv", venvRoot]);
+    runCommand(servicePythonBin, ["-m", "venv", venvRoot]);
   }
 
   if (service.setupHook) {
     service.setupHook();
   }
 
-  const reqHash = fileSha(service);
+  const reqHash = desiredHash || fileSha(service, servicePythonBin);
   const statePath = serviceStatePath(service.id);
   const currentHash = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "";
   if (currentHash === reqHash) {
     runServiceFixups(service);
+    writePipFreeze(pyPath, service.id);
     return pyPath;
   }
 
-  runCommand(pyPath, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"]);
+  if (service.id === "rvc-runtime") {
+    // rvc-python pins omegaconf metadata incompatible with newer pip (>=24.1).
+    runCommand(pyPath, ["-m", "pip", "install", "--upgrade", "pip<24.1", "setuptools", "wheel"]);
+  } else {
+    runCommand(pyPath, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"]);
+  }
   for (const reqPath of service.requirements) {
     runCommand(pyPath, ["-m", "pip", "install", "-r", reqPath]);
   }
@@ -348,6 +444,7 @@ function ensureVenv(service) {
 
   fs.writeFileSync(statePath, `${reqHash}\n`, "utf8");
   runServiceFixups(service);
+  writePipFreeze(pyPath, service.id);
   return pyPath;
 }
 
@@ -479,7 +576,9 @@ function stopService(service) {
 }
 
 function startService(service, gpuMode) {
-  const desiredFingerprint = fileSha(service);
+  const servicePythonBin = resolveServicePythonBin(service);
+  ensureServicePythonVersion(service, servicePythonBin);
+  const desiredFingerprint = fileSha(service, servicePythonBin);
   const statePath = serviceStatePath(service.id);
   const currentFingerprint = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "";
   const serviceStale = desiredFingerprint !== currentFingerprint;
@@ -512,7 +611,11 @@ function startService(service, gpuMode) {
 
   stopPortListeners(service);
 
-  const pyPath = ensureVenv(service);
+  const pyPath = ensureVenv(service, servicePythonBin, desiredFingerprint);
+  const pyVersion = getPythonVersionTuple(pyPath).token;
+  console.log(
+    `${service.name} runtime: venv=${path.join(VENV_DIR, service.venv)} interpreter=${servicePythonBin} python=${pyVersion}`
+  );
   const [cmd, ...args] = service.command(pyPath);
   const logFile = serviceLogPath(service.id);
   const outFd = fs.openSync(logFile, "a");
@@ -525,7 +628,7 @@ function startService(service, gpuMode) {
       ...(service.env ? service.env(gpuMode) : {}),
     },
     detached: true,
-    windowsHide: true,
+    windowsHide: false,
     stdio: ["ignore", outFd, outFd],
   });
 

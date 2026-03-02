@@ -183,16 +183,18 @@ export const verifyDriveAccess = async (token: string): Promise<{ ok: boolean; m
 
 export const ensureNovelRootFolder = async (token: string): Promise<DriveFileRecord> => {
   const existing = await listFoldersByName(token, DRIVE_ROOT_FOLDER_NAME, 'root');
-  if (existing.length > 0) {
-    return existing[0];
+  const first = existing[0];
+  if (first) {
+    return first;
   }
   return createFolder(token, DRIVE_ROOT_FOLDER_NAME, 'root');
 };
 
 export const ensureProjectExportsFolder = async (token: string, projectFolderId: string): Promise<DriveFileRecord> => {
   const existing = await listFoldersByName(token, EXPORTS_FOLDER_NAME, projectFolderId);
-  if (existing.length > 0) {
-    return existing[0];
+  const first = existing[0];
+  if (first) {
+    return first;
   }
   return createFolder(token, EXPORTS_FOLDER_NAME, projectFolderId);
 };

@@ -1,5 +1,5 @@
 import { DubSegment, GenerationSettings } from "../types";
-import { audioBufferToWav, getAudioContext } from "./geminiService";
+import { audioBufferToWav, getAudioContext, extractAudioFromVideo } from "./geminiService";
 import { separateVideoStemWithBackend } from "./mediaBackendService";
 
 export interface DubbingStemPack {
@@ -11,7 +11,7 @@ export interface DubbingStemPack {
   duration: number;
 }
 
-interface DubbingStemExtractionOptions {
+export interface DubbingStemExtractionOptions {
   backendUrl?: string;
   preferBackendModel?: boolean;
   onStatus?: (message: string) => void;
@@ -77,8 +77,8 @@ const subtractSpeechFromFull = (full: AudioBuffer, speech: AudioBuffer): AudioBu
     const speechAttenuation = 0.76;
 
     for (let i = 0; i < outData.length; i += 1) {
-      const base = i < fullData.length ? fullData[i] : 0;
-      const dialogue = i < speechData.length ? speechData[i] : 0;
+      const base = i < fullData.length ? (fullData[i] ?? 0) : 0;
+      const dialogue = i < speechData.length ? (speechData[i] ?? 0) : 0;
       outData[i] = Math.max(-1, Math.min(1, base - (dialogue * speechAttenuation)));
     }
   }
@@ -98,8 +98,17 @@ export const extractAndSeparateDubbingStems = async (
   options?: DubbingStemExtractionOptions
 ): Promise<DubbingStemPack> => {
   const ctx = getAudioContext();
-  const arrayBuffer = await videoFile.arrayBuffer();
-  const fullMix = await ctx.decodeAudioData(arrayBuffer.slice(0));
+  
+  // Extract audio from video file using backend endpoint
+  let fullMixBlob: Blob;
+  try {
+    fullMixBlob = await extractAudioFromVideo(videoFile, options?.backendUrl);
+  } catch (error) {
+    throw new Error(`Failed to extract audio from video: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  
+  // Decode the extracted audio blob
+  const fullMix = await decodeAudioBlob(ctx, fullMixBlob);
 
   const shouldUseBackend = Boolean(options?.preferBackendModel && options?.backendUrl);
   if (shouldUseBackend) {

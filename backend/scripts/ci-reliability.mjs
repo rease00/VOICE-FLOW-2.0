@@ -2,13 +2,37 @@
 import { spawn } from 'node:child_process';
 
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const loadGateEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.VF_ENABLE_LOAD_GATE || '').trim().toLowerCase());
+const liveAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.VF_ENABLE_LIVE_AUDIT_GATE || '').trim().toLowerCase(),
+);
+const rvcMappingAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.VF_ENABLE_RVC_MAPPING_AUDIT_GATE || '').trim().toLowerCase(),
+);
 
 const run = (command, args, env = {}) =>
   new Promise((resolve) => {
-    const child = spawn(command, args, {
+    const commonOptions = {
       stdio: 'inherit',
-      shell: false,
       env: { ...process.env, ...env },
+    };
+    const child =
+      process.platform === 'win32'
+        ? spawn(command, args, {
+            ...commonOptions,
+            shell: true,
+          })
+        : spawn(command, args, {
+            ...commonOptions,
+            shell: false,
+          });
+    child.on('error', (error) => {
+      resolve({
+        ok: false,
+        code: 1,
+        command: `${command} ${args.join(' ')}`,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
     child.on('close', (code) => {
       resolve({ ok: code === 0, code: code ?? 1, command: `${command} ${args.join(' ')}` });
@@ -18,8 +42,8 @@ const run = (command, args, env = {}) =>
 const steps = [
   {
     name: 'Type checks',
-    command: process.execPath,
-    args: ['../frontend/node_modules/typescript/bin/tsc', '--noEmit', '--project', '../frontend/tsconfig.json'],
+    command: npmBin,
+    args: ['--prefix', '../frontend', 'run', 'typecheck'],
   },
   {
     name: 'Media backend audit',
@@ -38,61 +62,40 @@ const steps = [
   },
 ];
 
+if (loadGateEnabled) {
+  steps.push({
+    name: '50-concurrency load gate',
+    command: npmBin,
+    args: ['run', 'test:load:50:all'],
+  });
+}
+
+if (liveAuditGateEnabled) {
+  steps.push({
+    name: 'Live TTS performance audit gate',
+    command: npmBin,
+    args: ['run', 'audit:tts:live'],
+  });
+}
+
+if (rvcMappingAuditGateEnabled) {
+  steps.push({
+    name: 'RVC voice mapping audit gate',
+    command: npmBin,
+    args: ['run', 'audit:rvc:mapping'],
+  });
+}
+
 const main = async () => {
   for (const step of steps) {
     console.log(`\n[ci:reliability] ${step.name}`);
 
-    // #region agent log
-    fetch('http://127.0.0.1:7253/ingest/7d53969d-0f6f-4881-933b-2b09a69b4b29', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': '74262e',
-      },
-      body: JSON.stringify({
-        sessionId: '74262e',
-        runId: 'ci-reliability-pre-fix',
-        hypothesisId: step.name === 'Type checks' ? 'H1' : 'H-other',
-        location: 'backend/scripts/ci-reliability.mjs:44',
-        message: 'ci step start',
-        data: {
-          cwd: process.cwd(),
-          stepName: step.name,
-          command: step.command,
-          args: step.args,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion agent log
-
     const result = await run(step.command, step.args, step.env || {});
 
-    // #region agent log
-    fetch('http://127.0.0.1:7253/ingest/7d53969d-0f6f-4881-933b-2b09a69b4b29', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': '74262e',
-      },
-      body: JSON.stringify({
-        sessionId: '74262e',
-        runId: 'ci-reliability-pre-fix',
-        hypothesisId: step.name === 'Type checks' ? 'H1' : 'H-other',
-        location: 'backend/scripts/ci-reliability.mjs:64',
-        message: 'ci step result',
-        data: {
-          stepName: step.name,
-          ok: result.ok,
-          code: result.code,
-          command: result.command,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion agent log
-
     if (!result.ok) {
+      if (result.error) {
+        console.error(`[ci:reliability] ${step.name} spawn error: ${result.error}`);
+      }
       console.error(`[ci:reliability] failed at "${step.name}" (${result.command})`);
       process.exit(result.code);
     }

@@ -1,4 +1,21 @@
 import { GenerationSettings, RuntimeCapabilities } from '../types';
+import type {
+  RuntimeLogTailResponse,
+  TtsEngineCapabilitiesResponse,
+  TtsEngineSwitchResponse,
+  VideoTranscriptionResponse,
+} from '../src/shared/api/contracts';
+import {
+  fetchTtsEngineCapabilities as fetchGatewayTtsEngineCapabilities,
+  muxDubbedVideo as gatewayMuxDubbedVideo,
+  separateStem,
+  switchTtsEngine,
+  tailRuntimeLogs,
+  transcribeVideo,
+  type RuntimeLogService,
+} from '../src/shared/api/gatewayClient';
+import { resolveApiBaseUrl } from '../src/shared/api/config';
+import { requestBlob, requestJson } from '../src/shared/api/httpClient';
 
 export interface MediaBackendHealth {
   ok: boolean;
@@ -22,120 +39,46 @@ export interface MediaBackendHealth {
   };
 }
 
-export interface VideoTranscriptionResult {
-  ok: boolean;
-  language?: string;
-  duration?: number;
-  script: string;
-  emotionCapture?: {
-    enabled?: boolean;
-    maxSegments?: number;
-    minSegmentSeconds?: number;
-  };
-  segments: Array<{
-    id: number;
-    start: number;
-    end: number;
-    timestampStart?: string;
-    timestampEnd?: string;
-    text: string;
-    speaker: string;
-    emotion?: string;
-    emotionSource?: string;
-    emotionConfidence?: number | null;
-  }>;
-}
-
-export interface TtsEngineSwitchResult {
-  ok: boolean;
-  engine: GenerationSettings['engine'];
-  state: 'online' | 'starting';
-  detail: string;
-  healthUrl: string;
-  gpuMode: boolean;
-  commandOutput?: string;
-}
-
-export interface RuntimeLogTailResult {
-  ok: boolean;
-  service: string;
-  exists: boolean;
-  file: string;
-  cursor: number;
-  nextCursor: number;
-  size: number;
-  lines: string[];
-  truncated: boolean;
-  lastModified?: number;
-}
-
-export interface TtsEngineCapabilitiesResult {
-  ok: boolean;
+export type VideoTranscriptionResult = VideoTranscriptionResponse;
+export type TtsEngineSwitchResult = TtsEngineSwitchResponse;
+export type RuntimeLogTailResult = RuntimeLogTailResponse;
+export type TtsEngineCapabilitiesResult = TtsEngineCapabilitiesResponse & {
   engines: Partial<Record<GenerationSettings['engine'], RuntimeCapabilities>>;
-  fetchedAt: string;
-}
-
-const FALLBACK_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
-
-const toBaseUrl = (input?: string): string => {
-  const raw = (input || FALLBACK_MEDIA_BACKEND_URL).trim();
-  return raw.replace(/\/+$/, '');
 };
 
-const parseError = async (response: Response): Promise<string> => {
-  try {
-    const payload = await response.json();
-    return payload?.detail || payload?.error || `${response.status} ${response.statusText}`;
-  } catch {
-    return `${response.status} ${response.statusText}`;
-  }
-};
-
-const fetchBackend = async (baseUrl: string, path: string, init?: RequestInit): Promise<Response> => {
-  const normalizedBase = toBaseUrl(baseUrl);
-  const targetUrl = `${normalizedBase}${path}`;
-  try {
-    return await fetch(targetUrl, init);
-  } catch {
-    throw new Error(`Media backend is unreachable at ${normalizedBase}.`);
-  }
-};
+const toBaseUrl = (input?: string): string => resolveApiBaseUrl(input);
 
 export const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'mediaBackendUrl'>): string => {
   return toBaseUrl(settings.mediaBackendUrl);
 };
 
 export const checkMediaBackendHealth = async (baseUrl: string): Promise<MediaBackendHealth> => {
-  const response = await fetchBackend(baseUrl, '/health');
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return requestJson<MediaBackendHealth>('/health', undefined, { baseUrl: toBaseUrl(baseUrl) });
 };
 
 export const listRvcModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {
-  const response = await fetchBackend(baseUrl, '/rvc/models');
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-
-  const payload = await response.json();
-  return {
+  const payload = await requestJson<{ models?: string[]; currentModel?: string }>('/rvc/models', undefined, {
+    baseUrl: toBaseUrl(baseUrl),
+  });
+  const response: { models: string[]; currentModel?: string } = {
     models: Array.isArray(payload?.models) ? payload.models : [],
-    currentModel: typeof payload?.currentModel === 'string' ? payload.currentModel : undefined,
   };
+  if (typeof payload?.currentModel === 'string') {
+    response.currentModel = payload.currentModel;
+  }
+  return response;
 };
 
 export const loadRvcModel = async (baseUrl: string, modelName: string): Promise<void> => {
-  const response = await fetchBackend(baseUrl, '/rvc/load-model', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ modelName }),
-  });
-
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
+  await requestJson<{ ok: boolean }>(
+    '/rvc/load-model',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelName }),
+    },
+    { baseUrl: toBaseUrl(baseUrl) }
+  );
 };
 
 export const convertRvcCover = async (
@@ -143,6 +86,7 @@ export const convertRvcCover = async (
   sourceAudio: File,
   modelName: string,
   options?: {
+    preset?: 'tts_realtime' | 'cover_hq';
     pitchShift?: number;
     indexRate?: number;
     filterRadius?: number;
@@ -154,6 +98,7 @@ export const convertRvcCover = async (
   const form = new FormData();
   form.append('file', sourceAudio);
   form.append('model_name', modelName);
+  form.append('preset', options?.preset || 'tts_realtime');
   form.append('pitch_shift', String(Math.round(options?.pitchShift ?? 0)));
   form.append('index_rate', String(options?.indexRate ?? 0.5));
   form.append('filter_radius', String(options?.filterRadius ?? 3));
@@ -161,16 +106,14 @@ export const convertRvcCover = async (
   form.append('protect', String(options?.protect ?? 0.33));
   form.append('f0_method', options?.f0Method || 'rmvpe');
 
-  const response = await fetchBackend(baseUrl, '/rvc/convert', {
-    method: 'POST',
-    body: form,
-  });
-
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-
-  return response.blob();
+  return requestBlob(
+    '/rvc/convert',
+    {
+      method: 'POST',
+      body: form,
+    },
+    { baseUrl: toBaseUrl(baseUrl) }
+  );
 };
 
 export const transcribeVideoWithBackend = async (
@@ -183,25 +126,15 @@ export const transcribeVideoWithBackend = async (
     speakerLabel?: string;
   }
 ): Promise<VideoTranscriptionResult> => {
-  const form = new FormData();
-  form.append('file', videoFile);
-  form.append('language', options?.language || 'auto');
-  form.append('task', options?.task || 'transcribe');
-  form.append('capture_emotions', String(options?.captureEmotions ?? true));
-  if (options?.speakerLabel) {
-    form.append('speaker_label', options.speakerLabel);
-  }
-
-  const response = await fetchBackend(baseUrl, '/video/transcribe', {
-    method: 'POST',
-    body: form,
-  });
-
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-
-  return response.json();
+  const request = {
+    baseUrl: toBaseUrl(baseUrl),
+    returnWords: true,
+    ...(options?.language ? { language: options.language } : {}),
+    ...(options?.task ? { task: options.task } : {}),
+    ...(typeof options?.captureEmotions === 'boolean' ? { includeEmotion: options.captureEmotions } : {}),
+    ...(options?.speakerLabel ? { speakerLabel: options.speakerLabel } : {}),
+  };
+  return transcribeVideo(videoFile, request);
 };
 
 export const separateVideoStemWithBackend = async (
@@ -212,48 +145,28 @@ export const separateVideoStemWithBackend = async (
     modelName?: string;
   }
 ): Promise<Blob> => {
-  const form = new FormData();
-  form.append('file', sourceFile);
-  form.append('stem', options?.stem || 'speech');
-  if (options?.modelName) {
-    form.append('model_name', options.modelName);
-  }
-
-  const response = await fetchBackend(baseUrl, '/video/separate-stem', {
-    method: 'POST',
-    body: form,
-  });
-
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-
-  return response.blob();
+  const request = {
+    baseUrl: toBaseUrl(baseUrl),
+    ...(options?.stem ? { stem: options.stem } : {}),
+    ...(options?.modelName ? { modelName: options.modelName } : {}),
+  };
+  return separateStem(sourceFile, request);
 };
 
 export const muxDubbedVideo = async (
   baseUrl: string,
   videoFile: File,
   dubAudioFile: File,
-  options?: { speechGain?: number; backgroundGain?: number; mixWithVideoAudio?: boolean }
+  options?: { speechGain?: number; backgroundGain?: number; normalize?: boolean; backgroundAudio?: File }
 ): Promise<Blob> => {
-  const form = new FormData();
-  form.append('video', videoFile);
-  form.append('dub_audio', dubAudioFile);
-  form.append('speech_gain', String(options?.speechGain ?? 1.0));
-  form.append('background_gain', String(options?.backgroundGain ?? 0.30));
-  form.append('mix_with_video_audio', String(options?.mixWithVideoAudio ?? true));
-
-  const response = await fetchBackend(baseUrl, '/video/mux-dub', {
-    method: 'POST',
-    body: form,
-  });
-
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-
-  return response.blob();
+  const request = {
+    baseUrl: toBaseUrl(baseUrl),
+    ...(typeof options?.speechGain === 'number' ? { speechGain: options.speechGain } : {}),
+    ...(typeof options?.backgroundGain === 'number' ? { backgroundGain: options.backgroundGain } : {}),
+    ...(typeof options?.normalize === 'boolean' ? { normalize: options.normalize } : {}),
+    ...(options?.backgroundAudio ? { backgroundAudio: options.backgroundAudio } : {}),
+  };
+  return gatewayMuxDubbedVideo(videoFile, dubAudioFile, request);
 };
 
 export const switchTtsEngineRuntime = async (
@@ -261,52 +174,28 @@ export const switchTtsEngineRuntime = async (
   engine: GenerationSettings['engine'],
   options?: { gpu?: boolean }
 ): Promise<TtsEngineSwitchResult> => {
-  const response = await fetchBackend(baseUrl, '/tts/engines/switch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      engine,
-      gpu: Boolean(options?.gpu),
-    }),
+  return switchTtsEngine(engine, {
+    baseUrl: toBaseUrl(baseUrl),
+    gpu: Boolean(options?.gpu),
   });
-
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-
-  return response.json();
 };
 
 export const fetchTtsEngineCapabilities = async (
   baseUrl: string
 ): Promise<TtsEngineCapabilitiesResult> => {
-  const response = await fetchBackend(baseUrl, '/tts/engines/capabilities');
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return fetchGatewayTtsEngineCapabilities(toBaseUrl(baseUrl));
 };
 
 export const tailRuntimeLog = async (
   baseUrl: string,
-  service: 'media-backend' | 'gemini-runtime' | 'kokoro-runtime',
+  service: RuntimeLogService,
   options?: { cursor?: number; maxBytes?: number; lineLimit?: number }
 ): Promise<RuntimeLogTailResult> => {
-  const params = new URLSearchParams();
-  params.set('service', service);
-  if (typeof options?.cursor === 'number' && Number.isFinite(options.cursor)) {
-    params.set('cursor', String(Math.max(0, Math.floor(options.cursor))));
-  }
-  if (typeof options?.maxBytes === 'number' && Number.isFinite(options.maxBytes)) {
-    params.set('max_bytes', String(Math.max(1024, Math.floor(options.maxBytes))));
-  }
-  if (typeof options?.lineLimit === 'number' && Number.isFinite(options.lineLimit)) {
-    params.set('line_limit', String(Math.max(1, Math.floor(options.lineLimit))));
-  }
-
-  const response = await fetchBackend(baseUrl, `/runtime/logs/tail?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  const request = {
+    baseUrl: toBaseUrl(baseUrl),
+    ...(typeof options?.cursor === 'number' ? { cursor: options.cursor } : {}),
+    ...(typeof options?.maxBytes === 'number' ? { maxBytes: options.maxBytes } : {}),
+    ...(typeof options?.lineLimit === 'number' ? { lineLimit: options.lineLimit } : {}),
+  };
+  return tailRuntimeLogs(service, request);
 };

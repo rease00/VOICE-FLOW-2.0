@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -48,6 +51,58 @@ class _DummyRuntimeErrorResponse:
         }
 
 
+class _DummyRuntimeCapacityResponse:
+    def __init__(self, status_code: int = 502) -> None:
+        self.status_code = status_code
+        self.content = b""
+        self.headers = {
+            "content-type": "application/json",
+            "x-voiceflow-trace-id": "trace_capacity_123",
+        }
+        self.text = (
+            '{"detail":{"errorCode":"GEMINI_KEY_POOL_OVERLOADED","summary":"capacity saturated","retryAfterMs":2200}}'
+        )
+
+    @property
+    def ok(self) -> bool:
+        return False
+
+    def json(self) -> dict:
+        return {
+            "detail": {
+                "errorCode": "GEMINI_KEY_POOL_OVERLOADED",
+                "summary": "capacity saturated",
+                "retryAfterMs": 2200,
+            }
+        }
+
+
+class _DummyRuntimeUpstreamTimeoutResponse:
+    def __init__(self, status_code: int = 502) -> None:
+        self.status_code = status_code
+        self.content = b""
+        self.headers = {
+            "content-type": "application/json",
+            "x-voiceflow-trace-id": "trace_timeout_123",
+        }
+        self.text = (
+            '{"detail":{"errorCode":"GEMINI_UPSTREAM_REQUEST_TIMEOUT","summary":"read timed out","retryAfterMs":1200}}'
+        )
+
+    @property
+    def ok(self) -> bool:
+        return False
+
+    def json(self) -> dict:
+        return {
+            "detail": {
+                "errorCode": "GEMINI_UPSTREAM_REQUEST_TIMEOUT",
+                "summary": "read timed out",
+                "retryAfterMs": 1200,
+            }
+        }
+
+
 def _make_key(seed: int) -> str:
     return f"AIza{seed:030d}"
 
@@ -64,6 +119,16 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
     backend_app._INMEMORY_GENERATION_HISTORY.clear()
     backend_app._INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
+    backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
+    with backend_app._ADMIN_USAGE_LOCK:
+        backend_app._ADMIN_USAGE_RECENT_EVENTS.clear()
+        backend_app._ADMIN_USAGE_TOTALS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _disable_post_tts_rvc(monkeypatch):
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_RVC_ENABLED", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_RVC_REQUIRED", False)
 
 
 def test_tts_synthesize_writes_compressed_history_blob(monkeypatch) -> None:
@@ -107,9 +172,19 @@ def test_generation_history_endpoints_return_newest_and_support_clear(monkeypatc
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
 
-    backend_app._history_append_item(uid, {"id": "old", "timestamp": 1000, "textPreview": "one", "engine": "GEM"})
-    backend_app._history_append_item(uid, {"id": "new", "timestamp": 2000, "textPreview": "two", "engine": "KOKORO"})
-    backend_app._history_append_item(uid, {"id": "newest", "timestamp": 3000, "textPreview": "three", "engine": "GEM"})
+    now_ms = int(time.time() * 1000)
+    backend_app._history_append_item(
+        uid,
+        {"id": "old", "timestamp": now_ms - 3_000, "textPreview": "one", "engine": "GEM"},
+    )
+    backend_app._history_append_item(
+        uid,
+        {"id": "new", "timestamp": now_ms - 2_000, "textPreview": "two", "engine": "KOKORO"},
+    )
+    backend_app._history_append_item(
+        uid,
+        {"id": "newest", "timestamp": now_ms - 1_000, "textPreview": "three", "engine": "GEM"},
+    )
 
     fetch = client.get("/account/generation-history?limit=2", headers=headers)
     assert fetch.status_code == 200
@@ -124,6 +199,37 @@ def test_generation_history_endpoints_return_newest_and_support_clear(monkeypatc
     refetch = client.get("/account/generation-history?limit=10", headers=headers)
     assert refetch.status_code == 200
     assert refetch.json()["items"] == []
+
+
+def test_generation_history_default_retention_prunes_items_older_than_one_year(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "history_user_retention"
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+
+    now_ms = int(time.time() * 1000)
+    old_timestamp = now_ms - backend_app.VF_GENERATION_HISTORY_RETENTION_MS - 1_000
+    fresh_timestamp = now_ms - 60_000
+
+    backend_app._history_append_item(
+        uid,
+        {"id": "expired", "timestamp": old_timestamp, "textPreview": "too old", "engine": "GEM"},
+    )
+    backend_app._history_append_item(
+        uid,
+        {"id": "fresh", "timestamp": fresh_timestamp, "textPreview": "still valid", "engine": "KOKORO"},
+    )
+
+    fetch = client.get("/account/generation-history?limit=10", headers=headers)
+    assert fetch.status_code == 200
+    payload = fetch.json()
+    assert payload["ok"] is True
+    assert [item["id"] for item in payload["items"]] == ["fresh"]
+
+    row = backend_app._INMEMORY_GENERATION_HISTORY.get(uid) or {}
+    decoded_items = backend_app._history_decode_items_gzip_b64(str(row.get("itemsGzipB64") or ""))
+    assert [item.get("id") for item in decoded_items] == ["fresh"]
 
 
 def test_admin_gemini_pool_status_requires_admin(monkeypatch) -> None:
@@ -182,6 +288,245 @@ def test_admin_gemini_pool_reload_uses_file_keys(monkeypatch, tmp_path: Path) ->
     assert source["fileKeyCount"] == 2
 
 
+def test_admin_gemini_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_a = _make_key(101)
+    free_b = _make_key(102)
+    pro_key = _make_key(103)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_a}\n{free_b}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": [pro_key]},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    monkeypatch.setenv("GEMINI_API_KEYS", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("VF_GEMINI_API_KEY", "")
+    monkeypatch.setenv("API_KEY", "")
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True})
+
+    client = TestClient(backend_app.app)
+    response = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["config"]["pools"]["free"]["keys"] == [free_a, free_b]
+    assert payload["config"]["pools"]["pro"]["keys"] == [pro_key]
+    assert payload["sourcePolicy"]["freePoolLocked"] is True
+    assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "api_file_authoritative"
+    assert payload.get("warnings") == []
+
+    persisted = json.loads(pools_path.read_text(encoding="utf-8"))
+    assert persisted["pools"]["free"]["keys"] == [free_a, free_b]
+
+
+def test_admin_gemini_pools_put_ignores_free_edits_when_locked(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(111)
+    pro_key = _make_key(112)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 2}})
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+
+    candidate_free = _make_key(119)
+    update = client.put(
+        "/admin/gemini/pools",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": [candidate_free]},
+                "pro": {"keys": [pro_key]},
+                "pro_plus": {"keys": []},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+                "pro_plus": ["pro_plus", "pro", "free"],
+            },
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert "free_pool_locked_by_api_file" in list(payload.get("appliedOverrides") or [])
+    assert payload["config"]["pools"]["free"]["keys"] == [free_key]
+    assert payload["config"]["pools"]["pro"]["keys"] == [pro_key]
+
+
+def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(121)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 1}})
+
+    client = TestClient(backend_app.app)
+    initial = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert initial.status_code == 200
+    assert initial.json()["config"]["pools"]["free"]["keys"] == [free_key]
+
+    keys_path.unlink()
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+
+    reloaded = client.post("/admin/gemini/pools/reload", headers={"x-dev-uid": "local_admin"})
+    assert reloaded.status_code == 200
+    warnings = list(reloaded.json().get("warnings") or [])
+    assert warnings
+
+    refreshed = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert refreshed.status_code == 200
+    payload = refreshed.json()
+    assert payload["config"]["pools"]["free"]["keys"] == [free_key]
+    assert list(payload.get("warnings") or [])
+
+
+def test_admin_integrations_usage_requires_admin(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    client = TestClient(backend_app.app)
+    denied = client.get("/admin/integrations/usage", headers={"x-dev-uid": "plain_dev_user"})
+    assert denied.status_code == 403
+
+
+def test_admin_integrations_usage_summary_and_export(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "local_admin"}
+
+    client.get("/health")
+    client.get("/system/version")
+
+    summary = client.get("/admin/integrations/usage", headers=headers)
+    assert summary.status_code == 200
+    payload = summary.json()
+    assert payload["ok"] is True
+    assert "windows" in payload and "total" in payload["windows"]
+    assert "integrations" in payload
+    assert "gateway" in payload
+
+    export_csv = client.get("/admin/integrations/usage/export?format=csv&window=24h", headers=headers)
+    assert export_csv.status_code == 200
+    assert "text/csv" in str(export_csv.headers.get("content-type") or "")
+    assert "integration,endpoint,method,window" in export_csv.text
+
+
+def test_tts_synthesize_returns_gateway_overload_detail(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(
+        backend_app._TTS_GATEWAY_CONTROLLER,
+        "acquire",
+        lambda: (None, {"reason": "queue_timeout", "queueDepth": 12, "retryAfterMs": 1500}),
+    )
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/tts/synthesize",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "engine": "GEM",
+            "text": "Gateway overload test.",
+            "voice_id": "Fenrir",
+        },
+    )
+    assert response.status_code == 503
+    detail = response.json().get("detail") or {}
+    assert detail.get("reason") == "queue_timeout"
+    assert int(detail.get("queueDepth") or 0) == 12
+    assert int(detail.get("retryAfterMs") or 0) == 1500
+
+
 def test_tts_synthesize_forwards_structured_runtime_error(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -204,6 +549,186 @@ def test_tts_synthesize_forwards_structured_runtime_error(monkeypatch) -> None:
     assert isinstance(payload.get("detail"), dict)
     assert payload["detail"].get("errorCode") == "GEMINI_API_KEY_MISSING"
     assert payload["detail"].get("trace_id") == "trace_error_123"
+
+
+def test_tts_synthesize_normalizes_gem_capacity_errors_to_503(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeCapacityResponse(status_code=502))
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "local_admin"}
+
+    response = client.post(
+        "/tts/synthesize",
+        headers=headers,
+        json={
+            "engine": "GEM",
+            "text": "capacity mapping test",
+            "voice_id": "Fenrir",
+            "request_id": "req_capacity_1",
+        },
+    )
+    assert response.status_code == 503
+    payload = response.json()
+    assert isinstance(payload.get("detail"), dict)
+    assert payload["detail"].get("errorCode") == "GEMINI_KEY_POOL_OVERLOADED"
+    assert int(payload["detail"].get("retryAfterMs") or 0) == 2200
+
+
+def test_tts_synthesize_maps_gem_upstream_timeout_to_504(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(
+        backend_app.requests,
+        "post",
+        lambda *args, **kwargs: _DummyRuntimeUpstreamTimeoutResponse(status_code=502),
+    )
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "local_admin"}
+
+    response = client.post(
+        "/tts/synthesize",
+        headers=headers,
+        json={
+            "engine": "GEM",
+            "text": "timeout mapping test",
+            "voice_id": "Fenrir",
+            "request_id": "req_timeout_1",
+        },
+    )
+    assert response.status_code == 504
+    payload = response.json()
+    assert isinstance(payload.get("detail"), dict)
+    assert payload["detail"].get("errorCode") == "GEMINI_UPSTREAM_REQUEST_TIMEOUT"
+
+
+def test_tts_synthesize_enforces_free_plan_success_limit(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "burst_free_user"}
+    payload = {
+        "engine": "GEM",
+        "text": "burst limit test",
+        "voice_id": "Fenrir",
+    }
+
+    first = client.post("/tts/synthesize", headers=headers, json=payload)
+    second = client.post("/tts/synthesize", headers=headers, json=payload)
+    third = client.post("/tts/synthesize", headers=headers, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    detail = third.json().get("detail") or {}
+    assert detail.get("errorCode") == "RATE_LIMIT_USER"
+    assert detail.get("reason") == "plan_success_limit_exceeded"
+    assert detail.get("plan") == "Free"
+    assert first.headers.get("x-ratelimit-success-limit") == "2"
+    assert first.headers.get("x-ratelimit-success-remaining") == "1"
+    assert second.headers.get("x-ratelimit-success-remaining") == "0"
+
+
+def test_tts_synthesize_enforces_plan_char_limit(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "char_limit_user"}
+    too_long_text = "a" * 8001
+    response = client.post(
+        "/tts/synthesize",
+        headers=headers,
+        json={
+            "engine": "GEM",
+            "text": too_long_text,
+            "voice_id": "Fenrir",
+        },
+    )
+    assert response.status_code == 400
+    detail = response.json().get("detail") or {}
+    assert detail.get("errorCode") == "VF_TTS_TEXT_TOO_LONG"
+    assert int(detail.get("maxChars") or 0) == 8000
+
+
+def test_tts_synthesize_enforces_pro_and_plus_success_limits(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+
+    pro_uid = "burst_pro_user"
+    plus_uid = "burst_plus_user"
+    backend_app._write_entitlement(pro_uid, {"plan": "Pro"})
+    backend_app._write_entitlement(plus_uid, {"plan": "Plus"})
+
+    payload = {"engine": "GEM", "text": "burst plan test", "voice_id": "Fenrir"}
+
+    for _ in range(5):
+        assert client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload).status_code == 200
+    pro_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload)
+    assert pro_blocked.status_code == 429
+    assert (pro_blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
+    assert (pro_blocked.json().get("detail") or {}).get("plan") == "Pro"
+
+    for _ in range(10):
+        assert client.post("/tts/synthesize", headers={"x-dev-uid": plus_uid}, json=payload).status_code == 200
+    plus_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": plus_uid}, json=payload)
+    assert plus_blocked.status_code == 429
+    assert (plus_blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
+    assert (plus_blocked.json().get("detail") or {}).get("plan") == "Plus"
+
+
+def test_tts_success_limit_does_not_count_failed_generation(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+
+    calls = {"count": 0}
+
+    def _runtime(*args, **kwargs):
+        _ = args, kwargs
+        calls["count"] += 1
+        if calls["count"] == 2:
+            return _DummyRuntimeCapacityResponse(status_code=500)
+        return _DummyRuntimeResponse()
+
+    monkeypatch.setattr(backend_app.requests, "post", _runtime)
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "success_only_user"}
+    payload = {"engine": "GEM", "text": "success-only limit", "voice_id": "Fenrir"}
+
+    first = client.post("/tts/synthesize", headers=headers, json=payload)
+    failed = client.post("/tts/synthesize", headers=headers, json=payload)
+    second_success = client.post("/tts/synthesize", headers=headers, json=payload)
+    blocked = client.post("/tts/synthesize", headers=headers, json=payload)
+
+    assert first.status_code == 200
+    assert failed.status_code >= 500
+    assert second_success.status_code == 200
+    assert blocked.status_code == 429
+    assert (blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
+
+
+def test_tts_success_limit_idempotency_key_does_not_double_count(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+    uid = "idempotency_user"
+    payload = {"engine": "GEM", "text": "idempotency success test", "voice_id": "Fenrir"}
+
+    first = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-1"}, json=payload)
+    second_same = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-1"}, json=payload)
+    third = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-2"}, json=payload)
+    blocked = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-3"}, json=payload)
+
+    assert first.status_code == 200
+    assert second_same.status_code == 200
+    assert third.status_code == 200
+    assert blocked.status_code == 429
+    assert first.headers.get("x-ratelimit-success-remaining") == "1"
+    assert second_same.headers.get("x-ratelimit-success-remaining") == "1"
+    assert third.headers.get("x-ratelimit-success-remaining") == "0"
 
 
 def test_wallet_spendable_now_includes_vff_for_gem() -> None:

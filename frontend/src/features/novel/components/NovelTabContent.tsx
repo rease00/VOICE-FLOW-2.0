@@ -20,7 +20,7 @@ export const NovelTabContent: React.FC<NovelTabContentProps> = ({
       settings={settings}
       mediaBackendUrl={mediaBackendUrl}
       onToast={onToast}
-      onSendToStudio={onSendToStudio}
+      onSendToStudio={onSendToStudio || (() => {})}
     />
   );
 };

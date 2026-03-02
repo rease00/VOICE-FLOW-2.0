@@ -24,6 +24,20 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
 4. Frontend-only mode (no service orchestration):
    `npm run dev:ui`
 
+## Separated Frontend/Backend Commands
+
+- Start frontend only: `npm run start:frontend`
+- Start backend services only: `npm run start:backend`
+- Start backend services in GPU mode: `npm run start:backend:gpu`
+
+Run all frontend commands from one root command:
+- `npm run frontend -- <frontend-script>`
+- Example: `npm run frontend -- build`
+
+Run all backend commands from one root command:
+- `npm run backend -- <backend-script>`
+- Example: `npm run backend -- services:check`
+
 Optional multi-key pool from file:
 - Set `GEMINI_API_KEYS_FILE` to a local text file path (for example `C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt`).
 - File format supports one key per line or comma/newline-separated keys.
@@ -31,6 +45,7 @@ Optional multi-key pool from file:
 ## Local Encrypted Admin Login
 
 Use this only for local/dev operation when backend auth enforcement is disabled (`VF_AUTH_ENFORCE=0`).
+Production requirement: keep `VF_AUTH_ENFORCE=1`, `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=0`, and `VITE_ENABLE_DEV_UID_HEADER=0`.
 
 1. Generate local admin credential values:
 
@@ -39,6 +54,8 @@ node -e "const c=require('node:crypto');const pwd=process.argv[1];if(!pwd){conso
 ```
 
 2. Set these in `.env`:
+- `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=1` (local dev only)
+- `VITE_ENABLE_DEV_UID_HEADER=1` (local dev only)
 - `VITE_LOCAL_ADMIN_USERNAME=admin`
 - `VITE_LOCAL_ADMIN_UID=local_admin`
 - `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64=...`
@@ -51,6 +68,11 @@ node -e "const c=require('node:crypto');const pwd=process.argv[1];if(!pwd){conso
 - `VF_AUTH_ENFORCE=0`
 - Optional fallback UID: `VF_DEV_BYPASS_UID=dev_local_user`
 - For guardian approvals, include local UID in `VF_ADMIN_APPROVER_UIDS` and configure `VF_ADMIN_APPROVAL_TOKEN`.
+
+4. Keep dev server endpoints locked down by default:
+- `VITE_DEV_SERVER_EXPOSE=0` (binds UI dev server to loopback)
+- `VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0` (disables `/__local/bootstrap-services` route)
+- `VITE_API_BASE_URL=http://127.0.0.1:7800` (canonical frontend backend gateway base URL; same default when unset)
 
 ## Admin Firebase Fallback (when local admin env is missing)
 
@@ -83,6 +105,7 @@ All backends now run locally using Python, each in its own virtual environment:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
 - `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
+- `RVC runtime` on `7830` (isolated `rvc-python` inference service)
 
 Runtime/backend URLs are wired internally to local defaults in the app.
 
@@ -120,13 +143,24 @@ Health checks include:
 - `http://127.0.0.1:7800/health` (media backend)
 - `http://127.0.0.1:7810/health` (Gemini runtime)
 - `http://127.0.0.1:7820/health` (Kokoro runtime)
+- `http://127.0.0.1:7830/v1/health` (RVC runtime)
 
 Notes:
 - Each runtime gets an isolated venv under `backend/.venvs/`.
 - First bootstrap installs Python dependencies for each runtime.
 - `services:bootstrap:gpu` sets GPU-first runtime envs where available.
-- For full RVC conversion features, install optional deps with `npm run backend:install:rvc`.
+- For isolated RVC runtime dependencies, install with `npm run backend:install:rvc`.
 - Kokoro runtime includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and runs in strict no-fallback mode.
+
+### Per-service Python interpreters
+
+Set these only when you need hard interpreter isolation:
+- `VF_PYTHON_BIN_MEDIA_BACKEND`
+- `VF_PYTHON_BIN_GEMINI_RUNTIME`
+- `VF_PYTHON_BIN_KOKORO_RUNTIME`
+- `VF_PYTHON_BIN_RVC_RUNTIME`
+
+`rvc-runtime` enforces Python `3.11.x` and bootstrap will fail fast on mismatch.
 
 ### RVC model folder
 

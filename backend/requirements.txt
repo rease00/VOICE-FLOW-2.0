@@ -1,2 +1,1 @@
 -r requirements-core.txt
--r requirements-rvc.txt

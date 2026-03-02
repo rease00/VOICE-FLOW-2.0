@@ -51,11 +51,11 @@ export const normalizeSynthesisRequest = (input: {
   engine: GenerationSettings['engine'];
   text: string;
   voiceId: string;
-  language?: string;
-  speed?: number;
-  emotion?: string;
-  style?: string;
-  traceId?: string;
+  language?: string | undefined;
+  speed?: number | undefined;
+  emotion?: string | undefined;
+  style?: string | undefined;
+  traceId?: string | undefined;
 }): NormalizedSynthesisRequest => {
   const speedBounds = ENGINE_SPEED_BOUNDS[input.engine] || ENGINE_SPEED_BOUNDS.GEM;
   const text = String(input.text || '').replace(/\s+/g, ' ').trim();

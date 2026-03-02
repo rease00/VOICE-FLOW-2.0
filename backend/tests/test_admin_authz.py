@@ -15,6 +15,7 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
     backend_app._INMEMORY_COUPONS.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
+    backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
 
 
 def test_admin_endpoint_requires_bearer_when_auth_enforced(monkeypatch) -> None:

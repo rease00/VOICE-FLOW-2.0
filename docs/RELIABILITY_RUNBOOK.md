@@ -23,6 +23,76 @@
    - GEM/KOKORO long-text smoke audit
    - Media backend audit
    - Runtime contract conformance
+3. Optional staging load gate:
+   - `VF_ENABLE_LOAD_GATE=1 npm run ci:reliability`
+   - Runs `test:load:50:all` (Node + k6).
+4. Optional live TTS performance gate:
+   - `VF_ENABLE_LIVE_AUDIT_GATE=1 npm run ci:reliability`
+   - Runs `audit:tts:live` with balanced hard-fail checks.
+5. Optional RVC mapping audit gate:
+   - `VF_ENABLE_RVC_MAPPING_AUDIT_GATE=1 npm run ci:reliability`
+   - Runs `audit:rvc:mapping` (gender and profile-map integrity).
+6. Run 50-concurrency load tests directly:
+   - `npm run test:load:50:node`
+   - `npm run test:load:50:k6`
+   - `npm run test:load:50:all`
+7. Load artifacts:
+   - `backend/artifacts/load/*.json`
+
+## Live Playback Without Full-Wait
+
+1. Gateway callers should submit async live jobs:
+   - Primary: `POST /tts/jobs` with `stream=true`
+   - Fallback only: `POST /tts/synthesize?wait_ms=0`
+2. Fast first-chunk tuning:
+   - `live_chunk_chars=180`
+   - `live_chunk_words=35`
+3. Client polling for playback chunks:
+   - `GET /tts/jobs/{job_id}?includeResult=1&includeChunks=1&chunkCursor=<n>&chunkLimit=2&includeChunkAudio=1`
+4. During generation:
+   - Auto-play first chunk.
+   - Queue-play subsequent chunks.
+   - Keep seek disabled until final merged audio is ready.
+
+## Live TTS Performance Audit
+
+1. Default staged run (50 VUs / 200 requests):
+   - `npm run audit:tts:live`
+   - Or explicit profile shortcut: `npm run audit:tts:live:50`
+2. Config knobs (env or CLI):
+   - `VF_MEDIA_BACKEND_URL` / `--base-url`
+   - `VF_LIVE_AUDIT_UID` / `--uid`
+   - `VF_LIVE_AUDIT_CONCURRENCY` / `--concurrency`
+   - `VF_LIVE_AUDIT_REQUESTS` / `--requests`
+   - `VF_LIVE_AUDIT_REQUEST_TIMEOUT_MS` / `--request-timeout-ms`
+   - `VF_LIVE_AUDIT_JOB_TIMEOUT_MS` / `--job-timeout-ms`
+   - `VF_LIVE_AUDIT_POLL_MS` / `--poll-ms`
+   - `VF_LIVE_AUDIT_SEED` / `--seed`
+   - `VF_LIVE_AUDIT_STRICT_RVC` / `--strict-rvc`
+3. Output artifact:
+   - `backend/artifacts/load/live_tts_performance_audit.json`
+4. Balanced gate rules:
+   - Hard-fail: completion rate, first-chunk observed rate, timeout rate, failed/cancelled rate, strict RVC coverage, or preflight failure.
+   - Warning-only: p95 first-chunk latency, p95 completion latency, p95 queue age, and admin telemetry p95 first-chunk latency.
+5. Baseline comparison:
+   - Keep prior artifact snapshots and compare `latencyMs`, `chunkMetrics`, `rvcMetrics`, and `queueSignals` across runs.
+
+## RVC Voice Mapping Audit
+
+1. Run mapping audit:
+   - `npm run audit:rvc:mapping`
+2. Output artifact:
+   - `backend/artifacts/load/rvc_voice_mapping_audit.json`
+3. What it verifies:
+   - Every runtime voice resolves to exactly one profile.
+   - Mapped profile exists in profile bank.
+   - Gender compatibility:
+     - GEM uses runtime voice gender.
+     - KOKORO uses prefix rule (`af/bf/hf=female`, `am/bm/hm=male`).
+   - Designated child/elder slots remain correctly mapped.
+4. Fix mode:
+   - Enabled by default for deterministic mismatches.
+   - Disable auto-fix with `VF_RVC_MAPPING_AUDIT_FIX=0`.
 
 ## Runtime Capabilities
 
@@ -37,15 +107,33 @@
    - `GET http://127.0.0.1:7800/health`
 2. Check runtime capability availability:
    - `GET http://127.0.0.1:7800/tts/engines/capabilities`
-3. Tail backend/runtime logs:
+3. Check gateway pressure and admin usage counters:
+   - `GET /admin/tts/gateway/status`
+   - `GET /admin/tts/queue/metrics`
+   - `GET /admin/integrations/usage`
+4. Inspect queued job debug fields:
+   - `GET /tts/jobs/{job_id}`
+   - Includes `deadlineAtMs`, `queueAgeMs`, `queueDepthAtRead`, `engineConcurrencyAtRead`.
+5. Tail backend/runtime logs:
    - `GET /runtime/logs/tail?service=media-backend`
    - `GET /runtime/logs/tail?service=kokoro-runtime`
    - `GET /runtime/logs/tail?service=gemini-runtime`
    - Canonical log directory: `backend/.runtime/logs/`
-4. If synthesis fails, use `trace_id`:
+6. If synthesis fails, use `trace_id`:
    - Request includes optional `trace_id`
    - Runtime response includes `X-VoiceFlow-Trace-Id`
    - Find matching stage events in runtime logs
+7. If live audio is not playing while generating:
+   - Confirm gateway submission is async (`/tts/jobs` or `wait_ms=0` fallback).
+   - Confirm job status returns `chunks` and increasing `chunkCursorNext`.
+   - Confirm `x-vf-post-tts-conversion=rvc` in terminal headers.
+8. If strict RVC fails during live chunks:
+   - Check RVC runtime health and model load.
+   - Verify `VF_TTS_POST_RVC_ENABLED=1` and `VF_TTS_POST_RVC_REQUIRED=1`.
+   - Run `npm run audit:rvc:mapping` and resolve mapping failures.
+9. If male/female voices sound swapped:
+   - Inspect `backend/config/voice_id_map.v1.json`.
+   - Re-run `npm run audit:rvc:mapping` and review mismatch list in artifact.
 
 ## Recovery Procedure
 
@@ -59,4 +147,12 @@
    - `npm run audit:tts:longtext:smoke`
    - `npm run audit:media`
    - `npm run test:contracts`
+4. If queue overload persists under load:
+   - Increase worker/runtime replicas in Kubernetes.
+   - Scale managed Redis tier.
+   - Tune:
+     - `VF_TTS_ENGINE_CONCURRENCY_GEM`
+     - `VF_TTS_ENGINE_CONCURRENCY_KOKORO`
+     - `VF_TTS_QUEUE_JOB_TTL_MS`
+     - `VF_TTS_QUEUE_SYNC_WAIT_MS`
 

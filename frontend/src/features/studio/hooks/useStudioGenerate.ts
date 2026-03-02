@@ -6,9 +6,11 @@ export const useStudioGenerate = () => {
   const synthesize = useCallback(async (
     text: string,
     settings: GenerationSettings,
+    mode: 'speech' | 'singing' = 'speech',
     signal?: AbortSignal
   ) => {
-    return generateSpeech(text, settings, signal);
+    const voiceName = String(settings.voiceId || '').trim() || 'alloy';
+    return generateSpeech(text, voiceName, settings, mode, signal);
   }, []);
 
   return { synthesize };

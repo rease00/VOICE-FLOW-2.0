@@ -1,0 +1,157 @@
+{
+  "generatedAt": "2026-03-01T19:20:02.866Z",
+  "profileBankVersion": "1.0.0",
+  "note": "Only open-licensed profiles are downloaded. Missing sourceUrl profiles are recorded as skipped.",
+  "profiles": [
+    {
+      "profileId": "p01_india_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p02_india_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p03_us_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p04_us_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p05_uk_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p06_uk_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p07_canada_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p08_canada_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p09_au_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p10_au_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p11_jp_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p12_jp_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p13_br_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p14_br_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p15_es_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p16_es_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p17_india_boy",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p18_india_girl",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p19_india_old_man",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p20_uk_old_woman",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p21_novel_artist_m",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p22_novel_artist_f",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p23_de_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p24_de_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p25_fr_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p26_fr_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p27_ae_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p28_ae_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p29_ru_m_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    },
+    {
+      "profileId": "p30_ru_f_adult",
+      "skipped": true,
+      "reason": "missing_source_url"
+    }
+  ]
+}

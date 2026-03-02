@@ -271,3 +271,59 @@ def test_stage6_tts_grouped_failure_falls_back_to_segmented(monkeypatch, tmp_pat
     assert len(fallback_calls) >= 2
     assert len(result["tts_segments"]) == 2
     assert all(item["engine"] == "GEM" for item in result["tts_segments"])
+
+
+def test_stage6_grouped_line_map_mismatch_falls_back_to_segmented(monkeypatch, tmp_path: Path) -> None:
+    cfg = build_config(tmp_path)
+    cfg.gemini_runtime_url = "http://gem-runtime"
+    cfg.kokoro_runtime_url = "http://kokoro-runtime"
+    vocals = cfg.output_root / "vocals.wav"
+    _write_wav(vocals)
+
+    calls: list[dict[str, Any]] = []
+
+    def _chunk_wav_base64(line_index: int) -> str:
+        signal = np.full(max(1, int(24000 * 0.08)), (line_index + 1) / 20.0, dtype=np.float32)
+        out = BytesIO()
+        sf.write(out, signal, 24000, format="WAV")
+        return base64.b64encode(out.getvalue()).decode("ascii")
+
+    def _stub_post(url: str, json: dict[str, Any], timeout: int) -> _FakeResponse:
+        calls.append({"url": url, "json": dict(json), "timeout": timeout})
+        if url.endswith("/synthesize/structured"):
+            payload = {
+                "ok": True,
+                "wavBase64": _chunk_wav_base64(0),
+                "lineChunks": [
+                    {
+                        "lineIndex": 0,
+                        "audioBase64": _chunk_wav_base64(0),
+                        "contentType": "audio/wav",
+                        "splitMode": "duration",
+                        "silenceFallback": False,
+                    }
+                ],
+                "diagnostics": {"realtimeFactorX": 160.0},
+            }
+            return _FakeResponse(json_payload=payload)
+        return _FakeResponse(_wav_bytes())
+
+    monkeypatch.setattr(stage6_tts.requests, "post", _stub_post)
+
+    ctx = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "speaker": "A", "translated_text": "hello", "voice_id": "alloy"},
+            {"start": 1.0, "end": 2.0, "speaker": "B", "translated_text": "there", "voice_id": "alloy"},
+        ],
+        "target_language": "en",
+        "vocals": str(vocals),
+        "output_dir": str(cfg.output_root),
+        "tts_route": "auto",
+    }
+
+    result = stage6_tts.run(ctx, cfg, lambda _: None)
+    assert calls[0]["url"] == "http://gem-runtime/synthesize/structured"
+    fallback_calls = [item for item in calls if item["url"].endswith("/synthesize") and not item["url"].endswith("/synthesize/structured")]
+    assert len(fallback_calls) >= 2
+    assert len(result["tts_segments"]) == 2
+    assert all(item["engine"] == "GEM" for item in result["tts_segments"])

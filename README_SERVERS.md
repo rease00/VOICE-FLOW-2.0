@@ -27,6 +27,23 @@ Frontend-only mode:
 npm run dev:ui
 ```
 
+Separated start commands:
+
+```powershell
+npm run start:frontend
+npm run start:backend
+npm run start:backend:gpu
+```
+
+Unified command entrypoints:
+
+```powershell
+npm run frontend -- build
+npm run frontend -- test:ci
+npm run backend -- services:check
+npm run backend -- ci:reliability
+```
+
 `npm run dev` reuses pre-running services, retries bootstrap failures, and auto-restarts crashed session-owned services with capped attempts.
 
 ## Services-Only Bootstrap
@@ -74,9 +91,13 @@ This mode relies on backend UID resolution from `x-dev-uid`, so keep:
 $env:VF_AUTH_ENFORCE="0"
 ```
 
+Production requirement: keep `VF_AUTH_ENFORCE=1`, `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=0`, and `VITE_ENABLE_DEV_UID_HEADER=0`.
+
 Frontend `.env` keys required:
 
 ```powershell
+VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=1
+VITE_ENABLE_DEV_UID_HEADER=1
 VITE_LOCAL_ADMIN_USERNAME=admin
 VITE_LOCAL_ADMIN_UID=local_admin
 VITE_LOCAL_ADMIN_PASSWORD_HASH_B64=<base64>
@@ -84,6 +105,8 @@ VITE_LOCAL_ADMIN_PASSWORD_SALT_B64=<base64>
 VITE_LOCAL_ADMIN_PBKDF2_ITERATIONS=210000
 VITE_LOCAL_ADMIN_SESSION_TTL_MIN=480
 VITE_LOCAL_ADMIN_SESSION_KEY_B64=<base64>
+VITE_DEV_SERVER_EXPOSE=0
+VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0
 ```
 
 If guardian approval actions are used, add the same UID to backend allowlist:
@@ -129,14 +152,38 @@ $env:GEMINI_KEY_COOLDOWN_BASE_MS="8000"
 $env:GEMINI_KEY_COOLDOWN_MAX_MS="120000"
 $env:GEMINI_KEY_RETRY_LIMIT="8"
 $env:GEMINI_KEY_WAIT_SLICE_MS="1000"
+$env:GEMINI_ALLOCATOR_DEFAULT_WAIT_TIMEOUT_MS="90000"
+$env:GEMINI_TTS_ALLOCATOR_RPM="3"
+$env:GEMINI_TTS_ALLOCATOR_TPM="10000"
+$env:GEMINI_TTS_ADMISSION_MAX_WAIT_MS="18000"
+$env:GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS="1200"
+$env:GEMINI_BATCH_DEFAULT_PARALLEL="4"
+$env:GEMINI_BATCH_PARALLEL_LIMIT="100"
 ```
 
 `GEMINI_API_KEYS_FILE` can be used by both backend and Gemini runtime to load key pools from a local file.
+Baseline allocator defaults should match cloud limits for Gemini 2.5 Flash TTS (`3 RPM / 10K TPM` per key) unless you explicitly override env vars.
+After changing allocator limits or key pool files, restart both media backend and gemini runtime so active processes pick up the new effective limits.
 
 Kokoro runtime (port `7820`):
 
 ```powershell
 python -m uvicorn app:app --app-dir backend/engines/kokoro-runtime --host 127.0.0.1 --port 7820
+```
+
+Kokoro runtime throughput env vars:
+
+```powershell
+$env:KOKORO_BATCH_DEFAULT_PARALLEL="2"
+$env:KOKORO_BATCH_PARALLEL_LIMIT="100"
+```
+
+Media backend TTS gateway concurrency env vars:
+
+```powershell
+$env:VF_TTS_GATEWAY_MAX_ACTIVE="100"
+$env:VF_TTS_GATEWAY_QUEUE_MAX="300"
+$env:VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS="30000"
 ```
 
 ## Health Endpoints
@@ -156,6 +203,10 @@ python -m uvicorn app:app --app-dir backend/engines/kokoro-runtime --host 127.0.
   - `GET http://127.0.0.1:7800/admin/gemini/pool/status`
   - `POST http://127.0.0.1:7800/admin/gemini/pool/reload`
   - Runtime reload proxy target: `POST http://127.0.0.1:7810/v1/admin/api-pool/reload`
+- Admin integrations usage:
+  - `GET http://127.0.0.1:7800/admin/integrations/usage`
+  - `GET http://127.0.0.1:7800/admin/integrations/usage/export?format=json|csv&window=total|24h|7d`
+  - `GET http://127.0.0.1:7800/admin/tts/gateway/status`
 
 ## Useful Commands
 
@@ -196,3 +247,9 @@ npm run audit:gemini-stack
 - PID files: `backend/.runtime/pids/`
 - Venvs used by bootstrap: `backend/.venvs/`
 - Legacy root `.runtime/` can contain stale logs from old startup paths; treat `backend/.runtime/` as canonical.
+
+Per-service Python interpreter env vars (optional):
+- `VF_PYTHON_BIN_MEDIA_BACKEND`
+- `VF_PYTHON_BIN_GEMINI_RUNTIME`
+- `VF_PYTHON_BIN_KOKORO_RUNTIME`
+- `VF_PYTHON_BIN_RVC_RUNTIME` (must resolve to Python `3.11.x`)

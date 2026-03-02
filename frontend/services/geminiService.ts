@@ -4,6 +4,7 @@ import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, KOKORO_VOICES
 import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisContractService";
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
+import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
 import {
   MAX_WORDS_PER_WINDOW,
   MAX_WORDS_PER_REQUEST,
@@ -20,18 +21,41 @@ import {
 
 // Gemini helper defaults to local runtime/server key pool; user key is optional override.
 export const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
+export const TTS_GATEWAY_JOB_PROGRESS_EVENT = 'voiceflow:tts-gateway-job-progress';
+export const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk';
 
 interface RuntimeDiagnosticsPayload {
-  engine?: string;
-  traceId?: string;
-  chunkCount?: number;
-  retryChunks?: number;
-  qualityGuardRecoveries?: number;
-  splitChunks?: number;
-  maxAttempt?: number;
-  strategies?: string[];
-  recoveryUsed?: boolean;
-  runtimeLabel?: string;
+  engine?: string | undefined;
+  traceId?: string | undefined;
+  chunkCount?: number | undefined;
+  retryChunks?: number | undefined;
+  qualityGuardRecoveries?: number | undefined;
+  splitChunks?: number | undefined;
+  maxAttempt?: number | undefined;
+  strategies?: string[] | undefined;
+  recoveryUsed?: boolean | undefined;
+  runtimeLabel?: string | undefined;
+}
+
+interface GatewayJobProgressPayload {
+  jobId: string;
+  status: string;
+  engine?: string | undefined;
+  queueAgeMs?: number | undefined;
+  queueDepth?: number | undefined;
+  stage?: string | undefined;
+  progressPct?: number | undefined;
+}
+
+interface GatewayAudioChunkPayload {
+  jobId: string;
+  index: number;
+  engine?: string | undefined;
+  contentType?: string | undefined;
+  durationMs?: number | undefined;
+  textChars?: number | undefined;
+  traceId?: string | undefined;
+  audioBase64: string;
 }
 
 const resolveGeminiApiKey = (settings: Pick<GenerationSettings, 'geminiApiKey'>): string => {
@@ -426,7 +450,7 @@ const parseRuntimeDiagnosticsHeader = (value: string | null): RuntimeDiagnostics
         : undefined,
       splitChunks: Number.isFinite(Number((parsed as any).splitChunks)) ? Number((parsed as any).splitChunks) : undefined,
       maxAttempt: Number.isFinite(Number((parsed as any).maxAttempt)) ? Number((parsed as any).maxAttempt) : undefined,
-      strategies: asArray.map((item: any) => String(item || '').trim()).filter(Boolean),
+      strategies: asArray.map((item: any) => String(item || '').trim()).filter(Boolean) as string[],
       recoveryUsed: Boolean((parsed as any).recoveryUsed),
     };
   } catch {
@@ -568,16 +592,49 @@ async function callPerplexityChat(messages: ChatMessage[], apiKey: string): Prom
 }
 
 // --- UNIFIED GENERATION DISPATCHER ---
+export interface AssistantTextDispatchPlan {
+  controlsEnabled: boolean;
+  provider: GenerationSettings['helperProvider'];
+  usePerplexity: boolean;
+  useRuntimeGemini: boolean;
+  useUserGeminiKey: boolean;
+}
+
+export const resolveAssistantTextDispatchPlan = (settings: GenerationSettings): AssistantTextDispatchPlan => {
+  const routing = resolveAssistantProviderRouting(settings);
+  const provider = routing.provider;
+
+  if (provider === 'PERPLEXITY') {
+    return {
+      controlsEnabled: routing.controlsEnabled,
+      provider,
+      usePerplexity: true,
+      useRuntimeGemini: false,
+      useUserGeminiKey: false,
+    };
+  }
+
+  // Local helper mode currently shares Gemini runtime/user-key paths.
+  const useUserGeminiKey = routing.controlsEnabled && Boolean(settings.preferUserGeminiKey);
+  return {
+    controlsEnabled: routing.controlsEnabled,
+    provider,
+    usePerplexity: false,
+    useRuntimeGemini: !useUserGeminiKey,
+    useUserGeminiKey,
+  };
+};
+
 export const generateText = async (
   systemPrompt: string,
   userPrompt: string,
   settings: GenerationSettings,
   jsonMode: boolean = false
 ): Promise<string> => {
-  const provider = settings.helperProvider || 'GEMINI';
+  const dispatchPlan = resolveAssistantTextDispatchPlan(settings);
   
   try {
-    if (provider === 'PERPLEXITY') {
+    if (dispatchPlan.usePerplexity) {
       const perplexityKey = String(settings.perplexityApiKey || '').trim();
       if (!perplexityKey) {
         throw new Error("Perplexity provider selected but API key is missing.");
@@ -589,8 +646,8 @@ export const generateText = async (
       return await callPerplexityChat(messages, perplexityKey);
     }
     
-    // Default Gemini path: runtime/server key pool first. User key is optional override.
-    const forceUserKey = Boolean(settings.preferUserGeminiKey);
+    // Gemini path: runtime/server key pool by default, with optional personal key override.
+    const forceUserKey = dispatchPlan.useUserGeminiKey;
     const geminiKey = resolveGeminiApiKey(settings);
     if (forceUserKey) {
       if (!geminiKey) throw new Error("Personal Gemini key is enabled, but API key is missing.");
@@ -698,7 +755,7 @@ function pcm16ToAudioBuffer(
   for (let channel = 0; channel < numChannels; channel++) {
     const channelData = buffer.getChannelData(channel);
     for (let i = 0; i < frameCount; i++) {
-      channelData[i] = int16Data[i * numChannels + channel] / 32768.0;
+      channelData[i] = (int16Data[i * numChannels + channel] ?? 0) / 32768.0;
     }
   }
   
@@ -710,20 +767,24 @@ export async function fetchAudioBuffer(url: string): Promise<AudioBuffer> {
   const ctx = getAudioContext();
   try {
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch audio: ${response.status}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const arrayBuffer = await response.arrayBuffer();
+    if (!arrayBuffer.byteLength) throw new Error("Empty audio response");
     return await ctx.decodeAudioData(arrayBuffer);
-  } catch (e: any) {
-    throw new Error(`Audio Fetch Error: ${e.message}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to decode audio from ${url}: ${message}`);
   }
 }
 
 // Helper to concatenate AudioBuffers
 function concatenateAudioBuffers(ctx: AudioContext, buffers: AudioBuffer[]): AudioBuffer {
   if (buffers.length === 0) return ctx.createBuffer(1, 1, 24000);
+  const first = buffers[0];
+  if (!first) return ctx.createBuffer(1, 1, 24000);
   
   const totalLength = buffers.reduce((acc, b) => acc + b.length, 0);
-  const result = ctx.createBuffer(buffers[0].numberOfChannels, totalLength, buffers[0].sampleRate);
+  const result = ctx.createBuffer(first.numberOfChannels, totalLength, first.sampleRate);
   
   let offset = 0;
   for (const buf of buffers) {
@@ -776,7 +837,7 @@ export function audioBufferToWav(buffer: AudioBuffer): Blob {
   
   for (let i = 0; i < buffer.length; i++) {
     for (let channel = 0; channel < numChannels; channel++) {
-      const sample = buffer.getChannelData(channel)[i];
+      const sample = buffer.getChannelData(channel)[i] ?? 0;
       const clamped = Math.max(-1, Math.min(1, sample));
       const int16 = clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF;
       view.setInt16(offset, int16, true);
@@ -787,14 +848,36 @@ export function audioBufferToWav(buffer: AudioBuffer): Blob {
   return new Blob([arrayBuffer], { type: 'audio/wav' });
 }
 
-export const extractAudioFromVideo = async (videoFile: File): Promise<Blob> => {
-  const ctx = getAudioContext();
-  const arrayBuffer = await videoFile.arrayBuffer();
+export const extractAudioFromVideo = async (videoFile: File, backendUrl?: string): Promise<Blob> => {
+  const baseUrl = backendUrl || resolveMediaBackendBaseUrl({});
+  const formData = new FormData();
+  formData.append("file", videoFile);
+  
   try {
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-    return audioBufferToWav(audioBuffer);
-  } catch (e) {
-    throw new Error("Failed to decode audio. Codec might not be supported.");
+    const response = await fetch(`${baseUrl}/audio/extract-from-video`, {
+      method: "POST",
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      const errorMsg = response.status === 413 
+        ? "Video file is too large. Maximum 500MB."
+        : response.status === 400
+        ? `Invalid video format: ${errorText}`
+        : `Failed to extract audio (HTTP ${response.status})`;
+      throw new Error(errorMsg);
+    }
+    
+    const audioBlob = await response.blob();
+    if (!audioBlob.size) {
+      throw new Error("Extracted audio is empty.");
+    }
+    
+    return audioBlob;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to extract audio from video: ${message}`);
   }
 };
 
@@ -1178,7 +1261,7 @@ const createProceduralSfxBuffer = (ctx: AudioContext, label: string): AudioBuffe
       for (let i = start; i < end; i += 1) {
         const phase = (i - start) / Math.max(1, (end - start));
         const env = Math.exp(-12 * phase);
-        data[i] += Math.sin((2 * Math.PI * 180 * (i / sampleRate))) * 0.35 * env;
+        data[i] = (data[i] ?? 0) + Math.sin((2 * Math.PI * 180 * (i / sampleRate))) * 0.35 * env;
       }
     }
   }
@@ -1187,7 +1270,7 @@ const createProceduralSfxBuffer = (ctx: AudioContext, label: string): AudioBuffe
     for (let i = 0; i < data.length; i += 1) {
       const t = i / sampleRate;
       const sub = Math.sin(2 * Math.PI * 52 * t) * Math.exp(-1.9 * t) * 0.55;
-      data[i] = Math.max(-1, Math.min(1, data[i] + sub));
+      data[i] = Math.max(-1, Math.min(1, (data[i] ?? 0) + sub));
     }
   }
 
@@ -1195,7 +1278,7 @@ const createProceduralSfxBuffer = (ctx: AudioContext, label: string): AudioBuffe
     for (let i = 0; i < data.length; i += 1) {
       const t = i / sampleRate;
       const tone = Math.sin(2 * Math.PI * 880 * t) * Math.exp(-8 * t) * 0.45;
-      data[i] = Math.max(-1, Math.min(1, (data[i] * 0.25) + tone));
+      data[i] = Math.max(-1, Math.min(1, ((data[i] ?? 0) * 0.25) + tone));
     }
   }
 
@@ -1257,7 +1340,7 @@ export const parseStudioDialogue = (text: string): {
     // Check for SFX first
     const sfxMatch = trimmed.match(SFX_REGEX);
     if (sfxMatch) {
-      segments.push({ speaker: 'SFX', text: sfxMatch[1].trim(), isSfx: true });
+      segments.push({ speaker: 'SFX', text: String(sfxMatch[1] || '').trim(), isSfx: true });
       return;
     }
 
@@ -1306,22 +1389,22 @@ export const parseStudioDialogue = (text: string): {
 
 export const parseScriptToSegments = (text: string): {
   startTime: number;
-  endTime?: number;
+  endTime?: number | undefined;
   speaker: string;
   text: string;
-  emotion?: string;
-  crewTags?: string[];
-  emotionTags?: string[];
+  emotion?: string | undefined;
+  crewTags?: string[] | undefined;
+  emotionTags?: string[] | undefined;
 }[] => {
   const lines = text.split('\n');
   const segments: {
     startTime: number;
-    endTime?: number;
+    endTime?: number | undefined;
     speaker: string;
     text: string;
-    emotion?: string;
-    crewTags?: string[];
-    emotionTags?: string[];
+    emotion?: string | undefined;
+    crewTags?: string[] | undefined;
+    emotionTags?: string[] | undefined;
   }[] = [];
   let fallbackCursor = 0;
   let currentSpeaker = 'Narrator';
@@ -1331,8 +1414,8 @@ export const parseScriptToSegments = (text: string): {
 
   const timeToSeconds = (timestamp: string) => {
     const parts = String(timestamp || '').split(':').map((part) => Number(part));
-    if (parts.length === 2) return (parts[0] * 60) + parts[1];
-    if (parts.length === 3) return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+    if (parts.length === 2) return ((parts[0] ?? 0) * 60) + (parts[1] ?? 0);
+    if (parts.length === 3) return ((parts[0] ?? 0) * 3600) + ((parts[1] ?? 0) * 60) + (parts[2] ?? 0);
     return 0;
   };
 
@@ -1356,9 +1439,9 @@ export const parseScriptToSegments = (text: string): {
       /^[\[(]?\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?)(?:\s*[-â€“]\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?))?\s*[\])]?\s*(.*)$/
     );
     if (timestampMatch) {
-      explicitStart = timeToSeconds(timestampMatch[1]);
+      explicitStart = timeToSeconds(String(timestampMatch[1] || '0:00'));
       if (timestampMatch[2]) {
-        const parsedEnd = timeToSeconds(timestampMatch[2]);
+        const parsedEnd = timeToSeconds(String(timestampMatch[2] || '0:00'));
         if (parsedEnd > explicitStart) explicitEnd = parsedEnd;
       }
       working = (timestampMatch[3] || '').trim();
@@ -1368,7 +1451,7 @@ export const parseScriptToSegments = (text: string): {
 
     const sfxMatch = working.match(SFX_REGEX);
     if (sfxMatch) {
-      const label = sfxMatch[1].trim();
+      const label = String(sfxMatch[1] || '').trim();
       const start = explicitStart ?? fallbackCursor;
       const dur = estimateSfxDurationSeconds(label);
       segments.push({
@@ -1536,11 +1619,11 @@ export const autoFormatScript = async (
   cast: {
     name: string,
     gender: 'Male' | 'Female' | 'Unknown',
-    age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly'
+    age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly' | undefined
   }[],
-  crewTags?: string[],
-  mood?: string,
-  suggestedMusicTrackId?: string
+  crewTags?: string[] | undefined,
+  mood?: string | undefined,
+  suggestedMusicTrackId?: string | undefined
 }> => {
   const castContext = existingCharacters.length > 0
     ? `**EXISTING CAST:** ${existingCharacters.map(c => `${c.name} (${c.gender})`).join(', ')}. Reuse these if applicable.`
@@ -1620,7 +1703,7 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
     const castMap = new Map<string, {
       name: string;
       gender: 'Male' | 'Female' | 'Unknown';
-      age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly';
+      age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly' | undefined;
     }>();
 
     const rawCast = Array.isArray(json.cast) ? json.cast : [];
@@ -1779,15 +1862,16 @@ export const analyzeVoiceSample = async (_audioBlob: Blob, settings: GenerationS
   if (!description) {
     throw new Error('Voice analysis returned invalid response.');
   }
+  const emotionHint = emotion
+    ? {
+        emotion,
+        style: style || undefined,
+        confidence,
+      }
+    : undefined;
   return {
     description,
-    emotionHint: emotion
-      ? {
-          emotion,
-          style: style || undefined,
-          confidence,
-        }
-      : undefined,
+    ...(emotionHint ? { emotionHint } : {}),
   };
 };
 
@@ -1841,7 +1925,7 @@ async function getCloneBase64(sampleUrl: string): Promise<string | null> {
     let binary = '';
     const len = bytes.byteLength;
     for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(bytes[i]);
+      binary += String.fromCharCode(bytes[i] ?? 0);
     }
     return btoa(binary);
   } catch(e) {
@@ -1975,6 +2059,209 @@ export const generateSpeech = async (
     return truncateRuntimeErrorDetail(`${response.status} ${response.statusText}`);
   };
 
+  const TTS_GATEWAY_JOB_POLL_MS = 250;
+  const TTS_GATEWAY_JOB_TIMEOUT_MS = 180000;
+  const TTS_GATEWAY_LIVE_CHUNK_CHARS = 180;
+  const TTS_GATEWAY_LIVE_CHUNK_WORDS = 35;
+
+  const base64ToArrayBuffer = (encoded: string): ArrayBuffer => {
+    const safe = String(encoded || '').trim();
+    if (!safe) return new ArrayBuffer(0);
+    const binary = atob(safe);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  };
+
+  const extractGatewayJobId = (
+    payload: any,
+    headers?: Headers
+  ): string => {
+    const fromPayload = String(
+      payload?.jobId ||
+      payload?.requestId ||
+      payload?.id ||
+      payload?.job_id ||
+      ''
+    ).trim();
+    if (fromPayload) return fromPayload;
+    const fromHeader = String(
+      headers?.get('x-vf-job-id') ||
+      headers?.get('x-vf-request-id') ||
+      ''
+    ).trim();
+    return fromHeader;
+  };
+
+  const emitGatewayProgress = (detail: GatewayJobProgressPayload) => {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    window.dispatchEvent(new CustomEvent(TTS_GATEWAY_JOB_PROGRESS_EVENT, { detail }));
+  };
+
+  const emitGatewayAudioChunk = (detail: GatewayAudioChunkPayload) => {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    window.dispatchEvent(new CustomEvent(TTS_GATEWAY_AUDIO_CHUNK_EVENT, { detail }));
+  };
+
+  const cancelGatewayJob = async (backendBase: string, jobId: string): Promise<void> => {
+    const encodedJobId = encodeURIComponent(jobId);
+    try {
+      await authFetch(
+        `${backendBase}/tts/jobs/${encodedJobId}`,
+        { method: 'DELETE' },
+        { requireAuth: true }
+      );
+    } catch {
+      // Best-effort cancellation.
+    }
+  };
+
+  const pollGatewayJobForAudio = async (
+    backendBase: string,
+    jobId: string,
+    runtimeLabel: string,
+    engine: 'GEM' | 'KOKORO'
+  ): Promise<{ audioBytes: ArrayBuffer; responseHeaders: Record<string, string> }> => {
+    const startedAt = Date.now();
+    const encodedJobId = encodeURIComponent(jobId);
+    let cancelled = false;
+    let chunkCursor = 0;
+    let chunkSupportEnabled = true;
+    const emittedChunkKeys = new Set<string>();
+
+    while (Date.now() - startedAt < TTS_GATEWAY_JOB_TIMEOUT_MS) {
+      if (signal?.aborted) {
+        if (!cancelled) {
+          cancelled = true;
+          await cancelGatewayJob(backendBase, jobId);
+        }
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const searchParams = new URLSearchParams();
+      searchParams.set('includeResult', '1');
+      if (chunkSupportEnabled) {
+        searchParams.set('includeChunks', '1');
+        searchParams.set('chunkCursor', String(Math.max(0, chunkCursor)));
+        searchParams.set('chunkLimit', '2');
+        searchParams.set('includeChunkAudio', '1');
+      }
+      const response = await authFetch(
+        `${backendBase}/tts/jobs/${encodedJobId}?${searchParams.toString()}`,
+        { method: 'GET' },
+        { requireAuth: true }
+      );
+      if (!response.ok && chunkSupportEnabled && (response.status === 400 || response.status === 404 || response.status === 422)) {
+        chunkSupportEnabled = false;
+        continue;
+      }
+      if (!response.ok) {
+        const detail = await parseRuntimeError(response);
+        throw new Error(`${runtimeLabel} job polling failed (${response.status}): ${detail}`);
+      }
+
+      const payload = await response.json().catch(() => null) as any;
+      const status = String(payload?.status || '').trim().toLowerCase();
+      const queueAgeMs = Number(payload?.queueAgeMs || 0);
+      const queueDepth = Number(payload?.queueDepthAtRead || 0);
+      const elapsedMs = Math.max(1, Date.now() - startedAt);
+      const softProgress = Math.max(
+        6,
+        Math.min(96, Math.round((elapsedMs / TTS_GATEWAY_JOB_TIMEOUT_MS) * 100))
+      );
+      emitGatewayProgress({
+        jobId,
+        status,
+        engine,
+        queueAgeMs: Number.isFinite(queueAgeMs) ? queueAgeMs : 0,
+        queueDepth: Number.isFinite(queueDepth) ? queueDepth : 0,
+        stage: status === 'running' ? 'Synthesizing audio...' : 'Queued for synthesis...',
+        progressPct: softProgress,
+      });
+
+      if (chunkSupportEnabled) {
+        const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
+        const responseChunkCursorNext = Number(payload?.chunkCursorNext);
+        if (chunks.length === 0 && payload && typeof payload === 'object' && !Object.prototype.hasOwnProperty.call(payload, 'chunks') && !Object.prototype.hasOwnProperty.call(payload, 'live')) {
+          chunkSupportEnabled = false;
+        } else {
+          for (const rawChunk of chunks) {
+            if (!rawChunk || typeof rawChunk !== 'object') continue;
+            const index = Number((rawChunk as any).index);
+            const audioBase64 = String((rawChunk as any).audioBase64 || '').trim();
+            if (!Number.isFinite(index) || index < 0 || !audioBase64) continue;
+            const key = `${jobId}:${Math.round(index)}`;
+            if (emittedChunkKeys.has(key)) continue;
+            emittedChunkKeys.add(key);
+            emitGatewayAudioChunk({
+              jobId,
+              index: Math.round(index),
+              engine,
+              contentType: String((rawChunk as any).contentType || 'audio/wav'),
+              durationMs: Number((rawChunk as any).durationMs || 0),
+              textChars: Number((rawChunk as any).textChars || 0),
+              traceId: String((rawChunk as any).traceId || payload?.traceId || ''),
+              audioBase64,
+            });
+          }
+          if (Number.isFinite(responseChunkCursorNext) && responseChunkCursorNext >= chunkCursor) {
+            chunkCursor = Math.max(chunkCursor, Math.round(responseChunkCursorNext));
+          } else if (chunks.length > 0) {
+            const maxIndex = chunks.reduce((max: number, item: any) => {
+              const idx = Number((item as any)?.index);
+              if (!Number.isFinite(idx)) return max;
+              return Math.max(max, Math.round(idx));
+            }, -1);
+            if (maxIndex >= 0) chunkCursor = Math.max(chunkCursor, maxIndex + 1);
+          }
+        }
+      }
+
+      if (status === 'completed') {
+        emitGatewayProgress({
+          jobId,
+          status,
+          engine,
+          queueAgeMs: Number.isFinite(queueAgeMs) ? queueAgeMs : 0,
+          queueDepth: Number.isFinite(queueDepth) ? queueDepth : 0,
+          stage: 'Synthesis completed. Preparing playback...',
+          progressPct: 98,
+        });
+        const result = payload?.result && typeof payload.result === 'object' ? payload.result : {};
+        const audioBase64 = String(result?.audioBase64 || '').trim();
+        if (!audioBase64) {
+          throw new Error(`${runtimeLabel} completed job is missing audio payload.`);
+        }
+        const headerRecord: Record<string, string> = {};
+        const rawHeaders = result?.headers && typeof result.headers === 'object' ? result.headers : {};
+        Object.entries(rawHeaders).forEach(([key, value]) => {
+          const safeKey = String(key || '').trim().toLowerCase();
+          if (!safeKey) return;
+          headerRecord[safeKey] = String(value ?? '');
+        });
+        return {
+          audioBytes: base64ToArrayBuffer(audioBase64),
+          responseHeaders: headerRecord,
+        };
+      }
+
+      if (status === 'failed') {
+        const errorDetail = payload?.error;
+        const message = typeof errorDetail === 'string'
+          ? errorDetail
+          : JSON.stringify(errorDetail || payload || {});
+        throw new Error(`${runtimeLabel} failed: ${truncateRuntimeErrorDetail(message)}`);
+      }
+      if (status === 'cancelled') {
+        throw new Error(`${runtimeLabel} was cancelled before completion.`);
+      }
+
+      await sleepMs(TTS_GATEWAY_JOB_POLL_MS);
+    }
+    throw new Error(`${runtimeLabel} timed out while waiting for queued synthesis.`);
+  };
+
   const synthesizeViaRuntime = async (
     runtimeUrl: string,
     endpointPath: string,
@@ -1988,7 +2275,7 @@ export const generateSpeech = async (
         'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify(payload),
-      signal,
+      ...(signal ? { signal } : {}),
     });
 
     if (!response.ok) {
@@ -2022,7 +2309,14 @@ export const generateSpeech = async (
       throw new Error(`${runtimeLabel} returned empty audio.`);
     }
 
-    return await ctx.decodeAudioData(audioBytes);
+    try {
+      return await ctx.decodeAudioData(audioBytes);
+    } catch (decodeError: any) {
+      throw new Error(
+        `Failed to decode audio from ${runtimeLabel}. ` +
+        `Possible codec issue or corrupted response. Details: ${decodeError?.message || 'unknown error'}`
+      );
+    }
   };
 
   const synthesizeViaBackendGateway = async (
@@ -2033,36 +2327,51 @@ export const generateSpeech = async (
     runtimeLabel: string
   ): Promise<AudioBuffer> => {
     const backendBase = resolveMediaBackendBaseUrl(settings);
-    let response: Response;
-    try {
-      response = await authFetch(
-        `${backendBase}/tts/synthesize`,
+    const livePayload = {
+      ...payload,
+      engine,
+      stream: true,
+      live_chunk_chars: TTS_GATEWAY_LIVE_CHUNK_CHARS,
+      live_chunk_words: TTS_GATEWAY_LIVE_CHUNK_WORDS,
+    };
+    const submitGatewayRequest = async (url: string): Promise<Response> => (
+      authFetch(
+        url,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'ngrok-skip-browser-warning': 'true',
           },
-          body: JSON.stringify({
-            ...payload,
-            engine,
-          }),
-          signal,
+          body: JSON.stringify(livePayload),
+          ...(signal ? { signal } : {}),
         },
         { requireAuth: true }
-      );
-    } catch (gatewayError: any) {
-      // Allow graceful fallback to direct runtime when backend gateway is unavailable.
-      const lower = String(gatewayError?.message || '').toLowerCase();
-      if (lower.includes('failed to fetch') || lower.includes('network')) {
-        return await synthesizeViaRuntime(runtimeUrl, endpointPath, payload, runtimeLabel);
+      )
+    );
+
+    let response: Response;
+    let usedFallbackSynthesize = false;
+    try {
+      response = await submitGatewayRequest(`${backendBase}/tts/jobs`);
+      if ([404, 405, 422, 501].includes(response.status)) {
+        usedFallbackSynthesize = true;
+        response = await submitGatewayRequest(`${backendBase}/tts/synthesize?wait_ms=0`);
       }
-      throw gatewayError;
+    } catch (gatewayError: unknown) {
+      const detail = gatewayError instanceof Error ? gatewayError.message : 'Unknown gateway error';
+      throw new Error(`Media backend gateway is unreachable at ${backendBase}: ${detail}`);
     }
 
-    if (response.status === 404 || response.status === 501) {
-      return await synthesizeViaRuntime(runtimeUrl, endpointPath, payload, runtimeLabel);
+    if (!response.ok && [404, 405, 422, 501].includes(response.status) && !usedFallbackSynthesize) {
+      response = await submitGatewayRequest(`${backendBase}/tts/synthesize?wait_ms=0`);
+      usedFallbackSynthesize = true;
     }
+
+    if ((response.status === 404 || response.status === 501) && usedFallbackSynthesize) {
+      throw new Error(`Media backend gateway does not expose live queue endpoints (${response.status}).`);
+    }
+
     if (!response.ok) {
       const detail = await parseRuntimeError(response);
       throw new Error(`${runtimeLabel} failed (${response.status}): ${detail}`);
@@ -2090,11 +2399,74 @@ export const generateSpeech = async (
       }
     }
 
-    const audioBytes = await response.arrayBuffer();
-    if (audioBytes.byteLength < 100) {
+    let audioBytes: ArrayBuffer | null = null;
+    let gatewayHeaders: Record<string, string> = {};
+    const responseContentType = String(response.headers.get('content-type') || '').toLowerCase();
+    const returnsAudioDirectly = responseContentType.includes('audio/');
+    const canParseJson = responseContentType.includes('application/json') || response.status === 202 || response.status === 200;
+
+    if (returnsAudioDirectly) {
+      audioBytes = await response.arrayBuffer();
+    } else if (canParseJson) {
+      const acceptedPayload = await response.json().catch(() => null) as any;
+      const acceptedStatus = String(acceptedPayload?.status || '').trim().toLowerCase();
+      if (acceptedStatus === 'completed' && acceptedPayload?.result && typeof acceptedPayload.result === 'object') {
+        const finalBase64 = String(acceptedPayload.result.audioBase64 || '').trim();
+        if (!finalBase64) {
+          throw new Error(`${runtimeLabel} completed response is missing audio payload.`);
+        }
+        audioBytes = base64ToArrayBuffer(finalBase64);
+        const rawHeaders = acceptedPayload.result.headers && typeof acceptedPayload.result.headers === 'object'
+          ? acceptedPayload.result.headers
+          : {};
+        Object.entries(rawHeaders).forEach(([key, value]) => {
+          const safeKey = String(key || '').trim().toLowerCase();
+          if (!safeKey) return;
+          gatewayHeaders[safeKey] = String(value ?? '');
+        });
+      } else {
+        const jobId = extractGatewayJobId(acceptedPayload, response.headers);
+        if (!jobId) {
+          throw new Error(`${runtimeLabel} accepted queue request but did not return a job id.`);
+        }
+        emitGatewayProgress({
+          jobId,
+          status: 'queued',
+          engine,
+          stage: 'Queued for synthesis...',
+          progressPct: 8,
+        });
+        const queuedResult = await pollGatewayJobForAudio(backendBase, jobId, runtimeLabel, engine);
+        audioBytes = queuedResult.audioBytes;
+        gatewayHeaders = queuedResult.responseHeaders;
+      }
+    } else {
+      audioBytes = await response.arrayBuffer();
+    }
+    if (!audioBytes || audioBytes.byteLength < 100) {
       throw new Error(`${runtimeLabel} returned empty audio.`);
     }
-    return await ctx.decodeAudioData(audioBytes);
+
+    const conversionHeader =
+      String(response.headers.get('x-vf-post-tts-conversion') || gatewayHeaders['x-vf-post-tts-conversion'] || '').trim();
+    const profileHeader =
+      String(response.headers.get('x-vf-post-tts-profile') || gatewayHeaders['x-vf-post-tts-profile'] || '').trim();
+    const modelHeader =
+      String(response.headers.get('x-vf-post-tts-model') || gatewayHeaders['x-vf-post-tts-model'] || '').trim();
+    if (conversionHeader || profileHeader || modelHeader) {
+      console.debug(
+        `[TTS][${runtimeLabel}] post_tts_conversion=${conversionHeader || 'unknown'} profile=${profileHeader || '-'} model=${modelHeader || '-'}`
+      );
+    }
+
+    try {
+      return await ctx.decodeAudioData(audioBytes);
+    } catch (decodeError: any) {
+      throw new Error(
+        `Failed to decode audio from ${runtimeLabel}. ` +
+        `Possible codec issue or corrupted response. Details: ${decodeError?.message || 'unknown error'}`
+      );
+    }
   };
 
   const enforceWordLimit = (candidateText: string) => {
@@ -2133,6 +2505,7 @@ export const generateSpeech = async (
     const buffers: AudioBuffer[] = [];
     for (let windowIndex = 0; windowIndex < windowQueue.length; windowIndex += 1) {
       const windowChunk = windowQueue[windowIndex];
+      if (!windowChunk) continue;
       let lastError: unknown = null;
       for (let attempt = 1; attempt <= RETRY_ATTEMPTS_PER_CHUNK; attempt += 1) {
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -2223,12 +2596,15 @@ export const generateSpeech = async (
 
   const ensureDistinctGeminiVoices = (voices: string[], fallbackVoice: string): string[] => {
     if (voices.length !== 2) return voices;
-    if (voices[0].toLowerCase() !== voices[1].toLowerCase()) return voices;
+    const firstVoice = voices[0];
+    const secondVoice = voices[1];
+    if (!firstVoice || !secondVoice) return voices;
+    if (firstVoice.toLowerCase() !== secondVoice.toLowerCase()) return voices;
     const alternate = VOICES
       .map((voice) => resolveGeminiVoiceName(voice.id, fallbackVoice))
-      .find((voice) => voice.toLowerCase() !== voices[0].toLowerCase());
+      .find((voice) => voice.toLowerCase() !== firstVoice.toLowerCase());
     if (!alternate) return voices;
-    return [voices[0], alternate];
+    return [firstVoice, alternate];
   };
   
   // Parse for multi-speaker and SFX content.
@@ -2385,7 +2761,8 @@ export const generateSpeech = async (
                const mappedId = settings.speakerMapping[speakerName];
                if (activeEngine === 'KOKORO' && runtimeVoiceCatalog.length > 0) {
                  const validIds = new Set(runtimeVoiceCatalog.map((voice) => voice.id));
-                 effectiveVoiceId = validIds.has(mappedId) ? mappedId : runtimeVoiceCatalog[0].id;
+                 const fallbackRuntimeVoiceId = runtimeVoiceCatalog[0]?.id || mappedId;
+                 effectiveVoiceId = validIds.has(mappedId) ? mappedId : fallbackRuntimeVoiceId;
                } else {
                  effectiveVoiceId = mappedId;
                }
@@ -2707,7 +3084,7 @@ export const generateSpeech = async (
               ...optionalBearerAuthHeaders(runtimeSettings.backendApiKey),
             },
             body: JSON.stringify(body),
-            signal: signal
+            ...(signal ? { signal } : {})
           });
 
           if (!res.ok) {
@@ -2728,7 +3105,14 @@ export const generateSpeech = async (
           }
 
           // Standard Decoding (WAV/MP3)
-          return await ctx.decodeAudioData(arrayBuffer);
+          try {
+            return await ctx.decodeAudioData(arrayBuffer);
+          } catch (decodeErr: any) {
+            throw new Error(
+              `Failed to decode F5 audio response. ` +
+              `File may be corrupted or in unsupported format. Details: ${decodeErr?.message || 'unknown error'}`
+            );
+          }
 
       } catch (err: any) {
           if (err.name === 'AbortError') throw err;
@@ -2783,7 +3167,7 @@ export const generateSpeech = async (
           voice: targetVoice, // Use the corrected voice ID
           speed: settings.speed || 1.0
         }),
-        signal: signal
+        ...(signal ? { signal } : {})
       });
 
       const contentType = res.headers.get("content-type");
@@ -2799,7 +3183,14 @@ export const generateSpeech = async (
       const arrayBuffer = await res.arrayBuffer();
       if (arrayBuffer.byteLength < 100) throw new Error("Empty audio response.");
       
-      return await ctx.decodeAudioData(arrayBuffer);
+      try {
+        return await ctx.decodeAudioData(arrayBuffer);
+      } catch (decodeErr: any) {
+        throw new Error(
+          `Failed to decode OpenAI/F5 audio response. ` +
+          `File may be corrupted or in unsupported format. Details: ${decodeErr?.message || 'unknown error'}`
+        );
+      }
       
     } catch (err: any) {
       if (err.name === 'AbortError') throw err;
@@ -2845,7 +3236,7 @@ export const generateSpeech = async (
           language_id: lang,
           emotion: settings.emotion || 'Neutral'
         }),
-        signal: signal
+        ...(signal ? { signal } : {})
       });
       
       const contentType = res.headers.get("content-type");

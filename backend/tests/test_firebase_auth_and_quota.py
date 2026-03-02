@@ -33,6 +33,7 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
     backend_app._INMEMORY_COUPONS.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
+    backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
 
 
 def test_auth_enforcement_blocks_missing_token(monkeypatch) -> None:
@@ -62,6 +63,7 @@ def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
     uid = "quota_user_daily"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
         **backend_app._default_entitlement(uid),
+        "plan": "Plus",
         "dailyGenerationLimit": 2,
         "monthlyVfLimit": 100000,
     }
@@ -75,7 +77,7 @@ def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     assert third.status_code == 429
-    assert "Daily generation limit reached" in third.json()["detail"]
+    assert "Daily generation limit reached" in str(third.json()["detail"])
 
 
 def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:

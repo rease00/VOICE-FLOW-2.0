@@ -104,7 +104,7 @@ const LOCAL_NOVEL_STORAGE_KEYS = [
   'vf_novel_workspace_v1',
   'vf_novel_workspace',
 ];
-const ACTIVE_LOCAL_NOVEL_STORAGE_KEY = LOCAL_NOVEL_STORAGE_KEYS[0];
+const ACTIVE_LOCAL_NOVEL_STORAGE_KEY = LOCAL_NOVEL_STORAGE_KEYS[0] ?? 'vf_novel_workspace_v3';
 
 const chapterSort = (a: NovelChapter, b: NovelChapter): number => a.index - b.index || a.name.localeCompare(b.name);
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
@@ -557,6 +557,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       if (current.length === 0) return;
       const first = current[0];
       const last = current[current.length - 1];
+      if (!first || !last) return;
       const active = document.activeElement as HTMLElement | null;
       if (!event.shiftKey && active === last) {
         event.preventDefault();
@@ -864,6 +865,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     for (let index = 0; index < queue.length; index += 1) {
       if (batchCancelRef.current) break;
       const chapter = queue[index];
+      if (!chapter) continue;
       setBatchMessage(`Adapting ${index + 1}/${queue.length}: ${chapter.title}`);
       try {
         await adaptSingleChapter(selectedProjectId, chapter.id);
@@ -929,7 +931,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
 
   const handleRenameNovel = (project: NovelProject): void => {
     const nextName = window.prompt('Rename novel', project.name);
-    const safeName = sanitizeLabel(nextName, '');
+    const safeName = sanitizeLabel(nextName ?? '', '');
     if (!safeName || safeName === project.name) return;
     const now = new Date().toISOString();
     setProjects((previous) => previous.map((item) => item.id === project.id ? { ...item, name: safeName, modifiedTime: now } : item));
@@ -1173,6 +1175,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       const selectedIndex = Number(selectedIndexRaw) - 1;
       if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= driveProjects.length) return;
       const driveProject = driveProjects[selectedIndex];
+      if (!driveProject) return;
       const driveChapters = (await listChapters(driveToken, driveProject.id)).sort(chapterSort);
       const localProjectId = createLocalId('project');
       const now = new Date().toISOString();

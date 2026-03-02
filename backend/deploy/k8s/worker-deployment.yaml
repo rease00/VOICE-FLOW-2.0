@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voiceflow-worker
+  namespace: voiceflow
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: voiceflow-worker
+  template:
+    metadata:
+      labels:
+        app: voiceflow-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/voiceflow/backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "app.py"]
+          env:
+            - name: VF_TTS_QUEUE_ENABLED
+              value: "1"
+            - name: VF_TTS_QUEUE_SYNC_WAIT_MS
+              value: "0"
+            - name: VF_AUTH_ENFORCE
+              value: "0"
+          envFrom:
+            - configMapRef:
+                name: voiceflow-backend-config
+            - secretRef:
+                name: voiceflow-redis
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: voiceflow-worker-hpa
+  namespace: voiceflow
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: voiceflow-worker
+  minReplicas: 4
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+

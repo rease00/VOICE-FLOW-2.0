@@ -58,7 +58,7 @@ const base64ToBytes = (raw: string): Uint8Array => {
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = '';
   for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
+    binary += String.fromCharCode(bytes[index] ?? 0);
   }
   return globalThis.btoa(binary);
 };
@@ -67,7 +67,7 @@ const timingSafeEqual = (left: Uint8Array, right: Uint8Array): boolean => {
   if (left.length !== right.length) return false;
   let diff = 0;
   for (let index = 0; index < left.length; index += 1) {
-    diff |= left[index] ^ right[index];
+    diff |= (left[index] ?? 0) ^ (right[index] ?? 0);
   }
   return diff === 0;
 };

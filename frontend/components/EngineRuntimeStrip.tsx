@@ -3,7 +3,7 @@ import { GenerationSettings } from '../types';
 import { getEngineDisplayName } from '../services/engineDisplay';
 import { EngineLogo } from './EngineLogo';
 
-type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured';
+type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
 
 interface EngineRuntimeStatus {
   state: EngineRuntimeState;
@@ -23,6 +23,7 @@ const getRuntimeStateLabel = (state: EngineRuntimeState): string => {
   if (state === 'online') return 'Online';
   if (state === 'offline') return 'Offline';
   if (state === 'starting') return 'Starting';
+  if (state === 'standby') return 'Standby';
   if (state === 'not_configured') return 'Not Set';
   return 'Checking';
 };
@@ -30,7 +31,7 @@ const getRuntimeStateLabel = (state: EngineRuntimeState): string => {
 const getIndicatorTone = (state: EngineRuntimeState): 'green' | 'orange' | 'red' => {
   if (state === 'online') return 'green';
   if (state === 'offline' || state === 'not_configured') return 'red';
-  if (state === 'starting' || state === 'checking') return 'orange';
+  if (state === 'starting' || state === 'checking' || state === 'standby') return 'orange';
   return 'red';
 };
 

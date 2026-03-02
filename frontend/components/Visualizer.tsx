@@ -87,7 +87,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
 
       for (let i = 0; i < bufferLength; i++) {
         // Smooth out bar height
-        barHeight = dataArray[i] / 2; // Scale down slightly
+        barHeight = (dataArray[i] ?? 0) / 2; // Scale down slightly
         
         // Draw rounded bar
         ctx.fillStyle = gradient;

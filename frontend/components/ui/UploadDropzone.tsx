@@ -39,7 +39,14 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     if (!list || disabled) return;
     const incoming = Array.from(list);
     if (incoming.length === 0) return;
-    onFilesSelected(multiple ? incoming : [incoming[0]]);
+    if (multiple) {
+      onFilesSelected(incoming);
+      return;
+    }
+    const first = incoming[0];
+    if (first) {
+      onFilesSelected([first]);
+    }
   };
 
   return (
@@ -87,7 +94,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         <div className="space-y-1">
           <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-bold text-indigo-700 shadow-sm">
             <FileAudio size={14} />
-            {selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files selected`}
+            {selectedFiles.length === 1 ? selectedFiles[0]?.name || 'Selected file' : `${selectedFiles.length} files selected`}
           </div>
           {selectedFiles.length > 1 && (
             <div className="mx-auto max-h-20 max-w-sm overflow-y-auto text-left text-[11px] text-gray-600 custom-scrollbar">
@@ -112,4 +119,3 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     </div>
   );
 };
-

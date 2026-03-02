@@ -3,6 +3,7 @@ import { Loader2, RefreshCw, Shield, Ticket, Users, Key } from 'lucide-react';
 import { useAdminCoupons } from '../src/features/admin/hooks/useAdminCoupons';
 import { useAdminUsers } from '../src/features/admin/hooks/useAdminUsers';
 import {
+  AdminUserSummary,
   DailyUsageResetStatusPayload,
   DailyUsageResetSummary,
   fetchDailyUsageResetStatus,
@@ -21,6 +22,8 @@ interface AdminPanelProps {
 }
 
 const planOptions = ['Free', 'Pro', 'Plus'] as const;
+type AdminUserPatch = Parameters<ReturnType<typeof useAdminUsers>['patchAdminUser']>[1];
+type AdminUserDraft = Partial<Pick<AdminUserPatch, 'plan' | 'disabled' | 'paidVfDelta' | 'vffDelta'>>;
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast, onRefreshEntitlements }) => {
   const {
@@ -41,6 +44,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   } = useAdminCoupons({ baseUrl: mediaBackendUrl });
   const [search, setSearch] = useState('');
   const [isSaving, setIsSaving] = useState<string>('');
+  const [userDrafts, setUserDrafts] = useState<Record<string, AdminUserDraft>>({});
   const [newCouponCode, setNewCouponCode] = useState('');
   const [newCouponCredit, setNewCouponCredit] = useState('1000');
   const [newCouponMax, setNewCouponMax] = useState('100');
@@ -173,7 +177,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
           code,
           creditVf,
           maxRedemptions: Math.max(0, Math.floor(Number(newCouponMax) || 0)),
-          expiresAt: newCouponExpiry || undefined,
+          ...(newCouponExpiry ? { expiresAt: newCouponExpiry } : {}),
           active: true,
         }
       );
@@ -181,6 +185,98 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       onToast('Coupon created.', 'success');
       await reloadCouponsSafely();
     });
+  };
+
+  const setUserDraft = (uid: string, updater: (previous: AdminUserDraft) => AdminUserDraft) => {
+    setUserDrafts((previous) => {
+      const nextDraft = updater(previous[uid] || {});
+      const normalized: AdminUserDraft = {};
+      if (nextDraft.plan) normalized.plan = nextDraft.plan;
+      if (typeof nextDraft.disabled === 'boolean') normalized.disabled = nextDraft.disabled;
+      const paidDelta = Math.trunc(Number(nextDraft.paidVfDelta || 0));
+      const vffDelta = Math.trunc(Number(nextDraft.vffDelta || 0));
+      if (paidDelta !== 0) normalized.paidVfDelta = paidDelta;
+      if (vffDelta !== 0) normalized.vffDelta = vffDelta;
+      if (Object.keys(normalized).length === 0) {
+        if (!previous[uid]) return previous;
+        const next = { ...previous };
+        delete next[uid];
+        return next;
+      }
+      return { ...previous, [uid]: normalized };
+    });
+  };
+
+  const getPendingUserPatch = (row: AdminUserSummary): AdminUserPatch | null => {
+    const draft = userDrafts[row.uid];
+    if (!draft) return null;
+    const patch: AdminUserPatch = {};
+    if (draft.plan && draft.plan !== row.plan) patch.plan = draft.plan;
+    if (typeof draft.disabled === 'boolean' && draft.disabled !== row.disabled) patch.disabled = draft.disabled;
+    const paidDelta = Math.trunc(Number(draft.paidVfDelta || 0));
+    const vffDelta = Math.trunc(Number(draft.vffDelta || 0));
+    if (paidDelta !== 0) patch.paidVfDelta = paidDelta;
+    if (vffDelta !== 0) patch.vffDelta = vffDelta;
+    return Object.keys(patch).length > 0 ? patch : null;
+  };
+
+  const dirtyUserUpdates = sortedUsers.reduce<Array<{ uid: string; patch: AdminUserPatch }>>((acc, row) => {
+    const patch = getPendingUserPatch(row);
+    if (patch) acc.push({ uid: row.uid, patch });
+    return acc;
+  }, []);
+
+  const removeUserDrafts = (uids: string[]) => {
+    setUserDrafts((previous) => {
+      let changed = false;
+      const next = { ...previous };
+      for (const uid of uids) {
+        if (uid in next) {
+          delete next[uid];
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  };
+
+  const handleSaveUser = async (row: AdminUserSummary) => {
+    const patch = getPendingUserPatch(row);
+    if (!patch) {
+      onToast('No changes to save for this user.', 'info');
+      return;
+    }
+    try {
+      await withSaving(`save_user_${row.uid}`, async () => {
+        await patchAdminUser(row.uid, patch);
+        removeUserDrafts([row.uid]);
+        await reloadUsersSafely(search);
+        await onRefreshEntitlements();
+        onToast(`Saved ${row.email || row.uid}.`, 'success');
+      });
+    } catch (error: any) {
+      onToast(error?.message || 'Failed to save user.', 'error');
+    }
+  };
+
+  const handleSaveAllUsers = async () => {
+    if (dirtyUserUpdates.length === 0) {
+      onToast('No user changes to save.', 'info');
+      return;
+    }
+    try {
+      await withSaving('save_all_users', async () => {
+        for (const update of dirtyUserUpdates) {
+          await patchAdminUser(update.uid, update.patch);
+        }
+        removeUserDrafts(dirtyUserUpdates.map((update) => update.uid));
+        await reloadUsersSafely(search);
+        await onRefreshEntitlements();
+        onToast(`Saved ${dirtyUserUpdates.length} user${dirtyUserUpdates.length === 1 ? '' : 's'}.`, 'success');
+      });
+    } catch (error: any) {
+      onToast(error?.message || 'Failed to save all users.', 'error');
+    }
   };
 
   const backendPool = geminiPoolStatus?.backend?.pool || {};
@@ -363,6 +459,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
             >
               Search
             </button>
+            <button
+              onClick={() => {
+                void handleSaveAllUsers();
+              }}
+              disabled={dirtyUserUpdates.length === 0 || Boolean(isSaving)}
+              className="h-9 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSaving === 'save_all_users' ? 'Saving...' : `Save all${dirtyUserUpdates.length ? ` (${dirtyUserUpdates.length})` : ''}`}
+            </button>
           </div>
         </div>
         <div className="max-h-[28rem] overflow-auto rounded-xl border border-gray-100">
@@ -395,125 +500,168 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                 </tr>
               )}
               {!isLoadingUsers &&
-                sortedUsers.map((row) => (
-                  <tr key={row.uid} className="border-t border-gray-100 align-top">
-                    <td className="px-2 py-2">
-                      <div className="font-semibold text-gray-800">{row.email || row.uid}</div>
-                      <div className="text-[11px] text-gray-500">{row.uid}</div>
-                    </td>
-                    <td className="px-2 py-2">
-                      <select
-                        className="h-8 rounded-md border border-gray-200 px-2 text-xs"
-                        value={row.plan}
-                        onChange={(event) => {
-                          const nextPlan = event.target.value;
-                          void withSaving(`plan_${row.uid}`, async () => {
-                              await patchAdminUser(row.uid, { plan: nextPlan });
-                              onToast(`Plan updated to ${nextPlan}.`, 'success');
-                              await reloadUsersSafely(search);
-                              await onRefreshEntitlements();
-                            });
-                        }}
-                      >
-                        {planOptions.map((plan) => (
-                          <option key={plan} value={plan}>
-                            {plan}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="px-2 py-2">
-                      <div className="text-[11px] text-gray-700">Paid: {row.wallet.paidVfBalance.toLocaleString()}</div>
-                      <div className="text-[11px] text-gray-700">VFF: {row.wallet.vffBalance.toLocaleString()}</div>
-                      <div className="mt-1 flex items-center gap-1">
-                        <button
-                          className="rounded border border-emerald-200 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
-                          onClick={() => {
-                            void withSaving(`add_paid_${row.uid}`, async () => {
-                              await patchAdminUser(row.uid, { paidVfDelta: 1000 });
-                              await reloadUsersSafely(search);
+                sortedUsers.map((row) => {
+                  const rowDraft = userDrafts[row.uid] || {};
+                  const pendingPatch = getPendingUserPatch(row);
+                  const isRowDirty = Boolean(pendingPatch);
+                  const effectivePlan = rowDraft.plan || row.plan;
+                  const effectiveDisabled = typeof rowDraft.disabled === 'boolean' ? rowDraft.disabled : row.disabled;
+                  const paidDelta = Math.trunc(Number(rowDraft.paidVfDelta || 0));
+                  const vffDelta = Math.trunc(Number(rowDraft.vffDelta || 0));
+                  const effectivePaidBalance = row.wallet.paidVfBalance + paidDelta;
+                  const effectiveVffBalance = row.wallet.vffBalance + vffDelta;
+                  const isActiveUser = !effectiveDisabled;
+                  const statusBadgeTone = isActiveUser
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-red-200 bg-red-50 text-red-700';
+                  const statusDotTone = isActiveUser ? 'bg-emerald-500' : 'bg-red-500';
+                  const statusBarTone = isActiveUser ? 'border-emerald-300 bg-emerald-400/80' : 'border-red-300 bg-red-400/80';
+                  const isRowSaving = isSaving.includes(row.uid) || (isSaving === 'save_all_users' && isRowDirty);
+                  return (
+                    <tr key={row.uid} className="border-t border-gray-100 align-top">
+                      <td className="px-2 py-2">
+                        <div className="font-semibold text-gray-800">Email: {row.email || '-'}</div>
+                        <div className="text-[11px] text-gray-500">UID: {row.uid}</div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <select
+                          className="h-8 rounded-md border border-gray-200 px-2 text-xs"
+                          value={effectivePlan}
+                          onChange={(event) => {
+                            const nextPlan = event.target.value;
+                            setUserDraft(row.uid, (previous) => {
+                              const { plan, ...rest } = previous;
+                              return nextPlan === row.plan ? rest : { ...rest, plan: nextPlan };
                             });
                           }}
                         >
-                          +1k paid
-                        </button>
-                        <button
-                          className="rounded border border-indigo-200 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700"
-                          onClick={() => {
-                            void withSaving(`add_vff_${row.uid}`, async () => {
-                              await patchAdminUser(row.uid, { vffDelta: 1000 });
-                              await reloadUsersSafely(search);
-                            });
-                          }}
-                        >
-                          +1k vff
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-2 py-2">
-                      <div className="text-[11px] text-gray-700">{row.disabled ? 'Locked' : 'Active'}</div>
-                      <div className="text-[11px] text-gray-500">{row.admin ? 'Admin' : 'User'}</div>
-                    </td>
-                    <td className="px-2 py-2">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <button
-                          onClick={() => {
-                            void withSaving(`toggle_lock_${row.uid}`, async () => {
-                              await patchAdminUser(row.uid, { disabled: !row.disabled });
-                              await reloadUsersSafely(search);
-                            });
-                          }}
-                          className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700"
-                        >
-                          {row.disabled ? 'Unlock' : 'Lock'}
-                        </button>
-                        <button
-                          onClick={() => {
-                            const password = window.prompt('Set new password (min 8 chars):');
-                            if (!password) return;
-                            void withSaving(`password_${row.uid}`, async () => {
-                              await resetAdminUserPassword(row.uid, password);
-                              onToast('Password reset.', 'success');
-                            });
-                          }}
-                          className="rounded border border-blue-200 px-2 py-1 text-[10px] font-semibold text-blue-700"
-                        >
-                          Reset pass
-                        </button>
-                        <button
-                          onClick={() => {
-                            void withSaving(`revoke_${row.uid}`, async () => {
-                              await revokeAdminUserSessions(row.uid);
-                              onToast('Sessions revoked.', 'success');
-                            });
-                          }}
-                          className="rounded border border-amber-200 px-2 py-1 text-[10px] font-semibold text-amber-700"
-                        >
-                          Revoke
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (!window.confirm(`Delete ${row.email || row.uid}? This cannot be undone.`)) return;
-                            void withSaving(`delete_${row.uid}`, async () => {
-                              await deleteAdminUser(row.uid);
-                              onToast('User deleted.', 'success');
-                              await reloadUsersSafely(search);
-                            });
-                          }}
-                          className="rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                      {isSaving && isSaving.includes(row.uid) && (
-                        <div className="mt-1 inline-flex items-center gap-1 text-[10px] text-indigo-600">
-                          <Loader2 size={11} className="animate-spin" />
-                          Saving
+                          {planOptions.map((plan) => (
+                            <option key={plan} value={plan}>
+                              {plan}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="text-[11px] text-gray-700">Paid VF: {effectivePaidBalance.toLocaleString()}</div>
+                        <div className="text-[11px] text-gray-700">Free VFF: {effectiveVffBalance.toLocaleString()}</div>
+                        <div className="mt-1 flex items-center gap-1">
+                          <button
+                            className="rounded border border-emerald-200 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
+                            onClick={() => {
+                              setUserDraft(row.uid, (previous) => ({
+                                ...previous,
+                                paidVfDelta: Number(previous.paidVfDelta || 0) + 1000,
+                              }));
+                            }}
+                          >
+                            +1k paid
+                          </button>
+                          <button
+                            className="rounded border border-indigo-200 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700"
+                            onClick={() => {
+                              setUserDraft(row.uid, (previous) => ({
+                                ...previous,
+                                vffDelta: Number(previous.vffDelta || 0) + 1000,
+                              }));
+                            }}
+                          >
+                            +1k VFF
+                          </button>
                         </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        {(paidDelta !== 0 || vffDelta !== 0) && (
+                          <div className="mt-1 text-[10px] text-amber-700">
+                            Pending: {paidDelta !== 0 ? `${paidDelta > 0 ? '+' : ''}${paidDelta.toLocaleString()} paid` : ''}
+                            {paidDelta !== 0 && vffDelta !== 0 ? ', ' : ''}
+                            {vffDelta !== 0 ? `${vffDelta > 0 ? '+' : ''}${vffDelta.toLocaleString()} VFF` : ''}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusBadgeTone}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${statusDotTone}`} />
+                          {isActiveUser ? 'Active' : 'Inactive'}
+                        </div>
+                        <div className={`mt-1 h-1.5 w-16 rounded-full border ${statusBarTone}`} />
+                        <div className="mt-1 text-[11px] text-gray-500">{row.admin ? 'Admin' : 'User'}</div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <button
+                            onClick={() => {
+                              const nextDisabled = !effectiveDisabled;
+                              setUserDraft(row.uid, (previous) => {
+                                const { disabled, ...rest } = previous;
+                                return nextDisabled === row.disabled ? rest : { ...rest, disabled: nextDisabled };
+                              });
+                            }}
+                            className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700"
+                          >
+                            {effectiveDisabled ? 'Unlock' : 'Lock'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              void handleSaveUser(row);
+                            }}
+                            disabled={!isRowDirty || Boolean(isSaving)}
+                            className="rounded border border-emerald-200 px-2 py-1 text-[10px] font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => {
+                              const password = window.prompt('Set new password (min 8 chars):');
+                              if (!password) return;
+                              void withSaving(`password_${row.uid}`, async () => {
+                                await resetAdminUserPassword(row.uid, password);
+                                onToast('Password reset.', 'success');
+                              });
+                            }}
+                            className="rounded border border-blue-200 px-2 py-1 text-[10px] font-semibold text-blue-700"
+                          >
+                            Reset pass
+                          </button>
+                          <button
+                            onClick={() => {
+                              void withSaving(`revoke_${row.uid}`, async () => {
+                                await revokeAdminUserSessions(row.uid);
+                                onToast('Sessions revoked.', 'success');
+                              });
+                            }}
+                            className="rounded border border-amber-200 px-2 py-1 text-[10px] font-semibold text-amber-700"
+                          >
+                            Revoke
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (!window.confirm(`Delete ${row.email || row.uid}? This cannot be undone.`)) return;
+                              void withSaving(`delete_${row.uid}`, async () => {
+                                await deleteAdminUser(row.uid);
+                                onToast('User deleted.', 'success');
+                                removeUserDrafts([row.uid]);
+                                await reloadUsersSafely(search);
+                              });
+                            }}
+                            className="rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        {isRowSaving && (
+                          <div className="mt-1 inline-flex items-center gap-1 text-[10px] text-indigo-600">
+                            <Loader2 size={11} className="animate-spin" />
+                            Saving
+                          </div>
+                        )}
+                        {!isRowSaving && isRowDirty && (
+                          <div className="mt-1 text-[10px] text-amber-700">
+                            Unsaved changes
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>

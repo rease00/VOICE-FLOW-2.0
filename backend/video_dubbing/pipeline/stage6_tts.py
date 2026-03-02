@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from io import BytesIO
 from typing import Any, Callable
 from urllib.parse import unquote
@@ -235,8 +236,10 @@ def _try_grouped_gemini(
     }
 
     try:
+        request_started_ms = int(time.time() * 1000)
         response = requests.post(endpoint, json=payload, timeout=int(cfg.gemini_pair_group_timeout_sec))
         response.raise_for_status()
+        request_elapsed_ms = max(0, int(time.time() * 1000) - request_started_ms)
         body = response.json()
         if not isinstance(body, dict):
             raise RuntimeError("invalid_grouped_response")
@@ -256,9 +259,32 @@ def _try_grouped_gemini(
                 continue
             chunk_by_index[line_index] = item
 
+        expected_indexes = [int(item.get("lineIndex", -1)) for item in list(plan["line_map"]) if int(item.get("lineIndex", -1)) >= 0]
+        actual_indexes = sorted(chunk_by_index.keys())
+        missing_indexes = [index for index in expected_indexes if index not in chunk_by_index]
+        unexpected_indexes = [index for index in actual_indexes if index not in set(expected_indexes)]
+        if missing_indexes or unexpected_indexes:
+            mismatch_detail = {
+                "expectedCount": len(expected_indexes),
+                "actualCount": len(actual_indexes),
+                "missingLineIndexes": missing_indexes[:20],
+                "unexpectedLineIndexes": unexpected_indexes[:20],
+            }
+            raise RuntimeError(f"grouped_line_map_mismatch:{json.dumps(mismatch_detail, ensure_ascii=True)}")
+
         generated: list[dict[str, Any]] = []
         local_requests: list[dict[str, Any]] = []
         diagnostics = body.get("diagnostics") if isinstance(body.get("diagnostics"), dict) else _decode_runtime_diagnostics(response)
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        diagnostics = {
+            **diagnostics,
+            "requestMs": request_elapsed_ms,
+            "expectedLineCount": len(expected_indexes),
+            "chunkCount": len(actual_indexes),
+            "groupCount": len(list(plan["groups"])),
+            "mode": "studio_pair_groups",
+        }
         for line in list(plan["line_map"]):
             line_index = int(line.get("lineIndex", -1))
             if line_index < 0:
@@ -307,7 +333,7 @@ def _try_grouped_gemini(
         tts_requests.extend(local_requests)
         log(
             "stage6 grouped Gemini synthesis completed "
-            f"(lines={len(plan['line_map'])}, groups={len(plan['groups'])}, concurrency={cfg.gemini_pair_group_max_concurrency})"
+            f"(lines={len(plan['line_map'])}, groups={len(plan['groups'])}, concurrency={cfg.gemini_pair_group_max_concurrency}, requestMs={request_elapsed_ms})"
         )
         return generated
     except Exception as exc:

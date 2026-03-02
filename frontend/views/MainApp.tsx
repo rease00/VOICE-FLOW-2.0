@@ -13,13 +13,13 @@ import {
 import { Button } from '../components/Button';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
 import { GenerationSettings, AppScreen, ClonedVoice, DubSegment, CharacterProfile, VoiceOption, StudioEditorMode } from '../types';
-import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, autoCorrectText, proofreadScript, DirectorOptions, parseScriptToSegments, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, guessGenderFromName } from '../services/geminiService';
+import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, autoCorrectText, proofreadScript, DirectorOptions, parseScriptToSegments, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT, TTS_GATEWAY_AUDIO_CHUNK_EVENT, guessGenderFromName } from '../services/geminiService';
 import { buildDubAlignmentReport, extractAndSeparateDubbingStems, mixFinalDub } from '../services/dubbingService';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { useUser } from '../contexts/UserContext';
 import { AdModal } from '../components/AdModal';
 import { applyStudioAudioMix } from '../services/studioMixService';
-import { checkMediaBackendHealth, convertRvcCover, listRvcModels, loadRvcModel, muxDubbedVideo, resolveMediaBackendUrl, switchTtsEngineRuntime, tailRuntimeLog, transcribeVideoWithBackend } from '../services/mediaBackendService';
+import { checkMediaBackendHealth, convertRvcCover, listRvcModels, loadRvcModel, muxDubbedVideo, resolveMediaBackendUrl, switchTtsEngineRuntime, transcribeVideoWithBackend } from '../services/mediaBackendService';
 import { fetchEngineRuntimeVoices, getStaticVoiceFallback } from '../services/ttsVoiceRegistryService';
 import { normalizeEmotionTag } from '../services/emotionTagRules';
 import { getEngineDisplayName } from '../services/engineDisplay';
@@ -37,8 +37,13 @@ import { buildWorkspaceTabs, WorkspaceTab as Tab } from '../src/features/workspa
 import { AdminTabContent } from '../src/features/admin/components/AdminTabContent';
 import { NovelTabContent } from '../src/features/novel/components/NovelTabContent';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
-import { fetchRuntimeJson } from '../services/runtimeProbeService';
+import { fetchTtsEnginesStatus } from '../src/shared/api/gatewayClient';
 import { blobUrlToFile } from '../services/blobFileService';
+import {
+  normalizeAssistantProviderControlsEnabled,
+  normalizePreferUserGeminiKey,
+  resolveAssistantProviderRouting,
+} from '../src/shared/settings/assistantProvider';
 
 interface MainAppProps {
   setScreen: (screen: AppScreen) => void;
@@ -62,6 +67,38 @@ interface RuntimeDiagnosticsEventDetail {
   qualityGuardRecoveries?: number;
   splitChunks?: number;
   recoveryUsed?: boolean;
+}
+
+interface GatewayJobProgressEventDetail {
+  jobId?: string;
+  status?: string;
+  engine?: string;
+  queueAgeMs?: number;
+  queueDepth?: number;
+  stage?: string;
+  progressPct?: number;
+}
+
+interface GatewayAudioChunkEventDetail {
+  jobId?: string;
+  index?: number;
+  engine?: string;
+  contentType?: string;
+  durationMs?: number;
+  textChars?: number;
+  traceId?: string;
+  audioBase64?: string;
+}
+
+interface LiveAudioChunkItem {
+  jobId: string;
+  index: number;
+  engine: string;
+  contentType: string;
+  durationMs: number;
+  textChars: number;
+  traceId: string;
+  audioBase64: string;
 }
 
 interface CachedDubbingStems {
@@ -101,9 +138,11 @@ const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]>
   GEM: [],
   KOKORO: [],
 };
+const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
+const DEFAULT_KOKORO_VOICE_ID = KOKORO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
 
 const DEFAULT_SETTINGS: GenerationSettings = {
-  voiceId: VOICES[0].id,
+  voiceId: DEFAULT_GEM_VOICE_ID,
   speed: 1.0,
   pitch: 'Medium',
   language: 'Auto',
@@ -113,6 +152,8 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   emotionStrength: 0.35,
   engine: 'GEM',
   helperProvider: 'GEMINI',
+  assistantProviderControlsEnabled: true,
+  preferUserGeminiKey: false,
   perplexityApiKey: '',
   localLlmUrl: 'http://localhost:5000',
   geminiApiKey: '',
@@ -141,8 +182,8 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
   const legacyEngine = typeof value.engine === 'string' ? value.engine : DEFAULT_SETTINGS.engine;
   const engine = (legacyEngine === 'GEM' || legacyEngine === 'KOKORO') ? legacyEngine : 'GEM';
   const defaultVoice = engine === 'KOKORO'
-    ? KOKORO_VOICES[0].id
-    : VOICES[0].id;
+    ? DEFAULT_KOKORO_VOICE_ID
+    : DEFAULT_GEM_VOICE_ID;
 
   const normalized: GenerationSettings = {
     ...DEFAULT_SETTINGS,
@@ -154,6 +195,14 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     language: typeof value.language === 'string' && value.language.trim() ? value.language : DEFAULT_SETTINGS.language,
     emotion: normalizeEmotionTag(String(value.emotion || '')) || (typeof value.emotion === 'string' && value.emotion.trim() ? value.emotion : DEFAULT_SETTINGS.emotion),
     helperProvider: value.helperProvider === 'GEMINI' || value.helperProvider === 'PERPLEXITY' || value.helperProvider === 'LOCAL' ? value.helperProvider : DEFAULT_SETTINGS.helperProvider,
+    assistantProviderControlsEnabled: normalizeAssistantProviderControlsEnabled(
+      value.assistantProviderControlsEnabled,
+      DEFAULT_SETTINGS.assistantProviderControlsEnabled !== false,
+    ),
+    preferUserGeminiKey: normalizePreferUserGeminiKey(
+      value.preferUserGeminiKey,
+      DEFAULT_SETTINGS.preferUserGeminiKey === true,
+    ),
     geminiApiKey: typeof value.geminiApiKey === 'string' ? value.geminiApiKey.trim() : DEFAULT_SETTINGS.geminiApiKey,
     perplexityApiKey: typeof value.perplexityApiKey === 'string' ? value.perplexityApiKey.trim() : DEFAULT_SETTINGS.perplexityApiKey,
     localLlmUrl: typeof value.localLlmUrl === 'string' && value.localLlmUrl.trim() ? value.localLlmUrl.trim() : DEFAULT_SETTINGS.localLlmUrl,
@@ -181,8 +230,8 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
       : DEFAULT_SETTINGS.mediaBackendUrl,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
     rvcModel: typeof value.rvcModel === 'string' ? value.rvcModel : DEFAULT_SETTINGS.rvcModel,
-    geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl),
-    kokoroTtsServiceUrl: normalizeServiceSetting(value.kokoroTtsServiceUrl, DEFAULT_SETTINGS.kokoroTtsServiceUrl),
+    geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.GEM),
+    kokoroTtsServiceUrl: normalizeServiceSetting(value.kokoroTtsServiceUrl, DEFAULT_SETTINGS.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO),
   };
 
   const validVoiceIds = new Set([
@@ -372,148 +421,6 @@ const ResourceMonitor = ({ isWorking }: { isWorking: boolean }) => {
   );
 };
 
-// --- Generation Widget (Real Backend Logs) ---
-interface RuntimeLogEntry {
-    id: string;
-    source: string;
-    line: string;
-    timestamp: number;
-}
-
-const RUNTIME_SOURCE_LABELS: Record<string, string> = {
-    'media-backend': 'Media Backend',
-    'gemini-runtime': 'Plus Runtime',
-    'kokoro-runtime': 'Basic Runtime',
-    system: 'System',
-};
-
-const GenerationWidget = ({ 
-    progress, 
-    timeLeft, 
-    stage, 
-    logs,
-    onCancel 
-}: { 
-    progress: number, 
-    timeLeft: number, 
-    stage: string,
-    logs: RuntimeLogEntry[],
-    onCancel?: () => void 
-}) => {
-    const [showDetails, setShowDetails] = useState(true);
-    const clampedProgress = Math.max(0, Math.min(100, progress));
-    const stageText = stage?.trim() || 'Waiting for backend events...';
-    const logViewportRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        const node = logViewportRef.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-    }, [logs, showDetails]);
-
-    return (
-        <div className="fixed bottom-6 left-6 z-[60] w-[22rem] bg-[#0f172a] border border-indigo-500/30 rounded-2xl shadow-2xl shadow-indigo-500/20 p-4 overflow-hidden animate-in slide-in-from-bottom-10 fade-in group">
-            <div className="absolute top-[-50%] left-[-50%] w-[200%] h-[200%] bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/10 via-transparent to-transparent animate-spin-slow pointer-events-none"></div>
-            
-            <div className="relative z-10">
-                <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                         <div className="w-8 h-8 relative">
-                            <div className="absolute inset-0 rounded-full border-2 border-indigo-500/20"></div>
-                            <div className="absolute inset-0 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"></div>
-                            <div className="absolute inset-0 flex items-center justify-center">
-                                <Cpu className="text-white animate-pulse" size={14} />
-                            </div>
-                        </div>
-                        <div>
-                            <h3 className="text-sm font-bold text-white">Generating Audio</h3>
-                            <p className="text-[10px] text-indigo-300 font-medium">{stageText}</p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                        <button
-                            onClick={() => setShowDetails((prev) => !prev)}
-                            className="px-2 py-1 rounded-full bg-white/5 hover:bg-white/10 text-[10px] font-semibold text-slate-300 transition-colors border border-transparent hover:border-white/10 flex items-center gap-1"
-                            title="Toggle backend logs"
-                            aria-expanded={showDetails}
-                        >
-                            Logs {showDetails ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                        </button>
-                        {onCancel && (
-                            <button 
-                                onClick={onCancel}
-                                className="p-1.5 rounded-full bg-white/5 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors border border-transparent hover:border-red-500/30"
-                                title="Cancel Generation"
-                            >
-                                <X size={14} />
-                            </button>
-                        )}
-                    </div>
-                </div>
-
-                <div className="w-full bg-gray-800 rounded-full h-1.5 mb-3 overflow-hidden border border-gray-700">
-                    <div 
-                        className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 transition-all duration-300 ease-out relative"
-                        style={{ width: `${clampedProgress}%` }}
-                    >
-                         <div className="absolute inset-0 bg-white/20 w-full h-full animate-[shimmer_2s_infinite]"></div>
-                    </div>
-                </div>
-
-                <div className="flex items-center justify-between w-full text-[10px] font-mono text-gray-400 bg-gray-900/50 p-2 rounded-lg border border-gray-800">
-                    <span className="text-white font-bold flex items-center gap-1">
-                        <Timer size={10} /> {timeLeft > 0 ? `${timeLeft}s` : 'Live'}
-                    </span>
-                    <span className="text-white font-bold">{Math.round(clampedProgress)}%</span>
-                </div>
-
-                {showDetails && (
-                    <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 p-2.5">
-                        <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">
-                            <span>Backend Live</span>
-                            <span>{logs.length} lines</span>
-                        </div>
-                        <div className="mb-2 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-2 py-1.5">
-                            <div className="text-[9px] uppercase tracking-[0.16em] text-indigo-300/90">Current Stage</div>
-                            <div className="mt-0.5 text-[11px] font-semibold text-indigo-100">{stageText}</div>
-                        </div>
-                        <div
-                            ref={logViewportRef}
-                            className="max-h-64 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/70 p-2 font-mono text-[10px] leading-relaxed text-slate-200 custom-scrollbar"
-                        >
-                            {logs.length === 0 ? (
-                                <div className="text-slate-500">Waiting for backend logs...</div>
-                            ) : (
-                                logs.map((entry) => {
-                                    const sourceLabel = RUNTIME_SOURCE_LABELS[entry.source] || entry.source;
-                                    const sourceTone = entry.source === 'system'
-                                        ? 'text-amber-300'
-                                        : entry.source === 'media-backend'
-                                            ? 'text-cyan-300'
-                                            : entry.source === 'kokoro-runtime'
-                                                ? 'text-emerald-300'
-                                                : 'text-indigo-300';
-                                    return (
-                                        <div key={entry.id} className="pb-1 mb-1 border-b border-slate-800/70 last:border-b-0 last:pb-0 last:mb-0">
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-slate-500">
-                                                    {new Date(entry.timestamp).toLocaleTimeString()}
-                                                </span>
-                                                <span className={`font-semibold ${sourceTone}`}>[{sourceLabel}]</span>
-                                            </div>
-                                            <div className="text-slate-100 break-words">{entry.line}</div>
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-};
-
 export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const {
     stats,
@@ -561,16 +468,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [progress, setProgress] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
   const [processingStage, setProcessingStage] = useState('');
-  const [liveRuntimeLogs, setLiveRuntimeLogs] = useState<RuntimeLogEntry[]>([]);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
+  const [liveAudioChunks, setLiveAudioChunks] = useState<LiveAudioChunkItem[]>([]);
   
   // Abort Controller for Cancellation
   const generationAbortController = useRef<AbortController | null>(null);
-  const liveLogPollRef = useRef<any>(null);
-  const liveLogCursorsRef = useRef<Record<string, number>>({});
-  const liveLogSessionRef = useRef<number>(0);
-  const liveLogErrorRef = useRef<Record<string, number>>({});
   const seenRuntimeDiagnosticsTracesRef = useRef<Set<string>>(new Set());
+  const activeGatewayJobIdRef = useRef<string>('');
+  const seenLiveChunkKeysRef = useRef<Set<string>>(new Set());
   
   // Modals & Overlays
   const [showSettings, setShowSettings] = useState(false);
@@ -580,6 +485,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [isBuyingTokenPack, setIsBuyingTokenPack] = useState(false);
   const [isRefreshingHistory, setIsRefreshingHistory] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [expandedHistoryItemKey, setExpandedHistoryItemKey] = useState<string | null>(null);
   const [toast, setToast] = useState<{msg: string, type: 'success' | 'error' | 'info'} | null>(null);
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => {
     const saved = readStorageString(STORAGE_KEYS.uiTheme);
@@ -668,7 +574,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [characterModalOpen, setCharacterModalOpen] = useState(false);
   const [editingChar, setEditingChar] = useState<CharacterProfile | null>(null);
   const [charForm, setCharForm] = useState<CharacterProfile>({
-      id: '', name: '', voiceId: VOICES[0].id, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
+      id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -676,7 +582,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const dubbingStemsRef = useRef<CachedDubbingStems | null>(null);
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
-  const studioGenerateAnchorRef = useRef<HTMLDivElement>(null);
 
   // --- PREVIEW STATE ---
   const [previewState, setPreviewState] = useState<{ id: string, status: 'loading' | 'playing' } | null>(null);
@@ -690,8 +595,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<GenerationSettings['engine'], VoiceOption[]>>(
     EMPTY_RUNTIME_CATALOG
   );
-  const [showFloatingStudioGenerate, setShowFloatingStudioGenerate] = useState(false);
-
   const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !hasUnlimitedAccess;
   const currentEngineSpendable = settings.engine === 'KOKORO'
     ? Math.max(0, Number(stats.wallet?.spendableNowByEngine?.KOKORO || 0))
@@ -861,14 +764,42 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine));
   }, [clonedVoices, withVoiceMeta]);
 
+  const mergeVoiceCatalogs = useCallback((primary: VoiceOption[], fallback: VoiceOption[]): VoiceOption[] => {
+      const out: VoiceOption[] = [];
+      const seen = new Set<string>();
+      const push = (voice: VoiceOption) => {
+          const key = String(voice.id || '').trim();
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          out.push(voice);
+      };
+      primary.forEach(push);
+      fallback.forEach(push);
+      return out;
+  }, []);
+
   const getEngineVoiceCatalog = useCallback((engine: GenerationSettings['engine']): VoiceOption[] => {
-      if (engine === 'GEM') return getStaticVoicesForEngine('GEM');
       const runtimeVoices = runtimeVoiceCatalogs[engine] || [];
-      if (runtimeVoices.length > 0) {
-          return runtimeVoices.map((voice) => withVoiceMeta(voice, engine));
+      if (engine === 'GEM') {
+          const runtimeBase = runtimeVoices.map((voice) => withVoiceMeta(voice, 'GEM'));
+          const staticBase = getStaticVoiceFallback('GEM').map((voice) => withVoiceMeta(voice, 'GEM'));
+          const baseVoices = mergeVoiceCatalogs(runtimeBase, staticBase);
+          const cloneVoices = clonedVoices.map((voice) =>
+              withVoiceMeta(
+                  {
+                      ...voice,
+                      country: voice.country || 'Unknown',
+                      ageGroup: voice.ageGroup || 'Unknown',
+                  },
+                  'GEM'
+              )
+          );
+          return [...baseVoices, ...cloneVoices];
       }
-      return getStaticVoicesForEngine(engine);
-  }, [getStaticVoicesForEngine, runtimeVoiceCatalogs, withVoiceMeta]);
+      const runtimeCatalog = runtimeVoices.map((voice) => withVoiceMeta(voice, engine));
+      const staticCatalog = getStaticVoicesForEngine(engine);
+      return mergeVoiceCatalogs(runtimeCatalog, staticCatalog);
+  }, [clonedVoices, getStaticVoicesForEngine, mergeVoiceCatalogs, runtimeVoiceCatalogs, withVoiceMeta]);
 
   const getVoiceById = useCallback((voiceId: string): VoiceOption | undefined => {
       if (!voiceId) return undefined;
@@ -884,7 +815,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const catalog = getEngineVoiceCatalog(engine);
           if (!catalog.length) return candidateId;
           const validIds = new Set(catalog.map((voice) => voice.id));
-          return validIds.has(candidateId) ? candidateId : catalog[0].id;
+          const fallbackVoiceId = catalog[0]?.id || candidateId;
+          return validIds.has(candidateId) ? candidateId : fallbackVoiceId;
       },
       [getEngineVoiceCatalog]
   );
@@ -893,7 +825,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       (catalog: VoiceOption[], candidateId: string): string => {
           if (!catalog.length) return candidateId;
           const validIds = new Set(catalog.map((voice) => voice.id));
-          return validIds.has(candidateId) ? candidateId : catalog[0].id;
+          const fallbackVoiceId = catalog[0]?.id || candidateId;
+          return validIds.has(candidateId) ? candidateId : fallbackVoiceId;
       },
       []
   );
@@ -1008,7 +941,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const seen = new Set(scoped.map((voice) => voice.id));
           const preserved = preserveVoiceIds
               .map((id) => catalog.find((voice) => voice.id === id))
-              .filter((voice): voice is VoiceOption => Boolean(voice) && !seen.has(voice.id));
+              .filter((voice): voice is VoiceOption => {
+                  if (!voice) return false;
+                  return !seen.has(voice.id);
+              });
           return [...preserved, ...scoped];
       },
       [getEngineVoiceCatalog, voiceMatchesLanguage]
@@ -1264,62 +1200,44 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [dubbingUiState.phase]);
 
   const refreshEngineVoiceCatalog = useCallback(
-      async (engine: GenerationSettings['engine'], runtimeUrl?: string): Promise<VoiceOption[]> => {
-          if (engine === 'GEM') return getStaticVoicesForEngine('GEM');
-          const baseUrl = normalizeRuntimeUrl(runtimeUrl || getRuntimeUrlForEngine(engine));
-          if (!baseUrl) {
-              setRuntimeVoiceCatalogs((prev) => ({ ...prev, [engine]: [] }));
-              return [];
-          }
+      async (engine: GenerationSettings['engine'], _runtimeUrl?: string): Promise<VoiceOption[]> => {
           try {
-              const voices = await fetchEngineRuntimeVoices(engine, baseUrl, 7000);
+              const voices = await fetchEngineRuntimeVoices(engine, mediaBackendUrl, 7000);
               const normalizedVoices = voices.map((voice) => withVoiceMeta(voice, engine));
-              setRuntimeVoiceCatalogs((prev) => ({ ...prev, [engine]: normalizedVoices }));
-              return normalizedVoices;
+              const staticVoices = getStaticVoicesForEngine(engine);
+              const mergedVoices = mergeVoiceCatalogs(normalizedVoices, staticVoices);
+              setRuntimeVoiceCatalogs((prev) => ({ ...prev, [engine]: mergedVoices }));
+              return mergedVoices;
           } catch {
-              setRuntimeVoiceCatalogs((prev) => ({ ...prev, [engine]: [] }));
-              return [];
+              const staticVoices = getStaticVoicesForEngine(engine);
+              setRuntimeVoiceCatalogs((prev) => ({ ...prev, [engine]: staticVoices }));
+              return staticVoices;
           }
       },
-      [getRuntimeUrlForEngine, getStaticVoicesForEngine, withVoiceMeta]
+      [getStaticVoicesForEngine, mediaBackendUrl, mergeVoiceCatalogs, withVoiceMeta]
   );
 
-  const probeRuntimeStatus = useCallback(async (_engine: GenerationSettings['engine'], runtimeUrl: string): Promise<EngineRuntimeStatus> => {
-      if (!runtimeUrl) return { state: 'not_configured', detail: 'URL not set' };
+  const probeRuntimeStatus = useCallback(async (_engine: GenerationSettings['engine']): Promise<EngineRuntimeStatus> => {
       try {
-          const health = await fetchRuntimeJson(`${runtimeUrl}/health`);
-          if (health && typeof health === 'object') {
-              const runtimeHealth = health as any;
-              if (
-                  _engine === 'GEM' &&
-                  runtimeHealth?.apiKeyConfigured === false
-              ) {
-                  return {
-                      state: 'offline',
-                      detail: 'Gemini key pool is not configured. Set GEMINI_API_KEYS_FILE and reload runtime pool.',
-                  };
-              }
-              const explicitError = String((health as any).status || '').toLowerCase() === 'error';
-              const explicitDown = (health as any).ok === false;
-              if (explicitError || explicitDown) {
-                  return { state: 'offline', detail: 'Runtime health error' };
-              }
-              const voiceCount = Number((health as any).voiceCount || 0);
-              if (Number.isFinite(voiceCount) && voiceCount > 0) {
-                  return { state: 'online', detail: `${voiceCount} voices` };
-              }
+          const payload = await fetchTtsEnginesStatus(_engine, mediaBackendUrl);
+          const engineItem = payload.engines?.[_engine];
+          if (!engineItem) {
+              return { state: 'offline', detail: 'Gateway did not return runtime status.' };
           }
-          return { state: 'online', detail: 'Runtime online' };
-      } catch (error: any) {
-          return { state: 'offline', detail: error?.message || 'Runtime offline' };
+          if (engineItem.state === 'online' || engineItem.state === 'starting' || engineItem.state === 'offline') {
+              return { state: engineItem.state, detail: engineItem.detail || 'Runtime status updated.' };
+          }
+          return { state: 'offline', detail: engineItem.detail || 'Runtime status unavailable.' };
+      } catch (error: unknown) {
+          const detail = error instanceof Error ? error.message : 'Runtime offline';
+          return { state: 'offline', detail };
       }
-  }, []);
+  }, [mediaBackendUrl]);
 
   const refreshTtsRuntimeStatus = async () => {
       const statuses = await Promise.all(
           ENGINE_ORDER.map(async (engine) => {
-              const runtimeUrl = getRuntimeUrlForEngine(engine);
-              const status = await probeRuntimeStatus(engine, runtimeUrl);
+              const status = await probeRuntimeStatus(engine);
               if (
                   managedActiveEngine &&
                   engine !== managedActiveEngine &&
@@ -1338,10 +1256,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   };
 
-  const waitForRuntimeOnline = async (engine: GenerationSettings['engine'], runtimeUrl: string, timeoutMs: number): Promise<boolean> => {
+  const waitForRuntimeOnline = async (engine: GenerationSettings['engine'], timeoutMs: number): Promise<boolean> => {
       const started = Date.now();
       while (Date.now() - started < timeoutMs) {
-          const status = await probeRuntimeStatus(engine, runtimeUrl);
+          const status = await probeRuntimeStatus(engine);
           if (status.state === 'online') return true;
           await new Promise((resolve) => setTimeout(resolve, 900));
       }
@@ -1354,25 +1272,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       const engineLabel = getEngineDisplayName(engine);
       let runtimeUrl = getRuntimeUrlForEngine(engine);
-      if (!runtimeUrl) {
-          const fallbackRuntimeUrl = normalizeRuntimeUrl(getDefaultRuntimeUrlForEngine(engine));
-          if (fallbackRuntimeUrl) {
-              runtimeUrl = fallbackRuntimeUrl;
-              setSettings((prev) => {
-                  if (engine === 'GEM') return { ...prev, geminiTtsServiceUrl: fallbackRuntimeUrl };
-                  return { ...prev, kokoroTtsServiceUrl: fallbackRuntimeUrl };
-              });
-          }
-      }
-      if (!runtimeUrl) {
-          throw new Error(
-              engine === 'GEM'
-                  ? 'Plus runtime URL is unavailable. Start backend services and retry.'
-                  : 'Basic runtime URL is unavailable. Start backend services and retry.'
-          );
+      try {
+          const statusPayload = await fetchTtsEnginesStatus(engine, mediaBackendUrl);
+          const gatewayRuntimeUrl = normalizeRuntimeUrl(statusPayload.engines?.[engine]?.runtimeUrl);
+          if (gatewayRuntimeUrl) runtimeUrl = gatewayRuntimeUrl;
+      } catch {
+          // Runtime URL is now gateway-managed; keep backward-compat fallback value if status call fails.
       }
 
-      const currentStatus = await probeRuntimeStatus(engine, runtimeUrl);
+      const currentStatus = await probeRuntimeStatus(engine);
       if (
           engine === 'GEM' &&
           currentStatus.state === 'offline' &&
@@ -1381,8 +1289,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           throw new Error(currentStatus.detail || 'Gemini key pool is not configured.');
       }
       if (currentStatus.state === 'online') {
-          const cachedCatalog = engine === 'GEM' ? getStaticVoicesForEngine('GEM') : (runtimeVoiceCatalogs[engine] || []);
-          const shouldRefreshCatalog = engine !== 'GEM' && cachedCatalog.length === 0;
+          const cachedCatalog = runtimeVoiceCatalogs[engine] || [];
+          const shouldRefreshCatalog = cachedCatalog.length === 0;
           const refreshedCatalog = shouldRefreshCatalog
               ? await refreshEngineVoiceCatalog(engine, runtimeUrl)
               : cachedCatalog;
@@ -1412,7 +1320,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return {
               runtimeUrl,
               catalog: refreshedCatalog,
-              syncedVoiceId,
+              ...(syncedVoiceId ? { syncedVoiceId } : {}),
           };
       }
 
@@ -1457,9 +1365,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           });
 
           const timeoutMs = options?.timeoutMs ?? (switchResult?.state === 'starting' ? 90000 : 60000);
-          const online = await waitForRuntimeOnline(engine, runtimeUrl, timeoutMs);
+          const online = await waitForRuntimeOnline(engine, timeoutMs);
           if (!online) {
-              throw new Error(`${engineLabel} runtime did not become online within ${Math.round(timeoutMs / 1000)}s. Check ${runtimeUrl}/health and runtime logs.`);
+              throw new Error(`${engineLabel} runtime did not become online within ${Math.round(timeoutMs / 1000)}s. Check gateway status and runtime logs.`);
           }
 
           const refreshedCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl);
@@ -1480,7 +1388,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return {
               runtimeUrl,
               catalog: refreshedCatalog,
-              syncedVoiceId,
+              ...(syncedVoiceId ? { syncedVoiceId } : {}),
           };
       } catch (error: any) {
           const reason = error?.message || 'Unknown runtime error';
@@ -1634,7 +1542,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const scoped = getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode);
       if (!scoped.length) return;
       if (scoped.some((voice) => voice.id === settings.voiceId)) return;
-      setSettings((prev) => ({ ...prev, voiceId: scoped[0].id }));
+      const fallbackVoiceId = scoped[0]?.id;
+      if (!fallbackVoiceId) return;
+      setSettings((prev) => ({ ...prev, voiceId: fallbackVoiceId }));
   }, [
       getLanguageScopedVoiceCatalog,
       settings.engine,
@@ -1649,7 +1559,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const catalog = scoped.length > 0 ? scoped : getEngineVoiceCatalog(settings.engine);
       if (!catalog.length) return;
       const validIds = new Set(catalog.map((voice) => voice.id));
-      const fallbackVoiceId = catalog[0].id;
+      const fallbackVoiceId = catalog[0]?.id;
+      if (!fallbackVoiceId) return;
 
       setSettings((prev) => {
           const nextMapping = { ...(prev.speakerMapping || {}) };
@@ -1721,6 +1632,70 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, []);
 
   useEffect(() => {
+      const handleGatewayProgress = (event: Event) => {
+          const detail = ((event as CustomEvent<GatewayJobProgressEventDetail>).detail || {}) as GatewayJobProgressEventDetail;
+          if (!isGenerating) return;
+          const detailEngine = String(detail.engine || '').trim().toUpperCase();
+          if (detailEngine && detailEngine !== String(settings.engine || '').trim().toUpperCase()) return;
+          const detailJobId = String(detail.jobId || '').trim();
+          const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
+          if (detailJobId) {
+              if (activeJobId && detailJobId !== activeJobId) return;
+              if (!activeJobId) activeGatewayJobIdRef.current = detailJobId;
+          }
+          const pct = Number(detail.progressPct || 0);
+          const stage = String(detail.stage || '').trim();
+          if (Number.isFinite(pct) && pct > 0) {
+              const safe = Math.max(6, Math.min(98, Math.round(pct)));
+              setProgress((prev) => Math.max(prev, safe));
+              if (stage) setProcessingStage(stage);
+          } else if (stage) {
+              setProcessingStage(stage);
+          }
+      };
+      window.addEventListener(TTS_GATEWAY_JOB_PROGRESS_EVENT, handleGatewayProgress as EventListener);
+      return () => window.removeEventListener(TTS_GATEWAY_JOB_PROGRESS_EVENT, handleGatewayProgress as EventListener);
+  }, [isGenerating, settings.engine]);
+
+  useEffect(() => {
+      const handleGatewayAudioChunk = (event: Event) => {
+          const detail = ((event as CustomEvent<GatewayAudioChunkEventDetail>).detail || {}) as GatewayAudioChunkEventDetail;
+          if (!isGenerating) return;
+          const detailEngine = String(detail.engine || '').trim().toUpperCase();
+          if (detailEngine && detailEngine !== String(settings.engine || '').trim().toUpperCase()) return;
+          const index = Number(detail.index);
+          const audioBase64 = String(detail.audioBase64 || '').trim();
+          if (!Number.isFinite(index) || index < 0 || !audioBase64) return;
+          const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
+          if (!activeJobId) return;
+          const detailJobId = String(detail.jobId || '').trim();
+          if (!detailJobId || detailJobId !== activeJobId) return;
+          const key = `${detailJobId}:${Math.round(index)}`;
+          if (seenLiveChunkKeysRef.current.has(key)) return;
+          seenLiveChunkKeysRef.current.add(key);
+          setLiveAudioChunks((prev) => {
+              const next = [
+                  ...prev,
+                  {
+                      jobId: detailJobId,
+                      index: Math.round(index),
+                      engine: detailEngine || String(settings.engine || 'GEM'),
+                      contentType: String(detail.contentType || 'audio/wav'),
+                      durationMs: Number(detail.durationMs || 0),
+                      textChars: Number(detail.textChars || 0),
+                      traceId: String(detail.traceId || ''),
+                      audioBase64,
+                  },
+              ];
+              next.sort((a, b) => a.index - b.index);
+              return next;
+          });
+      };
+      window.addEventListener(TTS_GATEWAY_AUDIO_CHUNK_EVENT, handleGatewayAudioChunk as EventListener);
+      return () => window.removeEventListener(TTS_GATEWAY_AUDIO_CHUNK_EVENT, handleGatewayAudioChunk as EventListener);
+  }, [isGenerating, settings.engine]);
+
+  useEffect(() => {
       if (!showSettings) return;
       const panel = settingsPanelRef.current;
       const previousActive = document.activeElement as HTMLElement | null;
@@ -1758,6 +1733,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (currentFocusable.length === 0) return;
           const firstEl = currentFocusable[0];
           const lastEl = currentFocusable[currentFocusable.length - 1];
+          if (!firstEl || !lastEl) return;
           const active = document.activeElement as HTMLElement | null;
           if (!event.shiftKey && active === lastEl) {
               event.preventDefault();
@@ -1817,45 +1793,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   }, [chatHistory, isChatOpen]);
 
-  useEffect(() => {
-      if (activeTab !== Tab.STUDIO) {
-          setShowFloatingStudioGenerate(false);
-          return;
-      }
-
-      const root = contentScrollRef.current;
-      const target = studioGenerateAnchorRef.current;
-      if (!root || !target) {
-          setShowFloatingStudioGenerate(false);
-          return;
-      }
-
-      let frame: number | null = null;
-      const observer = new IntersectionObserver(
-          ([entry]) => {
-              const isVisible = entry.isIntersecting && entry.intersectionRatio >= 0.55;
-              if (frame) cancelAnimationFrame(frame);
-              frame = requestAnimationFrame(() => setShowFloatingStudioGenerate(!isVisible));
-          },
-          {
-              root,
-              threshold: [0, 0.25, 0.55, 0.8, 1],
-              rootMargin: '0px 0px -8px 0px',
-          }
-      );
-
-      observer.observe(target);
-      return () => {
-          if (frame) cancelAnimationFrame(frame);
-          observer.disconnect();
-      };
-  }, [activeTab, detectedSpeakers.length, isGenerating, settings.engine, settings.language, text.length]);
-
   // Cleanup timer on unmount
   useEffect(() => {
       return () => { 
           if(progressTimerRef.current) clearInterval(progressTimerRef.current);
-          if(liveLogPollRef.current) clearInterval(liveLogPollRef.current);
           if(previewAudioRef.current) previewAudioRef.current.pause();
           if(generationAbortController.current) generationAbortController.current.abort();
       }
@@ -1945,97 +1886,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // --- Logic Functions ---
 
-  const getRuntimeServiceForEngine = useCallback((engine: GenerationSettings['engine']) => {
-      if (engine === 'GEM') return 'gemini-runtime' as const;
-      return 'kokoro-runtime' as const;
-  }, []);
-
-  const appendRuntimeLogLines = useCallback((source: string, lines: string[]) => {
-      const cleaned = lines
-          .map((line) => String(line || '').replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').trim())
-          .filter((line) => Boolean(line));
-      if (!cleaned.length) return;
-
-      setLiveRuntimeLogs((prev) => {
-          const next = [...prev];
-          for (const line of cleaned) {
-              const last = next[next.length - 1];
-              if (last && last.source === source && last.line === line) continue;
-              next.push({
-                  id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                  source,
-                  line,
-                  timestamp: Date.now(),
-              });
-          }
-          return next.slice(-160);
-      });
-  }, []);
-
-  const stopLiveRuntimeLogStream = useCallback(() => {
-      if (liveLogPollRef.current) {
-          clearInterval(liveLogPollRef.current);
-          liveLogPollRef.current = null;
-      }
-      liveLogSessionRef.current += 1;
-      liveLogCursorsRef.current = {};
-      liveLogErrorRef.current = {};
-  }, []);
-
-  const pollLiveRuntimeLogs = useCallback(async (
-      services: Array<'media-backend' | 'gemini-runtime' | 'kokoro-runtime'>,
-      sessionId: number
-  ) => {
-      await Promise.all(
-          services.map(async (serviceId) => {
-              try {
-                  const cursor = liveLogCursorsRef.current[serviceId];
-                  const payload = await tailRuntimeLog(mediaBackendUrl, serviceId, {
-                      cursor: Number.isFinite(cursor) ? cursor : undefined,
-                      maxBytes: 8_192,
-                      lineLimit: 12,
-                  });
-                  if (liveLogSessionRef.current !== sessionId) return;
-                  if (typeof payload?.nextCursor === 'number') {
-                      liveLogCursorsRef.current[serviceId] = payload.nextCursor;
-                  }
-                  if (Array.isArray(payload?.lines) && payload.lines.length > 0) {
-                      appendRuntimeLogLines(serviceId, payload.lines);
-                  }
-              } catch (error: any) {
-                  const now = Date.now();
-                  const lastLogged = liveLogErrorRef.current[serviceId] || 0;
-                  if (now - lastLogged > 9000) {
-                      liveLogErrorRef.current[serviceId] = now;
-                      appendRuntimeLogLines(
-                          'system',
-                          [`${serviceId}: ${error?.message || 'log stream unavailable'}`]
-                      );
-                  }
-              }
-          })
-      );
-  }, [appendRuntimeLogLines, mediaBackendUrl]);
-
-  const startLiveRuntimeLogStream = useCallback((engine: GenerationSettings['engine']) => {
-      stopLiveRuntimeLogStream();
-      setLiveRuntimeLogs([]);
-
-      const runtimeService = getRuntimeServiceForEngine(engine);
-      const services: Array<'media-backend' | 'gemini-runtime' | 'kokoro-runtime'> =
-          ['media-backend', runtimeService];
-      const sessionId = Date.now();
-      liveLogSessionRef.current = sessionId;
-
-      appendRuntimeLogLines('system', [
-          `Live backend log stream started (${runtimeService}).`,
-      ]);
-      void pollLiveRuntimeLogs(services, sessionId);
-      liveLogPollRef.current = setInterval(() => {
-          void pollLiveRuntimeLogs(services, sessionId);
-      }, 2500);
-  }, [appendRuntimeLogLines, getRuntimeServiceForEngine, pollLiveRuntimeLogs, stopLiveRuntimeLogStream]);
-
   const setLiveProgress = useCallback((nextProgress: number, stageMessage?: string) => {
       const safe = Math.max(0, Math.min(99, Math.round(nextProgress)));
       setProgress((prev) => Math.max(prev, safe));
@@ -2072,34 +1922,33 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const stopSimulation = () => {
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-      stopLiveRuntimeLogStream();
       setProgress(100);
       setTimeLeft(0);
       // Short delay to show 100% before closing
       setTimeout(() => {
           setIsGenerating(false);
           setProgress(0);
-          setLiveRuntimeLogs([]);
       }, 500);
   };
-  
+
   const handleCancelGeneration = () => {
-      if (generationAbortController.current) {
-          generationAbortController.current.abort();
+      if (!isGenerating) return;
+
+      const hadController = Boolean(generationAbortController.current);
+      if (hadController) {
+          generationAbortController.current?.abort();
           generationAbortController.current = null;
+          setProcessingStage('Cancelling generation...');
+      } else {
+          stopSimulation();
       }
-      stopSimulation();
-      if (activeTab === Tab.DUBBING) {
-          patchDubbingUiState({
-              phase: 'idle',
-              progress: 0,
-              stage: 'Dubbing cancelled',
-              error: '',
-          });
-      }
+
+      activeGatewayJobIdRef.current = '';
+      setLiveAudioChunks([]);
+      seenLiveChunkKeysRef.current.clear();
       showToast("Generation Cancelled", "info");
   };
-
+  
   const performGeneration = async (scriptText: string, signal?: AbortSignal) => {
       if (!scriptText.trim()) throw new Error("Text is empty");
       setLiveProgress(14, `Checking ${settings.engine} runtime...`);
@@ -2135,7 +1984,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } as GenerationSettings & { runtimeVoiceCatalog?: VoiceOption[] };
 
       // Pass signal to generateSpeech and then apply studio-level audio mix.
-      setLiveProgress(40, `Sending synthesis request to ${settings.engine} runtime...`);
+      setLiveProgress(40, 'Generating audio...');
       const ttsBuffer = await generateSpeech(scriptText, engineVoiceName, generationSettings, 'speech', signal);
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
       const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings);
@@ -2154,7 +2003,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         setShowAdModal(true);
         return;
       }
-      return showToast(`Insufficient ${settings.engine} VF balance.`, 'error');
+      return showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`, 'error');
     }
     
     // Setup Abort Controller
@@ -2163,12 +2012,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     generationAbortController.current = controller;
     
     setGeneratedAudioUrl(null);
+    setLiveAudioChunks([]);
+    seenLiveChunkKeysRef.current.clear();
+    activeGatewayJobIdRef.current = '';
     
     // Calculate Estimate
     // TTS speed is roughly 20 chars per second for runtime estimate
     const estTime = Math.max(3, Math.ceil(text.length / 20));
     startSimulation(estTime, "Preparing backend generation...", 'live');
-    startLiveRuntimeLogStream(settings.engine);
 
     try {
       const { url, voiceNameDisplay } = await performGeneration(text, controller.signal);
@@ -2196,6 +2047,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     } finally {
       stopSimulation();
       generationAbortController.current = null;
+      activeGatewayJobIdRef.current = '';
     }
   };
 
@@ -2208,13 +2060,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setEditingChar(null);
           // Auto-color assignment
           const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef', '#f43f5e'];
-          const randomColor = colors[Math.floor(Math.random() * colors.length)];
+          const randomColor = colors[Math.floor(Math.random() * colors.length)] || '#6366f1';
           const defaultCatalog = getEngineVoiceCatalog(settings.engine);
           
           setCharForm({
               id: Date.now().toString(),
               name: '',
-              voiceId: presetVoiceId || defaultCatalog[0]?.id || VOICES[0].id,
+              voiceId: presetVoiceId || defaultCatalog[0]?.id || DEFAULT_GEM_VOICE_ID,
               gender: 'Unknown',
               age: 'Adult',
               avatarColor: randomColor
@@ -2446,7 +2298,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         setShowAdModal(true);
         return;
       }
-      return showToast(`Insufficient ${settings.engine} VF balance.`, 'error');
+      return showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`, 'error');
     }
       patchDubbingUiState({
           phase: 'running',
@@ -2529,7 +2381,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const estTime = (segmentsRaw.length / 2) + 3; // Optimized Estimate due to batching
       
       startSimulation(estTime, `Preparing dubbing backend jobs (${segmentsRaw.length} segments)...`, 'live');
-      startLiveRuntimeLogStream(settings.engine);
       setLiveProgress(12, `Analyzing ${segmentsRaw.length} segments...`);
       patchDubbingUiState({
           phase: 'running',
@@ -2714,7 +2565,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   const renderedBlob = await muxDubbedVideo(mediaBackendUrl, videoFile, dubAudioFile, {
                       speechGain: 1.0,
                       backgroundGain: 0,
-                      mixWithVideoAudio: false,
+                      normalize: true,
                   });
                   if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
                   setRenderedDubVideoUrl(URL.createObjectURL(renderedBlob));
@@ -2944,6 +2795,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       try {
           await loadRvcModel(mediaBackendUrl, settings.rvcModel);
           const coverBlob = await convertRvcCover(mediaBackendUrl, rvcSourceFile, settings.rvcModel, {
+              preset: 'cover_hq',
               pitchShift: rvcPitchShift,
           });
 
@@ -2968,7 +2820,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const renderedBlob = await muxDubbedVideo(mediaBackendUrl, videoFile, dubAudioFile, {
               speechGain: 1.0,
               backgroundGain: 0,
-              mixWithVideoAudio: false,
+              normalize: true,
           });
 
           if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
@@ -3023,8 +2875,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const getEngineLabel = (engine: GenerationSettings['engine']) => getEngineDisplayName(engine);
   const getEngineSubLabel = (engine: GenerationSettings['engine']) => (
     engine === 'GEM'
-      ? 'Plus Runtime'
-      : 'Basic Runtime'
+      ? 'Gemini Runtime'
+      : 'Kokoro Runtime'
   );
   const getRuntimeStateLabel = (state: EngineRuntimeState) => {
     if (state === 'online') return 'Online';
@@ -3086,6 +2938,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ? 'Characters'
         : activeTab === Tab.NOVEL
           ? 'Novel Workspace'
+          : activeTab === Tab.HISTORY
+            ? 'History'
           : activeTab === Tab.ADMIN
             ? 'Admin'
             : 'Voice Lab';
@@ -3150,7 +3004,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleRefreshHistory = async () => {
       setIsRefreshingHistory(true);
       try {
-          await loadHistory(30);
+          await loadHistory(200);
       } catch (error: any) {
           showToast(error?.message || 'Failed to refresh generation history.', 'error');
       } finally {
@@ -3171,238 +3025,274 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
+  useEffect(() => {
+      if (activeTab !== Tab.HISTORY) return;
+      void loadHistory(200);
+  }, [activeTab]);
+
   // --- UI Components ---
 
+  const isDarkUi = resolvedTheme === 'dark';
+
   const Sidebar = () => (
-    <aside className={`fixed inset-y-0 left-0 z-[56] md:z-40 w-64 bg-white border-r border-gray-100 shadow-2xl md:shadow-none transform transition-transform duration-300 md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="p-6 flex items-center gap-3 border-b border-gray-50">
-            {/* Premium Logo Design */}
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center shadow-lg shadow-indigo-200 text-white relative overflow-hidden">
-                <div className="absolute inset-0 bg-white/20 rounded-full blur-md transform -translate-x-2 -translate-y-2"></div>
-                <Bot size={20} strokeWidth={2.5} />
-            </div>
-            <div>
-                <h1 className="font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-600">VoiceFlow</h1>
-                <p className="text-[10px] text-gray-400 font-mono font-bold uppercase tracking-widest">AI Studio</p>
-            </div>
+    <aside
+      className={`fixed inset-y-0 left-0 z-[56] md:z-40 w-72 max-w-[90vw] md:w-64 transform transition-transform duration-300 md:translate-x-0 ${
+        isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+      } ${
+        isDarkUi
+          ? 'border-r border-slate-800 bg-slate-950/92 shadow-[0_24px_56px_rgba(2,6,23,0.72)]'
+          : 'border-r border-gray-200 bg-white/95 shadow-2xl md:shadow-xl'
+      } flex h-full flex-col overflow-hidden backdrop-blur-xl`}
+    >
+      <div className={`flex items-center gap-3 border-b px-5 py-5 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
+        <div className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-teal-500 via-cyan-500 to-blue-500 text-white shadow-lg shadow-cyan-500/25">
+          <div className="absolute inset-0 -translate-x-2 -translate-y-2 rounded-full bg-white/20 blur-md" />
+          <Bot size={20} strokeWidth={2.5} />
         </div>
+        <div>
+          <h1 className={`text-xl font-bold tracking-tight ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>VoiceFlow</h1>
+          <p className={`text-[10px] font-mono font-bold uppercase tracking-[0.22em] ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>AI Studio</p>
+        </div>
+      </div>
 
-        <nav className="p-4 space-y-1">
-            {workspaceTabs.map(item => (
-                <button 
-                    key={item.id}
-                    onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold transition-all ${activeTab === item.id ? 'bg-indigo-50 text-indigo-600 shadow-sm ring-1 ring-indigo-100' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}
-                >
-                    {item.icon} {item.label}
-                </button>
-            ))}
-        </nav>
+      <nav className={`space-y-1 border-b px-3 py-3 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
+        {workspaceTabs.map(item => (
+          <button
+            key={item.id}
+            onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
+            className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition-all ${
+              activeTab === item.id
+                ? isDarkUi
+                  ? 'border border-cyan-500/35 bg-cyan-500/15 text-cyan-100 shadow-[0_6px_18px_rgba(6,182,212,0.16)]'
+                  : 'border border-cyan-100 bg-cyan-50 text-cyan-700 shadow-sm'
+                : isDarkUi
+                  ? 'text-slate-300 hover:bg-slate-900 hover:text-slate-100'
+                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+            }`}
+          >
+            {item.icon} {item.label}
+          </button>
+        ))}
+      </nav>
 
+      <div className="custom-scrollbar flex-1 min-h-0 overflow-y-auto">
         {activeTab === Tab.STUDIO && (
-            <div className="mt-6 px-6 animate-in fade-in">
-                <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center justify-between">
-                    <span>Recent Drafts</span>
-                    <button onClick={() => { setText(''); setSettings(s => ({...s, speakerMapping: {}})) }} className="text-indigo-600 hover:underline">New</button>
-                </div>
-                <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
-                    {drafts.length === 0 && <div className="text-xs text-gray-400 italic">No drafts yet</div>}
-                    {drafts.map(d => (
-                        <div key={d.id} className="group flex items-center justify-between p-2 rounded-lg hover:bg-gray-50 transition-colors">
-                            <button
-                              type="button"
-                              onClick={() => { setText(d.text); setSettings(normalizeSettings(d.settings)); setIsMobileMenuOpen(false); }}
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                            >
-                                <FileText size={14} className="text-gray-400 flex-shrink-0"/>
-                                <span className="text-sm text-gray-600 truncate">{d.name}</span>
-                            </button>
-                            <button
-                              onClick={() => { deleteDraft(d.id); }}
-                              className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600"
-                              aria-label={`Delete draft ${d.name}`}
-                            >
-                              <X size={12}/>
-                            </button>
-                        </div>
-                    ))}
-                </div>
-
-                <div className="mt-5">
-                    <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center justify-between">
-                        <span>Recent Generations</span>
-                        <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => { void handleRefreshHistory(); }}
-                              disabled={isRefreshingHistory}
-                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 hover:underline disabled:opacity-50"
-                              title="Refresh from server"
-                            >
-                              {isRefreshingHistory ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                              Refresh
-                            </button>
-                            <button
-                              onClick={() => { void handleClearHistory(); }}
-                              disabled={isClearingHistory || history.length === 0}
-                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-red-600 hover:underline disabled:opacity-50"
-                              title="Clear server history"
-                            >
-                              {isClearingHistory ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
-                              Clear
-                            </button>
-                        </div>
-                    </div>
-                    <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar pr-2">
-                        {history.length === 0 && <div className="text-xs text-gray-400 italic">No generation history</div>}
-                        {history.slice(0, 12).map((item, index) => (
-                            <div key={`${item.id}_${index}`} className="rounded-lg border border-gray-100 bg-gray-50/70 p-2">
-                                <div className="flex items-center justify-between gap-2">
-                                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                      item.engine === 'KOKORO'
-                                        ? 'bg-emerald-100 text-emerald-700'
-                                        : 'bg-indigo-100 text-indigo-700'
-                                    }`}>
-                                      {item.engine || 'GEM'}
-                                    </span>
-                                    <span className="text-[10px] text-gray-500">{new Date(Number(item.timestamp || Date.now())).toLocaleString()}</span>
-                                </div>
-                                <div className="mt-1 text-[11px] font-semibold text-gray-700 truncate">{item.voiceName || 'AI Voice'}</div>
-                                <div className="mt-0.5 text-[11px] text-gray-600 line-clamp-2">{item.text || ''}</div>
-                                <div className="mt-1 text-[10px] text-gray-500">{Math.max(0, Number(item.chars || (item.text || '').length || 0)).toLocaleString()} chars</div>
-                                {item.audioUrl && (
-                                  <audio controls src={item.audioUrl} className="mt-1.5 h-8 w-full" />
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                </div>
+          <div className="animate-in fade-in space-y-5 px-4 pb-3 pt-4">
+            <div>
+              <div className={`mb-2.5 flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-[0.14em] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                <span className="whitespace-nowrap">Recent Drafts</span>
+                <button
+                  onClick={() => { setText(''); setSettings(s => ({ ...s, speakerMapping: {} })); }}
+                  className={`text-[11px] font-semibold normal-case tracking-normal ${isDarkUi ? 'text-cyan-300 hover:text-cyan-200' : 'text-cyan-700 hover:text-cyan-800'}`}
+                >
+                  New
+                </button>
+              </div>
+              <div className="custom-scrollbar max-h-44 space-y-1.5 overflow-y-auto pr-1">
+                {drafts.length === 0 && <div className={`text-xs italic ${isDarkUi ? 'text-slate-500' : 'text-gray-400'}`}>No drafts yet</div>}
+                {drafts.map(d => (
+                  <div key={d.id} className={`group flex items-center justify-between rounded-lg border px-2 py-2 transition-colors ${
+                    isDarkUi ? 'border-slate-800 bg-slate-900/60 hover:bg-slate-900' : 'border-gray-200 bg-white hover:bg-gray-50'
+                  }`}>
+                    <button
+                      type="button"
+                      onClick={() => { setText(d.text); setSettings(normalizeSettings(d.settings)); setIsMobileMenuOpen(false); }}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    >
+                      <FileText size={14} className={`flex-shrink-0 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />
+                      <span className={`truncate text-sm ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>{d.name}</span>
+                    </button>
+                    <button
+                      onClick={() => { deleteDraft(d.id); }}
+                      className={`opacity-0 transition-opacity group-hover:opacity-100 ${isDarkUi ? 'text-rose-300 hover:text-rose-200' : 'text-rose-500 hover:text-rose-700'}`}
+                      aria-label={`Delete draft ${d.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
+
+          </div>
         )}
 
-        <div className="px-4 pt-2 pb-40">
-            <div className="rounded-2xl border border-gray-200 bg-white p-3 shadow-sm">
-                <div className="rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                        <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-gray-800">
-                            <span className="h-2.5 w-2.5 rounded-full border border-gray-300 bg-white" />
-                            <span>Balance</span>
-                        </div>
-                        <button
-                            onClick={() => setShowSubscriptionModal(true)}
-                            className="rounded-md bg-black px-2.5 py-1 text-[11px] font-bold text-white hover:bg-gray-800"
-                        >
-                            Upgrade
-                        </button>
-                    </div>
-                    <div className="mt-2.5 space-y-1 text-[11px]">
-                        <div className="flex items-center justify-between text-gray-500">
-                            <span>Total</span>
-                            <strong className="text-gray-900">{balanceTotalLabel}</strong>
-                        </div>
-                        <div className="flex items-center justify-between text-gray-500">
-                            <span>Remaining</span>
-                            <strong className="text-gray-900">{balanceRemainingLabel}</strong>
-                        </div>
-                    </div>
+        <div className="px-4 pb-4">
+          <div className={`rounded-2xl border p-3 shadow-sm ${
+            isDarkUi ? 'border-slate-800 bg-slate-900/75 shadow-black/20' : 'border-gray-200 bg-white'
+          }`}>
+            <div className={`rounded-xl border px-3 py-2.5 ${
+              isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'
+            }`}>
+              <div className="flex items-center justify-between gap-2">
+                <div className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${isDarkUi ? 'text-slate-200' : 'text-gray-800'}`}>
+                  <span className={`h-2.5 w-2.5 rounded-full border ${isDarkUi ? 'border-slate-500 bg-cyan-400' : 'border-gray-300 bg-white'}`} />
+                  <span>Balance</span>
                 </div>
-
-                <div className="mt-2 text-[10px] text-gray-500">
-                    Spendable now ({settings.engine}): {hasUnlimitedAccess ? 'Unlimited' : currentEngineSpendable.toLocaleString()}
-                </div>
-                <div className="mt-1 text-[10px] text-gray-500">
-                    VFF: {walletVff.toLocaleString()} | Paid: {walletPaid.toLocaleString()}
-                </div>
-                <div className="mt-1 text-[10px] text-gray-500">
-                    Ads today: {Math.max(0, Number(stats.wallet?.adClaimsToday || 0))}/{Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3))}
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                    <button
-                        onClick={() => setShowAdModal(true)}
-                        disabled={!canClaimAdReward}
-                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-violet-200 bg-white px-2 py-2 text-[11px] font-semibold text-violet-700 disabled:opacity-50"
-                    >
-                        <Gift size={12} />
-                        Watch Ad
-                    </button>
-                    <button
-                        onClick={() => { void handleBuyTokenPack(); }}
-                        disabled={isBuyingTokenPack}
-                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-white px-2 py-2 text-[11px] font-semibold text-emerald-700 disabled:opacity-50"
-                    >
-                        {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-                        100k pack
-                    </button>
-                </div>
-                <div className="mt-2 flex items-center gap-1">
-                    <input
-                        value={couponCode}
-                        onChange={(event) => setCouponCode(event.target.value)}
-                        placeholder="Coupon code"
-                        className="h-8 min-w-0 flex-1 rounded-lg border border-gray-200 px-2 text-[11px] outline-none focus:border-indigo-300"
-                    />
-                    <button
-                        onClick={() => { void handleRedeemCoupon(); }}
-                        disabled={isRedeemingCoupon || !couponCode.trim()}
-                        className="h-8 rounded-lg border border-indigo-200 px-2 text-[11px] font-semibold text-indigo-700 disabled:opacity-50"
-                    >
-                        {isRedeemingCoupon ? <Loader2 size={12} className="animate-spin" /> : 'Redeem'}
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-100 bg-gray-50/50">
-            <button
-                onClick={handleStartServices}
-                className="mb-3 w-full flex items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2 py-2 text-[11px] font-bold text-indigo-600 hover:bg-indigo-50 transition-colors"
-            >
-                <Server size={12} /> Start Services
-            </button>
-            {isGuestSession && (
-                <div className="mb-3 grid grid-cols-2 gap-2">
-                    <button
-                        onClick={() => openAuthScreen('login')}
-                        className="flex items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2 py-2 text-[11px] font-bold text-indigo-600 hover:bg-indigo-50 transition-colors"
-                    >
-                        <LogIn size={12} /> Login
-                    </button>
-                    <button
-                        onClick={() => openAuthScreen('signup')}
-                        className="flex items-center justify-center gap-1.5 rounded-lg border border-indigo-600 bg-indigo-600 px-2 py-2 text-[11px] font-bold text-white hover:bg-indigo-700 transition-colors"
-                    >
-                        <UserPlus size={12} /> Sign Up
-                    </button>
-                </div>
-            )}
-            {!isGuestSession && (
                 <button
-                    onClick={() => { void handleSignOut(); }}
-                    className="mb-3 w-full flex items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2 py-2 text-[11px] font-bold text-rose-600 hover:bg-rose-50 transition-colors"
+                  onClick={() => setShowSubscriptionModal(true)}
+                  className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                    isDarkUi ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400' : 'bg-cyan-600 text-white hover:bg-cyan-500'
+                  }`}
                 >
-                    <LogOut size={12} /> Sign Out
+                  Upgrade
                 </button>
-            )}
-            <button
-                type="button"
-                className="flex w-full items-center gap-3 p-2 rounded-xl hover:bg-white transition-colors text-left"
-                onClick={() => setScreen(AppScreen.PROFILE)}
-                aria-label="Open profile"
-            >
-                <div className="w-9 h-9 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold shadow-sm border border-white">
-                    {user.avatarUrl ? <img src={user.avatarUrl} className="w-full h-full rounded-full object-cover" alt={`${user.name} avatar`}/> : user.name[0]}
+              </div>
+              <div className={`mt-2.5 space-y-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                <div className="flex items-center justify-between">
+                  <span>Total</span>
+                  <strong className={isDarkUi ? 'text-slate-100' : 'text-gray-900'}>{balanceTotalLabel}</strong>
                 </div>
-                <div className="flex-1 overflow-hidden">
-                    <div className="text-sm font-bold text-gray-900 truncate">{user.name}</div>
-                    <div className="text-[10px] text-gray-500 truncate">{user.email}</div>
+                <div className="flex items-center justify-between">
+                  <span>Remaining</span>
+                  <strong className={isDarkUi ? 'text-slate-100' : 'text-gray-900'}>{balanceRemainingLabel}</strong>
                 </div>
-                <Settings size={16} className="text-gray-400" />
-            </button>
+              </div>
+            </div>
+
+            <div className={`mt-2 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+              Spendable now ({getEngineDisplayName(settings.engine)}): {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
+            </div>
+            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+              VFF Free: {walletVff.toLocaleString()} | Paid VF: {walletPaid.toLocaleString()}
+            </div>
+            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+              Ads today: {Math.max(0, Number(stats.wallet?.adClaimsToday || 0))}/{Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3))}
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setShowAdModal(true)}
+                disabled={!canClaimAdReward}
+                className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+                  isDarkUi
+                    ? 'border-amber-400/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                    : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                }`}
+              >
+                <Gift size={12} />
+                Watch Ad
+              </button>
+              <button
+                onClick={() => { void handleBuyTokenPack(); }}
+                disabled={isBuyingTokenPack}
+                className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+                  isDarkUi
+                    ? 'border-emerald-400/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                }`}
+              >
+                {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
+                100k pack
+              </button>
+            </div>
+            <div className="mt-2 flex items-center gap-1">
+              <input
+                value={couponCode}
+                onChange={(event) => setCouponCode(event.target.value)}
+                placeholder="Coupon code"
+                className={`h-8 min-w-0 flex-1 rounded-lg border px-2 text-[11px] outline-none transition-colors ${
+                  isDarkUi
+                    ? 'border-slate-700 bg-slate-950/70 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400'
+                    : 'border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-cyan-300'
+                }`}
+              />
+              <button
+                onClick={() => { void handleRedeemCoupon(); }}
+                disabled={isRedeemingCoupon || !couponCode.trim()}
+                className={`h-8 rounded-lg border px-2 text-[11px] font-semibold disabled:opacity-50 ${
+                  isDarkUi
+                    ? 'border-cyan-400/35 text-cyan-200 hover:bg-cyan-500/10'
+                    : 'border-cyan-200 text-cyan-700 hover:bg-cyan-50'
+                }`}
+              >
+                {isRedeemingCoupon ? <Loader2 size={12} className="animate-spin" /> : 'Redeem'}
+              </button>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <div className={`shrink-0 border-t p-4 backdrop-blur-md ${isDarkUi ? 'border-slate-800 bg-slate-950/88' : 'border-gray-200 bg-white/90'}`}>
+        <button
+          onClick={handleStartServices}
+          className={`mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+            isDarkUi
+              ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+              : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+          }`}
+        >
+          <Server size={12} /> Start Services
+        </button>
+        {isGuestSession && (
+          <div className="mb-3 grid grid-cols-2 gap-2">
+            <button
+              onClick={() => openAuthScreen('login')}
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                isDarkUi
+                  ? 'border-slate-600 bg-slate-900 text-slate-200 hover:bg-slate-800'
+                  : 'border-cyan-200 bg-white text-cyan-700 hover:bg-cyan-50'
+              }`}
+            >
+              <LogIn size={12} /> Login
+            </button>
+            <button
+              onClick={() => openAuthScreen('signup')}
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                isDarkUi
+                  ? 'border-cyan-400/40 bg-cyan-500 text-slate-950 hover:bg-cyan-400'
+                  : 'border-cyan-600 bg-cyan-600 text-white hover:bg-cyan-700'
+              }`}
+            >
+              <UserPlus size={12} /> Sign Up
+            </button>
+          </div>
+        )}
+        {!isGuestSession && (
+          <button
+            onClick={() => { void handleSignOut(); }}
+            className={`mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+              isDarkUi
+                ? 'border-rose-400/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+            }`}
+          >
+            <LogOut size={12} /> Sign Out
+          </button>
+        )}
+        <button
+          type="button"
+          className={`flex w-full items-center gap-3 rounded-xl border p-2 text-left transition-colors ${
+            isDarkUi
+              ? 'border-slate-700 bg-slate-900/70 hover:bg-slate-900'
+              : 'border-gray-200 bg-white hover:bg-gray-50'
+          }`}
+          onClick={() => setScreen(AppScreen.PROFILE)}
+          aria-label="Open profile"
+        >
+          <div className={`flex h-9 w-9 items-center justify-center rounded-full font-bold shadow-sm ${
+            isDarkUi
+              ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
+              : 'border border-white bg-cyan-100 text-cyan-700'
+          }`}>
+            {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <div className={`truncate text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>{user.name}</div>
+            <div className={`truncate text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{user.email}</div>
+          </div>
+          <Settings size={16} className={isDarkUi ? 'text-slate-400' : 'text-gray-400'} />
+        </button>
+      </div>
     </aside>
   );
 
-  const SettingsPanel = () => (
+  const renderSettingsPanel = () => {
+      const assistantRouting = resolveAssistantProviderRouting(settings);
+      const providerControlsEnabled = assistantRouting.controlsEnabled;
+      const activeAssistantProvider = assistantRouting.provider;
+
+      return (
       <div
           className="fixed inset-0 z-50 flex justify-end bg-black/35 backdrop-blur-[1px]"
           onClick={() => setShowSettings(false)}
@@ -3535,20 +3425,63 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   {/* AI Helper */}
                   <section>
                       <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 block">AI Assistant Provider</label>
-                      <div className="bg-white p-1 rounded-xl border border-gray-200 flex mb-3">
-                          {['GEMINI', 'PERPLEXITY', 'LOCAL'].map((p: any) => (
-                              <button
-                                  key={p}
-                                  onClick={() => setSettings(s => ({...s, helperProvider: p}))}
-                                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${settings.helperProvider === p ? 'bg-gray-100 text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
-                              >
-                                  {p}
-                              </button>
-                          ))}
+                      <div className="mb-3 flex items-center justify-between rounded-xl border border-gray-200 bg-white p-3">
+                          <div className="min-w-0">
+                              <p className="text-[11px] font-bold text-gray-700">Provider Controls</p>
+                              <p className="text-[10px] text-gray-500">
+                                  {providerControlsEnabled
+                                      ? 'Use GEMINI / PERPLEXITY / LOCAL selector.'
+                                      : 'Forced to Gemini runtime path.'}
+                              </p>
+                          </div>
+                          <button
+                              type="button"
+                              onClick={() => setSettings((s) => ({ ...s, assistantProviderControlsEnabled: s.assistantProviderControlsEnabled === false }))}
+                              className={`relative h-5 w-10 rounded-full transition-colors ${providerControlsEnabled ? 'bg-indigo-500' : 'bg-gray-300'}`}
+                              aria-label="Toggle assistant provider controls"
+                              aria-pressed={providerControlsEnabled}
+                          >
+                              <span
+                                  className={`absolute top-1 h-3 w-3 rounded-full bg-white transition-transform ${providerControlsEnabled ? 'left-6' : 'left-1'}`}
+                              />
+                          </button>
                       </div>
 
+                      <div className="bg-white p-1 rounded-xl border border-gray-200 flex mb-3">
+                          {(['GEMINI', 'PERPLEXITY', 'LOCAL'] as const).map((p) => {
+                              const isDisabled = !providerControlsEnabled && p !== 'GEMINI';
+                              const isActive = activeAssistantProvider === p;
+                              return (
+                                  <button
+                                      key={p}
+                                      type="button"
+                                      disabled={isDisabled}
+                                      onClick={() => {
+                                          if (isDisabled) return;
+                                          setSettings((s) => ({ ...s, helperProvider: p }));
+                                      }}
+                                      className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+                                          isActive
+                                              ? 'bg-gray-100 text-gray-900 shadow-sm'
+                                              : isDisabled
+                                                  ? 'text-gray-300 cursor-not-allowed'
+                                                  : 'text-gray-400 hover:text-gray-600'
+                                      }`}
+                                  >
+                                      {p}
+                                  </button>
+                              );
+                          })}
+                      </div>
+
+                      {!providerControlsEnabled && (
+                          <p className="mb-3 text-[10px] text-gray-500">
+                              Perplexity and Local routes are currently disabled until provider controls are turned back on.
+                          </p>
+                      )}
+
                       <div className="space-y-3 animate-in fade-in bg-white p-3 rounded-xl border border-gray-100">
-                          {settings.helperProvider === 'GEMINI' && (
+                          {activeAssistantProvider === 'GEMINI' && (
                               <div>
                                   <div className="flex items-center justify-between gap-2 mb-1">
                                       <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-1"><Key size={10}/> Gemini API Key</label>
@@ -3580,11 +3513,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       placeholder="AIza..."
                                       className="w-full p-2.5 text-xs border border-gray-200 rounded-lg outline-none focus:border-indigo-500 font-mono bg-gray-50 focus:bg-white transition-colors"
                                   />
+                                  <div className="mt-2 flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+                                      <div className="pr-2">
+                                          <p className="text-[10px] font-bold text-gray-600 uppercase">Use Personal Gemini Key</p>
+                                          <p className="text-[10px] text-gray-500">When OFF, requests use backend runtime key-pool.</p>
+                                      </div>
+                                      <button
+                                          type="button"
+                                          onClick={() => setSettings((s) => ({ ...s, preferUserGeminiKey: !(s.preferUserGeminiKey === true) }))}
+                                          className={`relative h-5 w-10 rounded-full transition-colors ${settings.preferUserGeminiKey === true ? 'bg-indigo-500' : 'bg-gray-300'}`}
+                                          aria-label="Toggle personal Gemini key preference"
+                                          aria-pressed={settings.preferUserGeminiKey === true}
+                                      >
+                                          <span
+                                              className={`absolute top-1 h-3 w-3 rounded-full bg-white transition-transform ${settings.preferUserGeminiKey === true ? 'left-6' : 'left-1'}`}
+                                          />
+                                      </button>
+                                  </div>
                                   <p className="text-[10px] text-gray-400 mt-1">Used by AI Assistant and Gemini fallback tasks.</p>
                               </div>
                           )}
 
-                          {settings.helperProvider === 'PERPLEXITY' && (
+                          {activeAssistantProvider === 'PERPLEXITY' && (
                               <div>
                                   <label className="text-[10px] font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><Lock size={10}/> Perplexity API Key</label>
                                   <input
@@ -3598,7 +3548,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               </div>
                           )}
 
-                          {settings.helperProvider === 'LOCAL' && (
+                          {activeAssistantProvider === 'LOCAL' && (
                               <div>
                                   <label className="text-[10px] font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><Terminal size={10}/> Local LLM URL</label>
                                   <input
@@ -3622,6 +3572,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           </div>
       </div>
   );
+  };
 
   return (
     <div className={`relative min-h-screen ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : ''}`}>
@@ -3695,7 +3646,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           : 'bg-gray-100 border-gray-200 text-gray-600'
                       }`}>
                           <Box size={14} />
-                          {`${currentEngineSpendable.toLocaleString()} VF (${settings.engine})`}
+                          {`${currentEngineSpendable.toLocaleString()} VF (${getEngineDisplayName(settings.engine).toUpperCase()})`}
                       </div>
                      <div className={`flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
                        resolvedTheme === 'dark'
@@ -3738,7 +3689,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${activeTab === Tab.STUDIO ? 'pb-14 md:pb-16' : 'pb-32'}`}
+          className={`flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${activeTab === Tab.STUDIO ? 'pb-32 md:pb-44 lg:pb-48 xl:pb-52' : 'pb-32'}`}
         >
             <div className={`mx-auto w-full space-y-6 ${activeTab === Tab.STUDIO ? 'max-w-[1140px]' : 'max-w-5xl'}`}>
                 
@@ -3819,9 +3770,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             </SectionCard>
 
                             {/* Generated Audio Player */}
-                            {generatedAudioUrl && (
+                            {(generatedAudioUrl || isGenerating || liveAudioChunks.length > 0) && (
                                 <div className="animate-in slide-in-from-bottom-4">
-                                    <AudioPlayer audioUrl={generatedAudioUrl} onReset={() => setGeneratedAudioUrl(null)} />
+                                    <AudioPlayer
+                                      audioUrl={generatedAudioUrl}
+                                      isGenerating={isGenerating}
+                                      liveChunks={liveAudioChunks}
+                                      isLiveStreaming={isGenerating}
+                                      liveAutoPlay={true}
+                                      onReset={() => {
+                                        setGeneratedAudioUrl(null);
+                                        setLiveAudioChunks([]);
+                                        seenLiveChunkKeysRef.current.clear();
+                                        activeGatewayJobIdRef.current = '';
+                                      }}
+                                    />
                                 </div>
                             )}
                         </div>
@@ -4099,17 +4062,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                    </div>
 	                                </SectionCard>
 
-                            <div ref={studioGenerateAnchorRef} className="pt-2">
-                                <Button 
-                                    onClick={handleGenerate} 
-                                    disabled={isGenerating} 
-                                    fullWidth 
-                                    size="lg" 
-                                    className="vf-generate-button bg-gradient-to-r from-indigo-600 to-purple-600 shadow-lg shadow-indigo-300 hover:shadow-indigo-400 hover:scale-[1.02] transition-all"
-                                >
-                                    {isGenerating ? <><Loader2 className="animate-spin mr-2"/> Generating...</> : <><Play size={20} className="mr-2" fill="white"/> Generate Audio</>}
-                                </Button>
-                            </div>
                         </div>
                     </div>
                     </div>
@@ -4333,6 +4285,132 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                  </div>
                              </div>
                          )}
+                    </div>
+                )}
+
+                {activeTab === Tab.HISTORY && (
+                    <div className={`animate-in fade-in rounded-3xl border p-5 md:p-6 ${
+                      isDarkUi ? 'border-slate-800 bg-slate-900/75' : 'border-gray-200 bg-white'
+                    }`}>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                                <h2 className={`text-lg font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>Generation History</h2>
+                                <p className={`mt-1 text-xs ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                    Full generation details. Entries older than 1 year are removed automatically.
+                                </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => { void handleRefreshHistory(); }}
+                                  disabled={isRefreshingHistory}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
+                                    isDarkUi
+                                      ? 'border-cyan-400/30 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+                                      : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+                                  }`}
+                                  title="Refresh from server"
+                                >
+                                  {isRefreshingHistory ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                                  Refresh
+                                </button>
+                                <button
+                                  onClick={() => { void handleClearHistory(); }}
+                                  disabled={isClearingHistory || history.length === 0}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
+                                    isDarkUi
+                                      ? 'border-rose-400/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                                      : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                                  }`}
+                                  title="Clear server history"
+                                >
+                                  {isClearingHistory ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                                  Clear
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="mt-5 space-y-3">
+                            {history.length === 0 && (
+                              <div className={`rounded-xl border p-4 text-sm italic ${
+                                isDarkUi ? 'border-slate-800 bg-slate-950/60 text-slate-400' : 'border-gray-200 bg-gray-50 text-gray-500'
+                              }`}>
+                                No generation history found.
+                              </div>
+                            )}
+                            {history.map((item, index) => {
+                              const itemKey = `${item.id || 'history'}_${index}`;
+                              const isExpanded = expandedHistoryItemKey === itemKey;
+                              const historyEngine: GenerationSettings['engine'] = item.engine === 'KOKORO' ? 'KOKORO' : 'GEM';
+                              const voiceLabel = item.voiceName || 'AI Voice';
+                              const normalizedPreview = String(item.text || '').replace(/\s+/g, ' ').trim();
+                              const previewText = normalizedPreview || 'No text preview.';
+                              const charCount = Math.max(0, Number(item.chars || (item.text || '').length || 0));
+
+                              return (
+                                <div
+                                  key={itemKey}
+                                  className={`overflow-hidden rounded-2xl border ${
+                                    isDarkUi ? 'border-slate-800 bg-slate-950/60' : 'border-gray-200 bg-gray-50/50'
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedHistoryItemKey((prev) => (prev === itemKey ? null : itemKey))}
+                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs ${
+                                      isDarkUi ? 'hover:bg-slate-900/70' : 'hover:bg-white/70'
+                                    }`}
+                                  >
+                                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                      historyEngine === 'KOKORO'
+                                        ? isDarkUi
+                                          ? 'bg-emerald-500/20 text-emerald-200'
+                                          : 'bg-emerald-100 text-emerald-700'
+                                        : isDarkUi
+                                          ? 'bg-cyan-500/20 text-cyan-100'
+                                          : 'bg-cyan-100 text-cyan-700'
+                                    }`}>
+                                      {getEngineDisplayName(historyEngine).toUpperCase()}
+                                    </span>
+                                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                      isDarkUi ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600'
+                                    }`}>
+                                      {String(item.status || 'completed')}
+                                    </span>
+                                    <span className={`shrink-0 font-semibold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>
+                                      {voiceLabel}:
+                                    </span>
+                                    <span className={`min-w-0 flex-1 truncate ${isDarkUi ? 'text-slate-300' : 'text-gray-700'}`}>
+                                      {previewText}
+                                    </span>
+                                    <span className={`shrink-0 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                      {new Date(Number(item.timestamp || Date.now())).toLocaleString()}
+                                    </span>
+                                    {isExpanded ? (
+                                      <ChevronUp size={14} className={isDarkUi ? 'text-slate-400' : 'text-gray-500'} />
+                                    ) : (
+                                      <ChevronDown size={14} className={isDarkUi ? 'text-slate-400' : 'text-gray-500'} />
+                                    )}
+                                  </button>
+
+                                  {isExpanded && (
+                                    <div className={`border-t px-3 pb-3 pt-2 ${
+                                      isDarkUi ? 'border-slate-800 text-slate-300' : 'border-gray-200 text-gray-700'
+                                    }`}>
+                                      <div className="text-sm leading-relaxed">
+                                        {item.text || ''}
+                                      </div>
+                                      <div className={`mt-2 text-xs ${isDarkUi ? 'text-slate-400' : 'text-gray-600'}`}>
+                                        Chars: {charCount.toLocaleString()}
+                                      </div>
+                                      {item.audioUrl && (
+                                        <audio controls src={item.audioUrl} className="mt-2 h-9 w-full" />
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                        </div>
                     </div>
                 )}
                 
@@ -4721,15 +4799,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             </div>
         </div>
 
-        {activeTab === Tab.STUDIO && showFloatingStudioGenerate && (
-            <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 md:left-[calc(50%+8rem)] z-[47] w-[min(24rem,calc(100vw-1.5rem))] animate-in slide-in-from-bottom-4 fade-in duration-200">
+        {activeTab === Tab.STUDIO && (
+            <div className="vf-studio-generate-anchor fixed z-[47] w-[min(22rem,calc(100vw-1.5rem))] md:w-[min(23rem,calc(100vw-18rem))] xl:w-[min(24rem,calc(100vw-24rem))] animate-in slide-in-from-bottom-4 fade-in duration-200">
                 <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
                     <MorphingGenerateButton
                       onClick={handleGenerate}
+                      onCancel={handleCancelGeneration}
                       disabled={!text.trim()}
                       isGenerating={isGenerating}
                       progress={progress}
-                      stage={processingStage}
+                      stage=""
                     />
                 </div>
             </div>
@@ -4740,8 +4819,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {/* Floating AI Assistant */}
       <div
         className={`fixed right-4 md:right-6 z-50 flex flex-col items-end gap-4 ${
-          activeTab === Tab.STUDIO && showFloatingStudioGenerate
-            ? 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-24'
+          activeTab === Tab.STUDIO
+            ? 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-28 lg:bottom-32'
             : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-6'
         }`}
       >
@@ -4788,16 +4867,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       <ResourceMonitor isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading} />
 
       {/* Modals & Overlays */}
-      {isGenerating && (
-          <GenerationWidget 
-              progress={progress} 
-              timeLeft={Math.ceil(timeLeft)} 
-              stage={processingStage} 
-              logs={liveRuntimeLogs}
-              onCancel={handleCancelGeneration} // Added Cancel Handler
-          />
-      )}
-      {showSettings && <SettingsPanel />}
+      {showSettings && renderSettingsPanel()}
       <AdModal
         isOpen={showAdModal}
         onClose={() => setShowAdModal(false)}

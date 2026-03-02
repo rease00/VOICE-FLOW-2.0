@@ -10,6 +10,7 @@ import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,10 +37,31 @@ APP_NAME = "kokoro-runtime"
 KOKORO_SAMPLE_RATE = int(os.getenv("KOKORO_SAMPLE_RATE", "24000"))
 KOKORO_DEVICE = os.getenv("KOKORO_DEVICE", "cpu").strip().lower()
 KOKORO_BATCH_MAX_ITEMS = max(1, int(os.getenv("KOKORO_BATCH_MAX_ITEMS", "64")))
-KOKORO_BATCH_MAX_PARALLEL = max(1, int(os.getenv("KOKORO_BATCH_MAX_PARALLEL", "2")))
+KOKORO_BATCH_DEFAULT_PARALLEL = max(
+    1,
+    int(
+        (
+            os.getenv("KOKORO_BATCH_DEFAULT_PARALLEL")
+            or os.getenv("KOKORO_BATCH_MAX_PARALLEL")
+            or "2"
+        )
+    ),
+)
+KOKORO_BATCH_MAX_PARALLEL = max(
+    KOKORO_BATCH_DEFAULT_PARALLEL,
+    int(
+        (
+            os.getenv("KOKORO_BATCH_PARALLEL_LIMIT")
+            or os.getenv("KOKORO_BATCH_MAX_PARALLEL")
+            or "6"
+        )
+    ),
+)
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
@@ -240,6 +262,58 @@ class KokoroFullRuntime:
     def clamp_speed(self, speed: float) -> float:
         return max(0.75, min(1.35, float(speed or 1.0)))
 
+    def _pause_ms_for_text(self, text: str, lang_code: str) -> int:
+        token = str(text or "").strip()
+        if not token:
+            return 0
+        if re.search(r"[.!?\u0964\u0965]\s*$", token):
+            return 130 if lang_code == "h" else 110
+        if re.search(r"[,;:]\s*$", token):
+            return 65 if lang_code == "h" else 50
+        return 34 if lang_code == "h" else 25
+
+    def _pause_array(self, pause_ms: int):
+        if self._np is None:
+            return None
+        safe_ms = max(0, int(pause_ms))
+        if safe_ms <= 0:
+            return None
+        sample_count = max(1, int((float(KOKORO_SAMPLE_RATE) * float(safe_ms)) / 1000.0))
+        return self._np.zeros(sample_count, dtype=self._np.float32)
+
+    def _merge_with_crossfade(self, chunks: List[Tuple[object, bool]], crossfade_ms: int):
+        if self._np is None:
+            raise RuntimeError("numpy unavailable")
+        if not chunks:
+            return self._np.zeros(1, dtype=self._np.float32)
+        safe_crossfade_ms = max(0, int(crossfade_ms))
+        crossfade_samples = max(0, int((float(KOKORO_SAMPLE_RATE) * float(safe_crossfade_ms)) / 1000.0))
+        merged = self._np.asarray(chunks[0][0], dtype=self._np.float32).reshape(-1)
+        merge_strategy = "concatenate"
+
+        for raw_chunk, is_pause in chunks[1:]:
+            next_chunk = self._np.asarray(raw_chunk, dtype=self._np.float32).reshape(-1)
+            if next_chunk.size <= 0:
+                continue
+            if merged.size <= 0:
+                merged = next_chunk
+                continue
+            if crossfade_samples <= 0 or is_pause:
+                merged = self._np.concatenate([merged, next_chunk])
+                continue
+
+            overlap = min(crossfade_samples, int(merged.size), int(next_chunk.size))
+            if overlap <= 0:
+                merged = self._np.concatenate([merged, next_chunk])
+                continue
+
+            fade_out = self._np.linspace(1.0, 0.0, overlap, endpoint=False, dtype=self._np.float32)
+            fade_in = 1.0 - fade_out
+            mixed = (merged[-overlap:] * fade_out) + (next_chunk[:overlap] * fade_in)
+            merged = self._np.concatenate([merged[:-overlap], mixed, next_chunk[overlap:]])
+            merge_strategy = "overlap_add_crossfade"
+        return merged, merge_strategy
+
     def _pipeline_for(self, lang_code: str):
         if not self.ready or self._pipeline_cls is None:
             raise RuntimeError(self.error or "kokoro runtime unavailable")
@@ -294,8 +368,10 @@ class KokoroFullRuntime:
         )
         pipeline = self._pipeline_for(lang_code)
 
-        audio_chunks: List[object] = []
+        audio_chunks: List[Tuple[object, bool]] = []
         phoneme_chars = 0
+        pause_insertions = 0
+        join_crossfade_ms = int(chunk_profile.get("join_crossfade_ms", 0))
 
         def synthesize_piece(piece_text: str, split_pattern: str = r"\n+") -> Tuple[List[object], int]:
             local_audio_chunks: List[object] = []
@@ -331,7 +407,7 @@ class KokoroFullRuntime:
             used_fallback = False
             try:
                 chunk_audio, chunk_phoneme_chars = synthesize_piece(segment, split_pattern=r"\n+")
-                audio_chunks.extend(chunk_audio)
+                audio_chunks.extend((item, False) for item in chunk_audio)
                 phoneme_chars += chunk_phoneme_chars
             except Exception as exc:  # noqa: BLE001
                 message = str(exc or "").strip()
@@ -356,11 +432,20 @@ class KokoroFullRuntime:
                     if not part:
                         continue
                     chunk_audio, chunk_phoneme_chars = synthesize_piece(part, split_pattern=r"[.!?,;:]+")
-                    audio_chunks.extend(chunk_audio)
+                    audio_chunks.extend((item, False) for item in chunk_audio)
                     phoneme_chars += chunk_phoneme_chars
-                    if part_index < len(fallback_parts):
-                        pause = self._np.zeros(int(KOKORO_SAMPLE_RATE * 0.025), dtype=self._np.float32)
-                        audio_chunks.append(pause)
+                    pause_ms = self._pause_ms_for_text(part, lang_code)
+                    if part_index < len(fallback_parts) and pause_ms > 0:
+                        pause = self._pause_array(pause_ms)
+                        if pause is not None:
+                            audio_chunks.append((pause, True))
+                            pause_insertions += 1
+            pause_ms = self._pause_ms_for_text(segment, lang_code)
+            if chunk_index < len(segments) and pause_ms > 0:
+                pause = self._pause_array(pause_ms)
+                if pause is not None:
+                    audio_chunks.append((pause, True))
+                    pause_insertions += 1
             _emit_stage_event(
                 safe_trace_id,
                 "chunk_synthesis",
@@ -377,7 +462,7 @@ class KokoroFullRuntime:
         if not audio_chunks:
             raise RuntimeError("Kokoro full runtime returned empty audio.")
 
-        merged = self._np.concatenate(audio_chunks)
+        merged, merge_strategy = self._merge_with_crossfade(audio_chunks, join_crossfade_ms)
         buffer = io.BytesIO()
         self._sf.write(buffer, merged, KOKORO_SAMPLE_RATE, format="WAV", subtype="PCM_16")
 
@@ -391,6 +476,11 @@ class KokoroFullRuntime:
             "phoneme_chars": phoneme_chars,
             "word_count": word_count,
             "sample_rate": KOKORO_SAMPLE_RATE,
+            "chunkCount": len(segments),
+            "chunkMaxChars": chunk_max_chars,
+            "joinCrossfadeMs": join_crossfade_ms,
+            "pauseInsertions": pause_insertions,
+            "mergeStrategy": merge_strategy,
         }
         return buffer.getvalue(), meta
 
@@ -469,7 +559,7 @@ def capabilities() -> JSONResponse:
             "supportsBatchSynthesis": True,
             "batchEndpoint": "/synthesize/batch",
             "batchMaxItems": KOKORO_BATCH_MAX_ITEMS,
-            "batchDefaultParallelism": KOKORO_BATCH_MAX_PARALLEL,
+            "batchDefaultParallelism": KOKORO_BATCH_DEFAULT_PARALLEL,
             "batchMaxParallelism": KOKORO_BATCH_MAX_PARALLEL,
             "model": "kokoro-full",
             "voiceCount": len(VOICE_IDS),
@@ -482,7 +572,7 @@ def capabilities() -> JSONResponse:
                 "supportsBatchSynthesis": True,
                 "batchEndpoint": "/synthesize/batch",
                 "batchMaxItems": KOKORO_BATCH_MAX_ITEMS,
-                "batchDefaultParallelism": KOKORO_BATCH_MAX_PARALLEL,
+                "batchDefaultParallelism": KOKORO_BATCH_DEFAULT_PARALLEL,
                 "batchMaxParallelism": KOKORO_BATCH_MAX_PARALLEL,
                 "chunking": {
                     "hi": SEGMENTATION_CHUNKING_PROFILES.get("hi", {}),
@@ -540,11 +630,21 @@ def _synthesize_item(payload: SynthesizeRequest) -> Tuple[bytes, Dict[str, objec
 
 @app.post("/synthesize")
 def synthesize(payload: SynthesizeRequest) -> Response:
-    wav_bytes, _, trace_id = _synthesize_item(payload)
+    wav_bytes, meta, trace_id = _synthesize_item(payload)
+    diagnostics = {
+        "chunkCount": int(meta.get("chunkCount") or 0),
+        "chunkMaxChars": int(meta.get("chunkMaxChars") or 0),
+        "joinCrossfadeMs": int(meta.get("joinCrossfadeMs") or 0),
+        "pauseInsertions": int(meta.get("pauseInsertions") or 0),
+        "mergeStrategy": str(meta.get("mergeStrategy") or "concatenate"),
+    }
     return Response(
         content=wav_bytes,
         media_type="audio/wav",
-        headers={"X-VoiceFlow-Trace-Id": trace_id},
+        headers={
+            "X-VoiceFlow-Trace-Id": trace_id,
+            "X-VoiceFlow-Diagnostics": quote(json.dumps(diagnostics, ensure_ascii=True, separators=(",", ":")), safe=""),
+        },
     )
 
 
@@ -563,7 +663,7 @@ def synthesize_batch(payload: BatchSynthesizeRequest) -> JSONResponse:
             },
         )
 
-    requested_parallelism = payload.parallelism if payload.parallelism is not None else KOKORO_BATCH_MAX_PARALLEL
+    requested_parallelism = payload.parallelism if payload.parallelism is not None else KOKORO_BATCH_DEFAULT_PARALLEL
     if requested_parallelism < 1:
         raise HTTPException(status_code=400, detail="parallelism must be >= 1.")
     if requested_parallelism > KOKORO_BATCH_MAX_PARALLEL:

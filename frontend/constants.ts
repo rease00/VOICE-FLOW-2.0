@@ -11,68 +11,68 @@ import { createEmptyVfUsageStats, createEmptyWalletStats } from './services/usag
 
 export const VOICES: VoiceOption[] = [
   // American English Voices
-  { id: 'v1', name: 'David', gender: 'Male', accent: 'American English', geminiVoiceName: 'Fenrir' },
-  { id: 'v2', name: 'Sarah', gender: 'Female', accent: 'American English', geminiVoiceName: 'Kore' },
-  { id: 'v3', name: 'Marcus', gender: 'Male', accent: 'American English', geminiVoiceName: 'Alnilam' },
-  { id: 'v4', name: 'Jennifer', gender: 'Female', accent: 'American English', geminiVoiceName: 'Leda' },
-  { id: 'v5', name: 'Robert', gender: 'Male', accent: 'American English', geminiVoiceName: 'Iapetus' },
-  { id: 'v6', name: 'Jessica', gender: 'Female', accent: 'American English', geminiVoiceName: 'Autonoe' },
-  { id: 'v7', name: 'William', gender: 'Male', accent: 'American English', geminiVoiceName: 'Enceladus' },
-  { id: 'v8', name: 'Ashley', gender: 'Female', accent: 'American English', geminiVoiceName: 'Erinome' },
+  { id: 'v1', name: 'Arjun India Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'Fenrir' },
+  { id: 'v2', name: 'Meera India Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'Kore' },
+  { id: 'v3', name: 'Ethan US Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'Alnilam' },
+  { id: 'v4', name: 'Ava US Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'Leda' },
+  { id: 'v5', name: 'Oliver UK Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'Iapetus' },
+  { id: 'v6', name: 'Emily UK Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'Autonoe' },
+  { id: 'v7', name: 'Liam Canada Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'Enceladus' },
+  { id: 'v8', name: 'Sophie Canada Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'Erinome' },
   
   // British English Voices
-  { id: 'v9', name: 'Michael', gender: 'Male', accent: 'British English', geminiVoiceName: 'Puck' },
-  { id: 'v10', name: 'Emily', gender: 'Female', accent: 'British English', geminiVoiceName: 'Charon' },
-  { id: 'v11', name: 'Oliver', gender: 'Male', accent: 'British English', geminiVoiceName: 'Achernar' },
-  { id: 'v12', name: 'Charlotte', gender: 'Female', accent: 'British English', geminiVoiceName: 'Despina' },
-  { id: 'v13', name: 'George', gender: 'Male', accent: 'British English', geminiVoiceName: 'Algenib' },
-  { id: 'v14', name: 'Victoria', gender: 'Female', accent: 'British English', geminiVoiceName: 'Algieba' },
+  { id: 'v9', name: 'Noah Australia Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'Puck' },
+  { id: 'v10', name: 'Isla Australia Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'Charon' },
+  { id: 'v11', name: 'Kenji Japan Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'Achernar' },
+  { id: 'v12', name: 'Yui Japan Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'Despina' },
+  { id: 'v13', name: 'Lucas Brazil Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'Algenib' },
+  { id: 'v14', name: 'Camila Brazil Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'Algieba' },
   
   // Australian English Voices
-  { id: 'v15', name: 'James', gender: 'Male', accent: 'Australian English', geminiVoiceName: 'Zephyr' },
-  { id: 'v16', name: 'Sophie', gender: 'Female', accent: 'Australian English', geminiVoiceName: 'Callirrhoe' },
-  { id: 'v17', name: 'Jack', gender: 'Male', accent: 'Australian English', geminiVoiceName: 'Achird' },
-  { id: 'v18', name: 'Olivia', gender: 'Female', accent: 'Australian English', geminiVoiceName: 'Aoede' },
+  { id: 'v15', name: 'Mateo Spain Male', gender: 'Male', accent: 'Australian English', geminiVoiceName: 'Zephyr' },
+  { id: 'v16', name: 'Valentina Spain Female', gender: 'Female', accent: 'Australian English', geminiVoiceName: 'Callirrhoe' },
+  { id: 'v17', name: 'Adi India Boy', gender: 'Male', accent: 'Australian English', geminiVoiceName: 'Achird' },
+  { id: 'v18', name: 'Tara India Girl', gender: 'Female', accent: 'Australian English', geminiVoiceName: 'Aoede' },
   
   // Canadian / Other
-  { id: 'v19', name: 'Nathan', gender: 'Male', accent: 'Canadian English', geminiVoiceName: 'Gacrux' },
-  { id: 'v20', name: 'Emma', gender: 'Female', accent: 'Canadian English', geminiVoiceName: 'Laomedeia' },
-  { id: 'v21', name: 'Liam', gender: 'Male', accent: 'Canadian English', geminiVoiceName: 'Orus' },
+  { id: 'v19', name: 'Raghu India Elder', gender: 'Male', accent: 'Canadian English', geminiVoiceName: 'Gacrux' },
+  { id: 'v20', name: 'Grace UK Elder', gender: 'Female', accent: 'Canadian English', geminiVoiceName: 'Laomedeia' },
+  { id: 'v21', name: 'Noir Novel Artist', gender: 'Male', accent: 'Canadian English', geminiVoiceName: 'Orus' },
   
   // European/Distinctive
-  { id: 'v22', name: 'Connor', gender: 'Male', accent: 'Irish English', geminiVoiceName: 'Pulcherrima' },
-  { id: 'v23', name: 'Siobhan', gender: 'Female', accent: 'Irish English', geminiVoiceName: 'Rasalgethi' },
-  { id: 'v24', name: 'Patrick', gender: 'Male', accent: 'Irish English', geminiVoiceName: 'Sadachbia' },
-  { id: 'v25', name: 'Duncan', gender: 'Male', accent: 'Scottish English', geminiVoiceName: 'Sadaltager' },
-  { id: 'v26', name: 'Isla', gender: 'Female', accent: 'Scottish English', geminiVoiceName: 'Schedar' },
+  { id: 'v22', name: 'Lyris Novel Artist', gender: 'Female', accent: 'Irish English', geminiVoiceName: 'Pulcherrima' },
+  { id: 'v23', name: 'Hans Germany Male', gender: 'Male', accent: 'Irish English', geminiVoiceName: 'Rasalgethi' },
+  { id: 'v24', name: 'Anna Germany Female', gender: 'Female', accent: 'Irish English', geminiVoiceName: 'Sadachbia' },
+  { id: 'v25', name: 'Pierre France Male', gender: 'Male', accent: 'Scottish English', geminiVoiceName: 'Sadaltager' },
+  { id: 'v26', name: 'Claire France Female', gender: 'Female', accent: 'Scottish English', geminiVoiceName: 'Schedar' },
   
   // Indian English
-  { id: 'v27', name: 'Rajesh', gender: 'Male', accent: 'Indian English', geminiVoiceName: 'Sulafat' },
-  { id: 'v28', name: 'Priya', gender: 'Female', accent: 'Indian English', geminiVoiceName: 'Umbriel' },
-  { id: 'v29', name: 'Arun', gender: 'Male', accent: 'Indian English', geminiVoiceName: 'Vindemiatrix' },
-  { id: 'v30', name: 'Anjali', gender: 'Female', accent: 'Indian English', geminiVoiceName: 'Zubenelgenubi' }
+  { id: 'v27', name: 'Omar UAE Male', gender: 'Male', accent: 'Indian English', geminiVoiceName: 'Sulafat' },
+  { id: 'v28', name: 'Leila UAE Female', gender: 'Female', accent: 'Indian English', geminiVoiceName: 'Umbriel' },
+  { id: 'v29', name: 'Ivan Russia Male', gender: 'Male', accent: 'Indian English', geminiVoiceName: 'Vindemiatrix' },
+  { id: 'v30', name: 'Alina Russia Female', gender: 'Female', accent: 'Indian English', geminiVoiceName: 'Zubenelgenubi' }
 ];
 
 // ============================================================================
 // KOKORO VOICES - Aligned with local Kokoro runtime voice registry
 // ============================================================================
 export const KOKORO_VOICES: VoiceOption[] = [
-  { id: 'af_heart', name: 'Heart', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_heart', country: 'United States', ageGroup: 'Adult' },
-  { id: 'af_bella', name: 'Bella', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_bella', country: 'United States', ageGroup: 'Adult' },
-  { id: 'af_nova', name: 'Nova', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_nova', country: 'United States', ageGroup: 'Adult' },
-  { id: 'af_sarah', name: 'Sarah', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_sarah', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_fenrir', name: 'Fenrir', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_fenrir', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_michael', name: 'Michael', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_michael', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_onyx', name: 'Onyx', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_onyx', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_echo', name: 'Echo', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_echo', country: 'United States', ageGroup: 'Adult' },
-  { id: 'bf_emma', name: 'Emma', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_emma', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bf_isabella', name: 'Isabella', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_isabella', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bm_george', name: 'George', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_george', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bm_fable', name: 'Fable', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_fable', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'hf_alpha', name: 'Hindi Alpha', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_alpha', country: 'India', ageGroup: 'Adult' },
-  { id: 'hf_beta', name: 'Hindi Beta', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_beta', country: 'India', ageGroup: 'Adult' },
-  { id: 'hm_omega', name: 'Hindi Omega', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_omega', country: 'India', ageGroup: 'Adult' },
-  { id: 'hm_psi', name: 'Hindi Psi', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_psi', country: 'India', ageGroup: 'Adult' },
+  { id: 'af_heart', name: 'Meera India Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_heart', country: 'United States', ageGroup: 'Adult' },
+  { id: 'af_bella', name: 'Ava US Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_bella', country: 'United States', ageGroup: 'Adult' },
+  { id: 'af_nova', name: 'Emily UK Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_nova', country: 'United States', ageGroup: 'Adult' },
+  { id: 'af_sarah', name: 'Sophie Canada Female', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_sarah', country: 'United States', ageGroup: 'Adult' },
+  { id: 'am_fenrir', name: 'Arjun India Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_fenrir', country: 'United States', ageGroup: 'Adult' },
+  { id: 'am_michael', name: 'Ethan US Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_michael', country: 'United States', ageGroup: 'Adult' },
+  { id: 'am_onyx', name: 'Oliver UK Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_onyx', country: 'United States', ageGroup: 'Adult' },
+  { id: 'am_echo', name: 'Liam Canada Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_echo', country: 'United States', ageGroup: 'Adult' },
+  { id: 'bf_emma', name: 'Isla Australia Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_emma', country: 'United Kingdom', ageGroup: 'Adult' },
+  { id: 'bf_isabella', name: 'Yui Japan Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_isabella', country: 'United Kingdom', ageGroup: 'Adult' },
+  { id: 'bm_george', name: 'Noah Australia Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_george', country: 'United Kingdom', ageGroup: 'Adult' },
+  { id: 'bm_fable', name: 'Kenji Japan Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_fable', country: 'United Kingdom', ageGroup: 'Adult' },
+  { id: 'hf_alpha', name: 'Meera India Female', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_alpha', country: 'India', ageGroup: 'Adult' },
+  { id: 'hf_beta', name: 'Leila UAE Female', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_beta', country: 'India', ageGroup: 'Adult' },
+  { id: 'hm_omega', name: 'Omar UAE Male', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_omega', country: 'India', ageGroup: 'Adult' },
+  { id: 'hm_psi', name: 'Raghu India Elder', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_psi', country: 'India', ageGroup: 'Adult' },
 ];
 
 // ============================================================================

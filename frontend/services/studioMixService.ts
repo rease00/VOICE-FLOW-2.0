@@ -11,10 +11,17 @@ function getAudioContext(): AudioContext {
 
 async function fetchTrackBuffer(url: string): Promise<AudioBuffer> {
   const ctx = getAudioContext();
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to load music track (${res.status}).`);
-  const data = await res.arrayBuffer();
-  return await ctx.decodeAudioData(data);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.arrayBuffer();
+    if (!data.byteLength) throw new Error("Empty audio data");
+    // Safari workaround: copy buffer to prevent mutation
+    return await ctx.decodeAudioData(data.slice(0));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load music track from ${url}: ${message}`);
+  }
 }
 
 export async function applyStudioAudioMix(

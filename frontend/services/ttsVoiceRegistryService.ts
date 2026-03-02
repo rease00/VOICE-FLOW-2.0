@@ -1,5 +1,6 @@
 import { KOKORO_VOICES, VOICES } from '../constants';
 import { GenerationSettings, VoiceOption } from '../types';
+import { fetchTtsEngineVoices } from '../src/shared/api/gatewayClient';
 
 export type RuntimeVoiceCatalogMap = Record<GenerationSettings['engine'], VoiceOption[]>;
 
@@ -7,8 +8,6 @@ const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
   GEM: [],
   KOKORO: [],
 };
-
-const normalizeUrl = (url?: string): string => (url || '').trim().replace(/\/+$/, '');
 
 const inferCountryFromAccent = (accent?: string): string => {
   const value = String(accent || '').toLowerCase();
@@ -48,30 +47,15 @@ const normalizeAgeGroup = (raw: unknown): string => {
   return value;
 };
 
-const fetchJson = async (url: string, timeoutMs: number): Promise<any> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`${response.status}: ${detail}`);
-    }
-    return response.json();
-  } finally {
-    clearTimeout(timer);
-  }
+const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption): VoiceOption => {
+  const out: VoiceOption = {
+    ...voice,
+    country: voice.country || inferCountryFromAccent(voice.accent),
+    ageGroup: voice.ageGroup || 'Unknown',
+    engine,
+  };
+  return out;
 };
-
-const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption): VoiceOption => ({
-  ...voice,
-  country: voice.country || inferCountryFromAccent(voice.accent),
-  ageGroup: voice.ageGroup || 'Unknown',
-  engine,
-});
 
 export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => {
   if (engine === 'GEM') return VOICES.map((voice) => asEngineVoice('GEM', voice));
@@ -80,18 +64,18 @@ export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): Vo
 
 const toVoiceOption = (
   engine: GenerationSettings['engine'],
-  raw: Record<string, any>,
+  raw: any,
   index: number
 ): VoiceOption => {
   const id = String(raw.voice_id || raw.id || raw.voiceId || raw.voice || `voice_${index}`).trim();
-  const name = String(raw.name || raw.voice || raw.label || id).trim();
+  const name = String(raw.mapped_name || raw.name || raw.voice || raw.label || id).trim();
   const accent = String(raw.accent || raw.language || 'Unknown').trim();
   const gender = normalizeGender(raw.gender);
   const ageGroup = normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age);
   const country = String(raw.country || raw.country_code || inferCountryFromAccent(accent)).trim() || 'Unknown';
   const geminiVoiceName = String(raw.voice || raw.voice_id || raw.id || id).trim();
 
-  return {
+  const output: VoiceOption = {
     id,
     name,
     gender,
@@ -100,49 +84,54 @@ const toVoiceOption = (
     country,
     ageGroup,
     engine,
-    source: typeof raw.source === 'string' ? raw.source : undefined,
-    isDownloaded: typeof raw.is_downloaded === 'boolean' ? raw.is_downloaded : undefined,
   };
+  if (typeof raw.source === 'string') {
+    output.source = raw.source;
+  }
+  if (typeof raw.is_downloaded === 'boolean') {
+    output.isDownloaded = raw.is_downloaded;
+  } else if (typeof raw.reference_exists === 'boolean') {
+    output.isDownloaded = raw.reference_exists;
+  }
+  if (typeof raw.preview_url === 'string' && raw.preview_url.trim()) {
+    output.previewUrl = raw.preview_url.trim();
+  }
+  if (!output.source && typeof raw.reference_path === 'string' && raw.reference_path.trim()) {
+    output.source = raw.reference_path.trim();
+  }
+  return output;
 };
 
 export const fetchEngineRuntimeVoices = async (
   engine: GenerationSettings['engine'],
-  runtimeUrl: string,
-  timeoutMs: number = 7000
+  _runtimeUrl: string,
+  _timeoutMs: number = 7000
 ): Promise<VoiceOption[]> => {
-  if (engine === 'GEM') {
-    return getStaticVoiceFallback('GEM');
-  }
-
-  const baseUrl = normalizeUrl(runtimeUrl);
-  if (!baseUrl) return [];
-
-  const payload = await fetchJson(`${baseUrl}/v1/voices`, timeoutMs);
+  const payload = await fetchTtsEngineVoices(engine);
   const voices = Array.isArray(payload?.voices) ? payload.voices : [];
-  return voices.map((voice: Record<string, any>, index: number) => toVoiceOption(engine, voice, index));
+  return voices.map((voice, index: number) => toVoiceOption(engine, voice, index));
 };
 
 export const fetchRuntimeVoiceRegistry = async (
-  runtimeUrls: Partial<Record<GenerationSettings['engine'], string>>,
-  timeoutMs: number = 7000
+  _runtimeUrls: Partial<Record<GenerationSettings['engine'], string>>,
+  _timeoutMs: number = 7000
 ): Promise<RuntimeVoiceCatalogMap> => {
   const entries: RuntimeVoiceCatalogMap = {
     ...EMPTY_CATALOG,
-    GEM: getStaticVoiceFallback('GEM'),
+    GEM: [],
   };
 
-  const engines: GenerationSettings['engine'][] = ['KOKORO'];
-  await Promise.all(
-    engines.map(async (engine) => {
-      const url = runtimeUrls[engine];
-      if (!url) return;
-      try {
-        entries[engine] = await fetchEngineRuntimeVoices(engine, url, timeoutMs);
-      } catch {
-        entries[engine] = [];
-      }
-    })
-  );
+  try {
+    entries.GEM = await fetchEngineRuntimeVoices('GEM', '');
+  } catch {
+    entries.GEM = getStaticVoiceFallback('GEM');
+  }
+
+  try {
+    entries.KOKORO = await fetchEngineRuntimeVoices('KOKORO', '');
+  } catch {
+    entries.KOKORO = [];
+  }
 
   return entries;
 };

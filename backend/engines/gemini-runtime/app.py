@@ -28,14 +28,27 @@ if str(RUNTIME_ROOT) not in sys.path:
 
 from shared.env_loader import load_backend_env_files
 from shared.gemini_allocator import (
+    AllocatorConfig,
     GeminiRateAllocator,
     LaneLease,
+    ModelLimit,
     api_key_fingerprint,
     estimate_text_tokens,
     load_allocator_config,
     normalize_model_name,
     parse_api_keys as parse_api_keys_shared,
     is_valid_api_key as is_valid_api_key_shared,
+)
+from shared.gemini_api_pools import (
+    POOL_NAMES,
+    duplicate_key_memberships,
+    flatten_pool_keys,
+    load_pool_config as load_pool_config_shared,
+    normalize_pool_config,
+    normalize_pool_name as normalize_pool_name_shared,
+    resolve_effective_keys as resolve_effective_keys_shared,
+    save_pool_config as save_pool_config_shared,
+    sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
 )
 from shared.gemini_multi_speaker import (
     build_studio_pair_groups as build_studio_pair_groups_shared,
@@ -53,7 +66,61 @@ except Exception:
     types = None
 
 APP_NAME = "gemini-runtime"
-ALLOCATOR_CONFIG = load_allocator_config()
+
+
+def _read_positive_int_env(name: str) -> Optional[int]:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _apply_allocator_env_overrides(config: AllocatorConfig) -> AllocatorConfig:
+    tts_rpm_override = _read_positive_int_env("GEMINI_TTS_ALLOCATOR_RPM")
+    tts_tpm_override = _read_positive_int_env("GEMINI_TTS_ALLOCATOR_TPM")
+    wait_timeout_override = _read_positive_int_env("GEMINI_ALLOCATOR_DEFAULT_WAIT_TIMEOUT_MS")
+
+    if (
+        tts_rpm_override is None
+        and tts_tpm_override is None
+        and wait_timeout_override is None
+    ):
+        return config
+
+    next_models: Dict[str, ModelLimit] = dict(config.models)
+    tts_route = list(config.routes.get("tts") or [])
+    if tts_rpm_override is not None or tts_tpm_override is not None:
+        for model_id in tts_route:
+            current = next_models.get(model_id)
+            if current is None:
+                continue
+            next_models[model_id] = ModelLimit(
+                model_id=current.model_id,
+                rpm=tts_rpm_override if tts_rpm_override is not None else int(current.rpm),
+                tpm=tts_tpm_override if tts_tpm_override is not None else int(current.tpm),
+                enabled_for=current.enabled_for,
+            )
+
+    return AllocatorConfig(
+        version=config.version,
+        window_seconds=int(config.window_seconds),
+        default_wait_timeout_ms=(
+            wait_timeout_override
+            if wait_timeout_override is not None
+            else int(config.default_wait_timeout_ms)
+        ),
+        models=next_models,
+        routes={task: list(route) for task, route in config.routes.items()},
+    )
+
+
+ALLOCATOR_CONFIG = _apply_allocator_env_overrides(load_allocator_config())
 TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", ALLOCATOR_CONFIG.routes["tts"][0]).strip()
 if normalize_model_name(TTS_MODEL) not in ALLOCATOR_CONFIG.routes["tts"]:
     TTS_MODEL = ALLOCATOR_CONFIG.routes["tts"][0]
@@ -61,6 +128,9 @@ SERVER_API_KEY = (os.getenv("API_KEY") or os.getenv("GEMINI_API_KEY") or "").str
 SERVER_API_KEYS_RAW = os.getenv("GEMINI_API_KEYS", "")
 GEMINI_API_KEYS_FILE = str(os.getenv("GEMINI_API_KEYS_FILE") or "").strip()
 DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
+GEMINI_API_POOLS_FILE = (
+    str(os.getenv("GEMINI_API_POOLS_FILE") or (RUNTIME_ROOT / "config" / "gemini_api_pools.json")).strip()
+)
 TTS_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["tts"])
 TEXT_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["text"])
 OCR_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["ocr"])
@@ -84,8 +154,35 @@ GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS = max(
     1000,
     int(os.getenv("GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS", "90000")),
 )
+GEMINI_TTS_ADMISSION_MAX_WAIT_MS = max(
+    1000,
+    int(os.getenv("GEMINI_TTS_ADMISSION_MAX_WAIT_MS", "18000")),
+)
+GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS = max(
+    0,
+    int(os.getenv("GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS", "1200")),
+)
 GEMINI_BATCH_MAX_ITEMS = max(1, int(os.getenv("GEMINI_BATCH_MAX_ITEMS", "64")))
-GEMINI_BATCH_MAX_PARALLEL = max(1, int(os.getenv("GEMINI_BATCH_MAX_PARALLEL", "4")))
+GEMINI_BATCH_DEFAULT_PARALLEL = max(
+    1,
+    int(
+        (
+            os.getenv("GEMINI_BATCH_DEFAULT_PARALLEL")
+            or os.getenv("GEMINI_BATCH_MAX_PARALLEL")
+            or "4"
+        )
+    ),
+)
+GEMINI_BATCH_MAX_PARALLEL = max(
+    GEMINI_BATCH_DEFAULT_PARALLEL,
+    int(
+        (
+            os.getenv("GEMINI_BATCH_PARALLEL_LIMIT")
+            or os.getenv("GEMINI_BATCH_MAX_PARALLEL")
+            or "8"
+        )
+    ),
+)
 GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY = 7
 GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS = max(
     0,
@@ -100,6 +197,9 @@ _KEY_USAGE_DAY_KEY = time.strftime("%Y-%m-%d", time.gmtime())
 _SERVER_API_KEY_POOL: tuple[str, ...] = tuple()
 _SERVER_API_KEY_SET: frozenset[str] = frozenset()
 _SERVER_POOL_NEXT_INDEX = 0
+_API_POOLS_LOCK = threading.Lock()
+_API_POOLS_CACHE: Optional[dict[str, Any]] = None
+_API_POOLS_META: dict[str, Any] = {}
 _LEGACY_ACTIVE_LEASES: Dict[str, list[LaneLease]] = {}
 _RUNTIME_ALLOCATOR = GeminiRateAllocator(
     ALLOCATOR_CONFIG,
@@ -113,16 +213,24 @@ ERROR_CODE_API_KEY_MISSING = "GEMINI_API_KEY_MISSING"
 ERROR_CODE_RUNTIME_SDK_UNAVAILABLE = "GEMINI_RUNTIME_SDK_UNAVAILABLE"
 ERROR_CODE_ALL_KEYS_AUTH_FAILED = "GEMINI_ALL_KEYS_AUTH_FAILED"
 ERROR_CODE_ALL_KEYS_RATE_LIMITED = "GEMINI_ALL_KEYS_RATE_LIMITED"
+ERROR_CODE_KEY_POOL_OVERLOADED = "GEMINI_KEY_POOL_OVERLOADED"
 ERROR_CODE_KEY_POOL_TIMEOUT = "GEMINI_KEY_POOL_TIMEOUT"
+ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT = "GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT"
+ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT = "GEMINI_UPSTREAM_REQUEST_TIMEOUT"
 ERROR_CODE_UPSTREAM_MODEL_FAILED = "GEMINI_UPSTREAM_MODEL_FAILED"
 KEY_POOL_MISSING_SUMMARY = (
     "Gemini key pool is empty. Configure GEMINI_API_KEYS_FILE (preferred), GEMINI_API_KEYS, or GEMINI_API_KEY."
 )
 MAX_PUBLIC_SUMMARY_ITEMS = 3
 MAX_PUBLIC_SUMMARY_CHARS = 220
+MAX_ERROR_CLASS_EVENTS = 300
+_ERROR_CLASS_LOCK = threading.Lock()
+_ERROR_CLASS_EVENTS: list[Dict[str, Any]] = []
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
@@ -254,6 +362,7 @@ class SynthesizeRequest(BaseModel):
     speaker: Optional[str] = None
     trace_id: Optional[str] = None
     return_line_chunks: Optional[bool] = None
+    poolHint: Optional[str] = None
 
 
 class BatchSynthesizeItem(SynthesizeRequest):
@@ -272,6 +381,14 @@ class TextGenerateRequest(BaseModel):
     apiKey: Optional[str] = ""
     temperature: float = 0.7
     trace_id: Optional[str] = None
+
+
+class ApiPoolsConfigUpdateRequest(BaseModel):
+    version: Optional[int] = None
+    pools: dict[str, Any]
+    fallbackChains: Optional[dict[str, Any]] = None
+    constraints: Optional[dict[str, Any]] = None
+    sourcePolicy: Optional[dict[str, Any]] = None
 
 
 def pcm16_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
@@ -442,11 +559,104 @@ def _build_server_api_key_pool() -> list[str]:
     return pool
 
 
-def _resolve_request_key_plan(request_key: str) -> tuple[list[str], Optional[str]]:
+def _resolve_api_pools_file_path() -> Path:
+    configured = str(os.getenv("GEMINI_API_POOLS_FILE") or GEMINI_API_POOLS_FILE).strip()
+    path = Path(configured).expanduser()
+    if path.is_absolute():
+        return path
+    return (RUNTIME_ROOT / path).resolve()
+
+
+def _sync_authoritative_runtime_free_pool(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    configured_file_path = _configured_key_file_path()
+    if configured_file_path:
+        candidate = Path(configured_file_path).expanduser()
+        if candidate.is_absolute():
+            resolved_file_path = candidate.resolve()
+        else:
+            runtime_candidate = (RUNTIME_ROOT / candidate).resolve()
+            resolved_file_path = runtime_candidate if runtime_candidate.exists() else (WORKSPACE_ROOT / candidate).resolve()
+    else:
+        resolved_file_path = DEFAULT_GEMINI_API_KEYS_FILE.resolve()
+    file_exists = False
+    file_keys: list[str] = []
+    try:
+        file_exists = bool(resolved_file_path.exists() and resolved_file_path.is_file())
+        if file_exists:
+            file_keys = parse_api_keys(
+                resolved_file_path.read_text(encoding="utf-8", errors="ignore")
+            )
+    except Exception:
+        file_exists = False
+        file_keys = []
+    return sync_authoritative_free_pool_shared(
+        config,
+        file_keys,
+        str(resolved_file_path),
+        file_exists=file_exists,
+        failure_mode="keep_last_good",
+    )
+
+
+def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+    global _API_POOLS_CACHE, _API_POOLS_META
+    with _API_POOLS_LOCK:
+        if not force and isinstance(_API_POOLS_CACHE, dict):
+            return dict(_API_POOLS_CACHE), dict(_API_POOLS_META)
+        file_path = _resolve_api_pools_file_path()
+        bootstrap_keys = list(_SERVER_API_KEY_POOL)
+        config, meta = load_pool_config_shared(
+            file_path=file_path,
+            firestore_db=None,
+            prefer_firestore=False,
+            bootstrap_free_keys=bootstrap_keys,
+        )
+        if not flatten_pool_keys(config):
+            legacy_pool = _build_server_api_key_pool()
+            if legacy_pool:
+                config = normalize_pool_config(config)
+                config["pools"]["free"]["keys"] = list(legacy_pool)
+        sync_warnings: list[str] = []
+        config, synced_changed, sync_warnings = _sync_authoritative_runtime_free_pool(config)
+        if synced_changed:
+            try:
+                config = save_pool_config_shared(
+                    file_path=file_path,
+                    config=config,
+                    firestore_db=None,
+                )
+            except Exception:
+                sync_warnings.append(
+                    "Authoritative free-pool sync could not be persisted; using in-memory pool config."
+                )
+        meta = dict(meta if isinstance(meta, dict) else {})
+        meta["warnings"] = list(sync_warnings)
+        meta["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
+        _API_POOLS_CACHE = dict(config)
+        _API_POOLS_META = dict(meta)
+        all_keys = flatten_pool_keys(config)
+        if all_keys:
+            _RUNTIME_ALLOCATOR.ensure_keys(all_keys)
+        return dict(config), dict(meta)
+
+
+def _pool_keys_for_hint(pool_hint: Optional[str]) -> list[str]:
+    config, _meta = _load_api_pool_config()
+    return resolve_effective_keys_shared(config, normalize_pool_name_shared(pool_hint))
+
+
+def _resolve_request_key_plan(request_key: str, pool_hint: Optional[str] = None) -> tuple[list[str], Optional[str]]:
     request_token = str(request_key or "").strip()
-    primary_pool = list(_SERVER_API_KEY_POOL)
+    primary_pool = _pool_keys_for_hint(pool_hint)
+    meta_source = str((_API_POOLS_META or {}).get("source") or "").strip().lower()
+    if meta_source in {"default", "bootstrap"}:
+        primary_pool = list(_SERVER_API_KEY_POOL)
+    if not primary_pool:
+        primary_pool = list(_SERVER_API_KEY_POOL)
     fallback_request_key: Optional[str] = None
-    if request_token and _is_valid_gemini_api_key(request_token) and request_token not in _SERVER_API_KEY_SET:
+    if request_token and _is_valid_gemini_api_key(request_token) and request_token not in set(primary_pool):
         fallback_request_key = request_token
     if not primary_pool and fallback_request_key:
         primary_pool = [fallback_request_key]
@@ -454,8 +664,8 @@ def _resolve_request_key_plan(request_key: str) -> tuple[list[str], Optional[str
     return primary_pool, fallback_request_key
 
 
-def resolve_request_api_key_pool(request_key: str) -> list[str]:
-    primary_pool, fallback_request_key = _resolve_request_key_plan(request_key)
+def resolve_request_api_key_pool(request_key: str, pool_hint: Optional[str] = "pro_plus") -> list[str]:
+    primary_pool, fallback_request_key = _resolve_request_key_plan(request_key, pool_hint=pool_hint)
     if fallback_request_key:
         return [*primary_pool, fallback_request_key]
     return primary_pool
@@ -474,20 +684,44 @@ def _refresh_server_api_key_pool() -> tuple[str, ...]:
         _SERVER_POOL_NEXT_INDEX = 0
     if next_pool:
         _RUNTIME_ALLOCATOR.ensure_keys(list(next_pool))
+    _load_api_pool_config(force=True)
     return next_pool
 
 
-def _ensure_runtime_pool_or_raise(trace_id: str, api_key: Optional[str] = None) -> tuple[list[str], Optional[str], list[str]]:
-    primary_key_pool, fallback_request_key = _resolve_request_key_plan(str(api_key or "").strip())
+def _ensure_runtime_pool_or_raise(
+    trace_id: str,
+    api_key: Optional[str] = None,
+    pool_hint: Optional[str] = None,
+) -> tuple[list[str], Optional[str], list[str]]:
+    primary_key_pool, fallback_request_key = _resolve_request_key_plan(
+        str(api_key or "").strip(),
+        pool_hint=pool_hint,
+    )
     effective_key_pool = list(primary_key_pool)
     if fallback_request_key:
         effective_key_pool.append(fallback_request_key)
 
-    if not effective_key_pool:
+    # When the in-memory server pool is empty, force a refresh before honoring cached config pools.
+    if not _SERVER_API_KEY_POOL and not str(api_key or "").strip():
         refreshed_pool = list(_refresh_server_api_key_pool())
         if refreshed_pool:
-            primary_key_pool = refreshed_pool
+            primary_key_pool = list(refreshed_pool)
+            fallback_request_key = None
+            effective_key_pool = list(refreshed_pool)
+
+    if not effective_key_pool:
+        _load_api_pool_config(force=True)
+        refreshed_pool = list(_refresh_server_api_key_pool())
+        if refreshed_pool:
+            primary_key_pool, fallback_request_key = _resolve_request_key_plan(
+                str(api_key or "").strip(),
+                pool_hint=pool_hint,
+            )
+            if not primary_key_pool:
+                primary_key_pool = refreshed_pool
             effective_key_pool = list(primary_key_pool)
+            if fallback_request_key and fallback_request_key not in effective_key_pool:
+                effective_key_pool.append(fallback_request_key)
 
     if not effective_key_pool:
         raise HTTPException(
@@ -582,6 +816,83 @@ def _key_snapshot(pool: list[str]) -> list[Dict[str, Any]]:
     if isinstance(keys, list):
         return keys
     return []
+
+
+def _build_pool_summary(pool_name: str, config: dict[str, Any]) -> dict[str, Any]:
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    direct_keys = list((pools.get(pool_name) or {}).get("keys") or [])
+    effective_keys = resolve_effective_keys_shared(config, pool_name)
+    snapshot = _RUNTIME_ALLOCATOR.snapshot(effective_keys)
+    pool_meta = snapshot.get("pool") if isinstance(snapshot.get("pool"), dict) else {}
+    return {
+        "pool": pool_name,
+        "directKeyCount": len(direct_keys),
+        "effectiveKeyCount": len(effective_keys),
+        "effectiveChain": list(config.get("fallbackChains", {}).get(pool_name) or []),
+        "allocator": {
+            "keyCount": int(pool_meta.get("keyCount") or 0),
+            "healthyKeys": int(pool_meta.get("healthyKeys") or 0),
+            "unhealthyKeys": int(pool_meta.get("unhealthyKeys") or 0),
+            "atLimitKeys": int(pool_meta.get("atLimitKeys") or 0),
+            "inFlightTotal": int(pool_meta.get("inFlightTotal") or 0),
+            "nextResetInMs": int(pool_meta.get("nextResetInMs") or 0),
+        },
+    }
+
+
+def _admin_api_pools_payload() -> dict[str, Any]:
+    config, meta = _load_api_pool_config()
+    duplicates = duplicate_key_memberships(config)
+    all_keys = flatten_pool_keys(config)
+    summaries = {
+        pool_name: _build_pool_summary(pool_name, config)
+        for pool_name in POOL_NAMES
+    }
+    return {
+        "ok": len(duplicates) == 0,
+        "engine": APP_NAME,
+        "timestampMs": int(time.time() * 1000),
+        "config": config,
+        "meta": meta,
+        "validation": {
+            "uniqueKeyMembership": bool(
+                (config.get("constraints") or {}).get("uniqueKeyMembership", True)
+            ),
+            "duplicateKeys": duplicates,
+        },
+        "warnings": list((meta or {}).get("warnings") or []),
+        "sourcePolicy": dict(config.get("sourcePolicy") or {}),
+        "poolSummaries": summaries,
+        "allKeyCount": len(all_keys),
+    }
+
+
+def _admin_api_pools_usage_payload() -> dict[str, Any]:
+    config, meta = _load_api_pool_config()
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    payload: dict[str, Any] = {}
+    for pool_name in POOL_NAMES:
+        direct_keys = list((pools.get(pool_name) or {}).get("keys") or [])
+        effective_keys = resolve_effective_keys_shared(config, pool_name)
+        direct_snapshot = _RUNTIME_ALLOCATOR.snapshot(direct_keys)
+        effective_snapshot = _RUNTIME_ALLOCATOR.snapshot(effective_keys)
+        payload[pool_name] = {
+            "pool": pool_name,
+            "directKeyCount": len(direct_keys),
+            "effectiveKeyCount": len(effective_keys),
+            "effectiveChain": list(config.get("fallbackChains", {}).get(pool_name) or []),
+            "direct": direct_snapshot,
+            "effective": effective_snapshot,
+        }
+    return {
+        "ok": True,
+        "engine": APP_NAME,
+        "timestampMs": int(time.time() * 1000),
+        "meta": meta,
+        "warnings": list((meta or {}).get("warnings") or []),
+        "sourcePolicy": dict(config.get("sourcePolicy") or {}),
+        "usage": payload,
+    }
 
 
 def discover_dynamic_tts_models(client: object, api_key: str) -> list[str]:
@@ -718,6 +1029,220 @@ def _retry_after_from_key_states(key_states: list[Dict[str, Any]]) -> int:
     return min(ready_values)
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _resolve_tts_route_model() -> str:
+    route = list(ALLOCATOR_CONFIG.routes.get("tts") or [])
+    if route:
+        return str(route[0] or "").strip()
+    return str(TTS_MODEL or "").strip()
+
+
+def _effective_tts_route_limits() -> Dict[str, Any]:
+    tts_model = _resolve_tts_route_model()
+    model_limit = ALLOCATOR_CONFIG.models.get(tts_model)
+    return {
+        "model": tts_model,
+        "rpm": max(0, int(model_limit.rpm)) if model_limit is not None else 0,
+        "tpm": max(0, int(model_limit.tpm)) if model_limit is not None else 0,
+        "windowSeconds": max(1, int(ALLOCATOR_CONFIG.window_seconds)),
+        "defaultWaitTimeoutMs": max(1, int(ALLOCATOR_CONFIG.default_wait_timeout_ms)),
+    }
+
+
+def _classification_for_error_code(error_code: str) -> str:
+    code = str(error_code or "").strip().upper()
+    if code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
+        return "upstream_timeout"
+    if code in {ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT, ERROR_CODE_KEY_POOL_TIMEOUT}:
+        return "acquire_timeout"
+    if code == ERROR_CODE_KEY_POOL_OVERLOADED:
+        return "capacity_overload"
+    if code == ERROR_CODE_ALL_KEYS_RATE_LIMITED:
+        return "rate_limited"
+    if code in {ERROR_CODE_ALL_KEYS_AUTH_FAILED, ERROR_CODE_API_KEY_MISSING}:
+        return "auth"
+    if code == ERROR_CODE_RUNTIME_SDK_UNAVAILABLE:
+        return "misconfig"
+    return "upstream_failure"
+
+
+def _record_error_classification(error_code: str) -> None:
+    classification = _classification_for_error_code(error_code)
+    now_ms = int(time.time() * 1000)
+    with _ERROR_CLASS_LOCK:
+        _ERROR_CLASS_EVENTS.append(
+            {
+                "ts": now_ms,
+                "classification": classification,
+                "errorCode": str(error_code or "").strip(),
+            }
+        )
+        if len(_ERROR_CLASS_EVENTS) > MAX_ERROR_CLASS_EVENTS:
+            del _ERROR_CLASS_EVENTS[: len(_ERROR_CLASS_EVENTS) - MAX_ERROR_CLASS_EVENTS]
+
+
+def _recent_error_class_counts() -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    with _ERROR_CLASS_LOCK:
+        events = list(_ERROR_CLASS_EVENTS)
+    for item in events:
+        classification = str(item.get("classification") or "").strip().lower()
+        if not classification:
+            continue
+        counts[classification] = counts.get(classification, 0) + 1
+    return counts
+
+
+print(
+    json.dumps(
+        {
+            "event": "allocator_limits",
+            "engine": APP_NAME,
+            "task": "tts",
+            "effectiveTtsLimits": _effective_tts_route_limits(),
+        },
+        ensure_ascii=True,
+    ),
+    flush=True,
+)
+
+
+def _estimate_tts_pool_pressure(key_pool: list[str], requested_tokens: int) -> Dict[str, Any]:
+    snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
+    key_states = list(snapshot.get("keys") or [])
+    model_entries = list(snapshot.get("models") or [])
+    tts_model = _resolve_tts_route_model()
+    safe_requested_tokens = max(1, int(requested_tokens or 1))
+
+    in_flight_total = 0
+    available_lanes = 0
+    nearest_ready_ms: Optional[int] = None
+    nearest_reset_ms: Optional[int] = None
+
+    for key_entry in key_states:
+        models = list((key_entry or {}).get("models") or [])
+        lane_entry = None
+        for model in models:
+            if str((model or {}).get("model") or "").strip() == tts_model:
+                lane_entry = model or {}
+                break
+        if lane_entry is None:
+            continue
+
+        ready_in_ms = max(0, _safe_int(lane_entry.get("readyInMs"), 0))
+        lane_usage = lane_entry.get("usage") or {}
+        lane_remaining = lane_entry.get("remaining") or {}
+        lane_window = lane_entry.get("window") or {}
+
+        rpm_remaining = max(0, _safe_int(lane_remaining.get("rpm"), 0))
+        tpm_remaining = max(0, _safe_int(lane_remaining.get("tpm"), 0))
+        in_flight_total += max(0, _safe_int(lane_usage.get("inFlightRequests"), 0))
+        reset_in_ms = max(0, _safe_int(lane_window.get("resetsInMs"), 0))
+
+        if ready_in_ms <= 0:
+            rpm_slots = max(0, rpm_remaining)
+            tpm_slots = max(0, tpm_remaining // safe_requested_tokens)
+            lane_slots = 0
+            if rpm_slots > 0 and tpm_slots > 0:
+                lane_slots = min(rpm_slots, tpm_slots)
+            available_lanes += max(0, lane_slots)
+            if lane_slots <= 0 and reset_in_ms > 0:
+                nearest_reset_ms = (
+                    reset_in_ms
+                    if nearest_reset_ms is None
+                    else min(nearest_reset_ms, reset_in_ms)
+                )
+        else:
+            nearest_ready_ms = (
+                ready_in_ms if nearest_ready_ms is None else min(nearest_ready_ms, ready_in_ms)
+            )
+
+    tts_model_entry = None
+    for model in model_entries:
+        if str((model or {}).get("model") or "").strip() == tts_model:
+            tts_model_entry = model or {}
+            break
+    if tts_model_entry:
+        pool_meta = tts_model_entry.get("pool") or {}
+        pool_reset = max(0, _safe_int(pool_meta.get("nextResetInMs"), 0))
+        if pool_reset > 0:
+            nearest_reset_ms = pool_reset if nearest_reset_ms is None else min(nearest_reset_ms, pool_reset)
+
+    estimated_wait_ms = 0
+    wait_candidates = [value for value in [nearest_ready_ms, nearest_reset_ms] if value is not None and int(value) > 0]
+    if available_lanes <= 0 and wait_candidates:
+        estimated_wait_ms = min(int(value) for value in wait_candidates)
+
+    retry_after_ms = max(
+        _retry_after_from_key_states(key_states),
+        int(estimated_wait_ms),
+    )
+    if in_flight_total <= 0:
+        in_flight_total = max(0, _safe_int((snapshot.get("pool") or {}).get("inFlightTotal"), 0))
+    return {
+        "keyPoolSize": len(key_pool),
+        "availableLanes": max(0, int(available_lanes)),
+        "inFlight": max(0, int(in_flight_total)),
+        "estimatedWaitMs": max(0, int(estimated_wait_ms)),
+        "retryAfterMs": max(0, int(retry_after_ms)),
+        "ttsModel": tts_model,
+        "keyStates": key_states,
+    }
+
+
+def _resolve_admission_wait_budget_ms(remaining_budget_ms: int) -> int:
+    remaining = max(1, int(remaining_budget_ms))
+    budget = min(remaining, GEMINI_TTS_ADMISSION_MAX_WAIT_MS)
+    if GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS > 0 and remaining > GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS:
+        budget = min(budget, remaining - GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS)
+    return max(1, int(budget))
+
+
+def _build_overload_detail_payload(
+    *,
+    trace_id: str,
+    speech_mode_requested: str,
+    window_index: int,
+    window_total: int,
+    attempt: int,
+    timeout_ms: int,
+    pressure: Dict[str, Any],
+) -> Dict[str, Any]:
+    retry_after_ms = max(250, int(pressure.get("retryAfterMs") or 0))
+    available_lanes = max(0, int(pressure.get("availableLanes") or 0))
+    estimated_wait_ms = max(retry_after_ms, int(pressure.get("estimatedWaitMs") or 0))
+    key_pool_size = max(0, int(pressure.get("keyPoolSize") or 0))
+    return {
+        "error": "Gemini key pool is temporarily overloaded.",
+        "errorCode": ERROR_CODE_KEY_POOL_OVERLOADED,
+        "classification": "capacity_overload",
+        "reason": "capacity_pressure",
+        "summary": (
+            f"Gemini TTS capacity is saturated (availableLanes={available_lanes}, "
+            f"keyPoolSize={key_pool_size})."
+        )[:220],
+        "trace_id": trace_id,
+        "timeoutMs": int(timeout_ms),
+        "retryAfterMs": retry_after_ms,
+        "estimatedWaitMs": estimated_wait_ms,
+        "keyPoolSize": key_pool_size,
+        "availableLanes": available_lanes,
+        "inFlight": max(0, int(pressure.get("inFlight") or 0)),
+        "ttsModel": str(pressure.get("ttsModel") or ""),
+        "windowIndex": max(1, int(window_index)),
+        "windowTotal": max(1, int(window_total)),
+        "attemptsUsed": max(0, int(attempt)),
+        "speechModeRequested": speech_mode_requested,
+        "keyStates": list(pressure.get("keyStates") or []),
+    }
+
+
 def _normalize_summary_fragment(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -762,9 +1287,48 @@ def _summarize_terminal_failure(
     return _truncate_summary(default_summary, MAX_PUBLIC_SUMMARY_CHARS)
 
 
-def _classify_terminal_error_code(model_attempts: list[Dict[str, Any]], timed_out: bool) -> str:
+def _classify_terminal_error_code(
+    model_attempts: list[Dict[str, Any]],
+    timed_out: bool,
+    pool_exhausted: bool,
+) -> str:
     if timed_out:
-        return ERROR_CODE_KEY_POOL_TIMEOUT
+        if pool_exhausted or not model_attempts:
+            error_code = ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT
+        else:
+            error_code = ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT
+            for attempt in model_attempts:
+                detail = str(attempt.get("error") or "").strip()
+                if _is_timeout_error(detail):
+                    error_code = ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT
+                    break
+        # #region agent log
+        try:
+            import json as _agent_json  # type: ignore[import-not-found]
+            with open("debug-d5d65f.log", "a", encoding="utf-8") as _agent_f:
+                _agent_f.write(
+                    _agent_json.dumps(
+                        {
+                            "sessionId": "d5d65f",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H_timeout_classification",
+                            "location": "backend/engines/gemini-runtime/app.py:_classify_terminal_error_code",
+                            "message": "Classified terminal timeout error code",
+                            "data": {
+                                "timed_out": bool(timed_out),
+                                "pool_exhausted": bool(pool_exhausted),
+                                "model_attempt_count": len(model_attempts),
+                                "error_code": error_code,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
+        return error_code
     if not model_attempts:
         return ERROR_CODE_UPSTREAM_MODEL_FAILED
     saw_auth = False
@@ -774,7 +1338,7 @@ def _classify_terminal_error_code(model_attempts: list[Dict[str, Any]], timed_ou
         detail = str(attempt.get("error") or "").strip()
         lowered = detail.lower()
         if _is_timeout_error(detail):
-            return ERROR_CODE_KEY_POOL_TIMEOUT
+            return ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT
         if _is_auth_error(detail):
             saw_auth = True
         elif _is_rate_limit_error(detail):
@@ -945,6 +1509,38 @@ def _build_studio_pair_groups(
     return build_studio_pair_groups_shared(line_map, speaker_voices, target_voice)
 
 
+def _resolve_adaptive_group_concurrency(
+    *,
+    groups: list[Dict[str, Any]],
+    requested_concurrency: int,
+    effective_key_pool: list[str],
+) -> tuple[int, Dict[str, Any]]:
+    concurrency_cap = max(1, int(requested_concurrency))
+    group_token_estimate = max(
+        1,
+        max(
+            (
+                estimate_text_tokens(str(group.get("text") or ""))
+                for group in groups
+            ),
+            default=1,
+        ),
+    )
+    pressure = _estimate_tts_pool_pressure(
+        key_pool=effective_key_pool,
+        requested_tokens=group_token_estimate,
+    )
+    available_lanes = max(1, int(pressure.get("availableLanes") or 0))
+    effective_concurrency = min(
+        concurrency_cap,
+        GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY,
+        len(groups),
+        max(1, len(effective_key_pool)),
+        available_lanes,
+    )
+    return max(1, int(effective_concurrency)), pressure
+
+
 def _synthesize_studio_pair_groups(
     *,
     trace_id: str,
@@ -967,14 +1563,11 @@ def _synthesize_studio_pair_groups(
     if not groups:
         raise HTTPException(status_code=400, detail="multi_speaker_line_map does not contain valid grouped dialogue.")
 
-    concurrency_cap = max(1, int(requested_concurrency))
-    effective_concurrency = min(
-        concurrency_cap,
-        GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY,
-        len(groups),
-        len(effective_key_pool),
+    effective_concurrency, pool_pressure = _resolve_adaptive_group_concurrency(
+        groups=groups,
+        requested_concurrency=requested_concurrency,
+        effective_key_pool=effective_key_pool,
     )
-    effective_concurrency = max(1, effective_concurrency)
     max_attempts = 2 if retry_once else 1
 
     _emit_stage_event(
@@ -987,6 +1580,8 @@ def _synthesize_studio_pair_groups(
             "groupCount": len(groups),
             "concurrency": effective_concurrency,
             "keyPoolSize": len(effective_key_pool),
+            "availableLanes": int(pool_pressure.get("availableLanes") or 0),
+            "estimatedWaitMs": int(pool_pressure.get("estimatedWaitMs") or 0),
             "retryOnce": bool(retry_once),
         },
     )
@@ -1129,6 +1724,8 @@ def _synthesize_studio_pair_groups(
         "lineCount": len(normalized_line_map),
         "concurrencyUsed": effective_concurrency,
         "keyPoolSize": len(effective_key_pool),
+        "availableLanes": int(pool_pressure.get("availableLanes") or 0),
+        "estimatedWaitMs": int(pool_pressure.get("estimatedWaitMs") or 0),
         "pauseSplitGroups": pause_split_groups,
         "durationSplitGroups": duration_split_groups,
         "lineChunkCount": len(ordered_line_chunks),
@@ -1370,8 +1967,12 @@ def _remaining_timeout_ms(started_at_ms: int, total_timeout_ms: int) -> int:
     return max(0, int(total_timeout_ms) - elapsed)
 
 
-def _resolve_tts_key_pool(api_key: Optional[str], trace_id: str) -> tuple[list[str], Optional[str], list[str]]:
-    return _ensure_runtime_pool_or_raise(trace_id=trace_id, api_key=api_key)
+def _resolve_tts_key_pool(
+    api_key: Optional[str],
+    trace_id: str,
+    pool_hint: Optional[str] = None,
+) -> tuple[list[str], Optional[str], list[str]]:
+    return _ensure_runtime_pool_or_raise(trace_id=trace_id, api_key=api_key, pool_hint=pool_hint)
 
 
 def _build_single_speech_config(language_code: str, voice_name: str) -> object:
@@ -1471,7 +2072,53 @@ def _synthesize_pcm_with_key_pool(
         remaining_budget_ms = _remaining_timeout_ms(started_at_ms, KEY_TOTAL_TIMEOUT_MS)
         if remaining_budget_ms <= 0:
             timed_out = True
+            # #region agent log
+            try:
+                import json as _agent_json  # type: ignore[import-not-found]
+                with open("debug-d5d65f.log", "a", encoding="utf-8") as _agent_f:
+                    _agent_f.write(
+                        _agent_json.dumps(
+                            {
+                                "sessionId": "d5d65f",
+                                "runId": "pre-fix",
+                                "hypothesisId": "H_timeout_budget",
+                                "location": "backend/engines/gemini-runtime/app.py:_synthesize_pcm_with_key_pool_loop_timeout",
+                                "message": "Key pool synthesis loop exhausted total timeout budget",
+                                "data": {
+                                    "timed_out": True,
+                                    "pool_exhausted": pool_exhausted,
+                                    "attempt": attempt,
+                                    "keyPoolSize": len(effective_key_pool),
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # #endregion
             break
+
+        pressure = _estimate_tts_pool_pressure(
+            key_pool=effective_key_pool,
+            requested_tokens=token_estimate,
+        )
+        admission_budget_ms = _resolve_admission_wait_budget_ms(remaining_budget_ms)
+        estimated_wait_ms = max(0, int(pressure.get("estimatedWaitMs") or 0))
+        available_lanes = max(0, int(pressure.get("availableLanes") or 0))
+        if available_lanes <= 0 and estimated_wait_ms > admission_budget_ms:
+            overload_payload = _build_overload_detail_payload(
+                trace_id=trace_id,
+                speech_mode_requested=speech_mode_requested,
+                window_index=window_index,
+                window_total=window_total,
+                attempt=attempt,
+                timeout_ms=KEY_TOTAL_TIMEOUT_MS,
+                pressure=pressure,
+            )
+            _emit_stage_event(trace_id, "synthesis", "overloaded", overload_payload)
+            raise RuntimeError(json.dumps(overload_payload, ensure_ascii=True))
 
         acquire = _RUNTIME_ALLOCATOR.acquire_for_task(
             task="tts",
@@ -1486,6 +2133,34 @@ def _synthesize_pcm_with_key_pool(
         if lease is None:
             timed_out = bool(acquire.timed_out)
             pool_exhausted = True
+            # #region agent log
+            try:
+                import json as _agent_json  # type: ignore[import-not-found]
+                with open("debug-d5d65f.log", "a", encoding="utf-8") as _agent_f:
+                    _agent_f.write(
+                        _agent_json.dumps(
+                            {
+                                "sessionId": "d5d65f",
+                                "runId": "pre-fix",
+                                "hypothesisId": "H_acquire_behavior",
+                                "location": "backend/engines/gemini-runtime/app.py:_synthesize_pcm_with_key_pool_acquire_none",
+                                "message": "Allocator acquire_for_task returned no lease",
+                                "data": {
+                                    "timed_out": bool(acquire.timed_out),
+                                    "waited_ms": int(acquire.waited_ms),
+                                    "retry_after_ms": int(acquire.retry_after_ms),
+                                    "pool_exhausted": True,
+                                    "remaining_budget_ms": remaining_budget_ms,
+                                    "keyPoolSize": len(effective_key_pool),
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # #endregion
             if acquire.retry_after_ms > 0:
                 _emit_stage_event(
                     trace_id,
@@ -1601,10 +2276,15 @@ def _synthesize_pcm_with_key_pool(
         last_exc=last_exc,
         default_summary="Gemini TTS synthesis failed after exhausting key/model attempts.",
     )
-    error_code = _classify_terminal_error_code(model_attempts=model_attempts, timed_out=timed_out)
+    error_code = _classify_terminal_error_code(
+        model_attempts=model_attempts,
+        timed_out=timed_out,
+        pool_exhausted=pool_exhausted,
+    )
     detail_payload = {
         "error": "Gemini model attempts failed.",
         "errorCode": error_code,
+        "classification": _classification_for_error_code(error_code),
         "summary": summary,
         "retryLimit": retry_limit,
         "attemptsUsed": attempt,
@@ -1677,7 +2357,11 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     else:
         requested_speech_mode = "single-speaker"
 
-    primary_key_pool, fallback_request_key, effective_key_pool = _resolve_tts_key_pool(payload.apiKey, trace_id=trace_id)
+    primary_key_pool, fallback_request_key, effective_key_pool = _resolve_tts_key_pool(
+        payload.apiKey,
+        trace_id=trace_id,
+        pool_hint=payload.poolHint,
+    )
     language_code = resolve_language_code(text, payload.language)
     speaker_hint = re.sub(r"\s+", " ", str(payload.speaker or "")).strip()
     word_count = count_words(text)
@@ -1885,12 +2569,26 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             error_payload["errorCode"] = ERROR_CODE_UPSTREAM_MODEL_FAILED
         if not str(error_payload.get("summary") or "").strip():
             error_payload["summary"] = str(error_payload.get("error") or "Gemini TTS synthesis failed.")[:220]
+        if not str(error_payload.get("classification") or "").strip():
+            error_payload["classification"] = _classification_for_error_code(str(error_payload.get("errorCode") or ""))
         error_payload["trace_id"] = trace_id
         if "retryAfterMs" not in error_payload:
             key_states = error_payload.get("keyStates") if isinstance(error_payload.get("keyStates"), list) else []
             error_payload["retryAfterMs"] = _retry_after_from_key_states(key_states)
         _emit_stage_event(trace_id, "failed", "error", error_payload)
-        raise HTTPException(status_code=502, detail=error_payload) from exc
+        error_code = str(error_payload.get("errorCode") or "").strip().upper()
+        _record_error_classification(error_code)
+        status_code = 502
+        if error_code in {
+            ERROR_CODE_KEY_POOL_OVERLOADED,
+            ERROR_CODE_KEY_POOL_TIMEOUT,
+            ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT,
+            ERROR_CODE_ALL_KEYS_RATE_LIMITED,
+        }:
+            status_code = 503
+        elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
+            status_code = 504
+        raise HTTPException(status_code=status_code, detail=error_payload) from exc
 
 
 app = FastAPI(title=APP_NAME)
@@ -1943,7 +2641,7 @@ def capabilities() -> JSONResponse:
             "supportsBatchSynthesis": True,
             "batchEndpoint": "/synthesize/batch",
             "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
-            "batchDefaultParallelism": GEMINI_BATCH_MAX_PARALLEL,
+            "batchDefaultParallelism": GEMINI_BATCH_DEFAULT_PARALLEL,
             "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
             "voiceCount": None,
             "emotionCount": 0,
@@ -1958,7 +2656,7 @@ def capabilities() -> JSONResponse:
                 "batchEndpoint": "/synthesize/batch",
                 "structuredEndpoint": "/synthesize/structured",
                 "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
-                "batchDefaultParallelism": GEMINI_BATCH_MAX_PARALLEL,
+                "batchDefaultParallelism": GEMINI_BATCH_DEFAULT_PARALLEL,
                 "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
                 "multiSpeakerMaxSpeakersPerCall": 2,
                 "multiSpeakerBatchingMode": "studio_pair_groups_with_line_map_windows",
@@ -1969,7 +2667,7 @@ def capabilities() -> JSONResponse:
 
 @app.get("/v1/admin/api-pool")
 def admin_api_pool() -> JSONResponse:
-    key_pool = resolve_request_api_key_pool("")
+    key_pool = resolve_request_api_key_pool("", pool_hint="pro_plus")
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
     payload = dict(snapshot)
     payload["ok"] = True
@@ -1977,12 +2675,23 @@ def admin_api_pool() -> JSONResponse:
     payload["timestampMs"] = int(time.time() * 1000)
     payload["configuredKeyFilePath"] = _configured_key_file_path()
     payload["keyFilePath"] = _resolved_key_file_path()
+    payload["effectiveTtsLimits"] = _effective_tts_route_limits()
+    payload["recentErrorClassCounts"] = _recent_error_class_counts()
+    config, meta = _load_api_pool_config()
+    payload["poolConfig"] = config
+    payload["poolConfigMeta"] = meta
+    payload["warnings"] = list((meta or {}).get("warnings") or [])
+    payload["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
     return JSONResponse(payload)
 
 
 @app.post("/v1/admin/api-pool/reload")
 def admin_api_pool_reload() -> JSONResponse:
-    key_pool = list(_refresh_server_api_key_pool())
+    refreshed_pool = list(_refresh_server_api_key_pool())
+    _load_api_pool_config(force=True)
+    key_pool = list(resolve_request_api_key_pool("", pool_hint="pro_plus"))
+    if not key_pool:
+        key_pool = list(refreshed_pool)
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
     payload = dict(snapshot if isinstance(snapshot, dict) else {})
     payload["ok"] = True
@@ -1992,7 +2701,88 @@ def admin_api_pool_reload() -> JSONResponse:
     payload["keyPoolSize"] = len(key_pool)
     payload["configuredKeyFilePath"] = _configured_key_file_path()
     payload["keyFilePath"] = _resolved_key_file_path()
+    payload["effectiveTtsLimits"] = _effective_tts_route_limits()
+    payload["recentErrorClassCounts"] = _recent_error_class_counts()
+    config, meta = _load_api_pool_config()
+    payload["poolConfig"] = config
+    payload["poolConfigMeta"] = meta
+    payload["warnings"] = list((meta or {}).get("warnings") or [])
+    payload["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
     return JSONResponse(payload)
+
+
+@app.get("/v1/admin/api-pools")
+def admin_api_pools() -> JSONResponse:
+    return JSONResponse(_admin_api_pools_payload())
+
+
+@app.put("/v1/admin/api-pools")
+def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest) -> JSONResponse:
+    current_config, _current_meta = _load_api_pool_config(force=True)
+    current_source_policy = dict(current_config.get("sourcePolicy") or {})
+    free_pool_locked = bool(current_source_policy.get("freePoolLocked"))
+    applied_overrides: list[str] = []
+    raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    normalized = normalize_pool_config(raw_payload)
+    if free_pool_locked:
+        current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
+        locked_free_keys = list((current_pools.get("free") or {}).get("keys") or [])
+        normalized["pools"]["free"]["keys"] = locked_free_keys
+        applied_overrides.append("free_pool_locked_by_api_file")
+    if current_source_policy:
+        normalized["sourcePolicy"] = dict(current_source_policy)
+    normalized, _sync_changed, sync_warnings = _sync_authoritative_runtime_free_pool(normalized)
+    duplicates = duplicate_key_memberships(normalized)
+    if duplicates and bool((normalized.get("constraints") or {}).get("uniqueKeyMembership", True)):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "duplicate_key_membership",
+                "duplicateKeys": duplicates,
+            },
+        )
+
+    saved = save_pool_config_shared(
+        file_path=_resolve_api_pools_file_path(),
+        config=normalized,
+        firestore_db=None,
+    )
+    _load_api_pool_config(force=True)
+    all_keys = flatten_pool_keys(saved)
+    if all_keys:
+        _RUNTIME_ALLOCATOR.ensure_keys(all_keys)
+    return JSONResponse(
+        {
+            "ok": True,
+            "reloaded": True,
+            "engine": APP_NAME,
+            "timestampMs": int(time.time() * 1000),
+            "config": saved,
+            "warnings": list(sync_warnings),
+            "sourcePolicy": dict(saved.get("sourcePolicy") or {}),
+            "appliedOverrides": applied_overrides,
+            "poolSummaries": {
+                pool_name: _build_pool_summary(pool_name, saved)
+                for pool_name in POOL_NAMES
+            },
+        }
+    )
+
+
+@app.post("/v1/admin/api-pools/reload")
+def admin_api_pools_reload() -> JSONResponse:
+    _load_api_pool_config(force=True)
+    key_pool = resolve_request_api_key_pool("", pool_hint="pro_plus")
+    if key_pool:
+        _RUNTIME_ALLOCATOR.ensure_keys(key_pool)
+    payload = _admin_api_pools_payload()
+    payload["reloaded"] = True
+    return JSONResponse(payload)
+
+
+@app.get("/v1/admin/api-pools/usage")
+def admin_api_pools_usage() -> JSONResponse:
+    return JSONResponse(_admin_api_pools_usage_payload())
 
 
 @app.post("/v1/generate-text")
@@ -2006,6 +2796,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
     primary_key_pool, fallback_request_key, effective_key_pool = _ensure_runtime_pool_or_raise(
         trace_id=trace_id,
         api_key=str(payload.apiKey or "").strip(),
+        pool_hint="pro_plus",
     )
 
     model_candidates = resolve_text_model_candidates()
@@ -2126,10 +2917,15 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
         last_exc=last_exc,
         default_summary="Gemini text generation failed after exhausting key/model attempts.",
     )
-    error_code = _classify_terminal_error_code(model_attempts=model_attempts, timed_out=timed_out)
+    error_code = _classify_terminal_error_code(
+        model_attempts=model_attempts,
+        timed_out=timed_out,
+        pool_exhausted=pool_exhausted,
+    )
     detail_payload: Dict[str, Any] = {
         "error": "Gemini text generation failed.",
         "errorCode": error_code,
+        "classification": _classification_for_error_code(error_code),
         "summary": summary,
         "retryLimit": attempt_budget,
         "attemptsUsed": attempt,
@@ -2145,7 +2941,18 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
         "modelAttempts": model_attempts[-50:],
         "keyStates": key_states,
     }
-    raise HTTPException(status_code=502, detail=detail_payload)
+    _record_error_classification(error_code)
+    status_code = 502
+    if error_code in {
+        ERROR_CODE_KEY_POOL_OVERLOADED,
+        ERROR_CODE_KEY_POOL_TIMEOUT,
+        ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT,
+        ERROR_CODE_ALL_KEYS_RATE_LIMITED,
+    }:
+        status_code = 503
+    elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
+        status_code = 504
+    raise HTTPException(status_code=status_code, detail=detail_payload)
 
 
 @app.post("/synthesize")
@@ -2226,7 +3033,7 @@ def synthesize_batch(payload: BatchSynthesizeRequest) -> JSONResponse:
             },
         )
 
-    requested_parallelism = payload.parallelism if payload.parallelism is not None else GEMINI_BATCH_MAX_PARALLEL
+    requested_parallelism = payload.parallelism if payload.parallelism is not None else GEMINI_BATCH_DEFAULT_PARALLEL
     if requested_parallelism < 1:
         raise HTTPException(status_code=400, detail="parallelism must be >= 1.")
     if requested_parallelism > GEMINI_BATCH_MAX_PARALLEL:

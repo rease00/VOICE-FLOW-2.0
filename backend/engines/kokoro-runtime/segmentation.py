@@ -6,10 +6,10 @@ SEGMENTATION_PROFILE = "quality-first"
 
 CHUNKING_PROFILES: Dict[str, Dict[str, int]] = {
     "hi": {
-        "hard_char_cap": 160,
-        "target_char_cap": 130,
-        "max_words_per_chunk": 30,
-        "join_crossfade_ms": 15,
+        "hard_char_cap": 240,
+        "target_char_cap": 190,
+        "max_words_per_chunk": 42,
+        "join_crossfade_ms": 32,
     },
     "default": {
         "hard_char_cap": 220,

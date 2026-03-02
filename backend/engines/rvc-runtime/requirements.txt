@@ -1,0 +1,7 @@
+﻿fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+imageio-ffmpeg==0.6.0
+soundfile==0.13.1
+numpy>=1.23.5,<2.0.0
+rvc-python==0.1.5; python_version < "3.12"

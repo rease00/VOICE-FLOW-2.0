@@ -24,7 +24,10 @@ export const useAdminUsers = ({ baseUrl }: UseAdminUsersArgs) => {
   const reloadUsers = useCallback(async (query?: string, limit = 120) => {
     setIsLoading(true);
     try {
-      const rows = await fetchAdminUsers(baseUrl, { q: query, limit });
+      const rows = await fetchAdminUsers(baseUrl, {
+        limit,
+        ...(query ? { q: query } : {}),
+      });
       setUsers(rows);
       return rows;
     } finally {

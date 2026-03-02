@@ -357,27 +357,35 @@ export const mergeChunkBuffersWithCrossfade = (
     return ctx.createBuffer(1, 1, 24000);
   }
   if (buffers.length === 1) {
-    return buffers[0];
+    const only = buffers[0];
+    return only || ctx.createBuffer(1, 1, 24000);
   }
 
-  const sampleRate = buffers[0].sampleRate;
+  const firstBuffer = buffers[0];
+  if (!firstBuffer) {
+    return ctx.createBuffer(1, 1, 24000);
+  }
+  const sampleRate = firstBuffer.sampleRate;
   const channels = Math.max(1, ...buffers.map((buffer) => buffer.numberOfChannels || 1));
   const maxOverlap = Math.max(0, Math.floor((sampleRate * Math.max(0, crossfadeMs)) / 1000));
 
   let totalFrames = 0;
   for (let i = 0; i < buffers.length; i += 1) {
     const current = buffers[i];
+    if (!current) continue;
     totalFrames += current.length;
     if (i > 0) {
       const previous = buffers[i - 1];
-      totalFrames -= Math.min(maxOverlap, previous.length, current.length);
+      if (previous) {
+        totalFrames -= Math.min(maxOverlap, previous.length, current.length);
+      }
     }
   }
 
   const output = ctx.createBuffer(channels, Math.max(1, totalFrames), sampleRate);
   let writeOffset = 0;
 
-  const first = buffers[0];
+  const first = firstBuffer;
   for (let channel = 0; channel < channels; channel += 1) {
     const sourceChannel = Math.min(channel, first.numberOfChannels - 1);
     output.getChannelData(channel).set(first.getChannelData(sourceChannel), 0);
@@ -386,6 +394,7 @@ export const mergeChunkBuffersWithCrossfade = (
 
   for (let index = 1; index < buffers.length; index += 1) {
     const current = buffers[index];
+    if (!current) continue;
     const overlap = Math.min(maxOverlap, writeOffset, current.length);
     const start = writeOffset - overlap;
 
@@ -396,7 +405,8 @@ export const mergeChunkBuffersWithCrossfade = (
 
       for (let i = 0; i < overlap; i += 1) {
         const ratio = overlap <= 1 ? 1 : i / (overlap - 1);
-        outputData[start + i] = outputData[start + i] * (1 - ratio) + sourceData[i] * ratio;
+        const writeIndex = start + i;
+        outputData[writeIndex] = (outputData[writeIndex] ?? 0) * (1 - ratio) + (sourceData[i] ?? 0) * ratio;
       }
 
       outputData.set(sourceData.subarray(overlap), start + overlap);

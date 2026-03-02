@@ -1,0 +1,96 @@
+components/AdminPanel.tsx(172,9): error TS2379: Argument of type '{ code: string; creditVf: number; maxRedemptions: number; expiresAt: string | undefined; active: true; }' is not assignable to parameter of type '{ code: string; creditVf: number; maxRedemptions?: number; expiresAt?: string; active?: boolean; note?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+components/NovelWorkspaceV2.tsx(257,31): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+components/NovelWorkspaceV2.tsx(563,9): error TS18048: 'first' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(566,9): error TS18048: 'last' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(867,65): error TS18048: 'chapter' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(869,53): error TS18048: 'chapter' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(872,44): error TS18048: 'chapter' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(872,69): error TS18048: 'chapter' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(873,92): error TS18048: 'chapter' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(932,36): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+components/NovelWorkspaceV2.tsx(1176,61): error TS18048: 'driveProject' is possibly 'undefined'.
+components/NovelWorkspaceV2.tsx(1195,95): error TS18048: 'driveProject' is possibly 'undefined'.
+components/studio/BlockScriptEditor.tsx(144,32): error TS2345: Argument of type 'ScriptBlock | undefined' is not assignable to parameter of type 'ScriptBlock'.
+components/ui/UploadDropzone.tsx(42,21): error TS2345: Argument of type '(File | undefined)[]' is not assignable to parameter of type 'File[]'.
+components/ui/UploadDropzone.tsx(90,43): error TS2532: Object is possibly 'undefined'.
+components/Visualizer.tsx(90,21): error TS2532: Object is possibly 'undefined'.
+contexts/UserContext.tsx(707,18): error TS18048: 'selectedVoice' is possibly 'undefined'.
+contexts/UserContext.tsx(716,63): error TS2741: Property 'loginAsGuest' is missing in type '{ user: UserProfile; updateUser: (partial: Partial<UserProfile>) => void; stats: UserStats; updateStats: (partial: Partial<UserStats>) => void; ... 31 more ...; refreshEntitlements: () => Promise<...>; }' but required in type 'ExtendedUserContextType'.
+services/accountService.ts(91,3): error TS2375: Type '{ url: string; sessionId: string | undefined; }' is not assignable to type '{ url: string; sessionId?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/accountService.ts(126,3): error TS2375: Type '{ url: string; sessionId: string | undefined; packVf: number | undefined; finalAmountInr: number | undefined; }' is not assignable to type '{ url: string; sessionId?: string; packVf?: number; finalAmountInr?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/dubbingService.ts(82,45): error TS18048: 'base' is possibly 'undefined'.
+services/dubbingService.ts(82,53): error TS18048: 'dialogue' is possibly 'undefined'.
+services/geminiService.ts(419,5): error TS2375: Type '{ engine: any; traceId: any; chunkCount: number | undefined; retryChunks: number | undefined; qualityGuardRecoveries: number | undefined; splitChunks: number | undefined; maxAttempt: number | undefined; strategies: any; recoveryUsed: boolean; }' is not assignable to type 'RuntimeDiagnosticsPayload' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(701,24): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(726,35): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(726,77): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(780,48): error TS2345: Argument of type 'number | undefined' is not assignable to parameter of type 'number'.
+services/geminiService.ts(1181,9): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1190,42): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1198,43): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1260,45): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1334,37): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1334,54): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1335,37): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1335,57): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1335,74): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1359,37): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+services/geminiService.ts(1371,21): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(1374,21): error TS2379: Argument of type '{ startTime: number; endTime: number | undefined; speaker: string; text: string; emotion: string; }' is not assignable to parameter of type '{ startTime: number; endTime?: number; speaker: string; text: string; emotion?: string; crewTags?: string[]; emotionTags?: string[]; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(1396,21): error TS2379: Argument of type '{ startTime: number; endTime: number | undefined; speaker: string; text: string; emotion: string; crewTags: string[]; emotionTags: string[]; }' is not assignable to parameter of type '{ startTime: number; endTime?: number; speaker: string; text: string; emotion?: string; crewTags?: string[]; emotionTags?: string[]; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(1413,19): error TS2379: Argument of type '{ startTime: number; endTime: number | undefined; speaker: string; text: string; emotion: string; crewTags: string[]; emotionTags: string[]; }' is not assignable to parameter of type '{ startTime: number; endTime?: number; speaker: string; text: string; emotion?: string; crewTags?: string[]; emotionTags?: string[]; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(1634,24): error TS2379: Argument of type '{ name: string; gender: "Male" | "Female" | "Unknown"; age: "Adult" | "Child" | "Young Adult" | "Elderly" | undefined; }' is not assignable to parameter of type '{ name: string; gender: "Male" | "Female" | "Unknown"; age?: "Adult" | "Child" | "Young Adult" | "Elderly"; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(1652,5): error TS2375: Type '{ formattedText: string; cast: { name: string; gender: "Male" | "Female" | "Unknown"; age?: "Child" | "Young Adult" | "Adult" | "Elderly"; }[]; crewTags: string[]; mood: any; suggestedMusicTrackId: string | undefined; }' is not assignable to type '{ formattedText: string; cast: { name: string; gender: "Male" | "Female" | "Unknown"; age?: "Adult" | "Child" | "Young Adult" | "Elderly"; }[]; crewTags?: string[]; mood?: string; suggestedMusicTrackId?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(1784,5): error TS2412: Type '{ emotion: string; style: string | undefined; confidence: number | undefined; } | undefined' is not assignable to type '{ emotion: string; style?: string; emotionRefId?: string; confidence?: number; nonLinguistic?: boolean; } | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+services/geminiService.ts(1844,37): error TS2345: Argument of type 'number | undefined' is not assignable to parameter of type 'number'.
+services/geminiService.ts(1984,66): error TS2769: No overload matches this call.
+services/geminiService.ts(2004,13): error TS2375: Type '{ traceId: string | undefined; runtimeLabel: string; engine?: string; chunkCount?: number; retryChunks?: number; qualityGuardRecoveries?: number; splitChunks?: number; maxAttempt?: number; strategies?: string[]; recoveryUsed?: boolean; }' is not assignable to type 'RuntimeDiagnosticsPayload' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(2040,9): error TS2379: Argument of type '{ method: string; headers: { 'Content-Type': string; 'ngrok-skip-browser-warning': string; }; body: string; signal: AbortSignal | undefined; }' is not assignable to parameter of type 'RequestInit' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(2073,13): error TS2375: Type '{ traceId: string | undefined; runtimeLabel: string; engine?: string; chunkCount?: number; retryChunks?: number; qualityGuardRecoveries?: number; splitChunks?: number; maxAttempt?: number; strategies?: string[]; recoveryUsed?: boolean; }' is not assignable to type 'RuntimeDiagnosticsPayload' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(2136,48): error TS18048: 'windowChunk' is possibly 'undefined'.
+services/geminiService.ts(2222,9): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(2222,37): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(2225,48): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(2227,13): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+services/geminiService.ts(2384,73): error TS2532: Object is possibly 'undefined'.
+services/geminiService.ts(2542,59): error TS2379: Argument of type '{ engine: "GEM"; text: string; voiceId: string; language: string; speed: number; emotion: string | undefined; style: string | undefined; traceId: string; }' is not assignable to parameter of type '{ engine: "GEM" | "KOKORO"; text: string; voiceId: string; language?: string; speed?: number; emotion?: string; style?: string; traceId?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(2614,59): error TS2379: Argument of type '{ engine: "KOKORO"; text: string; voiceId: string; language: string; speed: number; emotion: string | undefined; style: string | undefined; traceId: string; }' is not assignable to parameter of type '{ engine: "GEM" | "KOKORO"; text: string; voiceId: string; language?: string; speed?: number; emotion?: string; style?: string; traceId?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+services/geminiService.ts(2698,40): error TS2769: No overload matches this call.
+services/geminiService.ts(2769,36): error TS2769: No overload matches this call.
+services/geminiService.ts(2832,36): error TS2769: No overload matches this call.
+services/localAdminAuth.ts(61,35): error TS2345: Argument of type 'number | undefined' is not assignable to parameter of type 'number'.
+services/localAdminAuth.ts(70,13): error TS2532: Object is possibly 'undefined'.
+services/localAdminAuth.ts(70,27): error TS2532: Object is possibly 'undefined'.
+services/novelDriveService.ts(187,5): error TS2322: Type 'DriveFileRecord | undefined' is not assignable to type 'DriveFileRecord'.
+services/novelDriveService.ts(195,5): error TS2322: Type 'DriveFileRecord | undefined' is not assignable to type 'DriveFileRecord'.
+services/ttsLongTextService.ts(360,5): error TS2322: Type 'AudioBuffer | undefined' is not assignable to type 'AudioBuffer'.
+services/ttsLongTextService.ts(363,22): error TS2532: Object is possibly 'undefined'.
+services/ttsLongTextService.ts(370,20): error TS18048: 'current' is possibly 'undefined'.
+services/ttsLongTextService.ts(373,43): error TS18048: 'previous' is possibly 'undefined'.
+services/ttsLongTextService.ts(373,60): error TS18048: 'current' is possibly 'undefined'.
+services/ttsLongTextService.ts(382,45): error TS18048: 'first' is possibly 'undefined'.
+services/ttsLongTextService.ts(383,40): error TS18048: 'first' is possibly 'undefined'.
+services/ttsLongTextService.ts(385,17): error TS18048: 'first' is possibly 'undefined'.
+services/ttsLongTextService.ts(389,55): error TS18048: 'current' is possibly 'undefined'.
+services/ttsLongTextService.ts(394,47): error TS18048: 'current' is possibly 'undefined'.
+services/ttsLongTextService.ts(395,26): error TS18048: 'current' is possibly 'undefined'.
+services/ttsLongTextService.ts(399,33): error TS2532: Object is possibly 'undefined'.
+services/ttsLongTextService.ts(399,71): error TS2532: Object is possibly 'undefined'.
+services/ttsLongTextService.ts(405,27): error TS18048: 'current' is possibly 'undefined'.
+views/MainApp.tsx(106,12): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(145,7): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(146,7): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(185,77): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+views/MainApp.tsx(186,77): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+views/MainApp.tsx(674,34): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(892,60): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(901,60): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(1023,84): error TS18048: 'voice' is possibly 'undefined'.
+views/MainApp.tsx(1619,50): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(1634,31): error TS2532: Object is possibly 'undefined'.
+views/MainApp.tsx(1746,15): error TS18048: 'firstEl' is possibly 'undefined'.
+views/MainApp.tsx(1749,15): error TS18048: 'lastEl' is possibly 'undefined'.
+views/MainApp.tsx(1818,33): error TS18048: 'entry' is possibly 'undefined'.
+views/MainApp.tsx(1818,57): error TS18048: 'entry' is possibly 'undefined'.
+views/MainApp.tsx(2199,23): error TS2345: Argument of type '{ id: string; name: string; voiceId: string; gender: "Unknown"; age: string; avatarColor: string | undefined; }' is not assignable to parameter of type 'SetStateAction<CharacterProfile>'.
+views/MainApp.tsx(2202,66): error TS2532: Object is possibly 'undefined'.

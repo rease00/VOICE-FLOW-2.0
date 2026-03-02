@@ -88,9 +88,10 @@ export const createCheckoutSession = async (
     },
     { requireAuth: true }
   ));
+  const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
   return {
     url: String(payload?.url || ''),
-    sessionId: payload?.sessionId ? String(payload.sessionId) : undefined,
+    ...(sessionId ? { sessionId } : {}),
   };
 };
 
@@ -123,11 +124,14 @@ export const createTokenPackCheckoutSession = async (
     },
     { requireAuth: true }
   ));
+  const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
+  const packVf = Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined;
+  const finalAmountInr = Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined;
   return {
     url: String(payload?.url || ''),
-    sessionId: payload?.sessionId ? String(payload.sessionId) : undefined,
-    packVf: Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined,
-    finalAmountInr: Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined,
+    ...(sessionId ? { sessionId } : {}),
+    ...(packVf !== undefined ? { packVf } : {}),
+    ...(finalAmountInr !== undefined ? { finalAmountInr } : {}),
   };
 };
 

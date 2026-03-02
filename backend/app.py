@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import base64
+import csv
 import gzip
 import json
 import hashlib
@@ -17,8 +18,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 import wave
-from collections import defaultdict
-from io import BytesIO
+from collections import defaultdict, deque
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Optional, Dict, List
 from urllib import error as urllib_error
@@ -27,7 +28,7 @@ from urllib import request as urllib_request
 
 import requests
 from bs4 import BeautifulSoup
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
@@ -67,6 +68,21 @@ from shared.gemini_allocator import (
     load_allocator_config,
     parse_api_keys as parse_api_keys_shared,
 )
+from shared.gemini_api_pools import (
+    POOL_NAMES,
+    duplicate_key_memberships,
+    flatten_pool_keys,
+    load_pool_config as load_pool_config_shared,
+    normalize_pool_config as normalize_gemini_pool_config,
+    plan_key_to_pool_hint,
+    resolve_effective_keys as resolve_effective_pool_keys,
+    save_pool_config as save_pool_config_shared,
+    sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
+)
+from shared.gemini_multi_speaker import normalize_multi_speaker_line_map as normalize_multi_speaker_line_map_shared
+from services.admission.redis_limits import SuccessQuotaDecision, SuccessQuotaLimiter
+from services.errors.codes import ENGINE_OVERLOADED, QUEUE_TIMEOUT, RATE_LIMIT_USER, extract_error_code
+from services.queue.redis_queue import TtsJobQueue, normalize_lane
 
 load_backend_env_files(Path(__file__).resolve())
 ARTIFACTS_DIR = APP_ROOT / "artifacts"
@@ -100,6 +116,7 @@ SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() 
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
 SEPARATION_SAMPLE_RATE = max(16000, int((os.getenv("VF_SOURCE_SEPARATION_SAMPLE_RATE") or "44100").strip() or "44100"))
 SEPARATION_CACHE_DIR = ARTIFACTS_DIR / "source-separation-cache"
+TTS_LIVE_ARTIFACTS_DIR = ARTIFACTS_DIR / "tts-live"
 ENABLE_SOURCE_SEPARATION = (
     (os.getenv("VF_ENABLE_SOURCE_SEPARATION") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -127,6 +144,62 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
 )
 GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
 KOKORO_RUNTIME_URL = (os.getenv("VF_KOKORO_RUNTIME_URL") or "http://127.0.0.1:7820").strip().rstrip("/")
+RVC_RUNTIME_URL = (os.getenv("VF_RVC_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
+VF_TTS_POST_RVC_ENABLED = (
+    (os.getenv("VF_TTS_POST_RVC_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TTS_POST_RVC_REQUIRED = (
+    (os.getenv("VF_TTS_POST_RVC_REQUIRED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TTS_POST_RVC_TIMEOUT_SEC = max(
+    15,
+    int((os.getenv("VF_TTS_POST_RVC_TIMEOUT_SEC") or "180").strip() or "180"),
+)
+VF_TTS_POST_RVC_PRESET = str(os.getenv("VF_TTS_POST_RVC_PRESET") or "tts_realtime").strip() or "tts_realtime"
+VF_TTS_LIVE_STREAM_ENABLED = (
+    (os.getenv("VF_TTS_LIVE_STREAM_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT = max(
+    1,
+    int((os.getenv("VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT") or "2").strip() or "2"),
+)
+VF_TTS_LIVE_CHUNK_LIMIT_MAX = max(
+    VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
+    int((os.getenv("VF_TTS_LIVE_CHUNK_LIMIT_MAX") or "8").strip() or "8"),
+)
+VF_TTS_LIVE_ARTIFACT_TTL_MS = max(
+    60_000,
+    int((os.getenv("VF_TTS_LIVE_ARTIFACT_TTL_MS") or "900000").strip() or "900000"),
+)
+VF_TTS_LIVE_CHUNK_CHARS_DEFAULT = max(
+    120,
+    int((os.getenv("VF_TTS_LIVE_CHUNK_CHARS_DEFAULT") or "420").strip() or "420"),
+)
+VF_TTS_LIVE_CHUNK_WORDS_DEFAULT = max(
+    24,
+    int((os.getenv("VF_TTS_LIVE_CHUNK_WORDS_DEFAULT") or "80").strip() or "80"),
+)
+VF_TTS_LIVE_CHUNK_CHARS_MAX = max(
+    VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
+    int((os.getenv("VF_TTS_LIVE_CHUNK_CHARS_MAX") or "2200").strip() or "2200"),
+)
+VF_TTS_LIVE_CHUNK_WORDS_MAX = max(
+    VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
+    int((os.getenv("VF_TTS_LIVE_CHUNK_WORDS_MAX") or "420").strip() or "420"),
+)
+VF_RVC_MODEL_CACHE_TTL_MS = max(
+    500,
+    int((os.getenv("VF_RVC_MODEL_CACHE_TTL_MS") or "5000").strip() or "5000"),
+)
+VOICE_PROFILE_BANK_FILE = Path(
+    os.getenv("VF_VOICE_PROFILE_BANK_FILE", str(APP_ROOT / "config" / "voice_profile_bank.v1.json"))
+).resolve()
+VOICE_ID_MAP_FILE = Path(
+    os.getenv("VF_VOICE_ID_MAP_FILE", str(APP_ROOT / "config" / "voice_id_map.v1.json"))
+).resolve()
 APP_BUILD_TIME = datetime.now(timezone.utc).isoformat()
 API_VERSION = "1.2.0"
 VF_AUTH_ENFORCE = (
@@ -148,18 +221,50 @@ STRIPE_CHECKOUT_CANCEL_URL = (
 )
 VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
 VF_ENGINE_RATES = {
-    "GEM": 5,
+    "GEM": 1,
     "KOKORO": 1,
 }
 VF_ENGINE_PLAN_RATES: dict[str, dict[str, int]] = {
     "KOKORO": {"free": 1, "pro": 1, "plus": 1},
-    "GEM": {"free": 5, "pro": 4, "plus": 3},
+    "GEM": {"free": 1, "pro": 1, "plus": 1},
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 10000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
     "pro": {"plan": "Pro", "monthlyVfLimit": 200000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
     "plus": {"plan": "Plus", "monthlyVfLimit": 500000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
 }
+TTS_PLAN_GUARDRAILS: dict[str, dict[str, int]] = {
+    "free": {"rpm": 2, "maxChars": 8000},
+    "pro": {"rpm": 5, "maxChars": 10000},
+    "plus": {"rpm": 10, "maxChars": 10000},
+}
+TTS_PLAN_BURST_WINDOW_SECONDS = 60
+VF_TTS_SUCCESS_LIMIT_FREE = max(
+    1,
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_FREE") or str(TTS_PLAN_GUARDRAILS["free"]["rpm"])).strip() or "2"),
+)
+VF_TTS_SUCCESS_LIMIT_PRO = max(
+    1,
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_PRO") or str(TTS_PLAN_GUARDRAILS["pro"]["rpm"])).strip() or "5"),
+)
+VF_TTS_SUCCESS_LIMIT_PLUS = max(
+    1,
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_PLUS") or str(TTS_PLAN_GUARDRAILS["plus"]["rpm"])).strip() or "10"),
+)
+TTS_SUCCESS_PLAN_LIMITS: dict[str, int] = {
+    "free": VF_TTS_SUCCESS_LIMIT_FREE,
+    "pro": VF_TTS_SUCCESS_LIMIT_PRO,
+    "plus": VF_TTS_SUCCESS_LIMIT_PLUS,
+}
+VF_TTS_SUCCESS_WINDOW_SECONDS = max(
+    10,
+    int((os.getenv("VF_TTS_SUCCESS_WINDOW_SECONDS") or str(TTS_PLAN_BURST_WINDOW_SECONDS)).strip() or str(TTS_PLAN_BURST_WINDOW_SECONDS)),
+)
+VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS = max(
+    60,
+    int((os.getenv("VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS") or "86400").strip() or "86400"),
+)
+VF_REDIS_URL = str(os.getenv("VF_REDIS_URL") or os.getenv("REDIS_URL") or "").strip()
 VF_AD_REWARD_CLAIM_LIMIT_PER_DAY = max(1, int((os.getenv("VF_AD_REWARD_CLAIM_LIMIT_PER_DAY") or "3").strip() or "3"))
 VF_AD_REWARD_VFF_AMOUNT = max(1, int((os.getenv("VF_AD_REWARD_VFF_AMOUNT") or "1000").strip() or "1000"))
 VF_TOKEN_PACK_VF_AMOUNT = max(1, int((os.getenv("VF_TOKEN_PACK_VF_AMOUNT") or "100000").strip() or "100000"))
@@ -168,6 +273,11 @@ VF_GENERATION_HISTORY_MAX_ITEMS = max(
     10,
     int((os.getenv("VF_GENERATION_HISTORY_MAX_ITEMS") or "200").strip() or "200"),
 )
+VF_GENERATION_HISTORY_RETENTION_DAYS = max(
+    1,
+    int((os.getenv("VF_GENERATION_HISTORY_RETENTION_DAYS") or "365").strip() or "365"),
+)
+VF_GENERATION_HISTORY_RETENTION_MS = VF_GENERATION_HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000
 VF_GENERATION_HISTORY_PREVIEW_CHARS = max(
     40,
     int((os.getenv("VF_GENERATION_HISTORY_PREVIEW_CHARS") or "220").strip() or "220"),
@@ -175,6 +285,13 @@ VF_GENERATION_HISTORY_PREVIEW_CHARS = max(
 VF_GENERATION_HISTORY_CODEC = "gzip+base64+json"
 GEMINI_API_KEYS_FILE = str(os.getenv("GEMINI_API_KEYS_FILE") or "").strip()
 DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
+GEMINI_API_POOLS_FILE = str(
+    os.getenv("GEMINI_API_POOLS_FILE") or (APP_ROOT / "config" / "gemini_api_pools.json")
+).strip()
+GEMINI_API_POOLS_PREFER_FIRESTORE = (
+    (os.getenv("VF_GEMINI_API_POOLS_PREFER_FIRESTORE") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 GEMINI_ALLOCATOR_CONFIG = load_allocator_config()
 BACKEND_GEMINI_ALLOCATOR_WAIT_TIMEOUT_MS = max(
     5000,
@@ -281,6 +398,8 @@ GOOGLE_ASR_LANGUAGE_HINTS = {
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
@@ -288,6 +407,7 @@ DEFAULT_CORS_ORIGINS = [
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 SEPARATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 TTS_ENGINE_HEALTH_URLS = {
@@ -312,8 +432,8 @@ TTS_ENGINE_ALIASES = {
     "KOKORO": "KOKORO",
 }
 ENGINE_DISPLAY_NAMES = {
-    "GEM": "Plus",
-    "KOKORO": "Basic",
+    "GEM": "PRO",
+    "KOKORO": "BASIC",
 }
 CONVERSION_POLICY_DISPLAY_NAMES = {
     "AUTO_RELIABLE": "AUTO_RELIABLE",
@@ -321,8 +441,8 @@ CONVERSION_POLICY_DISPLAY_NAMES = {
 }
 EXECUTED_ENGINE_DISPLAY_NAMES = {
     "LHQ_SVC": "LHQ-SVC (Pilot)",
-    "GEM": "Plus",
-    "KOKORO": "Basic",
+    "GEM": "PRO",
+    "KOKORO": "BASIC",
     "RVC_FALLBACK": "RVC Fallback",
     "RVC": "RVC",
 }
@@ -387,6 +507,74 @@ VF_AI_OPS_ENABLE_AUTOFIX_MINOR = (
     (os.getenv("VF_AI_OPS_ENABLE_AUTOFIX_MINOR") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+VF_TTS_GATEWAY_MAX_ACTIVE = max(
+    1,
+    int((os.getenv("VF_TTS_GATEWAY_MAX_ACTIVE") or "100").strip() or "100"),
+)
+VF_TTS_GATEWAY_QUEUE_MAX = max(
+    1,
+    int((os.getenv("VF_TTS_GATEWAY_QUEUE_MAX") or "300").strip() or "300"),
+)
+VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS = max(
+    500,
+    int((os.getenv("VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS") or "30000").strip() or "30000"),
+)
+VF_TTS_QUEUE_ENABLED = (
+    (os.getenv("VF_TTS_QUEUE_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TTS_QUEUE_SYNC_WAIT_MS = max(
+    500,
+    int((os.getenv("VF_TTS_QUEUE_SYNC_WAIT_MS") or "3000").strip() or "3000"),
+)
+VF_TTS_QUEUE_MAX_DEPTH = max(
+    1,
+    int((os.getenv("VF_TTS_QUEUE_MAX_DEPTH") or "5000").strip() or "5000"),
+)
+VF_TTS_QUEUE_JOB_TTL_MS = max(
+    5_000,
+    int((os.getenv("VF_TTS_QUEUE_JOB_TTL_MS") or "300000").strip() or "300000"),
+)
+VF_TTS_QUEUE_MAX_ATTEMPTS = max(
+    1,
+    int((os.getenv("VF_TTS_QUEUE_MAX_ATTEMPTS") or "4").strip() or "4"),
+)
+VF_TTS_QUEUE_BACKOFF_BASE_MS = max(
+    100,
+    int((os.getenv("VF_TTS_QUEUE_BACKOFF_BASE_MS") or "450").strip() or "450"),
+)
+VF_TTS_QUEUE_WORKER_COUNT = max(
+    1,
+    int((os.getenv("VF_TTS_QUEUE_WORKER_COUNT") or "4").strip() or "4"),
+)
+VF_TTS_ENGINE_CONCURRENCY_GEM = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_GEM") or "12").strip() or "12"),
+)
+VF_TTS_ENGINE_CONCURRENCY_KOKORO = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_KOKORO") or "8").strip() or "8"),
+)
+VF_TTS_QUEUE_METRICS_WINDOW = max(
+    20,
+    int((os.getenv("VF_TTS_QUEUE_METRICS_WINDOW") or "800").strip() or "800"),
+)
+VF_TTS_QUEUE_KEY_PREFIX = str(os.getenv("VF_TTS_QUEUE_KEY_PREFIX") or "vf:tts:jobs").strip() or "vf:tts:jobs"
+VF_TTS_LANE_WEIGHTS = {
+    "pro_plus": 10,
+    "pro": 5,
+    "free": 2,
+}
+VF_ADMIN_USAGE_RECENT_EVENT_CAP = max(
+    1000,
+    int((os.getenv("VF_ADMIN_USAGE_RECENT_EVENT_CAP") or "80000").strip() or "80000"),
+)
+VF_ADMIN_USAGE_TOTAL_SAMPLE_CAP = max(
+    128,
+    int((os.getenv("VF_ADMIN_USAGE_TOTAL_SAMPLE_CAP") or "2048").strip() or "2048"),
+)
+USAGE_WINDOW_24H_MS = 24 * 60 * 60 * 1000
+USAGE_WINDOW_7D_MS = 7 * 24 * 60 * 60 * 1000
 VF_ADMIN_APPROVAL_TOKEN = (os.getenv("VF_ADMIN_APPROVAL_TOKEN") or "").strip()
 VF_ADMIN_APPROVER_UIDS = frozenset(
     {
@@ -395,6 +583,143 @@ VF_ADMIN_APPROVER_UIDS = frozenset(
         if token
     }
 )
+
+
+class _TtsGatewayLease:
+    def __init__(self, controller: "TtsGatewayController", *, queued: bool, wait_ms: int, queue_depth: int) -> None:
+        self._controller = controller
+        self.queued = bool(queued)
+        self.wait_ms = max(0, int(wait_ms))
+        self.queue_depth = max(0, int(queue_depth))
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._controller.release()
+
+
+class TtsGatewayController:
+    def __init__(self, *, max_active: int, queue_max: int, queue_wait_timeout_ms: int) -> None:
+        self.max_active = max(1, int(max_active))
+        self.queue_max = max(1, int(queue_max))
+        self.queue_wait_timeout_ms = max(500, int(queue_wait_timeout_ms))
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._active = 0
+        self._waiting = 0
+        self._stats = {
+            "accepted": 0,
+            "queuedAccepted": 0,
+            "rejectedQueueFull": 0,
+            "rejectedQueueTimeout": 0,
+            "totalQueueWaitMs": 0,
+            "peakActive": 0,
+            "peakWaiting": 0,
+            "updatedAtMs": 0,
+        }
+
+    def _retry_after_ms_locked(self) -> int:
+        estimated_cycles = max(1, self._waiting + 1)
+        cycle_ms = max(250, self.queue_wait_timeout_ms // max(1, self.max_active))
+        return max(250, min(self.queue_wait_timeout_ms, estimated_cycles * cycle_ms))
+
+    def acquire(self) -> tuple[Optional[_TtsGatewayLease], Optional[dict[str, Any]]]:
+        started_ms = int(time.time() * 1000)
+        with self._condition:
+            if self._active < self.max_active:
+                self._active += 1
+                self._stats["accepted"] = int(self._stats.get("accepted", 0)) + 1
+                self._stats["peakActive"] = max(int(self._stats.get("peakActive", 0)), self._active)
+                self._stats["updatedAtMs"] = started_ms
+                return _TtsGatewayLease(self, queued=False, wait_ms=0, queue_depth=self._waiting), None
+
+            if self._waiting >= self.queue_max:
+                self._stats["rejectedQueueFull"] = int(self._stats.get("rejectedQueueFull", 0)) + 1
+                self._stats["updatedAtMs"] = started_ms
+                detail = {
+                    "error": "TTS gateway is overloaded.",
+                    "reason": "queue_full",
+                    "queueDepth": int(self._waiting),
+                    "maxActive": int(self.max_active),
+                    "queueMax": int(self.queue_max),
+                    "retryAfterMs": self._retry_after_ms_locked(),
+                }
+                return None, detail
+
+            self._waiting += 1
+            self._stats["peakWaiting"] = max(int(self._stats.get("peakWaiting", 0)), self._waiting)
+            deadline_ms = started_ms + self.queue_wait_timeout_ms
+
+            while True:
+                now_ms = int(time.time() * 1000)
+                if self._active < self.max_active:
+                    self._waiting = max(0, self._waiting - 1)
+                    self._active += 1
+                    wait_ms = max(0, now_ms - started_ms)
+                    self._stats["accepted"] = int(self._stats.get("accepted", 0)) + 1
+                    self._stats["queuedAccepted"] = int(self._stats.get("queuedAccepted", 0)) + 1
+                    self._stats["totalQueueWaitMs"] = int(self._stats.get("totalQueueWaitMs", 0)) + wait_ms
+                    self._stats["peakActive"] = max(int(self._stats.get("peakActive", 0)), self._active)
+                    self._stats["updatedAtMs"] = now_ms
+                    return _TtsGatewayLease(self, queued=True, wait_ms=wait_ms, queue_depth=self._waiting), None
+
+                remaining_ms = deadline_ms - now_ms
+                if remaining_ms <= 0:
+                    self._waiting = max(0, self._waiting - 1)
+                    self._stats["rejectedQueueTimeout"] = int(self._stats.get("rejectedQueueTimeout", 0)) + 1
+                    self._stats["updatedAtMs"] = now_ms
+                    detail = {
+                        "error": "TTS gateway queue wait timed out.",
+                        "reason": "queue_timeout",
+                        "queueDepth": int(self._waiting),
+                        "maxActive": int(self.max_active),
+                        "queueMax": int(self.queue_max),
+                        "waitTimeoutMs": int(self.queue_wait_timeout_ms),
+                        "retryAfterMs": self._retry_after_ms_locked(),
+                    }
+                    return None, detail
+
+                self._condition.wait(timeout=max(0.05, float(remaining_ms) / 1000.0))
+
+    def release(self) -> None:
+        with self._condition:
+            self._active = max(0, self._active - 1)
+            self._stats["updatedAtMs"] = int(time.time() * 1000)
+            self._condition.notify(1)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            accepted = int(self._stats.get("accepted", 0))
+            queued_accepted = int(self._stats.get("queuedAccepted", 0))
+            avg_queue_wait = (
+                round(float(self._stats.get("totalQueueWaitMs", 0)) / float(queued_accepted), 2)
+                if queued_accepted > 0
+                else 0.0
+            )
+            return {
+                "config": {
+                    "maxActive": int(self.max_active),
+                    "queueMax": int(self.queue_max),
+                    "queueWaitTimeoutMs": int(self.queue_wait_timeout_ms),
+                },
+                "state": {
+                    "active": int(self._active),
+                    "queueDepth": int(self._waiting),
+                    "capacityUsedPct": round((float(self._active) / float(max(1, self.max_active))) * 100.0, 2),
+                },
+                "stats": {
+                    "accepted": accepted,
+                    "queuedAccepted": queued_accepted,
+                    "rejectedQueueFull": int(self._stats.get("rejectedQueueFull", 0)),
+                    "rejectedQueueTimeout": int(self._stats.get("rejectedQueueTimeout", 0)),
+                    "avgQueueWaitMs": avg_queue_wait,
+                    "peakActive": int(self._stats.get("peakActive", 0)),
+                    "peakQueueDepth": int(self._stats.get("peakWaiting", 0)),
+                    "updatedAtMs": int(self._stats.get("updatedAtMs", 0)),
+                },
+            }
 
 
 def _engine_display_name(engine: str) -> str:
@@ -440,6 +765,304 @@ def _safe_upload_name(filename: Optional[str], fallback: str) -> str:
     if not safe:
         return fallback
     return safe[:128]
+
+
+_VOICE_PROFILE_BANK_CACHE: dict[str, Any] = {"mtime": 0.0, "payload": {}}
+_VOICE_ID_MAP_CACHE: dict[str, Any] = {"mtime": 0.0, "payload": {}}
+_RVC_MODEL_CACHE_LOCK = threading.Lock()
+_RVC_MODEL_CACHE: dict[str, Any] = {
+    "updatedAtMs": 0,
+    "models": [],
+    "fallbackAvailable": bool(ENABLE_RVC_FALLBACK),
+}
+
+
+def _read_json_file_cached(path: Path, cache: dict[str, Any]) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except Exception:
+        cache["mtime"] = 0.0
+        cache["payload"] = {}
+        return {}
+    mtime = float(stat.st_mtime)
+    if cache.get("payload") and float(cache.get("mtime") or 0.0) == mtime:
+        payload = cache.get("payload")
+        return payload if isinstance(payload, dict) else {}
+    try:
+        # Accept UTF-8 BOM-prefixed JSON config files.
+        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(parsed, dict):
+            parsed = {}
+    except Exception:
+        parsed = {}
+    cache["mtime"] = mtime
+    cache["payload"] = parsed
+    return parsed
+
+
+def _load_voice_profile_bank() -> dict[str, Any]:
+    payload = _read_json_file_cached(VOICE_PROFILE_BANK_FILE, _VOICE_PROFILE_BANK_CACHE)
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, list):
+        profiles = []
+    normalized_profiles: list[dict[str, Any]] = []
+    for row in profiles:
+        if not isinstance(row, dict):
+            continue
+        profile_id = str(row.get("profileId") or "").strip()
+        if not profile_id:
+            continue
+        normalized_profiles.append(
+            {
+                **row,
+                "profileId": profile_id,
+                "displayName": str(row.get("displayName") or profile_id).strip() or profile_id,
+                "country": str(row.get("country") or "Unknown").strip() or "Unknown",
+                "gender": str(row.get("gender") or "Unknown").strip() or "Unknown",
+                "ageGroup": str(row.get("ageGroup") or "Unknown").strip() or "Unknown",
+                "styleTag": str(row.get("styleTag") or "").strip(),
+                "rvcModelName": str(row.get("rvcModelName") or "").strip(),
+            }
+        )
+    return {"version": payload.get("version") or "0", "profiles": normalized_profiles}
+
+
+def _load_voice_id_map() -> dict[str, Any]:
+    payload = _read_json_file_cached(VOICE_ID_MAP_FILE, _VOICE_ID_MAP_CACHE)
+    engines = payload.get("engines") if isinstance(payload.get("engines"), dict) else {}
+    normalized_engines: dict[str, dict[str, Any]] = {}
+    for engine_key, raw_engine_payload in engines.items():
+        normalized_engine = _normalize_engine_name(str(engine_key or "GEM"))
+        source = raw_engine_payload if isinstance(raw_engine_payload, dict) else {}
+        voice_to_profile_raw = source.get("voiceToProfile") if isinstance(source.get("voiceToProfile"), dict) else {}
+        voice_to_profile: dict[str, str] = {}
+        for raw_key, raw_value in voice_to_profile_raw.items():
+            source_id = str(raw_key or "").strip()
+            profile_id = str(raw_value or "").strip()
+            if not source_id or not profile_id:
+                continue
+            voice_to_profile[source_id] = profile_id
+            voice_to_profile[source_id.lower()] = profile_id
+        runtime_voices = source.get("runtimeVoices")
+        if not isinstance(runtime_voices, list):
+            runtime_voices = []
+        normalized_engines[normalized_engine] = {
+            "voiceToProfile": voice_to_profile,
+            "runtimeVoices": [item for item in runtime_voices if isinstance(item, dict)],
+        }
+    return {"version": payload.get("version") or "0", "engines": normalized_engines}
+
+
+def _profile_index() -> dict[str, dict[str, Any]]:
+    payload = _load_voice_profile_bank()
+    index: dict[str, dict[str, Any]] = {}
+    for profile in payload.get("profiles") or []:
+        if not isinstance(profile, dict):
+            continue
+        profile_id = str(profile.get("profileId") or "").strip()
+        if profile_id:
+            index[profile_id] = profile
+    return index
+
+
+def _default_profile_reference_relpath(profile_id: str) -> str:
+    safe_profile_id = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", str(profile_id or "").strip()).strip("._")
+    if not safe_profile_id:
+        return ""
+    return f"assets/voice_profiles/reference/{safe_profile_id}.wav"
+
+
+def _resolve_profile_reference_path(profile: dict[str, Any]) -> tuple[Optional[Path], str, bool]:
+    profile_id = str(profile.get("profileId") or "").strip()
+    raw_reference = str(profile.get("referencePath") or "").strip()
+
+    candidates: list[tuple[Path, str]] = []
+    if raw_reference:
+        raw_path = Path(raw_reference)
+        if raw_path.is_absolute():
+            abs_path = raw_path
+            try:
+                rel_path = abs_path.resolve().relative_to(APP_ROOT).as_posix()
+            except Exception:
+                rel_path = abs_path.as_posix()
+        else:
+            rel_path = raw_reference.replace("\\", "/").lstrip("/")
+            abs_path = APP_ROOT / rel_path
+        candidates.append((abs_path, rel_path))
+
+    default_rel_path = _default_profile_reference_relpath(profile_id)
+    if default_rel_path:
+        default_abs_path = APP_ROOT / default_rel_path
+        if all(item[0] != default_abs_path for item in candidates):
+            candidates.append((default_abs_path, default_rel_path))
+
+    fallback: tuple[Optional[Path], str, bool] = (None, "", False)
+    for abs_path, rel_path in candidates:
+        resolved = abs_path.resolve()
+        exists = resolved.exists() and resolved.is_file()
+        if exists:
+            return resolved, rel_path, True
+        if fallback[0] is None:
+            fallback = (resolved, rel_path, False)
+    return fallback
+
+
+def _profile_preview_url(profile_id: str) -> str:
+    return f"/tts/voice-profiles/{profile_id}/reference"
+
+
+def _decorate_profile_with_reference(profile: dict[str, Any]) -> dict[str, Any]:
+    out = dict(profile)
+    profile_id = str(profile.get("profileId") or "").strip()
+    _, rel_path, exists = _resolve_profile_reference_path(profile)
+    declared_downloaded = bool(profile.get("isDownloaded"))
+    out["isDownloaded"] = bool(exists or declared_downloaded)
+    out["referenceExists"] = bool(exists)
+    if rel_path:
+        out["referencePath"] = rel_path
+    if profile_id and (rel_path or exists):
+        out["previewUrl"] = _profile_preview_url(profile_id)
+    return out
+
+
+def _resolve_mapped_profile(
+    engine: str,
+    voice_id: str,
+    *,
+    voice_name: str = "",
+) -> Optional[dict[str, Any]]:
+    mapping = _load_voice_id_map()
+    engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
+    safe_engine = _normalize_engine_name(engine)
+    engine_payload = engines.get(safe_engine) if isinstance(engines.get(safe_engine), dict) else {}
+    voice_to_profile = engine_payload.get("voiceToProfile") if isinstance(engine_payload.get("voiceToProfile"), dict) else {}
+    candidates = [
+        str(voice_id or "").strip(),
+        str(voice_name or "").strip(),
+        str(voice_id or "").strip().lower(),
+        str(voice_name or "").strip().lower(),
+    ]
+    profile_id = ""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        mapped = str(voice_to_profile.get(candidate) or "").strip()
+        if mapped:
+            profile_id = mapped
+            break
+    if not profile_id:
+        return None
+    return _profile_index().get(profile_id)
+
+
+def _resolve_mapped_model_name(engine: str, voice_id: str, *, voice_name: str = "") -> tuple[Optional[str], Optional[str]]:
+    profile = _resolve_mapped_profile(engine, voice_id, voice_name=voice_name)
+    if not isinstance(profile, dict):
+        return None, None
+    profile_id = str(profile.get("profileId") or "").strip() or None
+    mapped_model_name = str(profile.get("rvcModelName") or "").strip() or profile_id or ""
+    resolved_model_name = _resolve_rvc_model_name_for_runtime(mapped_model_name)
+    if not resolved_model_name:
+        return None, profile_id
+    return resolved_model_name, profile_id
+
+
+def _rvc_runtime_model_snapshot(*, force_refresh: bool = False) -> tuple[set[str], bool]:
+    now_ms = int(time.time() * 1000)
+    with _RVC_MODEL_CACHE_LOCK:
+        updated_at_ms = int(_RVC_MODEL_CACHE.get("updatedAtMs") or 0)
+        if (
+            not force_refresh
+            and updated_at_ms > 0
+            and (now_ms - updated_at_ms) < VF_RVC_MODEL_CACHE_TTL_MS
+        ):
+            cached_models = _RVC_MODEL_CACHE.get("models")
+            cached_fallback = bool(_RVC_MODEL_CACHE.get("fallbackAvailable"))
+            model_set = {str(item).strip() for item in list(cached_models or []) if str(item).strip()}
+            return model_set, cached_fallback
+
+    fallback_available = bool(ENABLE_RVC_FALLBACK)
+    models: list[str] = []
+    try:
+        payload = rvc_runtime.health_payload()
+        nested = payload.get("rvc") if isinstance(payload.get("rvc"), dict) else {}
+        if isinstance(nested, dict):
+            fallback_available = bool(nested.get("fallbackAvailable")) or fallback_available
+    except Exception:
+        fallback_available = bool(ENABLE_RVC_FALLBACK)
+
+    try:
+        models = [str(item).strip() for item in rvc_runtime.list_models() if str(item).strip()]
+    except Exception:
+        models = []
+
+    if fallback_available and RVC_FALLBACK_MODEL_ID not in models:
+        models = [RVC_FALLBACK_MODEL_ID, *models]
+
+    with _RVC_MODEL_CACHE_LOCK:
+        _RVC_MODEL_CACHE["updatedAtMs"] = now_ms
+        _RVC_MODEL_CACHE["models"] = list(models)
+        _RVC_MODEL_CACHE["fallbackAvailable"] = bool(fallback_available)
+
+    return set(models), bool(fallback_available)
+
+
+def _resolve_rvc_model_name_for_runtime(mapped_model_name: str) -> str:
+    desired = str(mapped_model_name or "").strip()
+    available_models, fallback_available = _rvc_runtime_model_snapshot()
+    if desired:
+        if not available_models or desired in available_models:
+            return desired
+    if fallback_available:
+        return RVC_FALLBACK_MODEL_ID
+    return desired
+
+
+def _apply_mapped_voice_fields(engine: str, voice_id: str, base: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    profile = _resolve_mapped_profile(engine, voice_id, voice_name=str(base.get("voice") or ""))
+    if not isinstance(profile, dict):
+        return out
+    mapped_name = str(profile.get("displayName") or "").strip()
+    if mapped_name:
+        out["name"] = mapped_name
+        out["mapped_name"] = mapped_name
+    out["profile_id"] = str(profile.get("profileId") or "").strip()
+    out["country"] = str(profile.get("country") or "Unknown").strip() or "Unknown"
+    out["age_group"] = str(profile.get("ageGroup") or "Unknown").strip() or "Unknown"
+    style_tag = str(profile.get("styleTag") or "").strip()
+    if style_tag:
+        out["style_tag"] = style_tag
+    _, rel_path, exists = _resolve_profile_reference_path(profile)
+    declared_downloaded = bool(profile.get("isDownloaded"))
+    out["is_downloaded"] = bool(exists or declared_downloaded)
+    out["reference_exists"] = bool(exists)
+    if rel_path:
+        out["reference_path"] = rel_path
+    if out.get("profile_id"):
+        out["preview_url"] = _profile_preview_url(str(out.get("profile_id")))
+    return out
+
+
+def _voice_mapping_catalog_payload() -> dict[str, Any]:
+    profile_bank = _load_voice_profile_bank()
+    mapping = _load_voice_id_map()
+    profiles = profile_bank.get("profiles") or []
+    decorated_profiles = [
+        _decorate_profile_with_reference(profile)
+        for profile in profiles
+        if isinstance(profile, dict)
+    ]
+    return {
+        "ok": True,
+        "version": {
+            "profileBank": profile_bank.get("version"),
+            "voiceMap": mapping.get("version"),
+        },
+        "profiles": decorated_profiles,
+        "engines": mapping.get("engines") or {},
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _resolve_node_bin() -> str:
@@ -1096,39 +1719,96 @@ def _mix_audio_arrays(speech: Any, background: Optional[Any]) -> Any:
 
 class RvcRuntime:
     def __init__(self) -> None:
-        self.engine: Any = None
+        self.base_url = RVC_RUNTIME_URL
         self.import_error: Optional[str] = None
+        self._current_model: Optional[str] = None
+        self._health_payload: dict[str, Any] = {}
+
+    def _request_json(self, method: str, path: str, *, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        try:
+            if method.upper() == "GET":
+                response = requests.get(url, timeout=25)
+            else:
+                response = requests.post(url, json=payload or {}, timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            self.import_error = f"rvc-runtime unreachable: {exc}"
+            raise RuntimeError(self.import_error) from exc
+        if not response.ok:
+            detail = response.text[:220] if response.text else f"HTTP {response.status_code}"
+            raise RuntimeError(f"rvc-runtime {path} failed: {detail}")
+        try:
+            parsed = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"rvc-runtime {path} returned invalid JSON: {exc}") from exc
+        return parsed if isinstance(parsed, dict) else {}
 
     def ensure_engine(self) -> Any:
-        if self.engine is not None:
-            return self.engine
-
-        try:
-            from rvc_python.infer import RVCInference  # type: ignore
-        except Exception as exc:
-            self.import_error = f"rvc-python import failed: {exc}"
-            raise RuntimeError(self.import_error) from exc
-
-        try:
-            self.engine = RVCInference(models_dir=str(MODELS_DIR), device=RVC_DEVICE)
-        except Exception as exc:
-            self.import_error = f"RVC engine init failed: {exc}"
-            raise RuntimeError(self.import_error) from exc
-
-        return self.engine
+        payload = self._request_json("GET", "/v1/health")
+        self._health_payload = payload
+        rvc_payload = payload.get("rvc") if isinstance(payload.get("rvc"), dict) else {}
+        available = bool(rvc_payload.get("available"))
+        self._current_model = str(rvc_payload.get("currentModel") or "").strip() or self._current_model
+        if not available and not bool(rvc_payload.get("fallbackAvailable")):
+            detail = str(rvc_payload.get("error") or payload.get("detail") or "rvc_runtime_unavailable")
+            self.import_error = detail
+            raise RuntimeError(detail)
+        self.import_error = None
+        return payload
 
     def list_models(self) -> list[str]:
-        engine = self.ensure_engine()
-        return engine.list_models()
+        payload = self._request_json("GET", "/v1/models")
+        models = payload.get("models") if isinstance(payload.get("models"), list) else []
+        current_model = str(payload.get("currentModel") or "").strip()
+        if current_model:
+            self._current_model = current_model
+        return [str(item).strip() for item in models if str(item).strip()]
 
     def load_model(self, model_name: str, version: str = "v2") -> None:
-        engine = self.ensure_engine()
-        engine.load_model(model_name, version=version)
+        payload = self._request_json(
+            "POST",
+            "/v1/load-model",
+            payload={"modelName": model_name, "version": version},
+        )
+        current_model = str(payload.get("currentModel") or "").strip()
+        if current_model:
+            self._current_model = current_model
 
     def current_model(self) -> Optional[str]:
-        if self.engine is None:
-            return None
-        return getattr(self.engine, "current_model", None)
+        return self._current_model
+
+    def health_payload(self) -> dict[str, Any]:
+        try:
+            self.ensure_engine()
+        except Exception:
+            pass
+        return dict(self._health_payload)
+
+    def convert_file(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
+        model_name = str(kwargs.get("model_name") or "").strip()
+        if not model_name:
+            raise RuntimeError("rvc_model_required")
+        preset = _normalize_rvc_preset(str(kwargs.get("preset") or VF_TTS_POST_RVC_PRESET))
+        with Path(input_wav).open("rb") as handle:
+            response = requests.post(
+                f"{self.base_url}/v1/convert",
+                files={"file": ("input.wav", handle, "audio/wav")},
+                data={
+                    "model_name": model_name,
+                    "preset": preset,
+                    "pitch_shift": str(int(kwargs.get("pitch_shift") or 0)),
+                    "index_rate": str(float(kwargs.get("index_rate") or 0.5)),
+                    "filter_radius": str(int(kwargs.get("filter_radius") or 3)),
+                    "rms_mix_rate": str(float(kwargs.get("rms_mix_rate") or 1.0)),
+                    "protect": str(float(kwargs.get("protect") or 0.33)),
+                    "f0_method": str(kwargs.get("f0_method") or "rmvpe"),
+                },
+                timeout=VF_TTS_POST_RVC_TIMEOUT_SEC,
+            )
+        if not response.ok:
+            detail = response.text[:240] if response.text else f"HTTP {response.status_code}"
+            raise RuntimeError(f"rvc-runtime /v1/convert failed: {detail}")
+        Path(output_wav).write_bytes(bytes(response.content or b""))
 
 
 class VoiceConversionAdapter:
@@ -1171,21 +1851,7 @@ class RvcAdapter(VoiceConversionAdapter):
             return False, str(exc)
 
     def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
-        model_name = str(kwargs.get("model_name") or "").strip()
-        if not model_name:
-            raise RuntimeError("rvc_model_required")
-        engine = rvc_runtime.ensure_engine()
-        if engine.current_model != model_name:
-            engine.load_model(model_name)
-        engine.set_params(
-            f0method=str(kwargs.get("f0_method") or "rmvpe"),
-            f0up_key=int(kwargs.get("pitch_shift") or 0),
-            index_rate=float(kwargs.get("index_rate") or 0.5),
-            filter_radius=int(kwargs.get("filter_radius") or 3),
-            rms_mix_rate=float(kwargs.get("rms_mix_rate") or 1.0),
-            protect=float(kwargs.get("protect") or 0.33),
-        )
-        engine.infer_file(input_wav, output_wav)
+        rvc_runtime.convert_file(input_wav, output_wav, **kwargs)
 
 
 class LhqSvcAdapter(VoiceConversionAdapter):
@@ -1320,6 +1986,70 @@ _INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_GENERATION_HISTORY: dict[str, dict[str, Any]] = {}
 _INMEMORY_DAILY_USAGE_RESET_STATUS: dict[str, Any] = {}
 _INMEMORY_LOCK = threading.Lock()
+_TTS_SUCCESS_LIMITER = SuccessQuotaLimiter(
+    redis_url=VF_REDIS_URL,
+    plan_limits=TTS_SUCCESS_PLAN_LIMITS,
+    window_seconds=VF_TTS_SUCCESS_WINDOW_SECONDS,
+    idempotency_ttl_seconds=VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS,
+)
+_TTS_GATEWAY_CONTROLLER = TtsGatewayController(
+    max_active=VF_TTS_GATEWAY_MAX_ACTIVE,
+    queue_max=VF_TTS_GATEWAY_QUEUE_MAX,
+    queue_wait_timeout_ms=VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS,
+)
+_TTS_JOB_QUEUE = TtsJobQueue(
+    redis_url=VF_REDIS_URL,
+    key_prefix=VF_TTS_QUEUE_KEY_PREFIX,
+    lane_weights=VF_TTS_LANE_WEIGHTS,
+)
+_TTS_JOB_WORKER_LOCK = threading.Lock()
+_TTS_JOB_WORKER_THREADS: list[threading.Thread] = []
+_TTS_ENGINE_CONCURRENCY_LIMITS: dict[str, int] = {
+    "GEM": int(VF_TTS_ENGINE_CONCURRENCY_GEM),
+    "KOKORO": int(VF_TTS_ENGINE_CONCURRENCY_KOKORO),
+}
+_TTS_ENGINE_SEMAPHORES: dict[str, threading.Semaphore] = {
+    engine: threading.Semaphore(max(1, int(limit)))
+    for engine, limit in _TTS_ENGINE_CONCURRENCY_LIMITS.items()
+}
+_TTS_ENGINE_ACTIVE_COUNTS: dict[str, int] = {engine: 0 for engine in _TTS_ENGINE_CONCURRENCY_LIMITS}
+_TTS_ENGINE_QUEUE_COUNTS: dict[str, dict[str, int]] = {
+    engine: {"queued": 0, "running": 0}
+    for engine in _TTS_ENGINE_CONCURRENCY_LIMITS
+}
+_TTS_ENGINE_RUNNING_JOB_IDS: dict[str, set[str]] = {
+    engine: set()
+    for engine in _TTS_ENGINE_CONCURRENCY_LIMITS
+}
+_TTS_ENGINE_QUEUED_JOB_IDS: dict[str, set[str]] = {
+    engine: set()
+    for engine in _TTS_ENGINE_CONCURRENCY_LIMITS
+}
+_TTS_ENGINE_ENQUEUED_AT_MS: dict[str, int] = {}
+_TTS_ENGINE_METRICS_LOCK = threading.Lock()
+_TTS_QUEUE_TELEMETRY: dict[str, Any] = {
+    "enqueueToStartMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "runtimeLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "engineSemaphoreWaitMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "liveFirstChunkLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "liveChunkCount": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "liveChunkRvcLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "terminalEvents": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    "runtimeLatencyByEngine": {
+        "GEM": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "KOKORO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    },
+    "semaphoreWaitByEngine": {
+        "GEM": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "KOKORO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+    },
+}
+_GEMINI_POOLS_LOCK = threading.Lock()
+_GEMINI_POOLS_CACHE: Optional[dict[str, Any]] = None
+_GEMINI_POOLS_META: dict[str, Any] = {}
+_ADMIN_USAGE_LOCK = threading.Lock()
+_ADMIN_USAGE_RECENT_EVENTS: deque[dict[str, Any]] = deque()
+_ADMIN_USAGE_TOTALS: dict[str, dict[str, Any]] = {}
 
 
 def _init_firebase_clients() -> None:
@@ -1406,6 +2136,24 @@ def _history_sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _history_prune_expired_items(items: list[dict[str, Any]], now_ms: Optional[int] = None) -> list[dict[str, Any]]:
+    safe_now_ms = _as_positive_int(now_ms or int(time.time() * 1000))
+    cutoff_ms = max(0, safe_now_ms - VF_GENERATION_HISTORY_RETENTION_MS)
+    safe_items: list[dict[str, Any]] = []
+    for item in list(items or []):
+        if not isinstance(item, dict):
+            continue
+        sanitized = _history_sanitize_item(item)
+        timestamp_ms = _as_positive_int(sanitized.get("timestamp"))
+        if timestamp_ms < cutoff_ms:
+            continue
+        safe_items.append(sanitized)
+    safe_items.sort(key=lambda item: _as_positive_int(item.get("timestamp")), reverse=True)
+    if len(safe_items) > VF_GENERATION_HISTORY_MAX_ITEMS:
+        safe_items = safe_items[:VF_GENERATION_HISTORY_MAX_ITEMS]
+    return safe_items
+
+
 def _history_encode_items_gzip_b64(items: list[dict[str, Any]]) -> str:
     serialized = json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     compressed = gzip.compress(serialized, compresslevel=9)
@@ -1433,9 +2181,9 @@ def _history_decode_items_gzip_b64(blob: str) -> list[dict[str, Any]]:
 
 def _history_row_from_items(uid: str, items: list[dict[str, Any]], now_iso: Optional[str] = None) -> dict[str, Any]:
     normalized_uid = str(uid or "").strip()
-    safe_items = [_history_sanitize_item(item) for item in list(items or []) if isinstance(item, dict)]
-    if len(safe_items) > VF_GENERATION_HISTORY_MAX_ITEMS:
-        safe_items = safe_items[:VF_GENERATION_HISTORY_MAX_ITEMS]
+    safe_items = _history_prune_expired_items(
+        [item for item in list(items or []) if isinstance(item, dict)]
+    )
     latest_at_ms = max([_as_positive_int(item.get("timestamp")) for item in safe_items], default=0)
     return {
         "uid": normalized_uid,
@@ -1467,13 +2215,16 @@ def _history_get_row(uid: str) -> dict[str, Any]:
 
 
 def _history_get_items(uid: str, limit: int = 30) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
     safe_limit = max(1, min(200, int(limit)))
-    row = _history_get_row(uid)
+    row = _history_get_row(safe_uid)
     items = _history_decode_items_gzip_b64(str(row.get("itemsGzipB64") or ""))
     if not items:
         return []
-    items.sort(key=lambda item: _as_positive_int(item.get("timestamp")), reverse=True)
-    return items[:safe_limit]
+    pruned_items = _history_prune_expired_items(items)
+    if len(pruned_items) != len(items):
+        _history_write_row(safe_uid, _history_row_from_items(safe_uid, pruned_items, now_iso=_safe_now_iso()))
+    return pruned_items[:safe_limit]
 
 
 def _history_write_row(uid: str, row: dict[str, Any]) -> None:
@@ -1499,9 +2250,7 @@ def _history_append_item(uid: str, item: dict[str, Any]) -> None:
     if not safe_uid:
         return
     current = _history_get_items(safe_uid, limit=VF_GENERATION_HISTORY_MAX_ITEMS)
-    next_items = [_history_sanitize_item(item), *current]
-    if len(next_items) > VF_GENERATION_HISTORY_MAX_ITEMS:
-        next_items = next_items[:VF_GENERATION_HISTORY_MAX_ITEMS]
+    next_items = _history_prune_expired_items([_history_sanitize_item(item), *current])
     row = _history_row_from_items(safe_uid, next_items, now_iso=_safe_now_iso())
     _history_write_row(safe_uid, row)
 
@@ -1564,6 +2313,93 @@ def _plan_key_from_name(plan_name: str) -> str:
 
 def _plan_config(plan_name: str) -> dict[str, Any]:
     return PLAN_LIMITS[_plan_key_from_name(plan_name)]
+
+
+def _tts_guardrail_for_plan(plan_name: str) -> tuple[str, dict[str, int]]:
+    plan_key = _plan_key_from_name(plan_name)
+    guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
+    return plan_key, {
+        "rpm": _TTS_SUCCESS_LIMITER.quota_for_plan(plan_key),
+        "maxChars": max(1, int(guardrails.get("maxChars") or 1)),
+    }
+
+
+def _success_rate_limit_headers(snapshot: Any) -> dict[str, str]:
+    reset_at_ms = max(0, int(getattr(snapshot, "reset_at_ms", 0) or 0))
+    reset_epoch_sec = max(0, reset_at_ms // 1000)
+    return {
+        "X-RateLimit-Success-Limit": str(max(1, int(getattr(snapshot, "limit", 1) or 1))),
+        "X-RateLimit-Success-Remaining": str(max(0, int(getattr(snapshot, "remaining", 0) or 0))),
+        "X-RateLimit-Success-Reset": str(reset_epoch_sec),
+    }
+
+
+def _enforce_tts_plan_guardrails(uid: str, text_chars: int, trace_id: str) -> tuple[str, str, dict[str, int]]:
+    entitlement = _load_entitlement(uid)
+    plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
+    plan_key, guardrails = _tts_guardrail_for_plan(plan_name)
+    max_chars = max(1, int(guardrails.get("maxChars") or 1))
+    actual_chars = max(0, int(text_chars))
+    if actual_chars > max_chars:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "errorCode": "VF_TTS_TEXT_TOO_LONG",
+                "reason": "plan_char_limit_exceeded",
+                "plan": plan_name,
+                "maxChars": max_chars,
+                "actualChars": actual_chars,
+                "trace_id": trace_id,
+            },
+        )
+    return plan_name, plan_key, guardrails
+
+
+def _precheck_tts_success_quota(uid: str, plan_name: str, plan_key: str, trace_id: str) -> dict[str, str]:
+    snapshot = _TTS_SUCCESS_LIMITER.peek(uid, plan_key)
+    if int(snapshot.remaining) <= 0:
+        retry_after_ms = max(250, int(snapshot.reset_at_ms) - int(time.time() * 1000))
+        detail = {
+            "errorCode": RATE_LIMIT_USER,
+            "reason": "plan_success_limit_exceeded",
+            "plan": plan_name,
+            "windowSeconds": int(snapshot.window_seconds),
+            "limit": int(snapshot.limit),
+            "used": int(snapshot.used),
+            "retryAfterMs": retry_after_ms,
+            "trace_id": trace_id,
+        }
+        headers = _success_rate_limit_headers(snapshot)
+        headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
+    return _success_rate_limit_headers(snapshot)
+
+
+def _commit_tts_success_quota(
+    uid: str,
+    plan_name: str,
+    plan_key: str,
+    trace_id: str,
+    *,
+    request_fingerprint: str,
+) -> SuccessQuotaDecision:
+    decision = _TTS_SUCCESS_LIMITER.commit_success(uid, plan_key, request_fingerprint=request_fingerprint)
+    if decision.allowed:
+        return decision
+    retry_after_ms = max(250, int(decision.snapshot.reset_at_ms) - int(time.time() * 1000))
+    detail = {
+        "errorCode": RATE_LIMIT_USER,
+        "reason": "plan_success_limit_exceeded",
+        "plan": plan_name,
+        "windowSeconds": int(decision.snapshot.window_seconds),
+        "limit": int(decision.snapshot.limit),
+        "used": int(decision.snapshot.used),
+        "retryAfterMs": retry_after_ms,
+        "trace_id": trace_id,
+    }
+    headers = _success_rate_limit_headers(decision.snapshot)
+    headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+    raise HTTPException(status_code=429, detail=detail, headers=headers)
 
 
 def _engine_rate_for_plan(plan_name: str, engine: str) -> int:
@@ -1686,9 +2522,11 @@ async def _firebase_auth_middleware(request: Request, call_next: Any) -> Respons
 @app.middleware("http")
 async def _ai_ops_observer_middleware(request: Request, call_next: Any) -> Response:
     path = str(request.url.path or "/")
+    method = str(request.method or "GET").upper()
     throttle_payload = _ai_ops_throttle_payload(path)
     if throttle_payload is not None:
         _ai_ops_record_rejected_request(path, throttle_payload)
+        _admin_usage_record_http(path, method, status_code=503, elapsed_ms=0)
         return JSONResponse(status_code=503, content=throttle_payload)
 
     started_ms = int(time.time() * 1000)
@@ -1706,6 +2544,7 @@ async def _ai_ops_observer_middleware(request: Request, call_next: Any) -> Respo
     finally:
         elapsed_ms = max(0, int(time.time() * 1000) - started_ms)
         _ai_ops_request_finished(path, status_code=status_code, elapsed_ms=elapsed_ms, error_detail=error_detail)
+        _admin_usage_record_http(path, method, status_code=status_code, elapsed_ms=elapsed_ms)
 
 
 def _require_request_uid(request: Request) -> str:
@@ -2540,6 +3379,14 @@ class AdminResetPasswordRequest(BaseModel):
     newPassword: str
 
 
+class GeminiApiPoolsUpdateRequest(BaseModel):
+    version: Optional[int] = None
+    pools: dict[str, Any]
+    fallbackChains: Optional[dict[str, Any]] = None
+    constraints: Optional[dict[str, Any]] = None
+    sourcePolicy: Optional[dict[str, Any]] = None
+
+
 class TtsSynthesizeRequest(BaseModel):
     engine: str = "GEM"
     text: str
@@ -2556,6 +3403,8 @@ class TtsSynthesizeRequest(BaseModel):
     speaker_voices: Optional[list[dict[str, Any]]] = None
     apiKey: Optional[str] = None
     stream: Optional[bool] = None
+    live_chunk_chars: Optional[int] = None
+    live_chunk_words: Optional[int] = None
     response_format: Optional[str] = None
     emotion_ref_id: Optional[str] = None
     emotion_strength: Optional[float] = None
@@ -2563,6 +3412,82 @@ class TtsSynthesizeRequest(BaseModel):
     multi_speaker_max_concurrency: Optional[int] = None
     multi_speaker_retry_once: Optional[bool] = None
     multi_speaker_line_map: Optional[list[dict[str, Any]]] = None
+    post_tts_disable: Optional[bool] = None
+
+
+class TtsEngineStatusItem(BaseModel):
+    engine: str
+    state: str
+    detail: str
+    ready: bool
+    healthUrl: str
+    runtimeUrl: str
+
+
+class TtsEngineStatusResponse(BaseModel):
+    ok: bool
+    engines: dict[str, TtsEngineStatusItem]
+    fetchedAt: str
+
+
+class TtsEngineVoiceItem(BaseModel):
+    voice_id: str
+    name: str
+    voice: Optional[str] = None
+    language: Optional[str] = None
+    gender: Optional[str] = None
+    source: Optional[str] = None
+    profile_id: Optional[str] = None
+    mapped_name: Optional[str] = None
+    country: Optional[str] = None
+    age_group: Optional[str] = None
+    style_tag: Optional[str] = None
+
+
+class TtsEngineVoicesResponse(BaseModel):
+    ok: bool
+    engine: str
+    voices: list[TtsEngineVoiceItem]
+    fetchedAt: str
+
+
+class TtsEngineCapabilitiesResponse(BaseModel):
+    ok: bool
+    engines: dict[str, dict[str, Any]]
+    voiceConversion: dict[str, dict[str, Any]]
+    fetchedAt: str
+
+
+class TtsEngineSwitchResponse(BaseModel):
+    ok: bool
+    engine: str
+    state: str
+    detail: str
+    healthUrl: str
+    gpuMode: bool
+    commandOutput: Optional[str] = None
+    probeDetail: Optional[str] = None
+
+
+class RuntimeLogTailResponse(BaseModel):
+    ok: bool
+    service: str
+    exists: bool
+    file: str
+    cursor: int
+    nextCursor: int
+    size: int
+    lines: list[str]
+    truncated: bool
+    lastModified: Optional[int] = None
+
+
+class VideoTranscriptionResponse(BaseModel):
+    ok: bool
+    language: Optional[str] = None
+    segments: list[dict[str, Any]]
+    script: str
+    durationSec: float
 
 
 class AiGenerateTextRequest(BaseModel):
@@ -2575,6 +3500,487 @@ class AiGenerateTextRequest(BaseModel):
 
 def _ai_ops_now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _usage_status_class(status_code: int) -> str:
+    safe_status = max(0, int(status_code))
+    if safe_status < 100:
+        return "unknown"
+    family = safe_status // 100
+    if family in {1, 2, 3, 4, 5}:
+        return f"{family}xx"
+    return "unknown"
+
+
+def _usage_integration_for_path(path: str) -> str:
+    token = str(path or "/").strip() or "/"
+    normalized = token.lower()
+    if normalized.startswith("/tts/"):
+        return "tts"
+    if normalized.startswith("/admin/"):
+        return "admin"
+    if normalized.startswith("/ai/"):
+        return "ai"
+    if normalized.startswith("/billing/"):
+        return "billing"
+    if normalized.startswith("/runtime/"):
+        return "runtime"
+    if normalized.startswith("/ops/"):
+        return "ops"
+    if normalized.startswith("/account/"):
+        return "account"
+    if normalized.startswith("/voice/"):
+        return "voice"
+    if normalized.startswith("/video/"):
+        return "video"
+    pieces = [part for part in normalized.split("/") if part]
+    return pieces[0] if pieces else "misc"
+
+
+def _usage_record_key(integration: str, endpoint: str, method: str) -> str:
+    return f"{integration}|{method}|{endpoint}"
+
+
+def _usage_new_metric_acc() -> dict[str, Any]:
+    return {
+        "requests": 0,
+        "success": 0,
+        "clientErrors": 0,
+        "serverErrors": 0,
+        "statusClassCounts": {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, "unknown": 0},
+        "totalLatencyMs": 0.0,
+        "maxLatencyMs": 0.0,
+        "latencySamples": [],
+        "lastStatusCode": 0,
+        "lastSeenMs": 0,
+    }
+
+
+def _usage_percentile(samples: list[float], percentile: float) -> float:
+    if not samples:
+        return 0.0
+    ordered = sorted(float(item) for item in samples if item is not None)
+    if not ordered:
+        return 0.0
+    rank = int(round((max(0.0, min(100.0, float(percentile))) / 100.0) * float(len(ordered) - 1)))
+    rank = max(0, min(rank, len(ordered) - 1))
+    return float(ordered[rank])
+
+
+def _usage_metric_add(
+    metric: dict[str, Any],
+    *,
+    status_code: int,
+    latency_ms: float,
+    event_ts_ms: int,
+    sample_cap: int = 4096,
+) -> None:
+    safe_status = int(status_code)
+    safe_latency = max(0.0, float(latency_ms))
+    status_class = _usage_status_class(safe_status)
+
+    metric["requests"] = int(metric.get("requests", 0)) + 1
+    if 200 <= safe_status < 400:
+        metric["success"] = int(metric.get("success", 0)) + 1
+    elif 400 <= safe_status < 500:
+        metric["clientErrors"] = int(metric.get("clientErrors", 0)) + 1
+    else:
+        metric["serverErrors"] = int(metric.get("serverErrors", 0)) + 1
+    status_counts = metric.get("statusClassCounts")
+    if not isinstance(status_counts, dict):
+        status_counts = {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, "unknown": 0}
+    status_counts[status_class] = int(status_counts.get(status_class, 0)) + 1
+    metric["statusClassCounts"] = status_counts
+    metric["totalLatencyMs"] = float(metric.get("totalLatencyMs", 0.0)) + safe_latency
+    metric["maxLatencyMs"] = max(float(metric.get("maxLatencyMs", 0.0)), safe_latency)
+    samples = metric.get("latencySamples")
+    if not isinstance(samples, list):
+        samples = []
+    samples.append(safe_latency)
+    overflow = len(samples) - max(8, int(sample_cap))
+    if overflow > 0:
+        del samples[:overflow]
+    metric["latencySamples"] = samples
+    metric["lastStatusCode"] = safe_status
+    metric["lastSeenMs"] = max(int(metric.get("lastSeenMs", 0)), int(event_ts_ms))
+
+
+def _usage_metric_merge(metric: dict[str, Any], source: dict[str, Any], *, sample_cap: int = 4096) -> None:
+    metric["requests"] = int(metric.get("requests", 0)) + int(source.get("requests", 0))
+    metric["success"] = int(metric.get("success", 0)) + int(source.get("success", 0))
+    metric["clientErrors"] = int(metric.get("clientErrors", 0)) + int(source.get("clientErrors", 0))
+    metric["serverErrors"] = int(metric.get("serverErrors", 0)) + int(source.get("serverErrors", 0))
+    target_counts = metric.get("statusClassCounts")
+    if not isinstance(target_counts, dict):
+        target_counts = {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, "unknown": 0}
+    source_counts = source.get("statusClassCounts") if isinstance(source.get("statusClassCounts"), dict) else {}
+    for key in ["1xx", "2xx", "3xx", "4xx", "5xx", "unknown"]:
+        target_counts[key] = int(target_counts.get(key, 0)) + int(source_counts.get(key, 0))
+    metric["statusClassCounts"] = target_counts
+    metric["totalLatencyMs"] = float(metric.get("totalLatencyMs", 0.0)) + float(source.get("totalLatencyMs", 0.0))
+    metric["maxLatencyMs"] = max(float(metric.get("maxLatencyMs", 0.0)), float(source.get("maxLatencyMs", 0.0)))
+    source_samples = list(source.get("latencySamples") or [])
+    if source_samples:
+        target_samples = metric.get("latencySamples")
+        if not isinstance(target_samples, list):
+            target_samples = []
+        target_samples.extend(float(item) for item in source_samples)
+        overflow = len(target_samples) - max(8, int(sample_cap))
+        if overflow > 0:
+            del target_samples[:overflow]
+        metric["latencySamples"] = target_samples
+    metric["lastStatusCode"] = int(source.get("lastStatusCode") or metric.get("lastStatusCode") or 0)
+    metric["lastSeenMs"] = max(int(metric.get("lastSeenMs", 0)), int(source.get("lastSeenMs", 0)))
+
+
+def _usage_metric_finalize(metric: dict[str, Any]) -> dict[str, Any]:
+    requests_total = int(metric.get("requests", 0))
+    client_errors = int(metric.get("clientErrors", 0))
+    server_errors = int(metric.get("serverErrors", 0))
+    total_latency = float(metric.get("totalLatencyMs", 0.0))
+    samples = list(metric.get("latencySamples") or [])
+    return {
+        "requests": requests_total,
+        "success": int(metric.get("success", 0)),
+        "clientErrors": client_errors,
+        "serverErrors": server_errors,
+        "errorRatePct": round(
+            ((float(client_errors + server_errors) / float(requests_total)) * 100.0) if requests_total > 0 else 0.0,
+            2,
+        ),
+        "statusClassCounts": metric.get("statusClassCounts") if isinstance(metric.get("statusClassCounts"), dict) else {
+            "1xx": 0,
+            "2xx": 0,
+            "3xx": 0,
+            "4xx": 0,
+            "5xx": 0,
+            "unknown": 0,
+        },
+        "avgLatencyMs": round((total_latency / float(requests_total)) if requests_total > 0 else 0.0, 2),
+        "p95LatencyMs": round(_usage_percentile(samples, 95), 2),
+        "maxLatencyMs": round(float(metric.get("maxLatencyMs", 0.0)), 2),
+        "lastStatusCode": int(metric.get("lastStatusCode", 0)),
+        "lastSeenMs": int(metric.get("lastSeenMs", 0)),
+    }
+
+
+def _admin_usage_prune_locked(now_ms: int) -> None:
+    cutoff_ms = int(now_ms) - USAGE_WINDOW_7D_MS
+    while _ADMIN_USAGE_RECENT_EVENTS and int((_ADMIN_USAGE_RECENT_EVENTS[0] or {}).get("ts", 0)) < cutoff_ms:
+        _ADMIN_USAGE_RECENT_EVENTS.popleft()
+    overflow = len(_ADMIN_USAGE_RECENT_EVENTS) - VF_ADMIN_USAGE_RECENT_EVENT_CAP
+    if overflow > 0:
+        for _ in range(overflow):
+            if not _ADMIN_USAGE_RECENT_EVENTS:
+                break
+            _ADMIN_USAGE_RECENT_EVENTS.popleft()
+
+
+def _admin_usage_record_event(
+    *,
+    integration: str,
+    endpoint: str,
+    method: str,
+    status_code: int,
+    latency_ms: float,
+) -> None:
+    now_ms = _ai_ops_now_ms()
+    safe_integration = str(integration or "misc").strip().lower()[:80] or "misc"
+    safe_endpoint = str(endpoint or "/").strip()[:200] or "/"
+    safe_method = str(method or "GET").strip().upper()[:16] or "GET"
+    safe_status = max(0, int(status_code))
+    safe_latency = max(0.0, float(latency_ms))
+    status_class = _usage_status_class(safe_status)
+    event = {
+        "ts": now_ms,
+        "integration": safe_integration,
+        "endpoint": safe_endpoint,
+        "method": safe_method,
+        "statusCode": safe_status,
+        "statusClass": status_class,
+        "latencyMs": safe_latency,
+    }
+    record_key = _usage_record_key(safe_integration, safe_endpoint, safe_method)
+    with _ADMIN_USAGE_LOCK:
+        _ADMIN_USAGE_RECENT_EVENTS.append(event)
+        _admin_usage_prune_locked(now_ms)
+        bucket = _ADMIN_USAGE_TOTALS.get(record_key)
+        if not isinstance(bucket, dict):
+            bucket = {
+                "integration": safe_integration,
+                "endpoint": safe_endpoint,
+                "method": safe_method,
+                **_usage_new_metric_acc(),
+            }
+            _ADMIN_USAGE_TOTALS[record_key] = bucket
+        _usage_metric_add(
+            bucket,
+            status_code=safe_status,
+            latency_ms=safe_latency,
+            event_ts_ms=now_ms,
+            sample_cap=VF_ADMIN_USAGE_TOTAL_SAMPLE_CAP,
+        )
+
+
+def _admin_usage_record_http(path: str, method: str, *, status_code: int, elapsed_ms: int) -> None:
+    _admin_usage_record_event(
+        integration=_usage_integration_for_path(path),
+        endpoint=str(path or "/"),
+        method=str(method or "GET"),
+        status_code=status_code,
+        latency_ms=float(max(0, int(elapsed_ms))),
+    )
+
+
+def _admin_usage_record_runtime_call(
+    *,
+    engine: str,
+    endpoint: str,
+    method: str,
+    status_code: int,
+    elapsed_ms: int,
+) -> None:
+    engine_key = str(engine or "").strip().upper()
+    integration = "gemini-runtime" if engine_key == "GEM" else "kokoro-runtime" if engine_key == "KOKORO" else "tts-runtime"
+    _admin_usage_record_event(
+        integration=integration,
+        endpoint=str(endpoint or "/synthesize"),
+        method=str(method or "POST"),
+        status_code=int(status_code),
+        latency_ms=float(max(0, int(elapsed_ms))),
+    )
+
+
+def _admin_usage_build_window_from_events(cutoff_ms: int) -> dict[str, Any]:
+    overall = _usage_new_metric_acc()
+    integrations: dict[str, dict[str, Any]] = {}
+
+    with _ADMIN_USAGE_LOCK:
+        events = list(_ADMIN_USAGE_RECENT_EVENTS)
+
+    for event in events:
+        event_ts = int(event.get("ts", 0))
+        if event_ts < cutoff_ms:
+            continue
+        integration = str(event.get("integration") or "misc")
+        endpoint = str(event.get("endpoint") or "/")
+        method = str(event.get("method") or "GET")
+        status_code = int(event.get("statusCode") or 0)
+        latency_ms = float(event.get("latencyMs") or 0.0)
+
+        _usage_metric_add(overall, status_code=status_code, latency_ms=latency_ms, event_ts_ms=event_ts)
+
+        integration_entry = integrations.get(integration)
+        if not isinstance(integration_entry, dict):
+            integration_entry = {
+                "metric": _usage_new_metric_acc(),
+                "endpoints": {},
+            }
+            integrations[integration] = integration_entry
+        _usage_metric_add(integration_entry["metric"], status_code=status_code, latency_ms=latency_ms, event_ts_ms=event_ts)
+
+        endpoint_key = _usage_record_key(integration, endpoint, method)
+        endpoint_entry = integration_entry["endpoints"].get(endpoint_key)
+        if not isinstance(endpoint_entry, dict):
+            endpoint_entry = {
+                "endpoint": endpoint,
+                "method": method,
+                "metric": _usage_new_metric_acc(),
+            }
+            integration_entry["endpoints"][endpoint_key] = endpoint_entry
+        _usage_metric_add(endpoint_entry["metric"], status_code=status_code, latency_ms=latency_ms, event_ts_ms=event_ts)
+
+    out_integrations: dict[str, Any] = {}
+    for integration, entry in integrations.items():
+        endpoints_payload: dict[str, Any] = {}
+        for endpoint_key, endpoint_entry in (entry.get("endpoints") or {}).items():
+            endpoints_payload[endpoint_key] = {
+                "endpoint": str(endpoint_entry.get("endpoint") or "/"),
+                "method": str(endpoint_entry.get("method") or "GET"),
+                "metric": _usage_metric_finalize(endpoint_entry.get("metric") if isinstance(endpoint_entry.get("metric"), dict) else {}),
+            }
+        out_integrations[integration] = {
+            "metric": _usage_metric_finalize(entry.get("metric") if isinstance(entry.get("metric"), dict) else {}),
+            "endpoints": endpoints_payload,
+        }
+
+    return {
+        "overall": _usage_metric_finalize(overall),
+        "integrations": out_integrations,
+    }
+
+
+def _admin_usage_build_window_from_totals() -> dict[str, Any]:
+    overall = _usage_new_metric_acc()
+    integrations: dict[str, dict[str, Any]] = {}
+    with _ADMIN_USAGE_LOCK:
+        totals = [dict(item) for item in _ADMIN_USAGE_TOTALS.values() if isinstance(item, dict)]
+
+    for bucket in totals:
+        integration = str(bucket.get("integration") or "misc")
+        endpoint = str(bucket.get("endpoint") or "/")
+        method = str(bucket.get("method") or "GET")
+        _usage_metric_merge(overall, bucket, sample_cap=VF_ADMIN_USAGE_TOTAL_SAMPLE_CAP)
+
+        integration_entry = integrations.get(integration)
+        if not isinstance(integration_entry, dict):
+            integration_entry = {
+                "metric": _usage_new_metric_acc(),
+                "endpoints": {},
+            }
+            integrations[integration] = integration_entry
+        _usage_metric_merge(integration_entry["metric"], bucket, sample_cap=VF_ADMIN_USAGE_TOTAL_SAMPLE_CAP)
+
+        endpoint_key = _usage_record_key(integration, endpoint, method)
+        integration_entry["endpoints"][endpoint_key] = {
+            "endpoint": endpoint,
+            "method": method,
+            "metric": _usage_metric_finalize(bucket),
+        }
+
+    out_integrations: dict[str, Any] = {}
+    for integration, entry in integrations.items():
+        out_integrations[integration] = {
+            "metric": _usage_metric_finalize(entry.get("metric") if isinstance(entry.get("metric"), dict) else {}),
+            "endpoints": dict(entry.get("endpoints") or {}),
+        }
+    return {
+        "overall": _usage_metric_finalize(overall),
+        "integrations": out_integrations,
+    }
+
+
+def _admin_usage_summary_payload() -> dict[str, Any]:
+    now_ms = _ai_ops_now_ms()
+    windows = {
+        "total": _admin_usage_build_window_from_totals(),
+        "last24h": _admin_usage_build_window_from_events(now_ms - USAGE_WINDOW_24H_MS),
+        "last7d": _admin_usage_build_window_from_events(now_ms - USAGE_WINDOW_7D_MS),
+    }
+    integration_keys: set[str] = set()
+    for window_payload in windows.values():
+        integration_keys.update((window_payload.get("integrations") or {}).keys())
+
+    integrations_out: list[dict[str, Any]] = []
+    for integration in sorted(integration_keys):
+        integration_windows: dict[str, Any] = {}
+        endpoint_keys: set[str] = set()
+        for window_name, window_payload in windows.items():
+            integration_entry = (window_payload.get("integrations") or {}).get(integration) or {}
+            integration_windows[window_name] = integration_entry.get("metric") or _usage_metric_finalize({})
+            endpoint_keys.update((integration_entry.get("endpoints") or {}).keys())
+
+        endpoints_out: list[dict[str, Any]] = []
+        for endpoint_key in sorted(endpoint_keys):
+            endpoint_label = "/"
+            method_label = "GET"
+            endpoint_windows: dict[str, Any] = {}
+            for window_name, window_payload in windows.items():
+                integration_entry = (window_payload.get("integrations") or {}).get(integration) or {}
+                endpoint_entry = (integration_entry.get("endpoints") or {}).get(endpoint_key) or {}
+                endpoint_label = str(endpoint_entry.get("endpoint") or endpoint_label)
+                method_label = str(endpoint_entry.get("method") or method_label)
+                endpoint_windows[window_name] = endpoint_entry.get("metric") or _usage_metric_finalize({})
+            endpoints_out.append(
+                {
+                    "key": endpoint_key,
+                    "endpoint": endpoint_label,
+                    "method": method_label,
+                    "windows": endpoint_windows,
+                }
+            )
+        endpoints_out.sort(
+            key=lambda item: int((((item.get("windows") or {}).get("total") or {}).get("requests") or 0)),
+            reverse=True,
+        )
+        integrations_out.append(
+            {
+                "integration": integration,
+                "windows": integration_windows,
+                "endpoints": endpoints_out,
+            }
+        )
+    integrations_out.sort(
+        key=lambda item: int((((item.get("windows") or {}).get("total") or {}).get("requests") or 0)),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "generatedAtMs": now_ms,
+        "windows": {
+            "total": windows["total"]["overall"],
+            "last24h": windows["last24h"]["overall"],
+            "last7d": windows["last7d"]["overall"],
+        },
+        "integrations": integrations_out,
+        "gateway": _TTS_GATEWAY_CONTROLLER.snapshot(),
+        "jobQueue": _TTS_JOB_QUEUE.depth_snapshot(),
+    }
+
+
+def _admin_usage_export_csv_rows(summary: dict[str, Any], window_name: str) -> str:
+    safe_window = "total" if window_name not in {"total", "last24h", "last7d"} else window_name
+    text_buffer = StringIO(newline="")
+    writer = csv.writer(text_buffer)
+    writer.writerow(
+        [
+            "integration",
+            "endpoint",
+            "method",
+            "window",
+            "requests",
+            "success",
+            "clientErrors",
+            "serverErrors",
+            "errorRatePct",
+            "avgLatencyMs",
+            "p95LatencyMs",
+            "maxLatencyMs",
+            "status1xx",
+            "status2xx",
+            "status3xx",
+            "status4xx",
+            "status5xx",
+            "statusUnknown",
+            "lastStatusCode",
+            "lastSeenMs",
+        ]
+    )
+    for integration_item in list(summary.get("integrations") or []):
+        if not isinstance(integration_item, dict):
+            continue
+        integration_name = str(integration_item.get("integration") or "misc")
+        for endpoint_item in list(integration_item.get("endpoints") or []):
+            if not isinstance(endpoint_item, dict):
+                continue
+            metric = ((endpoint_item.get("windows") or {}).get(safe_window) or {})
+            status_counts = metric.get("statusClassCounts") if isinstance(metric.get("statusClassCounts"), dict) else {}
+            writer.writerow(
+                [
+                    integration_name,
+                    str(endpoint_item.get("endpoint") or "/"),
+                    str(endpoint_item.get("method") or "GET"),
+                    safe_window,
+                    int(metric.get("requests") or 0),
+                    int(metric.get("success") or 0),
+                    int(metric.get("clientErrors") or 0),
+                    int(metric.get("serverErrors") or 0),
+                    float(metric.get("errorRatePct") or 0.0),
+                    float(metric.get("avgLatencyMs") or 0.0),
+                    float(metric.get("p95LatencyMs") or 0.0),
+                    float(metric.get("maxLatencyMs") or 0.0),
+                    int(status_counts.get("1xx") or 0),
+                    int(status_counts.get("2xx") or 0),
+                    int(status_counts.get("3xx") or 0),
+                    int(status_counts.get("4xx") or 0),
+                    int(status_counts.get("5xx") or 0),
+                    int(status_counts.get("unknown") or 0),
+                    int(metric.get("lastStatusCode") or 0),
+                    int(metric.get("lastSeenMs") or 0),
+                ]
+            )
+    return text_buffer.getvalue()
 
 
 def _ai_ops_is_exempt_path(path: str) -> bool:
@@ -3952,6 +5358,7 @@ def _read_gemini_keys_from_file(path_hint: str) -> list[str]:
 def _gemini_pool_source_diagnostics() -> dict[str, Any]:
     configured_file_path = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
     resolved_file_path = _resolve_gemini_keys_file_path(configured_file_path)
+    pools_file_path = _resolve_gemini_api_pools_file_path()
     file_item_count = 0
     file_exists = False
     if str(resolved_file_path):
@@ -3967,10 +5374,12 @@ def _gemini_pool_source_diagnostics() -> dict[str, Any]:
         "fileKeyCount": file_item_count,
         "envPoolKeyCount": env_pool_count,
         "singleKeyPresent": single_key_present,
+        "poolsFilePath": str(pools_file_path),
+        "poolsFileExists": bool(pools_file_path.exists() and pools_file_path.is_file()),
     }
 
 
-def _resolve_gemini_fallback_key_pool() -> list[str]:
+def _legacy_gemini_key_pool() -> list[str]:
     raw_pool = str(os.getenv("GEMINI_API_KEYS") or "").strip()
     file_pool = _read_gemini_keys_from_file(str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip())
     candidates: list[str] = []
@@ -3992,8 +5401,155 @@ def _resolve_gemini_fallback_key_pool() -> list[str]:
     return candidates
 
 
+def _resolve_gemini_api_pools_file_path() -> Path:
+    raw_hint = str(os.getenv("GEMINI_API_POOLS_FILE") or GEMINI_API_POOLS_FILE).strip()
+    if not raw_hint:
+        return (APP_ROOT / "config" / "gemini_api_pools.json").resolve()
+    hint_path = Path(raw_hint).expanduser()
+    if hint_path.is_absolute():
+        return hint_path.resolve()
+    candidate = (APP_ROOT / hint_path).resolve()
+    if candidate.exists():
+        return candidate
+    return (WORKSPACE_ROOT / hint_path).resolve()
+
+
+def _sync_authoritative_gemini_free_pool(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    configured_file_path = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
+    if configured_file_path:
+        candidate = Path(configured_file_path).expanduser()
+        if candidate.is_absolute():
+            resolved_file_path = candidate.resolve()
+        else:
+            app_candidate = (APP_ROOT / candidate).resolve()
+            resolved_file_path = app_candidate if app_candidate.exists() else (WORKSPACE_ROOT / candidate).resolve()
+    else:
+        resolved_file_path = DEFAULT_GEMINI_API_KEYS_FILE.resolve()
+    file_exists = False
+    file_keys: list[str] = []
+    try:
+        file_exists = bool(resolved_file_path.exists() and resolved_file_path.is_file())
+        if file_exists:
+            file_keys = parse_api_keys_shared(
+                resolved_file_path.read_text(encoding="utf-8", errors="ignore")
+            )
+    except Exception:
+        file_exists = False
+        file_keys = []
+    return sync_authoritative_free_pool_shared(
+        config,
+        file_keys,
+        str(resolved_file_path),
+        file_exists=file_exists,
+        failure_mode="keep_last_good",
+    )
+
+
+def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+    global _GEMINI_POOLS_CACHE, _GEMINI_POOLS_META
+    with _GEMINI_POOLS_LOCK:
+        if not force and isinstance(_GEMINI_POOLS_CACHE, dict):
+            return dict(_GEMINI_POOLS_CACHE), dict(_GEMINI_POOLS_META)
+
+        file_path = _resolve_gemini_api_pools_file_path()
+        bootstrap_keys = _legacy_gemini_key_pool()
+        firestore_db = _FIRESTORE_DB if GEMINI_API_POOLS_PREFER_FIRESTORE else None
+        config, meta = load_pool_config_shared(
+            file_path=file_path,
+            firestore_db=firestore_db,
+            prefer_firestore=GEMINI_API_POOLS_PREFER_FIRESTORE,
+            bootstrap_free_keys=bootstrap_keys,
+        )
+        if not flatten_pool_keys(config) and bootstrap_keys:
+            config = normalize_gemini_pool_config(config)
+            config["pools"]["free"]["keys"] = list(bootstrap_keys)
+        sync_warnings: list[str] = []
+        config, synced_changed, sync_warnings = _sync_authoritative_gemini_free_pool(config)
+        if synced_changed:
+            try:
+                config = save_pool_config_shared(
+                    file_path=file_path,
+                    config=config,
+                    firestore_db=firestore_db,
+                )
+            except Exception:
+                sync_warnings.append(
+                    "Authoritative free-pool sync could not be persisted; using in-memory pool config."
+                )
+        meta = dict(meta if isinstance(meta, dict) else {})
+        meta["warnings"] = list(sync_warnings)
+        meta["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
+        _GEMINI_POOLS_CACHE = dict(config)
+        _GEMINI_POOLS_META = dict(meta)
+        return dict(_GEMINI_POOLS_CACHE), dict(_GEMINI_POOLS_META)
+
+
+def _save_gemini_api_pools(config: dict[str, Any]) -> dict[str, Any]:
+    file_path = _resolve_gemini_api_pools_file_path()
+    firestore_db = _FIRESTORE_DB if GEMINI_API_POOLS_PREFER_FIRESTORE else None
+    saved = save_pool_config_shared(
+        file_path=file_path,
+        config=config,
+        firestore_db=firestore_db,
+    )
+    with _GEMINI_POOLS_LOCK:
+        global _GEMINI_POOLS_CACHE, _GEMINI_POOLS_META
+        _GEMINI_POOLS_CACHE = dict(saved)
+        source_policy = dict(saved.get("sourcePolicy") or {})
+        warnings: list[str] = []
+        status_token = str(source_policy.get("lastSyncStatus") or "").strip().lower()
+        if status_token.startswith("warning_"):
+            warnings.append(
+                "Authoritative free-pool file has issues; service kept the last good free pool."
+            )
+        _GEMINI_POOLS_META = {
+            "source": "save",
+            "filePath": str(file_path),
+            "fileExists": bool(file_path.exists() and file_path.is_file()),
+            "firestoreError": "",
+            "warnings": warnings,
+            "sourcePolicy": source_policy,
+        }
+    return saved
+
+
+def _resolve_gemini_fallback_key_pool() -> list[str]:
+    config, meta = _load_gemini_api_pools()
+    source = str((meta or {}).get("source") or "").strip().lower()
+    if source in {"default", "bootstrap"}:
+        legacy = _legacy_gemini_key_pool()
+        if legacy:
+            return legacy
+    keys = resolve_effective_pool_keys(config, "pro_plus")
+    if keys:
+        return keys
+    return _legacy_gemini_key_pool()
+
+
+def _resolve_gemini_plan_key_pool(plan_key: str) -> list[str]:
+    config, _meta = _load_gemini_api_pools()
+    pool_hint = plan_key_to_pool_hint(plan_key)
+    keys = resolve_effective_pool_keys(config, pool_hint)
+    if keys:
+        return keys
+    return _resolve_gemini_fallback_key_pool()
+
+
+def _gemini_pools_validation(config: dict[str, Any]) -> dict[str, Any]:
+    duplicates = duplicate_key_memberships(config)
+    unique_required = bool((config.get("constraints") or {}).get("uniqueKeyMembership", True))
+    return {
+        "uniqueKeyMembership": unique_required,
+        "duplicateKeys": duplicates,
+        "isValid": not (unique_required and bool(duplicates)),
+    }
+
+
 def _backend_gemini_pool_snapshot() -> dict[str, Any]:
-    key_pool = _resolve_gemini_fallback_key_pool()
+    config, config_meta = _load_gemini_api_pools()
+    key_pool = resolve_effective_pool_keys(config, "pro_plus")
     if not key_pool:
         return {
             "ok": True,
@@ -4001,17 +5557,109 @@ def _backend_gemini_pool_snapshot() -> dict[str, Any]:
             "keys": [],
             "models": [],
             "source": _gemini_pool_source_diagnostics(),
+            "config": config,
+            "configMeta": config_meta,
+            "validation": _gemini_pools_validation(config),
         }
     BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
     snapshot = BACKEND_GEMINI_ALLOCATOR.snapshot(key_pool)
     payload = dict(snapshot if isinstance(snapshot, dict) else {})
     payload["ok"] = True
     payload["source"] = _gemini_pool_source_diagnostics()
+    payload["config"] = config
+    payload["configMeta"] = config_meta
+    payload["validation"] = _gemini_pools_validation(config)
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    payload["poolSummaries"] = {
+        pool_name: {
+            "pool": pool_name,
+            "directKeyCount": len(list((pools.get(pool_name) or {}).get("keys") or [])),
+            "effectiveKeyCount": len(resolve_effective_pool_keys(config, pool_name)),
+            "chain": list((config.get("fallbackChains") or {}).get(pool_name) or []),
+        }
+        for pool_name in POOL_NAMES
+    }
     return payload
 
 
+def _backend_gemini_pool_usage_snapshot() -> dict[str, Any]:
+    config, config_meta = _load_gemini_api_pools()
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    usage_payload: dict[str, Any] = {}
+    for pool_name in POOL_NAMES:
+        direct_keys = list((pools.get(pool_name) or {}).get("keys") or [])
+        effective_keys = resolve_effective_pool_keys(config, pool_name)
+        if direct_keys:
+            BACKEND_GEMINI_ALLOCATOR.ensure_keys(direct_keys)
+        if effective_keys:
+            BACKEND_GEMINI_ALLOCATOR.ensure_keys(effective_keys)
+        usage_payload[pool_name] = {
+            "pool": pool_name,
+            "directKeyCount": len(direct_keys),
+            "effectiveKeyCount": len(effective_keys),
+            "effectiveChain": list((config.get("fallbackChains") or {}).get(pool_name) or []),
+            "direct": BACKEND_GEMINI_ALLOCATOR.snapshot(direct_keys) if direct_keys else {"pool": {"keyCount": 0}},
+            "effective": BACKEND_GEMINI_ALLOCATOR.snapshot(effective_keys) if effective_keys else {"pool": {"keyCount": 0}},
+        }
+    return {
+        "ok": True,
+        "config": config,
+        "configMeta": config_meta,
+        "validation": _gemini_pools_validation(config),
+        "usage": usage_payload,
+    }
+
+
 def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
-    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool"
+    endpoints = [
+        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools",
+        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool",
+    ]
+    for endpoint in endpoints:
+        try:
+            response = requests.get(endpoint, timeout=timeout_sec)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {"detail": response.text[:220]}
+        if not response.ok:
+            continue
+        if not isinstance(payload, dict):
+            payload = {"payload": payload}
+        payload["ok"] = True
+        payload["endpoint"] = endpoint
+        return payload
+    return {"ok": False, "error": "runtime_pool_snapshot_unavailable"}
+
+
+def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
+    endpoints = [
+        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/reload",
+        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool/reload",
+    ]
+    for endpoint in endpoints:
+        try:
+            response = requests.post(endpoint, timeout=timeout_sec)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {"detail": response.text[:220]}
+        if not response.ok:
+            continue
+        if not isinstance(payload, dict):
+            payload = {"payload": payload}
+        payload["ok"] = True
+        payload["endpoint"] = endpoint
+        return payload
+    return {"ok": False, "error": "runtime_pool_reload_unavailable"}
+
+
+def _runtime_gemini_pool_usage(timeout_sec: float = 8.0) -> dict[str, Any]:
+    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/usage"
     try:
         response = requests.get(endpoint, timeout=timeout_sec)
     except Exception as exc:  # noqa: BLE001
@@ -4026,36 +5674,6 @@ def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
             "statusCode": response.status_code,
             "error": payload.get("detail") if isinstance(payload, dict) else str(payload),
             "endpoint": endpoint,
-        }
-    if not isinstance(payload, dict):
-        payload = {"payload": payload}
-    payload["ok"] = True
-    payload["endpoint"] = endpoint
-    return payload
-
-
-def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
-    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool/reload"
-    try:
-        response = requests.post(endpoint, timeout=timeout_sec)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
-    try:
-        payload = response.json()
-    except Exception:
-        payload = {"detail": response.text[:220]}
-    if not response.ok:
-        compatibility: Optional[str] = None
-        if int(response.status_code) in {404, 405}:
-            compatibility = "runtime_reload_endpoint_unavailable"
-        elif int(response.status_code) in {400, 422}:
-            compatibility = "runtime_reload_endpoint_incompatible"
-        return {
-            "ok": False,
-            "statusCode": response.status_code,
-            "error": payload.get("detail") if isinstance(payload, dict) else str(payload),
-            "endpoint": endpoint,
-            "compatibility": compatibility,
         }
     if not isinstance(payload, dict):
         payload = {"payload": payload}
@@ -4578,11 +6196,15 @@ def health() -> JSONResponse:
     rvc_available = False
     rvc_error = rvc_runtime.import_error
     current_model = rvc_runtime.current_model()
+    rvc_models_dir = str(MODELS_DIR)
     try:
         rvc_runtime.ensure_engine()
-        rvc_available = True
-        current_model = rvc_runtime.current_model()
-        rvc_error = None
+        rvc_payload = rvc_runtime.health_payload()
+        nested = rvc_payload.get("rvc") if isinstance(rvc_payload.get("rvc"), dict) else {}
+        rvc_available = bool(nested.get("available"))
+        current_model = str(nested.get("currentModel") or current_model or "").strip() or current_model
+        rvc_models_dir = str(nested.get("modelsDir") or rvc_models_dir)
+        rvc_error = str(nested.get("error") or "").strip() or None
     except Exception as exc:
         rvc_available = False
         rvc_error = str(exc)
@@ -4602,12 +6224,13 @@ def health() -> JSONResponse:
         "rvc": {
             "available": rvc_available or fallback_available,
             "currentModel": current_model or (RVC_FALLBACK_MODEL_ID if fallback_available else None),
-            "modelsDir": str(MODELS_DIR),
+            "modelsDir": rvc_models_dir,
             "error": rvc_error,
             "fallbackAvailable": fallback_available,
             "fallbackModel": RVC_FALLBACK_MODEL_ID if fallback_available else None,
             "conversionPolicies": sorted(VOICE_CONVERSION_POLICIES),
             "lhqPilot": {"healthy": lhq_healthy, "detail": lhq_detail, "model": LHQ_SVC_PILOT_MODEL_ID},
+            "runtimeUrl": RVC_RUNTIME_URL,
         },
         "whisper": {
             "loaded": whisper_runtime.model is not None,
@@ -5408,6 +7031,71 @@ def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONR
     return JSONResponse(summary)
 
 
+@app.get("/admin/tts/gateway/status")
+def admin_tts_gateway_status(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    return JSONResponse(
+        {
+            "ok": True,
+            "gateway": _TTS_GATEWAY_CONTROLLER.snapshot(),
+            "jobQueue": _TTS_JOB_QUEUE.depth_snapshot(),
+        }
+    )
+
+
+@app.get("/admin/tts/queue/metrics")
+def admin_tts_queue_metrics(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    return JSONResponse(_tts_queue_metrics_snapshot())
+
+
+@app.get("/admin/integrations/usage")
+def admin_integrations_usage(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    return JSONResponse(_admin_usage_summary_payload())
+
+
+@app.get("/admin/integrations/usage/export")
+def admin_integrations_usage_export(
+    request: Request,
+    format: str = "json",
+    window: str = "total",
+) -> Response:
+    _ = _require_admin_uid(request)
+    safe_format = str(format or "json").strip().lower()
+    safe_window = str(window or "total").strip().lower()
+    if safe_window in {"24h", "last_24h", "day"}:
+        safe_window = "last24h"
+    elif safe_window in {"7d", "last_7d", "week"}:
+        safe_window = "last7d"
+    elif safe_window != "total":
+        raise HTTPException(status_code=400, detail="window must be one of: total, 24h, 7d")
+
+    summary = _admin_usage_summary_payload()
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if safe_format in {"json", "application/json"}:
+        payload = {
+            **summary,
+            "exportWindow": safe_window,
+        }
+        return JSONResponse(
+            payload,
+            headers={
+                "content-disposition": f'attachment; filename="integration_usage_{safe_window}_{timestamp}.json"',
+            },
+        )
+    if safe_format in {"csv", "text/csv"}:
+        csv_text = _admin_usage_export_csv_rows(summary, safe_window)
+        return Response(
+            content=csv_text.encode("utf-8"),
+            media_type="text/csv",
+            headers={
+                "content-disposition": f'attachment; filename="integration_usage_{safe_window}_{timestamp}.csv"',
+            },
+        )
+    raise HTTPException(status_code=400, detail="format must be json or csv")
+
+
 @app.get("/admin/users")
 def admin_list_users(request: Request, q: str = "", limit: int = 50) -> JSONResponse:
     _ = _require_admin_uid(request)
@@ -5518,6 +7206,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
             for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
                 _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
             _INMEMORY_GENERATION_HISTORY.pop(uid, None)
+    _TTS_SUCCESS_LIMITER.clear_uid(uid)
 
     return JSONResponse({"ok": True, "uid": uid})
 
@@ -5617,23 +7306,81 @@ def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Req
     return JSONResponse({"ok": True, "coupon": {**fresh, "id": safe_coupon_id}})
 
 
-@app.get("/admin/gemini/pool/status")
-def admin_gemini_pool_status(request: Request) -> JSONResponse:
+@app.get("/admin/gemini/pools")
+def admin_gemini_pools(request: Request) -> JSONResponse:
     _ = _require_admin_uid(request)
+    config, meta = _load_gemini_api_pools(force=True)
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
+    validation = _gemini_pools_validation(config)
+    warnings = list((meta or {}).get("warnings") or [])
     return JSONResponse(
         {
-            "ok": bool(backend_snapshot.get("ok")) and bool(runtime_snapshot.get("ok")),
+            "ok": bool(validation.get("isValid")) and bool(runtime_snapshot.get("ok", True)),
+            "config": config,
+            "meta": meta,
+            "validation": validation,
+            "warnings": warnings,
+            "sourcePolicy": dict(config.get("sourcePolicy") or {}),
             "backend": backend_snapshot,
             "runtime": runtime_snapshot,
         }
     )
 
 
-@app.post("/admin/gemini/pool/reload")
-def admin_gemini_pool_reload(request: Request) -> JSONResponse:
+@app.put("/admin/gemini/pools")
+def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Request) -> JSONResponse:
     _ = _require_admin_uid(request)
+    current_config, _current_meta = _load_gemini_api_pools(force=True)
+    current_source_policy = dict(current_config.get("sourcePolicy") or {})
+    free_pool_locked = bool(current_source_policy.get("freePoolLocked"))
+    applied_overrides: list[str] = []
+
+    raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    normalized = normalize_gemini_pool_config(raw_payload)
+    if free_pool_locked:
+        current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
+        locked_free_keys = list((current_pools.get("free") or {}).get("keys") or [])
+        normalized["pools"]["free"]["keys"] = locked_free_keys
+        applied_overrides.append("free_pool_locked_by_api_file")
+    if current_source_policy:
+        normalized["sourcePolicy"] = dict(current_source_policy)
+    normalized, _sync_changed, sync_warnings = _sync_authoritative_gemini_free_pool(normalized)
+    validation = _gemini_pools_validation(normalized)
+    if not bool(validation.get("isValid")):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "duplicate_key_membership",
+                "validation": validation,
+            },
+        )
+    saved = _save_gemini_api_pools(normalized)
+    key_pool = flatten_pool_keys(saved)
+    if key_pool:
+        BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
+    runtime_reload = _runtime_gemini_pool_reload()
+    runtime_snapshot = _runtime_gemini_pool_snapshot()
+    return JSONResponse(
+        {
+            "ok": bool(runtime_reload.get("ok")),
+            "detail": "Gemini API pools updated.",
+            "config": saved,
+            "validation": _gemini_pools_validation(saved),
+            "warnings": list(sync_warnings),
+            "sourcePolicy": dict(saved.get("sourcePolicy") or {}),
+            "appliedOverrides": applied_overrides,
+            "backend": _backend_gemini_pool_snapshot(),
+            "runtimeReload": runtime_reload,
+            "runtime": runtime_snapshot,
+        }
+    )
+
+
+@app.post("/admin/gemini/pools/reload")
+def admin_gemini_pools_reload(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    _config, meta = _load_gemini_api_pools(force=True)
     key_pool = _resolve_gemini_fallback_key_pool()
     if not key_pool:
         raise HTTPException(status_code=400, detail="Gemini key pool is empty.")
@@ -5644,12 +7391,39 @@ def admin_gemini_pool_reload(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "ok": bool(backend_snapshot.get("ok")) and bool(runtime_reload.get("ok")),
-            "detail": "Gemini key pool reloaded.",
+            "detail": "Gemini API pools reloaded.",
+            "warnings": list((meta or {}).get("warnings") or []),
             "backend": backend_snapshot,
             "runtimeReload": runtime_reload,
             "runtime": runtime_snapshot,
         }
     )
+
+
+@app.get("/admin/gemini/pools/usage")
+def admin_gemini_pools_usage(request: Request) -> JSONResponse:
+    _ = _require_admin_uid(request)
+    backend_usage = _backend_gemini_pool_usage_snapshot()
+    runtime_usage = _runtime_gemini_pool_usage()
+    return JSONResponse(
+        {
+            "ok": bool(backend_usage.get("ok")) and bool(runtime_usage.get("ok", True)),
+            "backend": backend_usage,
+            "runtime": runtime_usage,
+        }
+    )
+
+
+@app.get("/admin/gemini/pool/status")
+def admin_gemini_pool_status(request: Request) -> JSONResponse:
+    # Legacy compatibility endpoint.
+    return admin_gemini_pools(request)
+
+
+@app.post("/admin/gemini/pool/reload")
+def admin_gemini_pool_reload(request: Request) -> JSONResponse:
+    # Legacy compatibility endpoint.
+    return admin_gemini_pools_reload(request)
 
 
 @app.post("/billing/checkout-session")
@@ -5935,45 +7709,87 @@ def _decode_runtime_error_detail(response: requests.Response) -> Any:
     return "TTS runtime failed."
 
 
-@app.post("/tts/synthesize")
-def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
-    uid = _require_request_uid(request)
-    admin_limit_bypass = _request_is_admin(request, uid)
-    text = str(payload.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text is required.")
-    engine = _normalize_engine_name(payload.engine)
-    request_id = str(payload.request_id or uuid.uuid4().hex).strip()
+_GEMINI_CAPACITY_PRESSURE_ERROR_CODES = {
+    "GEMINI_KEY_POOL_OVERLOADED",
+    "GEMINI_KEY_POOL_TIMEOUT",
+    "GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT",
+    "GEMINI_ALL_KEYS_RATE_LIMITED",
+}
+_GEMINI_UPSTREAM_TIMEOUT_ERROR_CODES = {
+    "GEMINI_UPSTREAM_REQUEST_TIMEOUT",
+}
 
-    reserve = _reserve_usage(
-        uid,
-        request_id,
-        engine,
-        len(text),
-        bypass_limits=admin_limit_bypass,
-        bypass_reason="admin_request" if admin_limit_bypass else "",
-    )
-    _ = reserve
 
-    runtime_base = _runtime_url_for_engine(engine)
-    runtime_path = _runtime_synthesize_path_for_engine(engine)
-    upstream_url = f"{runtime_base}{runtime_path}"
+def _is_gemini_capacity_pressure_error(detail: Any) -> bool:
+    code = extract_error_code(detail)
+    if not code:
+        return False
+    return code in _GEMINI_CAPACITY_PRESSURE_ERROR_CODES
+
+
+def _is_gemini_upstream_timeout_error(detail: Any) -> bool:
+    code = extract_error_code(detail)
+    if not code:
+        return False
+    return code in _GEMINI_UPSTREAM_TIMEOUT_ERROR_CODES
+
+
+def _map_runtime_failure_status(engine: str, status_code: int, detail: Any) -> int:
+    safe_status = int(status_code)
+    if engine == "GEM" and safe_status >= 500:
+        if _is_gemini_upstream_timeout_error(detail):
+            return 504
+        if _is_gemini_capacity_pressure_error(detail):
+            return 503
+    return safe_status
+
+
+def _is_retryable_runtime_failure(engine: str, status_code: int, detail: Any) -> bool:
+    safe_status = int(status_code)
+    if safe_status in {429, 500, 502, 503, 504}:
+        return True
+    if engine == "GEM":
+        if _is_gemini_capacity_pressure_error(detail):
+            return True
+        if _is_gemini_upstream_timeout_error(detail):
+            return True
+    return False
+
+
+def _build_tts_upstream_payload(
+    payload: TtsSynthesizeRequest,
+    *,
+    engine: str,
+    text: str,
+    request_id: str,
+    trace_id: str,
+    plan_key: str,
+) -> tuple[dict[str, Any], str]:
     if hasattr(payload, "model_dump"):
         upstream_payload = payload.model_dump(exclude_none=True)  # type: ignore[attr-defined]
     else:
         upstream_payload = payload.dict(exclude_none=True)
+    upstream_payload.pop("stream", None)
+    upstream_payload.pop("live_chunk_chars", None)
+    upstream_payload.pop("live_chunk_words", None)
+    upstream_payload.pop("post_tts_disable", None)
     upstream_payload["engine"] = engine
     upstream_payload["text"] = text
+    upstream_payload.setdefault("trace_id", trace_id)
+    upstream_payload.setdefault("request_id", request_id)
+
     voice_id = str(payload.voice_id or payload.voiceId or "").strip()
     if voice_id:
         upstream_payload["voice_id"] = voice_id
         upstream_payload["voiceId"] = voice_id
+
     if engine == "GEM":
         if not upstream_payload.get("voiceName"):
             upstream_payload["voiceName"] = voice_id or str(payload.voiceName or "Fenrir")
-    elif engine == "KOKORO":
-        if voice_id:
-            upstream_payload["voiceId"] = voice_id
+        upstream_payload["poolHint"] = plan_key_to_pool_hint(plan_key)
+    elif engine == "KOKORO" and voice_id:
+        upstream_payload["voiceId"] = voice_id
+
     multi_speaker_mode = str(payload.multi_speaker_mode or "").strip().lower()
     if multi_speaker_mode:
         if multi_speaker_mode not in {"studio_pair_groups", "legacy_windows", "off"}:
@@ -5985,7 +7801,7 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
 
     if payload.multi_speaker_max_concurrency is not None:
         try:
-            bounded_concurrency = max(1, min(7, int(payload.multi_speaker_max_concurrency)))
+            bounded_concurrency = max(1, min(10, int(payload.multi_speaker_max_concurrency)))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail="multi_speaker_max_concurrency must be an integer.") from exc
         upstream_payload["multi_speaker_max_concurrency"] = bounded_concurrency
@@ -5994,33 +7810,21 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
         upstream_payload["multi_speaker_retry_once"] = bool(payload.multi_speaker_retry_once)
     if payload.multi_speaker_line_map is not None:
         upstream_payload["multi_speaker_line_map"] = payload.multi_speaker_line_map
-    upstream_payload.setdefault("request_id", request_id)
 
-    try:
-        runtime_response = requests.post(upstream_url, json=upstream_payload, timeout=240)
-    except Exception as exc:  # noqa: BLE001
-        _finalize_usage(uid, request_id, success=False, error_detail=f"runtime_unreachable:{exc}")
-        raise HTTPException(status_code=502, detail=f"TTS runtime is unreachable: {exc}") from exc
+    return upstream_payload, voice_id
 
-    if not runtime_response.ok:
-        _finalize_usage(uid, request_id, success=False, error_detail=f"runtime_error:{runtime_response.status_code}")
-        detail = _decode_runtime_error_detail(runtime_response)
-        trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
-        if isinstance(detail, dict):
-            payload_detail = dict(detail)
-            if trace_id and not payload_detail.get("trace_id"):
-                payload_detail["trace_id"] = trace_id
-            raise HTTPException(status_code=runtime_response.status_code, detail=payload_detail)
-        raise HTTPException(status_code=runtime_response.status_code, detail=detail or "TTS runtime failed.")
 
-    _finalize_usage(uid, request_id, success=True)
-
-    out_headers: dict[str, str] = {
-        "x-vf-request-id": request_id,
-    }
-    trace_id = runtime_response.headers.get("x-voiceflow-trace-id")
-    if trace_id:
-        out_headers["x-voiceflow-trace-id"] = trace_id
+def _build_tts_history_item(
+    *,
+    uid: str,
+    request_id: str,
+    trace_id: str,
+    engine: str,
+    voice_name: str,
+    voice_id: str,
+    text: str,
+) -> None:
+    _ = uid
     preview = text[:VF_GENERATION_HISTORY_PREVIEW_CHARS]
     if len(text) > VF_GENERATION_HISTORY_PREVIEW_CHARS:
         preview = f"{preview}..."
@@ -6029,23 +7833,1929 @@ def tts_synthesize(payload: TtsSynthesizeRequest, request: Request) -> Response:
         "timestamp": int(time.time() * 1000),
         "status": "completed",
         "engine": engine,
-        "voiceName": str(payload.voiceName or "").strip(),
-        "voiceId": voice_id,
+        "voiceName": str(voice_name or "").strip(),
+        "voiceId": str(voice_id or "").strip(),
         "chars": len(text),
         "textPreview": preview,
         "requestId": request_id,
         "traceId": str(trace_id or "").strip(),
     }
     _history_append_item(uid, history_item)
-    diagnostics = runtime_response.headers.get("x-voiceflow-diagnostics")
-    if diagnostics:
-        out_headers["x-voiceflow-diagnostics"] = diagnostics
-
-    media_type = runtime_response.headers.get("content-type") or "audio/wav"
-    return Response(content=runtime_response.content, media_type=media_type, headers=out_headers)
 
 
-@app.get("/runtime/logs/tail")
+def _tts_job_lane_for_plan(plan_key: str) -> str:
+    return normalize_lane(plan_key_to_pool_hint(plan_key))
+
+
+def _tts_job_retry_backoff_ms(attempt: int) -> int:
+    bounded_attempt = max(1, int(attempt))
+    return min(10_000, int(VF_TTS_QUEUE_BACKOFF_BASE_MS * (2 ** max(0, bounded_attempt - 1))))
+
+
+def _safe_tts_engine_name(engine: str) -> str:
+    normalized = _normalize_engine_name(str(engine or "GEM"))
+    return "KOKORO" if normalized == "KOKORO" else "GEM"
+
+
+def _sample_stats(values: list[int]) -> dict[str, int]:
+    if not values:
+        return {
+            "count": 0,
+            "avgMs": 0,
+            "p50Ms": 0,
+            "p95Ms": 0,
+            "p99Ms": 0,
+            "maxMs": 0,
+        }
+    ordered = sorted(max(0, int(item)) for item in values)
+    count = len(ordered)
+
+    def _pick(percentile: float) -> int:
+        if count <= 1:
+            return int(ordered[0])
+        index = int(round((count - 1) * percentile))
+        index = max(0, min(index, count - 1))
+        return int(ordered[index])
+
+    return {
+        "count": int(count),
+        "avgMs": int(sum(ordered) / max(1, count)),
+        "p50Ms": _pick(0.50),
+        "p95Ms": _pick(0.95),
+        "p99Ms": _pick(0.99),
+        "maxMs": int(ordered[-1]),
+    }
+
+
+def _default_engine_runtime_ms(engine: str) -> int:
+    safe_engine = _safe_tts_engine_name(engine)
+    if safe_engine == "KOKORO":
+        return 2_000
+    return 3_200
+
+
+def _record_tts_job_enqueued(*, job_id: str, engine: str, created_at_ms: int) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    with _TTS_ENGINE_METRICS_LOCK:
+        queue_counts = _TTS_ENGINE_QUEUE_COUNTS.setdefault(safe_engine, {"queued": 0, "running": 0})
+        queued_ids = _TTS_ENGINE_QUEUED_JOB_IDS.setdefault(safe_engine, set())
+        running_ids = _TTS_ENGINE_RUNNING_JOB_IDS.setdefault(safe_engine, set())
+        if safe_job_id in queued_ids or safe_job_id in running_ids:
+            return
+        queued_ids.add(safe_job_id)
+        queue_counts["queued"] = max(0, int(queue_counts.get("queued") or 0) + 1)
+        _TTS_ENGINE_ENQUEUED_AT_MS[safe_job_id] = max(0, int(created_at_ms))
+
+
+def _record_tts_job_started(*, job: dict[str, Any]) -> None:
+    safe_job_id = str(job.get("jobId") or "").strip()
+    if not safe_job_id:
+        return
+    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "GEM"))
+    created_at_ms = int(job.get("createdAtMs") or 0)
+    started_at_ms = int(job.get("startedAtMs") or 0)
+    enqueue_delay_ms = max(0, started_at_ms - created_at_ms) if created_at_ms > 0 and started_at_ms > 0 else 0
+
+    with _TTS_ENGINE_METRICS_LOCK:
+        queue_counts = _TTS_ENGINE_QUEUE_COUNTS.setdefault(safe_engine, {"queued": 0, "running": 0})
+        queued_ids = _TTS_ENGINE_QUEUED_JOB_IDS.setdefault(safe_engine, set())
+        running_ids = _TTS_ENGINE_RUNNING_JOB_IDS.setdefault(safe_engine, set())
+        if safe_job_id in queued_ids:
+            queued_ids.discard(safe_job_id)
+            queue_counts["queued"] = max(0, int(queue_counts.get("queued") or 0) - 1)
+        if safe_job_id not in running_ids:
+            running_ids.add(safe_job_id)
+            queue_counts["running"] = max(0, int(queue_counts.get("running") or 0) + 1)
+        _TTS_ENGINE_ENQUEUED_AT_MS.setdefault(safe_job_id, created_at_ms)
+        _TTS_QUEUE_TELEMETRY["enqueueToStartMs"].append(enqueue_delay_ms)
+
+
+def _record_tts_job_requeued(*, job_id: str, engine: str) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    with _TTS_ENGINE_METRICS_LOCK:
+        queue_counts = _TTS_ENGINE_QUEUE_COUNTS.setdefault(safe_engine, {"queued": 0, "running": 0})
+        queued_ids = _TTS_ENGINE_QUEUED_JOB_IDS.setdefault(safe_engine, set())
+        running_ids = _TTS_ENGINE_RUNNING_JOB_IDS.setdefault(safe_engine, set())
+        if safe_job_id in running_ids:
+            running_ids.discard(safe_job_id)
+            queue_counts["running"] = max(0, int(queue_counts.get("running") or 0) - 1)
+        if safe_job_id not in queued_ids:
+            queued_ids.add(safe_job_id)
+            queue_counts["queued"] = max(0, int(queue_counts.get("queued") or 0) + 1)
+
+
+def _record_tts_terminal_event(*, job_id: str, engine: str, status: str, reason: str, status_code: int) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    safe_job_id = str(job_id or "").strip()
+    safe_status = str(status or "").strip().lower() or "failed"
+    safe_reason = str(reason or "").strip().lower() or "unknown"
+    now_ms = int(time.time() * 1000)
+    with _TTS_ENGINE_METRICS_LOCK:
+        queue_counts = _TTS_ENGINE_QUEUE_COUNTS.setdefault(safe_engine, {"queued": 0, "running": 0})
+        queued_ids = _TTS_ENGINE_QUEUED_JOB_IDS.setdefault(safe_engine, set())
+        running_ids = _TTS_ENGINE_RUNNING_JOB_IDS.setdefault(safe_engine, set())
+        if safe_job_id in queued_ids:
+            queued_ids.discard(safe_job_id)
+            queue_counts["queued"] = max(0, int(queue_counts.get("queued") or 0) - 1)
+        if safe_job_id in running_ids:
+            running_ids.discard(safe_job_id)
+            queue_counts["running"] = max(0, int(queue_counts.get("running") or 0) - 1)
+        _TTS_ENGINE_ENQUEUED_AT_MS.pop(safe_job_id, None)
+        _TTS_QUEUE_TELEMETRY["terminalEvents"].append(
+            {
+                "status": safe_status,
+                "reason": safe_reason,
+                "engine": safe_engine,
+                "statusCode": int(status_code),
+                "timestampMs": now_ms,
+            }
+        )
+
+
+def _record_tts_runtime_latency(*, engine: str, elapsed_ms: int) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    safe_elapsed = max(0, int(elapsed_ms))
+    with _TTS_ENGINE_METRICS_LOCK:
+        _TTS_QUEUE_TELEMETRY["runtimeLatencyMs"].append(safe_elapsed)
+        runtime_by_engine = _TTS_QUEUE_TELEMETRY.get("runtimeLatencyByEngine")
+        if isinstance(runtime_by_engine, dict):
+            runtime_by_engine.setdefault(safe_engine, deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW)).append(safe_elapsed)
+
+
+def _record_tts_engine_semaphore_wait(*, engine: str, wait_ms: int) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    safe_wait = max(0, int(wait_ms))
+    with _TTS_ENGINE_METRICS_LOCK:
+        _TTS_QUEUE_TELEMETRY["engineSemaphoreWaitMs"].append(safe_wait)
+        waits_by_engine = _TTS_QUEUE_TELEMETRY.get("semaphoreWaitByEngine")
+        if isinstance(waits_by_engine, dict):
+            waits_by_engine.setdefault(safe_engine, deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW)).append(safe_wait)
+
+
+def _record_tts_live_first_chunk_latency(*, elapsed_ms: int) -> None:
+    safe_elapsed = max(0, int(elapsed_ms))
+    with _TTS_ENGINE_METRICS_LOCK:
+        source = _TTS_QUEUE_TELEMETRY.get("liveFirstChunkLatencyMs")
+        if isinstance(source, deque):
+            source.append(safe_elapsed)
+
+
+def _record_tts_live_chunk_count(*, chunk_count: int) -> None:
+    safe_count = max(0, int(chunk_count))
+    with _TTS_ENGINE_METRICS_LOCK:
+        source = _TTS_QUEUE_TELEMETRY.get("liveChunkCount")
+        if isinstance(source, deque):
+            source.append(safe_count)
+
+
+def _record_tts_live_chunk_rvc_latency(*, elapsed_ms: int) -> None:
+    safe_elapsed = max(0, int(elapsed_ms))
+    with _TTS_ENGINE_METRICS_LOCK:
+        source = _TTS_QUEUE_TELEMETRY.get("liveChunkRvcLatencyMs")
+        if isinstance(source, deque):
+            source.append(safe_elapsed)
+
+
+def _record_tts_engine_active(*, engine: str, delta: int) -> None:
+    safe_engine = _safe_tts_engine_name(engine)
+    with _TTS_ENGINE_METRICS_LOCK:
+        current = int(_TTS_ENGINE_ACTIVE_COUNTS.get(safe_engine) or 0)
+        _TTS_ENGINE_ACTIVE_COUNTS[safe_engine] = max(0, current + int(delta))
+
+
+def _oldest_tts_queue_age_ms() -> int:
+    now_ms = int(time.time() * 1000)
+    with _TTS_ENGINE_METRICS_LOCK:
+        queued_job_ids: set[str] = set()
+        for ids in _TTS_ENGINE_QUEUED_JOB_IDS.values():
+            queued_job_ids.update(ids)
+        if not queued_job_ids:
+            return 0
+        created_values = [int(_TTS_ENGINE_ENQUEUED_AT_MS.get(job_id) or 0) for job_id in queued_job_ids]
+        created_values = [value for value in created_values if value > 0]
+        if not created_values:
+            return 0
+        oldest_created = min(created_values)
+    return max(0, now_ms - oldest_created)
+
+
+def _estimate_tts_completion_delay(engine: str) -> dict[str, int]:
+    safe_engine = _safe_tts_engine_name(engine)
+    with _TTS_ENGINE_METRICS_LOCK:
+        counts = _TTS_ENGINE_QUEUE_COUNTS.get(safe_engine) or {"queued": 0, "running": 0}
+        queued = max(0, int(counts.get("queued") or 0))
+        running = max(0, int(counts.get("running") or 0))
+        runtime_by_engine = _TTS_QUEUE_TELEMETRY.get("runtimeLatencyByEngine")
+        runtime_samples: list[int] = []
+        if isinstance(runtime_by_engine, dict):
+            sample_source = runtime_by_engine.get(safe_engine)
+            if isinstance(sample_source, deque):
+                runtime_samples = [max(0, int(value)) for value in list(sample_source)]
+    avg_runtime_ms = int(sum(runtime_samples) / len(runtime_samples)) if runtime_samples else _default_engine_runtime_ms(safe_engine)
+    engine_limit = max(1, int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(safe_engine) or 1))
+    effective_parallelism = max(1, min(engine_limit, int(VF_TTS_QUEUE_WORKER_COUNT)))
+    jobs_ahead = max(0, queued + running)
+    predicted_batches = int(jobs_ahead // effective_parallelism) + 1
+    estimated_completion_ms = max(avg_runtime_ms, int(predicted_batches * avg_runtime_ms))
+    return {
+        "engine": safe_engine,
+        "queued": queued,
+        "running": running,
+        "jobsAhead": jobs_ahead,
+        "concurrency": effective_parallelism,
+        "avgRuntimeMs": avg_runtime_ms,
+        "estimatedCompletionMs": estimated_completion_ms,
+    }
+
+
+def _tts_queue_metrics_snapshot() -> dict[str, Any]:
+    queue_depth = _TTS_JOB_QUEUE.depth_snapshot()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    oldest_age_ms = _oldest_tts_queue_age_ms()
+    with _TTS_ENGINE_METRICS_LOCK:
+        enqueue_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY["enqueueToStartMs"])]
+        runtime_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY["runtimeLatencyMs"])]
+        semaphore_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY["engineSemaphoreWaitMs"])]
+        live_first_chunk_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveFirstChunkLatencyMs") or [])]
+        live_chunk_count_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkCount") or [])]
+        live_chunk_rvc_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkRvcLatencyMs") or [])]
+        terminal_events = list(_TTS_QUEUE_TELEMETRY["terminalEvents"])
+        runtime_by_engine = _TTS_QUEUE_TELEMETRY.get("runtimeLatencyByEngine")
+        waits_by_engine = _TTS_QUEUE_TELEMETRY.get("semaphoreWaitByEngine")
+        engine_counts = json.loads(json.dumps(_TTS_ENGINE_QUEUE_COUNTS))
+        engine_active = dict(_TTS_ENGINE_ACTIVE_COUNTS)
+
+    terminal_by_status: dict[str, int] = defaultdict(int)
+    terminal_by_reason: dict[str, int] = defaultdict(int)
+    for event in terminal_events:
+        status = str((event or {}).get("status") or "unknown").strip().lower() or "unknown"
+        reason = str((event or {}).get("reason") or "unknown").strip().lower() or "unknown"
+        terminal_by_status[status] += 1
+        terminal_by_reason[reason] += 1
+
+    engines_payload: dict[str, Any] = {}
+    for engine in sorted(_TTS_ENGINE_CONCURRENCY_LIMITS):
+        runtime_samples_engine: list[int] = []
+        semaphore_samples_engine: list[int] = []
+        if isinstance(runtime_by_engine, dict):
+            source = runtime_by_engine.get(engine)
+            if isinstance(source, deque):
+                runtime_samples_engine = [max(0, int(value)) for value in list(source)]
+        if isinstance(waits_by_engine, dict):
+            source = waits_by_engine.get(engine)
+            if isinstance(source, deque):
+                semaphore_samples_engine = [max(0, int(value)) for value in list(source)]
+        engine_snapshot = engine_counts.get(engine) if isinstance(engine_counts, dict) else None
+        engines_payload[engine] = {
+            "concurrencyLimit": int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(engine) or 1),
+            "active": max(0, int(engine_active.get(engine) or 0)),
+            "queued": max(0, int((engine_snapshot or {}).get("queued") or 0)),
+            "running": max(0, int((engine_snapshot or {}).get("running") or 0)),
+            "runtimeLatencyMs": _sample_stats(runtime_samples_engine),
+            "semaphoreWaitMs": _sample_stats(semaphore_samples_engine),
+            "estimatedNextJobCompletionMs": int(_estimate_tts_completion_delay(engine).get("estimatedCompletionMs") or 0),
+        }
+
+    worker_threads = list(_TTS_JOB_WORKER_THREADS)
+    worker_payload = {
+        "configured": int(VF_TTS_QUEUE_WORKER_COUNT),
+        "spawned": len(worker_threads),
+        "alive": sum(1 for thread in worker_threads if thread.is_alive()),
+        "workers": [
+            {
+                "name": str(thread.name or ""),
+                "alive": bool(thread.is_alive()),
+                "daemon": bool(thread.daemon),
+            }
+            for thread in worker_threads
+        ],
+    }
+
+    return {
+        "ok": True,
+        "generatedAt": now_iso,
+        "gateway": _TTS_GATEWAY_CONTROLLER.snapshot(),
+        "queue": queue_depth,
+        "workers": worker_payload,
+        "engines": engines_payload,
+        "telemetry": {
+            "enqueueToStartMs": _sample_stats(enqueue_samples),
+            "runtimeLatencyMs": _sample_stats(runtime_samples),
+            "engineSemaphoreWaitMs": _sample_stats(semaphore_samples),
+            "liveFirstChunkLatencyMs": _sample_stats(live_first_chunk_samples),
+            "liveChunkCount": _sample_stats(live_chunk_count_samples),
+            "liveChunkRvcLatencyMs": _sample_stats(live_chunk_rvc_samples),
+            "terminalStatusesByReason": {
+                "byStatus": dict(terminal_by_status),
+                "byReason": dict(terminal_by_reason),
+                "sampleCount": len(terminal_events),
+            },
+            "oldestQueuedAgeMs": int(oldest_age_ms),
+        },
+    }
+
+
+def _mark_job_failed_and_revert_usage(
+    *,
+    job_id: str,
+    uid: str,
+    request_id: str,
+    status_code: int,
+    detail: Any,
+    error_tag: str,
+) -> None:
+    _finalize_usage(uid, request_id, success=False, error_detail=error_tag)
+    failed_job = _TTS_JOB_QUEUE.mark_failed(job_id, status_code=status_code, error=detail)
+    failed_engine = _safe_tts_engine_name(str((failed_job or {}).get("engine") or "GEM"))
+    reason = error_tag
+    if isinstance(detail, dict):
+        reason = str(detail.get("reason") or reason or "failed")
+    _record_tts_terminal_event(
+        job_id=job_id,
+        engine=failed_engine,
+        status="failed",
+        reason=str(reason or "failed"),
+        status_code=int(status_code),
+    )
+
+
+def _normalize_rvc_preset(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if token in {"cover_hq", "cover", "hq"}:
+        return "cover_hq"
+    return "tts_realtime"
+
+
+def _safe_bounded_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default)
+    return max(int(min_value), min(int(max_value), parsed))
+
+
+def _live_chunk_word_count(text: str) -> int:
+    return len(re.findall(r"\S+", str(text or "")))
+
+
+def _split_segment_by_words(segment: str, *, max_chars: int, max_words: int) -> list[str]:
+    words = [token for token in str(segment or "").split() if token]
+    if not words:
+        return []
+    chunks: list[str] = []
+    current_words: list[str] = []
+    current_len = 0
+    for word in words:
+        word_len = len(word)
+        projected_len = word_len if not current_words else current_len + 1 + word_len
+        projected_words = len(current_words) + 1
+        if current_words and (projected_len > max_chars or projected_words > max_words):
+            chunks.append(" ".join(current_words).strip())
+            current_words = [word]
+            current_len = word_len
+        else:
+            current_words.append(word)
+            current_len = projected_len
+    if current_words:
+        chunks.append(" ".join(current_words).strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def _split_plain_text_live_chunks(text: str, *, max_chars: int, max_words: int) -> list[dict[str, Any]]:
+    normalized_text = str(text or "").replace("\r\n", "\n").strip()
+    if not normalized_text:
+        return []
+    raw_segments = [
+        re.sub(r"\s+", " ", part).strip()
+        for part in re.split(r"(?:\n+|(?<=[.!?।])\s+)", normalized_text)
+        if str(part or "").strip()
+    ]
+    segments: list[str] = []
+    for segment in raw_segments:
+        if len(segment) > max_chars or _live_chunk_word_count(segment) > max_words:
+            segments.extend(_split_segment_by_words(segment, max_chars=max_chars, max_words=max_words))
+        else:
+            segments.append(segment)
+    if not segments:
+        segments = _split_segment_by_words(normalized_text, max_chars=max_chars, max_words=max_words)
+    if not segments:
+        return []
+
+    out: list[dict[str, Any]] = []
+    current: list[str] = []
+    current_chars = 0
+    current_words = 0
+    for segment in segments:
+        seg_chars = len(segment)
+        seg_words = max(1, _live_chunk_word_count(segment))
+        projected_chars = seg_chars if not current else current_chars + 1 + seg_chars
+        projected_words = current_words + seg_words
+        if current and (projected_chars > max_chars or projected_words > max_words):
+            text_chunk = " ".join(current).strip()
+            if text_chunk:
+                out.append(
+                    {
+                        "text": text_chunk,
+                        "textChars": len(text_chunk),
+                        "wordCount": max(1, _live_chunk_word_count(text_chunk)),
+                    }
+                )
+            current = [segment]
+            current_chars = seg_chars
+            current_words = seg_words
+        else:
+            current.append(segment)
+            current_chars = projected_chars
+            current_words = projected_words
+
+    if current:
+        text_chunk = " ".join(current).strip()
+        if text_chunk:
+            out.append(
+                {
+                    "text": text_chunk,
+                    "textChars": len(text_chunk),
+                    "wordCount": max(1, _live_chunk_word_count(text_chunk)),
+                }
+            )
+    return out
+
+
+def _select_chunk_speaker_voices(
+    speaker_voices: list[dict[str, Any]],
+    chunk_speakers: set[str],
+) -> list[dict[str, Any]]:
+    if not chunk_speakers:
+        return list(speaker_voices)
+    normalized_keys = {str(value).strip().lower() for value in chunk_speakers if str(value or "").strip()}
+    out: list[dict[str, Any]] = []
+    for item in speaker_voices:
+        if not isinstance(item, dict):
+            continue
+        speaker = str(item.get("speaker") or "").strip().lower()
+        if speaker and speaker in normalized_keys:
+            out.append(dict(item))
+    if out:
+        return out
+    return list(speaker_voices)
+
+
+def _build_line_map_live_chunks(
+    *,
+    line_map: list[dict[str, Any]],
+    speaker_voices: list[dict[str, Any]],
+    max_chars: int,
+    max_words: int,
+) -> list[dict[str, Any]]:
+    if not line_map:
+        return []
+    windows: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_chars = 0
+    current_words = 0
+    for line in line_map:
+        speaker = str(line.get("speaker") or "").strip()
+        text = str(line.get("text") or "").strip()
+        if not speaker or not text:
+            continue
+        render = f"{speaker}: {text}"
+        line_chars = len(render)
+        line_words = max(1, _live_chunk_word_count(text))
+        projected_chars = line_chars if not current else current_chars + 1 + line_chars
+        projected_words = current_words + line_words
+        if current and (projected_chars > max_chars or projected_words > max_words):
+            windows.append(current)
+            current = []
+            current_chars = 0
+            current_words = 0
+            projected_chars = line_chars
+            projected_words = line_words
+        current.append(
+            {
+                "lineIndex": int(line.get("lineIndex") or 0),
+                "speaker": speaker,
+                "text": text,
+            }
+        )
+        current_chars = projected_chars
+        current_words = projected_words
+    if current:
+        windows.append(current)
+
+    out: list[dict[str, Any]] = []
+    for window in windows:
+        chunk_text = "\n".join(f"{str(item.get('speaker') or '').strip()}: {str(item.get('text') or '').strip()}" for item in window).strip()
+        if not chunk_text:
+            continue
+        speakers = {
+            str(item.get("speaker") or "").strip()
+            for item in window
+            if str(item.get("speaker") or "").strip()
+        }
+        out.append(
+            {
+                "text": chunk_text,
+                "textChars": len(chunk_text),
+                "wordCount": max(1, _live_chunk_word_count(chunk_text)),
+                "multiSpeakerLineMap": window,
+                "speakerVoices": _select_chunk_speaker_voices(speaker_voices, speakers),
+            }
+        )
+    return out
+
+
+def _split_text_live_chunks(
+    *,
+    engine: str,
+    text: str,
+    language: str,
+    chunk_chars: int,
+    chunk_words: int,
+    multi_speaker_payload: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    _ = language
+    safe_chars = _safe_bounded_int(
+        chunk_chars,
+        default=VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
+        min_value=120,
+        max_value=VF_TTS_LIVE_CHUNK_CHARS_MAX,
+    )
+    safe_words = _safe_bounded_int(
+        chunk_words,
+        default=VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
+        min_value=24,
+        max_value=VF_TTS_LIVE_CHUNK_WORDS_MAX,
+    )
+    safe_engine = _safe_tts_engine_name(engine)
+    source_payload = multi_speaker_payload or {}
+    if safe_engine == "GEM":
+        mode = str(source_payload.get("multi_speaker_mode") or "").strip().lower()
+        raw_line_map = source_payload.get("multi_speaker_line_map")
+        line_map = normalize_multi_speaker_line_map_shared(raw_line_map)
+        raw_speaker_voices = source_payload.get("speaker_voices")
+        speaker_voices = [dict(item) for item in list(raw_speaker_voices or []) if isinstance(item, dict)]
+        if mode == "studio_pair_groups" and line_map:
+            line_chunks = _build_line_map_live_chunks(
+                line_map=line_map,
+                speaker_voices=speaker_voices,
+                max_chars=safe_chars,
+                max_words=safe_words,
+            )
+            if line_chunks:
+                return line_chunks
+    return _split_plain_text_live_chunks(text, max_chars=safe_chars, max_words=safe_words)
+
+
+def _build_gem_chunk_payload(base_payload: dict[str, Any], chunk: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(base_payload)
+    payload["text"] = str(chunk.get("text") or "").strip()
+    line_map = chunk.get("multiSpeakerLineMap")
+    speaker_voices = chunk.get("speakerVoices")
+    if isinstance(line_map, list) and line_map:
+        payload["multi_speaker_mode"] = "studio_pair_groups"
+        payload["multi_speaker_line_map"] = line_map
+        if isinstance(speaker_voices, list) and speaker_voices:
+            payload["speaker_voices"] = speaker_voices
+    else:
+        payload.pop("multi_speaker_line_map", None)
+    return payload
+
+
+def _build_live_chunk_upstream_payload(*, engine: str, base_payload: dict[str, Any], chunk: dict[str, Any]) -> dict[str, Any]:
+    safe_engine = _safe_tts_engine_name(engine)
+    if safe_engine == "GEM":
+        return _build_gem_chunk_payload(base_payload, chunk)
+    payload = dict(base_payload)
+    payload["text"] = str(chunk.get("text") or "").strip()
+    payload.pop("multi_speaker_line_map", None)
+    return payload
+
+
+def _read_wav_info(wav_bytes: bytes) -> dict[str, int]:
+    with wave.open(BytesIO(bytes(wav_bytes or b"")), "rb") as handle:
+        frame_rate = int(handle.getframerate() or 0)
+        frames = int(handle.getnframes() or 0)
+        channels = int(handle.getnchannels() or 0)
+        sample_width = int(handle.getsampwidth() or 0)
+        duration_ms = int(round((float(frames) / float(frame_rate)) * 1000.0)) if frame_rate > 0 and frames > 0 else 0
+    return {
+        "sampleRate": frame_rate,
+        "frames": frames,
+        "channels": channels,
+        "sampleWidth": sample_width,
+        "durationMs": duration_ms,
+    }
+
+
+def _concat_wav_chunks(chunks: list[bytes]) -> bytes:
+    if not chunks:
+        return b""
+    params: Optional[tuple[int, int, int]] = None
+    raw_frames: list[bytes] = []
+    for chunk in chunks:
+        with wave.open(BytesIO(bytes(chunk or b"")), "rb") as handle:
+            current = (
+                int(handle.getnchannels() or 0),
+                int(handle.getsampwidth() or 0),
+                int(handle.getframerate() or 0),
+            )
+            if params is None:
+                params = current
+            elif current != params:
+                raise RuntimeError("Live TTS chunk WAV format mismatch.")
+            raw_frames.append(handle.readframes(int(handle.getnframes() or 0)))
+    if params is None:
+        return b""
+    output = BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(params[0])
+        writer.setsampwidth(params[1])
+        writer.setframerate(params[2])
+        for frame_chunk in raw_frames:
+            writer.writeframes(frame_chunk)
+    return output.getvalue()
+
+
+def _tts_live_job_dir(job_id: str) -> Path:
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(job_id or "").strip()) or "unknown_job"
+    return TTS_LIVE_ARTIFACTS_DIR / safe_job_id
+
+
+def _persist_live_chunk(job_id: str, index: int, wav_bytes: bytes, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    safe_index = max(0, int(index))
+    job_dir = _tts_live_job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    path = job_dir / f"chunk_{safe_index:04d}.wav"
+    content = bytes(wav_bytes or b"")
+    path.write_bytes(content)
+    wav_info = _read_wav_info(content)
+    payload: dict[str, Any] = {
+        "index": safe_index,
+        "contentType": "audio/wav",
+        "durationMs": int(wav_info.get("durationMs") or 0),
+        "sampleRate": int(wav_info.get("sampleRate") or 0),
+        "textChars": int(meta.get("textChars") or 0) if isinstance(meta, dict) else 0,
+        "engine": str((meta or {}).get("engine") or ""),
+        "traceId": str((meta or {}).get("traceId") or ""),
+        "path": str(path),
+        "sizeBytes": len(content),
+    }
+    return payload
+
+
+def _cleanup_live_artifacts(job_id: str) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    job_dir = _tts_live_job_dir(safe_job_id)
+    if not job_dir.exists():
+        return
+    _cleanup_paths(str(job_dir))
+
+
+def _cleanup_expired_live_artifacts() -> None:
+    now_ms = int(time.time() * 1000)
+    ttl_ms = max(60_000, int(VF_TTS_LIVE_ARTIFACT_TTL_MS))
+    if not TTS_LIVE_ARTIFACTS_DIR.exists():
+        return
+    for child in list(TTS_LIVE_ARTIFACTS_DIR.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            mtime_ms = int(child.stat().st_mtime * 1000)
+        except Exception:
+            continue
+        if mtime_ms <= 0:
+            continue
+        if (now_ms - mtime_ms) < ttl_ms:
+            continue
+        _cleanup_paths(str(child))
+
+
+def _load_live_chunks_from_artifacts(job_id: str, *, engine: str, trace_id: str) -> list[dict[str, Any]]:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return []
+    job_dir = _tts_live_job_dir(safe_job_id)
+    if not job_dir.exists() or not job_dir.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for child in sorted(job_dir.glob("chunk_*.wav")):
+        if not child.is_file():
+            continue
+        match = re.match(r"^chunk_(\d+)\.wav$", child.name, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            index = int(match.group(1))
+        except Exception:
+            continue
+        try:
+            data = child.read_bytes()
+            wav_info = _read_wav_info(data)
+        except Exception:
+            wav_info = {"durationMs": 0, "sampleRate": 0}
+        out.append(
+            {
+                "index": int(index),
+                "contentType": "audio/wav",
+                "durationMs": int(wav_info.get("durationMs") or 0),
+                "sampleRate": int(wav_info.get("sampleRate") or 0),
+                "textChars": 0,
+                "engine": str(engine or ""),
+                "traceId": str(trace_id or ""),
+                "path": str(child.resolve()),
+            }
+        )
+    out.sort(key=lambda item: int(item.get("index") or 0))
+    return out
+
+
+def _load_live_chunk_audio_base64(chunk: dict[str, Any]) -> str:
+    path = Path(str(chunk.get("path") or "")).resolve()
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    return base64.b64encode(data).decode("ascii")
+
+
+def _convert_tts_audio_with_rvc_runtime(
+    *,
+    audio_bytes: bytes,
+    engine: str,
+    voice_id: str,
+    voice_name: str,
+) -> tuple[bytes, dict[str, str]]:
+    model_name, profile_id = _resolve_mapped_model_name(engine, voice_id, voice_name=voice_name)
+    if not model_name:
+        raise RuntimeError(f"No mapped RVC model for {engine}:{voice_id or voice_name}.")
+
+    temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_rvc_")
+    input_path = Path(temp_dir) / "tts_input.wav"
+    output_headers: dict[str, str] = {
+        "x-vf-post-tts-profile": str(profile_id or ""),
+        "x-vf-post-tts-model": str(model_name),
+    }
+    try:
+        input_path.write_bytes(audio_bytes)
+        with input_path.open("rb") as handle:
+            response = requests.post(
+                f"{RVC_RUNTIME_URL}/v1/convert",
+                files={"file": ("tts_input.wav", handle, "audio/wav")},
+                data={
+                    "model_name": str(model_name),
+                    "preset": _normalize_rvc_preset(VF_TTS_POST_RVC_PRESET),
+                },
+                timeout=VF_TTS_POST_RVC_TIMEOUT_SEC,
+            )
+        if not response.ok:
+            detail = response.text[:260] if response.text else f"HTTP {response.status_code}"
+            raise RuntimeError(f"RVC runtime conversion failed: {detail}")
+        output_headers["x-vf-post-tts-conversion"] = "rvc"
+        return bytes(response.content or b""), output_headers
+    finally:
+        _cleanup_paths(temp_dir)
+
+
+def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
+    job_id = str(job.get("jobId") or "").strip()
+    if not job_id:
+        return
+    current = _TTS_JOB_QUEUE.mark_running(job_id, worker_id=worker_id) or dict(job)
+    status = str(current.get("status") or "").strip().lower()
+    if status in {"completed", "failed", "cancelled"}:
+        if status == "cancelled":
+            _record_tts_terminal_event(
+                job_id=job_id,
+                engine=str(current.get("engine") or "GEM"),
+                status="cancelled",
+                reason="cancelled",
+                status_code=409,
+            )
+        return
+    _record_tts_job_started(job=current)
+
+    uid = str(current.get("uid") or "").strip()
+    request_id = str(current.get("requestId") or job_id).strip() or job_id
+    trace_id = str(current.get("traceId") or request_id).strip() or request_id
+    engine = _normalize_engine_name(str(current.get("engine") or "GEM"))
+    text = str(current.get("text") or "")
+    voice_id = str(current.get("voiceId") or "").strip()
+    voice_name = str(current.get("voiceName") or "").strip()
+    plan_name = str(current.get("planName") or "Free").strip() or "Free"
+    plan_key = str(current.get("planKey") or "free").strip().lower() or "free"
+    admin_limit_bypass = bool(current.get("adminLimitBypass"))
+    idempotency_key = str(current.get("idempotencyKey") or "").strip()
+    deadline_ms = int(current.get("deadlineAtMs") or 0)
+    max_attempts = max(1, int(current.get("maxAttempts") or VF_TTS_QUEUE_MAX_ATTEMPTS))
+    attempts_used = max(1, int(current.get("attempts") or 1))
+    lane = _tts_job_lane_for_plan(plan_key)
+
+    if deadline_ms > 0 and int(time.time() * 1000) >= deadline_ms:
+        detail = {
+            "error": "Queued TTS job expired before completion.",
+            "errorCode": QUEUE_TIMEOUT,
+            "reason": "job_deadline_exceeded",
+            "trace_id": trace_id,
+            "jobId": job_id,
+            "retryAfterMs": 1000,
+        }
+        _mark_job_failed_and_revert_usage(
+            job_id=job_id,
+            uid=uid,
+            request_id=request_id,
+            status_code=504,
+            detail=detail,
+            error_tag="job_deadline_exceeded",
+        )
+        return
+
+    runtime_base = str(current.get("runtimeBase") or _runtime_url_for_engine(engine)).strip().rstrip("/")
+    runtime_path = str(current.get("runtimePath") or _runtime_synthesize_path_for_engine(engine)).strip()
+    upstream_url = f"{runtime_base}{runtime_path}"
+    upstream_payload = dict(current.get("upstreamPayload") or {})
+    safe_engine = _safe_tts_engine_name(engine)
+    semaphore = _TTS_ENGINE_SEMAPHORES.get(safe_engine)
+    acquired_slot = False
+    runtime_response: Optional[requests.Response] = None
+    runtime_started = 0
+    semaphore_wait_started = int(time.time() * 1000)
+
+    try:
+        if semaphore is not None:
+            if deadline_ms > 0:
+                remaining_ms = max(0, deadline_ms - int(time.time() * 1000))
+                acquire_timeout = max(0.05, remaining_ms / 1000.0)
+                acquired_slot = semaphore.acquire(timeout=acquire_timeout)
+            else:
+                semaphore.acquire()
+                acquired_slot = True
+            semaphore_wait_ms = max(0, int(time.time() * 1000) - semaphore_wait_started)
+            _record_tts_engine_semaphore_wait(engine=safe_engine, wait_ms=semaphore_wait_ms)
+            if not acquired_slot:
+                detail = {
+                    "error": "TTS job expired while waiting for engine concurrency slot.",
+                    "errorCode": QUEUE_TIMEOUT,
+                    "reason": "engine_concurrency_wait_timeout",
+                    "trace_id": trace_id,
+                    "jobId": job_id,
+                    "retryAfterMs": 1000,
+                }
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=504,
+                    detail=detail,
+                    error_tag="engine_concurrency_wait_timeout",
+                )
+                return
+            _record_tts_engine_active(engine=safe_engine, delta=1)
+
+        live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(current.get("liveStream"))
+        if live_stream_requested:
+            chunk_chars = _safe_bounded_int(
+                current.get("liveChunkChars"),
+                default=VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
+                min_value=120,
+                max_value=VF_TTS_LIVE_CHUNK_CHARS_MAX,
+            )
+            chunk_words = _safe_bounded_int(
+                current.get("liveChunkWords"),
+                default=VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
+                min_value=24,
+                max_value=VF_TTS_LIVE_CHUNK_WORDS_MAX,
+            )
+            live_chunks = _split_text_live_chunks(
+                engine=engine,
+                text=text,
+                language=str(upstream_payload.get("language") or ""),
+                chunk_chars=chunk_chars,
+                chunk_words=chunk_words,
+                multi_speaker_payload=upstream_payload,
+            )
+            if not live_chunks:
+                live_chunks = [
+                    {
+                        "text": str(text or "").strip(),
+                        "textChars": len(str(text or "").strip()),
+                        "wordCount": max(1, _live_chunk_word_count(text)),
+                    }
+                ]
+            live_state: dict[str, Any] = {
+                "enabled": True,
+                "playableChunks": 0,
+                "playableDurationMs": 0,
+                "chunkCursorNext": 0,
+                "chunks": [],
+            }
+            _TTS_JOB_QUEUE.update(
+                job_id,
+                {
+                    "liveState": live_state,
+                    "liveChunkChars": int(chunk_chars),
+                    "liveChunkWords": int(chunk_words),
+                },
+            )
+
+            chunk_audio_bytes: list[bytes] = []
+            post_tts_disable = bool(current.get("postTtsDisable"))
+            post_conversion_headers: dict[str, str] = {}
+            if post_tts_disable:
+                post_conversion_headers["x-vf-post-tts-conversion"] = "disabled_by_request"
+            elif not VF_TTS_POST_RVC_ENABLED:
+                post_conversion_headers["x-vf-post-tts-conversion"] = "disabled"
+
+            live_started_ms = int(time.time() * 1000)
+            first_chunk_recorded = False
+            response_trace_id = ""
+            diagnostics_header = ""
+            media_type = "audio/wav"
+
+            for chunk_index, chunk in enumerate(live_chunks):
+                latest = _TTS_JOB_QUEUE.get(job_id)
+                if isinstance(latest, dict):
+                    latest_status = str(latest.get("status") or "").strip().lower()
+                    if latest_status == "cancelled":
+                        _record_tts_terminal_event(
+                            job_id=job_id,
+                            engine=safe_engine,
+                            status="cancelled",
+                            reason="cancelled_by_user",
+                            status_code=409,
+                        )
+                        return
+
+                chunk_payload = _build_live_chunk_upstream_payload(
+                    engine=engine,
+                    base_payload=upstream_payload,
+                    chunk=chunk,
+                )
+                chunk_started_ms = int(time.time() * 1000)
+                try:
+                    runtime_response = requests.post(upstream_url, json=chunk_payload, timeout=240)
+                except Exception as exc:  # noqa: BLE001
+                    chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
+                    _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=chunk_elapsed)
+                    _admin_usage_record_runtime_call(
+                        engine=engine,
+                        endpoint=runtime_path,
+                        method="POST",
+                        status_code=502,
+                        elapsed_ms=chunk_elapsed,
+                    )
+                    detail = {
+                        "error": f"TTS runtime is unreachable during live chunk synthesis: {exc}",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "runtime_unreachable",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                        "chunkIndex": int(chunk_index),
+                    }
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=502,
+                        detail=detail,
+                        error_tag=f"runtime_unreachable:{exc}",
+                    )
+                    return
+
+                chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
+                _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=chunk_elapsed)
+                _admin_usage_record_runtime_call(
+                    engine=engine,
+                    endpoint=runtime_path,
+                    method="POST",
+                    status_code=int(runtime_response.status_code),
+                    elapsed_ms=chunk_elapsed,
+                )
+                if not runtime_response.ok:
+                    detail = _decode_runtime_error_detail(runtime_response)
+                    mapped_status = _map_runtime_failure_status(engine, int(runtime_response.status_code), detail)
+                    response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
+                    if isinstance(detail, dict) and response_trace_id and not detail.get("trace_id"):
+                        detail = {**detail, "trace_id": response_trace_id}
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=mapped_status,
+                        detail=detail or "TTS runtime failed.",
+                        error_tag=f"runtime_error:{mapped_status}",
+                    )
+                    return
+
+                media_type = str(runtime_response.headers.get("content-type") or media_type or "audio/wav")
+                response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or response_trace_id or "").strip()
+                diagnostics_header = str(runtime_response.headers.get("x-voiceflow-diagnostics") or diagnostics_header or "").strip()
+
+                chunk_audio = bytes(runtime_response.content or b"")
+                if len(chunk_audio) < 100:
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=502,
+                        detail={
+                            "error": "Live chunk synthesis returned empty audio.",
+                            "errorCode": ENGINE_OVERLOADED,
+                            "reason": "runtime_empty_audio",
+                            "trace_id": trace_id,
+                            "jobId": job_id,
+                            "chunkIndex": int(chunk_index),
+                        },
+                        error_tag="runtime_empty_audio",
+                    )
+                    return
+
+                if VF_TTS_POST_RVC_ENABLED and not post_tts_disable:
+                    conversion_started_ms = int(time.time() * 1000)
+                    try:
+                        converted_audio_bytes, conversion_headers = _convert_tts_audio_with_rvc_runtime(
+                            audio_bytes=chunk_audio,
+                            engine=engine,
+                            voice_id=voice_id,
+                            voice_name=voice_name or str(chunk_payload.get("voiceName") or ""),
+                        )
+                        conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
+                        _record_tts_live_chunk_rvc_latency(elapsed_ms=conversion_elapsed_ms)
+                        if len(converted_audio_bytes) < 100:
+                            raise RuntimeError("Converted live chunk is empty.")
+                        chunk_audio = converted_audio_bytes
+                        post_conversion_headers.update(conversion_headers)
+                    except Exception as exc:
+                        conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
+                        _record_tts_live_chunk_rvc_latency(elapsed_ms=conversion_elapsed_ms)
+                        if VF_TTS_POST_RVC_REQUIRED:
+                            detail = {
+                                "error": f"Post-TTS conversion failed: {exc}",
+                                "errorCode": ENGINE_OVERLOADED,
+                                "reason": "post_tts_conversion_failed",
+                                "trace_id": trace_id,
+                                "jobId": job_id,
+                                "chunkIndex": int(chunk_index),
+                            }
+                            _mark_job_failed_and_revert_usage(
+                                job_id=job_id,
+                                uid=uid,
+                                request_id=request_id,
+                                status_code=503,
+                                detail=detail,
+                                error_tag="post_tts_conversion_failed",
+                            )
+                            return
+                        post_conversion_headers["x-vf-post-tts-conversion"] = "bypassed_error"
+                        post_conversion_headers["x-vf-post-tts-error"] = str(exc).replace("\n", " ").replace("\r", " ")[:180]
+
+                try:
+                    chunk_meta = _persist_live_chunk(
+                        job_id,
+                        chunk_index,
+                        chunk_audio,
+                        meta={
+                            "textChars": int(chunk.get("textChars") or len(str(chunk.get("text") or ""))),
+                            "engine": safe_engine,
+                            "traceId": response_trace_id or trace_id,
+                        },
+                    )
+                except Exception as exc:
+                    print(
+                        f"[tts-live:{job_id}] chunk persist failed idx={int(chunk_index)} "
+                        f"engine={safe_engine} err={exc}",
+                        flush=True,
+                    )
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=500,
+                        detail={
+                            "error": f"Failed to persist live chunk: {exc}",
+                            "errorCode": ENGINE_OVERLOADED,
+                            "reason": "live_chunk_persist_failed",
+                            "trace_id": trace_id,
+                            "jobId": job_id,
+                            "chunkIndex": int(chunk_index),
+                        },
+                        error_tag="live_chunk_persist_failed",
+                    )
+                    return
+                live_chunks_state = list(live_state.get("chunks") or [])
+                live_chunks_state.append(chunk_meta)
+                playable_duration_ms = sum(int(item.get("durationMs") or 0) for item in live_chunks_state)
+                live_state = {
+                    "enabled": True,
+                    "playableChunks": len(live_chunks_state),
+                    "playableDurationMs": int(playable_duration_ms),
+                    "chunkCursorNext": int(chunk_index + 1),
+                    "chunks": live_chunks_state,
+                }
+                _TTS_JOB_QUEUE.update(job_id, {"liveState": live_state})
+                chunk_audio_bytes.append(chunk_audio)
+
+                if not first_chunk_recorded:
+                    first_chunk_recorded = True
+                    first_chunk_latency_ms = max(0, int(time.time() * 1000) - live_started_ms)
+                    _record_tts_live_first_chunk_latency(elapsed_ms=first_chunk_latency_ms)
+                    print(
+                        f"[tts-live:{job_id}] first_chunk_ready_ms={first_chunk_latency_ms} "
+                        f"engine={safe_engine} trace={response_trace_id or trace_id}",
+                        flush=True,
+                    )
+
+            _record_tts_live_chunk_count(chunk_count=len(chunk_audio_bytes))
+            try:
+                synthesized_audio_bytes = _concat_wav_chunks(chunk_audio_bytes)
+            except Exception as exc:
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=500,
+                    detail={
+                        "error": f"Failed to merge live chunks: {exc}",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "live_chunk_concat_failed",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                    },
+                    error_tag="live_chunk_concat_failed",
+                )
+                return
+            if len(synthesized_audio_bytes) < 100:
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=500,
+                    detail={
+                        "error": "Merged live audio is empty.",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "live_chunk_concat_empty",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                    },
+                    error_tag="live_chunk_concat_empty",
+                )
+                return
+
+            quota_headers: dict[str, str] = {}
+            if not admin_limit_bypass:
+                fingerprint = idempotency_key or request_id
+                try:
+                    quota_decision = _commit_tts_success_quota(
+                        uid,
+                        plan_name,
+                        plan_key,
+                        trace_id,
+                        request_fingerprint=fingerprint,
+                    )
+                except HTTPException as quota_exc:
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=quota_exc.status_code,
+                        detail=quota_exc.detail,
+                        error_tag="success_quota_exceeded",
+                    )
+                    return
+                quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
+
+            _finalize_usage(uid, request_id, success=True)
+            _build_tts_history_item(
+                uid=uid,
+                request_id=request_id,
+                trace_id=response_trace_id or trace_id,
+                engine=engine,
+                voice_name=voice_name,
+                voice_id=voice_id,
+                text=text,
+            )
+
+            completed_headers: dict[str, str] = {"x-vf-request-id": request_id}
+            completed_headers.update(quota_headers)
+            if response_trace_id:
+                completed_headers["x-voiceflow-trace-id"] = response_trace_id
+            if diagnostics_header:
+                completed_headers["x-voiceflow-diagnostics"] = diagnostics_header
+            completed_headers.update(post_conversion_headers)
+            completed_headers["x-vf-live-stream"] = "1"
+            completed_headers["x-vf-live-chunks"] = str(len(chunk_audio_bytes))
+
+            _TTS_JOB_QUEUE.mark_completed(
+                job_id,
+                audio_bytes=synthesized_audio_bytes,
+                media_type=str(media_type or "audio/wav"),
+                headers=completed_headers,
+            )
+            _record_tts_terminal_event(
+                job_id=job_id,
+                engine=safe_engine,
+                status="completed",
+                reason="completed",
+                status_code=200,
+            )
+            return
+
+        runtime_started = int(time.time() * 1000)
+        try:
+            runtime_response = requests.post(upstream_url, json=upstream_payload, timeout=240)
+        except Exception as exc:  # noqa: BLE001
+            runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started)
+            _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=runtime_elapsed)
+            _admin_usage_record_runtime_call(
+                engine=engine,
+                endpoint=runtime_path,
+                method="POST",
+                status_code=502,
+                elapsed_ms=runtime_elapsed,
+            )
+            detail = {
+                "error": f"TTS runtime is unreachable: {exc}",
+                "errorCode": ENGINE_OVERLOADED,
+                "reason": "runtime_unreachable",
+                "trace_id": trace_id,
+                "jobId": job_id,
+            }
+            can_retry = attempts_used < max_attempts and (deadline_ms <= 0 or int(time.time() * 1000) < deadline_ms)
+            if can_retry:
+                backoff_ms = _tts_job_retry_backoff_ms(attempts_used)
+                _TTS_JOB_QUEUE.update(
+                    job_id,
+                    {
+                        "status": "queued",
+                        "lastError": detail,
+                        "lastStatusCode": 502,
+                        "attempts": attempts_used,
+                    },
+                )
+                _record_tts_job_requeued(job_id=job_id, engine=safe_engine)
+                time.sleep(backoff_ms / 1000.0)
+                next_payload = dict(current)
+                next_payload["attempts"] = attempts_used
+                _TTS_JOB_QUEUE.enqueue(lane=lane, payload=next_payload)
+                return
+            _mark_job_failed_and_revert_usage(
+                job_id=job_id,
+                uid=uid,
+                request_id=request_id,
+                status_code=502,
+                detail=detail,
+                error_tag=f"runtime_unreachable:{exc}",
+            )
+            return
+
+        runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started)
+        _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=runtime_elapsed)
+        _admin_usage_record_runtime_call(
+            engine=engine,
+            endpoint=runtime_path,
+            method="POST",
+            status_code=int(runtime_response.status_code),
+            elapsed_ms=runtime_elapsed,
+        )
+
+        if not runtime_response.ok:
+            detail = _decode_runtime_error_detail(runtime_response)
+            response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
+            mapped_status = _map_runtime_failure_status(engine, int(runtime_response.status_code), detail)
+            if isinstance(detail, dict) and response_trace_id and not detail.get("trace_id"):
+                detail = {**detail, "trace_id": response_trace_id}
+            retryable = _is_retryable_runtime_failure(engine, mapped_status, detail)
+            can_retry = retryable and attempts_used < max_attempts and (deadline_ms <= 0 or int(time.time() * 1000) < deadline_ms)
+            if can_retry:
+                backoff_ms = _tts_job_retry_backoff_ms(attempts_used)
+                _TTS_JOB_QUEUE.update(
+                    job_id,
+                    {
+                        "status": "queued",
+                        "lastError": detail,
+                        "lastStatusCode": mapped_status,
+                        "attempts": attempts_used,
+                    },
+                )
+                _record_tts_job_requeued(job_id=job_id, engine=safe_engine)
+                time.sleep(backoff_ms / 1000.0)
+                next_payload = dict(current)
+                next_payload["attempts"] = attempts_used
+                _TTS_JOB_QUEUE.enqueue(lane=lane, payload=next_payload)
+                return
+
+            _mark_job_failed_and_revert_usage(
+                job_id=job_id,
+                uid=uid,
+                request_id=request_id,
+                status_code=mapped_status,
+                detail=detail or "TTS runtime failed.",
+                error_tag=f"runtime_error:{mapped_status}",
+            )
+            return
+
+        post_tts_disable = bool(current.get("postTtsDisable"))
+        synthesized_audio_bytes = bytes(runtime_response.content or b"")
+        post_conversion_headers: dict[str, str] = {}
+        if VF_TTS_POST_RVC_ENABLED and not post_tts_disable:
+            try:
+                converted_audio_bytes, conversion_headers = _convert_tts_audio_with_rvc_runtime(
+                    audio_bytes=synthesized_audio_bytes,
+                    engine=engine,
+                    voice_id=voice_id,
+                    voice_name=voice_name or str(upstream_payload.get("voiceName") or ""),
+                )
+                if len(converted_audio_bytes) < 100:
+                    raise RuntimeError("Converted audio payload is empty.")
+                synthesized_audio_bytes = converted_audio_bytes
+                post_conversion_headers.update(conversion_headers)
+            except Exception as exc:
+                if VF_TTS_POST_RVC_REQUIRED:
+                    detail = {
+                        "error": f"Post-TTS conversion failed: {exc}",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "post_tts_conversion_failed",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                    }
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=503,
+                        detail=detail,
+                        error_tag="post_tts_conversion_failed",
+                    )
+                    return
+                post_conversion_headers["x-vf-post-tts-conversion"] = "bypassed_error"
+                post_conversion_headers["x-vf-post-tts-error"] = str(exc).replace("\n", " ").replace("\r", " ")[:180]
+        elif post_tts_disable:
+            post_conversion_headers["x-vf-post-tts-conversion"] = "disabled_by_request"
+        else:
+            post_conversion_headers["x-vf-post-tts-conversion"] = "disabled"
+
+        quota_headers: dict[str, str] = {}
+        if not admin_limit_bypass:
+            fingerprint = idempotency_key or request_id
+            try:
+                quota_decision = _commit_tts_success_quota(
+                    uid,
+                    plan_name,
+                    plan_key,
+                    trace_id,
+                    request_fingerprint=fingerprint,
+                )
+            except HTTPException as quota_exc:
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=quota_exc.status_code,
+                    detail=quota_exc.detail,
+                    error_tag="success_quota_exceeded",
+                )
+                return
+            quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
+
+        _finalize_usage(uid, request_id, success=True)
+
+        response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
+        _build_tts_history_item(
+            uid=uid,
+            request_id=request_id,
+            trace_id=response_trace_id or trace_id,
+            engine=engine,
+            voice_name=voice_name,
+            voice_id=voice_id,
+            text=text,
+        )
+
+        completed_headers: dict[str, str] = {"x-vf-request-id": request_id}
+        completed_headers.update(quota_headers)
+        if response_trace_id:
+            completed_headers["x-voiceflow-trace-id"] = response_trace_id
+        diagnostics = runtime_response.headers.get("x-voiceflow-diagnostics")
+        if diagnostics:
+            completed_headers["x-voiceflow-diagnostics"] = diagnostics
+        completed_headers.update(post_conversion_headers)
+
+        _TTS_JOB_QUEUE.mark_completed(
+            job_id,
+            audio_bytes=synthesized_audio_bytes,
+            media_type=str(runtime_response.headers.get("content-type") or "audio/wav"),
+            headers=completed_headers,
+        )
+        _record_tts_terminal_event(
+            job_id=job_id,
+            engine=safe_engine,
+            status="completed",
+            reason="completed",
+            status_code=200,
+        )
+    finally:
+        if acquired_slot and semaphore is not None:
+            _record_tts_engine_active(engine=safe_engine, delta=-1)
+            semaphore.release()
+
+
+def _tts_worker_loop(worker_id: str) -> None:
+    while True:
+        try:
+            job = _TTS_JOB_QUEUE.dequeue_next()
+            if not isinstance(job, dict):
+                time.sleep(0.06)
+                continue
+            status = str(job.get("status") or "").strip().lower()
+            if status in {"completed", "failed", "cancelled"}:
+                if status == "cancelled":
+                    _record_tts_terminal_event(
+                        job_id=str(job.get("jobId") or ""),
+                        engine=str(job.get("engine") or "GEM"),
+                        status="cancelled",
+                        reason="cancelled",
+                        status_code=409,
+                    )
+                continue
+            _process_tts_job(job, worker_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[tts-worker:{worker_id}] error: {exc}", flush=True)
+            time.sleep(0.2)
+
+
+def _ensure_tts_workers_started() -> None:
+    if not VF_TTS_QUEUE_ENABLED:
+        return
+    with _TTS_JOB_WORKER_LOCK:
+        if len(_TTS_JOB_WORKER_THREADS) >= VF_TTS_QUEUE_WORKER_COUNT:
+            return
+        for index in range(len(_TTS_JOB_WORKER_THREADS), VF_TTS_QUEUE_WORKER_COUNT):
+            worker_id = f"tts-worker-{index + 1}"
+            thread = threading.Thread(
+                target=_tts_worker_loop,
+                args=(worker_id,),
+                daemon=True,
+                name=worker_id,
+            )
+            thread.start()
+            _TTS_JOB_WORKER_THREADS.append(thread)
+
+
+def _tts_job_can_access(job: dict[str, Any], *, uid: str, is_admin: bool) -> bool:
+    if is_admin:
+        return True
+    owner_uid = str(job.get("uid") or "").strip()
+    return bool(owner_uid) and owner_uid == uid
+
+
+def _tts_job_status_payload(
+    job: dict[str, Any],
+    *,
+    include_result: bool = False,
+    include_chunks: bool = False,
+    chunk_cursor: int = 0,
+    chunk_limit: int = VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
+    include_chunk_audio: bool = True,
+) -> dict[str, Any]:
+    status = str(job.get("status") or "queued").strip().lower() or "queued"
+    now_ms = int(time.time() * 1000)
+    created_at_ms = int(job.get("createdAtMs") or 0)
+    queue_age_ms = max(0, now_ms - created_at_ms) if created_at_ms > 0 else 0
+    queue_depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
+    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "GEM"))
+    payload: dict[str, Any] = {
+        "ok": True,
+        "jobId": str(job.get("jobId") or ""),
+        "requestId": str(job.get("requestId") or ""),
+        "traceId": str(job.get("traceId") or ""),
+        "status": status,
+        "engine": str(job.get("engine") or ""),
+        "lane": str(job.get("lane") or ""),
+        "attempts": int(job.get("attempts") or 0),
+        "maxAttempts": int(job.get("maxAttempts") or VF_TTS_QUEUE_MAX_ATTEMPTS),
+        "createdAtMs": int(job.get("createdAtMs") or 0),
+        "updatedAtMs": int(job.get("updatedAtMs") or 0),
+        "startedAtMs": int(job.get("startedAtMs") or 0),
+        "finishedAtMs": int(job.get("finishedAtMs") or 0),
+        "deadlineAtMs": int(job.get("deadlineAtMs") or 0),
+        "queueAgeMs": int(queue_age_ms),
+        "queueDepthAtRead": int(queue_depth_snapshot.get("total") or 0),
+        "engineConcurrencyAtRead": int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(safe_engine) or 1),
+    }
+    if status == "failed":
+        payload["statusCode"] = int(job.get("statusCode") or 500)
+        payload["error"] = job.get("error")
+    if include_result and status == "completed":
+        payload["result"] = job.get("result")
+
+    live_state = job.get("liveState") if isinstance(job.get("liveState"), dict) else {}
+    live_stream_requested = bool(job.get("liveStream"))
+    if isinstance(live_state, dict) and bool(live_state):
+        payload["live"] = {
+            "enabled": bool(live_state.get("enabled")),
+            "playableChunks": int(live_state.get("playableChunks") or 0),
+            "playableDurationMs": int(live_state.get("playableDurationMs") or 0),
+        }
+        payload["chunkCursorNext"] = int(live_state.get("chunkCursorNext") or 0)
+    elif live_stream_requested:
+        payload["live"] = {
+            "enabled": True,
+            "playableChunks": 0,
+            "playableDurationMs": 0,
+        }
+        payload["chunkCursorNext"] = 0
+
+    if include_chunks and (isinstance(live_state, dict) or live_stream_requested):
+        def _chunk_index_value(chunk_item: dict[str, Any]) -> int:
+            raw_value = chunk_item.get("index")
+            try:
+                return int(raw_value)
+            except Exception:
+                return -1
+
+        safe_cursor = max(0, int(chunk_cursor or 0))
+        safe_limit = _safe_bounded_int(
+            chunk_limit,
+            default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
+            min_value=1,
+            max_value=VF_TTS_LIVE_CHUNK_LIMIT_MAX,
+        )
+        source_chunks = [
+            item
+            for item in list((live_state or {}).get("chunks") or [])
+            if isinstance(item, dict)
+        ]
+        source_chunks = [
+            item
+            for item in source_chunks
+            if _chunk_index_value(item) >= 0
+        ]
+        if not source_chunks:
+            source_chunks = _load_live_chunks_from_artifacts(
+                str(job.get("jobId") or ""),
+                engine=safe_engine,
+                trace_id=str(job.get("traceId") or ""),
+            )
+        if source_chunks and isinstance(payload.get("live"), dict):
+            playable_chunks = max(int(payload["live"].get("playableChunks") or 0), len(source_chunks))
+            playable_duration_ms = int(
+                max(
+                    int(payload["live"].get("playableDurationMs") or 0),
+                    sum(int(item.get("durationMs") or 0) for item in source_chunks),
+                )
+            )
+            payload["live"] = {
+                **payload["live"],
+                "playableChunks": playable_chunks,
+                "playableDurationMs": playable_duration_ms,
+            }
+        source_chunks.sort(key=_chunk_index_value)
+        visible = [
+            item
+            for item in source_chunks
+            if _chunk_index_value(item) >= safe_cursor
+        ][:safe_limit]
+        chunk_payloads: list[dict[str, Any]] = []
+        for item in visible:
+            chunk_item = {
+                "index": int(item.get("index") or 0),
+                "contentType": str(item.get("contentType") or "audio/wav"),
+                "durationMs": int(item.get("durationMs") or 0),
+                "textChars": int(item.get("textChars") or 0),
+                "engine": str(item.get("engine") or ""),
+                "traceId": str(item.get("traceId") or ""),
+            }
+            if include_chunk_audio:
+                chunk_item["audioBase64"] = _load_live_chunk_audio_base64(item)
+            chunk_payloads.append(chunk_item)
+        payload["chunkCursor"] = int(safe_cursor)
+        payload["chunkCursorNext"] = int(safe_cursor + len(chunk_payloads))
+        payload["chunks"] = chunk_payloads
+    return payload
+
+
+def _response_from_completed_tts_job(job: dict[str, Any], gateway_lease: Optional[_TtsGatewayLease]) -> Response:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    audio_base64 = str(result.get("audioBase64") or "").strip()
+    if not audio_base64:
+        raise HTTPException(status_code=500, detail="Completed TTS job is missing audio payload.")
+    try:
+        content = base64.b64decode(audio_base64.encode("ascii"), validate=False)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to decode TTS job audio payload: {exc}") from exc
+
+    media_type = str(result.get("mediaType") or "audio/wav")
+    out_headers: dict[str, str] = {}
+    result_headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    for key, value in result_headers.items():
+        safe_key = str(key or "").strip()
+        if not safe_key:
+            continue
+        out_headers[safe_key] = str(value or "")
+    if gateway_lease is not None:
+        out_headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
+        out_headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
+    return Response(content=content, media_type=media_type, headers=out_headers)
+
+
+def _raise_failed_tts_job(job: dict[str, Any], *, default_headers: Optional[dict[str, str]] = None) -> None:
+    status_code = int(job.get("statusCode") or 500)
+    detail = job.get("error")
+    if detail is None:
+        detail = {"error": "TTS job failed."}
+    raise HTTPException(status_code=status_code, detail=detail, headers=dict(default_headers or {}))
+
+
+def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wait_ms: int) -> Response:
+    safe_sync_wait_ms = max(0, min(60_000, int(sync_wait_ms)))
+    uid = _require_request_uid(request)
+    admin_limit_bypass = _request_is_admin(request, uid)
+    text = str(payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required.")
+    engine = _normalize_engine_name(payload.engine)
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    request_id = str(payload.request_id or idempotency_key or uuid.uuid4().hex).strip()
+    trace_id = str(payload.trace_id or request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+
+    plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(uid, len(text), trace_id)
+    quota_headers: dict[str, str] = {}
+    if not admin_limit_bypass:
+        quota_headers = _precheck_tts_success_quota(uid, plan_name, plan_key, trace_id)
+
+    gateway_lease, reject_detail = _TTS_GATEWAY_CONTROLLER.acquire()
+    if gateway_lease is None:
+        safe_detail = dict(reject_detail or {})
+        reason = str(safe_detail.get("reason") or "queue_rejected").strip().lower()
+        safe_detail.setdefault("reason", reason)
+        if reason == "queue_timeout":
+            safe_detail.setdefault("errorCode", QUEUE_TIMEOUT)
+        else:
+            safe_detail.setdefault("errorCode", ENGINE_OVERLOADED)
+        safe_detail.setdefault("queueDepth", 0)
+        safe_detail.setdefault("retryAfterMs", 1000)
+        safe_detail.setdefault("trace_id", trace_id)
+        retry_after_ms = max(250, int(safe_detail.get("retryAfterMs") or 1000))
+        error_headers = dict(quota_headers)
+        error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+        raise HTTPException(status_code=503, detail=safe_detail, headers=error_headers)
+
+    try:
+        reserve = _reserve_usage(
+            uid,
+            request_id,
+            engine,
+            len(text),
+            bypass_limits=admin_limit_bypass,
+            bypass_reason="admin_request" if admin_limit_bypass else "",
+        )
+        _ = reserve
+        _ensure_tts_workers_started()
+        _cleanup_expired_live_artifacts()
+
+        runtime_base = _runtime_url_for_engine(engine)
+        runtime_path = _runtime_synthesize_path_for_engine(engine)
+        live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(payload.stream)
+        live_chunk_chars = None
+        live_chunk_words = None
+        if live_stream_requested:
+            live_chunk_chars = _safe_bounded_int(
+                payload.live_chunk_chars,
+                default=VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
+                min_value=120,
+                max_value=VF_TTS_LIVE_CHUNK_CHARS_MAX,
+            )
+            live_chunk_words = _safe_bounded_int(
+                payload.live_chunk_words,
+                default=VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
+                min_value=24,
+                max_value=VF_TTS_LIVE_CHUNK_WORDS_MAX,
+            )
+        upstream_payload, voice_id = _build_tts_upstream_payload(
+            payload,
+            engine=engine,
+            text=text,
+            request_id=request_id,
+            trace_id=trace_id,
+            plan_key=plan_key,
+        )
+
+        existing_job = _TTS_JOB_QUEUE.get(request_id)
+        if existing_job is None:
+            depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
+            if int(depth_snapshot.get("total") or 0) >= VF_TTS_QUEUE_MAX_DEPTH:
+                _finalize_usage(uid, request_id, success=False, error_detail="queue_depth_limit")
+                detail = {
+                    "error": "TTS queue depth limit reached.",
+                    "errorCode": ENGINE_OVERLOADED,
+                    "reason": "queue_full",
+                    "queueDepth": int(depth_snapshot.get("total") or 0),
+                    "queueMax": int(VF_TTS_QUEUE_MAX_DEPTH),
+                    "retryAfterMs": 1000,
+                    "trace_id": trace_id,
+                }
+                raise HTTPException(status_code=503, detail=detail, headers=quota_headers)
+
+            projection = _estimate_tts_completion_delay(engine)
+            observed_queue_depth = int(depth_snapshot.get("total") or 0)
+            projection_jobs_ahead = int(projection.get("jobsAhead") or 0)
+            projection_concurrency = max(1, int(projection.get("concurrency") or 1))
+            projection_avg_runtime = max(1, int(projection.get("avgRuntimeMs") or _default_engine_runtime_ms(engine)))
+            estimated_jobs_ahead = max(projection_jobs_ahead, observed_queue_depth)
+            estimated_completion_ms = max(
+                int(projection.get("estimatedCompletionMs") or 0),
+                int(((estimated_jobs_ahead // projection_concurrency) + 1) * projection_avg_runtime),
+            )
+            if estimated_completion_ms > int(VF_TTS_QUEUE_JOB_TTL_MS):
+                _finalize_usage(uid, request_id, success=False, error_detail="estimated_queue_timeout")
+                retry_after_ms = max(
+                    500,
+                    int(estimated_completion_ms - int(VF_TTS_QUEUE_JOB_TTL_MS) + projection_avg_runtime),
+                )
+                detail = {
+                    "error": "TTS engine is overloaded and queue TTL would likely expire before completion.",
+                    "errorCode": ENGINE_OVERLOADED,
+                    "reason": "estimated_queue_timeout",
+                    "trace_id": trace_id,
+                    "engine": str(projection.get("engine") or _safe_tts_engine_name(engine)),
+                    "queueDepth": observed_queue_depth,
+                    "engineQueueDepth": int(estimated_jobs_ahead),
+                    "engineQueued": int(projection.get("queued") or 0),
+                    "engineRunning": int(projection.get("running") or 0),
+                    "engineConcurrency": int(projection.get("concurrency") or 1),
+                    "estimatedCompletionMs": estimated_completion_ms,
+                    "deadlineBudgetMs": int(VF_TTS_QUEUE_JOB_TTL_MS),
+                    "retryAfterMs": retry_after_ms,
+                }
+                error_headers = dict(quota_headers)
+                error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+                raise HTTPException(status_code=503, detail=detail, headers=error_headers)
+
+            deadline_at_ms = int(time.time() * 1000) + VF_TTS_QUEUE_JOB_TTL_MS
+            lane = _tts_job_lane_for_plan(plan_key)
+            job_payload = {
+                "jobId": request_id,
+                "uid": uid,
+                "requestId": request_id,
+                "traceId": trace_id,
+                "engine": engine,
+                "text": text,
+                "voiceId": voice_id,
+                "voiceName": str(payload.voiceName or "").strip(),
+                "planName": plan_name,
+                "planKey": plan_key,
+                "adminLimitBypass": bool(admin_limit_bypass),
+                "idempotencyKey": idempotency_key,
+                "runtimeBase": runtime_base,
+                "runtimePath": runtime_path,
+                "upstreamPayload": upstream_payload,
+                "deadlineAtMs": deadline_at_ms,
+                "maxAttempts": VF_TTS_QUEUE_MAX_ATTEMPTS if safe_sync_wait_ms <= 0 else 1,
+                "postTtsDisable": bool(payload.post_tts_disable),
+                "liveStream": bool(live_stream_requested),
+                "liveChunkChars": int(live_chunk_chars or VF_TTS_LIVE_CHUNK_CHARS_DEFAULT),
+                "liveChunkWords": int(live_chunk_words or VF_TTS_LIVE_CHUNK_WORDS_DEFAULT),
+            }
+            current_job = _TTS_JOB_QUEUE.enqueue(lane=lane, payload=job_payload)
+            _record_tts_job_enqueued(
+                job_id=request_id,
+                engine=engine,
+                created_at_ms=int((current_job or {}).get("createdAtMs") or int(time.time() * 1000)),
+            )
+        else:
+            current_job = existing_job
+
+        if safe_sync_wait_ms > 0:
+            terminal_job = _TTS_JOB_QUEUE.wait_for_terminal(
+                request_id,
+                timeout_ms=safe_sync_wait_ms,
+                poll_ms=120,
+            )
+            if isinstance(terminal_job, dict):
+                terminal_status = str(terminal_job.get("status") or "").strip().lower()
+                if terminal_status == "completed":
+                    return _response_from_completed_tts_job(terminal_job, gateway_lease)
+                if terminal_status == "failed":
+                    _raise_failed_tts_job(terminal_job, default_headers=quota_headers)
+                if terminal_status == "cancelled":
+                    raise HTTPException(status_code=409, detail={"error": "TTS job was cancelled.", "jobId": request_id})
+                current_job = terminal_job
+
+        status_payload = _tts_job_status_payload(current_job if isinstance(current_job, dict) else {"jobId": request_id})
+        status_payload["accepted"] = True
+        status_payload["queue"] = _TTS_JOB_QUEUE.depth_snapshot()
+        headers = dict(quota_headers)
+        headers["x-vf-request-id"] = request_id
+        headers["x-vf-job-id"] = request_id
+        headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
+        headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
+        return JSONResponse(status_payload, status_code=202, headers=headers)
+    finally:
+        gateway_lease.release()
+
+
+@app.post("/tts/synthesize")
+def tts_synthesize(
+    payload: TtsSynthesizeRequest,
+    request: Request,
+    wait_ms: Optional[int] = Query(default=None, ge=0, le=60_000),
+) -> Response:
+    effective_wait_ms = VF_TTS_QUEUE_SYNC_WAIT_MS if wait_ms is None else int(wait_ms)
+    return _submit_tts_job(payload, request, sync_wait_ms=effective_wait_ms)
+
+
+@app.post("/tts/jobs")
+def tts_job_create(payload: TtsSynthesizeRequest, request: Request) -> JSONResponse:
+    response = _submit_tts_job(payload, request, sync_wait_ms=0)
+    if isinstance(response, JSONResponse):
+        return response
+    if isinstance(response, Response):
+        encoded = base64.b64encode(bytes(response.body or b"")).decode("ascii")
+        headers = {str(k): str(v) for k, v in dict(response.headers or {}).items()}
+        return JSONResponse(
+            {
+                "ok": True,
+                "accepted": True,
+                "status": "completed",
+                "result": {
+                    "audioBase64": encoded,
+                    "mediaType": str(response.media_type or "audio/wav"),
+                    "headers": headers,
+                },
+            }
+        )
+    return JSONResponse({"ok": True, "accepted": True}, status_code=202)
+
+
+@app.get("/tts/jobs/{job_id}")
+def tts_job_status(
+    job_id: str,
+    request: Request,
+    includeResult: bool = False,
+    includeChunks: bool = False,
+    chunkCursor: int = 0,
+    chunkLimit: int = Query(default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT, ge=1, le=VF_TTS_LIVE_CHUNK_LIMIT_MAX),
+    includeChunkAudio: bool = True,
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        raise HTTPException(status_code=400, detail="Missing job id.")
+    job = _TTS_JOB_QUEUE.get(safe_job_id)
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
+    return JSONResponse(
+        _tts_job_status_payload(
+            job,
+            include_result=bool(includeResult),
+            include_chunks=bool(includeChunks),
+            chunk_cursor=max(0, int(chunkCursor or 0)),
+            chunk_limit=int(chunkLimit),
+            include_chunk_audio=bool(includeChunkAudio),
+        )
+    )
+
+
+@app.delete("/tts/jobs/{job_id}")
+def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        raise HTTPException(status_code=400, detail="Missing job id.")
+    job = _TTS_JOB_QUEUE.get(safe_job_id)
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="Not authorized to cancel this job.")
+    cancelled = _TTS_JOB_QUEUE.cancel(safe_job_id)
+    if not isinstance(cancelled, dict):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _cleanup_live_artifacts(safe_job_id)
+    _record_tts_terminal_event(
+        job_id=safe_job_id,
+        engine=str(cancelled.get("engine") or "GEM"),
+        status="cancelled",
+        reason="cancelled_by_user",
+        status_code=409,
+    )
+    return JSONResponse({"ok": True, "job": _tts_job_status_payload(cancelled, include_result=False)})
+
+
+@app.get("/runtime/logs/tail", response_model=RuntimeLogTailResponse)
 def tail_runtime_logs(
     service: str,
     cursor: Optional[int] = None,
@@ -6121,7 +9831,7 @@ def tail_runtime_logs(
     )
 
 
-@app.post("/tts/engines/switch")
+@app.post("/tts/engines/switch", response_model=TtsEngineSwitchResponse)
 def switch_tts_engine(payload: SwitchTtsEngineRequest) -> JSONResponse:
     try:
         engine = _normalize_engine_name(payload.engine)
@@ -6159,6 +9869,79 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest) -> JSONResponse:
             "commandOutput": command_output[-500:],
         }
     )
+
+
+@app.post("/audio/extract-from-video")
+async def extract_audio_from_video(
+    file: UploadFile = File(...),
+) -> FileResponse:
+    """
+    Extract audio stream from a video file and return as WAV format.
+    Handles all video formats that FFmpeg supports (MP4, WebM, MKV, etc.).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    
+    content_type = str(file.content_type or "").strip().lower()
+    if not any(x in content_type for x in ["video/", "application/octet-stream"]):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expected video file, got {content_type or 'unknown type'}. Supported: MP4, WebM, MKV, AVI, MOV, FLV, WMV, etc."
+        )
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(payload) > 500 * 1024 * 1024:  # 500MB limit for video files
+        raise HTTPException(
+            status_code=413,
+            detail="Video file is too large. Maximum 500MB."
+        )
+
+    # Save uploaded video to temporary file
+    temp_dir = tempfile.mkdtemp(prefix="audio_extract_")
+    input_path = Path(temp_dir) / _safe_upload_name(file.filename, "video_input.mp4")
+    
+    try:
+        # Write uploaded video data to temp file
+        input_path.write_bytes(payload)
+        
+        # Verify file is readable by FFmpeg
+        if not input_path.exists() or input_path.stat().st_size == 0:
+            raise RuntimeError("Failed to write temporary video file.")
+        
+        # Extract audio to WAV format using FFmpeg
+        output_path = input_path.with_suffix(".wav")
+        _convert_media_to_wav(
+            str(input_path),
+            str(output_path),
+            sample_rate=44100,
+            channels=1,
+        )
+        
+        if not output_path.exists():
+            raise RuntimeError("FFmpeg failed to extract audio from video.")
+        
+        # Stream WAV file back to client
+        return FileResponse(
+            path=output_path,
+            media_type="audio/wav",
+            filename="extracted_audio.wav",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+    except Exception as exc:
+        _cleanup_paths(str(input_path), str(output_path) if 'output_path' in locals() else "")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to extract audio from video: {str(exc)}"
+        ) from exc
+    finally:
+        # Cleanup temporary directory (files will be cleaned up when response is sent)
+        try:
+            import atexit
+            atexit.register(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
+        except Exception:
+            pass
 
 
 @app.post("/services/dubbing/prepare")
@@ -6249,7 +10032,7 @@ def prepare_dubbing_services(payload: PrepareDubbingServicesRequest) -> JSONResp
     )
 
 
-@app.get("/tts/engines/capabilities")
+@app.get("/tts/engines/capabilities", response_model=TtsEngineCapabilitiesResponse)
 def tts_engines_capabilities() -> JSONResponse:
     payload: dict[str, Any] = {}
     for engine in ["GEM", "KOKORO"]:
@@ -6279,6 +10062,96 @@ def tts_engines_capabilities() -> JSONResponse:
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
         }
     )
+
+
+@app.get("/tts/engines/status", response_model=TtsEngineStatusResponse)
+def tts_engines_status(engine: Optional[str] = Query(None)) -> JSONResponse:
+    if engine is not None and str(engine).strip():
+        selected_engines = [_normalize_engine_name(str(engine))]
+    else:
+        selected_engines = ["GEM", "KOKORO"]
+
+    items: dict[str, dict[str, Any]] = {}
+    for normalized_engine in selected_engines:
+        health_url = TTS_ENGINE_HEALTH_URLS[normalized_engine]
+        runtime_url = _runtime_url_for_engine(normalized_engine)
+        online, detail = _probe_runtime_health(health_url)
+        capability_payload = _probe_runtime_capabilities(normalized_engine, timeout_sec=2.2)
+        ready = bool(capability_payload.get("ready")) if isinstance(capability_payload, dict) else bool(online)
+
+        if online and ready:
+            state = "online"
+        elif online:
+            state = "starting"
+        else:
+            state = "offline"
+
+        runtime_detail = str(detail or "").strip() or ("Runtime online" if state == "online" else "Runtime offline")
+        if normalized_engine == "GEM" and isinstance(capability_payload, dict):
+            metadata = capability_payload.get("metadata")
+            if isinstance(metadata, dict):
+                probe_error = str(metadata.get("capabilityProbeError") or "").strip()
+                if state != "online" and probe_error:
+                    runtime_detail = probe_error
+
+        items[normalized_engine] = {
+            "engine": normalized_engine,
+            "state": state,
+            "detail": runtime_detail,
+            "ready": ready,
+            "healthUrl": health_url,
+            "runtimeUrl": runtime_url,
+        }
+
+    return JSONResponse(
+        {
+            "ok": all(str(item.get("state") or "") != "offline" for item in items.values()),
+            "engines": items,
+            "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.get("/tts/engines/voices", response_model=TtsEngineVoicesResponse)
+def tts_engines_voices(engine: str = Query("KOKORO")) -> JSONResponse:
+    normalized_engine = _normalize_engine_name(engine)
+    voices = _fetch_runtime_voices(normalized_engine)
+    return JSONResponse(
+        {
+            "ok": True,
+            "engine": normalized_engine,
+            "voices": voices,
+            "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.get("/tts/voice-profiles/{profile_id}/reference")
+def tts_voice_profile_reference(profile_id: str) -> FileResponse:
+    safe_profile_id = str(profile_id or "").strip()
+    if not safe_profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    profile = _profile_index().get(safe_profile_id)
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    resolved_path, _, exists = _resolve_profile_reference_path(profile)
+    if not resolved_path or not exists:
+        raise HTTPException(status_code=404, detail="Reference audio not found")
+
+    media_type, _ = mimetypes.guess_type(str(resolved_path))
+    suffix = resolved_path.suffix or ".wav"
+    return FileResponse(
+        str(resolved_path),
+        media_type=media_type or "audio/wav",
+        filename=f"{safe_profile_id}{suffix}",
+    )
+
+
+@app.get("/tts/voice-mapping/catalog")
+def tts_voice_mapping_catalog() -> JSONResponse:
+    return JSONResponse(_voice_mapping_catalog_payload())
 
 
 def _update_dubbing_job(job_id: str, **updates: Any) -> None:
@@ -6340,6 +10213,74 @@ def _fetch_runtime_voice_ids(engine: str) -> list[str]:
             if voice_id:
                 ids.append(voice_id)
         return ids
+    except Exception:
+        return []
+
+
+def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
+    normalized_engine = _normalize_engine_name(engine)
+    if normalized_engine == "GEM":
+        mapping = _load_voice_id_map()
+        engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
+        engine_payload = engines.get("GEM") if isinstance(engines.get("GEM"), dict) else {}
+        runtime_voices = engine_payload.get("runtimeVoices") if isinstance(engine_payload.get("runtimeVoices"), list) else []
+        normalized: list[dict[str, Any]] = []
+        for item in runtime_voices:
+            if not isinstance(item, dict):
+                continue
+            voice_id = str(item.get("voice_id") or item.get("id") or "").strip()
+            if not voice_id:
+                continue
+            entry = {
+                "voice_id": voice_id,
+                "voice": str(item.get("voice") or item.get("runtimeVoice") or voice_id).strip() or voice_id,
+                "name": str(item.get("name") or voice_id).strip() or voice_id,
+                "language": str(item.get("language") or "multilingual"),
+                "gender": str(item.get("gender") or "unknown"),
+                "source": str(item.get("source") or "voice-map"),
+            }
+            normalized.append(_apply_mapped_voice_fields("GEM", voice_id, entry))
+        if normalized:
+            return normalized
+
+        # Fallback for boot without mapping files.
+        fallback = {
+            "voice_id": "v1",
+            "voice": "Fenrir",
+            "name": "Voice 1",
+            "language": "multilingual",
+            "gender": "unknown",
+            "source": "gateway-fallback",
+        }
+        return [_apply_mapped_voice_fields("GEM", "v1", fallback)]
+
+    base_url = KOKORO_RUNTIME_URL
+    try:
+        response = requests.get(f"{base_url}/v1/voices", timeout=15)
+        if not response.ok:
+            return []
+        payload = response.json()
+        voices = payload.get("voices") if isinstance(payload, dict) else payload
+        if not isinstance(voices, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for idx, voice in enumerate(voices):
+            if not isinstance(voice, dict):
+                continue
+            voice_id = str(voice.get("voice_id") or voice.get("id") or "").strip()
+            if not voice_id:
+                voice_id = f"voice_{idx}"
+            name = str(voice.get("name") or voice.get("voice") or voice_id).strip() or voice_id
+            normalized.append(
+                _apply_mapped_voice_fields(normalized_engine, voice_id, {
+                    "voice_id": voice_id,
+                    "name": name,
+                    "language": str(voice.get("language") or "unknown"),
+                    "gender": str(voice.get("gender") or "unknown"),
+                    "source": str(voice.get("source") or "runtime"),
+                })
+            )
+        return normalized
     except Exception:
         return []
 
@@ -7075,19 +11016,26 @@ def _run_dubbing_job(job_id: str, job_payload: dict[str, Any]) -> None:
             _append_dubbing_log(job_id, f"Error: {exc}")
 
 
-@app.post("/video/transcribe")
+@app.post("/video/transcribe", response_model=VideoTranscriptionResponse)
 async def video_transcribe(
     file: UploadFile = File(...),
     language: str = Form("auto"),
     task: str = Form("transcribe"),
     include_emotion: bool = Form(True),
     return_words: bool = Form(True),
+    capture_emotions: Optional[bool] = Form(None),
+    speaker_label: Optional[str] = Form(None),
 ) -> JSONResponse:
     temp_dir = tempfile.mkdtemp(prefix="vf_transcribe_")
     source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source")
     try:
         with source_path.open("wb") as handle:
             handle.write(await file.read())
+
+        _ = speaker_label  # Accepted for backward compatibility.
+        effective_include_emotion = bool(include_emotion)
+        if capture_emotions is not None:
+            effective_include_emotion = bool(capture_emotions)
 
         asr_path = Path(temp_dir) / "asr.wav"
         _convert_media_to_wav(str(source_path), str(asr_path), sample_rate=16000, channels=1)
@@ -7100,7 +11048,7 @@ async def video_transcribe(
         segments = whisper_payload.get("segments", [])
         detected_language = whisper_payload.get("language")
 
-        if include_emotion and ENABLE_TRANSCRIBE_EMOTION_CAPTURE:
+        if effective_include_emotion and ENABLE_TRANSCRIBE_EMOTION_CAPTURE:
             for idx, seg in enumerate(segments[:TRANSCRIBE_EMOTION_MAX_SEGMENTS]):
                 start = float(seg.get("start") or 0.0)
                 end = float(seg.get("end") or start + 0.5)
@@ -7132,6 +11080,39 @@ async def video_transcribe(
         _cleanup_paths(temp_dir)
 
 
+@app.post("/video/separate-stem")
+async def video_separate_stem(
+    file: UploadFile = File(...),
+    stem: str = Form("speech"),
+    model_name: str = Form(SEPARATION_MODEL),
+) -> FileResponse:
+    if not ENABLE_SOURCE_SEPARATION:
+        raise HTTPException(status_code=503, detail="Source separation is disabled.")
+
+    stem_token = str(stem or "speech").strip().lower()
+    if stem_token not in {"speech", "background"}:
+        raise HTTPException(status_code=400, detail="stem must be 'speech' or 'background'.")
+
+    temp_dir = tempfile.mkdtemp(prefix="vf_separate_upload_")
+    source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source")
+    try:
+        with source_path.open("wb") as handle:
+            handle.write(await file.read())
+        speech_path, background_path, _cache_key = _ensure_source_separation(source_path, model_name)
+        selected = speech_path if stem_token == "speech" else background_path
+        return FileResponse(
+            str(selected),
+            media_type="audio/wav",
+            filename=f"{stem_token}_stem.wav",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to separate stems: {exc}") from exc
+    finally:
+        _cleanup_paths(temp_dir)
+
+
 @app.post("/video/mux-dub")
 async def video_mux_dub(
     video: UploadFile = File(...),
@@ -7140,9 +11121,12 @@ async def video_mux_dub(
     speech_gain: float = Form(1.0),
     background_gain: float = Form(0.3),
     normalize: bool = Form(True),
+    mix_with_video_audio: Optional[bool] = Form(None),
 ) -> FileResponse:
     temp_dir = tempfile.mkdtemp(prefix="vf_mux_")
     try:
+        _ = normalize
+        _ = mix_with_video_audio  # Accepted for compatibility with legacy frontend payloads.
         video_path = Path(temp_dir) / _safe_upload_name(video.filename, "video")
         dub_path = Path(temp_dir) / _safe_upload_name(dub_audio.filename, "dub.wav")
         with video_path.open("wb") as handle:
@@ -7499,6 +11483,7 @@ async def convert_rvc(
     model_name: str = Form(...),
     engine_policy: str = Form("AUTO_RELIABLE"),
     clone_required: bool = Form(False),
+    preset: str = Form("tts_realtime"),
     pitch_shift: int = Form(0),
     index_rate: float = Form(0.5),
     filter_radius: int = Form(3),
@@ -7507,6 +11492,7 @@ async def convert_rvc(
     f0_method: str = Form("rmvpe"),
 ) -> FileResponse:
     policy = _normalize_conversion_policy(engine_policy, default="AUTO_RELIABLE")
+    safe_preset = _normalize_rvc_preset(preset)
     selected_engine = "RVC"
     executed_engine = "RVC"
     fallback_used = False
@@ -7563,6 +11549,7 @@ async def convert_rvc(
                         str(normalized_wav),
                         str(output_path),
                         model_name=model_name,
+                        preset=safe_preset,
                         f0_method=f0_method,
                         pitch_shift=pitch_shift,
                         index_rate=index_rate,
@@ -7598,6 +11585,7 @@ async def convert_rvc(
         headers={
             "x-vf-engine-selected": selected_engine,
             "x-vf-engine-executed": executed_engine,
+            "x-vf-rvc-preset": safe_preset,
             "x-vf-rvc-fallback": "1" if fallback_used else "0",
             "x-vf-rvc-fallback-reason": (fallback_reason or "")
             .replace("\r", " ")

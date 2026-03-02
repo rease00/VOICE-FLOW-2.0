@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { SubscriptionModal } from '../../../components/SubscriptionModal';
-import { useUser } from '../../../contexts/UserContext';
-import { AppScreen } from '../../../types';
-import { Login } from '../../../views/Login';
-import { MainApp } from '../../../views/MainApp';
-import { Onboarding } from '../../../views/Onboarding';
-import { Profile } from '../../../views/Profile';
+import { useUser } from '../../features/auth/context/UserContext';
+import { AppScreen } from '../../entities/contracts';
+import { Login } from '../../pages/Login';
+import { MainApp } from '../../pages/MainApp';
+import { Onboarding } from '../../pages/Onboarding';
+import { Profile } from '../../pages/Profile';
 
 export const ScreenRouter: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<AppScreen>(AppScreen.ONBOARDING);

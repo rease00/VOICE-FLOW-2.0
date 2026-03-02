@@ -33,7 +33,7 @@ export const DubbingTranslateBar: React.FC<DubbingTranslateBarProps> = ({
             <select
               value={targetLang}
               onChange={(e) => onTargetLang(e.target.value)}
-              className="h-8 min-w-[8.75rem] px-2 text-[11px] font-semibold bg-transparent outline-none text-gray-700 hover:text-gray-900 cursor-pointer"
+              className="vf-theme-select h-8 min-w-[8.75rem] px-2 text-[11px] font-semibold bg-transparent outline-none text-gray-700 hover:text-gray-900 cursor-pointer"
             >
               {languages.map((lang) => (
                 <option key={lang.code} value={lang.name}>{lang.name}</option>

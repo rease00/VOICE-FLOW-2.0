@@ -6,6 +6,10 @@ import react from '@vitejs/plugin-react';
 const localBootstrapPlugin = () => ({
   name: 'local-bootstrap-services',
   configureServer(server: any) {
+    const enabled = String(process.env.VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT || '').trim().toLowerCase();
+    if (!(enabled === '1' || enabled === 'true' || enabled === 'yes' || enabled === 'on')) {
+      return;
+    }
     server.middlewares.use('/__local/bootstrap-services', (req: any, res: any, next: any) => {
       if (req.method !== 'POST') {
         next();
@@ -16,10 +20,10 @@ const localBootstrapPlugin = () => ({
       try {
         const child = spawn(npmCmd, ['run', 'services:bootstrap'], {
           cwd: process.cwd(),
-          detached: true,
-          stdio: 'ignore',
+          detached: false,
+          stdio: 'inherit',
+          windowsHide: false,
         });
-        child.unref();
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ ok: true, started: true, message: 'Service bootstrap started.' }));
@@ -58,7 +62,7 @@ export default defineConfig(() => {
       plugins: [react(), localBootstrapPlugin()],
       resolve: {
         alias: {
-          '@': path.resolve(__dirname, '.'),
+          '@': path.resolve(__dirname, 'src'),
         }
       }
     };

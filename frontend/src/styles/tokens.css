@@ -1,0 +1,41 @@
+:root {
+  --vf-color-bg: #fdf9f2;
+  --vf-color-bg-deep: #f5efe3;
+  --vf-color-surface: #fffdf9;
+  --vf-color-surface-2: #f8f3ea;
+  --vf-color-border: #dccfb8;
+  --vf-color-text: #1d2733;
+  --vf-color-text-muted: #5b6877;
+  --vf-color-accent: #0f766e;
+  --vf-color-accent-soft: #e0f2f1;
+  --vf-color-highlight: #c2410c;
+  --vf-space-1: 0.25rem;
+  --vf-space-2: 0.5rem;
+  --vf-space-3: 0.75rem;
+  --vf-space-4: 1rem;
+  --vf-space-5: 1.25rem;
+  --vf-space-6: 1.5rem;
+  --vf-space-8: 2rem;
+  --vf-radius-sm: 0.5rem;
+  --vf-radius-md: 0.75rem;
+  --vf-radius-lg: 1rem;
+  --vf-radius-xl: 1.5rem;
+  --vf-shadow-soft: 0 6px 20px rgba(15, 35, 55, 0.08);
+  --vf-shadow-card: 0 12px 30px rgba(15, 35, 55, 0.14);
+  --vf-motion-fast: 140ms;
+  --vf-motion-base: 220ms;
+  --vf-motion-slow: 360ms;
+}
+
+body.theme-dark {
+  --vf-color-bg: #101820;
+  --vf-color-bg-deep: #0a1117;
+  --vf-color-surface: #17232d;
+  --vf-color-surface-2: #1d2c37;
+  --vf-color-border: #2b3c49;
+  --vf-color-text: #f5f7fa;
+  --vf-color-text-muted: #b7c2ce;
+  --vf-color-accent: #14b8a6;
+  --vf-color-accent-soft: rgba(20, 184, 166, 0.18);
+  --vf-color-highlight: #fb923c;
+}

@@ -187,8 +187,14 @@ const switchRuntimeEngine = async (engine) => {
     throw new Error(`runtime switch failed (${response.status}): ${detail}`);
   }
 
-  const baseUrl = String(payload?.runtimeUrl || '').trim().replace(/\/+$/, '');
-  if (!baseUrl) throw new Error('runtime switch response missing runtimeUrl.');
+  let baseUrl = String(payload?.runtimeUrl || '').trim().replace(/\/+$/, '');
+  if (!baseUrl) {
+    const healthUrl = String(payload?.healthUrl || '').trim();
+    if (healthUrl) {
+      baseUrl = healthUrl.replace(/\/health\/?$/i, '').replace(/\/+$/, '');
+    }
+  }
+  if (!baseUrl) throw new Error('runtime switch response missing runtimeUrl/healthUrl.');
 
   const deadline = Date.now() + SWITCH_TIMEOUT_MS;
   while (Date.now() < deadline) {

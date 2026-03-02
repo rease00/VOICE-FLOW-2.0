@@ -1,3 +1,6 @@
+import { authFetch } from '../../../services/authHttpClient';
+import { resolveApiUrl } from './config';
+
 export class HttpError extends Error {
   status: number;
   statusText: string;
@@ -28,4 +31,39 @@ export const readJsonOrThrow = async <T>(response: Response): Promise<T> => {
     throw await parseResponseError(response);
   }
   return response.json() as Promise<T>;
+};
+
+export interface ApiRequestOptions {
+  baseUrl?: string;
+  requireAuth?: boolean;
+}
+
+const request = async (
+  pathOrUrl: string,
+  init: RequestInit | undefined,
+  options: ApiRequestOptions | undefined
+): Promise<Response> => {
+  const url = resolveApiUrl(pathOrUrl, options?.baseUrl);
+  return authFetch(url, init, { requireAuth: Boolean(options?.requireAuth) });
+};
+
+export const requestJson = async <T>(
+  pathOrUrl: string,
+  init?: RequestInit,
+  options?: ApiRequestOptions
+): Promise<T> => {
+  const response = await request(pathOrUrl, init, options);
+  return readJsonOrThrow<T>(response);
+};
+
+export const requestBlob = async (
+  pathOrUrl: string,
+  init?: RequestInit,
+  options?: ApiRequestOptions
+): Promise<Blob> => {
+  const response = await request(pathOrUrl, init, options);
+  if (!response.ok) {
+    throw await parseResponseError(response);
+  }
+  return response.blob();
 };

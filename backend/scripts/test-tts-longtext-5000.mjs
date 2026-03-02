@@ -112,6 +112,52 @@ const parseErrorDetail = async (response) => {
   }
 };
 
+const sanitizeErrorDetail = (detail) => {
+  if (!detail || typeof detail !== 'object') return detail;
+  const clone = JSON.parse(JSON.stringify(detail));
+  if (clone && typeof clone === 'object') {
+    delete clone.keyAttempts;
+    delete clone.modelAttempts;
+    delete clone.keyStates;
+    if (typeof clone.summary === 'string' && clone.summary.length > 240) {
+      clone.summary = `${clone.summary.slice(0, 240)}...`;
+    }
+    if (typeof clone.error === 'string' && clone.error.length > 240) {
+      clone.error = `${clone.error.slice(0, 240)}...`;
+    }
+  }
+  return clone;
+};
+
+const classifyTransportError = (error) => {
+  const name = String(error?.name || '');
+  const message = String(error?.message || '');
+  if (name.toLowerCase() === 'aborterror' || message.toLowerCase().includes('aborted')) {
+    return {
+      code: 'REQUEST_TIMEOUT',
+      message: `request timed out after ${REQUEST_TIMEOUT_MS}ms`,
+    };
+  }
+  return {
+    code: 'NETWORK_ERROR',
+    message: message || 'network request failed',
+  };
+};
+
+const summarizeErrorForLog = (error) => {
+  if (!error) return '-';
+  if (typeof error === 'string') {
+    return error.length > 200 ? `${error.slice(0, 200)}...` : error;
+  }
+  if (typeof error !== 'object') return String(error);
+  const code = error.errorCode || error.code || null;
+  const classification = error.classification || null;
+  const retryAfterMs = Number(error.retryAfterMs || 0) || undefined;
+  const status = Number(error.status || 0) || undefined;
+  const message = String(error.error || error.message || error.summary || '').slice(0, 200) || undefined;
+  return JSON.stringify({ code, classification, status, retryAfterMs, message });
+};
+
 const postJsonWithTimeout = async (url, payload, timeoutMs = REQUEST_TIMEOUT_MS) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -156,10 +202,22 @@ const synthesize = async ({ engine, language, words, traceId }) => {
       };
 
   const started = Date.now();
-  const response = await postJsonWithTimeout(runtime.url, payload);
+  let response;
+  try {
+    response = await postJsonWithTimeout(runtime.url, payload);
+  } catch (error) {
+    const elapsedMs = Date.now() - started;
+    return {
+      ok: false,
+      status: 0,
+      error: classifyTransportError(error),
+      elapsedMs,
+      wordCount: normalizedWords,
+    };
+  }
   const elapsedMs = Date.now() - started;
   if (!response.ok) {
-    const detail = await parseErrorDetail(response);
+    const detail = sanitizeErrorDetail(await parseErrorDetail(response));
     return {
       ok: false,
       status: response.status,
@@ -274,7 +332,7 @@ const main = async () => {
     for (const entry of failed.slice(0, 12)) {
       console.log(
         `[FAIL] ${entry.kind} ${entry.engine} ${entry.language || ''} words=${entry.words || entry.wordCount || '-'} ` +
-        `status=${entry.status} error=${typeof entry.error === 'string' ? entry.error : JSON.stringify(entry.error)}`
+        `status=${entry.status} error=${summarizeErrorForLog(entry.error)}`
       );
     }
     process.exitCode = 1;

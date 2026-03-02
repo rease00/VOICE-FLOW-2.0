@@ -3,7 +3,7 @@ import { GenerationSettings, UserStats, UserWalletStats, VfEngineUsage, VfUsageS
 export const VF_UNIT = 'VF' as const;
 export const VF_ENGINE_RATES: Record<GenerationSettings['engine'], number> = {
   KOKORO: 1,
-  GEM: 5,
+  GEM: 1,
 };
 
 const createEngineUsage = (): VfEngineUsage => ({ chars: 0, vf: 0 });

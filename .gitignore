@@ -36,7 +36,17 @@ artifacts/**
 backend/artifacts/**
 !backend/artifacts/.gitkeep
 
+# Local secrets and credentials (never commit)
+API.txt
+FIREBASE.txt
+*firebase-adminsdk*.json
+*serviceAccount*.json
+*.pem
+*.p12
+*.pfx
+*.jks
+
 # Local NLLB model assets (too large for standard repo push)
-video_dubbing/models/nllb_ct2/model.bin
-video_dubbing/models/nllb_ct2/sentencepiece.bpe.model
-video_dubbing/models/nllb_ct2/tokenizer.json
+backend/video_dubbing/models/nllb_ct2/model.bin
+backend/video_dubbing/models/nllb_ct2/sentencepiece.bpe.model
+backend/video_dubbing/models/nllb_ct2/tokenizer.json

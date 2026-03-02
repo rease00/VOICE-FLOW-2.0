@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { reportFrontendError } from '../../shared/telemetry/frontendErrors';
 
 interface AppErrorBoundaryState {
   message: string;
@@ -12,12 +13,25 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
       const message = event.error?.message || event.message || 'Unknown render error';
       console.error('[ui.error_boundary]', event.error || message);
       setUiError({ message });
+      void reportFrontendError({
+        message,
+        severity: 'error',
+        stack: typeof event.error?.stack === 'string' ? event.error.stack : undefined,
+        component: 'AppErrorBoundary',
+      });
     };
     const onUnhandledRejection = (event: PromiseRejectionEvent): void => {
       const reason = event.reason;
       const message = reason?.message || String(reason || 'Unhandled rejection');
       console.error('[ui.error_boundary.unhandled_rejection]', reason);
       setUiError({ message });
+      void reportFrontendError({
+        message,
+        severity: 'fatal',
+        stack: typeof reason?.stack === 'string' ? reason.stack : undefined,
+        component: 'AppErrorBoundary',
+        metadata: { kind: 'unhandledrejection' },
+      });
     };
     window.addEventListener('error', onWindowError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);

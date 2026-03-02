@@ -109,7 +109,7 @@ export const runCommand = (command, args, options = {}) =>
       cwd,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
+      windowsHide: false,
     });
 
     const stdoutChunks = [];

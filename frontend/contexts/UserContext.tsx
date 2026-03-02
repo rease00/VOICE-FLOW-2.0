@@ -701,6 +701,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       else if (detectedGender === 'Female') voicePool = VOICES.filter((voice) => voice.gender === 'Female');
       if (voicePool.length === 0) voicePool = VOICES;
       const selectedVoice = voicePool[(characterLibrary.length + idx) % voicePool.length];
+      if (!selectedVoice) return;
       updateCharacter({
         id: crypto.randomUUID(),
         name,
@@ -773,6 +774,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     signInWithFacebook,
     startPhoneSignIn,
     confirmPhoneSignIn,
+    loginAsGuest: () => undefined,
     isAuthenticated,
     isAdmin,
     hasUnlimitedAccess,

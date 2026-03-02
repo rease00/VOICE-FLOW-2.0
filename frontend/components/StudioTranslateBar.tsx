@@ -44,7 +44,7 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
           <select
             value={targetLang}
             onChange={(e) => onTargetLang(e.target.value)}
-            className="px-2 py-1 text-[10px] font-bold bg-transparent outline-none text-gray-500 hover:text-gray-800 cursor-pointer max-w-[96px]"
+            className="vf-theme-select px-2 py-1 text-[10px] font-bold bg-transparent outline-none text-gray-500 hover:text-gray-800 cursor-pointer max-w-[96px]"
           >
             {languages.map((lang) => (
               <option key={lang.code} value={lang.name}>{lang.name}</option>

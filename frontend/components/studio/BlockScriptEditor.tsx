@@ -141,6 +141,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
     const safeTarget = clampIndex(targetIndex, blocks.length);
     const next = [...blocks];
     const [moved] = next.splice(safeSource, 1);
+    if (!moved) return;
     next.splice(safeTarget, 0, moved);
     commitBlocks(next);
   };
@@ -352,4 +353,3 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
     </div>
   );
 };
-
