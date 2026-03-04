@@ -73,13 +73,16 @@ from shared.gemini_allocator import (
     parse_api_keys as parse_api_keys_shared,
 )
 from shared.gemini_api_pools import (
-    POOL_NAMES,
     duplicate_key_memberships,
     flatten_pool_keys,
+    list_pool_names as list_gemini_pool_names,
     load_pool_config as load_pool_config_shared,
     normalize_pool_config as normalize_gemini_pool_config,
-    plan_key_to_pool_hint,
+    SOURCE_POLICY_PROVIDER_GEMINI_API,
+    SOURCE_POLICY_PROVIDER_VERTEX,
+    resolve_default_pool_hint as resolve_default_gemini_pool_hint,
     resolve_effective_keys as resolve_effective_pool_keys,
+    resolve_plan_pool_hint as resolve_gemini_plan_pool_hint,
     save_pool_config as save_pool_config_shared,
     sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
 )
@@ -90,6 +93,10 @@ from services.queue.redis_queue import TtsJobQueue, normalize_lane
 
 load_backend_env_files(Path(__file__).resolve())
 ARTIFACTS_DIR = APP_ROOT / "artifacts"
+OUTPUT_ROOT_DIR = Path(
+    (os.getenv("VF_OUTPUT_DIR") or str(WORKSPACE_ROOT / "output")).strip()
+    or str(WORKSPACE_ROOT / "output")
+).resolve()
 RUNTIME_LOG_DIR = PROJECT_ROOT / ".runtime" / "logs"
 MODELS_DIR = Path(os.getenv("VF_LLVC_MODELS_DIR", str(APP_ROOT / "models" / "llvc"))).resolve()
 BOOTSTRAP_SCRIPT = PROJECT_ROOT / "scripts" / "bootstrap-services.mjs"
@@ -109,7 +116,9 @@ SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() 
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
 SEPARATION_SAMPLE_RATE = max(16000, int((os.getenv("VF_SOURCE_SEPARATION_SAMPLE_RATE") or "44100").strip() or "44100"))
 SEPARATION_CACHE_DIR = ARTIFACTS_DIR / "source-separation-cache"
-TTS_LIVE_ARTIFACTS_DIR = ARTIFACTS_DIR / "tts-live"
+TTS_LIVE_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "tts-live"
+TTS_RESULT_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "tts-results"
+DUBBING_OUTPUT_DIR = OUTPUT_ROOT_DIR / "dubbing"
 ENABLE_SOURCE_SEPARATION = (
     (os.getenv("VF_ENABLE_SOURCE_SEPARATION") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -208,6 +217,18 @@ VF_AUTH_ENFORCE = (
 )
 VF_DEV_BYPASS_UID = (os.getenv("VF_DEV_BYPASS_UID") or "dev_local_user").strip() or "dev_local_user"
 FIREBASE_SERVICE_ACCOUNT_JSON = (os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip()
+VF_FIRESTORE_ENABLE = (
+    (os.getenv("VF_FIRESTORE_ENABLE") or ("0" if "pytest" in sys.modules else "1")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_USER_PROFILE_FALLBACK_FILE = Path(
+    (os.getenv("VF_USER_PROFILE_FALLBACK_FILE") or str(ARTIFACTS_DIR / "user_profile_fallback.json")).strip()
+    or str(ARTIFACTS_DIR / "user_profile_fallback.json")
+).resolve()
+VF_USER_PROFILE_FALLBACK_PERSIST = (
+    (os.getenv("VF_USER_PROFILE_FALLBACK_PERSIST") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
 STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 STRIPE_PRICE_PRO_INR = (os.getenv("STRIPE_PRICE_PRO_INR") or "").strip()
@@ -221,7 +242,8 @@ STRIPE_CHECKOUT_CANCEL_URL = (
 )
 VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
 ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
-    "KOKORO": {"label": "BASIC", "rate": 1.0},
+    "KOKORO": {"label": "BASIC", "rate": 0.7},
+    "GOOD": {"label": "GOOD", "rate": 1.0},
     "NEURAL2": {"label": "HD", "rate": 1.2},
     "GEM": {"label": "PRIME", "rate": 1.5},
 }
@@ -230,7 +252,24 @@ VF_ENGINE_RATES = {
     for engine, meta in ENGINE_TIER_REGISTRY.items()
 }
 TTS_ENGINE_KEYS: tuple[str, ...] = tuple(VF_ENGINE_RATES.keys())
-GEM_RUNTIME_ENGINE_KEYS = frozenset({"GEM", "NEURAL2"})
+GEM_RUNTIME_ENGINE_KEYS = frozenset({"GEM", "GOOD", "NEURAL2"})
+FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
+    "GEM": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
+    "GOOD": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
+    "NEURAL2": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
+    "KOKORO": (
+        "af_heart",
+        "af_bella",
+        "af_nova",
+        "af_sarah",
+        "bf_emma",
+        "bf_isabella",
+        "am_fenrir",
+        "am_michael",
+        "am_onyx",
+        "bm_george",
+    ),
+}
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 10000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
     "pro": {"plan": "Pro", "monthlyVfLimit": 200000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
@@ -295,6 +334,11 @@ GEMINI_API_POOLS_PREFER_FIRESTORE = (
     (os.getenv("VF_GEMINI_API_POOLS_PREFER_FIRESTORE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+GEMINI_VERTEX_SECRET_DIR = (PROJECT_ROOT / ".runtime" / "secrets" / "gemini").resolve()
+GEMINI_VERTEX_SERVICE_ACCOUNT_FILE = str(
+    os.getenv("VF_GEMINI_VERTEX_SERVICE_ACCOUNT_FILE")
+    or (GEMINI_VERTEX_SECRET_DIR / "vertex-service-account.json")
+).strip()
 GEMINI_ALLOCATOR_CONFIG = load_allocator_config()
 BACKEND_GEMINI_ALLOCATOR_WAIT_TIMEOUT_MS = max(
     5000,
@@ -408,13 +452,17 @@ DEFAULT_CORS_ORIGINS = [
 ]
 
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 SEPARATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+TTS_RESULT_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+DUBBING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 TTS_ENGINE_HEALTH_URLS = {
     "GEM": "http://127.0.0.1:7810/health",
+    "GOOD": "http://127.0.0.1:7810/health",
     "NEURAL2": "http://127.0.0.1:7810/health",
     "KOKORO": "http://127.0.0.1:7820/health",
 }
@@ -424,6 +472,7 @@ TTS_ENGINE_CAPABILITIES_URLS = {
 }
 DUBBING_PREPARE_ENGINE_WAIT_MS = {
     "GEM": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
+    "GOOD": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
     "NEURAL2": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
     "KOKORO": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_KOKORO_MS") or "90000").strip() or "90000")),
 }
@@ -434,6 +483,9 @@ DUBBING_PREPARE_POLL_INTERVAL_MS = max(
 TTS_ENGINE_ALIASES = {
     "GEM": "GEM",
     "GEMINI": "GEM",
+    "GOOD": "GOOD",
+    "GOOD_RUNTIME": "GOOD",
+    "GEMINI_2_5_LITE_TTS": "GOOD",
     "NEURAL2": "NEURAL2",
     "NEURAL_2": "NEURAL2",
     "NURAL2": "NEURAL2",
@@ -545,6 +597,14 @@ VF_TTS_QUEUE_JOB_TTL_MS = max(
     5_000,
     int((os.getenv("VF_TTS_QUEUE_JOB_TTL_MS") or "300000").strip() or "300000"),
 )
+VF_TTS_QUEUE_RESULT_TTL_MS = max(
+    5_000,
+    int((os.getenv("VF_TTS_QUEUE_RESULT_TTL_MS") or "900000").strip() or "900000"),
+)
+VF_TTS_JOB_INLINE_RESULT_MAX_BYTES = max(
+    64_000,
+    int((os.getenv("VF_TTS_JOB_INLINE_RESULT_MAX_BYTES") or "1048576").strip() or "1048576"),
+)
 VF_TTS_QUEUE_MAX_ATTEMPTS = max(
     1,
     int((os.getenv("VF_TTS_QUEUE_MAX_ATTEMPTS") or "4").strip() or "4"),
@@ -570,6 +630,10 @@ VF_TTS_QUEUE_METRICS_WINDOW = max(
     int((os.getenv("VF_TTS_QUEUE_METRICS_WINDOW") or "800").strip() or "800"),
 )
 VF_TTS_QUEUE_KEY_PREFIX = str(os.getenv("VF_TTS_QUEUE_KEY_PREFIX") or "vf:tts:jobs").strip() or "vf:tts:jobs"
+VF_TTS_RUNTIME_TIMEOUT_SEC = max(
+    10,
+    int((os.getenv("VF_TTS_RUNTIME_TIMEOUT_SEC") or "240").strip() or "240"),
+)
 VF_TTS_LANE_WEIGHTS = {
     "pro_plus": 10,
     "pro": 5,
@@ -979,6 +1043,63 @@ def _parse_cors_origins(env_var: str, default: list[str]) -> list[str]:
     return values or default
 
 
+CORS_ALLOWED_METHODS = "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT"
+
+
+def _resolved_cors_origins() -> list[str]:
+    return _parse_cors_origins("VF_CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
+
+
+def _is_cors_origin_allowed(origin: str) -> bool:
+    safe_origin = str(origin or "").strip()
+    if not safe_origin:
+        return False
+    allowed_origins = _resolved_cors_origins()
+    if "*" in allowed_origins:
+        return True
+    return safe_origin in allowed_origins
+
+
+def _is_cors_preflight_request(request: Request) -> bool:
+    if str(request.method or "").strip().upper() != "OPTIONS":
+        return False
+    origin = str(request.headers.get("Origin") or "").strip()
+    requested_method = str(request.headers.get("Access-Control-Request-Method") or "").strip()
+    return bool(origin and requested_method)
+
+
+def _cors_headers_for_request(request: Request, include_preflight: bool = False) -> dict[str, str]:
+    origin = str(request.headers.get("Origin") or "").strip()
+    if not _is_cors_origin_allowed(origin):
+        return {}
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Vary": "Origin",
+    }
+    if include_preflight:
+        requested_headers = str(request.headers.get("Access-Control-Request-Headers") or "").strip()
+        headers["Access-Control-Allow-Methods"] = CORS_ALLOWED_METHODS
+        headers["Access-Control-Allow-Headers"] = requested_headers or "*"
+        headers["Access-Control-Max-Age"] = "600"
+    return headers
+
+
+def _apply_cors_headers(response: Response, request: Request, include_preflight: bool = False) -> Response:
+    for key, value in _cors_headers_for_request(request, include_preflight).items():
+        response.headers[key] = value
+    return response
+
+
+def _cors_json_response(request: Request, *, status_code: int, content: dict[str, Any]) -> JSONResponse:
+    response = JSONResponse(status_code=status_code, content=content)
+    return _apply_cors_headers(response, request)
+
+
+def _cors_preflight_response(request: Request) -> Response:
+    response = Response(status_code=200)
+    return _apply_cors_headers(response, request, include_preflight=True)
+
+
 def _safe_upload_name(filename: Optional[str], fallback: str) -> str:
     if not filename:
         return fallback
@@ -990,6 +1111,36 @@ def _safe_upload_name(filename: Optional[str], fallback: str) -> str:
     if not safe:
         return fallback
     return safe[:128]
+
+
+async def _write_upload_file_chunked(
+    upload: UploadFile,
+    destination: Path,
+    *,
+    max_bytes: Optional[int] = None,
+    chunk_size: int = 1_048_576,
+) -> int:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    total_bytes = 0
+    safe_limit = int(max_bytes) if max_bytes is not None else None
+    safe_chunk_size = max(64 * 1024, int(chunk_size))
+    with destination.open("wb") as handle:
+        while True:
+            chunk = await upload.read(safe_chunk_size)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if safe_limit is not None and total_bytes > safe_limit:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Uploaded file is too large. Maximum {safe_limit} bytes.",
+                )
+            handle.write(chunk)
+    try:
+        await upload.close()
+    except Exception:
+        pass
+    return total_bytes
 
 
 _VOICE_PROFILE_BANK_CACHE: dict[str, Any] = {"mtime": 0.0, "payload": {}}
@@ -1076,6 +1227,82 @@ def _load_voice_id_map() -> dict[str, Any]:
             "runtimeVoices": [item for item in runtime_voices if isinstance(item, dict)],
         }
     return {"version": payload.get("version") or "0", "engines": normalized_engines}
+
+
+def _resolve_gem_runtime_voice_name(value: str, fallback: str = "Fenrir") -> str:
+    token = str(value or "").strip()
+    if not token:
+        return str(fallback or "Fenrir").strip() or "Fenrir"
+    mapping = _load_voice_id_map()
+    engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
+    gem_payload = engines.get("GEM") if isinstance(engines.get("GEM"), dict) else {}
+    runtime_voices = gem_payload.get("runtimeVoices") if isinstance(gem_payload.get("runtimeVoices"), list) else []
+    normalized_target = token.lower()
+    for item in runtime_voices:
+        if not isinstance(item, dict):
+            continue
+        voice_id = str(item.get("voice_id") or item.get("id") or "").strip()
+        voice_name = str(item.get("voice") or item.get("runtimeVoice") or "").strip()
+        display_name = str(item.get("name") or "").strip()
+        if normalized_target in {voice_id.lower(), voice_name.lower(), display_name.lower()}:
+            return voice_name or token
+    return token
+
+
+def _plan_allowed_voice_tokens(engine: str, plan_key: str) -> tuple[set[str], str]:
+    normalized_plan = str(plan_key or "").strip().lower()
+    if normalized_plan != "free":
+        return set(), ""
+    normalized_engine = _normalize_engine_name(engine)
+    allowlist = list(FREE_TIER_ALLOWED_VOICE_IDS.get(normalized_engine) or [])
+    if not allowlist:
+        return set(), ""
+    default_token = str(allowlist[0] or "").strip()
+    tokens: set[str] = set()
+    for token in allowlist:
+        raw_token = str(token or "").strip()
+        if not raw_token:
+            continue
+        tokens.add(raw_token.lower())
+        if _is_gem_runtime_engine(normalized_engine):
+            resolved = _resolve_gem_runtime_voice_name(raw_token, fallback=raw_token)
+            if resolved:
+                tokens.add(str(resolved).strip().lower())
+    return tokens, default_token
+
+
+def _sanitize_tts_voice_selection_for_plan(
+    *,
+    engine: str,
+    plan_key: str,
+    voice_id: str,
+    voice_name: str,
+) -> tuple[str, str, bool]:
+    normalized_engine = _normalize_engine_name(engine)
+    raw_voice_id = str(voice_id or "").strip()
+    raw_voice_name = str(voice_name or "").strip()
+    requested_token = raw_voice_name or raw_voice_id
+    allow_tokens, fallback_token = _plan_allowed_voice_tokens(normalized_engine, plan_key)
+    gated = False
+
+    if allow_tokens and requested_token:
+        if requested_token.lower() not in allow_tokens:
+            gated = True
+            requested_token = fallback_token
+    elif allow_tokens and not requested_token:
+        gated = True
+        requested_token = fallback_token
+
+    if _is_gem_runtime_engine(normalized_engine):
+        resolved = _resolve_gem_runtime_voice_name(requested_token, fallback="Fenrir")
+        return resolved, resolved, gated
+
+    if normalized_engine == "KOKORO":
+        resolved = requested_token or fallback_token or "hf_alpha"
+        return resolved, raw_voice_name or resolved, gated
+
+    resolved = requested_token or raw_voice_id or raw_voice_name
+    return resolved, raw_voice_name or resolved, gated
 
 
 def _profile_index() -> dict[str, dict[str, Any]]:
@@ -1193,6 +1420,19 @@ def _resolve_mapped_model_name(engine: str, voice_id: str, *, voice_name: str = 
     return resolved_model_name, profile_id
 
 
+def _post_tts_llvc_pitch_shift_for_profile(profile: Optional[dict[str, Any]]) -> int:
+    if not isinstance(profile, dict):
+        return 0
+    age_group = str(profile.get("ageGroup") or "").strip().lower()
+    gender = str(profile.get("gender") or "").strip().lower()
+
+    if "child" in age_group or "boy" in age_group or "girl" in age_group:
+        return 4 if gender == "female" else 3
+    if "elder" in age_group or "old" in age_group or "senior" in age_group:
+        return -2 if gender == "female" else -3
+    return 0
+
+
 def _llvc_runtime_model_snapshot(*, force_refresh: bool = False) -> tuple[set[str], bool]:
     now_ms = int(time.time() * 1000)
     with _LLVC_MODEL_CACHE_LOCK:
@@ -1238,6 +1478,10 @@ def _resolve_llvc_model_name_for_runtime(mapped_model_name: str) -> str:
     available_models, fallback_available = _llvc_runtime_model_snapshot()
     if desired and desired in available_models:
         return desired
+    if desired:
+        # Do not silently remap profile-specific post-TTS conversion to another profile model.
+        # If the exact mapped model is missing, caller should bypass LLVC rather than change timbre.
+        return ""
     if available_models:
         preferred = str(VF_LLVC_PRESET_DEFAULT or "").strip()
         if preferred and preferred in available_models:
@@ -2141,6 +2385,7 @@ app.add_middleware(
 _FIREBASE_APP = None
 _FIRESTORE_DB = None
 _FIREBASE_INIT_ERROR: Optional[str] = None
+_FIRESTORE_INIT_ERROR: Optional[str] = None
 _INMEMORY_ENTITLEMENTS: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_MONTHLY: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_DAILY: dict[str, dict[str, Any]] = {}
@@ -2190,6 +2435,8 @@ _TTS_JOB_QUEUE = TtsJobQueue(
     redis_url=VF_REDIS_URL,
     key_prefix=VF_TTS_QUEUE_KEY_PREFIX,
     lane_weights=VF_TTS_LANE_WEIGHTS,
+    result_ttl_ms=VF_TTS_QUEUE_RESULT_TTL_MS,
+    inline_result_max_bytes=VF_TTS_JOB_INLINE_RESULT_MAX_BYTES,
 )
 _TTS_JOB_WORKER_LOCK = threading.Lock()
 _TTS_JOB_WORKER_THREADS: list[threading.Thread] = []
@@ -2233,6 +2480,43 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
         "KOKORO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
 }
+_RUNTIME_HTTP_LOCAL = threading.local()
+_REQUESTS_GET_BASE = requests.get
+_REQUESTS_POST_BASE = requests.post
+_REQUESTS_PUT_BASE = requests.put
+_REQUESTS_PATCH_BASE = requests.patch
+_REQUESTS_DELETE_BASE = requests.delete
+
+
+def _runtime_http_session() -> requests.Session:
+    session = getattr(_RUNTIME_HTTP_LOCAL, "session", None)
+    if isinstance(session, requests.Session):
+        return session
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=0)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    _RUNTIME_HTTP_LOCAL.session = session
+    return session
+
+
+def _runtime_http_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    method_upper = str(method or "GET").strip().upper() or "GET"
+    direct_overrides = {
+        "GET": (_REQUESTS_GET_BASE, requests.get),
+        "POST": (_REQUESTS_POST_BASE, requests.post),
+        "PUT": (_REQUESTS_PUT_BASE, requests.put),
+        "PATCH": (_REQUESTS_PATCH_BASE, requests.patch),
+        "DELETE": (_REQUESTS_DELETE_BASE, requests.delete),
+    }
+    current_pair = direct_overrides.get(method_upper)
+    if current_pair is not None:
+        original_fn, current_fn = current_pair
+        if current_fn is not original_fn:
+            return current_fn(url, **kwargs)
+    session = _runtime_http_session()
+    return session.request(method=method_upper, url=url, **kwargs)
+
 _GEMINI_POOLS_LOCK = threading.Lock()
 _GEMINI_POOLS_CACHE: Optional[dict[str, Any]] = None
 _GEMINI_POOLS_META: dict[str, Any] = {}
@@ -2247,7 +2531,7 @@ _SCHEDULER_STOP_EVENT = threading.Event()
 
 
 def _init_firebase_clients() -> None:
-    global _FIREBASE_APP, _FIRESTORE_DB, _FIREBASE_INIT_ERROR
+    global _FIREBASE_APP, _FIRESTORE_DB, _FIREBASE_INIT_ERROR, _FIRESTORE_INIT_ERROR
     if firebase_admin is None or firebase_auth is None:
         _FIREBASE_INIT_ERROR = "firebase-admin dependency is unavailable."
         return
@@ -2260,8 +2544,17 @@ def _init_firebase_clients() -> None:
             _FIREBASE_APP = firebase_admin.initialize_app(cred)
         else:
             _FIREBASE_APP = firebase_admin.initialize_app()
-        if firebase_firestore is not None:
-            _FIRESTORE_DB = firebase_firestore.client()
+        _FIRESTORE_DB = None
+        _FIRESTORE_INIT_ERROR = None
+        if VF_FIRESTORE_ENABLE and firebase_firestore is not None:
+            candidate = firebase_firestore.client()
+            try:
+                # Probe Firestore once at startup; disabled APIs must gracefully fall back to in-memory mode.
+                next(candidate.collections(), None)
+                _FIRESTORE_DB = candidate
+            except Exception as firestore_exc:  # noqa: BLE001
+                _FIRESTORE_DB = None
+                _FIRESTORE_INIT_ERROR = str(firestore_exc)
         _FIREBASE_INIT_ERROR = None
     except Exception as exc:  # noqa: BLE001
         _FIREBASE_APP = None
@@ -2310,6 +2603,103 @@ def _wallet_month_key(now: Optional[datetime] = None) -> str:
 
 def _safe_now_iso(now: Optional[datetime] = None) -> str:
     return (now or _utc_now()).isoformat()
+
+
+def _persist_inmemory_user_profile_store_locked() -> None:
+    if not VF_USER_PROFILE_FALLBACK_PERSIST:
+        return
+    try:
+        target = VF_USER_PROFILE_FALLBACK_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "updatedAt": _safe_now_iso(),
+            "profiles": dict(_INMEMORY_USER_PROFILES),
+            "userIdIndex": dict(_INMEMORY_USER_ID_INDEX),
+        }
+        tmp_path = target.with_suffix(f"{target.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+        os.replace(str(tmp_path), str(target))
+    except Exception as exc:
+        print(
+            f"[user-profile-store] persist_failed path={VF_USER_PROFILE_FALLBACK_FILE} "
+            f"reason_class={type(exc).__name__} reason={str(exc)[:180]}",
+            flush=True,
+        )
+
+
+def _load_inmemory_user_profile_store() -> None:
+    if not VF_USER_PROFILE_FALLBACK_PERSIST:
+        return
+    target = VF_USER_PROFILE_FALLBACK_FILE
+    if not target.exists():
+        return
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(
+            f"[user-profile-store] load_failed path={target} reason_class={type(exc).__name__} "
+            f"reason={str(exc)[:180]}",
+            flush=True,
+        )
+        return
+    profiles_raw = payload.get("profiles") if isinstance(payload, dict) else {}
+    index_raw = payload.get("userIdIndex") if isinstance(payload, dict) else {}
+    if not isinstance(profiles_raw, dict):
+        profiles_raw = {}
+    if not isinstance(index_raw, dict):
+        index_raw = {}
+
+    hydrated_profiles: dict[str, dict[str, Any]] = {}
+    hydrated_index: dict[str, dict[str, Any]] = {}
+
+    for uid_key, row in profiles_raw.items():
+        safe_uid = str(uid_key or "").strip()
+        if not safe_uid or not isinstance(row, dict):
+            continue
+        row_uid = str(row.get("uid") or safe_uid).strip()
+        user_id = str(row.get("userId") or "").strip().lower()
+        if not row_uid or not user_id:
+            continue
+        normalized_row = dict(row)
+        normalized_row["uid"] = row_uid
+        normalized_row["userId"] = user_id
+        hydrated_profiles[row_uid] = normalized_row
+
+    for user_id_key, row in index_raw.items():
+        safe_user_id = str(user_id_key or "").strip().lower()
+        if not safe_user_id or not isinstance(row, dict):
+            continue
+        owner_uid = str(row.get("uid") or "").strip()
+        if not owner_uid:
+            continue
+        hydrated_index[safe_user_id] = {
+            "userId": safe_user_id,
+            "uid": owner_uid,
+            "createdAt": str(row.get("createdAt") or ""),
+            "updatedAt": str(row.get("updatedAt") or ""),
+        }
+
+    for uid_value, row in hydrated_profiles.items():
+        user_id = str(row.get("userId") or "").strip().lower()
+        if not user_id:
+            continue
+        index_row = hydrated_index.get(user_id) or {}
+        hydrated_index[user_id] = {
+            "userId": user_id,
+            "uid": uid_value,
+            "createdAt": str(index_row.get("createdAt") or row.get("createdAt") or ""),
+            "updatedAt": str(index_row.get("updatedAt") or row.get("updatedAt") or ""),
+        }
+
+    if not hydrated_profiles and not hydrated_index:
+        return
+    with _INMEMORY_LOCK:
+        _INMEMORY_USER_PROFILES.update(hydrated_profiles)
+        _INMEMORY_USER_ID_INDEX.update(hydrated_index)
+
+
+_load_inmemory_user_profile_store()
 
 
 def _history_sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -2737,6 +3127,9 @@ def _user_id_requirement_exempt_path(path: str) -> bool:
 
 @app.middleware("http")
 async def _firebase_auth_middleware(request: Request, call_next: Any) -> Response:
+    if _is_cors_preflight_request(request):
+        return _cors_preflight_response(request)
+
     if not VF_AUTH_ENFORCE:
         return await call_next(request)
 
@@ -2745,20 +3138,20 @@ async def _firebase_auth_middleware(request: Request, call_next: Any) -> Respons
 
     auth_header = str(request.headers.get("Authorization") or "").strip()
     if not auth_header.lower().startswith("bearer "):
-        return JSONResponse(status_code=401, content={"detail": "Missing bearer token."})
+        return _cors_json_response(request, status_code=401, content={"detail": "Missing bearer token."})
 
     id_token = auth_header.split(" ", 1)[1].strip()
     if not id_token:
-        return JSONResponse(status_code=401, content={"detail": "Missing bearer token."})
+        return _cors_json_response(request, status_code=401, content={"detail": "Missing bearer token."})
 
     try:
         claims = _verify_firebase_id_token(id_token)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse(status_code=401, content={"detail": f"Invalid auth token: {exc}"})
+        return _cors_json_response(request, status_code=401, content={"detail": f"Invalid auth token: {exc}"})
 
     uid = str(claims.get("uid") or "")
     if not uid:
-        return JSONResponse(status_code=401, content={"detail": "Auth token did not include uid."})
+        return _cors_json_response(request, status_code=401, content={"detail": "Auth token did not include uid."})
 
     request.state.uid = uid
     request.state.auth_claims = claims
@@ -2775,13 +3168,16 @@ async def _user_id_requirement_middleware(request: Request, call_next: Any) -> R
     uid = str(getattr(request.state, "uid", "") or "").strip()
     if not uid:
         return await call_next(request)
+    if _request_is_admin(request, uid):
+        return await call_next(request)
     profile = _user_profile_read(uid)
     if isinstance(profile, dict):
         user_id = str(profile.get("userId") or "").strip().lower()
         if user_id:
             request.state.user_id = user_id
             return await call_next(request)
-    return JSONResponse(
+    return _cors_json_response(
+        request,
         status_code=428,
         content={"detail": "Complete your userId before using this feature."},
     )
@@ -2890,8 +3286,14 @@ def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
     try:
         doc = collection.document(safe_uid).get()
     except Exception:
-        return None
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_PROFILES.get(safe_uid)
+            return dict(row) if isinstance(row, dict) else None
     if not doc.exists:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_PROFILES.get(safe_uid)
+            if isinstance(row, dict):
+                return dict(row)
         return None
     payload = doc.to_dict() or {}
     payload["uid"] = safe_uid
@@ -2915,9 +3317,23 @@ def _user_profile_find_by_user_id(user_id: str) -> Optional[dict[str, Any]]:
     try:
         index_doc = index_collection.document(safe_user_id).get()
     except Exception:
-        return None
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_ID_INDEX.get(safe_user_id)
+            if not isinstance(row, dict):
+                return None
+            uid = str(row.get("uid") or "").strip()
+        if not uid:
+            return None
+        return _user_profile_read(uid)
     if not index_doc.exists:
-        return None
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_ID_INDEX.get(safe_user_id)
+            if not isinstance(row, dict):
+                return None
+            uid = str(row.get("uid") or "").strip()
+        if not uid:
+            return None
+        return _user_profile_read(uid)
     idx = index_doc.to_dict() or {}
     uid = str(idx.get("uid") or "").strip()
     if not uid:
@@ -2930,6 +3346,62 @@ def _user_id_for_uid(uid: str) -> str:
     if isinstance(profile, dict):
         return str(profile.get("userId") or "").strip().lower()
     return ""
+
+
+def _is_firestore_transaction_wrapper_error(exc: Exception) -> bool:
+    detail = str(exc or "").strip().lower()
+    if not detail:
+        return False
+    if "transaction has no transaction id" in detail:
+        return True
+    if "transaction id" in detail and "cannot be rolled back" in detail:
+        return True
+    if "rollback" in detail and "transaction id" in detail:
+        return True
+    return False
+
+
+def _classify_user_profile_write_error(exc: Exception) -> tuple[int, str]:
+    detail = str(exc or "").strip()
+    lowered = detail.lower()
+    if "userid is immutable once set" in lowered or ("immutable" in lowered and "userid" in lowered):
+        return 409, "userId is immutable once set."
+    if "userid already exists" in lowered or ("already exists" in lowered and "userid" in lowered):
+        return 409, "userId already exists."
+    if (
+        "service_disabled" in lowered
+        or "firestore.googleapis.com" in lowered
+        or "cloud firestore api has not been used" in lowered
+        or "permission_denied" in lowered
+        or "insufficient permissions" in lowered
+        or "googleapis.com" in lowered
+    ):
+        return 503, "Profile service is temporarily unavailable. Please try again in a few minutes."
+    if "deadline exceeded" in lowered or "timed out" in lowered or "timeout" in lowered:
+        return 503, "Profile service timed out. Please try again."
+    return 503, "Failed to save user profile. Please try again."
+
+
+def _log_user_profile_write_error(stage: str, uid: str, user_id: str, exc: Exception) -> None:
+    print(
+        f"[user-profile-upsert] {stage} uid={str(uid or '').strip()} userId={str(user_id or '').strip()} "
+        f"reason_class={type(exc).__name__} reason={str(exc)[:220]}",
+        flush=True,
+    )
+
+
+def _is_user_profile_store_unavailable_error(exc: Exception) -> bool:
+    lowered = str(exc or "").strip().lower()
+    if not lowered:
+        return False
+    return (
+        "service_disabled" in lowered
+        or "cloud firestore api has not been used" in lowered
+        or "firestore.googleapis.com" in lowered
+        or "googleapis.com" in lowered
+        or "permission_denied" in lowered
+        or "insufficient permissions" in lowered
+    )
 
 
 def _user_profile_upsert(
@@ -2976,12 +3448,9 @@ def _user_profile_upsert(
 
     profiles_collection = _firestore_collection(USER_PROFILES_COLLECTION)
     index_collection = _firestore_collection(USER_ID_INDEX_COLLECTION)
-    if (
-        profiles_collection is None
-        or index_collection is None
-        or _FIRESTORE_DB is None
-        or firebase_firestore is None
-    ):
+    def _apply_inmemory_upsert(*, reason: Optional[Exception] = None) -> dict[str, Any]:
+        if reason is not None:
+            _log_user_profile_write_error("inmemory_fallback", safe_uid, next_user_id, reason)
         with _INMEMORY_LOCK:
             existing = dict(_INMEMORY_USER_PROFILES.get(safe_uid) or {})
             existing_user_id = str(existing.get("userId") or "").strip().lower()
@@ -3000,45 +3469,109 @@ def _user_profile_upsert(
                 "updatedAt": now_iso,
             }
             _INMEMORY_USER_PROFILES[safe_uid] = dict(row)
+            _persist_inmemory_user_profile_store_locked()
             return dict(row)
+
+    if (
+        profiles_collection is None
+        or index_collection is None
+        or _FIRESTORE_DB is None
+        or firebase_firestore is None
+    ):
+        return _apply_inmemory_upsert()
 
     profile_ref = _FIRESTORE_DB.collection(USER_PROFILES_COLLECTION).document(safe_uid)
     new_index_ref = _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(next_user_id)
     transaction = _FIRESTORE_DB.transaction()
+
+    def _build_firestore_payload(existing_profile: dict[str, Any], *, index_created_at: str) -> dict[str, Any]:
+        _ = index_created_at
+        return {
+            "uid": safe_uid,
+            "userId": next_user_id,
+            "displayName": next_display_name,
+            "email": next_email,
+            "status": str((existing_profile or {}).get("status") or "active"),
+            "createdAt": str((existing_profile or {}).get("createdAt") or now_iso),
+            "updatedAt": now_iso,
+            "createdBy": str((existing_profile or {}).get("createdBy") or created_by or safe_uid)[:160],
+            "updatedBy": str(updated_by or created_by or safe_uid)[:160],
+        }
+
+    def _raise_user_id_conflict_if_any(existing_user_id: str, owner_uid: str) -> None:
+        if existing_user_id and existing_user_id != next_user_id and not force_change and not allow_existing_immutable:
+            raise HTTPException(status_code=409, detail="userId is immutable once set.")
+        if owner_uid and owner_uid != safe_uid:
+            raise HTTPException(status_code=409, detail="userId already exists.")
+
+    def _apply_non_transactional_fallback(transaction_error: Exception) -> dict[str, Any]:
+        print(
+            f"[user-profile-upsert] fallback_non_transactional uid={safe_uid} userId={next_user_id} "
+            f"reason_class={type(transaction_error).__name__} reason={str(transaction_error)[:180]}",
+            flush=True,
+        )
+        try:
+            profile_doc = profile_ref.get()
+            existing = profile_doc.to_dict() if profile_doc.exists else {}
+            existing_user_id = str((existing or {}).get("userId") or "").strip().lower()
+            index_doc = new_index_ref.get()
+            index_payload = index_doc.to_dict() if index_doc.exists else {}
+            owner_uid = str((index_payload or {}).get("uid") or "").strip()
+            _raise_user_id_conflict_if_any(existing_user_id, owner_uid)
+
+            old_index_ref = None
+            if existing_user_id and existing_user_id != next_user_id:
+                old_index_ref = _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(existing_user_id)
+            payload = _build_firestore_payload(
+                existing,
+                index_created_at=str((index_payload or {}).get("createdAt") or now_iso),
+            )
+            profile_ref.set(payload, merge=True)
+            new_index_ref.set(
+                {
+                    "userId": next_user_id,
+                    "uid": safe_uid,
+                    "createdAt": str((index_payload or {}).get("createdAt") or now_iso),
+                    "updatedAt": now_iso,
+                },
+                merge=True,
+            )
+            if old_index_ref is not None:
+                old_index_ref.delete()
+            return dict(payload)
+        except HTTPException:
+            raise
+        except Exception as fallback_exc:
+            if _is_user_profile_store_unavailable_error(fallback_exc):
+                return _apply_inmemory_upsert(reason=fallback_exc)
+            _log_user_profile_write_error("fallback_failed", safe_uid, next_user_id, fallback_exc)
+            status_code, detail = _classify_user_profile_write_error(fallback_exc)
+            raise HTTPException(status_code=status_code, detail=detail) from fallback_exc
 
     @firebase_firestore.transactional
     def _apply(transaction_obj: Any) -> dict[str, Any]:
         profile_doc = profile_ref.get(transaction=transaction_obj)
         existing = profile_doc.to_dict() if profile_doc.exists else {}
         existing_user_id = str((existing or {}).get("userId") or "").strip().lower()
-        if existing_user_id and existing_user_id != next_user_id and not force_change and not allow_existing_immutable:
-            raise RuntimeError("userId is immutable once set.")
         index_doc = new_index_ref.get(transaction=transaction_obj)
-        if index_doc.exists:
-            owner_uid = str((index_doc.to_dict() or {}).get("uid") or "").strip()
-            if owner_uid and owner_uid != safe_uid:
-                raise RuntimeError("userId already exists.")
+        owner_uid = str((index_doc.to_dict() or {}).get("uid") or "").strip() if index_doc.exists else ""
+        _raise_user_id_conflict_if_any(existing_user_id, owner_uid)
         old_index_ref = None
         if existing_user_id and existing_user_id != next_user_id:
             old_index_ref = _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(existing_user_id)
-        payload = {
-            "uid": safe_uid,
-            "userId": next_user_id,
-            "displayName": next_display_name,
-            "email": next_email,
-            "status": str((existing or {}).get("status") or "active"),
-            "createdAt": str((existing or {}).get("createdAt") or now_iso),
-            "updatedAt": now_iso,
-            "createdBy": str((existing or {}).get("createdBy") or created_by or safe_uid)[:160],
-            "updatedBy": str(updated_by or created_by or safe_uid)[:160],
-        }
+        index_payload = index_doc.to_dict() if index_doc.exists else {}
+        payload = _build_firestore_payload(
+            existing,
+            index_created_at=str((index_payload or {}).get("createdAt") or now_iso),
+        )
+        index_created_at = str((index_payload or {}).get("createdAt") or now_iso)
         transaction_obj.set(profile_ref, payload, merge=True)
         transaction_obj.set(
             new_index_ref,
             {
                 "userId": next_user_id,
                 "uid": safe_uid,
-                "createdAt": str((index_doc.to_dict() or {}).get("createdAt") if index_doc.exists else now_iso),
+                "createdAt": index_created_at,
                 "updatedAt": now_iso,
             },
             merge=True,
@@ -3049,14 +3582,24 @@ def _user_profile_upsert(
 
     try:
         return _apply(transaction)
-    except RuntimeError as exc:
-        detail = str(exc)
-        status = 409 if "exists" in detail.lower() or "immutable" in detail.lower() else 400
-        raise HTTPException(status_code=status, detail=detail) from exc
     except HTTPException:
         raise
+    except RuntimeError as exc:
+        if _is_firestore_transaction_wrapper_error(exc):
+            return _apply_non_transactional_fallback(exc)
+        if _is_user_profile_store_unavailable_error(exc):
+            return _apply_inmemory_upsert(reason=exc)
+        _log_user_profile_write_error("transaction_runtime_error", safe_uid, next_user_id, exc)
+        status_code, detail = _classify_user_profile_write_error(exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Failed to save user profile: {exc}") from exc
+        if _is_firestore_transaction_wrapper_error(exc):
+            return _apply_non_transactional_fallback(exc)
+        if _is_user_profile_store_unavailable_error(exc):
+            return _apply_inmemory_upsert(reason=exc)
+        _log_user_profile_write_error("transaction_error", safe_uid, next_user_id, exc)
+        status_code, detail = _classify_user_profile_write_error(exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 def _ensure_user_profile(
@@ -3101,7 +3644,7 @@ def _resolve_request_user_id(request: Optional[Request], uid: str) -> str:
         return ""
     allow_auto_backfill = (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE)
     if request is not None and _request_is_admin(request, safe_uid):
-        allow_auto_backfill = True
+        allow_auto_backfill = False
     profile = _ensure_user_profile(
         safe_uid,
         request=request,
@@ -3112,10 +3655,22 @@ def _resolve_request_user_id(request: Optional[Request], uid: str) -> str:
     return ""
 
 
+def _resolve_request_user_id_read_only(uid: str) -> str:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return ""
+    return _user_id_for_uid(safe_uid)
+
+
 def _require_user_id_ready(request: Request, uid: str) -> Optional[dict[str, Any]]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         raise HTTPException(status_code=401, detail="Authentication required.")
+    if _request_is_admin(request, safe_uid):
+        existing = _user_profile_read(safe_uid)
+        if isinstance(existing, dict):
+            return existing
+        return {"uid": safe_uid, "userId": "", "status": "admin"}
     profile = _user_profile_read(safe_uid)
     if isinstance(profile, dict) and str(profile.get("userId") or "").strip():
         return profile
@@ -3334,7 +3889,8 @@ def _resolve_actor(uid: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Authentication required.")
     def _with_identity(actor_payload: dict[str, Any]) -> dict[str, Any]:
         payload = dict(actor_payload or {})
-        payload["userId"] = _resolve_request_user_id(request, safe_uid)
+        # Permission checks must stay read-only; profile auto-backfill belongs to explicit profile flows.
+        payload["userId"] = _resolve_request_user_id_read_only(safe_uid)
         return payload
     if not VF_RBAC_ENABLED:
         if _request_is_admin(request, safe_uid):
@@ -4435,6 +4991,8 @@ class GeminiApiPoolsUpdateRequest(BaseModel):
     version: Optional[int] = None
     pools: dict[str, Any]
     fallbackChains: Optional[dict[str, Any]] = None
+    planPools: Optional[dict[str, Any]] = None
+    defaultFallbackChain: Optional[list[Any]] = None
     constraints: Optional[dict[str, Any]] = None
     sourcePolicy: Optional[dict[str, Any]] = None
 
@@ -7165,7 +7723,7 @@ def _normalize_engine_name(raw_engine: str) -> str:
     normalized = normalized.strip("_")
     engine = TTS_ENGINE_ALIASES.get(normalized)
     if not engine:
-        raise ValueError("Invalid engine. Use KOKORO, NEURAL2, or GEM.")
+        raise ValueError("Invalid engine. Use KOKORO, GOOD, NEURAL2, or GEM.")
     return engine
 
 
@@ -8132,10 +8690,11 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
 def _probe_runtime_capabilities(engine: str, timeout_sec: float = 3.0) -> dict[str, Any]:
     capabilities_url = TTS_ENGINE_CAPABILITIES_URLS[engine]
     health_url = TTS_ENGINE_HEALTH_URLS[engine]
-    cap_ok, cap_payload, cap_detail = _fetch_runtime_json(capabilities_url, timeout_sec=timeout_sec)
+    capabilities_query_url = f"{capabilities_url}?engine={engine}"
+    cap_ok, cap_payload, cap_detail = _fetch_runtime_json(capabilities_query_url, timeout_sec=timeout_sec)
     if cap_ok and isinstance(cap_payload, dict):
         payload = dict(cap_payload)
-        payload["engine"] = str(payload.get("engine") or engine)
+        payload["engine"] = engine
         payload.setdefault("runtime", f"{engine.lower()}-runtime")
         payload.setdefault("ready", True)
         payload.setdefault("metadata", {})
@@ -8472,9 +9031,106 @@ def _resolve_gemini_api_pools_file_path() -> Path:
     return (WORKSPACE_ROOT / hint_path).resolve()
 
 
+def _resolve_vertex_service_account_store_path(path_hint: str) -> Path:
+    raw_hint = str(path_hint or GEMINI_VERTEX_SERVICE_ACCOUNT_FILE).strip()
+    path = Path(raw_hint).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (PROJECT_ROOT / path).resolve()
+
+
+def _persist_vertex_service_account_json(raw_json: str, *, path_hint: str) -> tuple[str, dict[str, Any]]:
+    payload: dict[str, Any]
+    try:
+        parsed = json.loads(str(raw_json or "").strip())
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid Vertex service-account JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Vertex service-account JSON must be an object.")
+    payload = dict(parsed)
+    if str(payload.get("type") or "").strip() not in {"", "service_account"}:
+        raise ValueError("Vertex service-account JSON must be a service_account credential.")
+
+    target_path = _resolve_vertex_service_account_store_path(path_hint)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    os.replace(str(tmp_path), str(target_path))
+    try:
+        os.chmod(str(target_path), 0o600)
+    except Exception:
+        pass
+    return str(target_path), payload
+
+
+def _sanitize_gemini_source_policy_for_response(source_policy: dict[str, Any]) -> dict[str, Any]:
+    policy = dict(source_policy or {})
+    policy.pop("vertexServiceAccountJson", None)
+    policy.pop("serviceAccountJson", None)
+    policy.pop("vertexServiceAccount", None)
+    service_account_ref = str(policy.get("vertexServiceAccountRef") or "").strip()
+    policy["vertexServiceAccountConfigured"] = bool(service_account_ref)
+    return policy
+
+
+def _rewrite_free_plan_pool_for_vertex(config: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
+    normalized = normalize_gemini_pool_config(config)
+    source_policy = dict(normalized.get("sourcePolicy") or {})
+    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    if provider != SOURCE_POLICY_PROVIDER_VERTEX:
+        return normalized, False, ""
+
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    if "free" not in pools:
+        pools["free"] = {"keys": []}
+        normalized["pools"] = pools
+
+    pool_names = list_gemini_pool_names(normalized)
+    if not pool_names:
+        pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+        pools["free"] = {"keys": []}
+        normalized["pools"] = pools
+        pool_names = ["free"]
+
+    plan_pools = normalized.get("planPools") if isinstance(normalized.get("planPools"), dict) else {}
+    preferred = [
+        str(plan_pools.get("free") or "").strip(),
+        str(plan_pools.get("pro") or "").strip(),
+        str(plan_pools.get("plus") or "").strip(),
+        "free",
+        *pool_names,
+    ]
+    target_pool = ""
+    for candidate in preferred:
+        if candidate and candidate in pool_names:
+            target_pool = candidate
+            break
+    if not target_pool:
+        target_pool = pool_names[0]
+
+    current_free_pool = str(plan_pools.get("free") or "").strip()
+    if current_free_pool == target_pool:
+        return normalized, False, target_pool
+    next_plan_pools = dict(plan_pools)
+    next_plan_pools["free"] = target_pool
+    normalized["planPools"] = next_plan_pools
+    return normalized, True, target_pool
+
+
 def _sync_authoritative_gemini_free_pool(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, list[str]]:
+    normalized = normalize_gemini_pool_config(config)
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    has_free_pool = "free" in pools
+    source_policy = dict(normalized.get("sourcePolicy") or {})
+    authoritative_mode = str(source_policy.get("freePoolMode") or "").strip().lower() == "api_file_authoritative"
+    free_pool_locked = bool(source_policy.get("freePoolLocked"))
+    # Allow legacy/default configs to auto-sync free pool from API file.
+    # Explicitly skip only when free pool has been hard-deleted and lock mode was disabled.
+    if not has_free_pool and not authoritative_mode and not free_pool_locked:
+        return normalized, False, []
+
     configured_file_path = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
     if configured_file_path:
         candidate = Path(configured_file_path).expanduser()
@@ -8497,7 +9153,7 @@ def _sync_authoritative_gemini_free_pool(
         file_exists = False
         file_keys = []
     return sync_authoritative_free_pool_shared(
-        config,
+        normalized,
         file_keys,
         str(resolved_file_path),
         file_exists=file_exists,
@@ -8520,9 +9176,13 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
             prefer_firestore=GEMINI_API_POOLS_PREFER_FIRESTORE,
             bootstrap_free_keys=bootstrap_keys,
         )
-        if not flatten_pool_keys(config) and bootstrap_keys:
+        source_token = str((meta or {}).get("source") or "").strip().lower()
+        if not flatten_pool_keys(config) and bootstrap_keys and source_token in {"default", "bootstrap"}:
             config = normalize_gemini_pool_config(config)
-            config["pools"]["free"]["keys"] = list(bootstrap_keys)
+            pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+            pools.setdefault("free", {"keys": []})
+            pools["free"]["keys"] = list(bootstrap_keys)
+            config["pools"] = pools
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_gemini_free_pool(config)
         if synced_changed:
@@ -8580,7 +9240,7 @@ def _resolve_gemini_fallback_key_pool() -> list[str]:
         legacy = _legacy_gemini_key_pool()
         if legacy:
             return legacy
-    keys = resolve_effective_pool_keys(config, "pro_plus")
+    keys = resolve_effective_pool_keys(config, resolve_default_gemini_pool_hint(config))
     if keys:
         return keys
     return _legacy_gemini_key_pool()
@@ -8588,7 +9248,7 @@ def _resolve_gemini_fallback_key_pool() -> list[str]:
 
 def _resolve_gemini_plan_key_pool(plan_key: str) -> list[str]:
     config, _meta = _load_gemini_api_pools()
-    pool_hint = plan_key_to_pool_hint(plan_key)
+    pool_hint = resolve_gemini_plan_pool_hint(config, plan_key)
     keys = resolve_effective_pool_keys(config, pool_hint)
     if keys:
         return keys
@@ -8597,23 +9257,36 @@ def _resolve_gemini_plan_key_pool(plan_key: str) -> list[str]:
 
 def _gemini_pools_validation(config: dict[str, Any]) -> dict[str, Any]:
     duplicates = duplicate_key_memberships(config)
+    pool_names = set(list_gemini_pool_names(config))
+    plan_pools = config.get("planPools") if isinstance(config.get("planPools"), dict) else {}
+    missing_plan_pools: dict[str, str] = {}
+    for plan_key in ("free", "pro", "plus"):
+        mapped = str(plan_pools.get(plan_key) or "").strip()
+        if mapped and mapped not in pool_names:
+            missing_plan_pools[plan_key] = mapped
+    default_fallback_chain = list(config.get("defaultFallbackChain") or [])
+    missing_default_chain = [pool for pool in default_fallback_chain if str(pool or "").strip() and str(pool or "").strip() not in pool_names]
     unique_required = bool((config.get("constraints") or {}).get("uniqueKeyMembership", True))
     return {
         "uniqueKeyMembership": unique_required,
         "duplicateKeys": duplicates,
+        "missingPlanPools": missing_plan_pools,
+        "missingDefaultFallbackPools": missing_default_chain,
         "isValid": not (unique_required and bool(duplicates)),
     }
 
 
 def _backend_gemini_pool_snapshot() -> dict[str, Any]:
     config, config_meta = _load_gemini_api_pools()
-    key_pool = resolve_effective_pool_keys(config, "pro_plus")
+    default_pool_hint = resolve_default_gemini_pool_hint(config)
+    key_pool = resolve_effective_pool_keys(config, default_pool_hint)
     if not key_pool:
         return {
             "ok": True,
             "pool": {"keyCount": 0, "healthyKeys": 0, "unhealthyKeys": 0, "atLimitKeys": 0},
             "keys": [],
             "models": [],
+            "defaultPoolHint": default_pool_hint,
             "source": _gemini_pool_source_diagnostics(),
             "config": config,
             "configMeta": config_meta,
@@ -8627,15 +9300,18 @@ def _backend_gemini_pool_snapshot() -> dict[str, Any]:
     payload["config"] = config
     payload["configMeta"] = config_meta
     payload["validation"] = _gemini_pools_validation(config)
+    payload["defaultPoolHint"] = default_pool_hint
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    fallback_chains = config.get("fallbackChains") if isinstance(config.get("fallbackChains"), dict) else {}
+    global_fallback = list(config.get("defaultFallbackChain") or [])
     payload["poolSummaries"] = {
         pool_name: {
             "pool": pool_name,
             "directKeyCount": len(list((pools.get(pool_name) or {}).get("keys") or [])),
             "effectiveKeyCount": len(resolve_effective_pool_keys(config, pool_name)),
-            "chain": list((config.get("fallbackChains") or {}).get(pool_name) or []),
+            "chain": list(fallback_chains.get(pool_name) or [pool_name, *[item for item in global_fallback if item != pool_name]]),
         }
-        for pool_name in POOL_NAMES
+        for pool_name in list_gemini_pool_names(config)
     }
     return payload
 
@@ -8643,8 +9319,10 @@ def _backend_gemini_pool_snapshot() -> dict[str, Any]:
 def _backend_gemini_pool_usage_snapshot() -> dict[str, Any]:
     config, config_meta = _load_gemini_api_pools()
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    fallback_chains = config.get("fallbackChains") if isinstance(config.get("fallbackChains"), dict) else {}
+    global_fallback = list(config.get("defaultFallbackChain") or [])
     usage_payload: dict[str, Any] = {}
-    for pool_name in POOL_NAMES:
+    for pool_name in list_gemini_pool_names(config):
         direct_keys = list((pools.get(pool_name) or {}).get("keys") or [])
         effective_keys = resolve_effective_pool_keys(config, pool_name)
         if direct_keys:
@@ -8655,7 +9333,7 @@ def _backend_gemini_pool_usage_snapshot() -> dict[str, Any]:
             "pool": pool_name,
             "directKeyCount": len(direct_keys),
             "effectiveKeyCount": len(effective_keys),
-            "effectiveChain": list((config.get("fallbackChains") or {}).get(pool_name) or []),
+            "effectiveChain": list(fallback_chains.get(pool_name) or [pool_name, *[item for item in global_fallback if item != pool_name]]),
             "direct": BACKEND_GEMINI_ALLOCATOR.snapshot(direct_keys) if direct_keys else {"pool": {"keyCount": 0}},
             "effective": BACKEND_GEMINI_ALLOCATOR.snapshot(effective_keys) if effective_keys else {"pool": {"keyCount": 0}},
         }
@@ -10362,17 +11040,23 @@ def _admin_revoke_user_sessions(uid: str) -> None:
 @app.get("/account/profile")
 def account_profile(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
     profile = _user_profile_read(uid)
-    if profile is None and (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE):
+    if profile is None and not is_admin and (not VF_USER_ID_REQUIRED or not VF_AUTH_ENFORCE):
         profile = _ensure_user_profile(uid, request=request, allow_auto_backfill=True)
-    required = bool(VF_USER_ID_REQUIRED and VF_AUTH_ENFORCE and not str((profile or {}).get("userId") or "").strip())
-    suggested = _user_profile_backfill_candidate(uid, _request_claim_email(request), "")
+    required = bool(
+        (not is_admin)
+        and VF_USER_ID_REQUIRED
+        and VF_AUTH_ENFORCE
+        and not str((profile or {}).get("userId") or "").strip()
+    )
+    suggested = "" if is_admin else _user_profile_backfill_candidate(uid, _request_claim_email(request), "")
     return JSONResponse(
         {
             "ok": True,
             "requiredUserId": required,
             "suggestedUserId": suggested,
-            "profile": profile or {"uid": uid, "userId": "", "status": "pending"},
+            "profile": profile or {"uid": uid, "userId": "", "status": "admin" if is_admin else "pending"},
         }
     )
 
@@ -10380,6 +11064,8 @@ def account_profile(request: Request) -> JSONResponse:
 @app.post("/account/profile")
 def account_profile_upsert(payload: UserProfileUpsertRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    if _request_is_admin(request, uid):
+        raise HTTPException(status_code=403, detail="Admin accounts do not use userId.")
     before = _user_profile_read(uid) or {}
     row = _user_profile_upsert(
         uid,
@@ -10408,6 +11094,9 @@ def account_profile_upsert(payload: UserProfileUpsertRequest, request: Request) 
 @app.post("/account/profile/bootstrap")
 def account_profile_bootstrap(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    if _request_is_admin(request, uid):
+        profile = _user_profile_read(uid)
+        return JSONResponse({"ok": True, "profile": profile or {"uid": uid, "userId": "", "status": "admin"}})
     profile = _ensure_user_profile(uid, request=request, allow_auto_backfill=True)
     return JSONResponse({"ok": True, "profile": profile or {"uid": uid, "userId": ""}})
 
@@ -11102,6 +11791,7 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
             for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
                 _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
             _INMEMORY_GENERATION_HISTORY.pop(uid, None)
+            _persist_inmemory_user_profile_store_locked()
     _TTS_SUCCESS_LIMITER.clear_uid(uid)
     _audit_append_event(
         action="admin_user_delete",
@@ -12248,6 +12938,8 @@ def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Req
 def admin_gemini_pools(request: Request) -> JSONResponse:
     _require_permission(request, PERM_OPS_READ)
     config, meta = _load_gemini_api_pools(force=True)
+    config_public = dict(config)
+    config_public["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
     validation = _gemini_pools_validation(config)
@@ -12255,11 +12947,11 @@ def admin_gemini_pools(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "ok": bool(validation.get("isValid")) and bool(runtime_snapshot.get("ok", True)),
-            "config": config,
+            "config": config_public,
             "meta": meta,
             "validation": validation,
             "warnings": warnings,
-            "sourcePolicy": dict(config.get("sourcePolicy") or {}),
+            "sourcePolicy": _sanitize_gemini_source_policy_for_response(dict(config.get("sourcePolicy") or {})),
             "backend": backend_snapshot,
             "runtime": runtime_snapshot,
         }
@@ -12271,19 +12963,93 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     current_config, _current_meta = _load_gemini_api_pools(force=True)
     current_source_policy = dict(current_config.get("sourcePolicy") or {})
-    free_pool_locked = bool(current_source_policy.get("freePoolLocked"))
     applied_overrides: list[str] = []
+    local_warnings: list[str] = []
 
     raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    source_policy_requested = isinstance(raw_payload.get("sourcePolicy"), dict)
+    raw_source_policy = dict(raw_payload.get("sourcePolicy") or {}) if source_policy_requested else {}
+    vertex_service_account_json = str(
+        raw_source_policy.get("vertexServiceAccountJson")
+        or raw_source_policy.get("serviceAccountJson")
+        or ""
+    ).strip()
+    if source_policy_requested:
+        raw_source_policy.pop("vertexServiceAccountJson", None)
+        raw_source_policy.pop("serviceAccountJson", None)
+        raw_payload["sourcePolicy"] = raw_source_policy
+
     normalized = normalize_gemini_pool_config(raw_payload)
-    if free_pool_locked:
+    requested_source_policy = dict(normalized.get("sourcePolicy") or {})
+    if source_policy_requested:
+        next_source_policy = dict(current_source_policy)
+        for key in raw_source_policy.keys():
+            if key in requested_source_policy:
+                next_source_policy[key] = requested_source_policy[key]
+        if not next_source_policy:
+            next_source_policy = dict(requested_source_policy)
+        provider = str(next_source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+        if vertex_service_account_json:
+            if provider != SOURCE_POLICY_PROVIDER_VERTEX:
+                provider = SOURCE_POLICY_PROVIDER_VERTEX
+                next_source_policy["provider"] = provider
+                applied_overrides.append("source_policy_provider_set_vertex")
+            path_hint = str(next_source_policy.get("vertexServiceAccountRef") or "").strip()
+            try:
+                persisted_ref, credential_payload = _persist_vertex_service_account_json(
+                    vertex_service_account_json,
+                    path_hint=path_hint,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            next_source_policy["vertexServiceAccountRef"] = persisted_ref
+            if not str(next_source_policy.get("vertexProject") or "").strip():
+                inferred_project = str(credential_payload.get("project_id") or "").strip()
+                if inferred_project:
+                    next_source_policy["vertexProject"] = inferred_project
+                    applied_overrides.append("vertex_project_inferred_from_service_account")
+            if not str(next_source_policy.get("vertexLocation") or "").strip():
+                default_location = str(
+                    os.getenv("GOOGLE_CLOUD_LOCATION")
+                    or os.getenv("GOOGLE_CLOUD_REGION")
+                    or "us-central1"
+                ).strip() or "us-central1"
+                next_source_policy["vertexLocation"] = default_location
+        normalized["sourcePolicy"] = next_source_policy
+    elif current_source_policy:
+        normalized["sourcePolicy"] = dict(current_source_policy)
+
+    effective_source_policy = dict(normalized.get("sourcePolicy") or {})
+    provider_token = str(
+        effective_source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API
+    ).strip().lower()
+    free_pool_locked = (
+        provider_token != SOURCE_POLICY_PROVIDER_VERTEX
+        and bool(effective_source_policy.get("freePoolLocked"))
+    )
+    normalized_pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    deleting_free_pool = "free" not in normalized_pools
+
+    if free_pool_locked and deleting_free_pool:
+        next_source_policy = dict(effective_source_policy)
+        next_source_policy["freePoolMode"] = "config_managed"
+        next_source_policy["freePoolLocked"] = False
+        normalized["sourcePolicy"] = next_source_policy
+        applied_overrides.append("free_pool_authoritative_mode_disabled")
+        local_warnings.append("Authoritative free-pool mode was disabled because the free pool was deleted.")
+    elif free_pool_locked:
         current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
         locked_free_keys = list((current_pools.get("free") or {}).get("keys") or [])
-        normalized["pools"]["free"]["keys"] = locked_free_keys
+        normalized_pools.setdefault("free", {"keys": []})
+        normalized_pools["free"]["keys"] = locked_free_keys
+        normalized["pools"] = normalized_pools
         applied_overrides.append("free_pool_locked_by_api_file")
-    if current_source_policy:
-        normalized["sourcePolicy"] = dict(current_source_policy)
+        normalized["sourcePolicy"] = dict(effective_source_policy)
+
     normalized, _sync_changed, sync_warnings = _sync_authoritative_gemini_free_pool(normalized)
+    normalized, vertex_free_changed, vertex_free_pool = _rewrite_free_plan_pool_for_vertex(normalized)
+    if vertex_free_changed:
+        applied_overrides.append(f"vertex_free_plan_pool:{vertex_free_pool}")
     validation = _gemini_pools_validation(normalized)
     if not bool(validation.get("isValid")):
         raise HTTPException(
@@ -12293,20 +13059,55 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
                 "validation": validation,
             },
         )
+
+    current_pool_names = set(list_gemini_pool_names(current_config))
+    next_pool_names = set(list_gemini_pool_names(normalized))
+    created_pools = sorted(next_pool_names - current_pool_names)
+    deleted_pools = sorted(current_pool_names - next_pool_names)
+    current_plan_pools = current_config.get("planPools") if isinstance(current_config.get("planPools"), dict) else {}
+    next_plan_pools = normalized.get("planPools") if isinstance(normalized.get("planPools"), dict) else {}
+    plan_pool_changes: dict[str, dict[str, str]] = {}
+    for plan_key in ("free", "pro", "plus"):
+        before_value = str(current_plan_pools.get(plan_key) or "")
+        after_value = str(next_plan_pools.get(plan_key) or "")
+        if before_value != after_value:
+            plan_pool_changes[plan_key] = {"before": before_value, "after": after_value}
+    current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
+    next_pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    key_diff_by_pool: dict[str, dict[str, int]] = {}
+    for pool_name in sorted(current_pool_names.union(next_pool_names)):
+        before_keys = set(list((current_pools.get(pool_name) or {}).get("keys") or []))
+        after_keys = set(list((next_pools.get(pool_name) or {}).get("keys") or []))
+        if before_keys == after_keys:
+            continue
+        key_diff_by_pool[pool_name] = {
+            "beforeCount": len(before_keys),
+            "afterCount": len(after_keys),
+            "addedCount": len(after_keys - before_keys),
+            "removedCount": len(before_keys - after_keys),
+        }
+
     saved = _save_gemini_api_pools(normalized)
     key_pool = flatten_pool_keys(saved)
     if key_pool:
         BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
     runtime_reload = _runtime_gemini_pool_reload()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
+    merged_warnings = [*local_warnings, *list(sync_warnings)]
+    saved_public = dict(saved)
+    saved_public["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(saved.get("sourcePolicy") or {}))
     response_payload = {
         "ok": bool(runtime_reload.get("ok")),
         "detail": "Gemini API pools updated.",
-        "config": saved,
+        "config": saved_public,
         "validation": _gemini_pools_validation(saved),
-        "warnings": list(sync_warnings),
-        "sourcePolicy": dict(saved.get("sourcePolicy") or {}),
+        "warnings": merged_warnings,
+        "sourcePolicy": _sanitize_gemini_source_policy_for_response(dict(saved.get("sourcePolicy") or {})),
         "appliedOverrides": applied_overrides,
+        "createdPools": created_pools,
+        "deletedPools": deleted_pools,
+        "planPoolChanges": plan_pool_changes,
+        "keyDiffByPool": key_diff_by_pool,
         "backend": _backend_gemini_pool_snapshot(),
         "runtimeReload": runtime_reload,
         "runtime": runtime_snapshot,
@@ -12315,7 +13116,14 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
         action="gemini_pools_update",
         resource_type="gemini_pool",
         resource_id="global",
-        after={"appliedOverrides": applied_overrides, "warnings": list(sync_warnings)},
+        after={
+            "appliedOverrides": applied_overrides,
+            "warnings": merged_warnings,
+            "createdPools": created_pools,
+            "deletedPools": deleted_pools,
+            "planPoolChanges": plan_pool_changes,
+            "keyDiffByPool": key_diff_by_pool,
+        },
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
@@ -12330,11 +13138,14 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
 @app.post("/admin/gemini/pools/reload")
 def admin_gemini_pools_reload(request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _config, meta = _load_gemini_api_pools(force=True)
+    config, meta = _load_gemini_api_pools(force=True)
+    source_policy = dict(config.get("sourcePolicy") or {})
+    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
     key_pool = _resolve_gemini_fallback_key_pool()
-    if not key_pool:
+    if not key_pool and provider != SOURCE_POLICY_PROVIDER_VERTEX:
         raise HTTPException(status_code=400, detail="Gemini key pool is empty.")
-    BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
+    if key_pool:
+        BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_reload = _runtime_gemini_pool_reload()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
@@ -13838,20 +14649,41 @@ def _build_tts_upstream_payload(
     upstream_payload.pop("live_chunk_chars", None)
     upstream_payload.pop("live_chunk_words", None)
     upstream_payload.pop("post_tts_disable", None)
+    # Never forward browser-provided API keys through the gateway payload.
+    upstream_payload.pop("apiKey", None)
+    upstream_payload.pop("api_key", None)
     upstream_payload["engine"] = engine
     upstream_payload["text"] = text
     upstream_payload.setdefault("trace_id", trace_id)
     upstream_payload.setdefault("request_id", request_id)
 
-    voice_id = str(payload.voice_id or payload.voiceId or "").strip()
+    requested_voice_id = str(payload.voice_id or payload.voiceId or "").strip()
+    requested_voice_name = str(payload.voiceName or "").strip()
+    voice_id, voice_name, allowlist_gated = _sanitize_tts_voice_selection_for_plan(
+        engine=engine,
+        plan_key=plan_key,
+        voice_id=requested_voice_id,
+        voice_name=requested_voice_name,
+    )
     if voice_id:
         upstream_payload["voice_id"] = voice_id
         upstream_payload["voiceId"] = voice_id
+    if voice_name:
+        upstream_payload["voiceName"] = voice_name
 
     if _is_gem_runtime_engine(engine):
         if not upstream_payload.get("voiceName"):
-            upstream_payload["voiceName"] = voice_id or str(payload.voiceName or "Fenrir")
-        upstream_payload["poolHint"] = plan_key_to_pool_hint(plan_key)
+            upstream_payload["voiceName"] = _resolve_gem_runtime_voice_name(voice_id or requested_voice_name or "Fenrir")
+        # Keep GEM runtime payload fully normalized to runtime voice names.
+        gem_voice_name = _resolve_gem_runtime_voice_name(str(upstream_payload.get("voiceName") or voice_id or "Fenrir"))
+        upstream_payload["voiceName"] = gem_voice_name
+        upstream_payload["voice_id"] = gem_voice_name
+        upstream_payload["voiceId"] = gem_voice_name
+        voice_id = gem_voice_name
+        if allowlist_gated:
+            upstream_payload["voicePolicy"] = "free_allowlist_applied"
+        pools_config, _ = _load_gemini_api_pools()
+        upstream_payload["poolHint"] = resolve_gemini_plan_pool_hint(pools_config, plan_key)
     elif engine == "KOKORO" and voice_id:
         upstream_payload["voiceId"] = voice_id
 
@@ -13909,7 +14741,12 @@ def _build_tts_history_item(
 
 
 def _tts_job_lane_for_plan(plan_key: str) -> str:
-    return normalize_lane(plan_key_to_pool_hint(plan_key))
+    token = str(plan_key or "").strip().lower()
+    if token in {"plus", "pro-plus", "pro_plus", "proplus"}:
+        return normalize_lane("pro_plus")
+    if token == "pro":
+        return normalize_lane("pro")
+    return normalize_lane("free")
 
 
 def _tts_job_retry_backoff_ms(attempt: int) -> int:
@@ -14250,6 +15087,27 @@ def _mark_job_failed_and_revert_usage(
     )
 
 
+def _post_tts_conversion_failure_detail(
+    *,
+    exc: Exception,
+    trace_id: str,
+    job_id: str,
+    chunk_index: Optional[int] = None,
+) -> dict[str, Any]:
+    safe_job_id = str(job_id or "").strip()
+    safe_trace_id = str(trace_id or "").strip() or safe_job_id
+    payload: dict[str, Any] = {
+        "error": f"Post-TTS conversion failed: {exc}",
+        "errorCode": ENGINE_OVERLOADED,
+        "reason": "post_tts_conversion_failed",
+        "trace_id": safe_trace_id,
+        "jobId": safe_job_id,
+    }
+    if chunk_index is not None:
+        payload["chunkIndex"] = int(chunk_index)
+    return payload
+
+
 def _normalize_llvc_preset(value: str) -> str:
     token = str(value or "").strip().lower()
     if token in {"llvc_hq_cpu", "cover_hq", "cover", "hq"}:
@@ -14554,6 +15412,70 @@ def _tts_live_job_dir(job_id: str) -> Path:
     return TTS_LIVE_ARTIFACTS_DIR / safe_job_id
 
 
+def _tts_result_file_path(job_id: str, media_type: str) -> Path:
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(job_id or "").strip()) or "unknown_job"
+    token = str(media_type or "").strip().lower()
+    extension = ".wav" if "wav" in token else ".bin"
+    return TTS_RESULT_ARTIFACTS_DIR / f"{safe_job_id}{extension}"
+
+
+def _persist_tts_result_audio(job_id: str, audio_bytes: bytes, media_type: str) -> dict[str, Any]:
+    content = bytes(audio_bytes or b"")
+    path = _tts_result_file_path(job_id, media_type)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return {
+        "kind": "file",
+        "path": str(path.resolve()),
+        "sizeBytes": len(content),
+    }
+
+
+def _resolve_tts_result_audio_bytes(result: dict[str, Any]) -> bytes:
+    audio_base64 = str(result.get("audioBase64") or "").strip()
+    if audio_base64:
+        try:
+            return base64.b64decode(audio_base64.encode("ascii"), validate=False)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Failed to decode TTS job audio payload: {exc}") from exc
+
+    audio_ref = result.get("audioRef") if isinstance(result.get("audioRef"), dict) else {}
+    path = Path(str(audio_ref.get("path") or "")).resolve()
+    if path.exists() and path.is_file():
+        try:
+            return path.read_bytes()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Failed to read TTS job audio payload: {exc}") from exc
+    return b""
+
+
+def _cleanup_tts_result_artifact(job_id: str) -> None:
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(job_id or "").strip())
+    if not safe_job_id:
+        return
+    for ext in (".wav", ".bin"):
+        _cleanup_paths(str(TTS_RESULT_ARTIFACTS_DIR / f"{safe_job_id}{ext}"))
+
+
+def _cleanup_expired_tts_result_artifacts() -> None:
+    now_ms = int(time.time() * 1000)
+    ttl_ms = max(60_000, int(VF_TTS_QUEUE_RESULT_TTL_MS))
+    if not TTS_RESULT_ARTIFACTS_DIR.exists():
+        return
+    for child in list(TTS_RESULT_ARTIFACTS_DIR.iterdir()):
+        if not child.is_file():
+            continue
+        try:
+            mtime_ms = int(child.stat().st_mtime * 1000)
+        except Exception:
+            continue
+        if mtime_ms <= 0:
+            continue
+        if (now_ms - mtime_ms) < ttl_ms:
+            continue
+        _cleanup_paths(str(child))
+
+
 def _persist_live_chunk(job_id: str, index: int, wav_bytes: bytes, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     safe_index = max(0, int(index))
     job_dir = _tts_live_job_dir(job_id)
@@ -14657,6 +15579,32 @@ def _load_live_chunk_audio_base64(chunk: dict[str, Any]) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+def _resolve_tts_job_chunk(job: dict[str, Any], chunk_index: int) -> Optional[dict[str, Any]]:
+    safe_index = max(0, int(chunk_index))
+    live_state = job.get("liveState") if isinstance(job.get("liveState"), dict) else {}
+    source_chunks = [
+        item
+        for item in list((live_state or {}).get("chunks") or [])
+        if isinstance(item, dict)
+    ]
+    if not source_chunks:
+        source_chunks = _load_live_chunks_from_artifacts(
+            str(job.get("jobId") or ""),
+            engine=_safe_tts_engine_name(str(job.get("engine") or "GEM")),
+            trace_id=str(job.get("traceId") or ""),
+        )
+    for item in source_chunks:
+        try:
+            raw_index = item.get("index")
+            if raw_index is None:
+                continue
+            if int(raw_index) == safe_index:
+                return dict(item)
+        except Exception:
+            continue
+    return None
+
+
 def _convert_tts_audio_with_llvc_runtime(
     *,
     audio_bytes: bytes,
@@ -14667,12 +15615,17 @@ def _convert_tts_audio_with_llvc_runtime(
     model_name, profile_id = _resolve_mapped_model_name(engine, voice_id, voice_name=voice_name)
     if not model_name:
         raise RuntimeError(f"No mapped LLVC model for {engine}:{voice_id or voice_name}.")
+    profile = _resolve_mapped_profile(engine, voice_id, voice_name=voice_name)
+    profile_pitch_shift = _post_tts_llvc_pitch_shift_for_profile(profile)
 
     temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_llvc_")
     input_path = Path(temp_dir) / "tts_input.wav"
     output_headers: dict[str, str] = {
         "x-vf-post-tts-profile": str(profile_id or ""),
         "x-vf-post-tts-model": str(model_name),
+        "x-vf-post-tts-pitch-shift": str(int(profile_pitch_shift)),
+        "x-vf-post-tts-age-group": str(profile.get("ageGroup") or "") if isinstance(profile, dict) else "",
+        "x-vf-post-tts-gender": str(profile.get("gender") or "") if isinstance(profile, dict) else "",
     }
     try:
         input_path.write_bytes(audio_bytes)
@@ -14683,6 +15636,7 @@ def _convert_tts_audio_with_llvc_runtime(
                 data={
                     "model_name": str(model_name),
                     "preset": _normalize_llvc_preset(VF_TTS_POST_LLVC_PRESET),
+                    "pitch_shift": str(int(profile_pitch_shift)),
                 },
                 timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
             )
@@ -14871,7 +15825,12 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 )
                 chunk_started_ms = int(time.time() * 1000)
                 try:
-                    runtime_response = requests.post(upstream_url, json=chunk_payload, timeout=240)
+                    runtime_response = _runtime_http_request(
+                        "POST",
+                        upstream_url,
+                        json=chunk_payload,
+                        timeout=VF_TTS_RUNTIME_TIMEOUT_SEC,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
                     _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=chunk_elapsed)
@@ -14967,14 +15926,12 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
                         _record_tts_live_chunk_llvc_latency(elapsed_ms=conversion_elapsed_ms)
                         if VF_TTS_POST_LLVC_REQUIRED:
-                            detail = {
-                                "error": f"Post-TTS conversion failed: {exc}",
-                                "errorCode": ENGINE_OVERLOADED,
-                                "reason": "post_tts_conversion_failed",
-                                "trace_id": trace_id,
-                                "jobId": job_id,
-                                "chunkIndex": int(chunk_index),
-                            }
+                            detail = _post_tts_conversion_failure_detail(
+                                exc=exc,
+                                trace_id=trace_id,
+                                job_id=job_id,
+                                chunk_index=int(chunk_index),
+                            )
                             _mark_job_failed_and_revert_usage(
                                 job_id=job_id,
                                 uid=uid,
@@ -15122,12 +16079,18 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             completed_headers.update(post_conversion_headers)
             completed_headers["x-vf-live-stream"] = "1"
             completed_headers["x-vf-live-chunks"] = str(len(chunk_audio_bytes))
+            result_ref = _persist_tts_result_audio(
+                job_id,
+                synthesized_audio_bytes,
+                str(media_type or "audio/wav"),
+            )
 
             _TTS_JOB_QUEUE.mark_completed(
                 job_id,
                 audio_bytes=synthesized_audio_bytes,
                 media_type=str(media_type or "audio/wav"),
                 headers=completed_headers,
+                result_ref=result_ref,
             )
             _record_tts_terminal_event(
                 job_id=job_id,
@@ -15140,7 +16103,12 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
 
         runtime_started = int(time.time() * 1000)
         try:
-            runtime_response = requests.post(upstream_url, json=upstream_payload, timeout=240)
+            runtime_response = _runtime_http_request(
+                "POST",
+                upstream_url,
+                json=upstream_payload,
+                timeout=VF_TTS_RUNTIME_TIMEOUT_SEC,
+            )
         except Exception as exc:  # noqa: BLE001
             runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started)
             _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=runtime_elapsed)
@@ -15249,13 +16217,11 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 post_conversion_headers.update(conversion_headers)
             except Exception as exc:
                 if VF_TTS_POST_LLVC_REQUIRED:
-                    detail = {
-                        "error": f"Post-TTS conversion failed: {exc}",
-                        "errorCode": ENGINE_OVERLOADED,
-                        "reason": "post_tts_conversion_failed",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                    }
+                    detail = _post_tts_conversion_failure_detail(
+                        exc=exc,
+                        trace_id=trace_id,
+                        job_id=job_id,
+                    )
                     _mark_job_failed_and_revert_usage(
                         job_id=job_id,
                         uid=uid,
@@ -15316,12 +16282,19 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
         if diagnostics:
             completed_headers["x-voiceflow-diagnostics"] = diagnostics
         completed_headers.update(post_conversion_headers)
+        media_type = str(runtime_response.headers.get("content-type") or "audio/wav")
+        result_ref = _persist_tts_result_audio(
+            job_id,
+            synthesized_audio_bytes,
+            media_type,
+        )
 
         _TTS_JOB_QUEUE.mark_completed(
             job_id,
             audio_bytes=synthesized_audio_bytes,
-            media_type=str(runtime_response.headers.get("content-type") or "audio/wav"),
+            media_type=media_type,
             headers=completed_headers,
+            result_ref=result_ref,
         )
         _record_tts_terminal_event(
             job_id=job_id,
@@ -15423,7 +16396,12 @@ def _tts_job_status_payload(
         payload["statusCode"] = int(job.get("statusCode") or 500)
         payload["error"] = job.get("error")
     if include_result and status == "completed":
-        payload["result"] = job.get("result")
+        result = dict(job.get("result") or {}) if isinstance(job.get("result"), dict) else {}
+        if result and not str(result.get("audioBase64") or "").strip():
+            resolved = _resolve_tts_result_audio_bytes(result)
+            if resolved:
+                result["audioBase64"] = base64.b64encode(resolved).decode("ascii")
+        payload["result"] = result
 
     live_state = job.get("liveState") if isinstance(job.get("liveState"), dict) else {}
     live_stream_requested = bool(job.get("liveStream"))
@@ -15494,13 +16472,15 @@ def _tts_job_status_payload(
         ][:safe_limit]
         chunk_payloads: list[dict[str, Any]] = []
         for item in visible:
+            safe_index = int(item.get("index") or 0)
             chunk_item = {
-                "index": int(item.get("index") or 0),
+                "index": safe_index,
                 "contentType": str(item.get("contentType") or "audio/wav"),
                 "durationMs": int(item.get("durationMs") or 0),
                 "textChars": int(item.get("textChars") or 0),
                 "engine": str(item.get("engine") or ""),
                 "traceId": str(item.get("traceId") or ""),
+                "downloadUrl": f"/tts/jobs/{str(job.get('jobId') or '')}/chunks/{safe_index}",
             }
             if include_chunk_audio:
                 chunk_item["audioBase64"] = _load_live_chunk_audio_base64(item)
@@ -15513,13 +16493,9 @@ def _tts_job_status_payload(
 
 def _response_from_completed_tts_job(job: dict[str, Any], gateway_lease: Optional[_TtsGatewayLease]) -> Response:
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    audio_base64 = str(result.get("audioBase64") or "").strip()
-    if not audio_base64:
+    content = _resolve_tts_result_audio_bytes(result)
+    if not content:
         raise HTTPException(status_code=500, detail="Completed TTS job is missing audio payload.")
-    try:
-        content = base64.b64decode(audio_base64.encode("ascii"), validate=False)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Failed to decode TTS job audio payload: {exc}") from exc
 
     media_type = str(result.get("mediaType") or "audio/wav")
     out_headers: dict[str, str] = {}
@@ -15547,6 +16523,9 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
     safe_sync_wait_ms = max(0, min(60_000, int(sync_wait_ms)))
     uid = _require_request_uid(request)
     admin_limit_bypass = _request_is_admin(request, uid)
+    # Enforce one-time userId completion before protected synthesis routes for non-admin users.
+    if not admin_limit_bypass:
+        _require_user_id_ready(request, uid)
     text = str(payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required.")
@@ -15589,6 +16568,7 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
         _ = reserve
         _ensure_tts_workers_started()
         _cleanup_expired_live_artifacts()
+        _cleanup_expired_tts_result_artifacts()
 
         runtime_base = _runtime_url_for_engine(engine)
         runtime_path = _runtime_synthesize_path_for_engine(engine)
@@ -15796,6 +16776,36 @@ def tts_job_status(
     )
 
 
+@app.get("/tts/jobs/{job_id}/chunks/{chunk_index}")
+def tts_job_chunk_download(job_id: str, chunk_index: int, request: Request) -> Response:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        raise HTTPException(status_code=400, detail="Missing job id.")
+    job = _TTS_JOB_QUEUE.get(safe_job_id)
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
+
+    chunk_meta = _resolve_tts_job_chunk(job, chunk_index)
+    if not isinstance(chunk_meta, dict):
+        raise HTTPException(status_code=404, detail="Chunk not found.")
+
+    chunk_path = Path(str(chunk_meta.get("path") or "")).resolve()
+    if not chunk_path.exists() or not chunk_path.is_file():
+        raise HTTPException(status_code=404, detail="Chunk file not found.")
+
+    media_type = str(chunk_meta.get("contentType") or "audio/wav")
+    return FileResponse(
+        str(chunk_path),
+        media_type=media_type,
+        filename=f"{safe_job_id}_chunk_{max(0, int(chunk_index)):04d}.wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.delete("/tts/jobs/{job_id}")
 def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
@@ -15812,6 +16822,7 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
     if not isinstance(cancelled, dict):
         raise HTTPException(status_code=404, detail="Job not found.")
     _cleanup_live_artifacts(safe_job_id)
+    _cleanup_tts_result_artifact(safe_job_id)
     _record_tts_terminal_event(
         job_id=safe_job_id,
         engine=str(cancelled.get("engine") or "GEM"),
@@ -15967,22 +16978,18 @@ async def extract_audio_from_video(
             detail=f"Expected video file, got {content_type or 'unknown type'}. Supported: MP4, WebM, MKV, AVI, MOV, FLV, WMV, etc."
         )
 
-    payload = await file.read()
-    if not payload:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(payload) > 500 * 1024 * 1024:  # 500MB limit for video files
-        raise HTTPException(
-            status_code=413,
-            detail="Video file is too large. Maximum 500MB."
-        )
-
     # Save uploaded video to temporary file
     temp_dir = tempfile.mkdtemp(prefix="audio_extract_")
     input_path = Path(temp_dir) / _safe_upload_name(file.filename, "video_input.mp4")
     
     try:
-        # Write uploaded video data to temp file
-        input_path.write_bytes(payload)
+        written_bytes = await _write_upload_file_chunked(
+            file,
+            input_path,
+            max_bytes=500 * 1024 * 1024,
+        )
+        if written_bytes <= 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
         
         # Verify file is readable by FFmpeg
         if not input_path.exists() or input_path.stat().st_size == 0:
@@ -16343,7 +17350,7 @@ def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
 
     base_url = KOKORO_RUNTIME_URL
     try:
-        response = requests.get(f"{base_url}/v1/voices", timeout=15)
+        response = _runtime_http_request("GET", f"{base_url}/v1/voices", timeout=15)
         if not response.ok:
             return []
         payload = response.json()
@@ -16402,7 +17409,12 @@ def _synthesize_runtime_tts(
             "speed": 1.0,
             "trace_id": trace_id,
         }
-        response = requests.post(f"{KOKORO_RUNTIME_URL}/synthesize", json=payload, timeout=120)
+        response = _runtime_http_request(
+            "POST",
+            f"{KOKORO_RUNTIME_URL}/synthesize",
+            json=payload,
+            timeout=min(VF_TTS_RUNTIME_TIMEOUT_SEC, 120),
+        )
     else:
         payload = {
             "text": text,
@@ -16414,7 +17426,12 @@ def _synthesize_runtime_tts(
             "speed": 1.0,
             "trace_id": trace_id,
         }
-        response = requests.post(f"{GEMINI_RUNTIME_URL}/synthesize", json=payload, timeout=120)
+        response = _runtime_http_request(
+            "POST",
+            f"{GEMINI_RUNTIME_URL}/synthesize",
+            json=payload,
+            timeout=min(VF_TTS_RUNTIME_TIMEOUT_SEC, 120),
+        )
 
     if not response.ok:
         raise RuntimeError(f"{engine} runtime failed: {response.status_code} {response.text[:160]}")
@@ -16555,7 +17572,7 @@ def _default_engine_for_tts_route(tts_route: str) -> str:
 
 
 def _resolve_engine_executed_from_requests(tts_requests: list[dict[str, Any]]) -> str:
-    counts: dict[str, int] = {"GEM": 0, "NEURAL2": 0, "KOKORO": 0}
+    counts: dict[str, int] = {"GEM": 0, "GOOD": 0, "NEURAL2": 0, "KOKORO": 0}
     first_seen = ""
     for request_item in tts_requests:
         raw_engine = str(request_item.get("engine") or "").strip()
@@ -17116,8 +18133,9 @@ async def video_transcribe(
     temp_dir = tempfile.mkdtemp(prefix="vf_transcribe_")
     source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source")
     try:
-        with source_path.open("wb") as handle:
-            handle.write(await file.read())
+        written_bytes = await _write_upload_file_chunked(file, source_path)
+        if written_bytes <= 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
         _ = speaker_label  # Accepted for backward compatibility.
         effective_include_emotion = bool(include_emotion)
@@ -17183,8 +18201,9 @@ async def video_separate_stem(
     temp_dir = tempfile.mkdtemp(prefix="vf_separate_upload_")
     source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source")
     try:
-        with source_path.open("wb") as handle:
-            handle.write(await file.read())
+        written_bytes = await _write_upload_file_chunked(file, source_path)
+        if written_bytes <= 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
         speech_path, background_path, _cache_key = _ensure_source_separation(source_path, model_name)
         selected = speech_path if stem_token == "speech" else background_path
         return FileResponse(
@@ -17216,17 +18235,17 @@ async def video_mux_dub(
         _ = mix_with_video_audio  # Accepted for compatibility with legacy frontend payloads.
         video_path = Path(temp_dir) / _safe_upload_name(video.filename, "video")
         dub_path = Path(temp_dir) / _safe_upload_name(dub_audio.filename, "dub.wav")
-        with video_path.open("wb") as handle:
-            handle.write(await video.read())
-        with dub_path.open("wb") as handle:
-            handle.write(await dub_audio.read())
+        if await _write_upload_file_chunked(video, video_path) <= 0:
+            raise HTTPException(status_code=400, detail="Video file is empty.")
+        if await _write_upload_file_chunked(dub_audio, dub_path) <= 0:
+            raise HTTPException(status_code=400, detail="Dub audio file is empty.")
 
         mixed_path = Path(temp_dir) / "mixed.wav"
         ffmpeg = _get_ffmpeg_path()
         if background_audio is not None:
             bg_path = Path(temp_dir) / _safe_upload_name(background_audio.filename, "bg.wav")
-            with bg_path.open("wb") as handle:
-                handle.write(await background_audio.read())
+            if await _write_upload_file_chunked(background_audio, bg_path) <= 0:
+                raise HTTPException(status_code=400, detail="Background audio file is empty.")
             _run(
                 [
                     ffmpeg,
@@ -17296,11 +18315,11 @@ async def create_dubbing_job(
     output: str = Form("audio+video"),
 ) -> JSONResponse:
     job_id = uuid.uuid4().hex
-    job_dir = ARTIFACTS_DIR / "dubbing" / job_id
+    job_dir = DUBBING_OUTPUT_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     source_path = job_dir / _safe_upload_name(source_file.filename, "source")
-    with source_path.open("wb") as handle:
-        handle.write(await source_file.read())
+    if await _write_upload_file_chunked(source_file, source_path) <= 0:
+        raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
     try:
         voice_map_payload = json.loads(voice_map or "{}")
     except Exception:
@@ -17351,11 +18370,11 @@ async def create_dubbing_job_v2(
         raise HTTPException(status_code=400, detail="Unsupported mode. Use strict_full.")
 
     job_id = uuid.uuid4().hex
-    job_dir = ARTIFACTS_DIR / "dubbing" / job_id
+    job_dir = DUBBING_OUTPUT_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     source_path = job_dir / _safe_upload_name(source_file.filename, "source")
-    with source_path.open("wb") as handle:
-        handle.write(await source_file.read())
+    if await _write_upload_file_chunked(source_file, source_path) <= 0:
+        raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
 
     try:
         advanced_payload = json.loads(advanced or "{}")
@@ -17556,8 +18575,8 @@ async def convert_llvc(
     output_path = Path(temp_dir) / "output.wav"
 
     try:
-        with source_path.open("wb") as f:
-            f.write(await file.read())
+        if await _write_upload_file_chunked(file, source_path) <= 0:
+            raise HTTPException(status_code=400, detail="Uploaded source audio is empty.")
 
         _convert_media_to_wav(str(source_path), str(normalized_wav), sample_rate=40000)
 

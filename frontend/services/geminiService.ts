@@ -5,6 +5,7 @@ import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisCo
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
 import { resolveApiBaseUrl } from "../src/shared/api/config";
+import { fetchTtsJobChunkAudio } from "../src/shared/api/gatewayClient";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
 import {
   MAX_WORDS_PER_WINDOW,
@@ -242,9 +243,27 @@ const TEXT_MODELS_FALLBACK = [
   "gemma-3-1b",
 ];
 
-const TTS_MODELS_FALLBACK = [
-  "gemini-2.5-flash-preview-tts",
-];
+const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'GOOD' | 'NEURAL2', string[]> = {
+  GOOD: [
+    "gemini-2.5-flash-lite-preview-tts",
+    "gemini-2.5-flash-preview-tts",
+  ],
+  NEURAL2: [
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-flash-lite-preview-tts",
+  ],
+  GEM: [
+    "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-preview-tts",
+  ],
+};
+
+const resolveDirectTtsFallbackModels = (engine: string): string[] => {
+  const normalized = String(engine || '').trim().toUpperCase();
+  if (normalized === 'GOOD') return [...TTS_MODELS_FALLBACK_BY_ENGINE.GOOD];
+  if (normalized === 'NEURAL2') return [...TTS_MODELS_FALLBACK_BY_ENGINE.NEURAL2];
+  return [...TTS_MODELS_FALLBACK_BY_ENGINE.GEM];
+};
 
 const GEMINI_MODEL_DISCOVERY_TTL_MS = 10 * 60 * 1000;
 const GEMINI_MODEL_DISCOVERY_SCAN_LIMIT = 200;
@@ -932,6 +951,65 @@ export function guessGenderFromName(name: string): 'Male' | 'Female' | 'Unknown'
   return 'Unknown';
 }
 
+export type SpeakerAgeGroup = 'Child' | 'Adult' | 'Elderly' | 'Unknown';
+
+const CHILD_AGE_INDICATORS = [
+  'child', 'kid', 'boy', 'girl', 'teen', 'son', 'daughter', 'school', 'student',
+  'beta', 'bacha', 'bachi', 'ladka', 'ladki', 'baccha',
+];
+
+const ELDER_AGE_INDICATORS = [
+  'elder', 'elderly', 'old', 'senior', 'aged', 'grandpa', 'grandma', 'grandfather', 'grandmother',
+  'dada', 'dadi', 'nana', 'nani', 'uncle', 'aunty', 'auntie', 'buzurg', 'vridh',
+];
+
+const normalizeAgeGroupToken = (value: string): SpeakerAgeGroup => {
+  const token = String(value || '').trim().toLowerCase();
+  if (!token) return 'Unknown';
+  if (token.includes('young') && token.includes('adult')) return 'Adult';
+  if (token.includes('adult')) return 'Adult';
+  if (CHILD_AGE_INDICATORS.some((item) => token.includes(item))) return 'Child';
+  if (ELDER_AGE_INDICATORS.some((item) => token.includes(item))) return 'Elderly';
+  return 'Unknown';
+};
+
+export function guessAgeGroupFromSpeaker(name: string): SpeakerAgeGroup {
+  const raw = String(name || '').trim();
+  if (!raw) return 'Unknown';
+  const normalized = raw.toLowerCase();
+
+  if (
+    /(?:\u092c\u091a\u094d\u091a\u093e|\u092c\u091a\u094d\u091a\u0940|\u0932\u0921\u093c\u0915\u093e|\u0932\u0921\u093c\u0915\u0940|\u0915\u093f\u0936\u094b\u0930)/u.test(raw)
+  ) {
+    return 'Child';
+  }
+  if (
+    /(?:\u092c\u0941\u091c\u0941\u0930\u094d\u0917|\u0935\u0943\u0926\u094d\u0927|\u0926\u093e\u0926\u093e|\u0926\u093e\u0926\u0940|\u0928\u093e\u0928\u093e|\u0928\u093e\u0928\u0940)/u.test(raw)
+  ) {
+    return 'Elderly';
+  }
+
+  if (CHILD_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Child';
+  if (ELDER_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Elderly';
+  return 'Unknown';
+}
+
+const inferVoiceAgeGroup = (voice: { ageGroup?: string; name?: string; id?: string }): SpeakerAgeGroup => {
+  const fromAgeGroup = normalizeAgeGroupToken(String(voice?.ageGroup || ''));
+  if (fromAgeGroup !== 'Unknown') return fromAgeGroup;
+  const fromName = normalizeAgeGroupToken(String(voice?.name || ''));
+  if (fromName !== 'Unknown') return fromName;
+  return normalizeAgeGroupToken(String(voice?.id || ''));
+};
+
+const filterVoicesByAgeGroup = <T extends { ageGroup?: string; name?: string; id?: string }>(
+  voices: T[],
+  ageGroup: SpeakerAgeGroup
+): T[] => {
+  if (ageGroup === 'Unknown') return voices;
+  return voices.filter((voice) => inferVoiceAgeGroup(voice) === ageGroup);
+};
+
 // --- ROBUST REGEX FOR MULTI-SPEAKER & SFX ---
 // Supports multilingual names, mixed punctuation, and multi-tag headers:
 // "Mohan (Shouting, Crying): ...", "à¤®à¤¾à¤ (Angry): ...", "Narrator: ..."
@@ -953,6 +1031,46 @@ const normalizeSpeakerName = (raw: string): string => (
     .replace(/\s+/g, ' ')
     .trim()
 );
+
+export const normalizeSpeakerMapKey = (raw: string): string => (
+  normalizeSpeakerName(raw)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s._'-]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const findSpeakerMappingKey = (
+  speakerMapping: Record<string, string> | undefined,
+  speaker: string,
+): string => {
+  if (!speakerMapping || typeof speakerMapping !== 'object') return '';
+  const rawSpeaker = String(speaker || '');
+  if (!rawSpeaker.trim()) return '';
+  if (speakerMapping[rawSpeaker]) return rawSpeaker;
+  const trimmed = rawSpeaker.trim();
+  if (trimmed && speakerMapping[trimmed]) return trimmed;
+
+  const normalizedTarget = normalizeSpeakerMapKey(rawSpeaker);
+  if (!normalizedTarget) return '';
+
+  for (const key of Object.keys(speakerMapping)) {
+    if (!key) continue;
+    if (normalizeSpeakerMapKey(key) === normalizedTarget) {
+      return key;
+    }
+  }
+  return '';
+};
+
+export const resolveSpeakerMappedVoiceId = (
+  speakerMapping: Record<string, string> | undefined,
+  speaker: string,
+): string => {
+  const matchedKey = findSpeakerMappingKey(speakerMapping, speaker);
+  if (!matchedKey) return '';
+  return String(speakerMapping?.[matchedKey] || '').trim();
+};
 
 const isLikelySpeakerName = (name: string): boolean => {
   const normalized = normalizeSpeakerName(name);
@@ -1000,6 +1118,79 @@ const parseSpeakerLine = (line: string): ParsedSpeakerLine | null => {
     emotionTags: tags.emotionTags,
     crewTags: tags.crewTags,
   };
+};
+
+const INLINE_BRACKET_SPEAKER_REGEX = /\[([^\]\n:]{1,40})\]/g;
+const INLINE_BRACKET_SFX_TOKEN_REGEX = /^(sfx|sound|music|bgm|fx|noise|ambient|ambience)\b/i;
+
+const normalizeInlineBracketSpeakerScript = (text: string): string => {
+  const source = String(text || '').replace(/\r/g, '');
+  if (!source.includes('[') || !source.includes(']')) return source;
+
+  const lines = source.split('\n');
+  const normalizedLines: string[] = [];
+
+  for (const rawLine of lines) {
+    const trimmed = String(rawLine || '').trim();
+    if (!trimmed) {
+      normalizedLines.push('');
+      continue;
+    }
+    if (SFX_REGEX.test(trimmed) || parseSpeakerLine(trimmed)) {
+      normalizedLines.push(trimmed);
+      continue;
+    }
+
+    const allMarkers = Array.from(trimmed.matchAll(INLINE_BRACKET_SPEAKER_REGEX));
+    if (allMarkers.length === 0) {
+      normalizedLines.push(trimmed);
+      continue;
+    }
+
+    const leadingWhitespace = (String(rawLine || '').match(/^\s*/) || [''])[0].length;
+    const firstMarker = allMarkers[0];
+    if (!firstMarker || (firstMarker.index ?? -1) > leadingWhitespace) {
+      normalizedLines.push(trimmed);
+      continue;
+    }
+
+    const speakerMarkers = allMarkers
+      .map((marker) => {
+        const label = normalizeSpeakerName(String(marker[1] || ''));
+        if (!label || !isLikelySpeakerName(label)) return null;
+        if (INLINE_BRACKET_SFX_TOKEN_REGEX.test(label)) return null;
+        return {
+          speaker: label,
+          start: Number(marker.index || 0),
+          end: Number((marker.index || 0) + String(marker[0] || '').length),
+        };
+      })
+      .filter((item): item is { speaker: string; start: number; end: number } => Boolean(item));
+
+    if (speakerMarkers.length === 0) {
+      normalizedLines.push(trimmed);
+      continue;
+    }
+
+    const converted: string[] = [];
+    for (let i = 0; i < speakerMarkers.length; i += 1) {
+      const marker = speakerMarkers[i];
+      if (!marker) continue;
+      const nextStart = speakerMarkers[i + 1]?.start ?? trimmed.length;
+      let dialogue = trimmed.slice(marker.end, nextStart).trim();
+      if (dialogue.startsWith(':')) dialogue = dialogue.slice(1).trim();
+      if (!dialogue) continue;
+      converted.push(`${marker.speaker}: ${dialogue}`);
+    }
+
+    if (converted.length === 0) {
+      normalizedLines.push(trimmed);
+      continue;
+    }
+    normalizedLines.push(...converted);
+  }
+
+  return normalizedLines.join('\n');
 };
 
 const ATTRIBUTION_VERB_PATTERN =
@@ -1300,7 +1491,7 @@ const createProceduralSfxBuffer = (ctx: AudioContext, label: string): AudioBuffe
 };
 
 export function parseMultiSpeakerScript(text: string) {
-  const lines = text.split('\n');
+  const lines = normalizeInlineBracketSpeakerScript(text).split('\n');
   const uniqueSpeakers = new Map<string, string>();
   const crewTags = new Set<string>();
 
@@ -1332,7 +1523,7 @@ export const parseStudioDialogue = (text: string): {
   crewTags?: string[];
   emotionTags?: string[];
 }[] => {
-  const lines = text.split('\n');
+  const lines = normalizeInlineBracketSpeakerScript(text).split('\n');
   const segments: {
     speaker?: string;
     text: string;
@@ -1410,7 +1601,7 @@ export const parseScriptToSegments = (text: string): {
   crewTags?: string[] | undefined;
   emotionTags?: string[] | undefined;
 }[] => {
-  const lines = text.split('\n');
+  const lines = normalizeInlineBracketSpeakerScript(text).split('\n');
   const segments: {
     startTime: number;
     endTime?: number | undefined;
@@ -1976,15 +2167,19 @@ export const generateSpeech = async (
   const activeEngine =
     rawEngine === 'GEMINI'
       ? 'GEM'
+      : rawEngine === 'GOOD_RUNTIME' || rawEngine === 'GEMINI_2_5_LITE_TTS'
+        ? 'GOOD'
       : rawEngine === 'NEURAL_2' || rawEngine === 'NURAL2' || rawEngine === 'NURAL_2'
         ? 'NEURAL2'
       : rawEngine === 'KOKORO_RUNTIME'
         ? 'KOKORO'
         : rawEngine;
-  const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'NEURAL2';
+  const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'GOOD' || activeEngine === 'NEURAL2';
   const runtimeEngine: GenerationSettings['engine'] =
     activeEngine === 'KOKORO'
       ? 'KOKORO'
+      : activeEngine === 'GOOD'
+        ? 'GOOD'
       : activeEngine === 'NEURAL2'
         ? 'NEURAL2'
         : 'GEM';
@@ -2080,7 +2275,8 @@ export const generateSpeech = async (
     return truncateRuntimeErrorDetail(`${response.status} ${response.statusText}`);
   };
 
-  const TTS_GATEWAY_JOB_POLL_MS = 250;
+  const TTS_GATEWAY_JOB_POLL_MS = 500;
+  const TTS_GATEWAY_JOB_POLL_MAX_MS = 2500;
   const TTS_GATEWAY_JOB_TIMEOUT_MS = 180000;
   const TTS_GATEWAY_LIVE_CHUNK_CHARS = 180;
   const TTS_GATEWAY_LIVE_CHUNK_WORDS = 35;
@@ -2143,13 +2339,17 @@ export const generateSpeech = async (
     backendBase: string,
     jobId: string,
     runtimeLabel: string,
-    engine: 'GEM' | 'NEURAL2' | 'KOKORO'
+    engine: 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO'
   ): Promise<{ audioBytes: ArrayBuffer; responseHeaders: Record<string, string> }> => {
     const startedAt = Date.now();
     const encodedJobId = encodeURIComponent(jobId);
     let cancelled = false;
     let chunkCursor = 0;
     let chunkSupportEnabled = true;
+    let chunkInlineAudioFallback = false;
+    let chunkDownloadEnabled = true;
+    let pollDelayMs = TTS_GATEWAY_JOB_POLL_MS;
+    let lastStatus = '';
     const emittedChunkKeys = new Set<string>();
 
     while (Date.now() - startedAt < TTS_GATEWAY_JOB_TIMEOUT_MS) {
@@ -2166,7 +2366,7 @@ export const generateSpeech = async (
         searchParams.set('includeChunks', '1');
         searchParams.set('chunkCursor', String(Math.max(0, chunkCursor)));
         searchParams.set('chunkLimit', '2');
-        searchParams.set('includeChunkAudio', '1');
+        searchParams.set('includeChunkAudio', chunkInlineAudioFallback ? '1' : '0');
       }
       const response = await authFetch(
         `${backendBase}/tts/jobs/${encodedJobId}?${searchParams.toString()}`,
@@ -2184,6 +2384,10 @@ export const generateSpeech = async (
 
       const payload = await response.json().catch(() => null) as any;
       const status = String(payload?.status || '').trim().toLowerCase();
+      if (status && status !== lastStatus) {
+        pollDelayMs = TTS_GATEWAY_JOB_POLL_MS;
+        lastStatus = status;
+      }
       const queueAgeMs = Number(payload?.queueAgeMs || 0);
       const queueDepth = Number(payload?.queueDepthAtRead || 0);
       const elapsedMs = Math.max(1, Date.now() - startedAt);
@@ -2201,6 +2405,7 @@ export const generateSpeech = async (
         progressPct: softProgress,
       });
 
+      let emittedInThisPoll = 0;
       if (chunkSupportEnabled) {
         const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
         const responseChunkCursorNext = Number(payload?.chunkCursorNext);
@@ -2210,14 +2415,27 @@ export const generateSpeech = async (
           for (const rawChunk of chunks) {
             if (!rawChunk || typeof rawChunk !== 'object') continue;
             const index = Number((rawChunk as any).index);
-            const audioBase64 = String((rawChunk as any).audioBase64 || '').trim();
-            if (!Number.isFinite(index) || index < 0 || !audioBase64) continue;
+            if (!Number.isFinite(index) || index < 0) continue;
+            const safeIndex = Math.round(index);
             const key = `${jobId}:${Math.round(index)}`;
             if (emittedChunkKeys.has(key)) continue;
+
+            let audioBase64 = String((rawChunk as any).audioBase64 || '').trim();
+            if (!audioBase64 && chunkDownloadEnabled) {
+              try {
+                const chunkBytes = await fetchTtsJobChunkAudio(jobId, safeIndex, backendBase);
+                audioBase64 = await arrayBufferToBase64(chunkBytes);
+              } catch {
+                chunkDownloadEnabled = false;
+                chunkInlineAudioFallback = true;
+              }
+            }
+            if (!audioBase64) continue;
+
             emittedChunkKeys.add(key);
             emitGatewayAudioChunk({
               jobId,
-              index: Math.round(index),
+              index: safeIndex,
               engine,
               contentType: String((rawChunk as any).contentType || 'audio/wav'),
               durationMs: Number((rawChunk as any).durationMs || 0),
@@ -2225,6 +2443,7 @@ export const generateSpeech = async (
               traceId: String((rawChunk as any).traceId || payload?.traceId || ''),
               audioBase64,
             });
+            emittedInThisPoll += 1;
           }
           if (Number.isFinite(responseChunkCursorNext) && responseChunkCursorNext >= chunkCursor) {
             chunkCursor = Math.max(chunkCursor, Math.round(responseChunkCursorNext));
@@ -2278,7 +2497,12 @@ export const generateSpeech = async (
         throw new Error(`${runtimeLabel} was cancelled before completion.`);
       }
 
-      await sleepMs(TTS_GATEWAY_JOB_POLL_MS);
+      if (emittedInThisPoll > 0) {
+        pollDelayMs = TTS_GATEWAY_JOB_POLL_MS;
+      } else {
+        pollDelayMs = Math.min(TTS_GATEWAY_JOB_POLL_MAX_MS, Math.max(TTS_GATEWAY_JOB_POLL_MS, Math.round(pollDelayMs * 1.35)));
+      }
+      await sleepMs(pollDelayMs);
     }
     throw new Error(`${runtimeLabel} timed out while waiting for queued synthesis.`);
   };
@@ -2341,7 +2565,7 @@ export const generateSpeech = async (
   };
 
   const synthesizeViaBackendGateway = async (
-    engine: 'GEM' | 'NEURAL2' | 'KOKORO',
+    engine: 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO',
     runtimeUrl: string,
     endpointPath: string,
     payload: Record<string, unknown>,
@@ -2502,7 +2726,7 @@ export const generateSpeech = async (
   };
 
   const maybeSynthesizePrimaryLongText = async (
-    engine: 'GEM' | 'NEURAL2' | 'KOKORO',
+    engine: 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO',
     candidateText: string,
     synthesizeChunk: (
       chunkText: string,
@@ -2589,18 +2813,23 @@ export const generateSpeech = async (
   };
 
   const resolveGeminiVoiceForSpeaker = (speaker: string, fallbackVoice: string): string => {
-    const mappedId = settings.speakerMapping?.[speaker];
+    const mappedId = resolveSpeakerMappedVoiceId(settings.speakerMapping, speaker);
     if (mappedId) {
       return resolveGeminiVoiceName(mappedId, fallbackVoice);
     }
 
     const detectedGender = guessGenderFromName(speaker);
+    const detectedAgeGroup = guessAgeGroupFromSpeaker(speaker);
     const isHindiTarget = lang.startsWith('hi');
     let candidateVoices = VOICES.filter((voice) => (
       !isHindiTarget || /indian|hindi|india/i.test(`${voice.accent} ${voice.country || ''}`)
     ));
     if (candidateVoices.length === 0) candidateVoices = VOICES;
 
+    if (detectedAgeGroup !== 'Unknown') {
+      const ageVoices = filterVoicesByAgeGroup(candidateVoices, detectedAgeGroup);
+      if (ageVoices.length > 0) candidateVoices = ageVoices;
+    }
     if (detectedGender !== 'Unknown') {
       const genderVoices = candidateVoices.filter((voice) => voice.gender === detectedGender);
       if (genderVoices.length > 0) candidateVoices = genderVoices;
@@ -2778,8 +3007,8 @@ export const generateSpeech = async (
           let effectiveSpeed = settings.speed;
           
           if (hasExplicitSpeaker) {
-            if (settings.speakerMapping && settings.speakerMapping[speakerName]) {
-               const mappedId = settings.speakerMapping[speakerName];
+            const mappedId = resolveSpeakerMappedVoiceId(settings.speakerMapping, speakerName);
+            if (mappedId) {
                if (activeEngine === 'KOKORO' && runtimeVoiceCatalog.length > 0) {
                  const validIds = new Set(runtimeVoiceCatalog.map((voice) => voice.id));
                  const fallbackRuntimeVoiceId = runtimeVoiceCatalog[0]?.id || mappedId;
@@ -2829,6 +3058,12 @@ export const generateSpeech = async (
                if (candidates.length === 0) {
                  if (activeEngine === 'KOKORO') candidates = KOKORO_VOICES;
                  else candidates = VOICES;
+               }
+
+               const detectedAgeGroup = guessAgeGroupFromSpeaker(speakerName);
+               if (detectedAgeGroup !== 'Unknown') {
+                 const ageCandidates = filterVoicesByAgeGroup(candidates, detectedAgeGroup);
+                 if (ageCandidates.length > 0) candidates = ageCandidates;
                }
 
                // Filter by gender if known, otherwise use all
@@ -2976,7 +3211,6 @@ export const generateSpeech = async (
           style: normalizedRequest.style,
           trace_id: normalizedRequest.trace_id,
           speaker: speakerHint || undefined,
-          apiKey: resolveGeminiApiKey(settings) || undefined,
         },
         'Gemini runtime synthesis'
       );
@@ -3320,7 +3554,7 @@ export const generateSpeech = async (
       ai,
       geminiKey,
       'tts',
-      TTS_MODELS_FALLBACK
+      resolveDirectTtsFallbackModels(runtimeEngine)
     );
     
     let lastError: any = null;
