@@ -4,10 +4,10 @@ namespace: voiceflow
 resources:
   - namespace.yaml
   - redis-secret.example.yaml
+  - runtime-admin-secret.example.yaml
   - backend-configmap.yaml
   - api-deployment.yaml
   - api-hpa.yaml
   - worker-deployment.yaml
   - runtime-gemini.yaml
   - runtime-kokoro.yaml
-

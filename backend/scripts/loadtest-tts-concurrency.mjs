@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  buildAuditHeaders,
+  classifyAuditFailure,
+  fetchJsonWithTimeout,
+  isTransientFailureClass,
+  normalizeBaseUrl,
+  withBoundedRetry,
+} from './lib/audit-helpers.mjs';
 
 const ROOT = process.cwd();
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts', 'load');
-const DEFAULT_BASE_URL = String(process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
+const DEFAULT_BASE_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
 
 const asInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -52,9 +60,11 @@ const timeoutMs = Math.max(1_000, asInt(args.get('timeout-ms') || process.env.VF
 const pollMs = Math.max(100, asInt(args.get('poll-ms') || process.env.VF_LOAD_POLL_MS, 350));
 const syncWaitMs = Math.max(0, asInt(args.get('sync-wait-ms') || process.env.VF_LOAD_SYNC_WAIT_MS, 3_000));
 const textChars = Math.max(20, asInt(args.get('chars') || process.env.VF_LOAD_TEXT_CHARS, 100));
-const baseUrl = String(args.get('base-url') || DEFAULT_BASE_URL).replace(/\/+$/, '');
+const baseUrl = normalizeBaseUrl(args.get('base-url') || DEFAULT_BASE_URL, DEFAULT_BASE_URL);
 const uid = String(args.get('uid') || process.env.VF_LOAD_UID || 'load_test_user').trim() || 'load_test_user';
 const minCompletionRate = Number.parseFloat(String(args.get('min-completion-rate') || process.env.VF_LOAD_MIN_COMPLETION_RATE || '1'));
+const retryMax = Math.max(0, asInt(args.get('retry-max') || process.env.VF_LOAD_RETRY_MAX, 2));
+const retryBaseMs = Math.max(100, asInt(args.get('retry-base-ms') || process.env.VF_LOAD_RETRY_BASE_MS, 650));
 
 const splitRaw = String(args.get('engine-split') || process.env.VF_LOAD_ENGINE_SPLIT || 'gem=0.6,kokoro=0.4').toLowerCase();
 const splitTokens = splitRaw
@@ -77,10 +87,14 @@ if (weightSum <= 0) {
 }
 const gemRatio = gemWeight / (gemWeight + kokoroWeight);
 
+const { headers: authHeaders, auth: authContext } = buildAuditHeaders(
+  { Accept: 'application/json' },
+  { scriptName: 'test:load:50:node', defaultDevUid: uid }
+);
+
 const headers = {
+  ...authHeaders,
   'Content-Type': 'application/json',
-  Accept: 'application/json',
-  'x-dev-uid': uid,
 };
 
 const pickEngine = (index) => {
@@ -116,6 +130,41 @@ const parseBody = async (response) => {
   }
 };
 
+const classifyFailure = (statusCode, payload) => classifyAuditFailure({ status: statusCode, payload });
+
+const runPreflight = async () => {
+  const checks = [];
+  const targets = [
+    { name: 'health', url: `${baseUrl}/health` },
+    { name: 'enginesStatus', url: `${baseUrl}/tts/engines/status` },
+    { name: 'queueMetrics', url: `${baseUrl}/admin/tts/queue/metrics` },
+  ];
+
+  for (const target of targets) {
+    const result = await fetchJsonWithTimeout(
+      target.url,
+      {
+        method: 'GET',
+        headers: authHeaders,
+      },
+      Math.min(timeoutMs, 15_000),
+    );
+
+    checks.push({
+      name: target.name,
+      ok: result.ok,
+      status: result.status,
+      classification: classifyAuditFailure(result),
+      detail: result.ok ? '' : JSON.stringify(result.payload || '').slice(0, 500),
+    });
+  }
+
+  return {
+    ok: checks.every((entry) => entry.ok),
+    checks,
+  };
+};
+
 const terminalFromStatus = (status) => {
   const token = String(status || '').trim().toLowerCase();
   if (token === 'completed' || token === 'failed' || token === 'cancelled') return token;
@@ -140,6 +189,7 @@ const pollJobUntilTerminal = async (jobId, deadlineMs) => {
         statusCode: response.status,
         errorCode: body?.error?.errorCode || body?.detail?.errorCode || null,
         reason: body?.error?.reason || body?.detail?.reason || 'status_poll_failed',
+        failureClass: classifyFailure(response.status, body),
         attempts,
         elapsedMs: Date.now() - started,
       };
@@ -161,6 +211,7 @@ const pollJobUntilTerminal = async (jobId, deadlineMs) => {
         statusCode: Number(body?.statusCode || 500),
         errorCode: errorPayload?.errorCode || null,
         reason: errorPayload?.reason || jobStatus,
+        failureClass: classifyFailure(Number(body?.statusCode || 500), body),
         attempts,
         elapsedMs: Date.now() - started,
       };
@@ -173,6 +224,7 @@ const pollJobUntilTerminal = async (jobId, deadlineMs) => {
     statusCode: 0,
     errorCode: 'JOB_TIMEOUT',
     reason: 'terminal_poll_timeout',
+    failureClass: 'timeout',
     attempts,
     elapsedMs: Date.now() - started,
   };
@@ -220,6 +272,7 @@ const runJobsPath = async (engine, requestId) => {
       terminalStatus: 'failed',
       errorCode: body?.detail?.errorCode || body?.errorCode || null,
       reason: body?.detail?.reason || body?.reason || 'submit_failed',
+      failureClass: classifyFailure(response.status, body),
       responseBody: body,
     };
   }
@@ -256,6 +309,7 @@ const runJobsPath = async (engine, requestId) => {
     pollElapsedMs: poll.elapsedMs,
     errorCode: poll.errorCode || null,
     reason: poll.reason || null,
+    failureClass: poll.failureClass || null,
   };
 };
 
@@ -282,6 +336,7 @@ const runSyncPath = async (engine, requestId) => {
       terminalStatus: 'failed',
       errorCode: body?.detail?.errorCode || body?.errorCode || null,
       reason: body?.detail?.reason || body?.reason || 'sync_5xx',
+      failureClass: classifyFailure(response.status, body),
       responseBody: body,
     };
   }
@@ -316,6 +371,7 @@ const runSyncPath = async (engine, requestId) => {
       pollElapsedMs: poll.elapsedMs,
       errorCode: poll.errorCode || null,
       reason: poll.reason || null,
+      failureClass: poll.failureClass || null,
     };
   }
 
@@ -330,6 +386,7 @@ const runSyncPath = async (engine, requestId) => {
     terminalStatus: 'failed',
     errorCode: body?.detail?.errorCode || body?.errorCode || null,
     reason: body?.detail?.reason || body?.reason || 'unexpected_sync_status',
+    failureClass: classifyFailure(response.status, body),
     responseBody: body,
   };
 };
@@ -338,23 +395,34 @@ const runOne = async (index) => {
   const requestMode = pickModeForRequest(index);
   const engine = pickEngine(index);
   const requestId = `load_${requestMode}_${engine.toLowerCase()}_${Date.now().toString(36)}_${index}`;
-  try {
-    if (requestMode === 'jobs') return await runJobsPath(engine, requestId);
-    return await runSyncPath(engine, requestId);
-  } catch (error) {
-    return {
-      ok: false,
-      mode: requestMode,
-      engine,
-      requestId,
-      statusCode: 0,
-      elapsedMs: 0,
-      accepted: false,
-      terminalStatus: 'failed',
-      errorCode: error?.name === 'AbortError' ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR',
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  }
+
+  return withBoundedRetry(
+    async () => {
+      try {
+        if (requestMode === 'jobs') return await runJobsPath(engine, requestId);
+        return await runSyncPath(engine, requestId);
+      } catch (error) {
+        return {
+          ok: false,
+          mode: requestMode,
+          engine,
+          requestId,
+          statusCode: 0,
+          elapsedMs: 0,
+          accepted: false,
+          terminalStatus: 'failed',
+          errorCode: error?.name === 'AbortError' ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR',
+          reason: error instanceof Error ? error.message : String(error),
+          failureClass: error?.name === 'AbortError' ? 'timeout' : 'backend_unavailable',
+        };
+      }
+    },
+    {
+      maxRetries: retryMax,
+      baseDelayMs: retryBaseMs,
+      shouldRetry: (result) => !result.ok && isTransientFailureClass(String(result.failureClass || '')),
+    }
+  );
 };
 
 const percentile = (values, ratio) => {
@@ -364,7 +432,7 @@ const percentile = (values, ratio) => {
   return Number(sorted[index] || 0);
 };
 
-const summarize = (results, startedAt, finishedAt) => {
+const summarize = (results, startedAt, finishedAt, preflight) => {
   const statusCodes = {};
   const terminal = { completed: 0, failed: 0, cancelled: 0, timeout: 0, unknown: 0 };
   const latencyValues = [];
@@ -414,6 +482,7 @@ const summarize = (results, startedAt, finishedAt) => {
     target: {
       baseUrl,
       uid,
+      authMode: authContext.mode,
     },
     config: {
       mode,
@@ -428,7 +497,10 @@ const summarize = (results, startedAt, finishedAt) => {
         kokoro: Number((1 - gemRatio).toFixed(4)),
       },
       minCompletionRate,
+      retryMax,
+      retryBaseMs,
     },
+    preflight,
     totals: {
       requests: results.length,
       accepted,
@@ -464,6 +536,8 @@ const summarize = (results, startedAt, finishedAt) => {
         terminalStatus: item.terminalStatus,
         errorCode: item.errorCode || null,
         reason: item.reason || null,
+        failureClass: item.failureClass || null,
+        attempts: Number(item.attempts || 1),
         elapsedMs: item.elapsedMs,
       })),
   };
@@ -471,6 +545,29 @@ const summarize = (results, startedAt, finishedAt) => {
 
 const main = async () => {
   const startedAt = nowIso();
+  const preflight = await runPreflight();
+  if (!preflight.ok) {
+    const finishedAt = nowIso();
+    const report = summarize([], startedAt, finishedAt, preflight);
+    report.verdict.passed = false;
+    report.verdict.reasons = [
+      'preflight_failure',
+      ...preflight.checks.filter((entry) => !entry.ok).map((entry) => `${entry.name}:${entry.classification}:${entry.status}`),
+    ];
+
+    await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+    const artifactName = String(args.get('artifact') || `node-load-${mode}-c${concurrency}-${Date.now()}.json`);
+    const artifactPath = path.join(ARTIFACT_DIR, artifactName);
+    await fs.writeFile(artifactPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+
+    console.error('[loadtest-node] preflight failed.');
+    for (const check of preflight.checks.filter((entry) => !entry.ok)) {
+      console.error(`[loadtest-node][preflight] ${check.name} status=${check.status} class=${check.classification}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+
   let nextIndex = 0;
   const results = [];
   const workers = Array.from({ length: concurrency }, async () => {
@@ -485,7 +582,7 @@ const main = async () => {
 
   await Promise.all(workers);
   const finishedAt = nowIso();
-  const report = summarize(results, startedAt, finishedAt);
+  const report = summarize(results, startedAt, finishedAt, preflight);
 
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
   const artifactName = String(args.get('artifact') || `node-load-${mode}-c${concurrency}-${Date.now()}.json`);
@@ -503,7 +600,8 @@ const main = async () => {
     for (const reason of report.verdict.reasons) {
       console.error(`[loadtest-node][FAIL] ${reason}`);
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 };
 

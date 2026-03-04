@@ -102,6 +102,31 @@ def test_runtime_status_endpoint_is_auth_exempt(monkeypatch) -> None:
     assert payload.get("engines", {}).get("GEM", {}).get("engine") == "GEM"
 
 
+def test_protected_preflight_returns_cors_success(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    client = TestClient(backend_app.app)
+    headers = {
+        "Origin": "http://localhost:3000",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization,x-dev-uid",
+    }
+    response = client.options("/account/profile", headers=headers)
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert "GET" in str(response.headers.get("access-control-allow-methods") or "")
+    assert "authorization" in str(response.headers.get("access-control-allow-headers") or "").lower()
+
+
+def test_auth_401_response_includes_cors_headers(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    client = TestClient(backend_app.app)
+    response = client.get("/account/profile", headers={"Origin": "http://localhost:3000"})
+    assert response.status_code == 401
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
 def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)

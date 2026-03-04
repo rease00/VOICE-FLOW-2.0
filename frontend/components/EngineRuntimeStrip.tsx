@@ -14,6 +14,7 @@ interface EngineRuntimeStatus {
 interface EngineRuntimeStripProps {
   engineOrder: GenerationSettings['engine'][];
   statuses: Record<GenerationSettings['engine'], EngineRuntimeStatus>;
+  accessState?: { blocked: boolean; detail: string };
   activeEngine: GenerationSettings['engine'];
   switchingEngine: GenerationSettings['engine'] | null;
   resolvedTheme: 'light' | 'dark';
@@ -70,6 +71,7 @@ const getDotClasses = (tone: 'green' | 'orange' | 'red', resolvedTheme: 'light' 
 
 const getEngineAbbrev = (engine: GenerationSettings['engine']): string => {
   if (engine === 'GEM') return 'PR';
+  if (engine === 'GOOD') return 'GD';
   if (engine === 'NEURAL2') return 'HD';
   return 'BS';
 };
@@ -77,13 +79,14 @@ const getEngineAbbrev = (engine: GenerationSettings['engine']): string => {
 export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
   engineOrder,
   statuses,
+  accessState,
   activeEngine,
   switchingEngine,
   resolvedTheme,
   onActivate,
 }) => {
   return (
-    <div className="flex items-center gap-2 pr-1 whitespace-nowrap">
+    <div className="vf-runtime-strip flex items-center gap-2 pr-1 whitespace-nowrap">
       {engineOrder.map((engine) => {
         const status = statuses[engine] ?? { state: 'checking', detail: 'Checking runtime...' };
         const isActive = activeEngine === engine;
@@ -93,24 +96,36 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
         const indicatorClass = getIndicatorClasses(indicatorTone, resolvedTheme);
         const dotClass = getDotClasses(indicatorTone, resolvedTheme);
         const runtimeDetail = sanitizeUiText(status.detail || '');
+        const showAccessBlockedNote = status.state === 'online' && Boolean(accessState?.blocked);
+        const accessBlockedDetail = sanitizeUiText(
+          accessState?.detail || 'Sign in again to enable AI/TTS requests.'
+        );
+        const titleParts = [
+          getEngineDisplayName(engine),
+          pending ? 'Starting' : getRuntimeStateLabel(status.state),
+          runtimeDetail,
+        ];
+        if (showAccessBlockedNote) {
+          titleParts.push(`Access blocked: ${accessBlockedDetail}`);
+        }
 
         return (
           <button
             key={engine}
             onClick={() => onActivate(engine)}
             disabled={switchLocked || pending}
-            title={`${getEngineDisplayName(engine)} - ${pending ? 'Starting' : getRuntimeStateLabel(status.state)} - ${runtimeDetail}`}
-            aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}`}
-            className={`vf-runtime-chip group relative inline-flex h-9 min-w-[2.8rem] sm:min-w-[3.4rem] items-center justify-center gap-1 sm:gap-1.5 rounded-full border px-1.5 sm:px-2 transition-all ${
+            title={titleParts.filter(Boolean).join(' - ')}
+            aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}${showAccessBlockedNote ? '. Access blocked.' : ''}`}
+            className={`vf-runtime-chip group relative inline-flex h-9 min-w-[3rem] sm:min-w-[3.8rem] items-center justify-center gap-1.5 sm:gap-2 rounded-full border px-1.5 sm:px-2.5 transition-all ${
               resolvedTheme === 'dark'
                 ? 'bg-slate-950/35 hover:bg-slate-900/60'
                 : 'bg-white/70 hover:bg-white'
-            } ${indicatorClass} ${isActive ? 'vf-runtime-chip--active ring-2 ring-indigo-400/70' : ''} ${(switchLocked || pending) ? 'opacity-55 cursor-not-allowed' : ''} ${pending ? 'animate-pulse' : ''}`}
+            } ${indicatorClass} ${isActive ? 'vf-runtime-chip--active ring-2 ring-indigo-400/65' : ''} ${(switchLocked || pending) ? 'opacity-55 cursor-not-allowed' : ''} ${pending ? 'animate-pulse' : ''}`}
           >
-            <span className={`absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${dotClass}`} />
+            <span className={`vf-runtime-chip__dot absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${dotClass}`} />
             <EngineLogo engine={engine} size="sm" variant="filled" withGlow={isActive || pending} />
             <span
-              className={`text-[9px] font-black uppercase tracking-[0.08em] ${
+              className={`vf-runtime-chip__label text-[10px] font-black uppercase tracking-[0.09em] ${
                 resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-700'
               }`}
             >

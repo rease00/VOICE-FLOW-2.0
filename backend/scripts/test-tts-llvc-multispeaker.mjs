@@ -2,13 +2,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { buildAuditHeaders, normalizeBaseUrl } from './lib/audit-helpers.mjs';
 
 const ROOT = process.cwd();
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts');
 const REPORT_PATH = path.join(ARTIFACT_DIR, 'tts_llvc_multispeaker_report.json');
 const AUDIO_DIR = path.join(ARTIFACT_DIR, 'tts_llvc_multispeaker_audio');
 
-const BACKEND_URL = String(process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
+const BACKEND_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
 const TEST_UID = String(process.env.VF_MULTI_TEST_UID || 'local_admin').trim() || 'local_admin';
 const WAIT_MS = parsePositiveInt(process.env.VF_MULTI_TEST_WAIT_MS, 25_000, 1_000, 60_000);
 const REQUEST_TIMEOUT_MS = parsePositiveInt(process.env.VF_MULTI_TEST_REQUEST_TIMEOUT_MS, 80_000, 5_000, 180_000);
@@ -20,6 +21,10 @@ const SAVE_AUDIO = parseBool(process.env.VF_MULTI_TEST_SAVE_AUDIO, false);
 const REQUIRE_POST_LLVC = parseBool(process.env.VF_MULTI_TEST_REQUIRE_POST_LLVC, false);
 const MIN_AUDIO_BYTES = parsePositiveInt(process.env.VF_MULTI_TEST_MIN_AUDIO_BYTES, 512, 64, 32_000);
 const GEM_FALLBACK_RUNTIME_VOICES = ['achernar', 'charon', 'kore', 'fenrir', 'achird', 'aoede'];
+const { headers: AUDIT_AUTH_HEADERS, auth: AUDIT_AUTH } = buildAuditHeaders(
+  { Accept: 'application/json' },
+  { scriptName: 'test:tts:llvc:multispeaker', defaultDevUid: TEST_UID }
+);
 
 function parsePositiveInt(raw, fallback, min, max) {
   const parsed = Number(raw);
@@ -88,7 +93,7 @@ async function fetchJson(url, timeoutMs = REQUEST_TIMEOUT_MS) {
     url,
     {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: AUDIT_AUTH_HEADERS,
     },
     timeoutMs
   );
@@ -201,10 +206,7 @@ async function pollJobUntilComplete(jobId, report) {
       `${BACKEND_URL}/tts/jobs/${encodeURIComponent(jobId)}?includeResult=1&includeChunks=1&chunkCursor=${encodeURIComponent(String(chunkCursor))}&chunkLimit=2&includeChunkAudio=0`,
       {
         method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          'x-dev-uid': TEST_UID,
-        },
+        headers: AUDIT_AUTH_HEADERS,
       },
       REQUEST_TIMEOUT_MS
     );
@@ -288,9 +290,9 @@ async function synthesizeOnce(payload, report) {
     {
       method: 'POST',
       headers: {
+        ...AUDIT_AUTH_HEADERS,
         'Content-Type': 'application/json',
         Accept: 'application/json, audio/wav',
-        'x-dev-uid': TEST_UID,
       },
       body: JSON.stringify({
         ...payload,
@@ -341,6 +343,7 @@ async function main() {
     startedAt,
     backendUrl: BACKEND_URL,
     testUid: TEST_UID,
+    authMode: AUDIT_AUTH.mode,
     settings: {
       waitMs: WAIT_MS,
       requestTimeoutMs: REQUEST_TIMEOUT_MS,
@@ -609,7 +612,7 @@ async function main() {
           `${BACKEND_URL}/llvc/convert`,
           {
             method: 'POST',
-            headers: { 'x-dev-uid': TEST_UID },
+            headers: AUDIT_AUTH_HEADERS,
             body: form,
           },
           REQUEST_TIMEOUT_MS

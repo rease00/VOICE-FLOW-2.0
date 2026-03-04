@@ -14,6 +14,30 @@ export class HttpError extends Error {
   }
 }
 
+const SENSITIVE_INFRA_DETAIL_PATTERNS = [
+  'service_disabled',
+  'firestore.googleapis.com',
+  'googleapis.com',
+  'metadata { key:',
+  'activationurl',
+  'traceback',
+];
+
+const toSafeHttpErrorDetail = (rawDetail: string, status: number, statusText: string): string => {
+  const detail = String(rawDetail || '').trim();
+  const lowered = detail.toLowerCase();
+  if (!detail) {
+    return `${status} ${statusText}`.trim();
+  }
+  if (
+    lowered.includes('failed to save user profile') ||
+    SENSITIVE_INFRA_DETAIL_PATTERNS.some((token) => lowered.includes(token))
+  ) {
+    return 'Profile service is temporarily unavailable. Please try again in a few minutes.';
+  }
+  return detail;
+};
+
 export const parseResponseError = async (response: Response): Promise<HttpError> => {
   let detail = `${response.status} ${response.statusText}`;
   try {
@@ -23,7 +47,11 @@ export const parseResponseError = async (response: Response): Promise<HttpError>
   } catch {
     // no-op
   }
-  return new HttpError(response.status, response.statusText, detail);
+  return new HttpError(
+    response.status,
+    response.statusText,
+    toSafeHttpErrorDetail(detail, response.status, response.statusText)
+  );
 };
 
 export const readJsonOrThrow = async <T>(response: Response): Promise<T> => {

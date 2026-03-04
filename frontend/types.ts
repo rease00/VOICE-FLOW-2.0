@@ -1,6 +1,7 @@
 export enum AppScreen {
   ONBOARDING = 'ONBOARDING',
   LOGIN = 'LOGIN',
+  USER_ID_SETUP = 'USER_ID_SETUP',
   MAIN = 'MAIN',
   PROFILE = 'PROFILE',
 }
@@ -13,7 +14,7 @@ export interface VoiceOption {
   geminiVoiceName: string;
   country?: string;
   ageGroup?: string;
-  engine?: 'GEM' | 'KOKORO';
+  engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD';
   source?: string;
   isDownloaded?: boolean;
   isCloned?: boolean;
@@ -83,8 +84,8 @@ export interface GenerationSettings {
   emotionRefId?: string | undefined;
   emotionStrength?: number | undefined;
 
-  // TTS engine (two-engine contract only)
-  engine: 'GEM' | 'KOKORO';
+  // TTS engine
+  engine: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD';
 
   // Assistant provider
   helperProvider: 'GEMINI' | 'PERPLEXITY' | 'LOCAL';
@@ -345,6 +346,7 @@ export interface UserProfile {
   name: string;
   email: string;
   avatarUrl?: string | undefined;
+  userId?: string | undefined;
   username?: string | undefined;
   role?: 'user' | 'admin' | undefined;
   isAdmin?: boolean | undefined;
@@ -360,7 +362,7 @@ export interface HistoryItem {
   voiceName: string;
   timestamp: number;
   duration?: string | undefined;
-  engine?: 'GEM' | 'KOKORO' | undefined;
+  engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD' | undefined;
   chars?: number | undefined;
   requestId?: string | undefined;
   traceId?: string | undefined;
@@ -392,11 +394,11 @@ export interface UserContextType {
   deleteCharacter: (id: string) => void;
   getVoiceForCharacter: (name: string) => string | undefined;
 
-  signInWithEmail: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  signUpWithEmail: (email: string, password: string, displayName?: string) => Promise<{ ok: boolean; error?: string }>;
+  signInWithEmail: (email: string, password: string) => Promise<{ ok: boolean; error?: string; requiresUserIdSetup?: boolean }>;
+  signUpWithEmail: (email: string, password: string, displayName?: string, userId?: string) => Promise<{ ok: boolean; error?: string }>;
   requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
   signOutUser: () => Promise<void>;
-  signInWithGoogle: () => Promise<{ ok: boolean; error?: string }>;
+  signInWithGoogle: () => Promise<{ ok: boolean; error?: string; requiresUserIdSetup?: boolean }>;
   signInWithFacebook: () => Promise<{ ok: boolean; error?: string }>;
   startPhoneSignIn: (
     phoneNumber: string,

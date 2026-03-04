@@ -72,8 +72,12 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   const subtitleToneClass = tone === 'light' ? 'text-slate-400' : 'text-slate-500';
 
   return (
-    <div className={`inline-flex items-center ${spec.gap} ${className}`}>
-      <span className={`vf-brand-mark vf-brand-mark--live relative inline-flex shrink-0 ${spec.mark} ${spec.markClass}`} aria-hidden="true">
+    <div className={`inline-flex items-center ${spec.gap} ${className}`} data-testid="brand-logo">
+      <span
+        className={`vf-brand-mark vf-brand-mark--live relative inline-flex shrink-0 ${spec.mark} ${spec.markClass}`}
+        aria-hidden="true"
+        data-testid="brand-logo-mark"
+      >
         <span className="vf-brand-mark__orb" />
         <span className="vf-brand-mark__shell">
           <span className="vf-brand-mark__core">
@@ -88,7 +92,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
         </span>
       </span>
       {showWordmark && (
-        <span className="flex min-w-0 flex-col leading-none">
+        <span className="flex min-w-0 flex-col leading-none" data-testid="brand-logo-wordmark">
           <span className={`truncate ${spec.title} font-extrabold tracking-tight ${titleToneClass}`}>VoiceFlow</span>
           <span className={`mt-1 truncate font-mono font-bold uppercase ${spec.subtitle} ${subtitleToneClass}`}>AI Studio</span>
         </span>

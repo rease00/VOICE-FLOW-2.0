@@ -109,6 +109,20 @@ const readSettingsBackendUrl = (): string => {
   return resolveApiBaseUrl(parsed?.mediaBackendUrl);
 };
 
+const isBearerTokenAuthMismatch = (error: unknown): boolean => {
+  const message = String((error as { message?: string })?.message || error || '').trim().toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes('missing bearer token') ||
+    message.includes('invalid auth token') ||
+    message.includes('auth token did not include uid')
+  );
+};
+
+const localAdminBackendAuthMismatchMessage =
+  'Local admin login is enabled in frontend, but backend auth enforcement is ON. ' +
+  'Set VF_AUTH_ENFORCE=0 for local admin mode, or disable local admin login and sign in with Firebase.';
+
 const normalizeStoredStats = (stored: any): UserStats => {
   const walletFallback = createEmptyWalletStats();
   const merged: UserStats = {
@@ -124,9 +138,10 @@ const normalizeStoredStats = (stored: any): UserStats => {
       ...walletFallback,
       ...(stored?.wallet || {}),
       spendableNowByEngine: {
-        GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
-        NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
         KOKORO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.KOKORO ?? walletFallback.spendableNowByEngine.KOKORO)),
+        GOOD: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GOOD ?? walletFallback.spendableNowByEngine.GOOD)),
+        NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
+        GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
       },
     },
   };
@@ -139,9 +154,10 @@ const mapEntitlementRatesToUsage = (
 ): UserStats['vfUsage']['rates'] => {
   const vfRates = entitlements?.limits?.vfRates || {};
   return {
-    GEM: Number.isFinite(vfRates.GEM) ? Math.max(0, Number(vfRates.GEM)) : fallback.GEM,
-    NEURAL2: Number.isFinite(vfRates.NEURAL2) ? Math.max(0, Number(vfRates.NEURAL2)) : fallback.NEURAL2,
     KOKORO: Number.isFinite(vfRates.KOKORO) ? Math.max(0, Number(vfRates.KOKORO)) : fallback.KOKORO,
+    GOOD: Number.isFinite(vfRates.GOOD) ? Math.max(0, Number(vfRates.GOOD)) : fallback.GOOD,
+    NEURAL2: Number.isFinite(vfRates.NEURAL2) ? Math.max(0, Number(vfRates.NEURAL2)) : fallback.NEURAL2,
+    GEM: Number.isFinite(vfRates.GEM) ? Math.max(0, Number(vfRates.GEM)) : fallback.GEM,
   };
 };
 
@@ -172,17 +188,21 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.daily?.vfUsed || 0)),
         byEngine: {
           ...usage.daily.byEngine,
-          GEM: {
-            chars: Math.max(0, Number(dailyByEngine?.GEM?.chars || 0)),
-            vf: Math.max(0, Number(dailyByEngine?.GEM?.vf || 0)),
+          KOKORO: {
+            chars: Math.max(0, Number(dailyByEngine?.KOKORO?.chars || 0)),
+            vf: Math.max(0, Number(dailyByEngine?.KOKORO?.vf || 0)),
+          },
+          GOOD: {
+            chars: Math.max(0, Number(dailyByEngine?.GOOD?.chars || 0)),
+            vf: Math.max(0, Number(dailyByEngine?.GOOD?.vf || 0)),
           },
           NEURAL2: {
             chars: Math.max(0, Number(dailyByEngine?.NEURAL2?.chars || 0)),
             vf: Math.max(0, Number(dailyByEngine?.NEURAL2?.vf || 0)),
           },
-          KOKORO: {
-            chars: Math.max(0, Number(dailyByEngine?.KOKORO?.chars || 0)),
-            vf: Math.max(0, Number(dailyByEngine?.KOKORO?.vf || 0)),
+          GEM: {
+            chars: Math.max(0, Number(dailyByEngine?.GEM?.chars || 0)),
+            vf: Math.max(0, Number(dailyByEngine?.GEM?.vf || 0)),
           },
         },
       },
@@ -193,17 +213,21 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.monthly?.vfUsed || 0)),
         byEngine: {
           ...usage.monthly.byEngine,
-          GEM: {
-            chars: Math.max(0, Number(monthlyByEngine?.GEM?.chars || 0)),
-            vf: Math.max(0, Number(monthlyByEngine?.GEM?.vf || 0)),
+          KOKORO: {
+            chars: Math.max(0, Number(monthlyByEngine?.KOKORO?.chars || 0)),
+            vf: Math.max(0, Number(monthlyByEngine?.KOKORO?.vf || 0)),
+          },
+          GOOD: {
+            chars: Math.max(0, Number(monthlyByEngine?.GOOD?.chars || 0)),
+            vf: Math.max(0, Number(monthlyByEngine?.GOOD?.vf || 0)),
           },
           NEURAL2: {
             chars: Math.max(0, Number(monthlyByEngine?.NEURAL2?.chars || 0)),
             vf: Math.max(0, Number(monthlyByEngine?.NEURAL2?.vf || 0)),
           },
-          KOKORO: {
-            chars: Math.max(0, Number(monthlyByEngine?.KOKORO?.chars || 0)),
-            vf: Math.max(0, Number(monthlyByEngine?.KOKORO?.vf || 0)),
+          GEM: {
+            chars: Math.max(0, Number(monthlyByEngine?.GEM?.chars || 0)),
+            vf: Math.max(0, Number(monthlyByEngine?.GEM?.vf || 0)),
           },
         },
       },
@@ -214,9 +238,10 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       vffBalance: Math.max(0, Number(wallet.vffBalance || 0)),
       paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
       spendableNowByEngine: {
-        GEM: Math.max(0, Number(wallet.spendableNowByEngine?.GEM || 0)),
-        NEURAL2: Math.max(0, Number(wallet.spendableNowByEngine?.NEURAL2 || 0)),
         KOKORO: Math.max(0, Number(wallet.spendableNowByEngine?.KOKORO || 0)),
+        GOOD: Math.max(0, Number(wallet.spendableNowByEngine?.GOOD || 0)),
+        NEURAL2: Math.max(0, Number(wallet.spendableNowByEngine?.NEURAL2 || 0)),
+        GEM: Math.max(0, Number(wallet.spendableNowByEngine?.GEM || 0)),
       },
       adClaimsToday: Math.max(0, Number(wallet.adClaimsToday || 0)),
       adClaimsDailyLimit: Math.max(1, Number(wallet.adClaimsDailyLimit || walletFallback.adClaimsDailyLimit)),
@@ -314,11 +339,33 @@ const requireFirebaseConfigForAuth = (): string | null => {
 
 const mapFirebaseAuthError = (error: any): string => {
   const code = String(error?.code || '').trim().toLowerCase();
+  const rawMessage = String(error?.message || '').trim();
+  const loweredMessage = rawMessage.toLowerCase();
   if (code === 'auth/api-key-not-valid' || code === 'auth/invalid-api-key') {
     return resolveFirebaseConfigIssue();
   }
   if (code === 'auth/invalid-email') {
     return 'Use a valid email address. For local admin login, use the configured local admin username.';
+  }
+  if (code === 'auth/network-request-failed' || loweredMessage.includes('network-request-failed')) {
+    return 'Cannot reach authentication service right now. Check internet connection, then retry.';
+  }
+  if (
+    loweredMessage.includes('cannot reach backend') ||
+    loweredMessage.includes('backend gateway is unreachable') ||
+    loweredMessage.includes('failed to fetch') ||
+    loweredMessage.includes('fetch failed')
+  ) {
+    return 'Cannot connect to backend service right now. Check backend URL/network and retry.';
+  }
+  if (code === 'auth/email-already-in-use') {
+    return 'This email is already registered. Use Login or reset password.';
+  }
+  if (code === 'auth/weak-password') {
+    return 'Password is too weak. Use at least 6 characters.';
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return 'Email/password authentication is not enabled for this project.';
   }
   if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
     return 'Invalid email or password.';
@@ -326,7 +373,19 @@ const mapFirebaseAuthError = (error: any): string => {
   if (code === 'auth/too-many-requests') {
     return 'Too many attempts. Wait a minute and retry.';
   }
-  return String(error?.message || 'Authentication failed.');
+  if (
+    loweredMessage.includes('service_disabled') ||
+    loweredMessage.includes('firestore.googleapis.com') ||
+    loweredMessage.includes('googleapis.com') ||
+    loweredMessage.includes('cloud firestore api has not been used') ||
+    loweredMessage.includes('profile service')
+  ) {
+    return 'Profile service is temporarily unavailable. Please try again in a few minutes.';
+  }
+  if (loweredMessage.includes('token used too early') || loweredMessage.includes('token is not yet valid')) {
+    return 'System clock is out of sync. Sync your device clock and sign in again.';
+  }
+  return 'Authentication failed. Please retry.';
 };
 
 const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
@@ -478,6 +537,19 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, []);
 
+  const resolvePostSignInUserIdRequirement = async (): Promise<boolean> => {
+    try {
+      const accountProfile = await fetchAccountProfile(readSettingsBackendUrl());
+      const requiredUserId = Boolean(accountProfile?.requiredUserId);
+      const resolvedUserId = String(accountProfile?.profile?.userId || '').trim().toLowerCase();
+      setUser((prev) => ({ ...prev, userId: resolvedUserId || undefined }));
+      return requiredUserId;
+    } catch {
+      // Keep authentication usable even if profile service is temporarily unavailable.
+      return false;
+    }
+  };
+
   const signInWithEmail: UserContextType['signInWithEmail'] = async (email, password) => {
     const rawEmail = String(email || '').trim();
     if (isLocalAdminUsername(rawEmail)) {
@@ -500,8 +572,23 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         setUser(mapLocalAdminSessionToProfile(session));
         setCharacterLibrary(DEFAULT_CHARACTERS);
+        try {
+          await fetchAccountProfile(readSettingsBackendUrl());
+        } catch (error) {
+          if (isBearerTokenAuthMismatch(error)) {
+            clearLocalAdminSession();
+            setUser(BLANK_USER);
+            setStats(INITIAL_STATS);
+            setHistory([]);
+            return {
+              ok: false,
+              error: localAdminBackendAuthMismatchMessage,
+            };
+          }
+        }
         await refreshEntitlements();
         await loadHistory();
+        removeStorageKey(STORAGE_KEYS.uidSetupRequired);
         return { ok: true };
       }
 
@@ -523,7 +610,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       try {
         await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
         await refreshEntitlements();
-        return { ok: true };
+        const requiresUserIdSetup = await resolvePostSignInUserIdRequirement();
+        return { ok: true, ...(requiresUserIdSetup ? { requiresUserIdSetup: true } : {}) };
       } catch (error: any) {
         return {
           ok: false,
@@ -547,7 +635,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
       await refreshEntitlements();
-      return { ok: true };
+      const requiresUserIdSetup = await resolvePostSignInUserIdRequirement();
+      return { ok: true, ...(requiresUserIdSetup ? { requiresUserIdSetup: true } : {}) };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
     }
@@ -567,7 +656,14 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     try {
-      const normalizedEmail = resolveFirebaseLoginEmail(String(email || '').trim());
+      const rawEmail = String(email || '').trim();
+      if (!rawEmail.includes('@')) {
+        return {
+          ok: false,
+          error: 'Use a full email address to create an account.',
+        };
+      }
+      const normalizedEmail = rawEmail;
       if (!normalizedEmail.includes('@')) {
         return {
           ok: false,
@@ -590,6 +686,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         readSettingsBackendUrl()
       );
       setUser((prev) => ({ ...prev, userId: normalizedUserId }));
+      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
       await refreshEntitlements();
       return { ok: true };
     } catch (error: any) {
@@ -638,9 +735,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const credential = GoogleAuthProvider.credentialFromResult(result);
       warmDriveTokenFromGoogleSignIn(credential);
       await refreshEntitlements();
-      return { ok: true };
+      const requiresUserIdSetup = await resolvePostSignInUserIdRequirement();
+      return { ok: true, ...(requiresUserIdSetup ? { requiresUserIdSetup: true } : {}) };
     } catch (error: any) {
-      return { ok: false, error: error?.message || 'Google login failed.' };
+      return { ok: false, error: mapFirebaseAuthError(error) };
     }
   };
 
@@ -655,7 +753,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await refreshEntitlements();
       return { ok: true };
     } catch (error: any) {
-      return { ok: false, error: error?.message || 'Facebook login failed.' };
+      return { ok: false, error: mapFirebaseAuthError(error) };
     }
   };
 
@@ -673,7 +771,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       confirmationRef.current = confirmation;
       return { ok: true };
     } catch (error: any) {
-      return { ok: false, error: error?.message || 'Phone sign-in failed.' };
+      return { ok: false, error: mapFirebaseAuthError(error) };
     }
   };
 
@@ -692,7 +790,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await refreshEntitlements();
       return { ok: true };
     } catch (error: any) {
-      return { ok: false, error: error?.message || 'Verification failed.' };
+      return { ok: false, error: mapFirebaseAuthError(error) };
     }
   };
 
@@ -710,6 +808,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setStats(INITIAL_STATS);
     setHistory([]);
     setShowSubscriptionModal(false);
+    removeStorageKey(STORAGE_KEYS.uidSetupRequired);
   };
 
   const updateCharacter = (character: CharacterProfile) => {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown, Leaf } from 'lucide-react';
+import { Crown, Leaf, Star, Zap } from 'lucide-react';
 import { GenerationSettings } from '../types';
 
 type LogoSize = 'sm' | 'md' | 'lg';
@@ -33,6 +33,18 @@ const ENGINE_STYLE: Record<
     glow: 'shadow-[0_0_18px_rgba(139,92,246,0.45)]',
     ring: 'ring-indigo-200/70',
     Icon: Crown,
+  },
+  NEURAL2: {
+    gradient: 'from-amber-500 via-orange-500 to-red-500',
+    glow: 'shadow-[0_0_18px_rgba(249,115,22,0.4)]',
+    ring: 'ring-orange-200/70',
+    Icon: Zap,
+  },
+  GOOD: {
+    gradient: 'from-sky-500 via-blue-500 to-indigo-500',
+    glow: 'shadow-[0_0_18px_rgba(59,130,246,0.42)]',
+    ring: 'ring-sky-200/70',
+    Icon: Star,
   },
   KOKORO: {
     gradient: 'from-cyan-500 via-emerald-500 to-teal-500',

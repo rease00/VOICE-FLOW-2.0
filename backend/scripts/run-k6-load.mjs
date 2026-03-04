@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { parseBool } from './lib/audit-helpers.mjs';
+import { probeCommand, runCommand } from './lib/process-runner.mjs';
 
 const ROOT = process.cwd();
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts', 'load');
@@ -39,33 +40,12 @@ const pollMs = Math.max(100, asInt(args.get('poll-ms') || process.env.VF_LOAD_PO
 const timeoutMs = Math.max(1_000, asInt(args.get('timeout-ms') || process.env.VF_LOAD_JOB_TIMEOUT_MS, 120_000));
 const syncWaitMs = Math.max(0, asInt(args.get('sync-wait-ms') || process.env.VF_LOAD_SYNC_WAIT_MS, 3_000));
 const uid = String(args.get('uid') || process.env.VF_LOAD_UID || 'k6_load_user').trim() || 'k6_load_user';
+const requireK6 = parseBool(args.get('require-k6') ?? process.env.VF_REQUIRE_K6, false);
 
 const timestamp = Date.now();
 const summaryPath = path.join(ARTIFACT_DIR, `k6-summary-${mode}-c${vus}-${timestamp}.json`);
 const rawSummaryExportPath = path.join(ARTIFACT_DIR, `k6-raw-${mode}-c${vus}-${timestamp}.json`);
 const verdictPath = path.join(ARTIFACT_DIR, `k6-verdict-${mode}-c${vus}-${timestamp}.json`);
-
-const run = (command, cliArgs, env) =>
-  new Promise((resolve) => {
-    const child = spawn(command, cliArgs, {
-      stdio: 'inherit',
-      env: { ...process.env, ...env },
-      shell: process.platform === 'win32',
-    });
-    child.on('error', (error) => {
-      resolve({
-        ok: false,
-        code: 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-    child.on('close', (code) => {
-      resolve({
-        ok: code === 0,
-        code: code ?? 1,
-      });
-    });
-  });
 
 const readJsonFile = async (filePath) => {
   const raw = await fs.readFile(filePath, 'utf8');
@@ -74,6 +54,68 @@ const readJsonFile = async (filePath) => {
 
 const main = async () => {
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+
+  const k6Probe = await probeCommand(K6_BIN, ['version']);
+  if (!k6Probe.available) {
+    const reason = 'SKIPPED_K6_MISSING';
+    const passed = !requireK6;
+    const summaryPayload = {
+      schemaVersion: '1.0.0',
+      generatedAt: new Date().toISOString(),
+      target: {
+        mode,
+        uid,
+        vus,
+        duration,
+      },
+      metrics: null,
+      verdict: {
+        passed,
+        reasons: passed ? [reason] : [`${reason}_STRICT`],
+      },
+      skipped: {
+        tool: 'k6',
+        error: k6Probe.error || 'k6 binary not found in PATH',
+      },
+    };
+    await fs.writeFile(summaryPath, `${JSON.stringify(summaryPayload, null, 2)}\n`, 'utf8');
+
+    const verdictPayload = {
+      schemaVersion: '1.0.0',
+      generatedAt: new Date().toISOString(),
+      config: {
+        mode,
+        vus,
+        duration,
+        pollMs,
+        timeoutMs,
+        syncWaitMs,
+        uid,
+        requireK6,
+      },
+      artifacts: {
+        summaryPath: path.relative(ROOT, summaryPath).replace(/\\/g, '/'),
+        rawSummaryExportPath: path.relative(ROOT, rawSummaryExportPath).replace(/\\/g, '/'),
+      },
+      verdict: {
+        passed,
+        reasons: summaryPayload.verdict.reasons,
+      },
+      k6: {
+        exitCode: 1,
+        launchError: k6Probe.error || 'k6 binary not found in PATH',
+        skipped: true,
+      },
+    };
+
+    await fs.writeFile(verdictPath, `${JSON.stringify(verdictPayload, null, 2)}\n`, 'utf8');
+    console.log(`[run-k6-load] summary: ${path.relative(ROOT, summaryPath).replace(/\\/g, '/')}`);
+    console.log(`[run-k6-load] verdict: ${path.relative(ROOT, verdictPath).replace(/\\/g, '/')}`);
+    console.log(`[run-k6-load] skipped: k6 binary missing (require=${requireK6 ? 'on' : 'off'})`);
+    if (!passed) process.exit(1);
+    return;
+  }
+
   const k6Args = ['run', SCRIPT_PATH, '--summary-export', rawSummaryExportPath];
   const env = {
     VF_LOAD_VUS: String(vus),
@@ -84,9 +126,16 @@ const main = async () => {
     VF_LOAD_JOB_TIMEOUT_MS: String(timeoutMs),
     VF_LOAD_SYNC_WAIT_MS: String(syncWaitMs),
     VF_K6_SUMMARY_PATH: summaryPath,
+    AUDIT_BEARER_TOKEN: String(process.env.AUDIT_BEARER_TOKEN || ''),
+    AUDIT_ALLOW_DEV_UID: String(process.env.AUDIT_ALLOW_DEV_UID || ''),
+    AUDIT_DEV_UID: String(process.env.AUDIT_DEV_UID || ''),
+    AUDIT_REQUIRE_AUTH: String(process.env.AUDIT_REQUIRE_AUTH || ''),
   };
 
-  const runResult = await run(K6_BIN, k6Args, env);
+  const runResult = await runCommand(K6_BIN, k6Args, {
+    env,
+    stdio: 'inherit',
+  });
   let summaryPayload = null;
   let verdictReasons = [];
   let passed = runResult.ok;
@@ -118,6 +167,7 @@ const main = async () => {
       timeoutMs,
       syncWaitMs,
       uid,
+      requireK6,
     },
     artifacts: {
       summaryPath: path.relative(ROOT, summaryPath).replace(/\\/g, '/'),
@@ -148,4 +198,3 @@ main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });
-

@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  buildAuditHeaders,
+  classifyAuditFailure,
+  fetchJsonWithTimeout,
+  isTransientFailureClass,
+  normalizeBaseUrl,
+  withBoundedRetry,
+} from './lib/audit-helpers.mjs';
 
 const ROOT = process.cwd();
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts');
@@ -9,10 +17,23 @@ const MIN_SECONDS = Number(process.env.VF_TTS_AUDIT_MIN_SECONDS || 24);
 const MAX_SECONDS = Number(process.env.VF_TTS_AUDIT_MAX_SECONDS || 36);
 const CHARS_PER_SECOND = Number(process.env.VF_TTS_AUDIT_CHARS_PER_SEC || 15);
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_AUDIT_TIMEOUT_MS || 180_000);
-const MEDIA_BACKEND_URL = (process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
+const MEDIA_BACKEND_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
 const SWITCH_TIMEOUT_MS = Number(process.env.VF_TTS_AUDIT_SWITCH_TIMEOUT_MS || 90_000);
 const SWITCH_POLL_MS = Number(process.env.VF_TTS_AUDIT_SWITCH_POLL_MS || 1_200);
 const SKIP_RUNTIME_SWITCH = ['1', 'true', 'yes'].includes((process.env.VF_TTS_AUDIT_SKIP_SWITCH || '').trim().toLowerCase());
+const RETRY_MAX = Math.max(0, Number(process.env.VF_TTS_AUDIT_RETRY_MAX || 2));
+const RETRY_BASE_MS = Math.max(100, Number(process.env.VF_TTS_AUDIT_RETRY_BASE_MS || 800));
+const AUDIT_UID = String(process.env.VF_TTS_AUDIT_UID || 'local_admin').trim() || 'local_admin';
+const { headers: AUDIT_AUTH_HEADERS, auth: AUDIT_AUTH } = buildAuditHeaders(
+  { Accept: 'application/json' },
+  { scriptName: 'audit:tts:hindi', defaultDevUid: AUDIT_UID }
+);
+
+if (!AUDIT_AUTH.tokenPresent) {
+  throw new Error(
+    '[audit:tts:hindi] /tts/engines/switch is bearer-protected. Set AUDIT_BEARER_TOKEN before running this audit.'
+  );
+}
 
 const REPORT_BASENAME = TARGET_SECONDS === 30 ? 'tts_hi_30s_report.json' : `tts_hi_${TARGET_SECONDS}s_report.json`;
 const REPORT_PATH = path.join(ARTIFACT_DIR, REPORT_BASENAME);
@@ -169,13 +190,44 @@ const parseJsonSafe = async (response) => {
   }
 };
 
+const runBackendPreflight = async () => {
+  const checks = [];
+  const targets = [
+    { name: 'health', url: `${MEDIA_BACKEND_URL}/health` },
+    { name: 'enginesStatus', url: `${MEDIA_BACKEND_URL}/tts/engines/status` },
+  ];
+
+  for (const target of targets) {
+    const result = await fetchJsonWithTimeout(
+      target.url,
+      {
+        method: 'GET',
+        headers: AUDIT_AUTH_HEADERS,
+      },
+      12_000
+    );
+    checks.push({
+      name: target.name,
+      ok: result.ok,
+      status: result.status,
+      classification: classifyAuditFailure(result),
+      detail: result.ok ? '' : JSON.stringify(result.payload || '').slice(0, 500),
+    });
+  }
+
+  return {
+    ok: checks.every((entry) => entry.ok),
+    checks,
+  };
+};
+
 const switchRuntimeEngine = async (engine) => {
   const started = Date.now();
   const response = await fetchWithTimeout(
     `${MEDIA_BACKEND_URL}/tts/engines/switch`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...AUDIT_AUTH_HEADERS, 'Content-Type': 'application/json' },
       body: JSON.stringify({ engine, gpu: false }),
     },
     SWITCH_TIMEOUT_MS
@@ -248,66 +300,122 @@ const runEngineAudit = async (config, emotion, runtimeSession) => {
   const text = buildEmotionText(emotion);
   const payload = config.buildPayload({ text, emotion });
 
-  const response = await fetchWithTimeout(
-    `${baseUrl}${config.synthPath}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+  const attemptResult = await withBoundedRetry(
+    async () => {
+      try {
+        const response = await fetchWithTimeout(
+          `${baseUrl}${config.synthPath}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+          REQUEST_TIMEOUT_MS
+        );
+
+        if (!response.ok) {
+          const detail = await parseJsonSafe(response);
+          return {
+            engine: config.id,
+            emotion,
+            status: 'failed',
+            reason: `synthesis_failed_${response.status}`,
+            detail,
+            failureClass: classifyAuditFailure({ status: response.status, payload: detail }),
+            elapsedMs: Date.now() - started,
+          };
+        }
+
+        const wavBytes = Buffer.from(await response.arrayBuffer());
+        if (wavBytes.length < 100) {
+          return {
+            engine: config.id,
+            emotion,
+            status: 'failed',
+            reason: 'empty_audio',
+            failureClass: 'backend_error',
+            elapsedMs: Date.now() - started,
+          };
+        }
+
+        const wav = decodeWavDuration(wavBytes);
+        const durationSeconds = Number(wav.durationSeconds || 0);
+        const durationOk = durationSeconds >= MIN_SECONDS && durationSeconds <= MAX_SECONDS;
+
+        const wavPath = path.join(
+          ARTIFACT_DIR,
+          `${config.id.toLowerCase()}_${emotion.toLowerCase().replace(/[^a-z0-9]+/g, '-')}_hi_${TARGET_SECONDS}s.wav`
+        );
+        await fs.writeFile(wavPath, wavBytes);
+
+        return {
+          engine: config.id,
+          emotion,
+          status: durationOk ? 'passed' : 'failed',
+          reason: durationOk ? '' : `duration_out_of_range_${MIN_SECONDS}_${MAX_SECONDS}`,
+          failureClass: durationOk ? null : 'client_error',
+          elapsedMs: Date.now() - started,
+          wav: path.relative(ROOT, wavPath),
+          bytes: wavBytes.length,
+          durationSeconds: round3(durationSeconds),
+          sampleRate: wav.sampleRate,
+          channels: wav.channels,
+          bitsPerSample: wav.bitsPerSample,
+        };
+      } catch (error) {
+        const isTimeout = String(error?.name || '').toLowerCase() === 'aborterror';
+        return {
+          engine: config.id,
+          emotion,
+          status: 'failed',
+          reason: isTimeout ? 'request_timeout' : 'network_fetch_failed',
+          detail: error instanceof Error ? error.message : String(error),
+          failureClass: isTimeout ? 'timeout' : 'backend_unavailable',
+          elapsedMs: Date.now() - started,
+        };
+      }
     },
-    REQUEST_TIMEOUT_MS
+    {
+      maxRetries: RETRY_MAX,
+      baseDelayMs: RETRY_BASE_MS,
+      shouldRetry: (result) => result.status === 'failed' && isTransientFailureClass(String(result.failureClass || '')),
+    }
   );
 
-  if (!response.ok) {
-    const detail = await parseJsonSafe(response);
-    return {
-      engine: config.id,
-      emotion,
-      status: 'failed',
-      reason: `synthesis_failed_${response.status}`,
-      detail,
-      elapsedMs: Date.now() - started,
-    };
-  }
-
-  const wavBytes = Buffer.from(await response.arrayBuffer());
-  if (wavBytes.length < 100) {
-    return {
-      engine: config.id,
-      emotion,
-      status: 'failed',
-      reason: 'empty_audio',
-      elapsedMs: Date.now() - started,
-    };
-  }
-
-  const wav = decodeWavDuration(wavBytes);
-  const durationSeconds = Number(wav.durationSeconds || 0);
-  const durationOk = durationSeconds >= MIN_SECONDS && durationSeconds <= MAX_SECONDS;
-
-  const wavPath = path.join(
-    ARTIFACT_DIR,
-    `${config.id.toLowerCase()}_${emotion.toLowerCase().replace(/[^a-z0-9]+/g, '-')}_hi_${TARGET_SECONDS}s.wav`
-  );
-  await fs.writeFile(wavPath, wavBytes);
-
-  return {
-    engine: config.id,
-    emotion,
-    status: durationOk ? 'passed' : 'failed',
-    reason: durationOk ? '' : `duration_out_of_range_${MIN_SECONDS}_${MAX_SECONDS}`,
-    elapsedMs: Date.now() - started,
-    wav: path.relative(ROOT, wavPath),
-    bytes: wavBytes.length,
-    durationSeconds: round3(durationSeconds),
-    sampleRate: wav.sampleRate,
-    channels: wav.channels,
-    bitsPerSample: wav.bitsPerSample,
-  };
+  return attemptResult;
 };
 
 const main = async () => {
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+  const preflight = await runBackendPreflight();
+  if (!preflight.ok) {
+    const report = {
+      timestamp: new Date().toISOString(),
+      profile: TARGET_SECONDS === 30 ? 'hindi-30s-tts-audit' : `hindi-${TARGET_SECONDS}s-tts-audit`,
+      targetSeconds: TARGET_SECONDS,
+      durationBandSeconds: [MIN_SECONDS, MAX_SECONDS],
+      charsPerSecond: CHARS_PER_SECOND,
+      skipRuntimeSwitch: SKIP_RUNTIME_SWITCH,
+      authMode: AUDIT_AUTH.mode,
+      preflight,
+      emotions: CORE_EMOTIONS,
+      results: [],
+      summary: {
+        total: 0,
+        failed: 0,
+        passed: 0,
+        passedAll: false,
+        byEngine: {},
+      },
+      failureReason: 'preflight_failure',
+    };
+    await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+    console.error('TTS Hindi audit preflight failed.');
+    for (const check of preflight.checks.filter((entry) => !entry.ok)) {
+      console.error(`[preflight] ${check.name} status=${check.status} class=${check.classification}`);
+    }
+    process.exit(1);
+  }
 
   const results = [];
 
@@ -380,6 +488,8 @@ const main = async () => {
       KOKORO_RUNTIME: ENGINE_CONFIGS[1].runtimeUrls,
     },
     skipRuntimeSwitch: SKIP_RUNTIME_SWITCH,
+    authMode: AUDIT_AUTH.mode,
+    preflight,
     emotions: CORE_EMOTIONS,
     results,
     summary: {

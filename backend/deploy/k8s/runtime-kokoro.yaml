@@ -17,7 +17,22 @@ spec:
         - name: kokoro-runtime
           image: ghcr.io/voiceflow/kokoro-runtime:latest
           imagePullPolicy: IfNotPresent
-          command: ["python", "app.py"]
+          command:
+            - python
+            - -m
+            - uvicorn
+            - app:app
+            - --app-dir
+            - engines/kokoro-runtime
+            - --host
+            - 0.0.0.0
+            - --port
+            - "7820"
+          envFrom:
+            - configMapRef:
+                name: voiceflow-backend-config
+            - secretRef:
+                name: voiceflow-runtime-admin
           ports:
             - containerPort: 7820
               name: http
@@ -73,4 +88,3 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
-

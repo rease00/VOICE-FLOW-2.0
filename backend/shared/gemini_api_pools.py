@@ -1,29 +1,66 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+# Legacy canonical pool names retained for backward compatibility and migration defaults.
 POOL_NAMES: tuple[str, ...] = ("free", "pro", "pro_plus")
+DEFAULT_PLAN_POOLS: dict[str, str] = {
+    "free": "free",
+    "pro": "pro",
+    "plus": "pro_plus",
+}
 DEFAULT_FALLBACK_CHAINS: dict[str, list[str]] = {
     "free": ["free"],
     "pro": ["pro", "free"],
     "pro_plus": ["pro_plus", "pro", "free"],
 }
+DEFAULT_GLOBAL_FALLBACK_CHAIN: list[str] = ["pro_plus", "pro", "free"]
+
 SOURCE_POLICY_MODE_API_FILE = "api_file_authoritative"
 SOURCE_POLICY_MODE_CONFIG = "config_managed"
 SOURCE_POLICY_FAILURE_KEEP_LAST = "keep_last_good"
+SOURCE_POLICY_PROVIDER_GEMINI_API = "gemini_api"
+SOURCE_POLICY_PROVIDER_VERTEX = "vertex"
+
+_POOL_ID_INVALID_RE = re.compile(r"[^a-z0-9_-]+")
+_MAX_POOL_ID_LENGTH = 48
 
 
-def normalize_pool_name(value: Any) -> str:
+def _normalize_pool_id(value: Any, *, default: str = "") -> str:
     token = str(value or "").strip().lower()
     if token in {"pro_plus", "pro-plus", "proplus", "plus"}:
         return "pro_plus"
     if token in {"pro", "free"}:
         return token
-    return "free"
+    if not token:
+        return str(default or "").strip().lower()
+    token = token.replace(" ", "_")
+    token = _POOL_ID_INVALID_RE.sub("", token)
+    token = token[:_MAX_POOL_ID_LENGTH].strip("_-")
+    if not token:
+        return str(default or "").strip().lower()
+    return token
+
+
+def _ordered_unique_pools(values: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        pool_name = _normalize_pool_id(item, default="")
+        if not pool_name or pool_name in seen:
+            continue
+        seen.add(pool_name)
+        out.append(pool_name)
+    return out
+
+
+def normalize_pool_name(value: Any) -> str:
+    return _normalize_pool_id(value, default="free")
 
 
 def normalize_plan_key(value: Any) -> str:
@@ -42,6 +79,34 @@ def plan_key_to_pool_hint(plan_key: Any) -> str:
     return normalized
 
 
+def resolve_default_pool_hint(config: dict[str, Any]) -> str:
+    plan_pools = config.get("planPools") if isinstance(config.get("planPools"), dict) else {}
+    mapped_plus = _normalize_pool_id(plan_pools.get("plus"), default="")
+    if mapped_plus:
+        return mapped_plus
+    default_chain = _ordered_unique_pools(list(config.get("defaultFallbackChain") or []))
+    if default_chain:
+        return default_chain[0]
+    pool_names = list_pool_names(config)
+    if pool_names:
+        return pool_names[0]
+    return "free"
+
+
+def resolve_plan_pool_hint(config: dict[str, Any], plan_key: Any) -> str:
+    normalized_plan = normalize_plan_key(plan_key)
+    plan_pools = config.get("planPools") if isinstance(config.get("planPools"), dict) else {}
+    mapped = _normalize_pool_id(plan_pools.get(normalized_plan), default="")
+    if mapped:
+        return mapped
+    return plan_key_to_pool_hint(normalized_plan)
+
+
+def list_pool_names(config: dict[str, Any]) -> list[str]:
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    return _ordered_unique_pools(list(pools.keys()))
+
+
 def default_pool_config() -> dict[str, Any]:
     return {
         "version": 1,
@@ -56,10 +121,17 @@ def default_pool_config() -> dict[str, Any]:
             "pro": ["pro", "free"],
             "pro_plus": ["pro_plus", "pro", "free"],
         },
+        "planPools": {
+            "free": "free",
+            "pro": "pro",
+            "plus": "pro_plus",
+        },
+        "defaultFallbackChain": ["pro_plus", "pro", "free"],
         "constraints": {
             "uniqueKeyMembership": True,
         },
         "sourcePolicy": {
+            "provider": SOURCE_POLICY_PROVIDER_GEMINI_API,
             "freePoolMode": SOURCE_POLICY_MODE_CONFIG,
             "freePoolFilePath": "",
             "freePoolLocked": False,
@@ -68,6 +140,9 @@ def default_pool_config() -> dict[str, Any]:
             "lastSyncStatus": "uninitialized",
             "lastSyncHash": "",
             "fileKeyCount": 0,
+            "vertexProject": "",
+            "vertexLocation": "",
+            "vertexServiceAccountRef": "",
         },
     }
 
@@ -90,25 +165,31 @@ def _normalize_key_list(raw: Any) -> list[str]:
     return out
 
 
-def _normalize_fallback_chain(raw: Any, *, default_name: str) -> list[str]:
-    values = raw if isinstance(raw, list) else []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in values:
-        pool = normalize_pool_name(item)
-        if pool in seen:
-            continue
-        seen.add(pool)
-        out.append(pool)
-    if not out:
-        out = list(DEFAULT_FALLBACK_CHAINS.get(default_name) or [default_name])
-    if default_name not in out:
-        out.insert(0, default_name)
-    return out
+def _default_fallback_chain_for(pool_name: str, default_fallback_chain: list[str]) -> list[str]:
+    if pool_name in DEFAULT_FALLBACK_CHAINS:
+        return list(DEFAULT_FALLBACK_CHAINS[pool_name])
+    return [pool_name, *[item for item in default_fallback_chain if item != pool_name]]
+
+
+def _normalize_fallback_chain(
+    raw: Any,
+    *,
+    default_name: str,
+    default_fallback_chain: list[str],
+) -> list[str]:
+    values = _ordered_unique_pools(list(raw or [])) if isinstance(raw, list) else []
+    if not values:
+        values = _default_fallback_chain_for(default_name, default_fallback_chain)
+    if default_name:
+        values = [default_name, *[item for item in values if item != default_name]]
+    return _ordered_unique_pools(values)
 
 
 def _normalize_source_policy(raw: Any) -> dict[str, Any]:
     values = dict(raw) if isinstance(raw, dict) else {}
+    provider = str(values.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    if provider not in {SOURCE_POLICY_PROVIDER_GEMINI_API, SOURCE_POLICY_PROVIDER_VERTEX}:
+        provider = SOURCE_POLICY_PROVIDER_GEMINI_API
     mode = str(values.get("freePoolMode") or SOURCE_POLICY_MODE_CONFIG).strip().lower()
     if mode not in {SOURCE_POLICY_MODE_API_FILE, SOURCE_POLICY_MODE_CONFIG}:
         mode = SOURCE_POLICY_MODE_CONFIG
@@ -116,6 +197,7 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
     if failure_mode != SOURCE_POLICY_FAILURE_KEEP_LAST:
         failure_mode = SOURCE_POLICY_FAILURE_KEEP_LAST
     return {
+        "provider": provider,
         "freePoolMode": mode,
         "freePoolFilePath": str(values.get("freePoolFilePath") or "").strip(),
         "freePoolLocked": bool(values.get("freePoolLocked", False)),
@@ -124,7 +206,44 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
         "lastSyncStatus": str(values.get("lastSyncStatus") or "uninitialized").strip() or "uninitialized",
         "lastSyncHash": str(values.get("lastSyncHash") or "").strip(),
         "fileKeyCount": max(0, int(values.get("fileKeyCount") or 0)),
+        "vertexProject": str(values.get("vertexProject") or "").strip(),
+        "vertexLocation": str(values.get("vertexLocation") or "").strip(),
+        "vertexServiceAccountRef": str(values.get("vertexServiceAccountRef") or "").strip(),
     }
+
+
+def _derive_default_fallback_chain(
+    source_default_chain: Any,
+    source_chains: dict[str, Any],
+    pool_names: list[str],
+) -> list[str]:
+    if isinstance(source_default_chain, list):
+        chain = _ordered_unique_pools(source_default_chain)
+        if chain:
+            return chain
+
+    # Legacy config often used the pro_plus chain as global fallback signal.
+    if isinstance(source_chains.get("pro_plus"), list):
+        chain = _ordered_unique_pools(list(source_chains.get("pro_plus") or []))
+        if chain:
+            return chain
+
+    preferred: list[str] = []
+    for candidate in DEFAULT_GLOBAL_FALLBACK_CHAIN:
+        if candidate in pool_names:
+            preferred.append(candidate)
+    if preferred:
+        return preferred
+    return _ordered_unique_pools(pool_names)
+
+
+def _normalize_plan_pools(raw: Any) -> dict[str, str]:
+    values = dict(raw) if isinstance(raw, dict) else {}
+    out: dict[str, str] = {}
+    for plan_key, default_pool in DEFAULT_PLAN_POOLS.items():
+        mapped = _normalize_pool_id(values.get(plan_key), default="")
+        out[plan_key] = mapped or default_pool
+    return out
 
 
 def normalize_pool_config(raw: Any) -> dict[str, Any]:
@@ -135,13 +254,27 @@ def normalize_pool_config(raw: Any) -> dict[str, Any]:
     source_constraints = source.get("constraints") if isinstance(source.get("constraints"), dict) else {}
     source_policy = source.get("sourcePolicy") if isinstance(source.get("sourcePolicy"), dict) else {}
 
+    has_explicit_pools = "pools" in source and isinstance(source.get("pools"), dict)
+    pool_names = _ordered_unique_pools(list(source_pools.keys()))
+    if not has_explicit_pools:
+        pool_names = list(defaults["pools"].keys())
+
     pools: dict[str, dict[str, list[str]]] = {}
-    fallback_chains: dict[str, list[str]] = {}
-    for pool_name in POOL_NAMES:
+    for pool_name in pool_names:
         pools[pool_name] = {"keys": _normalize_key_list(source_pools.get(pool_name))}
+
+    default_fallback_chain = _derive_default_fallback_chain(
+        source.get("defaultFallbackChain"),
+        source_chains,
+        pool_names,
+    )
+
+    fallback_chains: dict[str, list[str]] = {}
+    for pool_name in pool_names:
         fallback_chains[pool_name] = _normalize_fallback_chain(
             source_chains.get(pool_name),
             default_name=pool_name,
+            default_fallback_chain=default_fallback_chain,
         )
 
     normalized = {
@@ -149,6 +282,8 @@ def normalize_pool_config(raw: Any) -> dict[str, Any]:
         "updatedAt": str(source.get("updatedAt") or defaults["updatedAt"]),
         "pools": pools,
         "fallbackChains": fallback_chains,
+        "planPools": _normalize_plan_pools(source.get("planPools") or defaults.get("planPools")),
+        "defaultFallbackChain": list(default_fallback_chain),
         "constraints": {
             "uniqueKeyMembership": bool(source_constraints.get("uniqueKeyMembership", True)),
         },
@@ -160,7 +295,7 @@ def normalize_pool_config(raw: Any) -> dict[str, Any]:
 def duplicate_key_memberships(config: dict[str, Any]) -> dict[str, list[str]]:
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
     key_memberships: dict[str, list[str]] = {}
-    for pool_name in POOL_NAMES:
+    for pool_name in list_pool_names(config):
         keys = _normalize_key_list((pools.get(pool_name) or {}).get("keys"))
         for key in keys:
             key_memberships.setdefault(key, []).append(pool_name)
@@ -189,7 +324,7 @@ def flatten_pool_keys(config: dict[str, Any]) -> list[str]:
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
     out: list[str] = []
     seen: set[str] = set()
-    for pool_name in POOL_NAMES:
+    for pool_name in list_pool_names(config):
         for key in _normalize_key_list((pools.get(pool_name) or {}).get("keys")):
             if key in seen:
                 continue
@@ -199,27 +334,33 @@ def flatten_pool_keys(config: dict[str, Any]) -> list[str]:
 
 
 def resolve_pool_chain(config: dict[str, Any], pool_hint: Any) -> list[str]:
-    normalized_hint = normalize_pool_name(pool_hint)
+    normalized_hint = _normalize_pool_id(pool_hint, default="")
     fallback_chains = (
         config.get("fallbackChains")
         if isinstance(config.get("fallbackChains"), dict)
         else {}
     )
-    chain = _normalize_fallback_chain(
-        fallback_chains.get(normalized_hint),
-        default_name=normalized_hint,
-    )
-    out: list[str] = []
-    seen: set[str] = set()
-    for pool_name in chain:
-        normalized = normalize_pool_name(pool_name)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        out.append(normalized)
-    if normalized_hint not in out:
-        out.insert(0, normalized_hint)
-    return out
+    default_fallback_chain = _ordered_unique_pools(list(config.get("defaultFallbackChain") or []))
+    if not default_fallback_chain:
+        default_fallback_chain = _derive_default_fallback_chain(None, fallback_chains, list_pool_names(config))
+
+    if not normalized_hint:
+        normalized_hint = resolve_default_pool_hint(config)
+
+    raw_chain = fallback_chains.get(normalized_hint)
+    if isinstance(raw_chain, list):
+        chain = _normalize_fallback_chain(
+            raw_chain,
+            default_name=normalized_hint,
+            default_fallback_chain=default_fallback_chain,
+        )
+    else:
+        # Missing/mismatched mapped pool: route through global default fallback chain.
+        chain = _ordered_unique_pools([normalized_hint, *default_fallback_chain]) if normalized_hint else list(default_fallback_chain)
+
+    if normalized_hint and normalized_hint not in chain:
+        chain.insert(0, normalized_hint)
+    return _ordered_unique_pools(chain)
 
 
 def resolve_effective_keys(config: dict[str, Any], pool_hint: Any) -> list[str]:
@@ -260,6 +401,15 @@ def sync_authoritative_free_pool(
     next_file_keys = _normalize_key_list(file_keys)
 
     source_policy = _normalize_source_policy(normalized.get("sourcePolicy"))
+    if str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower() == SOURCE_POLICY_PROVIDER_VERTEX:
+        next_policy = dict(source_policy)
+        next_policy["freePoolMode"] = SOURCE_POLICY_MODE_CONFIG
+        next_policy["freePoolLocked"] = False
+        if next_policy != source_policy:
+            normalized["sourcePolicy"] = next_policy
+            changed = True
+        return normalized, changed, warnings
+
     next_policy = dict(source_policy)
     next_policy["freePoolMode"] = SOURCE_POLICY_MODE_API_FILE
     next_policy["freePoolFilePath"] = str(file_path or "").strip()
@@ -274,7 +424,8 @@ def sync_authoritative_free_pool(
     if has_valid_file_keys:
         file_hash = _keys_digest(next_file_keys)
         if current_free != next_file_keys:
-            free_pool["keys"] = list(next_file_keys)
+            pools.setdefault("free", {"keys": []})
+            pools["free"]["keys"] = list(next_file_keys)
             changed = True
         if (
             next_policy.get("lastSyncHash") != file_hash
@@ -299,7 +450,8 @@ def sync_authoritative_free_pool(
             next_policy["lastSyncAt"] = datetime.now(timezone.utc).isoformat()
             next_policy["lastSyncStatus"] = status_token
         if not should_keep_last and current_free:
-            free_pool["keys"] = []
+            if "free" in pools:
+                pools["free"]["keys"] = []
             changed = True
             next_policy["lastSyncHash"] = ""
 
@@ -363,7 +515,10 @@ def load_pool_config(
     if source in {"default", "file"}:
         fallback_keys = list(bootstrap_free_keys or [])
         if fallback_keys and not flatten_pool_keys(config):
-            config["pools"]["free"]["keys"] = fallback_keys
+            pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+            pools.setdefault("free", {"keys": []})
+            pools["free"]["keys"] = fallback_keys
+            config["pools"] = pools
             config["updatedAt"] = datetime.now(timezone.utc).isoformat()
             source = "bootstrap"
 

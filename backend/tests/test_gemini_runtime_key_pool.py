@@ -51,7 +51,10 @@ def test_parse_api_keys_dedupes_and_filters_invalid_tokens() -> None:
 
 def test_runtime_routes_follow_locked_policy() -> None:
     runtime = _load_gemini_runtime_module()
-    assert runtime.resolve_tts_model_candidates() == ["gemini-2.5-flash-preview-tts"]
+    tts_candidates = runtime.resolve_tts_model_candidates()
+    assert tts_candidates
+    assert tts_candidates[0] == "gemini-2.5-pro-preview-tts"
+    assert "gemini-2.5-flash-preview-tts" in tts_candidates
     assert runtime.resolve_text_model_candidates() == [
         "gemini-2.5-flash",
         "gemini-3-flash",
@@ -66,6 +69,37 @@ def test_runtime_routes_follow_locked_policy() -> None:
         "gemini-2.5-flash",
         "gemini-3-flash",
         "gemini-2.5-flash-lite",
+    ]
+
+
+def test_tts_model_candidates_resolve_by_engine_and_provider() -> None:
+    runtime = _load_gemini_runtime_module()
+
+    good_gemini = runtime.resolve_tts_model_candidates(
+        engine="GOOD",
+        auth_mode="gemini_api",
+        source_policy={"provider": "gemini_api"},
+    )
+    neural2_gemini = runtime.resolve_tts_model_candidates(
+        engine="NEURAL2",
+        auth_mode="gemini_api",
+        source_policy={"provider": "gemini_api"},
+    )
+    gem_vertex = runtime.resolve_tts_model_candidates(
+        engine="GEM",
+        auth_mode="vertex",
+        source_policy={"provider": "vertex"},
+    )
+
+    assert good_gemini[:2] == [
+        "gemini-2.5-flash-lite-preview-tts",
+        "gemini-2.5-flash-preview-tts",
+    ]
+    assert neural2_gemini[0] == "gemini-2.5-flash-preview-tts"
+    assert gem_vertex[:3] == [
+        "gemini-2.5-pro-tts",
+        "gemini-2.5-pro-preview-tts",
+        "gemini-2.5-flash-tts",
     ]
 
 
@@ -469,6 +503,216 @@ def test_admin_api_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Pat
     assert list(latest_payload.get("warnings") or [])
 
 
+def test_admin_api_pools_supports_custom_pool_and_plan_mapping(monkeypatch, tmp_path: Path) -> None:
+    free_key = _make_key(231)
+    custom_key = _make_key(232)
+    key_file = tmp_path / "runtime_api.txt"
+    key_file.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_file = tmp_path / "runtime_pools.json"
+    pools_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_file))
+    runtime = _load_gemini_runtime_module()
+    client = _runtime_admin_client(runtime)
+
+    warm = client.get("/v1/admin/api-pools")
+    assert warm.status_code == 200
+
+    response = client.put(
+        "/v1/admin/api-pools",
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": []},
+                "pro": {"keys": []},
+                "pro_plus": {"keys": []},
+                "vip": {"keys": [custom_key]},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+                "pro_plus": ["pro_plus", "pro", "free"],
+                "vip": ["vip", "pro", "free"],
+            },
+            "planPools": {
+                "free": "free",
+                "pro": "pro",
+                "plus": "vip",
+            },
+            "defaultFallbackChain": ["vip", "pro", "free"],
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["config"]["planPools"]["plus"] == "vip"
+    assert payload["config"]["pools"]["vip"]["keys"] == [custom_key]
+
+    refreshed = client.get("/v1/admin/api-pools")
+    assert refreshed.status_code == 200
+    assert refreshed.json()["config"]["pools"]["vip"]["keys"] == [custom_key]
+
+
+def test_admin_api_pools_delete_free_disables_authoritative_mode(monkeypatch, tmp_path: Path) -> None:
+    free_key = _make_key(241)
+    pro_key = _make_key(242)
+    key_file = tmp_path / "runtime_api.txt"
+    key_file.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_file = tmp_path / "runtime_pools.json"
+    pools_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": [pro_key]},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_file))
+    runtime = _load_gemini_runtime_module()
+    client = _runtime_admin_client(runtime)
+
+    warm = client.get("/v1/admin/api-pools")
+    assert warm.status_code == 200
+    assert warm.json()["sourcePolicy"]["freePoolLocked"] is True
+
+    response = client.put(
+        "/v1/admin/api-pools",
+        json={
+            "version": 1,
+            "pools": {
+                "pro": {"keys": [pro_key]},
+                "pro_plus": {"keys": []},
+            },
+            "fallbackChains": {
+                "pro": ["pro"],
+                "pro_plus": ["pro_plus", "pro"],
+            },
+            "planPools": {
+                "free": "free",
+                "pro": "pro",
+                "plus": "pro_plus",
+            },
+            "defaultFallbackChain": ["pro", "pro_plus"],
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert "free_pool_authoritative_mode_disabled" in list(payload.get("appliedOverrides") or [])
+    assert "free" not in payload["config"]["pools"]
+    assert payload["sourcePolicy"]["freePoolLocked"] is False
+    assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "config_managed"
+
+    runtime._API_POOLS_CACHE = None
+    runtime._API_POOLS_META = {}
+    latest = client.get("/v1/admin/api-pools")
+    assert latest.status_code == 200
+    assert "free" not in latest.json()["config"]["pools"]
+
+
+def test_runtime_pool_hint_missing_pool_falls_back_to_default_chain(monkeypatch, tmp_path: Path) -> None:
+    free_key = _make_key(251)
+    pro_key = _make_key(252)
+    key_file = tmp_path / "runtime_api.txt"
+    key_file.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_file = tmp_path / "runtime_pools.json"
+    pools_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": [pro_key]},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(key_file))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_file))
+    runtime = _load_gemini_runtime_module()
+    client = _runtime_admin_client(runtime)
+
+    warm = client.get("/v1/admin/api-pools")
+    assert warm.status_code == 200
+
+    response = client.put(
+        "/v1/admin/api-pools",
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": []},
+                "pro": {"keys": [pro_key]},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+            },
+            "planPools": {
+                "free": "free",
+                "pro": "pro",
+                "plus": "enterprise_missing",
+            },
+            "defaultFallbackChain": ["pro", "free"],
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert response.status_code == 200
+
+    payload = client.get("/v1/admin/api-pools").json()
+    assert payload["validation"]["missingPlanPools"]["plus"] == "enterprise_missing"
+    resolved_keys = runtime._pool_keys_for_hint("enterprise_missing")
+    assert pro_key in resolved_keys
+    assert free_key in resolved_keys
+
+
 def test_lazy_pool_self_heal_before_missing_error(monkeypatch) -> None:
     runtime = _load_gemini_runtime_module()
     key = _make_key(33)
@@ -526,7 +770,8 @@ def test_allocator_tts_limits_can_be_overridden_by_env(monkeypatch) -> None:
     monkeypatch.setenv("GEMINI_ALLOCATOR_DEFAULT_WAIT_TIMEOUT_MS", "25000")
     runtime = _load_gemini_runtime_module()
 
-    tts_model = runtime.resolve_tts_model_candidates()[0]
+    limits = runtime._effective_tts_route_limits()
+    tts_model = str(limits.get("model") or runtime.resolve_tts_model_candidates()[0])
     model_limit = runtime.ALLOCATOR_CONFIG.models[tts_model]
     assert int(model_limit.rpm) == 9
     assert int(model_limit.tpm) == 22000
@@ -548,8 +793,11 @@ def test_tts_pool_capacity_fast_fails_with_overload_payload(monkeypatch) -> None
         runtime._SERVER_API_KEY_SET = frozenset({key})
         runtime._RUNTIME_ALLOCATOR.ensure_keys([key])
         runtime._resolve_speech_attempts = lambda *args, **kwargs: [("single-speaker", object())]
+        source_policy = runtime._runtime_source_policy()
+        auth_mode = runtime._normalize_runtime_auth_mode(None, source_policy=source_policy)
 
-        tts_model = runtime.resolve_tts_model_candidates()[0]
+        tts_model = str(runtime._effective_tts_route_limits().get("model") or runtime.resolve_tts_model_candidates()[0])
+        monkeypatch.setattr(runtime, "resolve_tts_model_candidates", lambda *args, **kwargs: [tts_model])
         rpm_limit = int(runtime.ALLOCATOR_CONFIG.models[tts_model].rpm)
         for _ in range(rpm_limit):
             acquired = runtime._RUNTIME_ALLOCATOR.acquire_for_task(
@@ -565,6 +813,9 @@ def test_tts_pool_capacity_fast_fails_with_overload_payload(monkeypatch) -> None
         try:
             runtime._synthesize_pcm_with_key_pool(
                 text_input="Overload check text.",
+                engine="GEM",
+                auth_mode=auth_mode,
+                source_policy=source_policy,
                 trace_id="trace_overload_fast_fail",
                 speaker_hint="",
                 language_code="en",
@@ -592,8 +843,118 @@ def test_tts_pool_capacity_fast_fails_with_overload_payload(monkeypatch) -> None
         runtime._resolve_speech_attempts = original_speech_attempts
 
 
+def test_model_access_error_falls_back_to_next_model_without_auth_disable(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    key = _make_key(72)
+
+    original_allocator = runtime._RUNTIME_ALLOCATOR
+    original_pool = runtime._SERVER_API_KEY_POOL
+    original_pool_set = runtime._SERVER_API_KEY_SET
+    original_genai = runtime.genai
+    original_types = runtime.types
+    original_speech_attempts = runtime._resolve_speech_attempts
+
+    call_order: list[str] = []
+
+    class _DummyInline:
+        data = b"\x00\x00" * 4800
+
+    class _DummyPart:
+        inline_data = _DummyInline()
+
+    class _DummyContent:
+        parts = [_DummyPart()]
+
+    class _DummyCandidate:
+        content = _DummyContent()
+
+    class _DummyResponse:
+        candidates = [_DummyCandidate()]
+
+    class _DummyModels:
+        def generate_content(self, **kwargs: object) -> object:
+            model = str(kwargs.get("model") or "")
+            call_order.append(model)
+            if model == "gemini-2.5-pro-preview-tts":
+                raise RuntimeError("Model gemini-2.5-pro-preview-tts is not available in this API version.")
+            return _DummyResponse()
+
+    class _DummyClient:
+        def __init__(self, api_key: str, http_options: object | None = None) -> None:
+            self.api_key = api_key
+            self.http_options = http_options
+            self.models = _DummyModels()
+
+    class _DummyGenai:
+        Client = _DummyClient
+
+    class _DummyTypes:
+        class HttpOptions:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+    try:
+        runtime._RUNTIME_ALLOCATOR = GeminiRateAllocator(runtime.ALLOCATOR_CONFIG, wait_slice_ms=100)
+        runtime._SERVER_API_KEY_POOL = (key,)
+        runtime._SERVER_API_KEY_SET = frozenset({key})
+        runtime._RUNTIME_ALLOCATOR.ensure_keys([key])
+        runtime.genai = _DummyGenai
+        runtime.types = _DummyTypes
+        runtime._resolve_speech_attempts = lambda *args, **kwargs: [("single-speaker", object())]
+        source_policy = runtime._runtime_source_policy()
+        auth_mode = runtime._normalize_runtime_auth_mode(None, source_policy=source_policy)
+        monkeypatch.setattr(
+            runtime,
+            "resolve_tts_model_candidates",
+            lambda *args, **kwargs: ["gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"],
+        )
+
+        pcm_bytes, model_used, speech_mode, key_index = runtime._synthesize_pcm_with_key_pool(
+            text_input="Fallback model access test.",
+            engine="GEM",
+            auth_mode=auth_mode,
+            source_policy=source_policy,
+            trace_id="trace_model_access_fallback",
+            speaker_hint="",
+            language_code="en",
+            target_voice="Fenrir",
+            speaker_voices=[],
+            primary_key_pool=[key],
+            fallback_request_key=None,
+            effective_key_pool=[key],
+            speech_mode_requested="single-speaker",
+            window_index=1,
+            window_total=1,
+            affinity_speakers=[],
+        )
+
+        assert call_order[:2] == ["gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"]
+        assert model_used == "gemini-2.5-flash-preview-tts"
+        assert speech_mode == "single-speaker"
+        assert key_index == 0
+        assert len(pcm_bytes) > 0
+
+        snapshot = runtime._RUNTIME_ALLOCATOR.snapshot([key])
+        key_rows = list(snapshot.get("keys") or [])
+        assert key_rows
+        assert str(key_rows[0].get("status") or "").strip().lower() != "auth_issue"
+    finally:
+        runtime._RUNTIME_ALLOCATOR = original_allocator
+        runtime._SERVER_API_KEY_POOL = original_pool
+        runtime._SERVER_API_KEY_SET = original_pool_set
+        runtime.genai = original_genai
+        runtime.types = original_types
+        runtime._resolve_speech_attempts = original_speech_attempts
+
+
 def test_studio_pair_groups_adaptive_concurrency_respects_pool_pressure(monkeypatch) -> None:
     runtime = _load_gemini_runtime_module()
+    source_policy = runtime._runtime_source_policy()
+    auth_mode = runtime._normalize_runtime_auth_mode(None, source_policy=source_policy)
 
     monkeypatch.setattr(
         runtime,
@@ -640,6 +1001,9 @@ def test_studio_pair_groups_adaptive_concurrency_respects_pool_pressure(monkeypa
 
     result = runtime._synthesize_studio_pair_groups(
         trace_id="trace_adaptive_groups",
+        engine="GEM",
+        auth_mode=auth_mode,
+        source_policy=source_policy,
         target_voice="Fenrir",
         language_code="en",
         speaker_hint="",

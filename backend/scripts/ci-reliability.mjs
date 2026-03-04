@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { runCommand } from './lib/process-runner.mjs';
 
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const loadGateEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.VF_ENABLE_LOAD_GATE || '').trim().toLowerCase());
@@ -9,41 +9,20 @@ const liveAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
 const llvcMappingAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_LLVC_MAPPING_AUDIT_GATE || '').trim().toLowerCase(),
 );
-
-const run = (command, args, env = {}) =>
-  new Promise((resolve) => {
-    const commonOptions = {
-      stdio: 'inherit',
-      env: { ...process.env, ...env },
-    };
-    const child =
-      process.platform === 'win32'
-        ? spawn(command, args, {
-            ...commonOptions,
-            shell: true,
-          })
-        : spawn(command, args, {
-            ...commonOptions,
-            shell: false,
-          });
-    child.on('error', (error) => {
-      resolve({
-        ok: false,
-        code: 1,
-        command: `${command} ${args.join(' ')}`,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-    child.on('close', (code) => {
-      resolve({ ok: code === 0, code: code ?? 1, command: `${command} ${args.join(' ')}` });
-    });
-  });
+const connectivityAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.VF_ENABLE_CONNECTIVITY_AUDIT_GATE || '').trim().toLowerCase(),
+);
 
 const steps = [
   {
     name: 'Type checks',
     command: npmBin,
     args: ['--prefix', '../frontend', 'run', 'typecheck'],
+  },
+  {
+    name: 'Kubernetes manifest validation',
+    command: npmBin,
+    args: ['run', 'validate:k8s'],
   },
   {
     name: 'Media backend audit',
@@ -86,11 +65,22 @@ if (llvcMappingAuditGateEnabled) {
   });
 }
 
+if (connectivityAuditGateEnabled) {
+  steps.push({
+    name: 'Frontend/backend connectivity audit gate',
+    command: npmBin,
+    args: ['run', 'audit:connectivity'],
+  });
+}
+
 const main = async () => {
   for (const step of steps) {
     console.log(`\n[ci:reliability] ${step.name}`);
 
-    const result = await run(step.command, step.args, step.env || {});
+    const result = await runCommand(step.command, step.args, {
+      env: step.env || {},
+      stdio: 'inherit',
+    });
 
     if (!result.ok) {
       if (result.error) {

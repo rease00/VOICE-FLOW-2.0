@@ -66,13 +66,13 @@ export const KOKORO_VOICES: VoiceOption[] = [
   { id: 'am_onyx', name: 'Oliver UK Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_onyx', country: 'United States', ageGroup: 'Adult' },
   { id: 'am_echo', name: 'Liam Canada Male', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_echo', country: 'United States', ageGroup: 'Adult' },
   { id: 'bf_emma', name: 'Isla Australia Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_emma', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bf_isabella', name: 'Yui Japan Female', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_isabella', country: 'United Kingdom', ageGroup: 'Adult' },
+  { id: 'bf_isabella', name: 'Tara India Girl', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_isabella', country: 'United Kingdom', ageGroup: 'Child' },
   { id: 'bm_george', name: 'Noah Australia Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_george', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bm_fable', name: 'Kenji Japan Male', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_fable', country: 'United Kingdom', ageGroup: 'Adult' },
+  { id: 'bm_fable', name: 'Adi India Boy', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_fable', country: 'United Kingdom', ageGroup: 'Child' },
   { id: 'hf_alpha', name: 'Meera India Female', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_alpha', country: 'India', ageGroup: 'Adult' },
-  { id: 'hf_beta', name: 'Leila UAE Female', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_beta', country: 'India', ageGroup: 'Adult' },
+  { id: 'hf_beta', name: 'Grace UK Elder', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_beta', country: 'India', ageGroup: 'Elderly' },
   { id: 'hm_omega', name: 'Omar UAE Male', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_omega', country: 'India', ageGroup: 'Adult' },
-  { id: 'hm_psi', name: 'Raghu India Elder', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_psi', country: 'India', ageGroup: 'Adult' },
+  { id: 'hm_psi', name: 'Raghu India Elder', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_psi', country: 'India', ageGroup: 'Elderly' },
 ];
 
 // ============================================================================

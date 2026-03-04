@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { reportFrontendError } from '../../shared/telemetry/frontendErrors';
+import { sanitizeUiText } from '../../shared/ui/terminology';
+import { useNotifications } from '../../shared/notifications/NotificationProvider';
+import { BrandLogo } from '../../../components/BrandLogo';
 
 interface AppErrorBoundaryState {
   message: string;
@@ -7,11 +10,23 @@ interface AppErrorBoundaryState {
 
 export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [uiError, setUiError] = useState<AppErrorBoundaryState>({ message: '' });
+  const { emit } = useNotifications();
 
   useEffect(() => {
     const onWindowError = (event: ErrorEvent): void => {
-      const message = event.error?.message || event.message || 'Unknown render error';
+      const message = sanitizeUiText(event.error?.message || event.message || 'Unknown render error');
       console.error('[ui.error_boundary]', event.error || message);
+      emit('app.crash.captured', {
+        title: 'Runtime Error',
+        message: 'The app encountered a runtime error. You can retry the interface or reload.',
+        details: message,
+        sticky: true,
+        dedupeKey: `ui-error-${message}`,
+        action: {
+          label: 'Reload App',
+          onClick: () => window.location.reload(),
+        },
+      });
       setUiError({ message });
       void reportFrontendError({
         message,
@@ -22,8 +37,19 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
     };
     const onUnhandledRejection = (event: PromiseRejectionEvent): void => {
       const reason = event.reason;
-      const message = reason?.message || String(reason || 'Unhandled rejection');
+      const message = sanitizeUiText(reason?.message || String(reason || 'Unhandled rejection'));
       console.error('[ui.error_boundary.unhandled_rejection]', reason);
+      emit('app.crash.captured', {
+        title: 'Unhandled Failure',
+        message: 'A background task failed unexpectedly. You can retry or reload the app.',
+        details: message,
+        sticky: true,
+        dedupeKey: `ui-unhandled-${message}`,
+        action: {
+          label: 'Reload App',
+          onClick: () => window.location.reload(),
+        },
+      });
       setUiError({ message });
       void reportFrontendError({
         message,
@@ -39,12 +65,15 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
     };
-  }, []);
+  }, [emit]);
 
   if (uiError.message) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 text-slate-100 p-6">
         <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+          <div className="mb-4 flex justify-center">
+            <BrandLogo size="sm" tone="light" />
+          </div>
           <h1 className="text-lg font-bold">Interface Error</h1>
           <p className="mt-2 text-sm text-slate-300">
             The UI hit a runtime error. You can retry without restarting services.

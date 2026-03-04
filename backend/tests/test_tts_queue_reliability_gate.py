@@ -248,6 +248,57 @@ def test_admin_tts_queue_metrics_auth_and_payload(monkeypatch) -> None:
     assert "telemetry" in payload
 
 
+def test_tts_job_strict_post_tts_failure_populates_reason_error_code_and_trace_id(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_REQUIRED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:post-tts-strict:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+
+    def _raise_conversion_failure(*_args, **_kwargs):
+        raise RuntimeError("llvc runtime unavailable")
+
+    monkeypatch.setattr(backend_app, "_convert_tts_audio_with_llvc_runtime", _raise_conversion_failure)
+
+    job_payload = {
+        "jobId": "strict_post_tts_job_1",
+        "uid": "strict_post_tts_user",
+        "requestId": "strict_post_tts_req_1",
+        "traceId": "strict_post_tts_trace_1",
+        "engine": "GEM",
+        "text": "strict post tts test",
+        "voiceId": "Fenrir",
+        "voiceName": "Fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "strict post tts test"},
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="GEM", created_at_ms=int(time.time() * 1000))
+
+    backend_app._process_tts_job(job_payload, "worker-strict-post-tts")
+
+    failed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(failed.get("status") or "") == "failed"
+    assert int(failed.get("statusCode") or 0) == 503
+    error = failed.get("error") if isinstance(failed.get("error"), dict) else {}
+    assert str(error.get("reason") or "") == "post_tts_conversion_failed"
+    assert str(error.get("errorCode") or "") == backend_app.ENGINE_OVERLOADED
+    assert str(error.get("trace_id") or "").strip() != ""
+
+
 def test_tts_synthesize_wait_ms_query_override(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -336,6 +387,7 @@ def test_tts_job_status_payload_live_chunks_cursor_and_audio(tmp_path) -> None:
     assert payload["chunkCursorNext"] == 2
     assert len(payload["chunks"]) == 1
     assert payload["chunks"][0]["index"] == 1
+    assert str(payload["chunks"][0]["downloadUrl"]).endswith("/tts/jobs/live_status_job/chunks/1")
     assert "audioBase64" not in payload["chunks"][0]
 
     payload_with_audio = backend_app._tts_job_status_payload(
@@ -349,8 +401,57 @@ def test_tts_job_status_payload_live_chunks_cursor_and_audio(tmp_path) -> None:
     assert payload_with_audio["chunkCursor"] == 0
     assert payload_with_audio["chunkCursorNext"] == 1
     assert len(payload_with_audio["chunks"]) == 1
+    assert str(payload_with_audio["chunks"][0]["downloadUrl"]).endswith("/tts/jobs/live_status_job/chunks/0")
     assert isinstance(payload_with_audio["chunks"][0].get("audioBase64"), str)
     assert payload_with_audio["chunks"][0]["audioBase64"] != ""
+
+
+def test_tts_job_chunk_download_endpoint(monkeypatch, tmp_path) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:chunk-download:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+
+    job_id = "chunk_download_job_1"
+    chunk_path = tmp_path / "chunk_0000.wav"
+    chunk_path.write_bytes(_tiny_wav_bytes(360))
+    backend_app._TTS_JOB_QUEUE.enqueue(
+        lane="free",
+        payload={
+            "jobId": job_id,
+            "uid": "chunk_user",
+            "requestId": job_id,
+            "traceId": job_id,
+            "engine": "GEM",
+            "text": "chunk test",
+            "liveState": {
+                "enabled": True,
+                "playableChunks": 1,
+                "playableDurationMs": 20,
+                "chunkCursorNext": 1,
+                "chunks": [
+                    {
+                        "index": 0,
+                        "contentType": "audio/wav",
+                        "durationMs": 20,
+                        "textChars": 16,
+                        "engine": "GEM",
+                        "traceId": job_id,
+                        "path": str(chunk_path),
+                    }
+                ],
+            },
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.get(f"/tts/jobs/{job_id}/chunks/0", headers={"x-dev-uid": "chunk_user"})
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("audio/wav")
+    assert len(response.content) > 64
 
 
 def test_tts_job_cancel_cleans_live_artifacts(monkeypatch, tmp_path) -> None:

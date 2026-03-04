@@ -471,6 +471,235 @@ def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: 
     assert list(payload.get("warnings") or [])
 
 
+def test_admin_gemini_pools_supports_custom_pool_and_plan_mapping(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(130)
+    custom_key = _make_key(131)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 2}})
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+
+    update = client.put(
+        "/admin/gemini/pools",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": []},
+                "pro": {"keys": []},
+                "pro_plus": {"keys": []},
+                "enterprise_gold": {"keys": [custom_key]},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+                "pro_plus": ["pro_plus", "pro", "free"],
+                "enterprise_gold": ["enterprise_gold", "pro", "free"],
+            },
+            "planPools": {
+                "free": "free",
+                "pro": "pro",
+                "plus": "enterprise_gold",
+            },
+            "defaultFallbackChain": ["enterprise_gold", "pro", "free"],
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert payload["config"]["planPools"]["plus"] == "enterprise_gold"
+    assert payload["config"]["pools"]["enterprise_gold"]["keys"] == [custom_key]
+    assert payload["config"]["defaultFallbackChain"] == ["enterprise_gold", "pro", "free"]
+    assert "enterprise_gold" in payload["config"]["fallbackChains"]
+
+    refreshed = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["config"]["pools"]["enterprise_gold"]["keys"] == [custom_key]
+
+
+def test_admin_gemini_pools_delete_free_disables_authoritative_mode(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(140)
+    pro_key = _make_key(141)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": [pro_key]},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 1}})
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+    assert warm.json()["sourcePolicy"]["freePoolLocked"] is True
+
+    update = client.put(
+        "/admin/gemini/pools",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "version": 1,
+            "pools": {
+                "pro": {"keys": [pro_key]},
+                "pro_plus": {"keys": []},
+            },
+            "fallbackChains": {
+                "pro": ["pro"],
+                "pro_plus": ["pro_plus", "pro"],
+            },
+            "planPools": {
+                "free": "free",
+                "pro": "pro",
+                "plus": "pro_plus",
+            },
+            "defaultFallbackChain": ["pro", "pro_plus"],
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert "free_pool_authoritative_mode_disabled" in list(payload.get("appliedOverrides") or [])
+    assert "free" not in payload["config"]["pools"]
+    assert payload["sourcePolicy"]["freePoolLocked"] is False
+    assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "config_managed"
+
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    after = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert after.status_code == 200
+    assert "free" not in after.json()["config"]["pools"]
+
+
+def test_admin_gemini_plan_mapping_missing_pool_falls_back_to_default_chain(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(150)
+    pro_key = _make_key(151)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": [pro_key]},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 2}})
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+
+    update = client.put(
+        "/admin/gemini/pools",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": []},
+                "pro": {"keys": [pro_key]},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+            },
+            "planPools": {
+                "free": "free",
+                "pro": "pro",
+                "plus": "enterprise_missing",
+            },
+            "defaultFallbackChain": ["pro", "free"],
+            "constraints": {"uniqueKeyMembership": True},
+        },
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert payload["validation"]["missingPlanPools"]["plus"] == "enterprise_missing"
+    keys = backend_app._resolve_gemini_plan_key_pool("plus")
+    assert pro_key in keys
+    assert free_key in keys
+
+
 def test_admin_integrations_usage_requires_admin(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)

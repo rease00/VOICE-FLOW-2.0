@@ -113,6 +113,12 @@ def _configure_runtime_for_local_tests(runtime, key_pool: list[str]) -> None:
         runtime.types = object()
 
 
+def _runtime_auth_context(runtime) -> tuple[str, dict[str, object]]:
+    source_policy = dict(runtime._runtime_source_policy())
+    auth_mode = str(runtime._normalize_runtime_auth_mode(None, source_policy=source_policy))
+    return auth_mode, source_policy
+
+
 def test_build_studio_pair_groups_pairs_speakers_in_sequence() -> None:
     runtime = _load_gemini_runtime_module()
     line_map = _line_map_for_speakers(["A", "B", "C", "D", "E"])
@@ -127,6 +133,7 @@ def test_build_studio_pair_groups_pairs_speakers_in_sequence() -> None:
 
 def test_grouped_synthesis_caps_concurrency_by_pool_size() -> None:
     runtime = _load_gemini_runtime_module()
+    auth_mode, source_policy = _runtime_auth_context(runtime)
     speakers = ["A", "B", "C", "D", "E"]
     line_map = _line_map_for_speakers(speakers)
     speaker_voices = _speaker_voices(speakers)
@@ -157,6 +164,9 @@ def test_grouped_synthesis_caps_concurrency_by_pool_size() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_concurrency",
+            engine="GEM",
+            auth_mode=auth_mode,
+            source_policy=source_policy,
             target_voice="Fenrir",
             language_code="en",
             speaker_hint="",
@@ -177,6 +187,7 @@ def test_grouped_synthesis_caps_concurrency_by_pool_size() -> None:
 
 def test_grouped_synthesis_reassembles_audio_in_line_index_order() -> None:
     runtime = _load_gemini_runtime_module()
+    auth_mode, source_policy = _runtime_auth_context(runtime)
     speakers = ["A", "B", "C", "D"]
     line_map = _line_map_for_speakers(speakers)
     speaker_voices = _speaker_voices(speakers)
@@ -192,6 +203,9 @@ def test_grouped_synthesis_reassembles_audio_in_line_index_order() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_ordering",
+            engine="GEM",
+            auth_mode=auth_mode,
+            source_policy=source_policy,
             target_voice="Fenrir",
             language_code="en",
             speaker_hint="",
@@ -212,6 +226,7 @@ def test_grouped_synthesis_reassembles_audio_in_line_index_order() -> None:
 
 def test_grouped_synthesis_retries_failed_group_once() -> None:
     runtime = _load_gemini_runtime_module()
+    auth_mode, source_policy = _runtime_auth_context(runtime)
     speakers = ["A", "B", "C"]
     line_map = _line_map_for_speakers(speakers)
     speaker_voices = _speaker_voices(speakers)
@@ -232,6 +247,9 @@ def test_grouped_synthesis_retries_failed_group_once() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_retry",
+            engine="GEM",
+            auth_mode=auth_mode,
+            source_policy=source_policy,
             target_voice="Fenrir",
             language_code="en",
             speaker_hint="",
@@ -363,3 +381,48 @@ def test_grouped_long_text_is_windowed_and_reassembled() -> None:
         assert levels[:6] == [1000, 1100, 1200, 1300, 1400, 1500]
     finally:
         runtime._synthesize_studio_pair_groups = original
+
+
+def test_good_engine_pair_mode_falls_back_to_split_windows() -> None:
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(51), _make_key(52)]
+    _configure_runtime_for_local_tests(runtime, key_pool)
+
+    original_group_windows = runtime._synthesize_studio_pair_group_windows
+    original_pcm_with_pool = runtime._synthesize_pcm_with_key_pool
+
+    def _stub_group_windows(**kwargs):
+        raise RuntimeError("forced_pair_groups_failure_for_test")
+
+    def _stub_pcm_with_pool(**kwargs):
+        line_ids = _parse_line_ids(str(kwargs.get("text_input") or ""))
+        if not line_ids:
+            line_ids = [0]
+        return _pcm_for_line_ids(line_ids), "gemini-2.5-flash-preview-tts", "single-speaker", 0
+
+    try:
+        runtime._synthesize_studio_pair_group_windows = _stub_group_windows
+        runtime._synthesize_pcm_with_key_pool = _stub_pcm_with_pool
+
+        line_map = _line_map_for_speakers(["A", "B", "A", "B"])
+        request = runtime.SynthesizeRequest(
+            text="\n".join(f"{line['speaker']}: {line['text']}" for line in line_map),
+            engine="GOOD",
+            voiceName="Fenrir",
+            speaker_voices=_speaker_voices(["A", "B"]),
+            multi_speaker_mode="studio_pair_groups",
+            multi_speaker_line_map=line_map,
+        )
+
+        result = runtime._synthesize_text_to_wav(request)
+        diagnostics = dict(result.get("diagnostics") or {})
+        strategies = list(diagnostics.get("strategies") or [])
+
+        assert len(bytes(result["wavBytes"])) > 0
+        assert bool(diagnostics.get("recoveryUsed")) is True
+        assert "good_pair_split_fallback" in strategies
+        assert "single_speaker_line_windows" in strategies
+        assert result.get("speechModeRequested") == "good_pair_split_fallback"
+    finally:
+        runtime._synthesize_studio_pair_group_windows = original_group_windows
+        runtime._synthesize_pcm_with_key_pool = original_pcm_with_pool

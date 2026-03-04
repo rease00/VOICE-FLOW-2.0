@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { classifyAuditFailure, isTransientFailureClass, normalizeBaseUrl, withBoundedRetry } from './lib/audit-helpers.mjs';
 
 const ROOT = process.cwd();
 const MODE = process.argv.includes('--mode')
@@ -8,9 +9,11 @@ const MODE = process.argv.includes('--mode')
   : 'smoke';
 
 const REPORT_PATH = path.join(ROOT, 'artifacts', 'tts_longtext_5000_audit_report.json');
-const GEM_URL = String(process.env.VF_GEMINI_RUNTIME_URL || 'http://127.0.0.1:7810').replace(/\/+$/, '');
-const KOKORO_URL = String(process.env.VF_KOKORO_RUNTIME_URL || 'http://127.0.0.1:7820').replace(/\/+$/, '');
+const GEM_URL = normalizeBaseUrl(process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
+const KOKORO_URL = normalizeBaseUrl(process.env.VF_KOKORO_RUNTIME_URL, 'http://127.0.0.1:7820');
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_LONGTEXT_TIMEOUT_MS || 240000);
+const RETRY_MAX = Math.max(0, Number(process.env.VF_TTS_LONGTEXT_RETRY_MAX || 2));
+const RETRY_BASE_MS = Math.max(100, Number(process.env.VF_TTS_LONGTEXT_RETRY_BASE_MS || 800));
 
 const EN_UNITS = [
   'One day Mohan asked his mother for fresh vegetables.',
@@ -176,6 +179,40 @@ const postJsonWithTimeout = async (url, payload, timeoutMs = REQUEST_TIMEOUT_MS)
   }
 };
 
+const runRuntimePreflight = async () => {
+  const runtimes = [
+    { name: 'GEM', url: `${GEM_URL}/health` },
+    { name: 'KOKORO', url: `${KOKORO_URL}/health` },
+  ];
+  const checks = [];
+
+  for (const runtime of runtimes) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      const response = await fetch(runtime.url, { method: 'GET', signal: controller.signal }).finally(() => clearTimeout(timer));
+      checks.push({
+        name: runtime.name,
+        ok: response.ok,
+        status: response.status,
+        classification: response.ok ? 'ok' : classifyAuditFailure({ status: response.status, payload: await parseErrorDetail(response) }),
+      });
+    } catch (error) {
+      checks.push({
+        name: runtime.name,
+        ok: false,
+        status: 0,
+        classification: classifyAuditFailure({ status: 0, payload: error instanceof Error ? error.message : String(error) }),
+      });
+    }
+  }
+
+  return {
+    ok: checks.every((entry) => entry.ok),
+    checks,
+  };
+};
+
 const synthesize = async ({ engine, language, words, traceId }) => {
   const runtime = ENGINES[engine];
   const unitBank = language === 'hi' ? HI_UNITS : EN_UNITS;
@@ -202,46 +239,61 @@ const synthesize = async ({ engine, language, words, traceId }) => {
       };
 
   const started = Date.now();
-  let response;
-  try {
-    response = await postJsonWithTimeout(runtime.url, payload);
-  } catch (error) {
-    const elapsedMs = Date.now() - started;
-    return {
-      ok: false,
-      status: 0,
-      error: classifyTransportError(error),
-      elapsedMs,
-      wordCount: normalizedWords,
-    };
-  }
-  const elapsedMs = Date.now() - started;
-  if (!response.ok) {
-    const detail = sanitizeErrorDetail(await parseErrorDetail(response));
-    return {
-      ok: false,
-      status: response.status,
-      error: detail,
-      elapsedMs,
-      wordCount: normalizedWords,
-    };
-  }
+  return withBoundedRetry(
+    async () => {
+      let response;
+      try {
+        response = await postJsonWithTimeout(runtime.url, payload);
+      } catch (error) {
+        const elapsedMs = Date.now() - started;
+        const transport = classifyTransportError(error);
+        return {
+          ok: false,
+          status: 0,
+          error: transport,
+          elapsedMs,
+          wordCount: normalizedWords,
+          failureClass: classifyAuditFailure({ status: 0, payload: transport }),
+        };
+      }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
-  const wav = parseWav(bytes);
-  const wordsPerSec = normalizedWords / Math.max(0.001, wav.duration);
-  return {
-    ok: bytes.length > 100 && wav.duration > 0.3 && wordsPerSec > 0.15 && wordsPerSec < 9.0,
-    status: 200,
-    elapsedMs,
-    bytes: bytes.length,
-    wordCount: normalizedWords,
-    durationSec: Number(wav.duration.toFixed(3)),
-    wordsPerSec: Number(wordsPerSec.toFixed(3)),
-    sampleRate: wav.sampleRate,
-    channels: wav.channels,
-    bitsPerSample: wav.bitsPerSample,
-  };
+      const elapsedMs = Date.now() - started;
+      if (!response.ok) {
+        const detail = sanitizeErrorDetail(await parseErrorDetail(response));
+        return {
+          ok: false,
+          status: response.status,
+          error: detail,
+          elapsedMs,
+          wordCount: normalizedWords,
+          failureClass: classifyAuditFailure({ status: response.status, payload: detail }),
+        };
+      }
+
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const wav = parseWav(bytes);
+      const wordsPerSec = normalizedWords / Math.max(0.001, wav.duration);
+      const qualityOk = bytes.length > 100 && wav.duration > 0.3 && wordsPerSec > 0.15 && wordsPerSec < 9.0;
+      return {
+        ok: qualityOk,
+        status: 200,
+        elapsedMs,
+        bytes: bytes.length,
+        wordCount: normalizedWords,
+        durationSec: Number(wav.duration.toFixed(3)),
+        wordsPerSec: Number(wordsPerSec.toFixed(3)),
+        sampleRate: wav.sampleRate,
+        channels: wav.channels,
+        bitsPerSample: wav.bitsPerSample,
+        failureClass: qualityOk ? null : 'client_error',
+      };
+    },
+    {
+      maxRetries: RETRY_MAX,
+      baseDelayMs: RETRY_BASE_MS,
+      shouldRetry: (result) => !result.ok && isTransientFailureClass(String(result.failureClass || '')),
+    }
+  );
 };
 
 const runSmoke = async (report) => {
@@ -294,9 +346,15 @@ const runMatrix = async (report) => {
 
 const main = async () => {
   const startedAt = new Date().toISOString();
+  const preflight = await runRuntimePreflight();
   const report = {
     startedAt,
     mode: MODE,
+    preflight,
+    retry: {
+      max: RETRY_MAX,
+      baseMs: RETRY_BASE_MS,
+    },
     runtimes: {
       GEM: GEM_URL,
       KOKORO: KOKORO_URL,
@@ -304,6 +362,21 @@ const main = async () => {
     tests: [],
     passed: false,
   };
+
+  if (!preflight.ok) {
+    report.finishedAt = new Date().toISOString();
+    report.failed = 0;
+    report.passed = false;
+    report.failureReason = 'runtime_preflight_failure';
+    await fs.mkdir(path.dirname(REPORT_PATH), { recursive: true });
+    await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+    console.log(`Long-text report written to ${path.relative(ROOT, REPORT_PATH).replace(/\\/g, '/')}`);
+    console.log(`Mode: ${MODE}`);
+    for (const check of preflight.checks.filter((entry) => !entry.ok)) {
+      console.log(`[FAIL] preflight ${check.name} status=${check.status} class=${check.classification}`);
+    }
+    process.exit(1);
+  }
 
   if (MODE === 'matrix') {
     await runSmoke(report);

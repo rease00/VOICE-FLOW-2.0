@@ -65,6 +65,11 @@ export interface AdminCoupon {
 
 export interface GeminiPoolStatusPayload {
   ok: boolean;
+  config?: GeminiPoolConfig;
+  validation?: GeminiPoolValidation;
+  warnings?: string[];
+  sourcePolicy?: GeminiSourcePolicy;
+  poolSummaries?: Record<string, GeminiPoolSummary>;
   backend?: {
     ok?: boolean;
     pool?: {
@@ -73,6 +78,8 @@ export interface GeminiPoolStatusPayload {
       unhealthyKeys?: number;
       atLimitKeys?: number;
     };
+    keys?: GeminiPoolKeyStatus[];
+    poolSummaries?: Record<string, GeminiPoolSummary>;
     source?: {
       configuredFilePath?: string;
       filePath?: string;
@@ -97,6 +104,120 @@ export interface GeminiPoolStatusPayload {
   };
   runtimeReload?: Record<string, unknown>;
   detail?: string;
+  createdPools?: string[];
+  deletedPools?: string[];
+  planPoolChanges?: Record<string, { before?: string; after?: string }>;
+  keyDiffByPool?: Record<string, { beforeCount?: number; afterCount?: number; addedCount?: number; removedCount?: number }>;
+}
+
+export type GeminiSourceProvider = 'gemini_api' | 'vertex';
+
+export interface GeminiSourcePolicy {
+  provider?: GeminiSourceProvider;
+  freePoolMode?: 'api_file_authoritative' | 'config_managed' | string;
+  freePoolFilePath?: string;
+  freePoolLocked?: boolean;
+  failureMode?: string;
+  lastSyncAt?: string;
+  lastSyncStatus?: string;
+  lastSyncHash?: string;
+  fileKeyCount?: number;
+  vertexProject?: string;
+  vertexLocation?: string;
+  vertexServiceAccountRef?: string;
+  vertexServiceAccountConfigured?: boolean;
+  vertexServiceAccountJson?: string;
+  [key: string]: unknown;
+}
+
+export interface GeminiPoolConfig {
+  version?: number;
+  updatedAt?: string;
+  pools?: Record<string, { keys?: string[] }>;
+  fallbackChains?: Record<string, string[]>;
+  planPools?: {
+    free?: string;
+    pro?: string;
+    plus?: string;
+  };
+  defaultFallbackChain?: string[];
+  constraints?: {
+    uniqueKeyMembership?: boolean;
+  };
+  sourcePolicy?: GeminiSourcePolicy;
+}
+
+export interface GeminiPoolValidation {
+  uniqueKeyMembership?: boolean;
+  duplicateKeys?: Record<string, string[]>;
+  missingPlanPools?: Record<string, string>;
+  missingDefaultFallbackPools?: string[];
+  isValid?: boolean;
+}
+
+export interface GeminiPoolSummary {
+  pool?: string;
+  directKeyCount?: number;
+  effectiveKeyCount?: number;
+  chain?: string[];
+  effectiveChain?: string[];
+  allocator?: {
+    keyCount?: number;
+    healthyKeys?: number;
+    unhealthyKeys?: number;
+    atLimitKeys?: number;
+    inFlightTotal?: number;
+    nextResetInMs?: number;
+  };
+}
+
+export interface GeminiPoolKeyStatus {
+  index?: number;
+  fingerprint?: string;
+  status?: string;
+  inFlight?: number;
+  readyInMs?: number;
+  rateLimitStrikes?: number;
+  usage?: Record<string, number | null | undefined>;
+  limit?: {
+    atLimit?: boolean;
+    [key: string]: unknown;
+  };
+  health?: {
+    healthy?: boolean;
+    reason?: string;
+    [key: string]: unknown;
+  };
+  models?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface GeminiPoolsUsagePayload {
+  ok: boolean;
+  backend?: {
+    ok?: boolean;
+    usage?: Record<string, {
+      pool?: string;
+      directKeyCount?: number;
+      effectiveKeyCount?: number;
+      effectiveChain?: string[];
+      direct?: Record<string, unknown>;
+      effective?: Record<string, unknown>;
+    }>;
+    [key: string]: unknown;
+  };
+  runtime?: {
+    ok?: boolean;
+    usage?: Record<string, {
+      pool?: string;
+      directKeyCount?: number;
+      effectiveKeyCount?: number;
+      effectiveChain?: string[];
+      direct?: Record<string, unknown>;
+      effective?: Record<string, unknown>;
+    }>;
+    [key: string]: unknown;
+  };
 }
 
 export interface DailyUsageResetSummary {
@@ -590,6 +711,45 @@ export const reloadGeminiPool = async (baseUrl?: string): Promise<GeminiPoolStat
   readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pool/reload`,
     { method: 'POST' },
+    { requireAuth: true }
+  ))
+);
+
+export const fetchGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
+  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/gemini/pools`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const reloadGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
+  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/gemini/pools/reload`,
+    { method: 'POST' },
+    { requireAuth: true }
+  ))
+);
+
+export const updateGeminiPools = async (
+  input: GeminiPoolConfig,
+  baseUrl?: string
+): Promise<GeminiPoolStatusPayload> => (
+  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/gemini/pools`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ))
+);
+
+export const fetchGeminiPoolsUsage = async (baseUrl?: string): Promise<GeminiPoolsUsagePayload> => (
+  readJsonOrThrow<GeminiPoolsUsagePayload>(await authFetch(
+    `${toBaseUrl(baseUrl)}/admin/gemini/pools/usage`,
+    undefined,
     { requireAuth: true }
   ))
 );

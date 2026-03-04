@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { buildAuditHeaders, classifyAuditFailure, fetchJsonWithTimeout, normalizeBaseUrl } from "./lib/audit-helpers.mjs";
+import { runCommand } from "./lib/process-runner.mjs";
 
 const backendRoot = process.cwd();
 const workspaceRoot = path.resolve(backendRoot, "..");
 const outputDir = path.join(workspaceRoot, "output", "audit");
 const outPath = path.join(outputDir, "stress_matrix.json");
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+const backendBaseUrl = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, "http://127.0.0.1:7800");
 
 const steps = [
   { name: "audit:gemini-stack", args: ["run", "audit:gemini-stack"] },
@@ -34,75 +36,75 @@ const steps = [
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function fetchJson(url, headers = {}) {
-  try {
-    const res = await fetch(url, { headers });
-    const text = await res.text();
-    let payload = null;
-    try {
-      payload = text ? JSON.parse(text) : null;
-    } catch {
-      payload = text;
-    }
-    return { ok: res.ok, status: res.status, payload };
-  } catch (error) {
-    return { ok: false, status: 0, payload: String(error instanceof Error ? error.message : error) };
-  }
+  const result = await fetchJsonWithTimeout(
+    url,
+    {
+      method: "GET",
+      headers,
+    },
+    10_000
+  );
+  return {
+    ok: result.ok,
+    status: result.status,
+    payload: result.payload,
+    classification: classifyAuditFailure(result),
+  };
 }
 
-function runStep(step) {
-  return new Promise((resolve) => {
-    const startedAt = new Date().toISOString();
-    const startedMs = Date.now();
-    const child = spawn(npmCmd, step.args, {
-      cwd: backendRoot,
-      stdio: "inherit",
-      env: { ...process.env, ...(step.env || {}) },
-      shell: false,
-      windowsHide: true,
-    });
+async function collectBackendChecks(authHeaders) {
+  const [health, status, queue] = await Promise.all([
+    fetchJson(`${backendBaseUrl}/health`, authHeaders),
+    fetchJson(`${backendBaseUrl}/tts/engines/status`, authHeaders),
+    fetchJson(`${backendBaseUrl}/admin/tts/queue/metrics`, authHeaders),
+  ]);
 
-    child.on("error", (error) => {
-      const finishedAt = new Date().toISOString();
-      resolve({
-        name: step.name,
-        startedAt,
-        finishedAt,
-        elapsedMs: Date.now() - startedMs,
-        ok: false,
-        code: 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+  return {
+    ok: health.ok && status.ok && queue.ok,
+    health,
+    enginesStatus: status,
+    queueMetrics: queue,
+  };
+}
 
-    child.on("close", async (code) => {
-      const finishedAt = new Date().toISOString();
-      const health = await fetchJson("http://127.0.0.1:7800/health");
-      const status = await fetchJson("http://127.0.0.1:7800/tts/engines/status");
-      const queue = await fetchJson("http://127.0.0.1:7800/admin/tts/queue/metrics", { "x-dev-uid": "local_admin" });
-      resolve({
-        name: step.name,
-        command: `${npmCmd} ${step.args.join(" ")}`,
-        startedAt,
-        finishedAt,
-        elapsedMs: Date.now() - startedMs,
-        ok: code === 0,
-        code: code ?? 1,
-        postCheck: {
-          health,
-          enginesStatus: status,
-          queueMetrics: queue,
-        },
-      });
-    });
+async function runStep(step, authHeaders) {
+  const startedAt = new Date().toISOString();
+  const preCheck = await collectBackendChecks(authHeaders);
+  const result = await runCommand(npmCmd, step.args, {
+    cwd: backendRoot,
+    env: { ...process.env, ...(step.env || {}) },
+    stdio: "inherit",
   });
+  const finishedAt = new Date().toISOString();
+  const postCheck = await collectBackendChecks(authHeaders);
+
+  return {
+    name: step.name,
+    command: result.command,
+    startedAt,
+    finishedAt,
+    elapsedMs: result.elapsedMs,
+    ok: result.ok,
+    code: result.code,
+    error: result.error,
+    preCheck,
+    postCheck,
+  };
 }
 
 async function main() {
+  const { headers: authHeaders, auth } = buildAuditHeaders(
+    { Accept: "application/json" },
+    { scriptName: "audit:stress:matrix", defaultDevUid: "local_admin" }
+  );
+
   await fs.mkdir(outputDir, { recursive: true });
   const report = {
     generatedAt: new Date().toISOString(),
     backendRoot,
     workspaceRoot,
+    backendBaseUrl,
+    authMode: auth.mode,
     steps: [],
     summary: {
       total: steps.length,
@@ -113,7 +115,7 @@ async function main() {
 
   for (const step of steps) {
     console.log(`\n[stress-matrix] running ${step.name}`);
-    const result = await runStep(step);
+    const result = await runStep(step, authHeaders);
     report.steps.push(result);
     if (result.ok) {
       report.summary.passed += 1;

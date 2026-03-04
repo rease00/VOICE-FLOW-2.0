@@ -106,7 +106,7 @@ const main = async () => {
       throw new Error('Invalid /tts/engines/capabilities payload.');
     }
     const engines = payload.engines;
-    for (const engine of ['GEM', 'KOKORO']) {
+    for (const engine of ['GEM', 'GOOD', 'NEURAL2', 'KOKORO']) {
       const cap = engines[engine];
       const violations = validateCapabilitiesPayload(engine, cap);
       report.checks.push({

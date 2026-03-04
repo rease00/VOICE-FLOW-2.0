@@ -8,16 +8,17 @@ import { BrandLogo } from '../components/BrandLogo';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, readStorageString } from '../src/shared/storage/localStore';
+import { useNotifications } from '../src/shared/notifications/NotificationProvider';
+import { sanitizeUiText } from '../src/shared/ui/terminology';
 import {
   fetchAccountProfile,
   fetchMySupportConversations,
   markSupportConversationUnresolved,
   postSupportMessage,
-  upsertAccountProfile,
   type SupportConversation,
 } from '../services/accountService';
 
-const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM'];
+const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'GOOD', 'NEURAL2', 'GEM'];
 
 const readSavedUiTheme = (): 'dark' | 'light' | 'system' | '' => {
   const raw = String(readStorageString(STORAGE_KEYS.uiTheme) || '').trim().toLowerCase();
@@ -69,17 +70,15 @@ const WindowCard: React.FC<{ title: string; data: VfUsageWindow; isDarkUi: boole
 
 export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setScreen }) => {
   const { user, stats, isAdmin, hasUnlimitedAccess, signOutUser, updateUser } = useUser();
+  const { emit } = useNotifications();
   const usage = stats.vfUsage;
   const [isDarkUi, setIsDarkUi] = useState<boolean>(() => detectDarkTheme());
   const initialBodyDarkRef = useRef<boolean | null>(null);
   const [accountUserId, setAccountUserId] = useState<string>(() => String(user.userId || '').trim().toLowerCase());
-  const [accountUserIdDraft, setAccountUserIdDraft] = useState<string>(() => String(user.userId || '').trim().toLowerCase());
-  const [suggestedUserId, setSuggestedUserId] = useState<string>('');
   const [supportText, setSupportText] = useState('');
   const [supportConversations, setSupportConversations] = useState<SupportConversation[]>([]);
   const [isLoadingSupport, setIsLoadingSupport] = useState(false);
   const [isSendingSupport, setIsSendingSupport] = useState(false);
-  const [profileNote, setProfileNote] = useState('');
 
   const loadAccountAndSupport = async () => {
     const baseUrl = readSettingsBackendUrl();
@@ -87,8 +86,6 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
       const profilePayload = await fetchAccountProfile(baseUrl);
       const resolvedUserId = String(profilePayload.profile?.userId || '').trim().toLowerCase();
       setAccountUserId(resolvedUserId);
-      setAccountUserIdDraft(resolvedUserId);
-      setSuggestedUserId(String(profilePayload.suggestedUserId || '').trim().toLowerCase());
       if (resolvedUserId) updateUser({ userId: resolvedUserId });
     } catch {
       // Keep profile screen available even when backend is unavailable.
@@ -160,7 +157,24 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
         </button>
         <button
           onClick={async () => {
-            await signOutUser();
+            try {
+              await signOutUser();
+              emit('custom.message', {
+                title: 'Session',
+                message: 'Signed out successfully.',
+                severity: 'success',
+                category: 'security',
+                channel: 'toast',
+              });
+            } catch (error) {
+              emit('custom.message', {
+                title: 'Session',
+                message: sanitizeUiText(error instanceof Error ? error.message : 'Sign out failed.'),
+                severity: 'error',
+                category: 'security',
+                dedupeKey: 'profile-signout-failed',
+              });
+            }
             setScreen(AppScreen.LOGIN);
           }}
           className={`absolute right-6 top-6 rounded-lg border px-3 py-1.5 text-xs font-semibold ${isDarkUi ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}
@@ -205,41 +219,8 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
                 </div>
               </div>
               {!accountUserId && (
-                <div className={`mt-3 rounded-lg border p-2 ${isDarkUi ? 'border-slate-700 bg-slate-900/70' : 'border-white bg-white'}`}>
-                  <div className={`mb-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Set your immutable user ID</div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={accountUserIdDraft}
-                      onChange={(event) => setAccountUserIdDraft(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                      placeholder={suggestedUserId || 'artist_01'}
-                      className={`h-8 flex-1 rounded-md border px-2 text-xs ${isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-gray-200 bg-white text-gray-900'}`}
-                    />
-                    <button
-                      onClick={() => {
-                        const next = accountUserIdDraft.trim().toLowerCase();
-                        if (!next) return;
-                        void (async () => {
-                          try {
-                            const profile = await upsertAccountProfile({
-                              userId: next,
-                              ...(user.name ? { displayName: user.name } : {}),
-                            }, readSettingsBackendUrl());
-                            const resolved = String(profile.userId || '').trim().toLowerCase();
-                            setAccountUserId(resolved);
-                            setAccountUserIdDraft(resolved);
-                            updateUser({ userId: resolved });
-                            setProfileNote('User ID saved.');
-                          } catch (error) {
-                            setProfileNote(error instanceof Error ? error.message : 'Could not save user ID.');
-                          }
-                        })();
-                      }}
-                      className={`h-8 rounded-md border px-2 text-[11px] font-semibold ${isDarkUi ? 'border-indigo-400/60 bg-indigo-500/20 text-indigo-100' : 'border-indigo-200 bg-indigo-50 text-indigo-700'}`}
-                    >
-                      Save
-                    </button>
-                  </div>
-                  {!!profileNote && <div className={`mt-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{profileNote}</div>}
+                <div className={`mt-3 rounded-lg border px-2.5 py-2 text-xs ${isDarkUi ? 'border-slate-700 bg-slate-900/70 text-slate-300' : 'border-white bg-white text-gray-600'}`}>
+                  User ID setup is pending. Finish it from the one-time setup screen shown after login.
                 </div>
               )}
               {isAdmin && (
@@ -269,6 +250,17 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
                         await postSupportMessage({ text }, readSettingsBackendUrl());
                         setSupportText('');
                         await loadAccountAndSupport();
+                        emit('support.message.sent', {
+                          title: 'Support',
+                          message: 'Support message sent.',
+                          dedupeKey: 'support-message-sent',
+                        });
+                      } catch (error) {
+                        emit('support.message.failed', {
+                          title: 'Support',
+                          message: sanitizeUiText(error instanceof Error ? error.message : 'Support message failed.'),
+                          dedupeKey: 'support-message-failed',
+                        });
                       } finally {
                         setIsSendingSupport(false);
                       }
@@ -297,6 +289,12 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
                             void (async () => {
                               await markSupportConversationUnresolved(item.conversationId, readSettingsBackendUrl());
                               await loadAccountAndSupport();
+                              emit('support.conversation.unresolved', {
+                                title: 'Support',
+                                message: 'Conversation marked as unresolved.',
+                                dedupeKey: `support-unresolved-${item.conversationId}`,
+                                channel: 'inbox',
+                              });
                             })();
                           }}
                           className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${isDarkUi ? 'border-amber-400/60 bg-amber-500/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-700'}`}

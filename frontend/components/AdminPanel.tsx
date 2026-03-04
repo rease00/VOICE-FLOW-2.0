@@ -32,14 +32,19 @@ import {
   fetchCouponAnalyticsSummary,
   fetchCouponAnalyticsTimeseries,
   fetchDailyUsageResetStatus,
-  fetchGeminiPoolStatus,
+  fetchGeminiPools,
+  fetchGeminiPoolsUsage,
+  type GeminiPoolConfig,
+  type GeminiPoolKeyStatus,
   type GeminiPoolStatusPayload,
+  type GeminiPoolsUsagePayload,
   patchAlertDestination,
   patchAlertPolicy,
   assignAdminRbacUser,
   createAlertDestination,
   createAlertPolicy,
-  reloadGeminiPool,
+  updateGeminiPools,
+  reloadGeminiPools,
   resetDailyUsageAll,
   ackAlertEvent,
   resolveAlertEvent,
@@ -58,6 +63,18 @@ import {
   verifyAdminAuditChain,
 } from '../services/adminService';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
+import {
+  applyKeysToPoolInConfig,
+  applySelectedPoolToAllPlans,
+  classifyGeminiPoolKeyTone,
+  createPoolInConfig,
+  deletePoolFromConfig,
+  normalizePoolIdInput,
+  parseGeminiKeysInput,
+  setSourcePolicyProvider,
+  setPlanPoolInConfig,
+  setVertexSourcePolicyFields,
+} from '../src/features/admin/pools/geminiPools';
 
 type ToastKind = 'success' | 'error' | 'info';
 type OpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
@@ -119,6 +136,7 @@ const asNumber = (value: unknown): number => {
   const next = Number(value || 0);
   return Number.isFinite(next) ? next : 0;
 };
+
 
 const isForbiddenError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
@@ -192,6 +210,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const [isLoadingRbac, setIsLoadingRbac] = useState(false);
 
   const [geminiPoolStatus, setGeminiPoolStatus] = useState<GeminiPoolStatusPayload | null>(null);
+  const [geminiPoolsUsage, setGeminiPoolsUsage] = useState<GeminiPoolsUsagePayload | null>(null);
+  const [geminiPoolEditor, setGeminiPoolEditor] = useState<GeminiPoolConfig | null>(null);
+  const [selectedGeminiPool, setSelectedGeminiPool] = useState('free');
+  const [newGeminiPoolName, setNewGeminiPoolName] = useState('');
+  const [newGeminiPoolKeyInput, setNewGeminiPoolKeyInput] = useState('');
+  const [geminiGlobalKeyInput, setGeminiGlobalKeyInput] = useState('');
+  const [vertexServiceAccountJsonInput, setVertexServiceAccountJsonInput] = useState('');
+  const [isSavingGeminiPools, setIsSavingGeminiPools] = useState(false);
   const [isLoadingGeminiPool, setIsLoadingGeminiPool] = useState(false);
   const [isReloadingGeminiPool, setIsReloadingGeminiPool] = useState(false);
 
@@ -423,8 +449,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const reloadGeminiPoolStatusSafely = async () => {
     setIsLoadingGeminiPool(true);
     try {
-      const payload = await fetchGeminiPoolStatus(mediaBackendUrl);
+      const [payload, usagePayload] = await Promise.all([
+        fetchGeminiPools(mediaBackendUrl),
+        fetchGeminiPoolsUsage(mediaBackendUrl),
+      ]);
       setGeminiPoolStatus(payload);
+      setGeminiPoolsUsage(usagePayload);
+      setGeminiPoolEditor(payload?.config || null);
+      const poolNames = Object.keys(payload?.config?.pools || {});
+      if (poolNames.length > 0 && !poolNames.includes(selectedGeminiPool)) {
+        setSelectedGeminiPool(poolNames[0] || '');
+      }
     } catch (error: unknown) {
       notifyError(error, 'Failed to load primary AI pool status.');
     } finally {
@@ -435,13 +470,148 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const handleReloadGeminiPool = async () => {
     setIsReloadingGeminiPool(true);
     try {
-      const payload = await reloadGeminiPool(mediaBackendUrl);
+      const payload = await reloadGeminiPools(mediaBackendUrl);
       setGeminiPoolStatus(payload);
+      setGeminiPoolEditor(payload?.config || null);
+      const usagePayload = await fetchGeminiPoolsUsage(mediaBackendUrl);
+      setGeminiPoolsUsage(usagePayload);
       onToast(sanitizeUiText(payload?.detail || 'Primary AI key pool reloaded.'), 'success');
     } catch (error: unknown) {
       notifyError(error, 'Failed to reload primary AI pool.');
     } finally {
       setIsReloadingGeminiPool(false);
+    }
+  };
+
+  const updateGeminiPoolEditorConfig = (mutator: (previous: GeminiPoolConfig) => GeminiPoolConfig) => {
+    setGeminiPoolEditor((previous) => {
+      const base: GeminiPoolConfig = previous || { pools: {}, fallbackChains: {}, planPools: { free: 'free', pro: 'pro', plus: 'pro_plus' }, defaultFallbackChain: ['pro_plus', 'pro', 'free'], constraints: { uniqueKeyMembership: true } };
+      return mutator(base);
+    });
+  };
+
+  const handleCreateGeminiPool = () => {
+    const normalized = normalizePoolIdInput(newGeminiPoolName);
+    if (!normalized) {
+      onToast('Pool name must use lowercase letters, numbers, "_" or "-".', 'error');
+      return;
+    }
+    updateGeminiPoolEditorConfig((previous) => {
+      return createPoolInConfig(previous, normalized) as GeminiPoolConfig;
+    });
+    setSelectedGeminiPool(normalized);
+    setNewGeminiPoolName('');
+  };
+
+  const handleDeleteGeminiPool = (poolName: string) => {
+    const safePool = String(poolName || '').trim();
+    if (!safePool) return;
+    if (!window.confirm(`Delete pool "${safePool}"? This will remove all keys in this pool.`)) return;
+    updateGeminiPoolEditorConfig((previous) => deletePoolFromConfig(previous, safePool) as GeminiPoolConfig);
+    setSelectedGeminiPool((previous) => (previous === safePool ? '' : previous));
+  };
+
+  const handleAddGeminiPoolKey = (poolName: string) => {
+    const key = String(newGeminiPoolKeyInput || '').trim();
+    if (!key) return;
+    updateGeminiPoolEditorConfig((previous) => {
+      const pools = { ...(previous.pools || {}) };
+      const current = pools[poolName] || { keys: [] as string[] };
+      const keys = Array.isArray(current.keys) ? [...current.keys] : [];
+      if (!keys.includes(key)) keys.push(key);
+      pools[poolName] = { keys };
+      return { ...previous, pools };
+    });
+    setNewGeminiPoolKeyInput('');
+  };
+
+  const handleDeleteGeminiPoolKey = (poolName: string, key: string) => {
+    const safeKey = String(key || '').trim();
+    if (!safeKey) return;
+    updateGeminiPoolEditorConfig((previous) => {
+      const pools = { ...(previous.pools || {}) };
+      const current = pools[poolName] || { keys: [] as string[] };
+      const keys = (Array.isArray(current.keys) ? current.keys : []).filter((item) => String(item || '').trim() !== safeKey);
+      pools[poolName] = { keys };
+      return { ...previous, pools };
+    });
+  };
+
+  const handlePlanPoolChange = (planKey: 'free' | 'pro' | 'plus', poolName: string) => {
+    updateGeminiPoolEditorConfig((previous) => setPlanPoolInConfig(previous, planKey, poolName) as GeminiPoolConfig);
+  };
+
+  const handleApplyGeminiGlobalKeys = () => {
+    const parsedKeys = parseGeminiKeysInput(geminiGlobalKeyInput);
+    if (!selectedPoolName) {
+      onToast('Select a pool first.', 'info');
+      return;
+    }
+    if (parsedKeys.length === 0) {
+      onToast('No valid API keys found in input.', 'info');
+      return;
+    }
+    updateGeminiPoolEditorConfig((previous) => applyKeysToPoolInConfig(previous, selectedPoolName, parsedKeys) as GeminiPoolConfig);
+    onToast(`Added ${parsedKeys.length} key${parsedKeys.length === 1 ? '' : 's'} to ${selectedPoolName}.`, 'success');
+    setGeminiGlobalKeyInput('');
+  };
+
+  const handleApplySelectedPoolToAllPlans = () => {
+    if (!selectedPoolName) {
+      onToast('Select a pool first.', 'info');
+      return;
+    }
+    updateGeminiPoolEditorConfig((previous) => applySelectedPoolToAllPlans(previous, selectedPoolName) as GeminiPoolConfig);
+    onToast(`Mapped free/pro/plus to ${selectedPoolName}.`, 'success');
+  };
+
+  const handleGeminiSourceProviderChange = (provider: 'gemini_api' | 'vertex') => {
+    updateGeminiPoolEditorConfig((previous) => {
+      let next = setSourcePolicyProvider(previous, provider) as GeminiPoolConfig;
+      if (provider === 'vertex' && selectedPoolName) {
+        next = setPlanPoolInConfig(next, 'free', selectedPoolName) as GeminiPoolConfig;
+      }
+      return next;
+    });
+  };
+
+  const handleVertexSourceFieldChange = (field: 'vertexProject' | 'vertexLocation', value: string) => {
+    updateGeminiPoolEditorConfig((previous) => {
+      if (field === 'vertexProject') {
+        return setVertexSourcePolicyFields(previous, { vertexProject: value }) as GeminiPoolConfig;
+      }
+      return setVertexSourcePolicyFields(previous, { vertexLocation: value }) as GeminiPoolConfig;
+    });
+  };
+
+  const handleSaveGeminiPools = async () => {
+    if (!geminiPoolEditor) {
+      onToast('No pool changes to save.', 'info');
+      return;
+    }
+    setIsSavingGeminiPools(true);
+    try {
+      let payloadInput = geminiPoolEditor;
+      const provider = String(geminiPoolEditor.sourcePolicy?.provider || 'gemini_api').trim().toLowerCase();
+      if (provider === 'vertex' && selectedPoolName) {
+        payloadInput = setPlanPoolInConfig(payloadInput, 'free', selectedPoolName) as GeminiPoolConfig;
+      }
+      const serviceAccountJson = String(vertexServiceAccountJsonInput || '').trim();
+      if (serviceAccountJson) {
+        payloadInput = setVertexSourcePolicyFields(payloadInput, { vertexServiceAccountJson: serviceAccountJson }) as GeminiPoolConfig;
+      }
+      const payload = await updateGeminiPools(payloadInput, mediaBackendUrl);
+      setGeminiPoolStatus(payload);
+      setGeminiPoolEditor(payload?.config || null);
+      const usagePayload = await fetchGeminiPoolsUsage(mediaBackendUrl);
+      setGeminiPoolsUsage(usagePayload);
+      await handleReloadGeminiPool();
+      setVertexServiceAccountJsonInput('');
+      onToast('Primary AI pool config saved and reloaded.', 'success');
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to save primary AI pools.');
+    } finally {
+      setIsSavingGeminiPools(false);
     }
   };
 
@@ -769,6 +939,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const backendPool = geminiPoolStatus?.backend?.pool || {};
   const runtimePool = geminiPoolStatus?.runtime?.pool || {};
   const sourceDiag = geminiPoolStatus?.backend?.source || {};
+  const geminiConfig = geminiPoolEditor || geminiPoolStatus?.config || null;
+  const geminiPoolNames = Object.keys(geminiConfig?.pools || {});
+  const selectedPoolName = geminiPoolNames.includes(selectedGeminiPool)
+    ? selectedGeminiPool
+    : (geminiPoolNames[0] || '');
+  const selectedPoolKeys = Array.isArray(geminiConfig?.pools?.[selectedPoolName]?.keys)
+    ? (geminiConfig?.pools?.[selectedPoolName]?.keys as string[])
+    : [];
+  const backendUsageByPool = (geminiPoolsUsage?.backend?.usage || {}) as Record<string, Record<string, unknown>>;
+  const selectedPoolUsage = (backendUsageByPool?.[selectedPoolName] || {}) as Record<string, unknown>;
+  const selectedPoolDirectSnapshot = (selectedPoolUsage?.direct || {}) as Record<string, unknown>;
+  const selectedPoolDirectKeyStatuses = Array.isArray(selectedPoolDirectSnapshot?.keys)
+    ? (selectedPoolDirectSnapshot.keys as GeminiPoolKeyStatus[])
+    : [];
+  const selectedPoolRows = selectedPoolKeys.map((key, index) => ({
+    key: String(key || '').trim(),
+    status: selectedPoolDirectKeyStatuses[index] || null,
+  }));
+  const geminiSourcePolicy = (geminiConfig?.sourcePolicy || {}) as Record<string, unknown>;
+  const geminiSourceProvider = String(geminiSourcePolicy.provider || 'gemini_api').trim().toLowerCase() === 'vertex'
+    ? 'vertex'
+    : 'gemini_api';
+  const vertexProject = String(geminiSourcePolicy.vertexProject || '');
+  const vertexLocation = String(geminiSourcePolicy.vertexLocation || '');
+  const vertexServiceAccountRef = String(geminiSourcePolicy.vertexServiceAccountRef || '');
+  const vertexServiceAccountConfigured = Boolean(geminiSourcePolicy.vertexServiceAccountConfigured || vertexServiceAccountRef);
+  const parsedGlobalGeminiKeys = parseGeminiKeysInput(geminiGlobalKeyInput);
+  const geminiWarnings = [
+    ...(Array.isArray(geminiPoolStatus?.warnings) ? geminiPoolStatus.warnings : []),
+  ];
+  const duplicateKeysValidation = geminiPoolStatus?.validation?.duplicateKeys || {};
+  const hasDuplicateKeys = Object.keys(duplicateKeysValidation || {}).length > 0;
   const lastRun = dailyUsageResetStatus?.lastRun;
 
   const handleExportAuditCsv = () => {
@@ -1051,64 +1253,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
-            <Key size={16} className="text-indigo-600" />
-            Primary AI Pool
-          </div>
-          <button
-            onClick={() => {
-              void handleReloadGeminiPool();
-            }}
-            disabled={isReloadingGeminiPool}
-            className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
-          >
-            {isReloadingGeminiPool ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-            Reload Pool
-          </button>
-        </div>
-        {isLoadingGeminiPool && (
-          <div className="text-xs text-gray-500 inline-flex items-center gap-2">
-            <Loader2 size={13} className="animate-spin" />
-            Loading primary AI pool status...
-          </div>
-        )}
-        {!isLoadingGeminiPool && (
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-xs">
-              <div className="mb-2 font-semibold text-gray-800">Backend allocator</div>
-              <div className="space-y-1 text-gray-600">
-                <div>Keys: <strong>{Number(backendPool.keyCount || 0)}</strong></div>
-                <div>Healthy: <strong>{Number(backendPool.healthyKeys || 0)}</strong></div>
-                <div>At limit: <strong>{Number(backendPool.atLimitKeys || 0)}</strong></div>
-                <div>Unhealthy: <strong>{Number(backendPool.unhealthyKeys || 0)}</strong></div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-xs">
-              <div className="mb-2 font-semibold text-gray-800">Cloud runtime</div>
-              <div className="space-y-1 text-gray-600">
-                <div>Keys: <strong>{Number(runtimePool.keyCount || 0)}</strong></div>
-                <div>Healthy: <strong>{Number(runtimePool.healthyKeys || 0)}</strong></div>
-                <div>At limit: <strong>{Number(runtimePool.atLimitKeys || 0)}</strong></div>
-                <div>Unhealthy: <strong>{Number(runtimePool.unhealthyKeys || 0)}</strong></div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-xs md:col-span-2">
-              <div className="mb-2 font-semibold text-gray-800">Key sources</div>
-              <div className="grid gap-1 text-gray-600 md:grid-cols-3">
-                <div>File exists: <strong>{sourceDiag.fileExists ? 'Yes' : 'No'}</strong></div>
-                <div>File keys: <strong>{Number(sourceDiag.fileKeyCount || 0)}</strong></div>
-                <div>Env pool keys: <strong>{Number(sourceDiag.envPoolKeyCount || 0)}</strong></div>
-              </div>
-              <div className="mt-1 truncate text-gray-500">Configured path: {sanitizeUiText(String(sourceDiag.configuredFilePath || '-'))}</div>
-              <div className="mt-1 truncate text-gray-500">Resolved path: {sanitizeUiText(String(sourceDiag.filePath || '-'))}</div>
-              <div className="mt-1 truncate text-gray-500">Runtime resolved path: {sanitizeUiText(String(geminiPoolStatus?.runtime?.keyFilePath || '-'))}</div>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
             <Users size={16} className="text-indigo-600" />
             Users
           </div>
@@ -1346,7 +1490,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
         )}
       </section>
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <section className="hidden rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Ticket size={16} className="text-indigo-600" />Coupons</div>
           <div className="inline-flex rounded-lg border border-gray-200 p-0.5">
@@ -1471,18 +1615,268 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Key size={16} className="text-indigo-600" />Primary AI Pool</div>
-          {canOpsMutate && (
-            <button onClick={() => { void handleReloadGeminiPool(); }} disabled={isReloadingGeminiPool} className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-60">
-              {isReloadingGeminiPool ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-              Reload
-            </button>
-          )}
+          <div className="inline-flex items-center gap-2">
+            {canOpsMutate && (
+              <button
+                onClick={() => { void handleSaveGeminiPools(); }}
+                disabled={isSavingGeminiPools || isReloadingGeminiPool}
+                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 disabled:opacity-60"
+              >
+                {isSavingGeminiPools ? <Loader2 size={13} className="animate-spin" /> : null}
+                Save Pools
+              </button>
+            )}
+            {canOpsMutate && (
+              <button onClick={() => { void handleReloadGeminiPool(); }} disabled={isReloadingGeminiPool} className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-60">
+                {isReloadingGeminiPool ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                Reload
+              </button>
+            )}
+          </div>
         </div>
         {!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : isLoadingGeminiPool ? <div className="text-xs text-gray-500">Loading primary AI pool status...</div> : (
-          <div className="grid gap-3 md:grid-cols-3 text-xs">
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Backend</div><div>Keys: <strong>{asNumber((backendPool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((backendPool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((backendPool as Record<string, unknown>).atLimitKeys)}</strong></div></div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runtime</div><div>Keys: <strong>{asNumber((runtimePool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((runtimePool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((runtimePool as Record<string, unknown>).atLimitKeys)}</strong></div></div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Sources</div><div>File exists: <strong>{(sourceDiag as Record<string, unknown>).fileExists ? 'Yes' : 'No'}</strong></div><div>File keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).fileKeyCount)}</strong></div><div>Env keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).envPoolKeyCount)}</strong></div></div>
+          <div className="space-y-3 text-xs">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Backend</div><div>Keys: <strong>{asNumber((backendPool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((backendPool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((backendPool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((backendPool as Record<string, unknown>).unhealthyKeys)}</strong></div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runtime</div><div>Keys: <strong>{asNumber((runtimePool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((runtimePool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((runtimePool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((runtimePool as Record<string, unknown>).unhealthyKeys)}</strong></div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Sources</div><div>File exists: <strong>{(sourceDiag as Record<string, unknown>).fileExists ? 'Yes' : 'No'}</strong></div><div>File keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).fileKeyCount)}</strong></div><div>Env keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).envPoolKeyCount)}</strong></div></div>
+            </div>
+
+            {geminiWarnings.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
+                {geminiWarnings.map((warning, index) => (
+                  <div key={`pool-warning-${index}`}>{sanitizeUiText(String(warning || ''))}</div>
+                ))}
+              </div>
+            )}
+            {hasDuplicateKeys && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-red-800">
+                Duplicate key membership detected. Remove duplicate keys from multiple pools before saving.
+              </div>
+            )}
+
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 font-semibold text-gray-800">Source Provider</div>
+              <div className="grid gap-2 md:grid-cols-3">
+                <label className="space-y-1">
+                  <div className="text-[11px] font-semibold uppercase text-gray-600">Provider</div>
+                  <select
+                    value={geminiSourceProvider}
+                    onChange={(event) => handleGeminiSourceProviderChange(event.target.value === 'vertex' ? 'vertex' : 'gemini_api')}
+                    disabled={!canOpsMutate}
+                    className="h-8 w-full rounded border border-gray-200 px-2"
+                  >
+                    <option value="gemini_api">Gemini API Key Pools</option>
+                    <option value="vertex">Vertex AI</option>
+                  </select>
+                </label>
+                <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                  <div>Service account: <strong>{vertexServiceAccountConfigured ? 'Configured' : 'Not configured'}</strong></div>
+                  <div className="truncate">Ref: {vertexServiceAccountRef || '-'}</div>
+                </div>
+                <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                  <div>Current free pool: <strong>{String(geminiConfig?.planPools?.free || '-')}</strong></div>
+                  <div>Selected pool: <strong>{selectedPoolName || '-'}</strong></div>
+                </div>
+              </div>
+              {geminiSourceProvider === 'vertex' && (
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  <label className="space-y-1">
+                    <div className="text-[11px] font-semibold uppercase text-gray-600">Vertex Project</div>
+                    <input
+                      value={vertexProject}
+                      onChange={(event) => handleVertexSourceFieldChange('vertexProject', event.target.value)}
+                      disabled={!canOpsMutate}
+                      className="h-8 w-full rounded border border-gray-200 px-2"
+                      placeholder="gcp-project-id"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <div className="text-[11px] font-semibold uppercase text-gray-600">Vertex Location</div>
+                    <input
+                      value={vertexLocation}
+                      onChange={(event) => handleVertexSourceFieldChange('vertexLocation', event.target.value)}
+                      disabled={!canOpsMutate}
+                      className="h-8 w-full rounded border border-gray-200 px-2"
+                      placeholder="us-central1"
+                    />
+                  </label>
+                  <label className="space-y-1 md:col-span-2">
+                    <div className="text-[11px] font-semibold uppercase text-gray-600">Service Account JSON (write-only)</div>
+                    <textarea
+                      value={vertexServiceAccountJsonInput}
+                      onChange={(event) => setVertexServiceAccountJsonInput(event.target.value)}
+                      disabled={!canOpsMutate}
+                      rows={4}
+                      placeholder='{"type":"service_account", ...}'
+                      className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-[11px]"
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 font-semibold text-gray-800">Plan Pool Mapping</div>
+              <div className="grid gap-2 md:grid-cols-3">
+                {(['free', 'pro', 'plus'] as const).map((planKey) => (
+                  <label key={`plan-pool-${planKey}`} className="space-y-1">
+                    <div className="text-[11px] font-semibold uppercase text-gray-600">{planKey}</div>
+                    <select
+                      value={String(geminiConfig?.planPools?.[planKey] || '')}
+                      onChange={(event) => handlePlanPoolChange(planKey, event.target.value)}
+                      disabled={!canOpsMutate}
+                      className="h-8 w-full rounded border border-gray-200 px-2"
+                    >
+                      <option value="">(fallback only)</option>
+                      {geminiPoolNames.map((poolName) => (
+                        <option key={`plan-pool-option-${planKey}-${poolName}`} value={poolName}>{poolName}</option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleApplySelectedPoolToAllPlans}
+                  disabled={!canOpsMutate || !selectedPoolName}
+                  className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
+                >
+                  Use selected pool for all plans
+                </button>
+                <div className="text-gray-500">Sets free/pro/plus in one click.</div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <input
+                  value={newGeminiPoolName}
+                  onChange={(event) => setNewGeminiPoolName(event.target.value)}
+                  placeholder="new pool name"
+                  disabled={!canOpsMutate}
+                  className="h-8 rounded border border-gray-200 px-2"
+                />
+                <button
+                  onClick={handleCreateGeminiPool}
+                  disabled={!canOpsMutate}
+                  className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
+                >
+                  Create Pool
+                </button>
+                <div className="text-gray-500">Pools: {geminiPoolNames.join(', ') || '-'}</div>
+              </div>
+
+              <div className="mb-2 rounded border border-gray-200 bg-white p-2">
+                <div className="mb-1 font-semibold text-gray-800">Paste API keys</div>
+                <textarea
+                  value={geminiGlobalKeyInput}
+                  onChange={(event) => setGeminiGlobalKeyInput(event.target.value)}
+                  disabled={!canOpsMutate}
+                  rows={3}
+                  placeholder="AIza...\nAIza..."
+                  className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-[11px]"
+                />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleApplyGeminiGlobalKeys}
+                    disabled={!canOpsMutate || !selectedPoolName}
+                    className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 disabled:opacity-60"
+                  >
+                    Apply to selected pool
+                  </button>
+                  <div className="text-gray-500">Parsed keys: {parsedGlobalGeminiKeys.length}</div>
+                </div>
+              </div>
+
+              {geminiPoolNames.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {geminiPoolNames.map((poolName) => (
+                    <button
+                      key={`pool-pill-${poolName}`}
+                      onClick={() => setSelectedGeminiPool(poolName)}
+                      className={`rounded border px-2 py-1 text-[11px] font-semibold ${poolName === selectedPoolName ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}
+                    >
+                      {poolName}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {selectedPoolName && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      value={newGeminiPoolKeyInput}
+                      onChange={(event) => setNewGeminiPoolKeyInput(event.target.value)}
+                      placeholder={`Add key to ${selectedPoolName}`}
+                      disabled={!canOpsMutate}
+                      className="h-8 min-w-[18rem] rounded border border-gray-200 px-2"
+                    />
+                    <button
+                      onClick={() => handleAddGeminiPoolKey(selectedPoolName)}
+                      disabled={!canOpsMutate}
+                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 disabled:opacity-60"
+                    >
+                      Add Key
+                    </button>
+                    <button
+                      onClick={() => handleDeleteGeminiPool(selectedPoolName)}
+                      disabled={!canOpsMutate}
+                      className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 disabled:opacity-60"
+                    >
+                      Delete Pool
+                    </button>
+                  </div>
+
+                  <div className="max-h-64 overflow-auto rounded border border-gray-200 bg-white">
+                    <table className="min-w-full text-[11px]">
+                      <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                        <tr>
+                          <th className="px-2 py-2 text-left">#</th>
+                          <th className="px-2 py-2 text-left">API key</th>
+                          <th className="px-2 py-2 text-left">Status</th>
+                          <th className="px-2 py-2 text-left">Health reason</th>
+                          <th className="px-2 py-2 text-left">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedPoolRows.length === 0 && (
+                          <tr>
+                            <td className="px-2 py-3 text-gray-500" colSpan={5}>No keys in this pool.</td>
+                          </tr>
+                        )}
+                        {selectedPoolRows.map((row, index) => {
+                          const tone = classifyGeminiPoolKeyTone(row.status);
+                          const rowClass = tone === 'bad'
+                            ? 'bg-red-50 text-red-800'
+                            : tone === 'warn'
+                              ? 'bg-amber-50 text-amber-800'
+                              : '';
+                          return (
+                            <tr key={`pool-key-${selectedPoolName}-${index}`} className={`border-t border-gray-100 ${rowClass}`}>
+                              <td className="px-2 py-2">{index + 1}</td>
+                              <td className="px-2 py-2 font-mono">{row.key}</td>
+                              <td className="px-2 py-2">{String(row.status?.status || 'unknown')}</td>
+                              <td className="px-2 py-2">{String(row.status?.health?.reason || '-')}</td>
+                              <td className="px-2 py-2">
+                                <button
+                                  onClick={() => handleDeleteGeminiPoolKey(selectedPoolName, row.key)}
+                                  disabled={!canOpsMutate}
+                                  className="rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700 disabled:opacity-60"
+                                >
+                                  Delete key
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </section>

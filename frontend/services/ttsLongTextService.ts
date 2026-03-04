@@ -47,6 +47,14 @@ const QUALITY_CHUNK_PROFILES: Record<
     hi: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
     default: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
   },
+  GOOD: {
+    hi: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+    default: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+  },
+  NEURAL2: {
+    hi: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+    default: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+  },
 };
 
 const SENTENCE_PATTERN = /[^.!?\n\u0964\u0965]+[.!?\u0964\u0965]?/g;
@@ -95,7 +103,7 @@ export const preflightWordLimit = (text: string, maxWords = MAX_WORDS_PER_REQUES
 
 export const isPrimaryTtsEngine = (value: string): value is PrimaryTtsEngine => {
   const normalized = String(value || '').trim().toUpperCase();
-  return normalized === 'GEM' || normalized === 'KOKORO';
+  return normalized === 'GEM' || normalized === 'GOOD' || normalized === 'NEURAL2' || normalized === 'KOKORO';
 };
 
 export const getChunkProfile = (engine: PrimaryTtsEngine, language?: string): ChunkingProfile => {

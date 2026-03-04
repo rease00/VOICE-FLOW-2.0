@@ -101,6 +101,9 @@ const STARTUP_PID_WAIT_TIMEOUT_MS = Math.max(1000, toIntEnv(process.env.VF_START
 const STARTUP_PID_WAIT_POLL_MS = clampInt(toIntEnv(process.env.VF_STARTUP_PID_WAIT_POLL_MS, 250), 100, 2000);
 const LOG_ROTATE_MAX_BYTES = Math.max(0, toIntEnv(process.env.VF_SERVICE_LOG_ROTATE_MAX_BYTES, 20 * 1024 * 1024));
 const LOG_ROTATE_KEEP = clampInt(toIntEnv(process.env.VF_SERVICE_LOG_ROTATE_KEEP, 3), 0, 10);
+const SERVICE_LOG_TAIL_LINES = clampInt(toIntEnv(process.env.VF_SERVICE_LOG_TAIL_LINES, 20), 0, 200);
+const SERVICE_WINDOWS_VISIBLE = toBoolEnv(process.env.VF_SERVICE_WINDOWS_VISIBLE, false);
+const DOCTOR_MAX_ATTEMPTS = clampInt(toIntEnv(process.env.VF_BOOTSTRAP_DOCTOR_MAX_ATTEMPTS, 2), 1, 5);
 const serviceStartStates = new Map();
 
 function toIntEnv(raw, fallback) {
@@ -205,10 +208,11 @@ const POSITIONAL_ARGS = argv.filter((arg) => !arg.startsWith("-"));
 const COMMAND = (POSITIONAL_ARGS[0] || "up").toLowerCase();
 const COMMAND_ARG = POSITIONAL_ARGS[1] || "";
 const GPU_MODE = argv.includes("--gpu");
-const VALID_COMMANDS = new Set(["up", "check", "down", "switch", "restart"]);
+const REPAIR_MODE = argv.includes("--repair");
+const VALID_COMMANDS = new Set(["up", "check", "down", "switch", "restart", "doctor"]);
 
 if (!VALID_COMMANDS.has(COMMAND)) {
-  console.error(`Unknown command "${COMMAND}". Use one of: up, check, down, switch, restart.`);
+  console.error(`Unknown command "${COMMAND}". Use one of: up, check, down, switch, restart, doctor.`);
   process.exit(1);
 }
 
@@ -332,29 +336,40 @@ const SERVICES = [
 const ENGINE_TO_SERVICE_ID = {
   GEM: "gemini-runtime",
   GEMINI: "gemini-runtime",
+  GOOD: "gemini-runtime",
+  GOOD_RUNTIME: "gemini-runtime",
+  GEMINI_2_5_LITE_TTS: "gemini-runtime",
+  NEURAL2: "gemini-runtime",
+  NEURAL_2: "gemini-runtime",
+  NURAL2: "gemini-runtime",
+  NURAL_2: "gemini-runtime",
   KOKORO: "kokoro-runtime",
 };
 
 const CHECKS = [
   {
+    serviceId: "media-backend",
     name: "Media Backend",
     url: "http://127.0.0.1:7800/health",
     timeoutMs: FAST_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && typeof payload.ok === "boolean",
   },
   {
+    serviceId: "gemini-runtime",
     name: "Gemini Runtime",
     url: "http://127.0.0.1:7810/health",
     timeoutMs: FAST_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
   {
+    serviceId: "kokoro-runtime",
     name: "Kokoro Runtime",
     url: "http://127.0.0.1:7820/health",
     timeoutMs: KOKORO_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
   {
+    serviceId: "llvc-runtime",
     name: "LLVC Runtime",
     url: "http://127.0.0.1:7830/v1/health",
     timeoutMs: FAST_TIMEOUT_MS,
@@ -519,7 +534,7 @@ function runCommand(cmd, args, options = {}) {
 function isPythonUsable(pythonBin) {
   const probe = spawnSync(pythonBin, ["-V"], {
     cwd: ROOT,
-    stdio: "ignore",
+    stdio: "inherit",
   });
   return probe.status === 0;
 }
@@ -681,6 +696,20 @@ function rotateServiceLog(logFile) {
   console.log(`Rotated log file: ${path.relative(ROOT, logFile)}`);
 }
 
+function printServiceLogTail(serviceId, serviceName) {
+  if (SERVICE_LOG_TAIL_LINES <= 0) return;
+  const logFile = serviceLogPath(serviceId);
+  if (!fs.existsSync(logFile)) return;
+  const text = fs.readFileSync(logFile, "utf8");
+  const lines = String(text || "").split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return;
+  const tail = lines.slice(-SERVICE_LOG_TAIL_LINES);
+  console.log(`\n[${serviceName}] recent log lines (${tail.length}):`);
+  for (const line of tail) {
+    console.log(line);
+  }
+}
+
 function terminatePid(pid, label) {
   if (!pid || !isPidAlive(pid)) return;
   if (label) {
@@ -791,7 +820,7 @@ function startService(service, gpuMode) {
       ...(service.env ? service.env(gpuMode) : {}),
     },
     detached: true,
-    windowsHide: false,
+    windowsHide: !SERVICE_WINDOWS_VISIBLE,
     stdio: ["ignore", outFd, outFd],
   });
 
@@ -805,21 +834,23 @@ function startService(service, gpuMode) {
     console.log(
       `Started ${service.name} (launcher PID ${child.pid}, listener PID ${resolvedListeningPid}) -> ${logFile}`
     );
+    printServiceLogTail(service.id, service.name);
     return;
   }
   console.log(`Started ${service.name} (PID ${stablePid}) -> ${logFile}`);
+  printServiceLogTail(service.id, service.name);
 }
 
 function resolveSwitchTarget(rawEngine) {
   const normalized = (rawEngine || "")
     .trim()
     .toUpperCase()
-    .replace(/[^A-Z_]/g, "_")
+    .replace(/[^A-Z0-9_]/g, "_")
     .replace(/__+/g, "_");
   const serviceId = ENGINE_TO_SERVICE_ID[normalized];
   if (!serviceId) {
     throw new Error(
-      `Invalid engine "${rawEngine}". Expected one of: GEM, KOKORO.`
+      `Invalid engine "${rawEngine}". Expected one of: GEM, GOOD, NEURAL2, KOKORO.`
     );
   }
   const service = SERVICES.find((item) => item.id === serviceId);
@@ -870,6 +901,7 @@ async function runCheck(check) {
       const payload = await getJson(check.url);
       if (check.validate(payload)) {
         return {
+          serviceId: check.serviceId || "",
           service: check.name,
           status: "PASS",
           attempts,
@@ -894,6 +926,7 @@ async function runCheck(check) {
   }
 
   return {
+    serviceId: check.serviceId || "",
     service: check.name,
     status: "FAIL",
     attempts,
@@ -902,7 +935,8 @@ async function runCheck(check) {
   };
 }
 
-async function runChecks() {
+async function runChecks(options = {}) {
+  const failOnError = options.failOnError !== false;
   console.log("\nRunning endpoint validation...");
   const results = await Promise.all(
     CHECKS.map(async (check) => {
@@ -921,9 +955,67 @@ async function runChecks() {
     })
   );
   console.table(results);
-  if (results.some((item) => item.status === "FAIL")) {
+  if (failOnError && results.some((item) => item.status === "FAIL")) {
     throw new Error("One or more endpoint checks failed.");
   }
+  return results;
+}
+
+function resolveFailedServices(results) {
+  const failedServiceIds = new Set(
+    results
+      .filter((item) => item.status === "FAIL" && typeof item.serviceId === "string" && item.serviceId.trim())
+      .map((item) => String(item.serviceId).trim())
+  );
+  return SERVICES.filter((service) => failedServiceIds.has(service.id));
+}
+
+async function runDoctor(gpuMode, maxAttempts = DOCTOR_MAX_ATTEMPTS) {
+  for (const service of SERVICES) {
+    startService(service, gpuMode);
+  }
+
+  let lastResults = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    console.log(`\n[doctor] Health validation attempt ${attempt}/${maxAttempts}`);
+    const results = await runChecks({ failOnError: false });
+    lastResults = results;
+
+    const failed = results.filter((item) => item.status === "FAIL");
+    if (failed.length === 0) {
+      printServiceStatusSummary();
+      console.log("\nDoctor completed successfully.");
+      return;
+    }
+
+    if (attempt >= maxAttempts) break;
+
+    const failedServices = resolveFailedServices(results);
+    if (failedServices.length === 0) {
+      console.warn("[doctor] Failed checks could not be mapped to specific services. Restarting all services.");
+      for (const service of SERVICES.slice().reverse()) {
+        stopService(service);
+      }
+      for (const service of SERVICES) {
+        startService(service, gpuMode);
+      }
+      continue;
+    }
+
+    console.warn(`[doctor] Restarting unhealthy services: ${failedServices.map((service) => service.id).join(", ")}`);
+    for (const service of failedServices) {
+      stopService(service);
+      startService(service, gpuMode);
+    }
+  }
+
+  const failedLabels = lastResults
+    .filter((item) => item.status === "FAIL")
+    .map((item) => String(item.service || "unknown"))
+    .join(", ");
+  throw new Error(
+    `Doctor failed after ${maxAttempts} attempt(s). Unhealthy services: ${failedLabels || "unknown"}.`
+  );
 }
 
 function printServiceStatusSummary() {
@@ -982,11 +1074,16 @@ async function main() {
     return;
   }
 
+  if (COMMAND === "doctor" || (COMMAND === "check" && REPAIR_MODE)) {
+    await runDoctor(GPU_MODE, DOCTOR_MAX_ATTEMPTS);
+    return;
+  }
+
   if (COMMAND === "restart") {
     if (COMMAND_ARG) {
       const target = resolveServiceTarget(COMMAND_ARG);
       if (!target) {
-        throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (GEM/KOKORO).`);
+        throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (GEM/GOOD/NEURAL2/KOKORO).`);
       }
       stopService(target);
       startService(target, GPU_MODE);

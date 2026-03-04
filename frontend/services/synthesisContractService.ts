@@ -8,6 +8,8 @@ const ENGINE_SPEED_BOUNDS: Record<
   { min: number; max: number; default: number }
 > = {
   GEM: { min: 0.7, max: 1.3, default: 1.0 },
+  GOOD: { min: 0.7, max: 1.3, default: 1.0 },
+  NEURAL2: { min: 0.7, max: 1.3, default: 1.0 },
   KOKORO: { min: 0.75, max: 1.35, default: 1.0 },
 };
 

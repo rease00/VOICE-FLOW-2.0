@@ -91,8 +91,12 @@ class TtsJobQueue:
         redis_url: str = "",
         key_prefix: str = "vf:tts:jobs",
         lane_weights: Optional[dict[str, int]] = None,
+        result_ttl_ms: int = 900_000,
+        inline_result_max_bytes: int = 1_048_576,
     ) -> None:
         self.key_prefix = str(key_prefix or "vf:tts:jobs").strip() or "vf:tts:jobs"
+        self._result_ttl_ms = max(5_000, int(result_ttl_ms))
+        self._inline_result_max_bytes = max(64_000, int(inline_result_max_bytes))
         self._weights = {normalize_lane(key): max(1, int(value)) for key, value in (lane_weights or DEFAULT_LANE_WEIGHTS).items()}
         self._cycle: list[str] = []
         for lane, weight in self._weights.items():
@@ -142,6 +146,33 @@ class TtsJobQueue:
     def _now_ms(self) -> int:
         return int(time.time() * 1000)
 
+    def _expires_at_ms(self, now_ms: Optional[int] = None) -> int:
+        anchor = int(now_ms if now_ms is not None else self._now_ms())
+        return anchor + self._result_ttl_ms
+
+    def _is_expired(self, payload: dict[str, Any], now_ms: Optional[int] = None) -> bool:
+        expires_at = int(payload.get("expiresAtMs") or 0)
+        if expires_at <= 0:
+            return False
+        safe_now = int(now_ms if now_ms is not None else self._now_ms())
+        return safe_now >= expires_at
+
+    def _redis_set_job(self, job_id: str, payload: dict[str, Any]) -> None:
+        if self._redis_client is None:
+            return
+        self._redis_client.set(self._job_key(job_id), self._serialize(payload), px=self._result_ttl_ms)
+
+    def _cleanup_expired_inmemory_locked(self) -> None:
+        now_ms = self._now_ms()
+        expired_job_ids = [
+            job_id
+            for job_id, payload in list(self._inmemory_jobs.items())
+            if isinstance(payload, dict) and self._is_expired(payload, now_ms=now_ms)
+        ]
+        for job_id in expired_job_ids:
+            self._inmemory_jobs.pop(job_id, None)
+            self._inmemory_job_lanes.pop(job_id, None)
+
     def enqueue(self, *, lane: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized_lane = normalize_lane(lane)
         base = dict(payload or {})
@@ -156,15 +187,17 @@ class TtsJobQueue:
             "updatedAtMs": now_ms,
             "attempts": int(base.get("attempts") or 0),
             "cancelRequested": False,
+            "expiresAtMs": self._expires_at_ms(now_ms),
         }
         if self._redis_client is not None:
             try:
-                self._redis_client.set(self._job_key(job_id), self._serialize(job))
+                self._redis_set_job(job_id, job)
                 self._redis_client.rpush(self._lane_key(normalized_lane), job_id)
                 return dict(job)
             except Exception:
                 pass
         with self._lock:
+            self._cleanup_expired_inmemory_locked()
             self._inmemory_jobs[job_id] = dict(job)
             self._inmemory_job_lanes[job_id] = normalized_lane
             self._inmemory_queue.push(normalized_lane, {"jobId": job_id})
@@ -187,10 +220,17 @@ class TtsJobQueue:
             job = self._deserialize(record_raw)
             if not job:
                 continue
+            if self._is_expired(job):
+                try:
+                    self._redis_client.delete(self._job_key(str(job_id)))
+                except Exception:
+                    pass
+                continue
             if bool(job.get("cancelRequested")):
                 job["status"] = "cancelled"
                 job["updatedAtMs"] = self._now_ms()
-                self._redis_client.set(self._job_key(str(job_id)), self._serialize(job))
+                job["expiresAtMs"] = self._expires_at_ms()
+                self._redis_set_job(str(job_id), job)
                 continue
             return job
         return None
@@ -206,12 +246,14 @@ class TtsJobQueue:
         if not job_id:
             return None
         with self._lock:
+            self._cleanup_expired_inmemory_locked()
             job = dict(self._inmemory_jobs.get(job_id) or {})
             if not job:
                 return None
             if bool(job.get("cancelRequested")):
                 job["status"] = "cancelled"
                 job["updatedAtMs"] = self._now_ms()
+                job["expiresAtMs"] = self._expires_at_ms()
                 self._inmemory_jobs[job_id] = job
                 return None
             return job
@@ -223,10 +265,17 @@ class TtsJobQueue:
         if self._redis_client is not None:
             try:
                 payload = self._deserialize(self._redis_client.get(self._job_key(safe_job_id)))
+                if payload and self._is_expired(payload):
+                    try:
+                        self._redis_client.delete(self._job_key(safe_job_id))
+                    except Exception:
+                        pass
+                    return None
                 return payload or None
             except Exception:
                 pass
         with self._lock:
+            self._cleanup_expired_inmemory_locked()
             payload = self._inmemory_jobs.get(safe_job_id)
             return dict(payload) if isinstance(payload, dict) else None
 
@@ -240,16 +289,25 @@ class TtsJobQueue:
                 current = self._deserialize(self._redis_client.get(self._job_key(safe_job_id)))
                 if not current:
                     return None
+                if self._is_expired(current):
+                    try:
+                        self._redis_client.delete(self._job_key(safe_job_id))
+                    except Exception:
+                        pass
+                    return None
                 next_value = {**current, **dict(patch or {}), "updatedAtMs": now_ms}
-                self._redis_client.set(self._job_key(safe_job_id), self._serialize(next_value))
+                next_value["expiresAtMs"] = self._expires_at_ms(now_ms)
+                self._redis_set_job(safe_job_id, next_value)
                 return next_value
             except Exception:
                 pass
         with self._lock:
+            self._cleanup_expired_inmemory_locked()
             current = self._inmemory_jobs.get(safe_job_id)
             if not isinstance(current, dict):
                 return None
             next_value = {**current, **dict(patch or {}), "updatedAtMs": now_ms}
+            next_value["expiresAtMs"] = self._expires_at_ms(now_ms)
             self._inmemory_jobs[safe_job_id] = next_value
             return dict(next_value)
 
@@ -275,17 +333,31 @@ class TtsJobQueue:
         audio_bytes: bytes,
         media_type: str,
         headers: Optional[dict[str, str]] = None,
+        result_ref: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
+        raw_audio = bytes(audio_bytes or b"")
+        safe_result_ref = dict(result_ref or {}) if isinstance(result_ref, dict) else {}
+        should_inline = len(raw_audio) <= self._inline_result_max_bytes or not safe_result_ref
+        encoded_audio = base64.b64encode(raw_audio).decode("ascii") if should_inline else ""
+        result_payload: dict[str, Any] = {
+            "mediaType": str(media_type or "audio/wav"),
+            "headers": {str(k): str(v) for k, v in dict(headers or {}).items()},
+            "sizeBytes": len(raw_audio),
+        }
+        if encoded_audio:
+            result_payload["audioBase64"] = encoded_audio
+        if safe_result_ref:
+            result_payload["audioRef"] = {
+                "kind": str(safe_result_ref.get("kind") or "file"),
+                "path": str(safe_result_ref.get("path") or ""),
+                "sizeBytes": int(safe_result_ref.get("sizeBytes") or len(raw_audio)),
+            }
         return self.update(
             job_id,
             {
                 "status": "completed",
                 "finishedAtMs": self._now_ms(),
-                "result": {
-                    "audioBase64": base64.b64encode(bytes(audio_bytes or b"")).decode("ascii"),
-                    "mediaType": str(media_type or "audio/wav"),
-                    "headers": {str(k): str(v) for k, v in dict(headers or {}).items()},
-                },
+                "result": result_payload,
             },
         )
 
@@ -321,15 +393,20 @@ class TtsJobQueue:
         if safe_timeout_ms <= 0:
             return self.get(job_id)
         started = self._now_ms()
+        sleep_ms = max(20, int(poll_ms))
         while True:
             current = self.get(job_id)
             if current:
                 status = str(current.get("status") or "").lower()
                 if status in {"completed", "failed", "cancelled"}:
                     return current
+                if status in {"queued", "running"}:
+                    sleep_ms = min(max(250, int(poll_ms) * 4), int(max(sleep_ms, poll_ms) * 1.5))
             if (self._now_ms() - started) >= safe_timeout_ms:
                 return current
-            time.sleep(max(20, int(poll_ms)) / 1000.0)
+            remaining_ms = max(1, safe_timeout_ms - (self._now_ms() - started))
+            wait_ms = min(remaining_ms, max(20, sleep_ms))
+            time.sleep(wait_ms / 1000.0)
 
     def depth_snapshot(self) -> dict[str, Any]:
         if self._redis_client is not None:
@@ -343,9 +420,10 @@ class TtsJobQueue:
                 }
             except Exception:
                 pass
+        with self._lock:
+            self._cleanup_expired_inmemory_locked()
         return {
             "total": int(self._inmemory_queue.depth()),
             "byLane": self._inmemory_queue.depth_by_lane(),
             "storage": "memory",
         }
-

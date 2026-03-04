@@ -23,13 +23,13 @@ spec:
               value: "1"
             - name: VF_TTS_QUEUE_SYNC_WAIT_MS
               value: "0"
-            - name: VF_AUTH_ENFORCE
-              value: "0"
           envFrom:
             - configMapRef:
                 name: voiceflow-backend-config
             - secretRef:
                 name: voiceflow-redis
+            - secretRef:
+                name: voiceflow-runtime-admin
           resources:
             requests:
               cpu: "500m"
@@ -57,4 +57,3 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
-

@@ -157,3 +157,18 @@ export const muxDubbedVideo = async (
     withBaseUrl(options?.baseUrl)
   );
 };
+
+export const fetchTtsJobChunkAudio = async (
+  jobId: string,
+  chunkIndex: number,
+  baseUrl?: string
+): Promise<ArrayBuffer> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  const safeChunkIndex = Math.max(0, Math.floor(Number(chunkIndex || 0)));
+  const blob = await requestBlob(
+    `/tts/jobs/${safeJobId}/chunks/${safeChunkIndex}`,
+    undefined,
+    withBaseUrl(baseUrl)
+  );
+  return blob.arrayBuffer();
+};

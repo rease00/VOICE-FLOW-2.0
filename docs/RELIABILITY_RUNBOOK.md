@@ -77,6 +77,7 @@
    - `npm run ci:reliability`
 2. Included checks:
    - Type checks (`tsc --noEmit`)
+   - Kubernetes manifest validation (`validate:k8s`)
    - GEM/KOKORO Hindi emotion audit
    - GEM/KOKORO long-text smoke audit
    - Media backend audit
@@ -90,12 +91,54 @@
 5. Optional LLVC mapping audit gate:
    - `VF_ENABLE_LLVC_MAPPING_AUDIT_GATE=1 npm run ci:reliability`
    - Runs `audit:llvc:mapping` (gender and profile-map integrity).
-6. Run 50-concurrency load tests directly:
+6. Optional frontend/backend connectivity gate:
+   - `VF_ENABLE_CONNECTIVITY_AUDIT_GATE=1 npm run ci:reliability`
+   - Runs `audit:connectivity` (CORS preflight + auth boundary checks).
+7. Run 50-concurrency load tests directly:
    - `npm run test:load:50:node`
    - `npm run test:load:50:k6`
    - `npm run test:load:50:all`
-7. Load artifacts:
+8. Load artifacts:
    - `backend/artifacts/load/*.json`
+   - `backend/artifacts/frontend_backend_connectivity_audit.json`
+
+## Frontend/Backend Connectivity Audit
+
+1. Run connectivity audit:
+   - `npm run audit:connectivity`
+2. Optional custom origins:
+   - `VF_AUDIT_ORIGINS=http://localhost:3000,http://127.0.0.1:3000 npm run audit:connectivity`
+3. Auth for protected checks:
+   - Preferred: `AUDIT_BEARER_TOKEN=<firebase_id_token>`
+   - Dev fallback: `AUDIT_ALLOW_DEV_UID=1` and optional `AUDIT_DEV_UID=<uid>`
+4. Report artifact:
+   - `backend/artifacts/frontend_backend_connectivity_audit.json`
+5. Interpretation:
+   - Failing preflight checks indicate CORS/auth middleware regression.
+   - Passing connectivity with key-pool warnings indicates transport is healthy but synthesis can still fail from key health/quota/auth issues.
+
+## Core Runtime Flows
+
+1. API pool allocator (Gemini):
+   - Backend maps plan to pool hint in `_build_tts_upstream_payload` (`backend/app.py`) and forwards `poolHint`.
+   - Gemini runtime resolves requested pool + fallback chain in `_resolve_request_key_plan` and `_ensure_runtime_pool_or_raise` (`backend/engines/gemini-runtime/app.py`).
+   - Shared allocator (`backend/shared/gemini_allocator.py`) enforces RPM/TPM windows and key health through `acquire_for_task`, `release`, `mark_rate_limited`, and `mark_auth_failed`.
+   - Pool visibility:
+   - Runtime-native: `GET /v1/admin/api-pool` and `GET /v1/admin/api-pools`.
+   - Backend merged view: `GET /admin/gemini/pools`.
+2. Multispeaker synthesis path:
+   - Frontend sends `speaker_voices`, `multi_speaker_mode`, and optional `multi_speaker_line_map`.
+   - Backend validates/forwards fields via `_build_tts_upstream_payload` (`backend/app.py`).
+   - Runtime normalizes voices + line-map and applies `studio_pair_groups` strategy in `_synthesize_text_to_wav` (`backend/engines/gemini-runtime/app.py`).
+   - Shared normalization and grouping logic lives in `backend/shared/gemini_multi_speaker.py`.
+3. POST `/tts/synthesize` and queued `/tts/jobs` flow:
+   - Request enters `_submit_tts_job`, reserves quota/gateway capacity, and enqueues work.
+   - Worker `_process_tts_job` calls runtime `/synthesize`, optionally emits live chunks, and persists chunk/result artifacts.
+   - Post-TTS LLVC conversion runs in `_convert_tts_audio_with_llvc_runtime`.
+   - Strict policy (`VF_TTS_POST_LLVC_REQUIRED=1`) fails job on conversion failure with `reason=post_tts_conversion_failed`.
+   - Retrieval:
+   - Job status and chunk metadata: `GET /tts/jobs/{job_id}`.
+   - Chunk bytes: `GET /tts/jobs/{job_id}/chunks/{chunk_index}`.
 
 ## Live Playback Without Full-Wait
 
@@ -106,7 +149,9 @@
    - `live_chunk_chars=180`
    - `live_chunk_words=35`
 3. Client polling for playback chunks:
-   - `GET /tts/jobs/{job_id}?includeResult=1&includeChunks=1&chunkCursor=<n>&chunkLimit=2&includeChunkAudio=1`
+   - Metadata poll: `GET /tts/jobs/{job_id}?includeResult=1&includeChunks=1&chunkCursor=<n>&chunkLimit=2&includeChunkAudio=0`
+   - Chunk download: `GET /tts/jobs/{job_id}/chunks/{chunk_index}`
+   - Legacy inline mode remains available via `includeChunkAudio=1`.
 4. During generation:
    - Auto-play first chunk.
    - Queue-play subsequent chunks.
@@ -192,6 +237,37 @@
 9. If male/female voices sound swapped:
    - Inspect `backend/config/voice_id_map.v1.json`.
    - Re-run `npm run audit:llvc:mapping` and review mismatch list in artifact.
+10. If frontend reports backend unreachable:
+    - Run `npm run audit:connectivity`.
+    - Confirm protected preflight checks are not returning `401`.
+    - Ensure `VF_CORS_ORIGINS` includes the exact frontend origin.
+
+## Quick Troubleshooting Map
+
+1. Auth/permission failure on admin endpoints:
+   - Symptom: `401/403` or unexpected `503` on `/admin/*`.
+   - Check first:
+   - `backend/artifacts/frontend_backend_connectivity_audit.json` (`audit:connectivity` result).
+   - Backend auth logs around `_require_permission` and `_resolve_actor`.
+   - Verify token source and `VF_AUTH_ENFORCE`.
+2. Profile-store/identity enrichment failure:
+   - Symptom: error contains `Failed to save user profile` or Firestore transaction rollback-id message.
+   - Check first:
+   - `/account/profile` and `/account/profile/bootstrap` behavior.
+   - Firestore health/permissions for `user_profiles` and `user_id_index`.
+   - Confirm fallback warning logs: `[user-profile-upsert] fallback_non_transactional ...`.
+3. Pool allocator failure:
+   - Symptom: `GEMINI_API_KEY_MISSING`, `GEMINI_KEY_POOL_OVERLOADED`, frequent 502/503 from runtime.
+   - Check first:
+   - `GET /admin/gemini/pools`.
+   - Runtime `GET /v1/admin/api-pools`.
+   - Key source files (`API.txt`, `gemini_api_pools.json`) and fallback chains.
+4. Post-TTS conversion failure:
+   - Symptom: failed job with `reason=post_tts_conversion_failed`.
+   - Check first:
+   - Job payload from `GET /tts/jobs/{job_id}` (`error.reason`, `error.errorCode`, `error.trace_id`).
+   - LLVC runtime health.
+   - `VF_TTS_POST_LLVC_ENABLED` and `VF_TTS_POST_LLVC_REQUIRED`.
 
 ## Recovery Procedure
 

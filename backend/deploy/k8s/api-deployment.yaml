@@ -26,6 +26,8 @@ spec:
                 name: voiceflow-backend-config
             - secretRef:
                 name: voiceflow-redis
+            - secretRef:
+                name: voiceflow-runtime-admin
           readinessProbe:
             httpGet:
               path: /health
@@ -61,4 +63,3 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
-

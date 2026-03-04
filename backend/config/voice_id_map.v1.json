@@ -1,70 +1,280 @@
-﻿{
+{
   "version": "1.0.0",
   "engines": {
     "GEM": {
       "runtimeVoices": [
-        { "voice_id": "v1", "voice": "Fenrir", "name": "v1", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v2", "voice": "Kore", "name": "v2", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v3", "voice": "Alnilam", "name": "v3", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v4", "voice": "Leda", "name": "v4", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v5", "voice": "Iapetus", "name": "v5", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v6", "voice": "Autonoe", "name": "v6", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v7", "voice": "Enceladus", "name": "v7", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v8", "voice": "Erinome", "name": "v8", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v9", "voice": "Puck", "name": "v9", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v10", "voice": "Charon", "name": "v10", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v11", "voice": "Achernar", "name": "v11", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v12", "voice": "Despina", "name": "v12", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v13", "voice": "Algenib", "name": "v13", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v14", "voice": "Algieba", "name": "v14", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v15", "voice": "Zephyr", "name": "v15", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v16", "voice": "Callirrhoe", "name": "v16", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v17", "voice": "Achird", "name": "v17", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v18", "voice": "Aoede", "name": "v18", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v19", "voice": "Gacrux", "name": "v19", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v20", "voice": "Laomedeia", "name": "v20", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v21", "voice": "Orus", "name": "v21", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v22", "voice": "Pulcherrima", "name": "v22", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v23", "voice": "Rasalgethi", "name": "v23", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v24", "voice": "Sadachbia", "name": "v24", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v25", "voice": "Sadaltager", "name": "v25", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v26", "voice": "Schedar", "name": "v26", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v27", "voice": "Sulafat", "name": "v27", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v28", "voice": "Umbriel", "name": "v28", "language": "multilingual", "gender": "female" },
-        { "voice_id": "v29", "voice": "Vindemiatrix", "name": "v29", "language": "multilingual", "gender": "male" },
-        { "voice_id": "v30", "voice": "Zubenelgenubi", "name": "v30", "language": "multilingual", "gender": "female" }
+        {
+          "voice_id": "v1",
+          "voice": "Fenrir",
+          "name": "Arjun India Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v2",
+          "voice": "Kore",
+          "name": "Meera India Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v3",
+          "voice": "Alnilam",
+          "name": "Ethan US Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v4",
+          "voice": "Leda",
+          "name": "Ava US Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v5",
+          "voice": "Iapetus",
+          "name": "Oliver UK Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v6",
+          "voice": "Autonoe",
+          "name": "Emily UK Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v7",
+          "voice": "Enceladus",
+          "name": "Liam Canada Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v8",
+          "voice": "Erinome",
+          "name": "Sophie Canada Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v9",
+          "voice": "Puck",
+          "name": "Noah Australia Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v10",
+          "voice": "Charon",
+          "name": "Isla Australia Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v11",
+          "voice": "Achernar",
+          "name": "Kenji Japan Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v12",
+          "voice": "Despina",
+          "name": "Yui Japan Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v13",
+          "voice": "Algenib",
+          "name": "Lucas Brazil Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v14",
+          "voice": "Algieba",
+          "name": "Camila Brazil Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v15",
+          "voice": "Zephyr",
+          "name": "Mateo Spain Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v16",
+          "voice": "Callirrhoe",
+          "name": "Valentina Spain Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v17",
+          "voice": "Achird",
+          "name": "Adi India Boy",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v18",
+          "voice": "Aoede",
+          "name": "Tara India Girl",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v19",
+          "voice": "Gacrux",
+          "name": "Raghu India Elder",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v20",
+          "voice": "Laomedeia",
+          "name": "Grace UK Elder",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v21",
+          "voice": "Orus",
+          "name": "Noir Novel Artist",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v22",
+          "voice": "Pulcherrima",
+          "name": "Lyris Novel Artist",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v23",
+          "voice": "Rasalgethi",
+          "name": "Hans Germany Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v24",
+          "voice": "Sadachbia",
+          "name": "Anna Germany Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v25",
+          "voice": "Sadaltager",
+          "name": "Pierre France Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v26",
+          "voice": "Schedar",
+          "name": "Claire France Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v27",
+          "voice": "Sulafat",
+          "name": "Omar UAE Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v28",
+          "voice": "Umbriel",
+          "name": "Leila UAE Female",
+          "language": "multilingual",
+          "gender": "female"
+        },
+        {
+          "voice_id": "v29",
+          "voice": "Vindemiatrix",
+          "name": "Ivan Russia Male",
+          "language": "multilingual",
+          "gender": "male"
+        },
+        {
+          "voice_id": "v30",
+          "voice": "Zubenelgenubi",
+          "name": "Alina Russia Female",
+          "language": "multilingual",
+          "gender": "female"
+        }
       ],
       "voiceToProfile": {
-        "v1": "p01_india_m_adult", "Fenrir": "p01_india_m_adult",
-        "v2": "p02_india_f_adult", "Kore": "p02_india_f_adult",
-        "v3": "p03_us_m_adult", "Alnilam": "p03_us_m_adult",
-        "v4": "p04_us_f_adult", "Leda": "p04_us_f_adult",
-        "v5": "p05_uk_m_adult", "Iapetus": "p05_uk_m_adult",
-        "v6": "p06_uk_f_adult", "Autonoe": "p06_uk_f_adult",
-        "v7": "p07_canada_m_adult", "Enceladus": "p07_canada_m_adult",
-        "v8": "p08_canada_f_adult", "Erinome": "p08_canada_f_adult",
-        "v9": "p09_au_m_adult", "Puck": "p09_au_m_adult",
-        "v10": "p10_au_f_adult", "Charon": "p10_au_f_adult",
-        "v11": "p11_jp_m_adult", "Achernar": "p11_jp_m_adult",
-        "v12": "p12_jp_f_adult", "Despina": "p12_jp_f_adult",
-        "v13": "p13_br_m_adult", "Algenib": "p13_br_m_adult",
-        "v14": "p14_br_f_adult", "Algieba": "p14_br_f_adult",
-        "v15": "p15_es_m_adult", "Zephyr": "p15_es_m_adult",
-        "v16": "p16_es_f_adult", "Callirrhoe": "p16_es_f_adult",
-        "v17": "p17_india_boy", "Achird": "p17_india_boy",
-        "v18": "p18_india_girl", "Aoede": "p18_india_girl",
-        "v19": "p19_india_old_man", "Gacrux": "p19_india_old_man",
-        "v20": "p20_uk_old_woman", "Laomedeia": "p20_uk_old_woman",
-        "v21": "p21_novel_artist_m", "Orus": "p21_novel_artist_m",
-        "v22": "p22_novel_artist_f", "Pulcherrima": "p22_novel_artist_f",
-        "v23": "p23_de_m_adult", "Rasalgethi": "p23_de_m_adult",
-        "v24": "p24_de_f_adult", "Sadachbia": "p24_de_f_adult",
-        "v25": "p25_fr_m_adult", "Sadaltager": "p25_fr_m_adult",
-        "v26": "p26_fr_f_adult", "Schedar": "p26_fr_f_adult",
-        "v27": "p27_ae_m_adult", "Sulafat": "p27_ae_m_adult",
-        "v28": "p28_ae_f_adult", "Umbriel": "p28_ae_f_adult",
-        "v29": "p29_ru_m_adult", "Vindemiatrix": "p29_ru_m_adult",
-        "v30": "p30_ru_f_adult", "Zubenelgenubi": "p30_ru_f_adult"
+        "v1": "p01_india_m_adult",
+        "Fenrir": "p01_india_m_adult",
+        "v2": "p02_india_f_adult",
+        "Kore": "p02_india_f_adult",
+        "v3": "p03_us_m_adult",
+        "Alnilam": "p03_us_m_adult",
+        "v4": "p04_us_f_adult",
+        "Leda": "p04_us_f_adult",
+        "v5": "p05_uk_m_adult",
+        "Iapetus": "p05_uk_m_adult",
+        "v6": "p06_uk_f_adult",
+        "Autonoe": "p06_uk_f_adult",
+        "v7": "p07_canada_m_adult",
+        "Enceladus": "p07_canada_m_adult",
+        "v8": "p08_canada_f_adult",
+        "Erinome": "p08_canada_f_adult",
+        "v9": "p09_au_m_adult",
+        "Puck": "p09_au_m_adult",
+        "v10": "p10_au_f_adult",
+        "Charon": "p10_au_f_adult",
+        "v11": "p11_jp_m_adult",
+        "Achernar": "p11_jp_m_adult",
+        "v12": "p12_jp_f_adult",
+        "Despina": "p12_jp_f_adult",
+        "v13": "p13_br_m_adult",
+        "Algenib": "p13_br_m_adult",
+        "v14": "p14_br_f_adult",
+        "Algieba": "p14_br_f_adult",
+        "v15": "p15_es_m_adult",
+        "Zephyr": "p15_es_m_adult",
+        "v16": "p16_es_f_adult",
+        "Callirrhoe": "p16_es_f_adult",
+        "v17": "p17_india_boy",
+        "Achird": "p17_india_boy",
+        "v18": "p18_india_girl",
+        "Aoede": "p18_india_girl",
+        "v19": "p19_india_old_man",
+        "Gacrux": "p19_india_old_man",
+        "v20": "p20_uk_old_woman",
+        "Laomedeia": "p20_uk_old_woman",
+        "v21": "p21_novel_artist_m",
+        "Orus": "p21_novel_artist_m",
+        "v22": "p22_novel_artist_f",
+        "Pulcherrima": "p22_novel_artist_f",
+        "v23": "p23_de_m_adult",
+        "Rasalgethi": "p23_de_m_adult",
+        "v24": "p24_de_f_adult",
+        "Sadachbia": "p24_de_f_adult",
+        "v25": "p25_fr_m_adult",
+        "Sadaltager": "p25_fr_m_adult",
+        "v26": "p26_fr_f_adult",
+        "Schedar": "p26_fr_f_adult",
+        "v27": "p27_ae_m_adult",
+        "Sulafat": "p27_ae_m_adult",
+        "v28": "p28_ae_f_adult",
+        "Umbriel": "p28_ae_f_adult",
+        "v29": "p29_ru_m_adult",
+        "Vindemiatrix": "p29_ru_m_adult",
+        "v30": "p30_ru_f_adult",
+        "Zubenelgenubi": "p30_ru_f_adult"
       }
     },
     "KOKORO": {
@@ -78,11 +288,11 @@
         "am_onyx": "p05_uk_m_adult",
         "am_echo": "p07_canada_m_adult",
         "bf_emma": "p10_au_f_adult",
-        "bf_isabella": "p12_jp_f_adult",
+        "bf_isabella": "p18_india_girl",
         "bm_george": "p09_au_m_adult",
-        "bm_fable": "p11_jp_m_adult",
+        "bm_fable": "p17_india_boy",
         "hf_alpha": "p02_india_f_adult",
-        "hf_beta": "p28_ae_f_adult",
+        "hf_beta": "p20_uk_old_woman",
         "hm_omega": "p27_ae_m_adult",
         "hm_psi": "p19_india_old_man"
       }

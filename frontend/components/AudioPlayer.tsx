@@ -19,7 +19,6 @@ interface AudioPlayerProps {
   isGenerating?: boolean;
   liveChunks?: LiveAudioChunk[];
   isLiveStreaming?: boolean;
-  liveAutoPlay?: boolean;
   onReset: () => void;
 }
 
@@ -73,7 +72,6 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   isGenerating = false,
   liveChunks = [],
   isLiveStreaming = false,
-  liveAutoPlay = true,
   onReset,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -89,11 +87,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const seenChunkKeysRef = useRef<Set<string>>(new Set());
   const liveChunkUrlsRef = useRef<string[]>([]);
   const isSwitchingLiveSourceRef = useRef<boolean>(false);
-  const pendingAutoPlayRef = useRef<boolean>(false);
+  const pendingPlayAfterLoadRef = useRef<boolean>(false);
   const suppressTransientErrorUntilRef = useRef<number>(0);
 
-  const markIntentionalSourceSwitch = useCallback(() => {
-    pendingAutoPlayRef.current = true;
+  const markIntentionalSourceSwitch = useCallback((playAfterLoad: boolean = false) => {
+    pendingPlayAfterLoadRef.current = playAfterLoad;
     suppressTransientErrorUntilRef.current = Date.now() + 1800;
   }, []);
 
@@ -133,11 +131,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     liveQueueRef.current = [];
     seenChunkKeysRef.current.clear();
     isSwitchingLiveSourceRef.current = false;
-    pendingAutoPlayRef.current = false;
+    pendingPlayAfterLoadRef.current = false;
     revokeLiveChunkUrls();
   }, [revokeLiveChunkUrls]);
 
-  const playNextLiveChunk = useCallback(async () => {
+  const playNextLiveChunk = useCallback(async (playAfterLoad: boolean = false) => {
     const audio = audioRef.current;
     if (!audio) return;
     if (isSwitchingLiveSourceRef.current) return;
@@ -153,7 +151,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
 
     isSwitchingLiveSourceRef.current = true;
-    markIntentionalSourceSwitch();
+    markIntentionalSourceSwitch(playAfterLoad);
     setActiveSourceType('live');
     setActiveSourceUrl(next.url);
     setCurrentTime(0);
@@ -183,7 +181,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setCurrentTime(0);
     setDuration(0);
     setPlayError(null);
-    pendingAutoPlayRef.current = false;
+    pendingPlayAfterLoadRef.current = false;
   }, [audioUrl, clearLiveQueue, isLiveStreaming, liveChunks.length]);
 
   useEffect(() => {
@@ -220,13 +218,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       added += 1;
     }
     if (added <= 0) return;
-    if (!liveAutoPlay) return;
-    const audio = audioRef.current;
-    const shouldStartLivePlayback = !audio || audio.paused || activeSourceType !== 'live';
-    if (shouldStartLivePlayback) {
-      void playNextLiveChunk();
-    }
-  }, [activeSourceType, liveAutoPlay, liveChunks, playNextLiveChunk]);
+  }, [liveChunks]);
 
   useEffect(() => {
     const justFinishedGenerating = previousGeneratingRef.current && !isGenerating;
@@ -234,27 +226,26 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     if (!audioUrl || !justFinishedGenerating || !audioRef.current) return;
     if (activeSourceType === 'live') return;
     if (activeSourceUrl !== audioUrl) {
-      markIntentionalSourceSwitch();
+      markIntentionalSourceSwitch(false);
       setActiveSourceType('final');
       setActiveSourceUrl(audioUrl);
       return;
     }
-    void safePlay(audioRef.current, 'auto');
-  }, [activeSourceType, activeSourceUrl, audioUrl, isGenerating, markIntentionalSourceSwitch, safePlay]);
+  }, [activeSourceType, activeSourceUrl, audioUrl, isGenerating, markIntentionalSourceSwitch]);
 
   const togglePlay = async () => {
     const audio = audioRef.current;
     if (!audio) return;
     setPlayError(null);
     try {
-      if (audio.paused) {
-        if (!activeSourceUrl) {
-          if (liveQueueRef.current.length > 0) {
-            await playNextLiveChunk();
+        if (audio.paused) {
+          if (!activeSourceUrl) {
+            if (liveQueueRef.current.length > 0) {
+            await playNextLiveChunk(true);
             return;
           }
           if (audioUrl) {
-            markIntentionalSourceSwitch();
+            markIntentionalSourceSwitch(true);
             setActiveSourceType('final');
             setActiveSourceUrl(audioUrl);
             return;
@@ -294,7 +285,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         liveChunkUrlsRef.current = liveChunkUrlsRef.current.filter((item) => item !== activeSourceUrl);
       }
       if (liveQueueRef.current.length > 0) {
-        void playNextLiveChunk();
+        void playNextLiveChunk(true);
         return;
       }
       if (audioUrl) {
@@ -323,6 +314,24 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setCurrentTime(time);
   };
 
+  useEffect(() => {
+    if (!isPlaying) return;
+    let rafId = 0;
+    const tick = () => {
+      const audio = audioRef.current;
+      if (!audio || audio.paused) return;
+      setCurrentTime(audio.currentTime);
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [isPlaying]);
+
   if (!audioUrl && !isGenerating && liveChunks.length === 0 && activeSourceType === 'none') return null;
 
   return (
@@ -336,10 +345,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           if (Number.isFinite(nextDuration) && nextDuration > 0) {
             setDuration(nextDuration);
           }
-          const shouldAutoPlay = pendingAutoPlayRef.current;
-          pendingAutoPlayRef.current = false;
-          if (shouldAutoPlay && e.currentTarget.paused) {
-            void safePlay(e.currentTarget, 'auto');
+          const shouldPlayAfterLoad = pendingPlayAfterLoadRef.current;
+          pendingPlayAfterLoadRef.current = false;
+          if (shouldPlayAfterLoad && e.currentTarget.paused) {
+            void safePlay(e.currentTarget, 'manual');
           }
           isSwitchingLiveSourceRef.current = false;
         }}
@@ -349,7 +358,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         onError={(event) => {
           setIsPlaying(false);
           isSwitchingLiveSourceRef.current = false;
-          pendingAutoPlayRef.current = false;
+          pendingPlayAfterLoadRef.current = false;
           if (Date.now() < suppressTransientErrorUntilRef.current) return;
           const mediaCode = Number(event.currentTarget.error?.code || 0);
           if (mediaCode === 1) return; // MEDIA_ERR_ABORTED during expected source swaps.
@@ -393,6 +402,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
               />
             </div>
             <span>{formatTime(duration > 0 ? duration : 0)}</span>
+            <span className="min-w-10 text-right text-[11px] font-semibold text-indigo-500">{Math.round(seekProgressPct)}%</span>
          </div>
 
          <div className="flex items-center justify-between">

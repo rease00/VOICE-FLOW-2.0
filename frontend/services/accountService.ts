@@ -47,7 +47,7 @@ export interface AccountEntitlements {
     monthlyFreeLimit: number;
     vffBalance: number;
     paidVfBalance: number;
-    spendableNowByEngine: Record<'KOKORO' | 'NEURAL2' | 'GEM', number>;
+    spendableNowByEngine: Record<'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM', number>;
     adClaimsToday: number;
     adClaimsDailyLimit: number;
     vffMonthKey?: string;

@@ -1,118 +1,186 @@
+#!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  buildAuditHeaders,
+  classifyAuditFailure,
+  fetchJsonWithTimeout,
+  normalizeBaseUrl,
+} from './lib/audit-helpers.mjs';
 
-const baseUrl = (process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
-const videoSample = process.env.VF_AUDIT_VIDEO || '';
-const audioSample = process.env.VF_AUDIT_AUDIO || '';
-const requireLlvc = ['1', 'true', 'yes'].includes((process.env.VF_AUDIT_REQUIRE_LLVC || '').trim().toLowerCase());
+const ROOT = process.cwd();
+const ARTIFACT_PATH = path.join(ROOT, 'artifacts', 'media_backend_audit.json');
+const BACKEND_BASE_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
+const GEMINI_RUNTIME_URL = normalizeBaseUrl(process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
+const KOKORO_RUNTIME_URL = normalizeBaseUrl(process.env.VF_KOKORO_RUNTIME_URL, 'http://127.0.0.1:7820');
 
-async function getJson(url, options = {}) {
-  const res = await fetch(url, options);
-  const text = await res.text();
-  let payload;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = text;
+const toBlob = async (filePath) => {
+  const data = await fs.readFile(filePath);
+  return new Blob([data]);
+};
+
+const fetchCheck = async (name, url, init, timeoutMs = 15_000) => {
+  const result = await fetchJsonWithTimeout(url, init, timeoutMs);
+  return {
+    name,
+    url,
+    ok: result.ok,
+    status: result.status,
+    classification: classifyAuditFailure(result),
+    payload: result.payload,
+  };
+};
+
+const runOptionalUploadCheck = async ({ name, endpoint, authHeaders, fields }) => {
+  const form = new FormData();
+  for (const field of fields) {
+    form.append(field.key, field.blob, field.filename);
   }
-  if (!res.ok) {
-    throw new Error(`${url} -> ${res.status}: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}`);
-  }
-  return payload;
-}
 
-async function fileToBlob(filePath, fallbackType = 'application/octet-stream') {
-  const bytes = await fs.readFile(filePath);
-  return new Blob([bytes], { type: fallbackType });
-}
+  const response = await fetch(`${BACKEND_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: form,
+  });
 
-async function main() {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  const bytes = await response.arrayBuffer();
+  const ok = response.ok && bytes.byteLength > 64;
+
+  return {
+    name,
+    endpoint,
+    ok,
+    status: response.status,
+    contentType,
+    bytes: bytes.byteLength,
+  };
+};
+
+const main = async () => {
   const report = {
     timestamp: new Date().toISOString(),
-    baseUrl,
-    config: {
-      requireLlvc,
+    backendBaseUrl: BACKEND_BASE_URL,
+    runtimes: {
+      GEMINI_RUNTIME: GEMINI_RUNTIME_URL,
+      KOKORO_RUNTIME: KOKORO_RUNTIME_URL,
     },
-    checks: [],
     passed: false,
+    checks: [],
+    optionalChecks: [],
+    summary: {
+      failed: 0,
+      skippedOptional: [],
+    },
   };
 
-  try {
-    const health = await getJson(`${baseUrl}/health`);
-    report.checks.push({ name: 'health', ok: true, detail: health });
+  const { headers: authHeaders, auth } = buildAuditHeaders(
+    { Accept: 'application/json' },
+    { scriptName: 'audit:media', defaultDevUid: 'local_admin' },
+  );
+  report.auth = {
+    mode: auth.mode,
+    hasAuth: auth.hasAuth,
+    requireAuth: auth.requireAuth,
+  };
 
-    try {
-      const models = await getJson(`${baseUrl}/llvc/models`);
-      report.checks.push({ name: 'llvc_models', ok: true, detail: models });
-    } catch (error) {
-      if (requireLlvc) {
-        throw error;
-      }
-      report.checks.push({
-        name: 'llvc_models',
-        ok: false,
-        skipped: true,
-        reason: `LLVC optional for this audit: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    }
+  const checks = await Promise.all([
+    fetchCheck('backend_health', `${BACKEND_BASE_URL}/health`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }),
+    fetchCheck('backend_version', `${BACKEND_BASE_URL}/system/version`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }),
+    fetchCheck('backend_engine_status', `${BACKEND_BASE_URL}/tts/engines/status`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }),
+    fetchCheck('runtime_health_gemini', `${GEMINI_RUNTIME_URL}/health`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }),
+    fetchCheck('runtime_health_kokoro', `${KOKORO_RUNTIME_URL}/health`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }),
+    fetchCheck('tts_queue_metrics', `${BACKEND_BASE_URL}/admin/tts/queue/metrics`, {
+      method: 'GET',
+      headers: authHeaders,
+    }),
+  ]);
 
-    if (videoSample) {
-      const form = new FormData();
-      const blob = await fileToBlob(videoSample, 'video/mp4');
-      form.append('file', blob, path.basename(videoSample));
-      form.append('language', 'auto');
-      form.append('task', 'transcribe');
-
-      const transcribe = await getJson(`${baseUrl}/video/transcribe`, {
-        method: 'POST',
-        body: form,
-      });
-      report.checks.push({
-        name: 'video_transcribe',
-        ok: Boolean(transcribe?.script?.length),
-        detail: {
-          language: transcribe?.language,
-          segmentCount: Array.isArray(transcribe?.segments) ? transcribe.segments.length : 0,
-          scriptPreview: (transcribe?.script || '').slice(0, 160),
-        },
-      });
-    } else {
-      report.checks.push({ name: 'video_transcribe', ok: false, skipped: true, reason: 'Set VF_AUDIT_VIDEO to run this check.' });
-    }
-
-    if (videoSample && audioSample) {
-      const form = new FormData();
-      form.append('video', await fileToBlob(videoSample, 'video/mp4'), path.basename(videoSample));
-      form.append('dub_audio', await fileToBlob(audioSample, 'audio/wav'), path.basename(audioSample));
-      form.append('speech_gain', '1.0');
-      form.append('background_gain', '0.3');
-
-      const res = await fetch(`${baseUrl}/video/mux-dub`, { method: 'POST', body: form });
-      if (!res.ok) {
-        throw new Error(`/video/mux-dub -> ${res.status}`);
-      }
-      const contentType = res.headers.get('content-type') || '';
-      report.checks.push({ name: 'video_mux', ok: contentType.includes('video/mp4'), detail: { contentType } });
-    } else {
-      report.checks.push({ name: 'video_mux', ok: false, skipped: true, reason: 'Set VF_AUDIT_VIDEO and VF_AUDIT_AUDIO to run this check.' });
-    }
-
-    const hardFailures = report.checks.filter((c) => c.ok === false && !c.skipped);
-    report.passed = hardFailures.length === 0;
-  } catch (error) {
-    report.error = error instanceof Error ? error.message : String(error);
-    report.passed = false;
+  report.checks = checks;
+  for (const item of checks) {
+    if (!item.ok) report.summary.failed += 1;
   }
 
-  await fs.mkdir('artifacts', { recursive: true });
-  await fs.writeFile('artifacts/media_backend_audit.json', JSON.stringify(report, null, 2));
+  const auditVideoPath = String(process.env.VF_AUDIT_VIDEO || '').trim();
+  const auditAudioPath = String(process.env.VF_AUDIT_AUDIO || '').trim();
+  const uploadAuthHeaders = {};
+  for (const [key, value] of Object.entries(authHeaders || {})) {
+    const safeKey = String(key || '').trim();
+    if (!safeKey || safeKey.toLowerCase() === 'accept') continue;
+    uploadAuthHeaders[safeKey] = String(value || '');
+  }
 
-  console.log(`Audit report written to artifacts/media_backend_audit.json`);
-  console.log(`Passed: ${report.passed}`);
+  if (auditVideoPath) {
+    try {
+      await fs.access(auditVideoPath);
+      const videoBlob = await toBlob(auditVideoPath);
+      const extractResult = await runOptionalUploadCheck({
+        name: 'extract_audio_from_video',
+        endpoint: '/audio/extract-from-video',
+        authHeaders: uploadAuthHeaders,
+        fields: [{ key: 'file', blob: videoBlob, filename: path.basename(auditVideoPath) }],
+      });
+      report.optionalChecks.push(extractResult);
+      if (!extractResult.ok) report.summary.failed += 1;
+
+      if (auditAudioPath) {
+        await fs.access(auditAudioPath);
+        const dubBlob = await toBlob(auditAudioPath);
+        const muxResult = await runOptionalUploadCheck({
+          name: 'mux_dubbed_video',
+          endpoint: '/video/mux-dub',
+          authHeaders: uploadAuthHeaders,
+          fields: [
+            { key: 'video', blob: videoBlob, filename: path.basename(auditVideoPath) },
+            { key: 'dub_audio', blob: dubBlob, filename: path.basename(auditAudioPath) },
+          ],
+        });
+        report.optionalChecks.push(muxResult);
+        if (!muxResult.ok) report.summary.failed += 1;
+      } else {
+        report.summary.skippedOptional.push('VF_AUDIT_AUDIO not provided; mux check skipped.');
+      }
+    } catch (error) {
+      report.optionalChecks.push({
+        name: 'upload_checks',
+        ok: false,
+        status: 0,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      report.summary.failed += 1;
+    }
+  } else {
+    report.summary.skippedOptional.push('VF_AUDIT_VIDEO not provided; upload smoke checks skipped.');
+  }
+
+  report.passed = report.summary.failed === 0;
+  await fs.mkdir(path.dirname(ARTIFACT_PATH), { recursive: true });
+  await fs.writeFile(ARTIFACT_PATH, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+
+  console.log(`[audit:media] artifact: ${path.relative(ROOT, ARTIFACT_PATH).replace(/\\/g, '/')}`);
+  console.log(`[audit:media] passed=${report.passed}`);
 
   if (!report.passed) {
     process.exitCode = 1;
   }
-}
+};
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

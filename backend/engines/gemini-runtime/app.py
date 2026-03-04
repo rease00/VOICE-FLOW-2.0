@@ -40,14 +40,16 @@ from shared.gemini_allocator import (
     is_valid_api_key as is_valid_api_key_shared,
 )
 from shared.gemini_api_pools import (
-    POOL_NAMES,
     duplicate_key_memberships,
     flatten_pool_keys,
+    list_pool_names as list_runtime_pool_names,
     load_pool_config as load_pool_config_shared,
     normalize_pool_config,
-    normalize_pool_name as normalize_pool_name_shared,
+    resolve_default_pool_hint as resolve_default_runtime_pool_hint,
     resolve_effective_keys as resolve_effective_keys_shared,
     save_pool_config as save_pool_config_shared,
+    SOURCE_POLICY_PROVIDER_GEMINI_API,
+    SOURCE_POLICY_PROVIDER_VERTEX,
     sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
 )
 from shared.gemini_multi_speaker import (
@@ -147,9 +149,47 @@ DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
 GEMINI_API_POOLS_FILE = (
     str(os.getenv("GEMINI_API_POOLS_FILE") or (RUNTIME_ROOT / "config" / "gemini_api_pools.json")).strip()
 )
+GEMINI_VERTEX_SECRET_DIR = (RUNTIME_ROOT / ".runtime" / "secrets" / "gemini").resolve()
+GEMINI_VERTEX_SERVICE_ACCOUNT_FILE = str(
+    os.getenv("VF_GEMINI_VERTEX_SERVICE_ACCOUNT_FILE")
+    or (GEMINI_VERTEX_SECRET_DIR / "vertex-service-account.json")
+).strip()
 TTS_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["tts"])
 TEXT_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["text"])
 OCR_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["ocr"])
+TTS_ENGINE_DEFAULT = "GEM"
+TTS_ENGINE_KEYS = frozenset({"GEM", "GOOD", "NEURAL2", "KOKORO"})
+TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
+    SOURCE_POLICY_PROVIDER_GEMINI_API: {
+        "GOOD": [
+            "gemini-2.5-flash-lite-preview-tts",
+            "gemini-2.5-flash-preview-tts",
+        ],
+        "NEURAL2": [
+            "gemini-2.5-flash-preview-tts",
+        ],
+        "GEM": [
+            "gemini-2.5-pro-preview-tts",
+            "gemini-2.5-flash-preview-tts",
+        ],
+    },
+    SOURCE_POLICY_PROVIDER_VERTEX: {
+        "GOOD": [
+            "gemini-2.5-flash-lite-preview-tts",
+            "gemini-2.5-flash-tts",
+            "gemini-2.5-flash-preview-tts",
+        ],
+        "NEURAL2": [
+            "gemini-2.5-flash-tts",
+            "gemini-2.5-flash-preview-tts",
+        ],
+        "GEM": [
+            "gemini-2.5-pro-tts",
+            "gemini-2.5-pro-preview-tts",
+            "gemini-2.5-flash-tts",
+        ],
+    },
+}
 MODEL_DISCOVERY_TTL_SECONDS = max(60, int(os.getenv("GEMINI_MODEL_DISCOVERY_TTL_SECONDS", "600")))
 MODEL_DISCOVERY_SCAN_LIMIT = max(20, int(os.getenv("GEMINI_MODEL_DISCOVERY_SCAN_LIMIT", "200")))
 KEY_COOLDOWN_BASE_MS = max(1000, int(os.getenv("GEMINI_KEY_COOLDOWN_BASE_MS", "8000")))
@@ -362,6 +402,8 @@ def _emit_stage_event(trace_id: str, stage: str, status: str, detail: Optional[D
 
 
 class SynthesizeRequest(BaseModel):
+    engine: Optional[str] = TTS_ENGINE_DEFAULT
+    authMode: Optional[str] = None
     text: str = Field(min_length=1)
     voiceName: Optional[str] = None
     voice_id: Optional[str] = None
@@ -403,6 +445,8 @@ class ApiPoolsConfigUpdateRequest(BaseModel):
     version: Optional[int] = None
     pools: dict[str, Any]
     fallbackChains: Optional[dict[str, Any]] = None
+    planPools: Optional[dict[str, Any]] = None
+    defaultFallbackChain: Optional[list[Any]] = None
     constraints: Optional[dict[str, Any]] = None
     sourcePolicy: Optional[dict[str, Any]] = None
 
@@ -450,6 +494,34 @@ def resolve_language_code(text: str, hint: Optional[str]) -> str:
 
 def _normalize_model_name(model_name: str) -> str:
     return normalize_model_name(model_name)
+
+
+def _normalize_runtime_engine(raw_engine: object, default: str = TTS_ENGINE_DEFAULT) -> str:
+    token = str(raw_engine or "").strip().upper()
+    if token in {"GEM", "GEMINI"}:
+        return "GEM"
+    if token in {"GOOD", "GOOD_RUNTIME", "GEMINI_2_5_LITE_TTS"}:
+        return "GOOD"
+    if token in {"NEURAL2", "NEURAL_2", "NURAL2", "NURAL_2"}:
+        return "NEURAL2"
+    if token in {"KOKORO", "KOKORO_RUNTIME"}:
+        return "KOKORO"
+    return str(default or TTS_ENGINE_DEFAULT).strip().upper() or TTS_ENGINE_DEFAULT
+
+
+def _normalize_runtime_auth_mode(
+    raw_mode: object,
+    *,
+    source_policy: Optional[dict[str, Any]] = None,
+) -> str:
+    mode_token = str(raw_mode or "").strip().lower()
+    if mode_token in {SOURCE_POLICY_PROVIDER_GEMINI_API, SOURCE_POLICY_PROVIDER_VERTEX}:
+        return mode_token
+    policy = dict(source_policy or {})
+    provider = str(policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    if provider == SOURCE_POLICY_PROVIDER_VERTEX:
+        return SOURCE_POLICY_PROVIDER_VERTEX
+    return SOURCE_POLICY_PROVIDER_GEMINI_API
 
 
 def _supports_generate_content(actions: object) -> bool:
@@ -583,9 +655,105 @@ def _resolve_api_pools_file_path() -> Path:
     return (RUNTIME_ROOT / path).resolve()
 
 
+def _resolve_vertex_service_account_store_path(path_hint: str) -> Path:
+    raw_hint = str(path_hint or GEMINI_VERTEX_SERVICE_ACCOUNT_FILE).strip()
+    path = Path(raw_hint).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (RUNTIME_ROOT / path).resolve()
+
+
+def _persist_vertex_service_account_json(raw_json: str, *, path_hint: str) -> tuple[str, dict[str, Any]]:
+    payload: dict[str, Any]
+    try:
+        parsed = json.loads(str(raw_json or "").strip())
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid Vertex service-account JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Vertex service-account JSON must be an object.")
+    payload = dict(parsed)
+    if str(payload.get("type") or "").strip() not in {"", "service_account"}:
+        raise ValueError("Vertex service-account JSON must be a service_account credential.")
+
+    target_path = _resolve_vertex_service_account_store_path(path_hint)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    os.replace(str(tmp_path), str(target_path))
+    try:
+        os.chmod(str(target_path), 0o600)
+    except Exception:
+        pass
+    return str(target_path), payload
+
+
+def _sanitize_source_policy_for_response(source_policy: dict[str, Any]) -> dict[str, Any]:
+    policy = dict(source_policy or {})
+    policy.pop("vertexServiceAccountJson", None)
+    policy.pop("serviceAccountJson", None)
+    policy.pop("vertexServiceAccount", None)
+    service_account_ref = str(policy.get("vertexServiceAccountRef") or "").strip()
+    policy["vertexServiceAccountConfigured"] = bool(service_account_ref)
+    return policy
+
+
+def _rewrite_free_plan_pool_for_vertex(config: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
+    normalized = normalize_pool_config(config)
+    source_policy = dict(normalized.get("sourcePolicy") or {})
+    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    if provider != SOURCE_POLICY_PROVIDER_VERTEX:
+        return normalized, False, ""
+
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    if "free" not in pools:
+        pools["free"] = {"keys": []}
+        normalized["pools"] = pools
+
+    pool_names = list_runtime_pool_names(normalized)
+    if not pool_names:
+        pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+        pools["free"] = {"keys": []}
+        normalized["pools"] = pools
+        pool_names = ["free"]
+
+    plan_pools = normalized.get("planPools") if isinstance(normalized.get("planPools"), dict) else {}
+    preferred = [
+        str(plan_pools.get("free") or "").strip(),
+        str(plan_pools.get("pro") or "").strip(),
+        str(plan_pools.get("plus") or "").strip(),
+        "free",
+        *pool_names,
+    ]
+    target_pool = ""
+    for candidate in preferred:
+        if candidate and candidate in pool_names:
+            target_pool = candidate
+            break
+    if not target_pool:
+        target_pool = pool_names[0]
+
+    current_free_pool = str(plan_pools.get("free") or "").strip()
+    if current_free_pool == target_pool:
+        return normalized, False, target_pool
+    next_plan_pools = dict(plan_pools)
+    next_plan_pools["free"] = target_pool
+    normalized["planPools"] = next_plan_pools
+    return normalized, True, target_pool
+
+
 def _sync_authoritative_runtime_free_pool(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, list[str]]:
+    normalized = normalize_pool_config(config)
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    has_free_pool = "free" in pools
+    source_policy = dict(normalized.get("sourcePolicy") or {})
+    authoritative_mode = str(source_policy.get("freePoolMode") or "").strip().lower() == "api_file_authoritative"
+    free_pool_locked = bool(source_policy.get("freePoolLocked"))
+    # Preserve legacy/default auto-sync behavior; skip only when free pool was hard-deleted.
+    if not has_free_pool and not authoritative_mode and not free_pool_locked:
+        return normalized, False, []
+
     configured_file_path = _configured_key_file_path()
     if configured_file_path:
         candidate = Path(configured_file_path).expanduser()
@@ -608,7 +776,7 @@ def _sync_authoritative_runtime_free_pool(
         file_exists = False
         file_keys = []
     return sync_authoritative_free_pool_shared(
-        config,
+        normalized,
         file_keys,
         str(resolved_file_path),
         file_exists=file_exists,
@@ -629,11 +797,15 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
             prefer_firestore=False,
             bootstrap_free_keys=bootstrap_keys,
         )
-        if not flatten_pool_keys(config):
+        source_token = str((meta or {}).get("source") or "").strip().lower()
+        if not flatten_pool_keys(config) and source_token in {"default", "bootstrap"}:
             legacy_pool = _build_server_api_key_pool()
             if legacy_pool:
                 config = normalize_pool_config(config)
-                config["pools"]["free"]["keys"] = list(legacy_pool)
+                pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+                pools.setdefault("free", {"keys": []})
+                pools["free"]["keys"] = list(legacy_pool)
+                config["pools"] = pools
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_runtime_free_pool(config)
         if synced_changed:
@@ -658,9 +830,30 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
         return dict(config), dict(meta)
 
 
+def _runtime_source_policy(force: bool = False) -> dict[str, Any]:
+    config, _meta = _load_api_pool_config(force=force)
+    policy = config.get("sourcePolicy") if isinstance(config.get("sourcePolicy"), dict) else {}
+    return dict(policy)
+
+
+def _resolve_vertex_credentials_path(source_policy: Optional[dict[str, Any]] = None) -> str:
+    policy = dict(source_policy or {})
+    raw_path = str(policy.get("vertexServiceAccountRef") or "").strip()
+    if not raw_path:
+        return ""
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    runtime_candidate = (RUNTIME_ROOT / path).resolve()
+    if runtime_candidate.exists():
+        return str(runtime_candidate)
+    return str((WORKSPACE_ROOT / path).resolve())
+
+
 def _pool_keys_for_hint(pool_hint: Optional[str]) -> list[str]:
     config, _meta = _load_api_pool_config()
-    return resolve_effective_keys_shared(config, normalize_pool_name_shared(pool_hint))
+    effective_hint = str(pool_hint or "").strip() or resolve_default_runtime_pool_hint(config)
+    return resolve_effective_keys_shared(config, effective_hint)
 
 
 def _resolve_request_key_plan(request_key: str, pool_hint: Optional[str] = None) -> tuple[list[str], Optional[str]]:
@@ -680,7 +873,7 @@ def _resolve_request_key_plan(request_key: str, pool_hint: Optional[str] = None)
     return primary_pool, fallback_request_key
 
 
-def resolve_request_api_key_pool(request_key: str, pool_hint: Optional[str] = "pro_plus") -> list[str]:
+def resolve_request_api_key_pool(request_key: str, pool_hint: Optional[str] = None) -> list[str]:
     primary_pool, fallback_request_key = _resolve_request_key_plan(request_key, pool_hint=pool_hint)
     if fallback_request_key:
         return [*primary_pool, fallback_request_key]
@@ -709,6 +902,8 @@ def _ensure_runtime_pool_or_raise(
     api_key: Optional[str] = None,
     pool_hint: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], list[str]]:
+    source_policy = _runtime_source_policy()
+    auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     primary_key_pool, fallback_request_key = _resolve_request_key_plan(
         str(api_key or "").strip(),
         pool_hint=pool_hint,
@@ -738,6 +933,13 @@ def _ensure_runtime_pool_or_raise(
             effective_key_pool = list(primary_key_pool)
             if fallback_request_key and fallback_request_key not in effective_key_pool:
                 effective_key_pool.append(fallback_request_key)
+
+    if not effective_key_pool and auth_mode == SOURCE_POLICY_PROVIDER_VERTEX:
+        synthetic_key = f"vertex::{str(source_policy.get('vertexProject') or 'default').strip() or 'default'}"
+        primary_key_pool = [synthetic_key]
+        fallback_request_key = None
+        effective_key_pool = [synthetic_key]
+        _RUNTIME_ALLOCATOR.ensure_keys(effective_key_pool)
 
     if not effective_key_pool:
         raise HTTPException(
@@ -836,6 +1038,8 @@ def _key_snapshot(pool: list[str]) -> list[Dict[str, Any]]:
 
 def _build_pool_summary(pool_name: str, config: dict[str, Any]) -> dict[str, Any]:
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    fallback_chains = config.get("fallbackChains") if isinstance(config.get("fallbackChains"), dict) else {}
+    global_fallback = list(config.get("defaultFallbackChain") or [])
     direct_keys = list((pools.get(pool_name) or {}).get("keys") or [])
     effective_keys = resolve_effective_keys_shared(config, pool_name)
     snapshot = _RUNTIME_ALLOCATOR.snapshot(effective_keys)
@@ -844,7 +1048,7 @@ def _build_pool_summary(pool_name: str, config: dict[str, Any]) -> dict[str, Any
         "pool": pool_name,
         "directKeyCount": len(direct_keys),
         "effectiveKeyCount": len(effective_keys),
-        "effectiveChain": list(config.get("fallbackChains", {}).get(pool_name) or []),
+        "effectiveChain": list(fallback_chains.get(pool_name) or [pool_name, *[item for item in global_fallback if item != pool_name]]),
         "allocator": {
             "keyCount": int(pool_meta.get("keyCount") or 0),
             "healthyKeys": int(pool_meta.get("healthyKeys") or 0),
@@ -858,26 +1062,36 @@ def _build_pool_summary(pool_name: str, config: dict[str, Any]) -> dict[str, Any
 
 def _admin_api_pools_payload() -> dict[str, Any]:
     config, meta = _load_api_pool_config()
+    config_public = dict(config)
+    config_public["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
     duplicates = duplicate_key_memberships(config)
     all_keys = flatten_pool_keys(config)
     summaries = {
         pool_name: _build_pool_summary(pool_name, config)
-        for pool_name in POOL_NAMES
+        for pool_name in list_runtime_pool_names(config)
+    }
+    pool_names = set(list_runtime_pool_names(config))
+    plan_pools = config.get("planPools") if isinstance(config.get("planPools"), dict) else {}
+    missing_plan_pools = {
+        plan_key: str(plan_pools.get(plan_key) or "")
+        for plan_key in ("free", "pro", "plus")
+        if str(plan_pools.get(plan_key) or "").strip() and str(plan_pools.get(plan_key) or "").strip() not in pool_names
     }
     return {
         "ok": len(duplicates) == 0,
         "engine": APP_NAME,
         "timestampMs": int(time.time() * 1000),
-        "config": config,
+        "config": config_public,
         "meta": meta,
         "validation": {
             "uniqueKeyMembership": bool(
                 (config.get("constraints") or {}).get("uniqueKeyMembership", True)
             ),
             "duplicateKeys": duplicates,
+            "missingPlanPools": missing_plan_pools,
         },
         "warnings": list((meta or {}).get("warnings") or []),
-        "sourcePolicy": dict(config.get("sourcePolicy") or {}),
+        "sourcePolicy": _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {})),
         "poolSummaries": summaries,
         "allKeyCount": len(all_keys),
     }
@@ -886,8 +1100,10 @@ def _admin_api_pools_payload() -> dict[str, Any]:
 def _admin_api_pools_usage_payload() -> dict[str, Any]:
     config, meta = _load_api_pool_config()
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    fallback_chains = config.get("fallbackChains") if isinstance(config.get("fallbackChains"), dict) else {}
+    global_fallback = list(config.get("defaultFallbackChain") or [])
     payload: dict[str, Any] = {}
-    for pool_name in POOL_NAMES:
+    for pool_name in list_runtime_pool_names(config):
         direct_keys = list((pools.get(pool_name) or {}).get("keys") or [])
         effective_keys = resolve_effective_keys_shared(config, pool_name)
         direct_snapshot = _RUNTIME_ALLOCATOR.snapshot(direct_keys)
@@ -896,7 +1112,7 @@ def _admin_api_pools_usage_payload() -> dict[str, Any]:
             "pool": pool_name,
             "directKeyCount": len(direct_keys),
             "effectiveKeyCount": len(effective_keys),
-            "effectiveChain": list(config.get("fallbackChains", {}).get(pool_name) or []),
+            "effectiveChain": list(fallback_chains.get(pool_name) or [pool_name, *[item for item in global_fallback if item != pool_name]]),
             "direct": direct_snapshot,
             "effective": effective_snapshot,
         }
@@ -906,7 +1122,7 @@ def _admin_api_pools_usage_payload() -> dict[str, Any]:
         "timestampMs": int(time.time() * 1000),
         "meta": meta,
         "warnings": list((meta or {}).get("warnings") or []),
-        "sourcePolicy": dict(config.get("sourcePolicy") or {}),
+        "sourcePolicy": _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {})),
         "usage": payload,
     }
 
@@ -962,13 +1178,41 @@ def discover_dynamic_tts_models(client: object, api_key: str) -> list[str]:
     return discovered
 
 
-def resolve_tts_model_candidates(client: Optional[object] = None, api_key: Optional[str] = None) -> list[str]:
-    # Strict allocator-driven route for TTS. Dynamic discovery is intentionally ignored.
+def resolve_tts_model_candidates(
+    engine: Optional[object] = None,
+    auth_mode: Optional[str] = None,
+    *,
+    source_policy: Optional[dict[str, Any]] = None,
+    client: Optional[object] = None,
+    api_key: Optional[str] = None,
+) -> list[str]:
+    _ = client
+    _ = api_key
+    safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
+    if safe_engine == "KOKORO":
+        return []
+
+    policy = dict(source_policy or {})
+    mode = _normalize_runtime_auth_mode(auth_mode, source_policy=policy)
+    preferred = list((TTS_MODEL_CANDIDATES_BY_AUTH_MODE.get(mode) or {}).get(safe_engine) or [])
     configured = _normalize_model_name(str(TTS_MODEL or ""))
     route = list(TTS_MODEL_FALLBACKS)
-    if configured and configured in route:
-        return [configured, *[item for item in route if item != configured]]
-    return route
+    allocator_route = list(ALLOCATOR_CONFIG.routes.get("tts") or [])
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw in [*preferred, configured, *route, *allocator_route]:
+        token = _normalize_model_name(str(raw or ""))
+        if not token:
+            continue
+        if token in seen:
+            continue
+        model_limit = ALLOCATOR_CONFIG.models.get(token)
+        if model_limit is not None and "tts" not in model_limit.enabled_for:
+            continue
+        seen.add(token)
+        candidates.append(token)
+    return candidates
 
 
 def resolve_text_model_candidates() -> list[str]:
@@ -1004,6 +1248,31 @@ def _is_auth_error(message: str) -> bool:
         or "unauthorized" in lower
         or "forbidden" in lower
         or "invalid argument" in lower and "api" in lower
+    )
+
+
+def _is_model_access_error(message: str) -> bool:
+    lower = str(message or "").lower()
+    if not lower:
+        return False
+    has_model_signal = (
+        "model" in lower
+        or "models/" in lower
+        or "generatecontent" in lower
+        or "speech" in lower and "tts" in lower
+    )
+    if not has_model_signal:
+        return False
+    return (
+        "not found" in lower
+        or "unsupported" in lower
+        or "not supported" in lower
+        or "not enabled" in lower
+        or "is not available" in lower
+        or "not available in this api version" in lower
+        or "permission denied" in lower
+        or "permission_denied" in lower
+        or "for this endpoint" in lower
     )
 
 
@@ -1052,15 +1321,18 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(default)
 
 
-def _resolve_tts_route_model() -> str:
+def _resolve_tts_route_model(model_candidates: Optional[list[str]] = None) -> str:
+    candidates = [str(item or "").strip() for item in list(model_candidates or []) if str(item or "").strip()]
+    if candidates:
+        return str(candidates[0])
     route = list(ALLOCATOR_CONFIG.routes.get("tts") or [])
     if route:
         return str(route[0] or "").strip()
     return str(TTS_MODEL or "").strip()
 
 
-def _effective_tts_route_limits() -> Dict[str, Any]:
-    tts_model = _resolve_tts_route_model()
+def _effective_tts_route_limits(model_candidates: Optional[list[str]] = None) -> Dict[str, Any]:
+    tts_model = _resolve_tts_route_model(model_candidates)
     model_limit = ALLOCATOR_CONFIG.models.get(tts_model)
     return {
         "model": tts_model,
@@ -1129,11 +1401,23 @@ print(
 )
 
 
-def _estimate_tts_pool_pressure(key_pool: list[str], requested_tokens: int) -> Dict[str, Any]:
+def _estimate_tts_pool_pressure(
+    key_pool: list[str],
+    requested_tokens: int,
+    *,
+    model_candidates: Optional[list[str]] = None,
+) -> Dict[str, Any]:
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
     key_states = list(snapshot.get("keys") or [])
     model_entries = list(snapshot.get("models") or [])
-    tts_model = _resolve_tts_route_model()
+    candidate_models = [
+        _normalize_model_name(str(item or ""))
+        for item in list(model_candidates or [])
+        if str(item or "").strip()
+    ]
+    if not candidate_models:
+        candidate_models = [_resolve_tts_route_model()]
+    tts_model = _resolve_tts_route_model(candidate_models)
     safe_requested_tokens = max(1, int(requested_tokens or 1))
 
     in_flight_total = 0
@@ -1143,48 +1427,51 @@ def _estimate_tts_pool_pressure(key_pool: list[str], requested_tokens: int) -> D
 
     for key_entry in key_states:
         models = list((key_entry or {}).get("models") or [])
-        lane_entry = None
-        for model in models:
-            if str((model or {}).get("model") or "").strip() == tts_model:
-                lane_entry = model or {}
-                break
-        if lane_entry is None:
-            continue
+        for model_id in candidate_models:
+            lane_entry = None
+            for model in models:
+                if str((model or {}).get("model") or "").strip() == model_id:
+                    lane_entry = model or {}
+                    break
+            if lane_entry is None:
+                continue
 
-        ready_in_ms = max(0, _safe_int(lane_entry.get("readyInMs"), 0))
-        lane_usage = lane_entry.get("usage") or {}
-        lane_remaining = lane_entry.get("remaining") or {}
-        lane_window = lane_entry.get("window") or {}
+            ready_in_ms = max(0, _safe_int(lane_entry.get("readyInMs"), 0))
+            lane_usage = lane_entry.get("usage") or {}
+            lane_remaining = lane_entry.get("remaining") or {}
+            lane_window = lane_entry.get("window") or {}
 
-        rpm_remaining = max(0, _safe_int(lane_remaining.get("rpm"), 0))
-        tpm_remaining = max(0, _safe_int(lane_remaining.get("tpm"), 0))
-        in_flight_total += max(0, _safe_int(lane_usage.get("inFlightRequests"), 0))
-        reset_in_ms = max(0, _safe_int(lane_window.get("resetsInMs"), 0))
+            rpm_remaining = max(0, _safe_int(lane_remaining.get("rpm"), 0))
+            tpm_remaining = max(0, _safe_int(lane_remaining.get("tpm"), 0))
+            in_flight_total += max(0, _safe_int(lane_usage.get("inFlightRequests"), 0))
+            reset_in_ms = max(0, _safe_int(lane_window.get("resetsInMs"), 0))
 
-        if ready_in_ms <= 0:
-            rpm_slots = max(0, rpm_remaining)
-            tpm_slots = max(0, tpm_remaining // safe_requested_tokens)
-            lane_slots = 0
-            if rpm_slots > 0 and tpm_slots > 0:
-                lane_slots = min(rpm_slots, tpm_slots)
-            available_lanes += max(0, lane_slots)
-            if lane_slots <= 0 and reset_in_ms > 0:
-                nearest_reset_ms = (
-                    reset_in_ms
-                    if nearest_reset_ms is None
-                    else min(nearest_reset_ms, reset_in_ms)
+            if ready_in_ms <= 0:
+                rpm_slots = max(0, rpm_remaining)
+                tpm_slots = max(0, tpm_remaining // safe_requested_tokens)
+                lane_slots = 0
+                if rpm_slots > 0 and tpm_slots > 0:
+                    lane_slots = min(rpm_slots, tpm_slots)
+                available_lanes += max(0, lane_slots)
+                if lane_slots <= 0 and reset_in_ms > 0:
+                    nearest_reset_ms = (
+                        reset_in_ms
+                        if nearest_reset_ms is None
+                        else min(nearest_reset_ms, reset_in_ms)
+                    )
+            else:
+                nearest_ready_ms = (
+                    ready_in_ms if nearest_ready_ms is None else min(nearest_ready_ms, ready_in_ms)
                 )
-        else:
-            nearest_ready_ms = (
-                ready_in_ms if nearest_ready_ms is None else min(nearest_ready_ms, ready_in_ms)
-            )
 
-    tts_model_entry = None
-    for model in model_entries:
-        if str((model or {}).get("model") or "").strip() == tts_model:
-            tts_model_entry = model or {}
-            break
-    if tts_model_entry:
+    for model_id in candidate_models:
+        tts_model_entry = None
+        for model in model_entries:
+            if str((model or {}).get("model") or "").strip() == model_id:
+                tts_model_entry = model or {}
+                break
+        if not tts_model_entry:
+            continue
         pool_meta = tts_model_entry.get("pool") or {}
         pool_reset = max(0, _safe_int(pool_meta.get("nextResetInMs"), 0))
         if pool_reset > 0:
@@ -1208,6 +1495,7 @@ def _estimate_tts_pool_pressure(key_pool: list[str], requested_tokens: int) -> D
         "estimatedWaitMs": max(0, int(estimated_wait_ms)),
         "retryAfterMs": max(0, int(retry_after_ms)),
         "ttsModel": tts_model,
+        "ttsModelCandidates": candidate_models,
         "keyStates": key_states,
     }
 
@@ -1355,6 +1643,10 @@ def _classify_terminal_error_code(
         lowered = detail.lower()
         if _is_timeout_error(detail):
             return ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT
+        if _is_model_access_error(detail):
+            if "no audio payload returned by gemini" not in lowered:
+                saw_non_rate_non_noise = True
+            continue
         if _is_auth_error(detail):
             saw_auth = True
         elif _is_rate_limit_error(detail):
@@ -1369,10 +1661,46 @@ def _classify_terminal_error_code(
     return ERROR_CODE_UPSTREAM_MODEL_FAILED
 
 
-def _build_genai_client(api_key: str, timeout_ms: int) -> object:
+def _build_genai_client(
+    api_key: str,
+    timeout_ms: int,
+    *,
+    auth_mode: str = SOURCE_POLICY_PROVIDER_GEMINI_API,
+    source_policy: Optional[dict[str, Any]] = None,
+) -> object:
     if genai is None:
         raise RuntimeError("google-genai SDK is unavailable in runtime.")
     bounded_timeout = max(1000, int(timeout_ms))
+    safe_mode = _normalize_runtime_auth_mode(auth_mode, source_policy=source_policy)
+    if safe_mode == SOURCE_POLICY_PROVIDER_VERTEX:
+        policy = dict(source_policy or _runtime_source_policy())
+        project = str(policy.get("vertexProject") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+        location = str(
+            policy.get("vertexLocation")
+            or os.getenv("GOOGLE_CLOUD_LOCATION")
+            or os.getenv("GOOGLE_CLOUD_REGION")
+            or "us-central1"
+        ).strip()
+        if not project:
+            raise RuntimeError("Vertex mode is enabled but sourcePolicy.vertexProject is missing.")
+        credentials_path = _resolve_vertex_credentials_path(policy)
+        if credentials_path and Path(credentials_path).exists():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+        client_kwargs: Dict[str, Any] = {
+            "vertexai": True,
+            "project": project,
+            "location": location,
+        }
+        if types is not None and hasattr(types, "HttpOptions"):
+            try:
+                http_options = types.HttpOptions(timeout=bounded_timeout)
+                try:
+                    return genai.Client(http_options=http_options, **client_kwargs)
+                except TypeError:
+                    return genai.Client(**client_kwargs)
+            except Exception:
+                return genai.Client(**client_kwargs)
+        return genai.Client(**client_kwargs)
     if types is not None and hasattr(types, "HttpOptions"):
         try:
             http_options = types.HttpOptions(timeout=bounded_timeout)
@@ -1530,6 +1858,7 @@ def _resolve_adaptive_group_concurrency(
     groups: list[Dict[str, Any]],
     requested_concurrency: int,
     effective_key_pool: list[str],
+    model_candidates: Optional[list[str]] = None,
 ) -> tuple[int, Dict[str, Any]]:
     concurrency_cap = max(1, int(requested_concurrency))
     group_token_estimate = max(
@@ -1545,6 +1874,7 @@ def _resolve_adaptive_group_concurrency(
     pressure = _estimate_tts_pool_pressure(
         key_pool=effective_key_pool,
         requested_tokens=group_token_estimate,
+        model_candidates=model_candidates,
     )
     available_lanes = max(1, int(pressure.get("availableLanes") or 0))
     effective_concurrency = min(
@@ -1559,6 +1889,9 @@ def _resolve_adaptive_group_concurrency(
 
 def _synthesize_studio_pair_groups(
     *,
+    engine: str,
+    auth_mode: str,
+    source_policy: Optional[dict[str, Any]],
     trace_id: str,
     target_voice: str,
     language_code: str,
@@ -1571,6 +1904,12 @@ def _synthesize_studio_pair_groups(
     requested_concurrency: int,
     retry_once: bool,
 ) -> Dict[str, Any]:
+    safe_engine = _normalize_runtime_engine(engine)
+    model_candidates = resolve_tts_model_candidates(
+        engine=safe_engine,
+        auth_mode=auth_mode,
+        source_policy=source_policy,
+    )
     groups = _build_studio_pair_groups(
         line_map=normalized_line_map,
         speaker_voices=normalized_speaker_voices,
@@ -1583,6 +1922,7 @@ def _synthesize_studio_pair_groups(
         groups=groups,
         requested_concurrency=requested_concurrency,
         effective_key_pool=effective_key_pool,
+        model_candidates=model_candidates,
     )
     max_attempts = 2 if retry_once else 1
 
@@ -1612,6 +1952,9 @@ def _synthesize_studio_pair_groups(
         for attempt in range(1, max_attempts + 1):
             try:
                 pcm_bytes, model_used, speech_mode_used, key_index_used = _synthesize_pcm_with_key_pool(
+                    engine=safe_engine,
+                    auth_mode=auth_mode,
+                    source_policy=source_policy,
                     text_input=str(group.get("text") or ""),
                     trace_id=trace_id,
                     speaker_hint=speaker_hint or ", ".join(group.get("speakers") or []),
@@ -1732,7 +2075,7 @@ def _synthesize_studio_pair_groups(
     model_header = unique_models[0] if unique_models else _normalize_model_name(TTS_MODEL)
     key_selection_index = key_indexes_used[0] if key_indexes_used else -1
     diagnostics_payload: Dict[str, Any] = {
-        "engine": "GEM",
+        "engine": safe_engine,
         "traceId": trace_id,
         "strategies": ["studio_pair_groups"],
         "recoveryUsed": bool(retry_once),
@@ -1815,6 +2158,42 @@ def _build_line_map_word_windows(
     return windows
 
 
+def _build_line_map_single_speaker_windows(
+    normalized_line_map: list[Dict[str, Any]],
+    speaker_voices: list[Dict[str, str]],
+    target_voice: str,
+) -> list[Dict[str, Any]]:
+    voice_map: Dict[str, str] = {}
+    for entry in speaker_voices:
+        speaker = str(entry.get("speaker") or "").strip().lower()
+        if not speaker:
+            continue
+        voice_name = str(entry.get("voiceName") or target_voice).strip() or target_voice
+        voice_map[speaker] = voice_name
+
+    windows: list[Dict[str, Any]] = []
+    for line in normalized_line_map:
+        text = _normalize_synthesis_text(str(line.get("text") or ""))
+        if not text:
+            continue
+        speaker = str(line.get("speaker") or "").strip()
+        speaker_entries: list[Dict[str, str]] = []
+        if speaker:
+            speaker_entries = [
+                {
+                    "speaker": speaker,
+                    "voiceName": voice_map.get(speaker.lower(), target_voice),
+                }
+            ]
+        windows.append(
+            {
+                "text": text,
+                "speakerVoices": speaker_entries,
+            }
+        )
+    return windows
+
+
 def _build_realtime_metrics(wav_bytes: bytes, processing_ms: int) -> Dict[str, Any]:
     audio_duration_sec = 0.0
     try:
@@ -1839,6 +2218,9 @@ def _build_realtime_metrics(wav_bytes: bytes, processing_ms: int) -> Dict[str, A
 
 def _synthesize_studio_pair_group_windows(
     *,
+    engine: str,
+    auth_mode: str,
+    source_policy: Optional[dict[str, Any]],
     trace_id: str,
     target_voice: str,
     language_code: str,
@@ -1853,6 +2235,7 @@ def _synthesize_studio_pair_group_windows(
     started_at_ms: int,
     include_line_chunks: bool,
 ) -> Dict[str, Any]:
+    safe_engine = _normalize_runtime_engine(engine)
     line_windows = _build_line_map_word_windows(normalized_line_map, MAX_WORDS_PER_REQUEST)
     if not line_windows:
         raise HTTPException(status_code=400, detail="multi_speaker_line_map does not contain valid grouped dialogue.")
@@ -1868,6 +2251,9 @@ def _synthesize_studio_pair_group_windows(
 
     for line_window in line_windows:
         window_result = _synthesize_studio_pair_groups(
+            engine=safe_engine,
+            auth_mode=auth_mode,
+            source_policy=source_policy,
             trace_id=trace_id,
             target_voice=target_voice,
             language_code=language_code,
@@ -1928,7 +2314,7 @@ def _synthesize_studio_pair_group_windows(
     model_header = next((item for item in models_used if item), _normalize_model_name(TTS_MODEL))
     key_selection_index = key_indexes_used[0] if key_indexes_used else -1
     diagnostics_payload: Dict[str, Any] = {
-        "engine": "GEM",
+        "engine": safe_engine,
         "traceId": trace_id,
         "strategies": ["studio_pair_groups", "line_map_word_windows"] if len(line_windows) > 1 else ["studio_pair_groups"],
         "recoveryUsed": bool(retry_once),
@@ -2049,6 +2435,9 @@ def _resolve_speech_attempts(
 
 def _synthesize_pcm_with_key_pool(
     *,
+    engine: str,
+    auth_mode: str,
+    source_policy: Optional[dict[str, Any]],
     text_input: str,
     trace_id: str,
     speaker_hint: str,
@@ -2063,6 +2452,15 @@ def _synthesize_pcm_with_key_pool(
     window_total: int,
     affinity_speakers: list[str],
 ) -> tuple[bytes, str, str, int]:
+    safe_engine = _normalize_runtime_engine(engine)
+    model_candidates = resolve_tts_model_candidates(
+        engine=safe_engine,
+        auth_mode=auth_mode,
+        source_policy=source_policy,
+    )
+    if not model_candidates:
+        raise RuntimeError(f"No Gemini TTS model candidates available for engine={safe_engine}.")
+
     last_exc: Optional[Exception] = None
     model_errors: list[str] = []
     model_attempts: list[Dict[str, Any]] = []
@@ -2082,7 +2480,7 @@ def _synthesize_pcm_with_key_pool(
     start_key_selection_index: Optional[int] = None
     preferred_key = _resolve_affinity_preferred_key(affinity_speakers, effective_key_pool)
     token_estimate = estimate_text_tokens(text_input)
-    retry_limit = max(1, len(effective_key_pool) * max(1, len(resolve_tts_model_candidates())))
+    retry_limit = max(1, len(effective_key_pool) * max(1, len(model_candidates)))
 
     while True:
         remaining_budget_ms = _remaining_timeout_ms(started_at_ms, KEY_TOTAL_TIMEOUT_MS)
@@ -2116,9 +2514,17 @@ def _synthesize_pcm_with_key_pool(
             # #endregion
             break
 
+        effective_model_candidates = [
+            model_id for model_id in model_candidates if model_id not in blocked_models
+        ]
+        if not effective_model_candidates:
+            pool_exhausted = True
+            break
+
         pressure = _estimate_tts_pool_pressure(
             key_pool=effective_key_pool,
             requested_tokens=token_estimate,
+            model_candidates=effective_model_candidates,
         )
         admission_budget_ms = _resolve_admission_wait_budget_ms(remaining_budget_ms)
         estimated_wait_ms = max(0, int(pressure.get("estimatedWaitMs") or 0))
@@ -2136,12 +2542,11 @@ def _synthesize_pcm_with_key_pool(
             _emit_stage_event(trace_id, "synthesis", "overloaded", overload_payload)
             raise RuntimeError(json.dumps(overload_payload, ensure_ascii=True))
 
-        acquire = _RUNTIME_ALLOCATOR.acquire_for_task(
-            task="tts",
+        acquire = _RUNTIME_ALLOCATOR.acquire_for_models(
+            model_candidates=effective_model_candidates,
             key_pool=effective_key_pool,
             requested_tokens=token_estimate,
             blocked_keys=blocked_keys,
-            blocked_models=blocked_models,
             wait_timeout_ms=remaining_budget_ms,
             preferred_key=preferred_key if attempt == 0 else None,
         )
@@ -2232,7 +2637,12 @@ def _synthesize_pcm_with_key_pool(
         )
 
         try:
-            client = _build_genai_client(api_key=lease.key, timeout_ms=request_timeout_ms)
+            client = _build_genai_client(
+                api_key=lease.key,
+                timeout_ms=request_timeout_ms,
+                auth_mode=auth_mode,
+                source_policy=source_policy,
+            )
             response = client.models.generate_content(
                 model=lease.model_id,
                 contents=text_input,
@@ -2252,6 +2662,8 @@ def _synthesize_pcm_with_key_pool(
             if _is_timeout_error(detail):
                 error_kind = "timeout"
                 timed_out = True
+            elif _is_model_access_error(detail):
+                blocked_models.add(lease.model_id)
             elif _is_auth_error(detail):
                 error_kind = "auth"
                 blocked_keys.add(lease.key)
@@ -2316,6 +2728,7 @@ def _synthesize_pcm_with_key_pool(
         "modelAttempts": model_attempts[-50:],
         "keyStates": key_states,
         "speechModeRequested": speech_mode_requested,
+        "ttsModelCandidates": model_candidates,
     }
     raise RuntimeError(json.dumps(detail_payload, ensure_ascii=True)) from last_exc
 
@@ -2334,6 +2747,11 @@ def _normalize_error_payload(raw_error: str) -> Dict[str, Any] | None:
 
 def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     started_at_ms = int(time.time() * 1000)
+    safe_engine = _normalize_runtime_engine(payload.engine, default=TTS_ENGINE_DEFAULT)
+    if safe_engine not in {"GEM", "GOOD", "NEURAL2"}:
+        safe_engine = TTS_ENGINE_DEFAULT
+    source_policy = _runtime_source_policy()
+    auth_mode = _normalize_runtime_auth_mode(payload.authMode, source_policy=source_policy)
     text = _normalize_synthesis_text(payload.text)
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty.")
@@ -2391,25 +2809,65 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             },
         )
 
+    good_pair_fallback_used = False
+    good_pair_fallback_detail = ""
+    fallback_windows: Optional[list[Dict[str, Any]]] = None
     if use_studio_pair_groups:
-        return _synthesize_studio_pair_group_windows(
-            trace_id=trace_id,
-            target_voice=target_voice,
-            language_code=language_code,
-            speaker_hint=speaker_hint,
-            normalized_speaker_voices=normalized_speaker_voices,
-            normalized_line_map=normalized_line_map,
-            primary_key_pool=primary_key_pool,
-            fallback_request_key=fallback_request_key,
-            effective_key_pool=effective_key_pool,
-            requested_concurrency=requested_pair_concurrency,
-            retry_once=retry_group_once,
-            started_at_ms=started_at_ms,
-            include_line_chunks=return_line_chunks_requested,
-        )
+        if safe_engine == "GOOD":
+            try:
+                return _synthesize_studio_pair_group_windows(
+                    engine=safe_engine,
+                    auth_mode=auth_mode,
+                    source_policy=source_policy,
+                    trace_id=trace_id,
+                    target_voice=target_voice,
+                    language_code=language_code,
+                    speaker_hint=speaker_hint,
+                    normalized_speaker_voices=normalized_speaker_voices,
+                    normalized_line_map=normalized_line_map,
+                    primary_key_pool=primary_key_pool,
+                    fallback_request_key=fallback_request_key,
+                    effective_key_pool=effective_key_pool,
+                    requested_concurrency=requested_pair_concurrency,
+                    retry_once=retry_group_once,
+                    started_at_ms=started_at_ms,
+                    include_line_chunks=return_line_chunks_requested,
+                )
+            except Exception as pair_exc:  # noqa: BLE001
+                fallback_windows = _build_line_map_single_speaker_windows(
+                    normalized_line_map=normalized_line_map,
+                    speaker_voices=normalized_speaker_voices,
+                    target_voice=target_voice,
+                )
+                if not fallback_windows:
+                    raise
+                good_pair_fallback_used = True
+                good_pair_fallback_detail = str(pair_exc).strip()[:220]
+                requested_speech_mode = "good_pair_split_fallback"
+        else:
+            return _synthesize_studio_pair_group_windows(
+                engine=safe_engine,
+                auth_mode=auth_mode,
+                source_policy=source_policy,
+                trace_id=trace_id,
+                target_voice=target_voice,
+                language_code=language_code,
+                speaker_hint=speaker_hint,
+                normalized_speaker_voices=normalized_speaker_voices,
+                normalized_line_map=normalized_line_map,
+                primary_key_pool=primary_key_pool,
+                fallback_request_key=fallback_request_key,
+                effective_key_pool=effective_key_pool,
+                requested_concurrency=requested_pair_concurrency,
+                retry_once=retry_group_once,
+                started_at_ms=started_at_ms,
+                include_line_chunks=return_line_chunks_requested,
+            )
 
     raw_windows: list[Dict[str, Any]]
-    if use_windowed_multi:
+    if isinstance(fallback_windows, list) and fallback_windows:
+        raw_windows = fallback_windows
+    elif use_windowed_multi:
         raw_windows = _build_text_order_two_speaker_windows(
             text=text,
             speaker_voices=normalized_speaker_voices,
@@ -2481,6 +2939,9 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 speaker_voices=list(window.get("speakerVoices") or []),
             )
             pcm_bytes, model_used, speech_mode_used, key_index_used = _synthesize_pcm_with_key_pool(
+                engine=safe_engine,
+                auth_mode=auth_mode,
+                source_policy=source_policy,
                 text_input=str(window["text"]),
                 trace_id=trace_id,
                 speaker_hint=speaker_hint,
@@ -2516,13 +2977,19 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             speech_mode_used = speech_modes_used[0] if speech_modes_used else "single-speaker"
         key_selection_index = key_indexes_used[0] if key_indexes_used else -1
         diagnostics_payload: Dict[str, Any] = {
-            "engine": "GEM",
+            "engine": safe_engine,
             "traceId": trace_id,
             "chunkCount": len(windows),
-            "strategies": ["legacy_windows" if not use_windowed_multi else "text_order_two_speaker_windows"],
-            "recoveryUsed": False,
+            "strategies": (
+                ["good_pair_split_fallback", "single_speaker_line_windows"]
+                if good_pair_fallback_used
+                else ["legacy_windows" if not use_windowed_multi else "text_order_two_speaker_windows"]
+            ),
+            "recoveryUsed": bool(good_pair_fallback_used),
             "keyPoolSize": len(effective_key_pool),
         }
+        if good_pair_fallback_detail:
+            diagnostics_payload["recoveryReason"] = good_pair_fallback_detail
         diagnostics_payload.update(
             _build_realtime_metrics(
                 wav_bytes=wav_bytes,
@@ -2544,6 +3011,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "keyPoolSize": len(effective_key_pool),
                 "speakerHint": speaker_hint or None,
                 "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
+                "recoveryUsed": bool(good_pair_fallback_used),
             },
         )
         return {
@@ -2571,6 +3039,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "error": "Gemini TTS synthesis failed.",
                 "speechModeRequested": requested_speech_mode,
                 "speakerHint": speaker_hint or None,
+                "engine": safe_engine,
                 **parsed_error,
             }
         else:
@@ -2580,6 +3049,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "summary": raw_error[:220] if raw_error else "Gemini TTS synthesis failed.",
                 "speechModeRequested": requested_speech_mode,
                 "speakerHint": speaker_hint or None,
+                "engine": safe_engine,
             }
         if not str(error_payload.get("errorCode") or "").strip():
             error_payload["errorCode"] = ERROR_CODE_UPSTREAM_MODEL_FAILED
@@ -2618,14 +3088,26 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> JSONResponse:
-    model_candidates = resolve_tts_model_candidates()
+def health(engine: Optional[str] = None) -> JSONResponse:
+    source_policy = _runtime_source_policy()
+    auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
+    safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
+    if safe_engine not in {"GEM", "GOOD", "NEURAL2"}:
+        safe_engine = TTS_ENGINE_DEFAULT
+    model_candidates = resolve_tts_model_candidates(
+        engine=safe_engine,
+        auth_mode=auth_mode,
+        source_policy=source_policy,
+    )
+    model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
     configured_pool = resolve_request_api_key_pool("")
     return JSONResponse(
         {
             "ok": genai is not None and types is not None,
             "engine": APP_NAME,
-            "model": TTS_MODEL,
+            "requestedEngine": safe_engine,
+            "authMode": auth_mode,
+            "model": model,
             "modelCandidates": model_candidates,
             "supportsMultiSpeaker": True,
             "multiSpeakerMaxSpeakers": 2,
@@ -2638,12 +3120,22 @@ def health() -> JSONResponse:
 
 
 @app.get("/v1/capabilities")
-def capabilities() -> JSONResponse:
-    model_candidates = resolve_tts_model_candidates()
+def capabilities(engine: Optional[str] = None) -> JSONResponse:
+    source_policy = _runtime_source_policy()
+    auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
+    safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
+    if safe_engine not in {"GEM", "GOOD", "NEURAL2"}:
+        safe_engine = TTS_ENGINE_DEFAULT
+    model_candidates = resolve_tts_model_candidates(
+        engine=safe_engine,
+        auth_mode=auth_mode,
+        source_policy=source_policy,
+    )
+    model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
     configured_pool = resolve_request_api_key_pool("")
     return JSONResponse(
         {
-            "engine": "GEM",
+            "engine": safe_engine,
             "runtime": APP_NAME,
             "ready": genai is not None and types is not None,
             "languages": ["multilingual"],
@@ -2651,7 +3143,7 @@ def capabilities() -> JSONResponse:
             "supportsEmotion": False,
             "supportsStyle": False,
             "supportsSpeakerWav": False,
-            "model": TTS_MODEL,
+            "model": model,
             "modelCandidates": model_candidates,
             "supportsMultiSpeaker": True,
             "supportsBatchSynthesis": True,
@@ -2664,7 +3156,8 @@ def capabilities() -> JSONResponse:
             "metadata": {
                 "apiKeyConfigured": bool(configured_pool),
                 "keyPoolSize": len(configured_pool),
-                "mode": "gemini-only",
+                "mode": "gemini-only" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex",
+                "authMode": auth_mode,
                 "maxWordsPerRequest": MAX_WORDS_PER_REQUEST,
                 "segmentation": "disabled",
                 "multiSpeakerMaxSpeakers": 2,
@@ -2684,7 +3177,8 @@ def capabilities() -> JSONResponse:
 @app.get("/v1/admin/api-pool")
 def admin_api_pool(request: Request) -> JSONResponse:
     _require_runtime_admin(request)
-    key_pool = resolve_request_api_key_pool("", pool_hint="pro_plus")
+    config, meta = _load_api_pool_config()
+    key_pool = resolve_request_api_key_pool("", pool_hint=resolve_default_runtime_pool_hint(config))
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
     payload = dict(snapshot)
     payload["ok"] = True
@@ -2694,11 +3188,10 @@ def admin_api_pool(request: Request) -> JSONResponse:
     payload["keyFilePath"] = _resolved_key_file_path()
     payload["effectiveTtsLimits"] = _effective_tts_route_limits()
     payload["recentErrorClassCounts"] = _recent_error_class_counts()
-    config, meta = _load_api_pool_config()
     payload["poolConfig"] = config
     payload["poolConfigMeta"] = meta
     payload["warnings"] = list((meta or {}).get("warnings") or [])
-    payload["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
+    payload["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
     return JSONResponse(payload)
 
 
@@ -2706,8 +3199,8 @@ def admin_api_pool(request: Request) -> JSONResponse:
 def admin_api_pool_reload(request: Request) -> JSONResponse:
     _require_runtime_admin(request)
     refreshed_pool = list(_refresh_server_api_key_pool())
-    _load_api_pool_config(force=True)
-    key_pool = list(resolve_request_api_key_pool("", pool_hint="pro_plus"))
+    config, _ = _load_api_pool_config(force=True)
+    key_pool = list(resolve_request_api_key_pool("", pool_hint=resolve_default_runtime_pool_hint(config)))
     if not key_pool:
         key_pool = list(refreshed_pool)
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
@@ -2725,7 +3218,7 @@ def admin_api_pool_reload(request: Request) -> JSONResponse:
     payload["poolConfig"] = config
     payload["poolConfigMeta"] = meta
     payload["warnings"] = list((meta or {}).get("warnings") or [])
-    payload["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
+    payload["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
     return JSONResponse(payload)
 
 
@@ -2740,18 +3233,91 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
     _require_runtime_admin(request)
     current_config, _current_meta = _load_api_pool_config(force=True)
     current_source_policy = dict(current_config.get("sourcePolicy") or {})
-    free_pool_locked = bool(current_source_policy.get("freePoolLocked"))
     applied_overrides: list[str] = []
+    local_warnings: list[str] = []
     raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    source_policy_requested = isinstance(raw_payload.get("sourcePolicy"), dict)
+    raw_source_policy = dict(raw_payload.get("sourcePolicy") or {}) if source_policy_requested else {}
+    vertex_service_account_json = str(
+        raw_source_policy.get("vertexServiceAccountJson")
+        or raw_source_policy.get("serviceAccountJson")
+        or ""
+    ).strip()
+    if source_policy_requested:
+        raw_source_policy.pop("vertexServiceAccountJson", None)
+        raw_source_policy.pop("serviceAccountJson", None)
+        raw_payload["sourcePolicy"] = raw_source_policy
+
     normalized = normalize_pool_config(raw_payload)
-    if free_pool_locked:
+    requested_source_policy = dict(normalized.get("sourcePolicy") or {})
+    if source_policy_requested:
+        next_source_policy = dict(current_source_policy)
+        for key in raw_source_policy.keys():
+            if key in requested_source_policy:
+                next_source_policy[key] = requested_source_policy[key]
+        if not next_source_policy:
+            next_source_policy = dict(requested_source_policy)
+        provider = str(next_source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+        if vertex_service_account_json:
+            if provider != SOURCE_POLICY_PROVIDER_VERTEX:
+                provider = SOURCE_POLICY_PROVIDER_VERTEX
+                next_source_policy["provider"] = provider
+                applied_overrides.append("source_policy_provider_set_vertex")
+            path_hint = str(next_source_policy.get("vertexServiceAccountRef") or "").strip()
+            try:
+                persisted_ref, credential_payload = _persist_vertex_service_account_json(
+                    vertex_service_account_json,
+                    path_hint=path_hint,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            next_source_policy["vertexServiceAccountRef"] = persisted_ref
+            if not str(next_source_policy.get("vertexProject") or "").strip():
+                inferred_project = str(credential_payload.get("project_id") or "").strip()
+                if inferred_project:
+                    next_source_policy["vertexProject"] = inferred_project
+                    applied_overrides.append("vertex_project_inferred_from_service_account")
+            if not str(next_source_policy.get("vertexLocation") or "").strip():
+                default_location = str(
+                    os.getenv("GOOGLE_CLOUD_LOCATION")
+                    or os.getenv("GOOGLE_CLOUD_REGION")
+                    or "us-central1"
+                ).strip() or "us-central1"
+                next_source_policy["vertexLocation"] = default_location
+        normalized["sourcePolicy"] = next_source_policy
+    elif current_source_policy:
+        normalized["sourcePolicy"] = dict(current_source_policy)
+
+    effective_source_policy = dict(normalized.get("sourcePolicy") or {})
+    provider_token = str(
+        effective_source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API
+    ).strip().lower()
+    free_pool_locked = (
+        provider_token != SOURCE_POLICY_PROVIDER_VERTEX
+        and bool(effective_source_policy.get("freePoolLocked"))
+    )
+    normalized_pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    deleting_free_pool = "free" not in normalized_pools
+
+    if free_pool_locked and deleting_free_pool:
+        next_source_policy = dict(effective_source_policy)
+        next_source_policy["freePoolMode"] = "config_managed"
+        next_source_policy["freePoolLocked"] = False
+        normalized["sourcePolicy"] = next_source_policy
+        applied_overrides.append("free_pool_authoritative_mode_disabled")
+        local_warnings.append("Authoritative free-pool mode was disabled because the free pool was deleted.")
+    elif free_pool_locked:
         current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
         locked_free_keys = list((current_pools.get("free") or {}).get("keys") or [])
-        normalized["pools"]["free"]["keys"] = locked_free_keys
+        normalized_pools.setdefault("free", {"keys": []})
+        normalized_pools["free"]["keys"] = locked_free_keys
+        normalized["pools"] = normalized_pools
         applied_overrides.append("free_pool_locked_by_api_file")
-    if current_source_policy:
-        normalized["sourcePolicy"] = dict(current_source_policy)
+        normalized["sourcePolicy"] = dict(effective_source_policy)
     normalized, _sync_changed, sync_warnings = _sync_authoritative_runtime_free_pool(normalized)
+    normalized, vertex_free_changed, vertex_free_pool = _rewrite_free_plan_pool_for_vertex(normalized)
+    if vertex_free_changed:
+        applied_overrides.append(f"vertex_free_plan_pool:{vertex_free_pool}")
     duplicates = duplicate_key_memberships(normalized)
     if duplicates and bool((normalized.get("constraints") or {}).get("uniqueKeyMembership", True)):
         raise HTTPException(
@@ -2771,19 +3337,21 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
     all_keys = flatten_pool_keys(saved)
     if all_keys:
         _RUNTIME_ALLOCATOR.ensure_keys(all_keys)
+    saved_public = dict(saved)
+    saved_public["sourcePolicy"] = _sanitize_source_policy_for_response(dict(saved.get("sourcePolicy") or {}))
     return JSONResponse(
         {
             "ok": True,
             "reloaded": True,
             "engine": APP_NAME,
             "timestampMs": int(time.time() * 1000),
-            "config": saved,
-            "warnings": list(sync_warnings),
-            "sourcePolicy": dict(saved.get("sourcePolicy") or {}),
+            "config": saved_public,
+            "warnings": [*local_warnings, *list(sync_warnings)],
+            "sourcePolicy": _sanitize_source_policy_for_response(dict(saved.get("sourcePolicy") or {})),
             "appliedOverrides": applied_overrides,
             "poolSummaries": {
                 pool_name: _build_pool_summary(pool_name, saved)
-                for pool_name in POOL_NAMES
+                for pool_name in list_runtime_pool_names(saved)
             },
         }
     )
@@ -2792,8 +3360,8 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
 @app.post("/v1/admin/api-pools/reload")
 def admin_api_pools_reload(request: Request) -> JSONResponse:
     _require_runtime_admin(request)
-    _load_api_pool_config(force=True)
-    key_pool = resolve_request_api_key_pool("", pool_hint="pro_plus")
+    config, _ = _load_api_pool_config(force=True)
+    key_pool = resolve_request_api_key_pool("", pool_hint=resolve_default_runtime_pool_hint(config))
     if key_pool:
         _RUNTIME_ALLOCATOR.ensure_keys(key_pool)
     payload = _admin_api_pools_payload()
@@ -2815,10 +3383,12 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
 
     system_prompt = str(payload.systemPrompt or "").strip()
     trace_id = _normalize_trace_id(payload.trace_id)
+    source_policy = _runtime_source_policy()
+    auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     primary_key_pool, fallback_request_key, effective_key_pool = _ensure_runtime_pool_or_raise(
         trace_id=trace_id,
         api_key=str(payload.apiKey or "").strip(),
-        pool_hint="pro_plus",
+        pool_hint=None,
     )
 
     model_candidates = resolve_text_model_candidates()
@@ -2879,7 +3449,12 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
             }
         )
         try:
-            client = _build_genai_client(api_key=lease.key, timeout_ms=remaining_budget_ms)
+            client = _build_genai_client(
+                api_key=lease.key,
+                timeout_ms=remaining_budget_ms,
+                auth_mode=auth_mode,
+                source_policy=source_policy,
+            )
             response = client.models.generate_content(
                 model=lease.model_id,
                 contents=user_prompt,

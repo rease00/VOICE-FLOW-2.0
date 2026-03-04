@@ -115,7 +115,7 @@ function printNextSteps(serviceId = null) {
   console.error("[dev-all] next steps:");
   console.error("  - npm run services:check");
   console.error("  - npm run services:restart");
-  console.error("  - npm run services:down && npm run services:bootstrap");
+  console.error("  - npm run services:down && npm run services:doctor");
 }
 
 function runBootstrapOnce(attempt, maxAttempts) {

@@ -35,6 +35,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
 Run all frontend commands from one root command:
 - `npm run frontend -- <frontend-script>`
 - Example: `npm run frontend -- build`
+- Production frontend audit contract (used by root CI): `npm run frontend -- audit:prod`
 
 Run all backend commands from one root command:
 - `npm run backend -- <backend-script>`
@@ -75,7 +76,9 @@ node -e "const c=require('node:crypto');const pwd=process.argv[1];if(!pwd){conso
 4. Keep dev server endpoints locked down by default:
 - `VITE_DEV_SERVER_EXPOSE=0` (binds UI dev server to loopback)
 - `VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0` (disables `/__local/bootstrap-services` route)
+- `VF_DEV_BOOTSTRAP_TOKEN=<strong_random_token>` (required when enabling local bootstrap route)
 - `VITE_API_BASE_URL=http://127.0.0.1:7800` (canonical frontend backend gateway base URL; same default when unset)
+- `VF_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000` (and add deployed frontend origins in remote environments)
 
 ## Admin Firebase Fallback (when local admin env is missing)
 
@@ -95,6 +98,47 @@ If `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64` (or related local admin env vars) is mis
   - `roles: ["admin"]`
 
 3. Restart the frontend dev server after `.env` changes.
+
+## Mandatory User ID Flow
+
+- Email signup must include `userId` (immutable after creation).
+- Google/email sign-in for non-admin users can return `requiredUserId=true`; frontend routes to one-time `USER_ID_SETUP` before `MAIN`.
+- Admin users do not require or set `userId`.
+- Profile screen shows `userId` read-only (no post-login edit flow).
+
+## Seed Admins From Allowlists
+
+Use backend allowlists as source-of-truth and seed Firebase Auth + Firestore admin flags:
+
+```bash
+cd backend
+python scripts/firebase_seed_admins.py --dry-run
+python scripts/firebase_seed_admins.py
+```
+
+Defaults:
+- Password: `rease1999` (override with `--password`).
+- Reads allowlists from env or `.env`: `VF_ADMIN_APPROVER_UIDS`, `VITE_ADMIN_UID_ALLOWLIST`, `VITE_ADMIN_EMAIL_ALLOWLIST`, `VITE_ADMIN_LOGIN_EMAIL`.
+- Writes:
+  - Firebase custom claim: `admin=true`
+  - Firestore: `users/{uid}` with `isAdmin/admin/role/roles`
+  - Firestore: `admin_roles/{uid}` with `super_admin`
+- If Firestore API is disabled, run temporary Auth-only seed with `--skip-firestore` after enabling Auth APIs.
+- For local runtime continuity when Firestore API is unavailable, set `VF_FIRESTORE_ENABLE=0` (in-memory fallback).
+
+## Wipe Old Firebase Project Data
+
+`backend/scripts/firebase_project_wipe.py` performs Firestore + Firebase Auth wipe for the currently configured project.
+
+```bash
+cd backend
+python scripts/firebase_project_wipe.py
+python scripts/firebase_project_wipe.py --apply --confirm WIPE_FIREBASE_NOW
+```
+
+- Default mode is dry-run.
+- `--apply` requires explicit confirmation token.
+- Use `--skip-firestore` or `--skip-auth-users` for partial cleanup.
 
 ## Real LLVC + Media Backend
 
@@ -199,6 +243,12 @@ Run backend audit:
 Run Gemini/runtime wiring audit:
 `npm run audit:gemini-stack`
 
+Run frontend/backend connectivity audit (CORS + auth preflight):
+`npm run audit:connectivity`
+
+Validate Kubernetes runtime/deployment manifests:
+`npm run validate:k8s`
+
 Optional sample checks:
 - `VF_AUDIT_VIDEO=/path/to/sample.mp4 npm run audit:media`
 - `VF_AUDIT_VIDEO=/path/to/sample.mp4 VF_AUDIT_AUDIO=/path/to/dub.wav npm run audit:media`
@@ -206,6 +256,8 @@ Optional sample checks:
 Audit report output:
 - `backend/artifacts/media_backend_audit.json`
 - `backend/artifacts/gemini_stack_audit.json`
+- `backend/artifacts/frontend_backend_connectivity_audit.json`
+- `backend/artifacts/k8s_manifest_validation_report.json`
 
 ### TTS Audits (GEM + KOKORO)
 
@@ -227,6 +279,13 @@ Primary outputs:
 
 Notes:
 - Reliability runbook: `docs/RELIABILITY_RUNBOOK.md`
+- Auth-first audit scripts:
+  - `AUDIT_BEARER_TOKEN=<firebase_id_token>` (primary)
+  - `AUDIT_RUNTIME_ADMIN_TOKEN=<gemini_runtime_admin_token>` for `audit:gemini-stack`
+  - optional strict gate for k6: `VF_REQUIRE_K6=1`
+  - optional explicit dev fallback only: `AUDIT_ALLOW_DEV_UID=1` and optional `AUDIT_DEV_UID=<uid>`
+  - optional connectivity gate in CI: `VF_ENABLE_CONNECTIVITY_AUDIT_GATE=1`
+  - if connectivity audit passes but synthesis still fails, inspect Gemini pool health in the audit output (`unhealthyKeys`, `atLimitKeys`, auth/leak issues).
 
 ## Generation History + Gemini Pool Admin
 

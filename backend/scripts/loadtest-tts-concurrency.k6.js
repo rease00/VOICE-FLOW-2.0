@@ -5,6 +5,8 @@ import { Counter, Rate } from 'k6/metrics';
 const BASE_URL = String(__ENV.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').replace(/\/+$/, '');
 const MODE = String(__ENV.VF_LOAD_MODE || 'mixed').toLowerCase();
 const UID = String(__ENV.VF_LOAD_UID || 'k6_load_user');
+const AUDIT_BEARER_TOKEN = String(__ENV.AUDIT_BEARER_TOKEN || '').trim();
+const AUDIT_DEV_UID = String(__ENV.AUDIT_DEV_UID || UID).trim() || UID;
 const GEM_RATIO = Number.parseFloat(String(__ENV.VF_LOAD_ENGINE_SPLIT_GEM || '0.6'));
 const VUS = Math.max(1, Number.parseInt(String(__ENV.VF_LOAD_VUS || '50'), 10) || 50);
 const DURATION = String(__ENV.VF_LOAD_DURATION || '30s');
@@ -13,6 +15,23 @@ const JOB_TIMEOUT_MS = Math.max(1_000, Number.parseInt(String(__ENV.VF_LOAD_JOB_
 const SYNC_WAIT_MS = Math.max(0, Number.parseInt(String(__ENV.VF_LOAD_SYNC_WAIT_MS || '3000'), 10) || 3000);
 const SUMMARY_PATH = String(__ENV.VF_K6_SUMMARY_PATH || 'artifacts/load/k6-summary.json');
 
+const parseBool = (value, fallback = false) => {
+  const token = String(value || '').trim().toLowerCase();
+  if (!token) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(token)) return true;
+  if (['0', 'false', 'no', 'off'].includes(token)) return false;
+  return fallback;
+};
+
+const ALLOW_DEV_UID = parseBool(__ENV.AUDIT_ALLOW_DEV_UID, false);
+const REQUIRE_AUTH = parseBool(__ENV.AUDIT_REQUIRE_AUTH, true);
+
+if (!AUDIT_BEARER_TOKEN && !ALLOW_DEV_UID && REQUIRE_AUTH) {
+  throw new Error(
+    '[loadtest-tts-concurrency.k6] missing auth: set AUDIT_BEARER_TOKEN or AUDIT_ALLOW_DEV_UID=1 with optional AUDIT_DEV_UID.'
+  );
+}
+
 export const completionRate = new Rate('completion_rate');
 export const serverErrors = new Counter('server_errors');
 export const terminalFailures = new Counter('terminal_failures');
@@ -20,7 +39,8 @@ export const terminalFailures = new Counter('terminal_failures');
 const headers = {
   'Content-Type': 'application/json',
   Accept: 'application/json',
-  'x-dev-uid': UID,
+  ...(AUDIT_BEARER_TOKEN ? { Authorization: AUDIT_BEARER_TOKEN.toLowerCase().startsWith('bearer ') ? AUDIT_BEARER_TOKEN : `Bearer ${AUDIT_BEARER_TOKEN}` } : {}),
+  ...(!AUDIT_BEARER_TOKEN && ALLOW_DEV_UID ? { 'x-dev-uid': AUDIT_DEV_UID } : {}),
 };
 
 export const options = {
@@ -189,9 +209,10 @@ export function handleSummary(data) {
     target: {
       baseUrl: BASE_URL,
       mode: MODE,
-      uid: UID,
+      uid: AUDIT_DEV_UID,
       vus: VUS,
       duration: DURATION,
+      authMode: AUDIT_BEARER_TOKEN ? 'bearer' : (ALLOW_DEV_UID ? 'dev_uid' : 'none'),
     },
     metrics: data.metrics,
     verdict: {
@@ -205,4 +226,3 @@ export function handleSummary(data) {
     stdout: `[k6-load] summary written to ${SUMMARY_PATH}\n[k6-load] passed=${thresholdFailures.length === 0}\n`,
   };
 }
-

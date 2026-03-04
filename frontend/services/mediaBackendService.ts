@@ -96,6 +96,7 @@ export const convertLlvcCover = async (
   }
 ): Promise<Blob> => {
   const form = new FormData();
+  // Backend accepts audio/video source and normalizes it to WAV before LLVC conversion.
   form.append('file', sourceAudio);
   form.append('model_name', modelName);
   form.append('preset', options?.preset || 'llvc_hq_cpu');

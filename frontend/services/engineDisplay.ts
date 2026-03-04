@@ -1,15 +1,17 @@
 import { GenerationSettings } from '../types';
 
 export const ENGINE_DISPLAY_NAMES: Record<GenerationSettings['engine'], string> = {
-  GEM: 'Prime',
-  NEURAL2: 'HD',
   KOKORO: 'Basic',
+  GOOD: 'Good',
+  NEURAL2: 'HD',
+  GEM: 'Prime',
 };
 
 export const ENGINE_RUNTIME_SUBLABELS: Record<GenerationSettings['engine'], string> = {
-  GEM: 'Runtime',
-  NEURAL2: 'Runtime',
   KOKORO: 'Runtime',
+  GOOD: 'Runtime',
+  NEURAL2: 'Runtime',
+  GEM: 'Runtime',
 };
 
 export const getEngineDisplayName = (engine: GenerationSettings['engine']): string => {

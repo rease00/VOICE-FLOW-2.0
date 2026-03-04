@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Facebook, Lock, Mail, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, Mail, User } from 'lucide-react';
 import { AppScreen } from '../types';
 import { useAuthSession } from '../src/features/auth/hooks/useAuthSession';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { removeStorageKey, readStorageString } from '../src/shared/storage/localStore';
+import { removeStorageKey, readStorageString, writeStorageString } from '../src/shared/storage/localStore';
 import { isLocalAdminUsername } from '../services/localAdminAuth';
 import { BrandLogo } from '../components/BrandLogo';
+import { useNotifications } from '../src/shared/notifications/NotificationProvider';
+import { sanitizeUiText } from '../src/shared/ui/terminology';
 
 interface LoginProps {
   setScreen: (screen: AppScreen) => void;
@@ -21,10 +23,11 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     signUpWithEmail,
     requestPasswordReset,
     signInWithGoogle,
-    signInWithFacebook,
   } = useAuthSession();
+  const { emit } = useNotifications();
   const [mode, setMode] = useState<AuthMode>('login');
   const [displayName, setDisplayName] = useState('');
+  const [userId, setUserId] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -58,12 +61,30 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     setIsLoading(true);
     try {
       const result = mode === 'signup'
-        ? await signUpWithEmail(email, password, displayName)
+        ? await signUpWithEmail(email, password, displayName, userId)
         : await signInWithEmail(email, password);
       if (!result.ok) {
-        setErrorMsg(result.error || 'Authentication failed.');
+        const message = sanitizeUiText(result.error || 'Authentication failed.');
+        setErrorMsg(message);
+        emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
+          title: mode === 'signup' ? 'Sign Up Failed' : 'Sign In Failed',
+          message,
+          category: 'security',
+          dedupeKey: mode === 'signup' ? 'auth-signup-failed' : 'auth-signin-failed',
+        });
         return;
       }
+      emit(mode === 'signup' ? 'auth.signup.success' : 'auth.signin.success', {
+        title: mode === 'signup' ? 'Sign Up Success' : 'Sign In Success',
+        message: mode === 'signup' ? 'Account created successfully.' : 'Signed in successfully.',
+        category: 'security',
+      });
+      if ('requiresUserIdSetup' in result && result.requiresUserIdSetup) {
+        writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
+        setScreen(AppScreen.USER_ID_SETUP);
+        return;
+      }
+      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
       setScreen(AppScreen.MAIN);
     } finally {
       setIsLoading(false);
@@ -77,25 +98,27 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     try {
       const result = await signInWithGoogle();
       if (!result.ok) {
-        setErrorMsg(result.error || 'Google sign-in failed.');
+        const message = sanitizeUiText(result.error || 'Google sign-in failed.');
+        setErrorMsg(message);
+        emit('auth.signin.failed', {
+          title: 'Google Sign-In Failed',
+          message,
+          category: 'security',
+          dedupeKey: 'auth-google-failed',
+        });
         return;
       }
-      setScreen(AppScreen.MAIN);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleFacebook = async () => {
-    setErrorMsg(null);
-    setInfoMsg(null);
-    setIsLoading(true);
-    try {
-      const result = await signInWithFacebook();
-      if (!result.ok) {
-        setErrorMsg(result.error || 'Facebook sign-in failed.');
+      emit('auth.signin.success', {
+        title: 'Sign In Success',
+        message: 'Signed in with Google.',
+        category: 'security',
+      });
+      if (result.requiresUserIdSetup) {
+        writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
+        setScreen(AppScreen.USER_ID_SETUP);
         return;
       }
+      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
       setScreen(AppScreen.MAIN);
     } finally {
       setIsLoading(false);
@@ -109,10 +132,24 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     try {
       const result = await requestPasswordReset(email);
       if (!result.ok) {
-        setErrorMsg(result.error || 'Could not request password reset.');
+        const message = sanitizeUiText(result.error || 'Could not request password reset.');
+        setErrorMsg(message);
+        emit('auth.reset.failed', {
+          title: 'Password Reset Failed',
+          message,
+          category: 'security',
+          dedupeKey: 'auth-reset-failed',
+        });
         return;
       }
-      setInfoMsg('If an account exists for this email, a reset link has been sent.');
+      const message = 'If an account exists for this email, a reset link has been sent.';
+      setInfoMsg(message);
+      emit('auth.reset.success', {
+        title: 'Password Reset Requested',
+        message,
+        category: 'security',
+        dedupeKey: 'auth-reset-sent',
+      });
     } finally {
       setIsResetting(false);
     }
@@ -169,18 +206,36 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
 
         <form onSubmit={handleEmailSubmit} className="space-y-4">
           {mode === 'signup' && (
-            <div>
-              <label className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-gray-500">Display Name</label>
-              <div className="relative">
-                <input
-                  value={displayName}
-                  onChange={(event) => setDisplayName(event.target.value)}
-                  placeholder="Guest Artist"
-                  className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-3 text-sm outline-none transition-all focus:border-indigo-500 focus:bg-white"
-                />
-                <User size={16} className="absolute left-3 top-3.5 text-gray-400" />
+            <>
+              <div>
+                <label className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-gray-500">Display Name</label>
+                <div className="relative">
+                  <input
+                    value={displayName}
+                    onChange={(event) => setDisplayName(event.target.value)}
+                    placeholder="Guest Artist"
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-3 text-sm outline-none transition-all focus:border-indigo-500 focus:bg-white"
+                  />
+                  <User size={16} className="absolute left-3 top-3.5 text-gray-400" />
+                </div>
               </div>
-            </div>
+              <div>
+                <label className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-gray-500">User ID</label>
+                <div className="relative">
+                  <input
+                    value={userId}
+                    onChange={(event) => setUserId(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                    placeholder="artist_01"
+                    pattern="[a-z0-9_]{4,24}"
+                    title="Use lowercase letters, numbers, underscore. 4-24 chars."
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-3 text-sm outline-none transition-all focus:border-indigo-500 focus:bg-white"
+                    required
+                  />
+                  <User size={16} className="absolute left-3 top-3.5 text-gray-400" />
+                </div>
+                <p className="mt-1 text-[11px] text-gray-500">Lowercase only, 4-24 chars. You can set it only once.</p>
+              </div>
+            </>
           )}
 
           <div>
@@ -246,7 +301,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
           <span className="h-px flex-1 bg-gray-200" />
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2">
           <button
             type="button"
             onClick={handleGoogle}
@@ -254,14 +309,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
             className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
           >
             Google
-          </button>
-          <button
-            type="button"
-            onClick={handleFacebook}
-            disabled={isLoading || disableOAuthAuthSubmit}
-            className="inline-flex items-center justify-center gap-1 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-          >
-            <Facebook size={14} /> Facebook
           </button>
         </div>
       </div>

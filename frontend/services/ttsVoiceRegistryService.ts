@@ -6,6 +6,8 @@ export type RuntimeVoiceCatalogMap = Record<GenerationSettings['engine'], VoiceO
 
 const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
   GEM: [],
+  GOOD: [],
+  NEURAL2: [],
   KOKORO: [],
 };
 
@@ -41,9 +43,25 @@ const normalizeAgeGroup = (raw: unknown): string => {
   if (!value) return 'Unknown';
   const lower = value.toLowerCase();
   if (lower.includes('young')) return 'Young Adult';
+  if (
+    lower.includes('child') ||
+    lower.includes('kid') ||
+    lower.includes('boy') ||
+    lower.includes('girl') ||
+    lower.includes('teen')
+  ) {
+    return 'Child';
+  }
+  if (
+    lower.includes('elder') ||
+    lower.includes('old') ||
+    lower.includes('senior') ||
+    lower.includes('aged') ||
+    lower.includes('grand')
+  ) {
+    return 'Elderly';
+  }
   if (lower.includes('adult')) return 'Adult';
-  if (lower.includes('child')) return 'Child';
-  if (lower.includes('elder')) return 'Elderly';
   return value;
 };
 
@@ -58,7 +76,9 @@ const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption)
 };
 
 export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => {
-  if (engine === 'GEM') return VOICES.map((voice) => asEngineVoice('GEM', voice));
+  if (engine === 'GEM' || engine === 'GOOD' || engine === 'NEURAL2') {
+    return VOICES.map((voice) => asEngineVoice(engine, voice));
+  }
   return KOKORO_VOICES.map((voice) => asEngineVoice('KOKORO', voice));
 };
 
@@ -119,6 +139,8 @@ export const fetchRuntimeVoiceRegistry = async (
   const entries: RuntimeVoiceCatalogMap = {
     ...EMPTY_CATALOG,
     GEM: [],
+    GOOD: [],
+    NEURAL2: [],
   };
 
   try {
@@ -126,6 +148,8 @@ export const fetchRuntimeVoiceRegistry = async (
   } catch {
     entries.GEM = getStaticVoiceFallback('GEM');
   }
+  entries.GOOD = entries.GEM.map((voice) => ({ ...voice, engine: 'GOOD' }));
+  entries.NEURAL2 = entries.GEM.map((voice) => ({ ...voice, engine: 'NEURAL2' }));
 
   try {
     entries.KOKORO = await fetchEngineRuntimeVoices('KOKORO', '');

@@ -1,14 +1,14 @@
 :root {
-  --vf-color-bg: #fdf9f2;
-  --vf-color-bg-deep: #f5efe3;
-  --vf-color-surface: #fffdf9;
-  --vf-color-surface-2: #f8f3ea;
-  --vf-color-border: #dccfb8;
-  --vf-color-text: #1d2733;
-  --vf-color-text-muted: #5b6877;
-  --vf-color-accent: #0f766e;
-  --vf-color-accent-soft: #e0f2f1;
-  --vf-color-highlight: #c2410c;
+  --vf-color-bg: #f4f7fb;
+  --vf-color-bg-deep: #edf2f8;
+  --vf-color-surface: #fbfdff;
+  --vf-color-surface-2: #f1f5fb;
+  --vf-color-border: #d7e1ee;
+  --vf-color-text: #1f2937;
+  --vf-color-text-muted: #5f6f84;
+  --vf-color-accent: #2f6fd4;
+  --vf-color-accent-soft: #e8f0ff;
+  --vf-color-highlight: #b45309;
   --vf-space-1: 0.25rem;
   --vf-space-2: 0.5rem;
   --vf-space-3: 0.75rem;
