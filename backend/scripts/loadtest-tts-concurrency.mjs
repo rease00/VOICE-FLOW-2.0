@@ -65,6 +65,15 @@ const uid = String(args.get('uid') || process.env.VF_LOAD_UID || 'load_test_user
 const minCompletionRate = Number.parseFloat(String(args.get('min-completion-rate') || process.env.VF_LOAD_MIN_COMPLETION_RATE || '1'));
 const retryMax = Math.max(0, asInt(args.get('retry-max') || process.env.VF_LOAD_RETRY_MAX, 2));
 const retryBaseMs = Math.max(100, asInt(args.get('retry-base-ms') || process.env.VF_LOAD_RETRY_BASE_MS, 650));
+const queueSampleMs = Math.max(250, asInt(args.get('queue-sample-ms') || process.env.VF_LOAD_QUEUE_SAMPLE_MS, 1000));
+const maxQueueDepth = Math.max(
+  1,
+  asInt(args.get('max-queue-depth') || process.env.VF_LOAD_MAX_QUEUE_DEPTH, Math.max(100, concurrency * 4))
+);
+const maxOldestQueuedAgeMs = Math.max(
+  1,
+  asInt(args.get('max-oldest-age-ms') || process.env.VF_LOAD_MAX_OLDEST_QUEUED_AGE_MS, Math.max(timeoutMs, 120_000))
+);
 
 const splitRaw = String(args.get('engine-split') || process.env.VF_LOAD_ENGINE_SPLIT || 'gem=0.6,kokoro=0.4').toLowerCase();
 const splitTokens = splitRaw
@@ -89,7 +98,7 @@ const gemRatio = gemWeight / (gemWeight + kokoroWeight);
 
 const { headers: authHeaders, auth: authContext } = buildAuditHeaders(
   { Accept: 'application/json' },
-  { scriptName: 'test:load:50:node', defaultDevUid: uid }
+  { scriptName: `test:load:node:c${concurrency}`, defaultDevUid: uid }
 );
 
 const headers = {
@@ -162,6 +171,15 @@ const runPreflight = async () => {
   return {
     ok: checks.every((entry) => entry.ok),
     checks,
+  };
+};
+
+const parseQueueMetrics = (payload) => {
+  const queue = payload && typeof payload === 'object' ? payload.queue : null;
+  const telemetry = payload && typeof payload === 'object' ? payload.telemetry : null;
+  return {
+    depthTotal: Math.max(0, Number(queue && queue.total ? queue.total : 0) || 0),
+    oldestAgeMs: Math.max(0, Number(telemetry && telemetry.oldestQueuedAgeMs ? telemetry.oldestQueuedAgeMs : 0) || 0),
   };
 };
 
@@ -432,7 +450,7 @@ const percentile = (values, ratio) => {
   return Number(sorted[index] || 0);
 };
 
-const summarize = (results, startedAt, finishedAt, preflight) => {
+const summarize = (results, startedAt, finishedAt, preflight, queueTelemetry = []) => {
   const statusCodes = {};
   const terminal = { completed: 0, failed: 0, cancelled: 0, timeout: 0, unknown: 0 };
   const latencyValues = [];
@@ -474,6 +492,31 @@ const summarize = (results, startedAt, finishedAt, preflight) => {
       `Terminal failures observed (failed=${terminal.failed}, timeout=${terminal.timeout}, cancelled=${terminal.cancelled}).`,
     );
   }
+  const queueDepthValues = queueTelemetry
+    .map((sample) => Number(sample.depthTotal || 0))
+    .filter((value) => Number.isFinite(value));
+  const queueOldestAgeValues = queueTelemetry
+    .map((sample) => Number(sample.oldestAgeMs || 0))
+    .filter((value) => Number.isFinite(value));
+  const queueSummary = {
+    sampleCount: queueTelemetry.length,
+    maxDepth: queueDepthValues.length ? Math.max(...queueDepthValues) : 0,
+    p95Depth: percentile(queueDepthValues, 0.95),
+    lastDepth: queueDepthValues.length ? Number(queueDepthValues[queueDepthValues.length - 1] || 0) : 0,
+    maxOldestAgeMs: queueOldestAgeValues.length ? Math.max(...queueOldestAgeValues) : 0,
+    p95OldestAgeMs: percentile(queueOldestAgeValues, 0.95),
+    lastOldestAgeMs: queueOldestAgeValues.length ? Number(queueOldestAgeValues[queueOldestAgeValues.length - 1] || 0) : 0,
+    fetchErrors: queueTelemetry.filter((sample) => !sample.ok).length,
+  };
+  if (queueSummary.maxDepth > maxQueueDepth) {
+    failureReasons.push(`Queue depth exceeded threshold (${queueSummary.maxDepth} > ${maxQueueDepth}).`);
+  }
+  if (queueSummary.maxOldestAgeMs > maxOldestQueuedAgeMs) {
+    failureReasons.push(`Queue oldest age exceeded threshold (${queueSummary.maxOldestAgeMs}ms > ${maxOldestQueuedAgeMs}ms).`);
+  }
+  if (queueSummary.sampleCount === 0 || queueSummary.fetchErrors > 0) {
+    failureReasons.push(`Queue telemetry incomplete (samples=${queueSummary.sampleCount}, fetchErrors=${queueSummary.fetchErrors}).`);
+  }
 
   return {
     schemaVersion: '1.0.0',
@@ -499,6 +542,9 @@ const summarize = (results, startedAt, finishedAt, preflight) => {
       minCompletionRate,
       retryMax,
       retryBaseMs,
+      queueSampleMs,
+      maxQueueDepth,
+      maxOldestQueuedAgeMs,
     },
     preflight,
     totals: {
@@ -519,6 +565,14 @@ const summarize = (results, startedAt, finishedAt, preflight) => {
       p95: percentile(latencyValues, 0.95),
       p99: percentile(latencyValues, 0.99),
       max: latencyValues.length ? Math.max(...latencyValues) : 0,
+    },
+    queue: {
+      thresholds: {
+        maxDepth: maxQueueDepth,
+        maxOldestAgeMs: maxOldestQueuedAgeMs,
+      },
+      summary: queueSummary,
+      samples: queueTelemetry.slice(-200),
     },
     verdict: {
       passed: failureReasons.length === 0,
@@ -568,6 +622,50 @@ const main = async () => {
     return;
   }
 
+  const queueTelemetry = [];
+  let queueSamplerActive = true;
+  let queueSamplerInFlight = false;
+  const sampleQueueMetrics = async (phase = 'interval') => {
+    if (!queueSamplerActive || queueSamplerInFlight) return;
+    queueSamplerInFlight = true;
+    try {
+      const probe = await fetchJsonWithTimeout(
+        `${baseUrl}/admin/tts/queue/metrics`,
+        {
+          method: 'GET',
+          headers: authHeaders,
+        },
+        Math.min(timeoutMs, 15_000),
+      );
+      if (!probe.ok) {
+        queueTelemetry.push({
+          at: nowIso(),
+          phase,
+          ok: false,
+          status: probe.status,
+          classification: classifyAuditFailure(probe),
+        });
+        return;
+      }
+      const parsed = parseQueueMetrics(probe.payload);
+      queueTelemetry.push({
+        at: nowIso(),
+        phase,
+        ok: true,
+        status: probe.status,
+        depthTotal: parsed.depthTotal,
+        oldestAgeMs: parsed.oldestAgeMs,
+      });
+    } finally {
+      queueSamplerInFlight = false;
+    }
+  };
+
+  await sampleQueueMetrics('start');
+  const queueSamplerTimer = setInterval(() => {
+    void sampleQueueMetrics('interval');
+  }, queueSampleMs);
+
   let nextIndex = 0;
   const results = [];
   const workers = Array.from({ length: concurrency }, async () => {
@@ -580,9 +678,15 @@ const main = async () => {
     }
   });
 
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } finally {
+    queueSamplerActive = false;
+    clearInterval(queueSamplerTimer);
+    await sampleQueueMetrics('end');
+  }
   const finishedAt = nowIso();
-  const report = summarize(results, startedAt, finishedAt, preflight);
+  const report = summarize(results, startedAt, finishedAt, preflight, queueTelemetry);
 
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
   const artifactName = String(args.get('artifact') || `node-load-${mode}-c${concurrency}-${Date.now()}.json`);
@@ -594,6 +698,10 @@ const main = async () => {
   console.log(`[loadtest-node] passed: ${report.verdict.passed}`);
   console.log(
     `[loadtest-node] completionRate=${report.totals.completionRate} http5xx=${report.totals.http5xx} p95=${report.latencyMs.p95}ms`,
+  );
+  console.log(
+    `[loadtest-node] queue maxDepth=${report.queue.summary.maxDepth} maxOldestAgeMs=${report.queue.summary.maxOldestAgeMs} ` +
+    `samples=${report.queue.summary.sampleCount}`,
   );
 
   if (!report.verdict.passed) {

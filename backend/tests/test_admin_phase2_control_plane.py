@@ -26,6 +26,8 @@ def _reset_phase2_state() -> None:
     backend_app._INMEMORY_COUPON_SUB_ATTRIBUTIONS.clear()
 
     backend_app._INMEMORY_ENTITLEMENTS.clear()
+    backend_app._INMEMORY_USER_PROFILES.clear()
+    backend_app._INMEMORY_USER_ID_INDEX.clear()
     backend_app._INMEMORY_COUPONS.clear()
     backend_app._INMEMORY_COUPON_CODE_INDEX.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
@@ -100,8 +102,10 @@ def test_rbac_bootstrap_fallback_for_legacy_admin_uid(monkeypatch) -> None:
 def test_rbac_endpoint_gating_with_read_only_role(monkeypatch) -> None:
     _reset_phase2_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
     monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
     monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "_firebase_ready", lambda: False)
 
     backend_app._rbac_write_assignment(
         "ops_reader",
@@ -113,7 +117,6 @@ def test_rbac_endpoint_gating_with_read_only_role(monkeypatch) -> None:
             "updatedBy": "seed",
         },
     )
-
     client = TestClient(backend_app.app)
     read_users = client.get("/admin/users", headers={"x-dev-uid": "ops_reader"})
     assert read_users.status_code == 200
@@ -243,8 +246,14 @@ def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypat
     _reset_phase2_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_INR", "price_pro_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PLUS_INR", "price_plus_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_STARTER_MAX_INR", "price_starter_max_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_STARTER_RECURRING_INR", "price_starter_recurring_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_CREATOR_MAX_INR", "price_creator_max_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_CREATOR_RECURRING_INR", "price_creator_recurring_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_MAX_INR", "price_pro_max_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_SCALE_MAX_INR", "price_scale_max_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_SCALE_RECURRING_INR", "price_scale_recurring_test")
 
     stripe_coupon_calls: list[dict] = []
     checkout_payloads: list[dict] = []
@@ -313,8 +322,8 @@ def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypat
     coupon = created.json()["coupon"]
     assert coupon["couponType"] == "subscription_discount"
     assert coupon["planDiscounts"]["pro"]["percentOff"] == 20
-    assert coupon["planDiscounts"]["plus"]["percentOff"] == 35
-    assert coupon["stripeCouponsByPlan"]["pro"] != coupon["stripeCouponsByPlan"]["plus"]
+    assert coupon["planDiscounts"]["scale"]["percentOff"] == 35
+    assert coupon["stripeCouponsByPlan"]["pro"] != coupon["stripeCouponsByPlan"]["scale"]
     assert str(coupon.get("stripePromotionCodeId") or "").strip() == ""
 
     checkout = client.post(
@@ -327,4 +336,4 @@ def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypat
     discounts = checkout_payloads[0].get("discounts") or []
     assert discounts and isinstance(discounts, list)
     selected_coupon_id = str(discounts[0].get("coupon") or "")
-    assert selected_coupon_id == coupon["stripeCouponsByPlan"]["plus"]
+    assert selected_coupon_id == coupon["stripeCouponsByPlan"]["scale"]

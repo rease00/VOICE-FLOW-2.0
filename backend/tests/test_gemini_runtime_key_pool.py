@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from shared.gemini_allocator import AllocatorConfig, GeminiRateAllocator, ModelLimit
@@ -31,6 +32,28 @@ def _make_key(seed: int) -> str:
     return f"AIza{seed:030d}"
 
 
+def _assert_masked_pool_keys(config: dict[str, object], pool_name: str, expected_count: int) -> None:
+    pools = config.get("pools")
+    assert isinstance(pools, dict)
+    pool_row = pools.get(pool_name)
+    assert isinstance(pool_row, dict)
+    keys = list(pool_row.get("keys") or [])
+    assert len(keys) == expected_count
+    assert all(str(item).startswith("__vf_masked_key__:") for item in keys)
+    metadata = list(pool_row.get("keyMetadata") or [])
+    assert len(metadata) == expected_count
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_pool_config_file(monkeypatch, tmp_path: Path) -> None:
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps({"version": 1, "pools": {"free": {"keys": []}}}, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+
+
 def _runtime_admin_client(runtime) -> TestClient:
     token = "test_runtime_admin_token"
     runtime.GEMINI_RUNTIME_ADMIN_TOKEN = token
@@ -53,7 +76,7 @@ def test_runtime_routes_follow_locked_policy() -> None:
     runtime = _load_gemini_runtime_module()
     tts_candidates = runtime.resolve_tts_model_candidates()
     assert tts_candidates
-    assert tts_candidates[0] == "gemini-2.5-pro-preview-tts"
+    assert tts_candidates[0] == "gemini-2.5-flash-preview-tts"
     assert "gemini-2.5-flash-preview-tts" in tts_candidates
     assert runtime.resolve_text_model_candidates() == [
         "gemini-2.5-flash",
@@ -378,11 +401,12 @@ def test_admin_api_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path: Pa
     response = client.get("/v1/admin/api-pools")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["config"]["pools"]["free"]["keys"] == [free_a, free_b]
-    assert payload["config"]["pools"]["pro"]["keys"] == [pro_key]
+    _assert_masked_pool_keys(payload["config"], "free", 2)
+    assert set((payload["config"].get("pools") or {}).keys()) == {"free"}
+    assert payload["config"]["planPools"] == {"free": "free", "pro": "free", "plus": "free"}
     assert payload["sourcePolicy"]["freePoolLocked"] is True
     assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "api_file_authoritative"
-    assert payload.get("warnings") == []
+    assert any("Single-pool mode" in str(item) for item in list(payload.get("warnings") or []))
 
     persisted = json.loads(pools_file.read_text(encoding="utf-8"))
     assert persisted["pools"]["free"]["keys"] == [free_a, free_b]
@@ -446,8 +470,9 @@ def test_admin_api_pools_update_ignores_free_edits_when_locked(monkeypatch, tmp_
     assert response.status_code == 200
     payload = response.json()
     assert "free_pool_locked_by_api_file" in list(payload.get("appliedOverrides") or [])
-    assert payload["config"]["pools"]["free"]["keys"] == [free_key]
-    assert payload["config"]["pools"]["pro"]["keys"] == [pro_key]
+    _assert_masked_pool_keys(payload["config"], "free", 1)
+    assert set((payload["config"].get("pools") or {}).keys()) == {"free"}
+    assert "single_pool_enforced:free" in list(payload.get("appliedOverrides") or [])
 
 
 def test_admin_api_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Path) -> None:
@@ -485,7 +510,7 @@ def test_admin_api_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Pat
 
     first = client.get("/v1/admin/api-pools")
     assert first.status_code == 200
-    assert first.json()["config"]["pools"]["free"]["keys"] == [free_key]
+    _assert_masked_pool_keys(first.json()["config"], "free", 1)
 
     key_file.unlink()
     runtime._API_POOLS_CACHE = None
@@ -499,7 +524,7 @@ def test_admin_api_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Pat
     latest = client.get("/v1/admin/api-pools")
     assert latest.status_code == 200
     latest_payload = latest.json()
-    assert latest_payload["config"]["pools"]["free"]["keys"] == [free_key]
+    _assert_masked_pool_keys(latest_payload["config"], "free", 1)
     assert list(latest_payload.get("warnings") or [])
 
 
@@ -567,12 +592,13 @@ def test_admin_api_pools_supports_custom_pool_and_plan_mapping(monkeypatch, tmp_
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["config"]["planPools"]["plus"] == "vip"
-    assert payload["config"]["pools"]["vip"]["keys"] == [custom_key]
+    assert payload["config"]["planPools"] == {"free": "free", "pro": "free", "plus": "free"}
+    _assert_masked_pool_keys(payload["config"], "free", 1)
+    assert set((payload["config"].get("pools") or {}).keys()) == {"free"}
 
     refreshed = client.get("/v1/admin/api-pools")
     assert refreshed.status_code == 200
-    assert refreshed.json()["config"]["pools"]["vip"]["keys"] == [custom_key]
+    _assert_masked_pool_keys(refreshed.json()["config"], "free", 1)
 
 
 def test_admin_api_pools_delete_free_disables_authoritative_mode(monkeypatch, tmp_path: Path) -> None:
@@ -637,7 +663,8 @@ def test_admin_api_pools_delete_free_disables_authoritative_mode(monkeypatch, tm
     assert response.status_code == 200
     payload = response.json()
     assert "free_pool_authoritative_mode_disabled" in list(payload.get("appliedOverrides") or [])
-    assert "free" not in payload["config"]["pools"]
+    assert "free" in payload["config"]["pools"]
+    _assert_masked_pool_keys(payload["config"], "free", 1)
     assert payload["sourcePolicy"]["freePoolLocked"] is False
     assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "config_managed"
 
@@ -645,7 +672,7 @@ def test_admin_api_pools_delete_free_disables_authoritative_mode(monkeypatch, tm
     runtime._API_POOLS_META = {}
     latest = client.get("/v1/admin/api-pools")
     assert latest.status_code == 200
-    assert "free" not in latest.json()["config"]["pools"]
+    _assert_masked_pool_keys(latest.json()["config"], "free", 1)
 
 
 def test_runtime_pool_hint_missing_pool_falls_back_to_default_chain(monkeypatch, tmp_path: Path) -> None:
@@ -707,10 +734,11 @@ def test_runtime_pool_hint_missing_pool_falls_back_to_default_chain(monkeypatch,
     assert response.status_code == 200
 
     payload = client.get("/v1/admin/api-pools").json()
-    assert payload["validation"]["missingPlanPools"]["plus"] == "enterprise_missing"
+    assert payload["validation"]["missingPlanPools"] == {}
+    assert payload["config"]["planPools"] == {"free": "free", "pro": "free", "plus": "free"}
     resolved_keys = runtime._pool_keys_for_hint("enterprise_missing")
-    assert pro_key in resolved_keys
     assert free_key in resolved_keys
+    assert pro_key not in resolved_keys
 
 
 def test_lazy_pool_self_heal_before_missing_error(monkeypatch) -> None:

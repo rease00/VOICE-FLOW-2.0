@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import wave
 from collections import defaultdict, deque
@@ -99,6 +100,19 @@ OUTPUT_ROOT_DIR = Path(
 ).resolve()
 RUNTIME_LOG_DIR = PROJECT_ROOT / ".runtime" / "logs"
 MODELS_DIR = Path(os.getenv("VF_LLVC_MODELS_DIR", str(APP_ROOT / "models" / "llvc"))).resolve()
+LOCAL_MODEL_MIRROR_ROOT = Path(
+    (os.getenv("VF_LOCAL_MODEL_MIRROR_DIR") or str(APP_ROOT / "models")).strip()
+    or str(APP_ROOT / "models")
+).resolve()
+KOKORO_MODEL_REPO_ID = (os.getenv("VF_KOKORO_MODEL_REPO_ID") or "onnx-community/Kokoro-82M-v1.0-ONNX").strip() or "onnx-community/Kokoro-82M-v1.0-ONNX"
+KOKORO_MODEL_REVISION = (os.getenv("VF_KOKORO_MODEL_REVISION") or "main").strip() or "main"
+KOKORO_MODEL_MIRROR_DIR = (LOCAL_MODEL_MIRROR_ROOT / KOKORO_MODEL_REPO_ID).resolve()
+KOKORO_MODEL_REQUIRED_FILES: tuple[str, ...] = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "onnx/model.onnx",
+)
 BOOTSTRAP_SCRIPT = PROJECT_ROOT / "scripts" / "bootstrap-services.mjs"
 WHISPER_MODEL_SIZE = os.getenv("VF_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("VF_WHISPER_DEVICE", "cpu")
@@ -116,9 +130,68 @@ SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() 
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
 SEPARATION_SAMPLE_RATE = max(16000, int((os.getenv("VF_SOURCE_SEPARATION_SAMPLE_RATE") or "44100").strip() or "44100"))
 SEPARATION_CACHE_DIR = ARTIFACTS_DIR / "source-separation-cache"
+VF_DUB_PIPELINE_VERSION = str(os.getenv("VF_DUB_PIPELINE_VERSION") or "2026.1").strip() or "2026.1"
+VF_DUB_PHASE1_MODEL = str(os.getenv("VF_DUB_PHASE1_MODEL") or "BS-Roformer-Viperx-1297").strip() or "BS-Roformer-Viperx-1297"
+VF_DUB_DEREVERB_MODEL = str(os.getenv("VF_DUB_DEREVERB_MODEL") or "uvr_deecho_dereverb").strip() or "uvr_deecho_dereverb"
+VF_DUB_DIRECTOR_MODEL = str(os.getenv("VF_DUB_DIRECTOR_MODEL") or "gemini-3-flash").strip() or "gemini-3-flash"
+VF_DUB_TTS_MODEL = str(os.getenv("VF_DUB_TTS_MODEL") or "gemini-2.5-flash-preview-tts").strip() or "gemini-2.5-flash-preview-tts"
+VF_DUB_ALLOW_MODEL_FALLBACK = (
+    (os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_DUB_ISOCHRONY_TOLERANCE_PCT = max(
+    1.0,
+    float((os.getenv("VF_DUB_ISOCHRONY_TOLERANCE_PCT") or "10").strip() or "10"),
+)
+VF_DUB_THINKING_LOW_SCENE_MAX_SPEAKERS = max(
+    1,
+    int((os.getenv("VF_DUB_THINKING_LOW_SCENE_MAX_SPEAKERS") or "1").strip() or "1"),
+)
+VF_DUB_LLVC_PRESET = str(os.getenv("VF_DUB_LLVC_PRESET") or "llvc_hq_cpu").strip() or "llvc_hq_cpu"
+VF_DUB_WAV2LIP_ONNX_PATH = Path(
+    str(
+        os.getenv(
+            "VF_DUB_WAV2LIP_ONNX_PATH",
+            str(APP_ROOT / "models" / "video-pipeline" / "wav2lip" / "wav2lip.onnx"),
+        )
+    ).strip()
+    or str(APP_ROOT / "models" / "video-pipeline" / "wav2lip" / "wav2lip.onnx")
+).resolve()
+VF_DUB_LPIPS_ASSET_PATH = Path(
+    str(
+        os.getenv(
+            "VF_DUB_LPIPS_ASSET_PATH",
+            str(APP_ROOT / "models" / "video-pipeline" / "lpips" / "lpips.onnx"),
+        )
+    ).strip()
+    or str(APP_ROOT / "models" / "video-pipeline" / "lpips" / "lpips.onnx")
+).resolve()
+VF_DUB_STRICT_CORE_PHASES = (
+    (os.getenv("VF_DUB_STRICT_CORE_PHASES") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST = Path(
+    str(
+        os.getenv(
+            "VF_VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST",
+            str(APP_ROOT / "config" / "video_pipeline_asset_sources.json"),
+        )
+    ).strip()
+    or str(APP_ROOT / "config" / "video_pipeline_asset_sources.json")
+).resolve()
+VIDEO_PIPELINE_ASSET_DOWNLOAD_MANIFEST = Path(
+    str(
+        os.getenv(
+            "VF_VIDEO_PIPELINE_ASSET_DOWNLOAD_MANIFEST",
+            str(APP_ROOT / "data" / "video-pipeline-asset-download-manifest.json"),
+        )
+    ).strip()
+    or str(APP_ROOT / "data" / "video-pipeline-asset-download-manifest.json")
+).resolve()
 TTS_LIVE_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "tts-live"
 TTS_RESULT_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "tts-results"
 DUBBING_OUTPUT_DIR = OUTPUT_ROOT_DIR / "dubbing"
+DUBBING_LIVE_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "dubbing-live"
 ENABLE_SOURCE_SEPARATION = (
     (os.getenv("VF_ENABLE_SOURCE_SEPARATION") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -147,6 +220,14 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
 GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
 KOKORO_RUNTIME_URL = (os.getenv("VF_KOKORO_RUNTIME_URL") or "http://127.0.0.1:7820").strip().rstrip("/")
 LLVC_RUNTIME_URL = (os.getenv("VF_LLVC_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
+_raw_llvc_runtime_urls = [
+    str(item or "").strip().rstrip("/")
+    for item in str(os.getenv("VF_LLVC_RUNTIME_URLS") or "").split(",")
+]
+_raw_llvc_runtime_urls = [item for item in _raw_llvc_runtime_urls if item]
+if not _raw_llvc_runtime_urls:
+    _raw_llvc_runtime_urls = [LLVC_RUNTIME_URL]
+VF_LLVC_RUNTIME_URLS: tuple[str, ...] = tuple(dict.fromkeys(_raw_llvc_runtime_urls))
 GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
 VF_TTS_POST_LLVC_ENABLED = (
     (os.getenv("VF_TTS_POST_LLVC_ENABLED") or "1").strip().lower()
@@ -199,6 +280,46 @@ VF_TTS_LIVE_CHUNK_WORDS_MAX = max(
     VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
     int((os.getenv("VF_TTS_LIVE_CHUNK_WORDS_MAX") or "420").strip() or "420"),
 )
+VF_TTS_LIVE_PIPELINE_ENABLED = (
+    (os.getenv("VF_TTS_LIVE_PIPELINE_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TTS_LIVE_SYNTH_CONCURRENCY = max(
+    1,
+    int((os.getenv("VF_TTS_LIVE_SYNTH_CONCURRENCY") or "2").strip() or "2"),
+)
+VF_TTS_LIVE_LLVC_CONCURRENCY = max(
+    1,
+    int((os.getenv("VF_TTS_LIVE_LLVC_CONCURRENCY") or "2").strip() or "2"),
+)
+VF_TTS_LIVE_LLVC_GLOBAL_CONCURRENCY = max(
+    1,
+    int((os.getenv("VF_TTS_LIVE_LLVC_GLOBAL_CONCURRENCY") or "2").strip() or "2"),
+)
+VF_TTS_LIVE_FIRST_CHUNK_CHARS = max(
+    120,
+    int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_CHARS") or "140").strip() or "140"),
+)
+VF_TTS_LIVE_FIRST_CHUNK_WORDS = max(
+    24,
+    int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_WORDS") or "28").strip() or "28"),
+)
+VF_DUB_LIVE_PLAY_ENABLED = (
+    (os.getenv("VF_DUB_LIVE_PLAY_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_DUB_LIVE_CHUNK_LIMIT_DEFAULT = max(
+    1,
+    int((os.getenv("VF_DUB_LIVE_CHUNK_LIMIT_DEFAULT") or "2").strip() or "2"),
+)
+VF_DUB_LIVE_CHUNK_LIMIT_MAX = max(
+    VF_DUB_LIVE_CHUNK_LIMIT_DEFAULT,
+    int((os.getenv("VF_DUB_LIVE_CHUNK_LIMIT_MAX") or "8").strip() or "8"),
+)
+VF_DUB_LIVE_ARTIFACT_TTL_MS = max(
+    60_000,
+    int((os.getenv("VF_DUB_LIVE_ARTIFACT_TTL_MS") or "1800000").strip() or "1800000"),
+)
 VF_LLVC_MODEL_CACHE_TTL_MS = max(
     500,
     int((os.getenv("VF_LLVC_MODEL_CACHE_TTL_MS") or "5000").strip() or "5000"),
@@ -213,6 +334,12 @@ APP_BUILD_TIME = datetime.now(timezone.utc).isoformat()
 API_VERSION = "1.2.0"
 VF_AUTH_ENFORCE = (
     (os.getenv("VF_AUTH_ENFORCE") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_ENV = str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower()
+VF_IS_PRODUCTION = VF_ENV in {"prod", "production"}
+VF_DOCS_ENABLE = (
+    (os.getenv("VF_DOCS_ENABLE") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_DEV_BYPASS_UID = (os.getenv("VF_DEV_BYPASS_UID") or "dev_local_user").strip() or "dev_local_user"
@@ -231,14 +358,44 @@ VF_USER_PROFILE_FALLBACK_PERSIST = (
 )
 STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
 STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
-STRIPE_PRICE_PRO_INR = (os.getenv("STRIPE_PRICE_PRO_INR") or "").strip()
-STRIPE_PRICE_PLUS_INR = (os.getenv("STRIPE_PRICE_PLUS_INR") or "").strip()
+STRIPE_PRICE_STARTER_MAX_INR = (os.getenv("STRIPE_PRICE_STARTER_MAX_INR") or "").strip()
+STRIPE_PRICE_STARTER_RECURRING_INR = (os.getenv("STRIPE_PRICE_STARTER_RECURRING_INR") or "").strip()
+STRIPE_PRICE_CREATOR_MAX_INR = (os.getenv("STRIPE_PRICE_CREATOR_MAX_INR") or "").strip()
+STRIPE_PRICE_CREATOR_RECURRING_INR = (os.getenv("STRIPE_PRICE_CREATOR_RECURRING_INR") or "").strip()
+STRIPE_PRICE_PRO_MAX_INR = (os.getenv("STRIPE_PRICE_PRO_MAX_INR") or "").strip()
+STRIPE_PRICE_PRO_RECURRING_INR = (os.getenv("STRIPE_PRICE_PRO_RECURRING_INR") or "").strip()
+STRIPE_PRICE_SCALE_MAX_INR = (os.getenv("STRIPE_PRICE_SCALE_MAX_INR") or "").strip()
+STRIPE_PRICE_SCALE_RECURRING_INR = (os.getenv("STRIPE_PRICE_SCALE_RECURRING_INR") or "").strip()
 STRIPE_PORTAL_RETURN_URL = (os.getenv("STRIPE_PORTAL_RETURN_URL") or "http://127.0.0.1:3000").strip()
 STRIPE_CHECKOUT_SUCCESS_URL = (
     (os.getenv("STRIPE_CHECKOUT_SUCCESS_URL") or "http://127.0.0.1:3000?billing=success").strip()
 )
 STRIPE_CHECKOUT_CANCEL_URL = (
     (os.getenv("STRIPE_CHECKOUT_CANCEL_URL") or "http://127.0.0.1:3000?billing=cancel").strip()
+)
+_billing_redirect_allowlist_raw = str(os.getenv("VF_BILLING_REDIRECT_ALLOWLIST") or "").strip()
+if _billing_redirect_allowlist_raw:
+    _billing_redirect_allowlist_seed = [
+        item.strip()
+        for item in _billing_redirect_allowlist_raw.split(",")
+        if item.strip()
+    ]
+else:
+    _billing_redirect_allowlist_seed = [
+        STRIPE_CHECKOUT_SUCCESS_URL,
+        STRIPE_CHECKOUT_CANCEL_URL,
+        STRIPE_PORTAL_RETURN_URL,
+    ]
+VF_BILLING_REDIRECT_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+        for parsed in [urlparse(item) for item in _billing_redirect_allowlist_seed]
+        if parsed.scheme and parsed.netloc
+    }
+)
+VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED = (
+    (os.getenv("VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
+    in {"1", "true", "yes", "on"}
 )
 VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
 ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
@@ -272,31 +429,70 @@ FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 10000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
-    "pro": {"plan": "Pro", "monthlyVfLimit": 200000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
-    "plus": {"plan": "Plus", "monthlyVfLimit": 500000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+    "starter": {"plan": "Starter", "monthlyVfLimit": 50000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+    "creator": {"plan": "Creator", "monthlyVfLimit": 150000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+    "pro": {"plan": "Pro", "monthlyVfLimit": 300000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+    "scale": {"plan": "Scale", "monthlyVfLimit": 600000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+}
+PAID_PLAN_KEYS: tuple[str, ...] = ("starter", "creator", "pro", "scale")
+PLAN_PRICE_POLICY: dict[str, dict[str, int]] = {
+    "starter": {"firstCycleInr": 450, "recurringInr": 405},
+    "creator": {"firstCycleInr": 1200, "recurringInr": 1080},
+    "pro": {"firstCycleInr": 2400, "recurringInr": 2160},
+    "scale": {"firstCycleInr": 4300, "recurringInr": 3440},
+}
+PLAN_FEATURE_FLAGS: dict[str, dict[str, Any]] = {
+    "free": {"allowedEngines": ("KOKORO", "GOOD", "NEURAL2"), "earlyAccess": False},
+    "starter": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
+    "creator": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
+    "pro": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
+    "scale": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": True},
+}
+PLAN_KEY_ALIASES: dict[str, str] = {
+    "free": "free",
+    "starter": "starter",
+    "creator": "creator",
+    "pro": "pro",
+    "scale": "scale",
+    "plus": "scale",
+    "pro_plus": "scale",
+    "pro-plus": "scale",
+    "proplus": "scale",
 }
 TTS_PLAN_GUARDRAILS: dict[str, dict[str, int]] = {
     "free": {"rpm": 2, "maxChars": 8000},
-    "pro": {"rpm": 5, "maxChars": 10000},
-    "plus": {"rpm": 10, "maxChars": 10000},
+    "starter": {"rpm": 5, "maxChars": 10000},
+    "creator": {"rpm": 5, "maxChars": 10000},
+    "pro": {"rpm": 10, "maxChars": 10000},
+    "scale": {"rpm": 10, "maxChars": 15000},
 }
 TTS_PLAN_BURST_WINDOW_SECONDS = 60
 VF_TTS_SUCCESS_LIMIT_FREE = max(
     1,
     int((os.getenv("VF_TTS_SUCCESS_LIMIT_FREE") or str(TTS_PLAN_GUARDRAILS["free"]["rpm"])).strip() or "2"),
 )
+VF_TTS_SUCCESS_LIMIT_STARTER = max(
+    1,
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_STARTER") or str(TTS_PLAN_GUARDRAILS["starter"]["rpm"])).strip() or "5"),
+)
+VF_TTS_SUCCESS_LIMIT_CREATOR = max(
+    1,
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_CREATOR") or str(TTS_PLAN_GUARDRAILS["creator"]["rpm"])).strip() or "5"),
+)
 VF_TTS_SUCCESS_LIMIT_PRO = max(
     1,
     int((os.getenv("VF_TTS_SUCCESS_LIMIT_PRO") or str(TTS_PLAN_GUARDRAILS["pro"]["rpm"])).strip() or "5"),
 )
-VF_TTS_SUCCESS_LIMIT_PLUS = max(
+VF_TTS_SUCCESS_LIMIT_SCALE = max(
     1,
-    int((os.getenv("VF_TTS_SUCCESS_LIMIT_PLUS") or str(TTS_PLAN_GUARDRAILS["plus"]["rpm"])).strip() or "10"),
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_SCALE") or str(TTS_PLAN_GUARDRAILS["scale"]["rpm"])).strip() or "10"),
 )
 TTS_SUCCESS_PLAN_LIMITS: dict[str, int] = {
     "free": VF_TTS_SUCCESS_LIMIT_FREE,
+    "starter": VF_TTS_SUCCESS_LIMIT_STARTER,
+    "creator": VF_TTS_SUCCESS_LIMIT_CREATOR,
     "pro": VF_TTS_SUCCESS_LIMIT_PRO,
-    "plus": VF_TTS_SUCCESS_LIMIT_PLUS,
+    "scale": VF_TTS_SUCCESS_LIMIT_SCALE,
 }
 VF_TTS_SUCCESS_WINDOW_SECONDS = max(
     10,
@@ -309,6 +505,14 @@ VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS = max(
 VF_REDIS_URL = str(os.getenv("VF_REDIS_URL") or os.getenv("REDIS_URL") or "").strip()
 VF_AD_REWARD_CLAIM_LIMIT_PER_DAY = max(1, int((os.getenv("VF_AD_REWARD_CLAIM_LIMIT_PER_DAY") or "3").strip() or "3"))
 VF_AD_REWARD_VFF_AMOUNT = max(1, int((os.getenv("VF_AD_REWARD_VFF_AMOUNT") or "1000").strip() or "1000"))
+TOKEN_PACK_CATALOG: dict[str, dict[str, int]] = {
+    "micro": {"vf": 50000, "priceInr": 550},
+    "standard": {"vf": 150000, "priceInr": 1450},
+    "mega": {"vf": 300000, "priceInr": 2900},
+    "ultra": {"vf": 600000, "priceInr": 5200},
+}
+TOKEN_PACK_SCALE_DISCOUNT_PCT = 20
+# Deprecated env compatibility values (legacy one-pack flow).
 VF_TOKEN_PACK_VF_AMOUNT = max(1, int((os.getenv("VF_TOKEN_PACK_VF_AMOUNT") or "100000").strip() or "100000"))
 VF_TOKEN_PACK_BASE_INR = max(1, int((os.getenv("VF_TOKEN_PACK_BASE_INR") or "499").strip() or "499"))
 VF_GENERATION_HISTORY_MAX_ITEMS = max(
@@ -458,6 +662,7 @@ SEPARATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 TTS_RESULT_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 DUBBING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+DUBBING_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 TTS_ENGINE_HEALTH_URLS = {
@@ -585,6 +790,11 @@ VF_TTS_QUEUE_ENABLED = (
     (os.getenv("VF_TTS_QUEUE_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+VF_SERVICE_ROLE = str(os.getenv("VF_SERVICE_ROLE") or "all").strip().lower()
+if VF_SERVICE_ROLE not in {"api", "worker", "all"}:
+    VF_SERVICE_ROLE = "all"
+VF_SERVICE_IS_API = VF_SERVICE_ROLE in {"api", "all"}
+VF_SERVICE_IS_WORKER = VF_SERVICE_ROLE in {"worker", "all"}
 VF_TTS_QUEUE_SYNC_WAIT_MS = max(
     500,
     int((os.getenv("VF_TTS_QUEUE_SYNC_WAIT_MS") or "3000").strip() or "3000"),
@@ -613,10 +823,12 @@ VF_TTS_QUEUE_BACKOFF_BASE_MS = max(
     100,
     int((os.getenv("VF_TTS_QUEUE_BACKOFF_BASE_MS") or "450").strip() or "450"),
 )
-VF_TTS_QUEUE_WORKER_COUNT = max(
-    1,
-    int((os.getenv("VF_TTS_QUEUE_WORKER_COUNT") or "4").strip() or "4"),
-)
+_vf_tts_worker_count_raw = str(os.getenv("VF_TTS_QUEUE_WORKER_COUNT") or "").strip()
+if _vf_tts_worker_count_raw:
+    _vf_tts_worker_count = int(_vf_tts_worker_count_raw or "0")
+else:
+    _vf_tts_worker_count = 4 if VF_SERVICE_IS_WORKER else 0
+VF_TTS_QUEUE_WORKER_COUNT = max(0, int(_vf_tts_worker_count))
 VF_TTS_ENGINE_CONCURRENCY_GEM = max(
     1,
     int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_GEM") or "12").strip() or "12"),
@@ -656,6 +868,31 @@ VF_ADMIN_APPROVER_UIDS = frozenset(
         for token in [item.strip() for item in (os.getenv("VF_ADMIN_APPROVER_UIDS") or "").split(",")]
         if token
     }
+)
+VF_ADMIN_UNLOCK_TTL_SECONDS = max(
+    60,
+    int((os.getenv("VF_ADMIN_UNLOCK_TTL_SECONDS") or "900").strip() or "900"),
+)
+VF_ADMIN_UNLOCK_KEY_TTL_SECONDS = max(
+    60,
+    int((os.getenv("VF_ADMIN_UNLOCK_KEY_TTL_SECONDS") or str(VF_ADMIN_UNLOCK_TTL_SECONDS)).strip() or str(VF_ADMIN_UNLOCK_TTL_SECONDS)),
+)
+VF_ADMIN_UNLOCK_MAX_ATTEMPTS = max(
+    1,
+    int((os.getenv("VF_ADMIN_UNLOCK_MAX_ATTEMPTS") or "5").strip() or "5"),
+)
+VF_ADMIN_UNLOCK_LOCKOUT_SECONDS = max(
+    30,
+    int((os.getenv("VF_ADMIN_UNLOCK_LOCKOUT_SECONDS") or "300").strip() or "300"),
+)
+VF_ADMIN_UNLOCK_SIGNING_SECRET = (
+    str(os.getenv("VF_ADMIN_UNLOCK_SIGNING_SECRET") or "").strip()
+    or str(VF_ADMIN_APPROVAL_TOKEN or "").strip()
+    or secrets.token_hex(32)
+)
+VF_GEMINI_SINGLE_POOL_ENFORCE = (
+    (os.getenv("VF_GEMINI_SINGLE_POOL_ENFORCE") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
 )
 VF_ADMIN_COUPON_LIMIT_BYPASS = (
     (os.getenv("VF_ADMIN_COUPON_LIMIT_BYPASS") or "0").strip().lower()
@@ -834,6 +1071,7 @@ SUPPORT_CONVERSATIONS_COLLECTION = "support_conversations"
 SUPPORT_MESSAGES_COLLECTION = "support_messages"
 SUPPORT_AI_RUNS_COLLECTION = "support_ai_runs"
 SUPPORT_AI_POLICY_COLLECTION = "support_ai_policy"
+ADMIN_SESSION_UNLOCK_COLLECTION = "admin_session_unlock"
 AUDIT_HASH_ALGO = "sha256"
 AUDIT_GENESIS_HASH = "GENESIS"
 ALERT_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
@@ -1229,6 +1467,44 @@ def _load_voice_id_map() -> dict[str, Any]:
     return {"version": payload.get("version") or "0", "engines": normalized_engines}
 
 
+def _normalize_voice_lookup_token(value: str) -> str:
+    token = str(value or "").strip().strip("\"'`").lower()
+    if not token:
+        return ""
+    token = re.sub(r"[\s\-_]+", "", token)
+    token = re.sub(r"[^a-z0-9]+", "", token)
+    return token
+
+
+def _voice_lookup_candidates(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in (raw, raw.lower(), raw.strip("\"'`"), raw.strip("\"'`").lower()):
+        safe = str(candidate or "").strip()
+        if safe and safe not in seen:
+            out.append(safe)
+            seen.add(safe)
+    normalized = _normalize_voice_lookup_token(raw)
+    if normalized and normalized not in seen:
+        out.append(normalized)
+    return out
+
+
+def _next_llvc_runtime_url() -> str:
+    if not VF_LLVC_RUNTIME_URLS:
+        return LLVC_RUNTIME_URL
+    if len(VF_LLVC_RUNTIME_URLS) == 1:
+        return VF_LLVC_RUNTIME_URLS[0]
+    global _LLVC_RUNTIME_POOL_CURSOR
+    with _LLVC_RUNTIME_POOL_LOCK:
+        index = int(_LLVC_RUNTIME_POOL_CURSOR % len(VF_LLVC_RUNTIME_URLS))
+        _LLVC_RUNTIME_POOL_CURSOR += 1
+    return VF_LLVC_RUNTIME_URLS[index]
+
+
 def _resolve_gem_runtime_voice_name(value: str, fallback: str = "Fenrir") -> str:
     token = str(value or "").strip()
     if not token:
@@ -1237,14 +1513,20 @@ def _resolve_gem_runtime_voice_name(value: str, fallback: str = "Fenrir") -> str
     engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
     gem_payload = engines.get("GEM") if isinstance(engines.get("GEM"), dict) else {}
     runtime_voices = gem_payload.get("runtimeVoices") if isinstance(gem_payload.get("runtimeVoices"), list) else []
-    normalized_target = token.lower()
+    normalized_targets = set(_voice_lookup_candidates(token))
+    normalized_targets.add(token.lower())
     for item in runtime_voices:
         if not isinstance(item, dict):
             continue
         voice_id = str(item.get("voice_id") or item.get("id") or "").strip()
         voice_name = str(item.get("voice") or item.get("runtimeVoice") or "").strip()
         display_name = str(item.get("name") or "").strip()
-        if normalized_target in {voice_id.lower(), voice_name.lower(), display_name.lower()}:
+        candidates: set[str] = set()
+        for part in (voice_id, voice_name, display_name):
+            candidates.update(_voice_lookup_candidates(part))
+            if part:
+                candidates.add(part.lower())
+        if normalized_targets.intersection(candidates):
             return voice_name or token
     return token
 
@@ -1263,11 +1545,13 @@ def _plan_allowed_voice_tokens(engine: str, plan_key: str) -> tuple[set[str], st
         raw_token = str(token or "").strip()
         if not raw_token:
             continue
-        tokens.add(raw_token.lower())
+        for candidate in _voice_lookup_candidates(raw_token):
+            tokens.add(candidate.lower())
         if _is_gem_runtime_engine(normalized_engine):
             resolved = _resolve_gem_runtime_voice_name(raw_token, fallback=raw_token)
             if resolved:
-                tokens.add(str(resolved).strip().lower())
+                for candidate in _voice_lookup_candidates(str(resolved).strip()):
+                    tokens.add(candidate.lower())
     return tokens, default_token
 
 
@@ -1286,7 +1570,8 @@ def _sanitize_tts_voice_selection_for_plan(
     gated = False
 
     if allow_tokens and requested_token:
-        if requested_token.lower() not in allow_tokens:
+        requested_candidates = {item.lower() for item in _voice_lookup_candidates(requested_token)}
+        if not requested_candidates.intersection(allow_tokens):
             gated = True
             requested_token = fallback_token
     elif allow_tokens and not requested_token:
@@ -1377,6 +1662,26 @@ def _decorate_profile_with_reference(profile: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _resolve_voice_access_tier(engine: str, voice_id: str) -> str:
+    normalized_engine = _normalize_engine_name(engine)
+    allow_tokens, _ = _plan_allowed_voice_tokens(normalized_engine, "free")
+    if not allow_tokens:
+        return "pro"
+    voice_candidates = {item.lower() for item in _voice_lookup_candidates(voice_id)}
+    if voice_candidates.intersection(allow_tokens):
+        return "free"
+    return "pro"
+
+
+def _annotate_voice_access_fields(engine: str, entry: dict[str, Any]) -> dict[str, Any]:
+    out = dict(entry)
+    voice_id = str(out.get("voice_id") or out.get("voiceId") or out.get("id") or "").strip()
+    access_tier = _resolve_voice_access_tier(engine, voice_id)
+    out["access_tier"] = access_tier
+    out["is_plan_restricted"] = access_tier != "free"
+    return out
+
+
 def _resolve_mapped_profile(
     engine: str,
     voice_id: str,
@@ -1389,17 +1694,35 @@ def _resolve_mapped_profile(
     mapping_engine = "GEM" if _is_gem_runtime_engine(safe_engine) else safe_engine
     engine_payload = engines.get(mapping_engine) if isinstance(engines.get(mapping_engine), dict) else {}
     voice_to_profile = engine_payload.get("voiceToProfile") if isinstance(engine_payload.get("voiceToProfile"), dict) else {}
-    candidates = [
-        str(voice_id or "").strip(),
-        str(voice_name or "").strip(),
-        str(voice_id or "").strip().lower(),
-        str(voice_name or "").strip().lower(),
-    ]
+    raw_voice_id = str(voice_id or "").strip()
+    raw_voice_name = str(voice_name or "").strip()
+    canonical_gem_voice = ""
+    if _is_gem_runtime_engine(safe_engine):
+        canonical_gem_voice = _resolve_gem_runtime_voice_name(raw_voice_name or raw_voice_id, fallback="")
+    candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    for token in (raw_voice_id, raw_voice_name, canonical_gem_voice):
+        for candidate in _voice_lookup_candidates(token):
+            if not candidate or candidate in seen_candidates:
+                continue
+            seen_candidates.add(candidate)
+            candidates.append(candidate)
     profile_id = ""
-    for candidate in candidates:
-        if not candidate:
+    normalized_index: dict[str, str] = {}
+    for raw_key, raw_value in voice_to_profile.items():
+        candidate_key = str(raw_key or "").strip()
+        if not candidate_key:
             continue
+        normalized_key = _normalize_voice_lookup_token(candidate_key)
+        safe_profile_id = str(raw_value or "").strip()
+        if normalized_key and safe_profile_id and normalized_key not in normalized_index:
+            normalized_index[normalized_key] = safe_profile_id
+    for candidate in candidates:
         mapped = str(voice_to_profile.get(candidate) or "").strip()
+        if not mapped:
+            mapped = str(voice_to_profile.get(candidate.lower()) or "").strip()
+        if not mapped:
+            mapped = str(normalized_index.get(_normalize_voice_lookup_token(candidate)) or "").strip()
         if mapped:
             profile_id = mapped
             break
@@ -2214,7 +2537,7 @@ class LlvcRuntime:
             pass
         return dict(self._health_payload)
 
-    def convert_file(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
+    def convert_file(self, input_wav: str, output_wav: str, **kwargs: Any) -> dict[str, str]:
         model_name = str(kwargs.get("model_name") or "").strip()
         if not model_name:
             raise RuntimeError("llvc_model_required")
@@ -2243,6 +2566,19 @@ class LlvcRuntime:
                 detail = f"HTTP {response.status_code}"
             raise RuntimeError(f"llvc-runtime /v1/convert failed: {detail}")
         Path(output_wav).write_bytes(bytes(response.content or b""))
+        headers: dict[str, str] = {}
+        for key in (
+            "x-vf-llvc-model-resolved",
+            "x-vf-llvc-backend-mode",
+            "x-vf-llvc-index-used",
+            "x-vf-llvc-f0-method",
+            "x-vf-llvc-preset",
+            "x-vf-llvc-model",
+        ):
+            raw_value = str(response.headers.get(key) or "").strip()
+            if raw_value:
+                headers[key.lower()] = raw_value
+        return headers
 
 
 class VoiceConversionAdapter:
@@ -2257,7 +2593,7 @@ class VoiceConversionAdapter:
     def prepare_voice(self, profile: dict[str, Any]) -> dict[str, Any]:
         return profile
 
-    def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
+    def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> dict[str, str]:
         raise RuntimeError("convert_not_implemented")
 
 
@@ -2284,8 +2620,8 @@ class LlvcAdapter(VoiceConversionAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> None:
-        llvc_runtime.convert_file(input_wav, output_wav, **kwargs)
+    def convert(self, input_wav: str, output_wav: str, **kwargs: Any) -> dict[str, str]:
+        return llvc_runtime.convert_file(input_wav, output_wav, **kwargs)
 
 
 class WhisperRuntime:
@@ -2367,13 +2703,107 @@ class SourceSeparationRuntime:
             return model
 
 
+def _iter_kokoro_model_files() -> list[Path]:
+    if not KOKORO_MODEL_MIRROR_DIR.exists():
+        return []
+    files: list[Path] = []
+    for entry in KOKORO_MODEL_MIRROR_DIR.rglob("*"):
+        if entry.is_file():
+            files.append(entry)
+    files.sort(key=lambda item: str(item.relative_to(KOKORO_MODEL_MIRROR_DIR)).lower())
+    return files
+
+
+def _kokoro_model_status_payload() -> dict[str, Any]:
+    required = list(KOKORO_MODEL_REQUIRED_FILES)
+    missing: list[str] = []
+    for rel in required:
+        candidate = (KOKORO_MODEL_MIRROR_DIR / rel).resolve()
+        if not candidate.exists() or not candidate.is_file():
+            missing.append(rel)
+
+    files = _iter_kokoro_model_files()
+    total_bytes = 0
+    hash_feed = hashlib.sha256()
+    file_entries: list[dict[str, Any]] = []
+    for file_path in files:
+        rel_path = str(file_path.relative_to(KOKORO_MODEL_MIRROR_DIR)).replace("\\", "/")
+        try:
+            stat = file_path.stat()
+            file_size = int(stat.st_size)
+        except Exception:
+            file_size = 0
+        total_bytes += max(0, file_size)
+        hash_feed.update(rel_path.encode("utf-8", errors="ignore"))
+        hash_feed.update(b":")
+        hash_feed.update(str(file_size).encode("utf-8", errors="ignore"))
+        hash_feed.update(b";")
+        file_entries.append({
+            "path": rel_path,
+            "size": file_size,
+        })
+
+    available = KOKORO_MODEL_MIRROR_DIR.exists()
+    ready = available and len(missing) == 0
+    detail = ""
+    if not available:
+        detail = f"Mirror directory is missing: {KOKORO_MODEL_MIRROR_DIR}"
+    elif missing:
+        detail = f"Mirror missing required files: {', '.join(missing)}"
+    else:
+        detail = "Kokoro local mirror ready."
+
+    return {
+        "ok": True,
+        "available": available,
+        "repoId": KOKORO_MODEL_REPO_ID,
+        "revision": KOKORO_MODEL_REVISION,
+        "modelPath": str(KOKORO_MODEL_MIRROR_DIR),
+        "fileCount": len(files),
+        "totalBytes": total_bytes,
+        "required": required,
+        "missing": missing,
+        "ready": ready,
+        "hash": hash_feed.hexdigest(),
+        "files": file_entries,
+        "detail": detail,
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _log_kokoro_model_mirror_status() -> None:
+    try:
+        payload = _kokoro_model_status_payload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[models.kokoro] status probe failed: {exc}")
+        return
+
+    print(
+        "[models.kokoro] "
+        f"ready={payload.get('ready')} "
+        f"path={payload.get('modelPath')} "
+        f"files={payload.get('fileCount')} "
+        f"bytes={payload.get('totalBytes')} "
+        f"missing={len(payload.get('missing') or [])}"
+    )
+    if not payload.get("ready"):
+        detail = str(payload.get("detail") or "Mirror unavailable.")
+        print(f"[models.kokoro] detail={detail}")
+
+
 llvc_runtime = LlvcRuntime()
 whisper_runtime = WhisperRuntime()
 source_separation_runtime = SourceSeparationRuntime()
 source_separation_lock = threading.Lock()
 kokoro_clone_adapter = KokoroCloneAdapter()
 llvc_adapter = LlvcAdapter()
-app = FastAPI(title="VoiceFlow Media Backend", version="1.0.0")
+app = FastAPI(
+    title="VoiceFlow Media Backend",
+    version="1.0.0",
+    openapi_url="/openapi.json" if VF_DOCS_ENABLE else None,
+    docs_url="/docs" if VF_DOCS_ENABLE else None,
+    redoc_url="/redoc" if VF_DOCS_ENABLE else None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_parse_cors_origins("VF_CORS_ORIGINS", DEFAULT_CORS_ORIGINS),
@@ -2381,6 +2811,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+try:
+    LOCAL_MODEL_MIRROR_ROOT.mkdir(parents=True, exist_ok=True)
+except Exception:
+    # Keep backend boot resilient even if mirror root cannot be created yet.
+    pass
 
 _FIREBASE_APP = None
 _FIRESTORE_DB = None
@@ -2419,6 +2854,7 @@ _INMEMORY_SUPPORT_CONVERSATIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_MESSAGES: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_POLICY: dict[str, Any] = {}
+_INMEMORY_ADMIN_SESSION_UNLOCK: dict[str, dict[str, Any]] = {}
 _INMEMORY_LOCK = threading.RLock()
 _TTS_SUCCESS_LIMITER = SuccessQuotaLimiter(
     redis_url=VF_REDIS_URL,
@@ -2463,6 +2899,9 @@ _TTS_ENGINE_QUEUED_JOB_IDS: dict[str, set[str]] = {
 }
 _TTS_ENGINE_ENQUEUED_AT_MS: dict[str, int] = {}
 _TTS_ENGINE_METRICS_LOCK = threading.Lock()
+_TTS_LIVE_LLVC_SEMAPHORE = threading.Semaphore(max(1, int(VF_TTS_LIVE_LLVC_GLOBAL_CONCURRENCY)))
+_LLVC_RUNTIME_POOL_LOCK = threading.Lock()
+_LLVC_RUNTIME_POOL_CURSOR = 0
 _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
     "enqueueToStartMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "runtimeLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
@@ -2882,28 +3321,94 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
 
 
 def _normalize_plan_name(value: str) -> str:
-    token = str(value or "").strip().lower()
-    if token in {"pro", "plus", "free"}:
-        return PLAN_LIMITS[token]["plan"]
-    return PLAN_LIMITS["free"]["plan"]
+    return PLAN_LIMITS[_plan_key_from_name(value)]["plan"]
 
 
 def _plan_key_from_name(plan_name: str) -> str:
     token = str(plan_name or "").strip().lower()
-    if token in {"free", "pro", "plus"}:
+    if token in PLAN_KEY_ALIASES:
+        return PLAN_KEY_ALIASES[token]
+    if token in PLAN_LIMITS:
         return token
+    display_to_key = {str(cfg.get("plan") or "").strip().lower(): key for key, cfg in PLAN_LIMITS.items()}
+    if token in display_to_key:
+        return str(display_to_key[token] or "free")
     return "free"
+
+
+def _is_known_plan_token(value: str) -> bool:
+    token = str(value or "").strip().lower()
+    if not token:
+        return False
+    if token in PLAN_KEY_ALIASES or token in PLAN_LIMITS:
+        return True
+    display_to_key = {str(cfg.get("plan") or "").strip().lower(): key for key, cfg in PLAN_LIMITS.items()}
+    return token in display_to_key
+
+
+def _normalize_coupon_plan_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9_-]", "", str(value or "").strip().lower())
+    if not token:
+        return ""
+    if not _is_known_plan_token(token):
+        return token
+    normalized = _plan_key_from_name(token)
+    if normalized == "free":
+        return ""
+    return normalized
 
 
 def _plan_config(plan_name: str) -> dict[str, Any]:
     return PLAN_LIMITS[_plan_key_from_name(plan_name)]
 
 
+def _plan_allowed_engines(plan_key: str) -> tuple[str, ...]:
+    normalized = _plan_key_from_name(plan_key)
+    row = PLAN_FEATURE_FLAGS.get(normalized) or {}
+    values = row.get("allowedEngines")
+    if isinstance(values, (tuple, list)):
+        out = tuple(
+            engine
+            for engine in [str(item or "").strip().upper() for item in values]
+            if engine in set(TTS_ENGINE_KEYS)
+        )
+        if out:
+            return out
+    return tuple(TTS_ENGINE_KEYS)
+
+
+def _plan_has_early_access(plan_key: str) -> bool:
+    normalized = _plan_key_from_name(plan_key)
+    row = PLAN_FEATURE_FLAGS.get(normalized) or {}
+    return bool(row.get("earlyAccess"))
+
+
+def _tts_success_bucket_for_plan(plan_key: str) -> str:
+    normalized = _plan_key_from_name(plan_key)
+    if normalized == "scale":
+        return "scale"
+    if normalized in {"pro"}:
+        return "pro"
+    if normalized in {"starter", "creator"}:
+        return "starter"
+    return "free"
+
+
+def _tts_pool_hint_plan_key(plan_key: str) -> str:
+    normalized = _plan_key_from_name(plan_key)
+    if normalized == "scale":
+        return "plus"
+    if normalized in {"pro", "starter", "creator"}:
+        return "pro"
+    return "free"
+
+
 def _tts_guardrail_for_plan(plan_name: str) -> tuple[str, dict[str, int]]:
     plan_key = _plan_key_from_name(plan_name)
     guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
+    success_bucket = _tts_success_bucket_for_plan(plan_key)
     return plan_key, {
-        "rpm": _TTS_SUCCESS_LIMITER.quota_for_plan(plan_key),
+        "rpm": _TTS_SUCCESS_LIMITER.quota_for_plan(success_bucket),
         "maxChars": max(1, int(guardrails.get("maxChars") or 1)),
     }
 
@@ -2918,10 +3423,32 @@ def _success_rate_limit_headers(snapshot: Any) -> dict[str, str]:
     }
 
 
-def _enforce_tts_plan_guardrails(uid: str, text_chars: int, trace_id: str) -> tuple[str, str, dict[str, int]]:
+def _enforce_tts_plan_guardrails(
+    uid: str,
+    text_chars: int,
+    trace_id: str,
+    *,
+    engine: str,
+    bypass: bool = False,
+) -> tuple[str, str, dict[str, int]]:
     entitlement = _load_entitlement(uid)
     plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
     plan_key, guardrails = _tts_guardrail_for_plan(plan_name)
+    if bypass:
+        return plan_name, plan_key, guardrails
+    safe_engine = _normalize_engine_name(engine)
+    if safe_engine not in set(_plan_allowed_engines(plan_key)):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "errorCode": "VF_TTS_ENGINE_PLAN_FORBIDDEN",
+                "reason": "plan_engine_forbidden",
+                "plan": plan_name,
+                "engine": safe_engine,
+                "allowedEngines": list(_plan_allowed_engines(plan_key)),
+                "trace_id": trace_id,
+            },
+        )
     max_chars = max(1, int(guardrails.get("maxChars") or 1))
     actual_chars = max(0, int(text_chars))
     if actual_chars > max_chars:
@@ -2940,7 +3467,8 @@ def _enforce_tts_plan_guardrails(uid: str, text_chars: int, trace_id: str) -> tu
 
 
 def _precheck_tts_success_quota(uid: str, plan_name: str, plan_key: str, trace_id: str) -> dict[str, str]:
-    snapshot = _TTS_SUCCESS_LIMITER.peek(uid, plan_key)
+    quota_bucket = _tts_success_bucket_for_plan(plan_key)
+    snapshot = _TTS_SUCCESS_LIMITER.peek(uid, quota_bucket)
     if int(snapshot.remaining) <= 0:
         retry_after_ms = max(250, int(snapshot.reset_at_ms) - int(time.time() * 1000))
         detail = {
@@ -2967,7 +3495,8 @@ def _commit_tts_success_quota(
     *,
     request_fingerprint: str,
 ) -> SuccessQuotaDecision:
-    decision = _TTS_SUCCESS_LIMITER.commit_success(uid, plan_key, request_fingerprint=request_fingerprint)
+    quota_bucket = _tts_success_bucket_for_plan(plan_key)
+    decision = _TTS_SUCCESS_LIMITER.commit_success(uid, quota_bucket, request_fingerprint=request_fingerprint)
     if decision.allowed:
         return decision
     retry_after_ms = max(250, int(decision.snapshot.reset_at_ms) - int(time.time() * 1000))
@@ -3086,7 +3615,7 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 def _auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip()
-    if normalized in {
+    public_paths = {
         "/health",
         "/system/version",
         "/billing/webhook",
@@ -3094,29 +3623,41 @@ def _auth_exempt_path(path: str) -> bool:
         "/tts/engines/capabilities",
         "/tts/engines/voices",
         "/tts/voice-mapping/catalog",
-        "/openapi.json",
-        "/docs",
-        "/docs/oauth2-redirect",
-        "/redoc",
-    }:
+    }
+    if VF_DOCS_ENABLE:
+        public_paths.update(
+            {
+                "/openapi.json",
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+            }
+        )
+    if normalized in public_paths:
         return True
-    return normalized.startswith("/docs")
+    return bool(VF_DOCS_ENABLE and normalized.startswith("/docs"))
 
 
 def _user_id_requirement_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip()
     if not normalized:
         return True
-    if normalized in {
+    exempt_paths = {
         "/health",
         "/system/version",
         "/account/profile",
         "/account/profile/bootstrap",
-        "/openapi.json",
-        "/docs",
-        "/docs/oauth2-redirect",
-        "/redoc",
-    }:
+    }
+    if VF_DOCS_ENABLE:
+        exempt_paths.update(
+            {
+                "/openapi.json",
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+            }
+        )
+    if normalized in exempt_paths:
         return True
     if normalized.startswith("/admin"):
         return True
@@ -3743,6 +4284,283 @@ def _require_admin_uid(request: Request) -> str:
     if _request_is_admin(request, uid):
         return uid
     raise HTTPException(status_code=403, detail="Admin access required.")
+
+
+def _constant_time_equal(left: str, right: str) -> bool:
+    return hmac.compare_digest(str(left or "").encode("utf-8"), str(right or "").encode("utf-8"))
+
+
+def _admin_unlock_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _admin_unlock_session_iat(request: Request) -> int:
+    claims = getattr(request.state, "auth_claims", None)
+    if isinstance(claims, dict):
+        for key in ("iat", "auth_time", "issued_at"):
+            value = claims.get(key)
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = 0
+            if parsed > 0:
+                if parsed > 10_000_000_000:
+                    return parsed
+                return parsed * 1000
+    # Dev fallback keeps unlock records session-scoped enough for local testing.
+    return 0
+
+
+def _admin_unlock_record_id(uid: str, session_iat_ms: int) -> str:
+    safe_uid = str(uid or "").strip().lower()
+    seed = f"{safe_uid}:{int(session_iat_ms)}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return f"unlock_{digest[:40]}"
+
+
+def _admin_unlock_collection():
+    return _firestore_collection(ADMIN_SESSION_UNLOCK_COLLECTION)
+
+
+def _admin_unlock_get_record(record_id: str) -> Optional[dict[str, Any]]:
+    safe_id = str(record_id or "").strip()
+    if not safe_id:
+        return None
+    collection = _admin_unlock_collection()
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_ADMIN_SESSION_UNLOCK.get(safe_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_id).get()
+    except Exception:
+        return None
+    if not bool(getattr(doc, "exists", False)):
+        return None
+    return {**(doc.to_dict() or {}), "recordId": safe_id}
+
+
+def _admin_unlock_set_record(record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(record_id or "").strip()
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="Invalid unlock session id.")
+    row = dict(payload or {})
+    row["recordId"] = safe_id
+    collection = _admin_unlock_collection()
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ADMIN_SESSION_UNLOCK[safe_id] = dict(row)
+        return row
+    collection.document(safe_id).set(row, merge=True)
+    return row
+
+
+def _admin_unlock_hash_value(*, salt: str, unlock_key: str) -> str:
+    payload = f"{str(salt or '').strip()}:{str(unlock_key or '').strip()}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _admin_unlock_build_token(uid: str, session_iat_ms: int, expires_at_ms: int) -> str:
+    body = {
+        "uid": str(uid or "").strip(),
+        "sessionIatMs": int(session_iat_ms),
+        "expMs": int(expires_at_ms),
+        "iatMs": _admin_unlock_now_ms(),
+        "nonce": secrets.token_hex(8),
+    }
+    body_raw = json.dumps(body, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    body_b64 = base64.urlsafe_b64encode(body_raw).decode("ascii").rstrip("=")
+    signature_raw = hmac.new(
+        VF_ADMIN_UNLOCK_SIGNING_SECRET.encode("utf-8"),
+        body_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    signature_b64 = base64.urlsafe_b64encode(signature_raw).decode("ascii").rstrip("=")
+    return f"{body_b64}.{signature_b64}"
+
+
+def _admin_unlock_parse_token(token: str) -> dict[str, Any]:
+    safe_token = str(token or "").strip()
+    if "." not in safe_token:
+        raise HTTPException(status_code=403, detail="Invalid admin unlock token.")
+    body_b64, signature_b64 = safe_token.split(".", 1)
+    expected_raw = hmac.new(
+        VF_ADMIN_UNLOCK_SIGNING_SECRET.encode("utf-8"),
+        body_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    expected_b64 = base64.urlsafe_b64encode(expected_raw).decode("ascii").rstrip("=")
+    if not _constant_time_equal(signature_b64, expected_b64):
+        raise HTTPException(status_code=403, detail="Invalid admin unlock signature.")
+    padded = body_b64 + ("=" * ((4 - len(body_b64) % 4) % 4))
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=403, detail="Malformed admin unlock token.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=403, detail="Malformed admin unlock token.")
+    return payload
+
+
+def _admin_unlock_extract_bearer(request: Request) -> str:
+    header_value = str(request.headers.get("x-admin-unlock") or "").strip()
+    if not header_value:
+        raise HTTPException(status_code=403, detail="Missing X-Admin-Unlock header.")
+    if not header_value.lower().startswith("bearer "):
+        raise HTTPException(status_code=403, detail="X-Admin-Unlock must be a bearer token.")
+    token = header_value.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=403, detail="Missing admin unlock bearer token.")
+    return token
+
+
+def _admin_unlock_issue_for_request(request: Request, uid: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    session_iat_ms = _admin_unlock_session_iat(request)
+    now_ms = _admin_unlock_now_ms()
+    key_expires_at_ms = now_ms + (VF_ADMIN_UNLOCK_KEY_TTL_SECONDS * 1000)
+    unlock_key = "".join(
+        secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        for _ in range(10)
+    )
+    key_salt = secrets.token_hex(16)
+    record_id = _admin_unlock_record_id(safe_uid, session_iat_ms)
+    payload = {
+        "uid": safe_uid,
+        "sessionIatMs": int(session_iat_ms),
+        "keySalt": key_salt,
+        "keyHash": _admin_unlock_hash_value(salt=key_salt, unlock_key=unlock_key),
+        "keyIssuedAtMs": now_ms,
+        "keyExpiresAtMs": key_expires_at_ms,
+        "unlockExpiresAtMs": 0,
+        "failedAttempts": 0,
+        "lockedUntilMs": 0,
+        "lastVerifiedAtMs": 0,
+        "updatedAtMs": now_ms,
+    }
+    _admin_unlock_set_record(record_id, payload)
+    return {
+        "recordId": record_id,
+        "unlockKey": unlock_key,
+        "keyExpiresAtMs": key_expires_at_ms,
+        "keyExpiresAt": datetime.fromtimestamp(key_expires_at_ms / 1000, tz=timezone.utc).isoformat(),
+    }
+
+
+def _admin_unlock_status_for_request(request: Request, uid: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    session_iat_ms = _admin_unlock_session_iat(request)
+    now_ms = _admin_unlock_now_ms()
+    record_id = _admin_unlock_record_id(safe_uid, session_iat_ms)
+    row = _admin_unlock_get_record(record_id) or {}
+    locked_until_ms = int(row.get("lockedUntilMs") or 0)
+    unlock_expires_at_ms = int(row.get("unlockExpiresAtMs") or 0)
+    key_expires_at_ms = int(row.get("keyExpiresAtMs") or 0)
+    failed_attempts = max(0, int(row.get("failedAttempts") or 0))
+    return {
+        "recordId": record_id,
+        "hasIssuedKey": bool(key_expires_at_ms > 0),
+        "isLocked": locked_until_ms > now_ms,
+        "lockedUntilMs": locked_until_ms,
+        "lockedUntil": datetime.fromtimestamp(locked_until_ms / 1000, tz=timezone.utc).isoformat() if locked_until_ms > 0 else "",
+        "isUnlocked": unlock_expires_at_ms > now_ms,
+        "unlockExpiresAtMs": unlock_expires_at_ms,
+        "unlockExpiresAt": datetime.fromtimestamp(unlock_expires_at_ms / 1000, tz=timezone.utc).isoformat() if unlock_expires_at_ms > 0 else "",
+        "keyExpiresAtMs": key_expires_at_ms,
+        "keyExpiresAt": datetime.fromtimestamp(key_expires_at_ms / 1000, tz=timezone.utc).isoformat() if key_expires_at_ms > 0 else "",
+        "failedAttempts": failed_attempts,
+        "attemptsRemaining": max(0, VF_ADMIN_UNLOCK_MAX_ATTEMPTS - failed_attempts),
+    }
+
+
+def _admin_unlock_verify_for_request(
+    request: Request,
+    *,
+    uid: str,
+    unlock_key: str,
+) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_unlock_key = str(unlock_key or "").strip().upper()
+    if not safe_unlock_key:
+        raise HTTPException(status_code=400, detail="unlockKey is required.")
+    session_iat_ms = _admin_unlock_session_iat(request)
+    now_ms = _admin_unlock_now_ms()
+    record_id = _admin_unlock_record_id(safe_uid, session_iat_ms)
+    row = _admin_unlock_get_record(record_id)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=404, detail="No unlock key issued for this session.")
+    if str(row.get("uid") or "").strip() != safe_uid:
+        raise HTTPException(status_code=403, detail="Unlock session UID mismatch.")
+    if int(row.get("sessionIatMs") or 0) != int(session_iat_ms):
+        raise HTTPException(status_code=403, detail="Unlock session mismatch.")
+    locked_until_ms = int(row.get("lockedUntilMs") or 0)
+    if locked_until_ms > now_ms:
+        raise HTTPException(status_code=429, detail="Unlock session is temporarily locked.")
+    key_expires_at_ms = int(row.get("keyExpiresAtMs") or 0)
+    if key_expires_at_ms <= now_ms:
+        raise HTTPException(status_code=400, detail="Unlock key has expired. Issue a new key.")
+
+    key_salt = str(row.get("keySalt") or "").strip()
+    expected_hash = str(row.get("keyHash") or "").strip()
+    provided_hash = _admin_unlock_hash_value(salt=key_salt, unlock_key=safe_unlock_key)
+    is_valid = bool(expected_hash) and _constant_time_equal(provided_hash, expected_hash)
+    failed_attempts = max(0, int(row.get("failedAttempts") or 0))
+    if not is_valid:
+        failed_attempts += 1
+        next_locked_until = 0
+        if failed_attempts >= VF_ADMIN_UNLOCK_MAX_ATTEMPTS:
+            next_locked_until = now_ms + (VF_ADMIN_UNLOCK_LOCKOUT_SECONDS * 1000)
+            failed_attempts = 0
+        row["failedAttempts"] = failed_attempts
+        row["lockedUntilMs"] = next_locked_until
+        row["updatedAtMs"] = now_ms
+        _admin_unlock_set_record(record_id, row)
+        raise HTTPException(status_code=403, detail="Invalid unlock key.")
+
+    unlock_expires_at_ms = now_ms + (VF_ADMIN_UNLOCK_TTL_SECONDS * 1000)
+    row["failedAttempts"] = 0
+    row["lockedUntilMs"] = 0
+    row["lastVerifiedAtMs"] = now_ms
+    row["unlockExpiresAtMs"] = unlock_expires_at_ms
+    row["updatedAtMs"] = now_ms
+    _admin_unlock_set_record(record_id, row)
+    unlock_token = _admin_unlock_build_token(
+        uid=safe_uid,
+        session_iat_ms=session_iat_ms,
+        expires_at_ms=unlock_expires_at_ms,
+    )
+    return {
+        "unlockToken": unlock_token,
+        "expiresAtMs": unlock_expires_at_ms,
+        "expiresAt": datetime.fromtimestamp(unlock_expires_at_ms / 1000, tz=timezone.utc).isoformat(),
+    }
+
+
+def _require_admin_mutation_unlock(request: Request, *, expected_uid: Optional[str] = None) -> str:
+    safe_uid = str(expected_uid or "").strip() or _require_request_uid(request)
+    if not VF_AUTH_ENFORCE and not VF_IS_PRODUCTION:
+        return safe_uid
+    token = _admin_unlock_extract_bearer(request)
+    payload = _admin_unlock_parse_token(token)
+    token_uid = str(payload.get("uid") or "").strip()
+    token_session_iat_ms = int(payload.get("sessionIatMs") or 0)
+    token_exp_ms = int(payload.get("expMs") or 0)
+    now_ms = _admin_unlock_now_ms()
+    if token_exp_ms <= now_ms:
+        raise HTTPException(status_code=403, detail="Admin unlock token expired.")
+    if token_uid != safe_uid:
+        raise HTTPException(status_code=403, detail="Admin unlock token UID mismatch.")
+    session_iat_ms = _admin_unlock_session_iat(request)
+    if int(token_session_iat_ms) != int(session_iat_ms):
+        raise HTTPException(status_code=403, detail="Admin unlock token session mismatch.")
+    record_id = _admin_unlock_record_id(safe_uid, session_iat_ms)
+    row = _admin_unlock_get_record(record_id)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=403, detail="Admin unlock session not found.")
+    unlock_expires_at_ms = int(row.get("unlockExpiresAtMs") or 0)
+    if unlock_expires_at_ms <= now_ms:
+        raise HTTPException(status_code=403, detail="Admin unlock session expired.")
+    return safe_uid
 
 
 def _rbac_default_permissions_for_role(role: str) -> set[str]:
@@ -4634,6 +5452,9 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
     ad_claims_today = _ad_claims_today(uid)
     month_start, month_end = _month_window_bounds()
     day_start, day_end = _day_window_bounds()
+    plan_key = _plan_key_from_name(plan_name)
+    guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
+    allowed_engines = list(_plan_allowed_engines(plan_key))
     return {
         "uid": uid,
         "plan": plan_name,
@@ -4684,10 +5505,14 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
                 for engine in TTS_ENGINE_KEYS
             },
             "monthlyPlanCaps": {
-                "Free": PLAN_LIMITS["free"]["monthlyVfLimit"],
-                "Pro": PLAN_LIMITS["pro"]["monthlyVfLimit"],
-                "Plus": PLAN_LIMITS["plus"]["monthlyVfLimit"],
+                str(cfg.get("plan") or key): _as_positive_int(cfg.get("monthlyVfLimit"))
+                for key, cfg in PLAN_LIMITS.items()
             },
+            "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 1)),
+            "allowedEngines": allowed_engines,
+        },
+        "features": {
+            "earlyAccess": _plan_has_early_access(plan_key),
         },
     }
 
@@ -4742,14 +5567,12 @@ class AiOpsScanRequest(BaseModel):
 class AiOpsActionRequest(BaseModel):
     action: str
     payload: Optional[dict[str, Any]] = None
-    adminToken: Optional[str] = None
     gpu: bool = False
     requireApproval: bool = True
 
 
 class AiOpsApprovalDecisionRequest(BaseModel):
     approved: bool = True
-    adminToken: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -4798,6 +5621,7 @@ class BillingPortalSessionRequest(BaseModel):
 
 
 class BillingTokenPackCheckoutSessionRequest(BaseModel):
+    pack: Optional[str] = "standard"
     successUrl: Optional[str] = None
     cancelUrl: Optional[str] = None
 
@@ -4916,7 +5740,10 @@ class SupportAiPolicyPatchRequest(BaseModel):
     allowedActions: Optional[list[str]] = None
     blockedTopics: Optional[list[str]] = None
     requireHumanForTags: Optional[list[str]] = None
-    adminToken: Optional[str] = None
+
+
+class AdminSessionUnlockVerifyRequest(BaseModel):
+    unlockKey: str
 
 
 class AlertPolicyCreateRequest(BaseModel):
@@ -4959,7 +5786,6 @@ class AlertDestinationPatchRequest(BaseModel):
 
 
 class AlertEventDecisionRequest(BaseModel):
-    adminToken: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -4984,7 +5810,6 @@ class ScheduledTaskPatchRequest(BaseModel):
 
 class ScheduledTaskRunRequest(BaseModel):
     dryRun: Optional[bool] = None
-    adminToken: Optional[str] = None
 
 
 class GeminiApiPoolsUpdateRequest(BaseModel):
@@ -5052,6 +5877,8 @@ class TtsEngineVoiceItem(BaseModel):
     country: Optional[str] = None
     age_group: Optional[str] = None
     style_tag: Optional[str] = None
+    access_tier: Optional[str] = None
+    is_plan_restricted: Optional[bool] = None
 
 
 class TtsEngineVoicesResponse(BaseModel):
@@ -6586,16 +7413,12 @@ def _ai_ops_execute_action(
 
 
 def _ai_ops_admin_authorized(request: Request, admin_token: Optional[str]) -> tuple[bool, str, str]:
+    _ = admin_token
     uid = _require_request_uid(request)
-    provided_token = str(admin_token or "").strip()
-    if not VF_ADMIN_APPROVER_UIDS:
-        return False, uid, "admin_uid_allowlist_not_configured"
-    if uid not in VF_ADMIN_APPROVER_UIDS:
-        return False, uid, "uid_not_allowlisted"
-    if not VF_ADMIN_APPROVAL_TOKEN:
-        return False, uid, "admin_token_not_configured"
-    if provided_token != VF_ADMIN_APPROVAL_TOKEN:
-        return False, uid, "invalid_admin_token"
+    if not _request_is_admin(request, uid):
+        return False, uid, "admin_access_required"
+    if VF_ADMIN_APPROVER_UIDS and uid not in VF_ADMIN_APPROVER_UIDS:
+        return False, uid, f"uid_not_allowlisted(uid={uid},env=VF_ADMIN_APPROVER_UIDS)"
     return True, uid, "authorized"
 
 
@@ -6603,7 +7426,7 @@ def _require_admin_approval_token(admin_token: Optional[str]) -> None:
     if not VF_ADMIN_APPROVAL_TOKEN:
         return
     provided = str(admin_token or "").strip()
-    if provided != VF_ADMIN_APPROVAL_TOKEN:
+    if not _constant_time_equal(provided, VF_ADMIN_APPROVAL_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid or missing admin approval token.")
 
 
@@ -7578,8 +8401,8 @@ def _analytics_record_coupon_event(
     safe_provider = str(provider or ACTIVE_BILLING_PROVIDER).strip().lower() or ACTIVE_BILLING_PROVIDER
     safe_coupon_code = _normalize_coupon_code(coupon_code)
     safe_kind = _normalize_coupon_type(coupon_kind)
-    safe_plan = str(plan or "").strip().lower()
-    if safe_plan not in {"pro", "plus"}:
+    safe_plan = _normalize_coupon_plan_token(plan)
+    if safe_plan not in set(PAID_PLAN_KEYS):
         safe_plan = "unknown"
     date_token = _utc_now().strftime("%Y-%m-%d")
     key = _coupon_analytics_daily_key(date_token, safe_coupon_code or "UNKNOWN", safe_plan)
@@ -7667,7 +8490,7 @@ def _analytics_list_coupon_daily(
     coupon_kind: str = "",
     coupon_code: str = "",
 ) -> list[dict[str, Any]]:
-    safe_plan = str(plan or "").strip().lower()
+    safe_plan = _normalize_coupon_plan_token(plan)
     safe_kind = str(coupon_kind or "").strip().lower()
     safe_code = _normalize_coupon_code(coupon_code)
     collection = _firestore_collection(COUPON_ANALYTICS_DAILY_COLLECTION)
@@ -7686,15 +8509,20 @@ def _analytics_list_coupon_daily(
         day = _parse_optional_datetime(f"{str(row.get('date') or '')}T00:00:00+00:00")
         if day is None:
             continue
+        row_plan = _normalize_coupon_plan_token(str(row.get("plan") or ""))
+        if not row_plan:
+            row_plan = "unknown"
         if day < from_dt or day > to_dt:
             continue
-        if safe_plan and str(row.get("plan") or "").strip().lower() != safe_plan:
+        if safe_plan and row_plan != safe_plan:
             continue
         if safe_kind and str(row.get("couponKind") or "").strip().lower() != safe_kind:
             continue
         if safe_code and _normalize_coupon_code(str(row.get("couponCode") or "")) != safe_code:
             continue
-        result.append(row)
+        normalized_row = dict(row)
+        normalized_row["plan"] = row_plan
+        result.append(normalized_row)
     return result
 
 
@@ -7739,29 +8567,58 @@ def _runtime_synthesize_path_for_engine(engine: str) -> str:
     return "/synthesize"
 
 
-def _stripe_price_id_for_plan(plan: str) -> str:
-    token = str(plan or "").strip().lower()
-    if token == "pro":
-        return STRIPE_PRICE_PRO_INR
-    if token == "plus":
-        return STRIPE_PRICE_PLUS_INR
-    return ""
+def _stripe_plan_price_catalog() -> dict[str, dict[str, str]]:
+    return {
+        "starter": {
+            "first": str(STRIPE_PRICE_STARTER_MAX_INR or "").strip(),
+            "recurring": str(STRIPE_PRICE_STARTER_RECURRING_INR or "").strip(),
+        },
+        "creator": {
+            "first": str(STRIPE_PRICE_CREATOR_MAX_INR or "").strip(),
+            "recurring": str(STRIPE_PRICE_CREATOR_RECURRING_INR or "").strip(),
+        },
+        "pro": {
+            "first": str(STRIPE_PRICE_PRO_MAX_INR or "").strip(),
+            "recurring": str(STRIPE_PRICE_PRO_RECURRING_INR or "").strip(),
+        },
+        "scale": {
+            "first": str(STRIPE_PRICE_SCALE_MAX_INR or "").strip(),
+            "recurring": str(STRIPE_PRICE_SCALE_RECURRING_INR or "").strip(),
+        },
+    }
+
+
+def _stripe_price_id_for_plan(plan: str, *, phase: str = "first") -> str:
+    plan_key = _plan_key_from_name(plan)
+    if plan_key not in set(PAID_PLAN_KEYS):
+        return ""
+    safe_phase = "recurring" if str(phase or "").strip().lower() == "recurring" else "first"
+    catalog = _stripe_plan_price_catalog()
+    return str(((catalog.get(plan_key) or {}).get(safe_phase)) or "").strip()
+
+
+def _stripe_plan_prices_configured() -> bool:
+    catalog = _stripe_plan_price_catalog()
+    for plan_key in PAID_PLAN_KEYS:
+        row = catalog.get(plan_key) or {}
+        if not str(row.get("first") or "").strip():
+            return False
+        if not str(row.get("recurring") or "").strip():
+            return False
+    return True
 
 
 def _entitlement_from_price_id(price_id: str) -> dict[str, Any]:
     token = str(price_id or "").strip()
-    if token and token == STRIPE_PRICE_PRO_INR:
-        return {
-            "plan": PLAN_LIMITS["pro"]["plan"],
-            "monthlyVfLimit": PLAN_LIMITS["pro"]["monthlyVfLimit"],
-            "dailyGenerationLimit": PLAN_LIMITS["pro"]["dailyGenerationLimit"],
-        }
-    if token and token == STRIPE_PRICE_PLUS_INR:
-        return {
-            "plan": PLAN_LIMITS["plus"]["plan"],
-            "monthlyVfLimit": PLAN_LIMITS["plus"]["monthlyVfLimit"],
-            "dailyGenerationLimit": PLAN_LIMITS["plus"]["dailyGenerationLimit"],
-        }
+    for plan_key in PAID_PLAN_KEYS:
+        first = _stripe_price_id_for_plan(plan_key, phase="first")
+        recurring = _stripe_price_id_for_plan(plan_key, phase="recurring")
+        if token and token in {first, recurring}:
+            return {
+                "plan": PLAN_LIMITS[plan_key]["plan"],
+                "monthlyVfLimit": PLAN_LIMITS[plan_key]["monthlyVfLimit"],
+                "dailyGenerationLimit": PLAN_LIMITS[plan_key]["dailyGenerationLimit"],
+            }
     return {
         "plan": PLAN_LIMITS["free"]["plan"],
         "monthlyVfLimit": PLAN_LIMITS["free"]["monthlyVfLimit"],
@@ -7770,20 +8627,52 @@ def _entitlement_from_price_id(price_id: str) -> dict[str, Any]:
 
 
 def _resolve_checkout_url_override(candidate: Optional[str], fallback: str) -> str:
+    def _normalize(url_value: str) -> str:
+        parsed = urlparse(str(url_value or "").strip())
+        if not parsed.scheme or not parsed.netloc:
+            raise HTTPException(status_code=400, detail="Billing redirect URL must be absolute.")
+        origin = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+        if VF_BILLING_REDIRECT_ALLOWLIST and origin not in VF_BILLING_REDIRECT_ALLOWLIST:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Billing redirect URL origin is not allowlisted: {origin}",
+            )
+        return parsed.geturl()
+
+    fallback_url = _normalize(str(fallback or "").strip())
     value = str(candidate or "").strip()
     if not value:
-        return fallback
-    return value
+        return fallback_url
+    return _normalize(value)
 
 
-def _token_pack_amount_inr_for_plan(plan_name: str) -> int:
+def _normalize_token_pack_key(pack_key: str, *, strict: bool = False) -> str:
+    key = str(pack_key or "").strip().lower()
+    if key in TOKEN_PACK_CATALOG:
+        return key
+    if strict:
+        raise ValueError("Invalid pack. Use micro, standard, mega, or ultra.")
+    return "standard"
+
+
+def _token_pack_config(pack_key: str) -> dict[str, int]:
+    key = _normalize_token_pack_key(pack_key)
+    return TOKEN_PACK_CATALOG[key]
+
+
+def _token_pack_amount_inr_for_plan(plan_name: str, pack_key: str) -> int:
     plan_key = _plan_key_from_name(plan_name)
-    discount = 0.0
-    if plan_key == "pro":
-        discount = 0.10
-    elif plan_key == "plus":
-        discount = 0.20
-    return _round_inr(VF_TOKEN_PACK_BASE_INR * (1.0 - discount))
+    pack = _token_pack_config(pack_key)
+    amount = max(1, int(pack.get("priceInr") or 1))
+    if plan_key == "scale":
+        discount_factor = max(0.0, 1.0 - (float(TOKEN_PACK_SCALE_DISCOUNT_PCT) / 100.0))
+        return _round_inr(amount * discount_factor)
+    return amount
+
+
+def _token_pack_vf_for_pack(pack_key: str) -> int:
+    pack = _token_pack_config(pack_key)
+    return max(1, int(pack.get("vf") or 1))
 
 
 COUPON_TYPE_WALLET_CREDIT = "wallet_credit"
@@ -7804,7 +8693,7 @@ COUPON_PLAN_SCOPE_VALUES = {
     str(plan_key or "").strip().lower()
     for plan_key in PLAN_LIMITS.keys()
     if str(plan_key or "").strip() and str(plan_key or "").strip().lower() != "free"
-} or {"pro", "plus"}
+} or set(PAID_PLAN_KEYS)
 COUPON_DEFAULT_VALIDITY_MONTHS = max(
     1,
     int((os.getenv("VF_COUPON_DEFAULT_VALIDITY_MONTHS") or "6").strip() or "6"),
@@ -7870,14 +8759,14 @@ def _normalize_coupon_plan_scope(raw_scope: Any) -> list[str]:
         values = [str(raw_scope).strip().lower()]
     normalized: list[str] = []
     for value in values:
-        token = re.sub(r"[^a-z0-9_-]", "", str(value or "").strip().lower())
+        token = _normalize_coupon_plan_token(value)
         if not token:
             continue
         normalized.append(token)
     unique = sorted(set(normalized))
     if unique:
         return unique
-    return sorted(COUPON_PLAN_SCOPE_VALUES) or ["pro", "plus"]
+    return sorted(COUPON_PLAN_SCOPE_VALUES) or list(PAID_PLAN_KEYS)
 
 
 def _coupon_plan_discount_entry(
@@ -7889,7 +8778,7 @@ def _coupon_plan_discount_entry(
     stripe_coupon_id: str = "",
     stripe_promotion_code_id: str = "",
 ) -> dict[str, Any]:
-    safe_plan = str(plan or "").strip().lower()
+    safe_plan = _normalize_coupon_plan_token(plan)
     safe_discount_type = _normalize_coupon_discount_type(discount_type)
     safe_percent = round(float(percent_off or 0.0), 4)
     safe_amount = _as_positive_int(amount_off_inr)
@@ -7926,7 +8815,7 @@ def _normalize_coupon_plan_discounts(
         stripe_coupon_id: str = "",
         stripe_promotion_code_id: str = "",
     ) -> None:
-        safe_plan = str(plan_token or "").strip().lower()
+        safe_plan = _normalize_coupon_plan_token(plan_token)
         if not safe_plan:
             return
         entry = _coupon_plan_discount_entry(
@@ -8005,14 +8894,15 @@ def _normalize_coupon_plan_discounts(
 def _coupon_primary_plan_discount(plan_discounts: dict[str, dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not isinstance(plan_discounts, dict) or not plan_discounts:
         return None
-    if "pro" in plan_discounts:
-        return dict(plan_discounts.get("pro") or {})
+    for preferred_plan in ("starter", "creator", "pro", "scale"):
+        if preferred_plan in plan_discounts:
+            return dict(plan_discounts.get(preferred_plan) or {})
     first_key = sorted(plan_discounts.keys())[0]
     return dict(plan_discounts.get(first_key) or {})
 
 
 def _coupon_resolved_stripe_coupon_id_for_plan(coupon: dict[str, Any], plan_token: str) -> str:
-    safe_plan = str(plan_token or "").strip().lower()
+    safe_plan = _normalize_coupon_plan_token(plan_token)
     if not safe_plan:
         return ""
     by_plan = coupon.get("stripeCouponsByPlan")
@@ -8498,6 +9388,191 @@ def _normalize_conversion_policy(raw_policy: str, default: str = "AUTO_RELIABLE"
     if token not in VOICE_CONVERSION_POLICIES:
         return default
     return token
+
+
+def _normalize_dubbing_processing_profile(raw_profile: str, default: str = "cpu_quality") -> str:
+    token = str(raw_profile or "").strip().lower().replace("-", "_")
+    if token not in {"cpu_quality", "cpu_balanced", "cpu_fast"}:
+        return default
+    return token
+
+
+def _normalize_multispeaker_policy(raw_policy: str, default: str = "hybrid_auto") -> str:
+    token = str(raw_policy or "").strip().lower().replace("-", "_")
+    if token in {"auto_diarize", "auto"}:
+        token = "hybrid_auto"
+    if token not in {"hybrid_auto", "transcript_only", "diarize_only"}:
+        return default
+    return token
+
+
+def _normalize_voice_binding_policy(raw_policy: str, default: str = "stable_fallback") -> str:
+    token = str(raw_policy or "").strip().lower().replace("-", "_")
+    if token not in {"stable_fallback"}:
+        return default
+    return token
+
+
+def _normalize_qos_policy(raw_policy: str, default: str = "adaptive_hq_first") -> str:
+    token = str(raw_policy or "").strip().lower().replace("-", "_")
+    if token not in {"adaptive_hq_first"}:
+        return default
+    return token
+
+
+def _normalize_hardware_policy(raw_policy: str, default: str = "gpu_preferred") -> str:
+    token = str(raw_policy or "").strip().lower().replace("-", "_")
+    if token not in {"gpu_preferred", "cpu_only"}:
+        return default
+    return token
+
+
+def _normalize_timeout_policy(raw_policy: str, default: str = "adaptive") -> str:
+    token = str(raw_policy or "").strip().lower().replace("-", "_")
+    if token not in {"adaptive", "fixed"}:
+        return default
+    return token
+
+
+def _normalize_live_play_mode(raw_mode: str, default: str = "progressive_audio") -> str:
+    token = str(raw_mode or "").strip().lower().replace("-", "_")
+    if token in {"off", "disabled", "none"}:
+        return "off"
+    if token not in {"progressive_audio"}:
+        return default
+    return token
+
+
+def _detect_cuda_available() -> bool:
+    try:
+        import torch as th  # type: ignore
+
+        return bool(th.cuda.is_available())
+    except Exception:
+        return False
+
+
+def _normalize_dubbing_clip_window(raw_window: Any) -> dict[str, int] | None:
+    if raw_window is None:
+        return None
+    if not isinstance(raw_window, dict):
+        raise ValueError("advanced.clip_window must be an object with start_ms and end_ms")
+
+    start_raw = raw_window.get("start_ms")
+    end_raw = raw_window.get("end_ms")
+    if start_raw is None or end_raw is None:
+        raise ValueError("advanced.clip_window requires start_ms and end_ms")
+
+    try:
+        start_ms = int(float(start_raw))
+        end_ms = int(float(end_raw))
+    except Exception as exc:
+        raise ValueError("advanced.clip_window start_ms/end_ms must be numeric") from exc
+
+    if start_ms < 0 or end_ms < 0:
+        raise ValueError("advanced.clip_window start_ms/end_ms must be non-negative")
+    if end_ms <= start_ms:
+        raise ValueError("advanced.clip_window end_ms must be greater than start_ms")
+    return {"start_ms": start_ms, "end_ms": end_ms}
+
+
+def _dubbing_processing_profile_overrides(profile: str) -> dict[str, Any]:
+    normalized = _normalize_dubbing_processing_profile(profile)
+    if normalized == "cpu_fast":
+        return {
+            "gemini_pair_group_max_concurrency": 5,
+            "isochrony_tolerance_pct": 14.0,
+            "mix_stretch_min_rate": 0.80,
+            "mix_stretch_max_rate": 1.40,
+            "llvc_preset": "tts_realtime",
+        }
+    if normalized == "cpu_balanced":
+        return {
+            "gemini_pair_group_max_concurrency": 4,
+            "isochrony_tolerance_pct": 10.0,
+            "mix_stretch_min_rate": 0.85,
+            "mix_stretch_max_rate": 1.30,
+            "llvc_preset": "llvc_hq_cpu",
+        }
+    return {
+        "gemini_pair_group_max_concurrency": 3,
+        "isochrony_tolerance_pct": 8.0,
+        "mix_stretch_min_rate": 0.90,
+        "mix_stretch_max_rate": 1.20,
+        "llvc_preset": "llvc_hq_cpu",
+    }
+
+
+def _select_dubbing_qos_state(
+    *,
+    requested_profile: str,
+    qos_policy: str,
+    hardware_policy: str,
+    transcript_override: str,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    selected_profile = _normalize_dubbing_processing_profile(requested_profile, default="cpu_quality")
+    normalized_qos_policy = _normalize_qos_policy(qos_policy)
+    normalized_hardware_policy = _normalize_hardware_policy(hardware_policy)
+    gpu_used = bool(normalized_hardware_policy == "gpu_preferred" and _detect_cuda_available())
+    downgraded = False
+    reason = ""
+
+    if normalized_qos_policy == "adaptive_hq_first":
+        selected_profile = "cpu_quality"
+        transcript_chars = len(str(transcript_override or ""))
+        if transcript_chars > 6000:
+            selected_profile = "cpu_balanced"
+            downgraded = True
+            reason = "long_script_timeout_risk"
+        elif normalized_hardware_policy == "gpu_preferred" and not gpu_used:
+            reason = "gpu_unavailable"
+
+    overrides = _dubbing_processing_profile_overrides(selected_profile)
+    safe_concurrency = int(overrides.get("gemini_pair_group_max_concurrency") or 3)
+    if gpu_used:
+        safe_concurrency = max(safe_concurrency, 7)
+    overrides["gemini_pair_group_max_concurrency"] = max(1, min(7, safe_concurrency))
+
+    qos_state = {
+        "selectedProfile": selected_profile,
+        "downgraded": bool(downgraded),
+        "reason": reason,
+        "gpuUsed": bool(gpu_used),
+    }
+    return selected_profile, qos_state, overrides
+
+
+def _trim_media_to_clip_window(
+    source_path: Path,
+    output_path: Path,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> Path:
+    ffmpeg = _get_ffmpeg_path()
+    start_sec = max(0.0, float(start_ms) / 1000.0)
+    duration_sec = max(0.05, (float(end_ms) - float(start_ms)) / 1000.0)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{start_sec:.3f}",
+            "-i",
+            str(source_path),
+            "-t",
+            f"{duration_sec:.3f}",
+            "-map",
+            "0",
+            "-c",
+            "copy",
+            str(output_path),
+        ]
+    )
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError("clip_window_trim_failed")
+    return output_path
 
 
 def _resolve_runtime_log_service(raw_service: str) -> str:
@@ -9073,6 +10148,142 @@ def _sanitize_gemini_source_policy_for_response(source_policy: dict[str, Any]) -
     return policy
 
 
+GEMINI_MASKED_KEY_TOKEN_PREFIX = "__vf_masked_key__:"
+GEMINI_MASKED_KEY_TOKEN_RE = re.compile(r"^__vf_masked_key__:(?P<fp>[0-9a-f]{12})(?::(?P<hint>[a-z0-9]{0,8}))?$")
+
+
+def _gemini_key_fingerprint(value: str) -> str:
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
+def _mask_gemini_key_for_response(value: str) -> tuple[str, dict[str, Any]]:
+    token = str(value or "").strip()
+    if not token:
+        return "", {"fingerprint": "", "masked": ""}
+    fingerprint = _gemini_key_fingerprint(token)
+    suffix = re.sub(r"[^a-z0-9]", "", token[-4:].lower())[:8]
+    placeholder = f"{GEMINI_MASKED_KEY_TOKEN_PREFIX}{fingerprint}"
+    if suffix:
+        placeholder = f"{placeholder}:{suffix}"
+    masked = f"{token[:4]}...{token[-4:]}" if len(token) >= 8 else ("*" * len(token))
+    return placeholder, {"fingerprint": fingerprint, "masked": masked}
+
+
+def _build_gemini_fingerprint_lookup(config: dict[str, Any]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    for pool_name in list_gemini_pool_names(config):
+        keys = list((pools.get(pool_name) or {}).get("keys") or [])
+        for key in keys:
+            safe_key = str(key or "").strip()
+            if not safe_key:
+                continue
+            fingerprint = _gemini_key_fingerprint(safe_key)
+            if fingerprint and fingerprint not in lookup:
+                lookup[fingerprint] = safe_key
+    return lookup
+
+
+def _restore_masked_gemini_keys_from_payload(
+    raw_payload: dict[str, Any],
+    *,
+    current_config: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(raw_payload, dict):
+        return {}
+    pools = raw_payload.get("pools")
+    if not isinstance(pools, dict):
+        return dict(raw_payload)
+
+    fingerprint_lookup = _build_gemini_fingerprint_lookup(current_config)
+    restored_payload = dict(raw_payload)
+    restored_pools: dict[str, Any] = {}
+    for pool_name, pool_value in pools.items():
+        row = dict(pool_value) if isinstance(pool_value, dict) else {}
+        keys_raw = row.get("keys")
+        if isinstance(keys_raw, list):
+            restored_keys: list[str] = []
+            seen: set[str] = set()
+            for item in keys_raw:
+                token = str(item or "").strip()
+                if not token:
+                    continue
+                match = GEMINI_MASKED_KEY_TOKEN_RE.match(token)
+                if match:
+                    fingerprint = str(match.group("fp") or "").strip().lower()
+                    resolved = str(fingerprint_lookup.get(fingerprint) or "").strip()
+                    if not resolved:
+                        raise ValueError(
+                            "Masked Gemini key placeholder could not be resolved. Refresh admin Gemini pools and retry."
+                        )
+                    token = resolved
+                if token in seen:
+                    continue
+                seen.add(token)
+                restored_keys.append(token)
+            row["keys"] = restored_keys
+        restored_pools[str(pool_name)] = row
+    restored_payload["pools"] = restored_pools
+    return restored_payload
+
+
+def _sanitize_gemini_pool_config_for_response(config: dict[str, Any]) -> dict[str, Any]:
+    public_config = dict(config or {})
+    source_policy = public_config.get("sourcePolicy") if isinstance(public_config.get("sourcePolicy"), dict) else {}
+    public_config["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(source_policy or {}))
+
+    pools = public_config.get("pools") if isinstance(public_config.get("pools"), dict) else {}
+    sanitized_pools: dict[str, Any] = {}
+    key_metadata: dict[str, list[dict[str, Any]]] = {}
+    for pool_name, pool_value in pools.items():
+        pool_row = dict(pool_value) if isinstance(pool_value, dict) else {}
+        keys_raw = pool_row.get("keys")
+        masked_keys: list[str] = []
+        metadata_rows: list[dict[str, Any]] = []
+        if isinstance(keys_raw, list):
+            for index, key in enumerate(keys_raw):
+                placeholder, metadata = _mask_gemini_key_for_response(str(key or "").strip())
+                if not placeholder:
+                    continue
+                masked_keys.append(placeholder)
+                metadata_rows.append(
+                    {
+                        "index": index,
+                        "fingerprint": str(metadata.get("fingerprint") or ""),
+                        "masked": str(metadata.get("masked") or ""),
+                    }
+                )
+        pool_row["keys"] = masked_keys
+        pool_row["keyMetadata"] = metadata_rows
+        sanitized_pools[str(pool_name)] = pool_row
+        key_metadata[str(pool_name)] = metadata_rows
+    public_config["pools"] = sanitized_pools
+    public_config["keyMetadata"] = key_metadata
+    return public_config
+
+
+def _sanitize_runtime_gemini_admin_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = dict(payload if isinstance(payload, dict) else {})
+    for config_field in ("config", "poolConfig"):
+        config_value = safe_payload.get(config_field)
+        if isinstance(config_value, dict):
+            safe_payload[config_field] = _sanitize_gemini_pool_config_for_response(config_value)
+    source_policy = safe_payload.get("sourcePolicy")
+    if isinstance(source_policy, dict):
+        safe_payload["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(source_policy))
+    meta = safe_payload.get("meta")
+    if isinstance(meta, dict):
+        next_meta = dict(meta)
+        meta_policy = next_meta.get("sourcePolicy")
+        if isinstance(meta_policy, dict):
+            next_meta["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(meta_policy))
+        safe_payload["meta"] = next_meta
+    return safe_payload
+
+
 def _rewrite_free_plan_pool_for_vertex(config: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
     normalized = normalize_gemini_pool_config(config)
     source_policy = dict(normalized.get("sourcePolicy") or {})
@@ -9161,6 +10372,58 @@ def _sync_authoritative_gemini_free_pool(
     )
 
 
+def _enforce_single_free_gemini_pool(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    normalized = normalize_gemini_pool_config(config)
+    if not VF_GEMINI_SINGLE_POOL_ENFORCE:
+        return normalized, False, []
+
+    warnings: list[str] = []
+    all_keys = flatten_pool_keys(normalized)
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    direct_free_keys = list((pools.get("free") or {}).get("keys") or [])
+    source_policy = normalized.get("sourcePolicy") if isinstance(normalized.get("sourcePolicy"), dict) else {}
+    provider_token = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    free_pool_locked = provider_token != SOURCE_POLICY_PROVIDER_VERTEX and bool(source_policy.get("freePoolLocked"))
+    if len(pools.keys()) > 1:
+        warnings.append("Single-pool mode forced all Gemini pools to canonical pool 'free'.")
+    effective_keys = list(all_keys)
+    if free_pool_locked:
+        effective_keys = list(direct_free_keys)
+        if len(all_keys) != len(direct_free_keys):
+            warnings.append(
+                "Single-pool mode ignored non-free keys because authoritative free-pool lock is enabled."
+            )
+    elif len(all_keys) != len(direct_free_keys):
+        warnings.append("Single-pool mode collapsed multi-pool key membership into canonical pool 'free'.")
+
+    unique_keys: list[str] = []
+    seen: set[str] = set()
+    for key in effective_keys:
+        token = str(key or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        unique_keys.append(token)
+
+    next_config = dict(normalized)
+    next_config["pools"] = {"free": {"keys": unique_keys}}
+    next_config["fallbackChains"] = {"free": ["free"]}
+    next_config["defaultFallbackChain"] = ["free"]
+    next_config["planPools"] = {"free": "free", "pro": "free", "plus": "free"}
+    constraints = dict(next_config.get("constraints") or {})
+    constraints["uniqueKeyMembership"] = True
+    next_config["constraints"] = constraints
+    next_config["singlePool"] = {
+        "enabled": True,
+        "canonicalPoolId": "free",
+        "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
+    }
+    changed = json.dumps(normalized, sort_keys=True) != json.dumps(next_config, sort_keys=True)
+    return next_config, changed, warnings
+
+
 def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     global _GEMINI_POOLS_CACHE, _GEMINI_POOLS_META
     with _GEMINI_POOLS_LOCK:
@@ -9185,7 +10448,9 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
             config["pools"] = pools
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_gemini_free_pool(config)
-        if synced_changed:
+        single_pool_warnings: list[str] = []
+        config, single_pool_changed, single_pool_warnings = _enforce_single_free_gemini_pool(config)
+        if synced_changed or single_pool_changed:
             try:
                 config = save_pool_config_shared(
                     file_path=file_path,
@@ -9197,7 +10462,7 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
                     "Authoritative free-pool sync could not be persisted; using in-memory pool config."
                 )
         meta = dict(meta if isinstance(meta, dict) else {})
-        meta["warnings"] = list(sync_warnings)
+        meta["warnings"] = [*list(sync_warnings), *list(single_pool_warnings)]
         meta["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
         _GEMINI_POOLS_CACHE = dict(config)
         _GEMINI_POOLS_META = dict(meta)
@@ -9207,9 +10472,10 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
 def _save_gemini_api_pools(config: dict[str, Any]) -> dict[str, Any]:
     file_path = _resolve_gemini_api_pools_file_path()
     firestore_db = _FIRESTORE_DB if GEMINI_API_POOLS_PREFER_FIRESTORE else None
+    normalized, _single_pool_changed, single_pool_warnings = _enforce_single_free_gemini_pool(config)
     saved = save_pool_config_shared(
         file_path=file_path,
-        config=config,
+        config=normalized,
         firestore_db=firestore_db,
     )
     with _GEMINI_POOLS_LOCK:
@@ -9222,6 +10488,7 @@ def _save_gemini_api_pools(config: dict[str, Any]) -> dict[str, Any]:
             warnings.append(
                 "Authoritative free-pool file has issues; service kept the last good free pool."
             )
+        warnings.extend(single_pool_warnings)
         _GEMINI_POOLS_META = {
             "source": "save",
             "filePath": str(file_path),
@@ -9278,6 +10545,7 @@ def _gemini_pools_validation(config: dict[str, Any]) -> dict[str, Any]:
 
 def _backend_gemini_pool_snapshot() -> dict[str, Any]:
     config, config_meta = _load_gemini_api_pools()
+    config_public = _sanitize_gemini_pool_config_for_response(config)
     default_pool_hint = resolve_default_gemini_pool_hint(config)
     key_pool = resolve_effective_pool_keys(config, default_pool_hint)
     if not key_pool:
@@ -9288,7 +10556,7 @@ def _backend_gemini_pool_snapshot() -> dict[str, Any]:
             "models": [],
             "defaultPoolHint": default_pool_hint,
             "source": _gemini_pool_source_diagnostics(),
-            "config": config,
+            "config": config_public,
             "configMeta": config_meta,
             "validation": _gemini_pools_validation(config),
         }
@@ -9297,7 +10565,7 @@ def _backend_gemini_pool_snapshot() -> dict[str, Any]:
     payload = dict(snapshot if isinstance(snapshot, dict) else {})
     payload["ok"] = True
     payload["source"] = _gemini_pool_source_diagnostics()
-    payload["config"] = config
+    payload["config"] = config_public
     payload["configMeta"] = config_meta
     payload["validation"] = _gemini_pools_validation(config)
     payload["defaultPoolHint"] = default_pool_hint
@@ -9318,6 +10586,7 @@ def _backend_gemini_pool_snapshot() -> dict[str, Any]:
 
 def _backend_gemini_pool_usage_snapshot() -> dict[str, Any]:
     config, config_meta = _load_gemini_api_pools()
+    config_public = _sanitize_gemini_pool_config_for_response(config)
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
     fallback_chains = config.get("fallbackChains") if isinstance(config.get("fallbackChains"), dict) else {}
     global_fallback = list(config.get("defaultFallbackChain") or [])
@@ -9339,7 +10608,7 @@ def _backend_gemini_pool_usage_snapshot() -> dict[str, Any]:
         }
     return {
         "ok": True,
-        "config": config,
+        "config": config_public,
         "configMeta": config_meta,
         "validation": _gemini_pools_validation(config),
         "usage": usage_payload,
@@ -9374,7 +10643,7 @@ def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
             payload = {"payload": payload}
         payload["ok"] = True
         payload["endpoint"] = endpoint
-        return payload
+        return _sanitize_runtime_gemini_admin_payload(payload)
     return {"ok": False, "error": "runtime_pool_snapshot_unavailable"}
 
 
@@ -9399,7 +10668,7 @@ def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
             payload = {"payload": payload}
         payload["ok"] = True
         payload["endpoint"] = endpoint
-        return payload
+        return _sanitize_runtime_gemini_admin_payload(payload)
     return {"ok": False, "error": "runtime_pool_reload_unavailable"}
 
 
@@ -9425,7 +10694,7 @@ def _runtime_gemini_pool_usage(timeout_sec: float = 8.0) -> dict[str, Any]:
         payload = {"payload": payload}
     payload["ok"] = True
     payload["endpoint"] = endpoint
-    return payload
+    return _sanitize_runtime_gemini_admin_payload(payload)
 
 
 def _extract_text_with_gemini_fallback(media_bytes: bytes, mime_type: str, language_hint: str, task_label: str) -> str:
@@ -9943,6 +11212,8 @@ def health() -> JSONResponse:
     llvc_error = llvc_runtime.import_error
     current_model = llvc_runtime.current_model()
     llvc_models_dir = str(MODELS_DIR)
+    llvc_backend_mode: Optional[str] = None
+    llvc_resolved_model_id: Optional[str] = None
     try:
         llvc_runtime.ensure_engine()
         llvc_payload = llvc_runtime.health_payload()
@@ -9951,16 +11222,25 @@ def health() -> JSONResponse:
         current_model = str(nested.get("currentModel") or current_model or "").strip() or current_model
         llvc_models_dir = str(nested.get("modelsDir") or llvc_models_dir)
         llvc_error = str(nested.get("error") or "").strip() or None
+        llvc_backend_mode = str(nested.get("backendMode") or "").strip() or None
+        llvc_resolved_model_id = str(nested.get("resolvedModelId") or "").strip() or None
     except Exception as exc:
         llvc_available = False
         llvc_error = str(exc)
 
     source_separation_available = source_separation_runtime.ensure_available()
     source_separation_error = source_separation_runtime.import_error
+    video_assets = _video_pipeline_assets_status()
+    dereverb_ready = bool(VF_DUB_DEREVERB_MODEL) and any(
+        str(item.get("id") or "").strip().lower().startswith("dereverb")
+        and bool(item.get("exists"))
+        for item in list(video_assets.get("assets") or [])
+    )
+    lipsync_ready = bool(VF_DUB_WAV2LIP_ONNX_PATH.exists())
 
     fallback_available = bool(ENABLE_LLVC_FALLBACK and ffmpeg_ok)
     response = {
-        "ok": ffmpeg_ok and (source_separation_available or not ENABLE_SOURCE_SEPARATION),
+        "ok": ffmpeg_ok and (source_separation_available or not ENABLE_SOURCE_SEPARATION) and bool(video_assets.get("ready")),
         "ffmpeg": {
             "available": ffmpeg_ok,
             "path": ffmpeg_path,
@@ -9969,6 +11249,8 @@ def health() -> JSONResponse:
         "llvc": {
             "available": llvc_available or fallback_available,
             "currentModel": current_model or (LLVC_FALLBACK_MODEL_ID if fallback_available else None),
+            "resolvedModelId": llvc_resolved_model_id,
+            "backendMode": llvc_backend_mode,
             "modelsDir": llvc_models_dir,
             "error": llvc_error,
             "fallbackAvailable": fallback_available,
@@ -9987,11 +11269,22 @@ def health() -> JSONResponse:
         "sourceSeparation": {
             "enabled": ENABLE_SOURCE_SEPARATION,
             "available": source_separation_available,
-            "model": SEPARATION_MODEL,
+            "model": VF_DUB_PHASE1_MODEL,
             "device": SEPARATION_DEVICE,
             "cacheDir": str(SEPARATION_CACHE_DIR),
+            "dereverbModel": VF_DUB_DEREVERB_MODEL,
+            "dereverbReady": dereverb_ready,
             "error": source_separation_error,
         },
+        "lipsync": {
+            "runtime": "wav2lip-onnx",
+            "assetPath": str(VF_DUB_WAV2LIP_ONNX_PATH),
+            "assetReady": bool(VF_DUB_WAV2LIP_ONNX_PATH.exists()),
+            "lpipsAssetPath": str(VF_DUB_LPIPS_ASSET_PATH),
+            "lpipsReady": bool(VF_DUB_LPIPS_ASSET_PATH.exists()),
+            "ready": lipsync_ready,
+        },
+        "videoPipelineAssets": video_assets,
     }
 
     return JSONResponse(response)
@@ -10031,6 +11324,7 @@ def ops_guardian_status(request: Request, include_route_stats: bool = False) -> 
 @app.post("/ops/guardian/scan")
 def ops_guardian_scan(payload: AiOpsScanRequest, request: Request) -> JSONResponse:
     uid, actor = _require_permission(request, PERM_GUARDIAN_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=uid)
     status_payload = _ai_ops_build_status(include_route_stats=True)
     detected_issues = list(status_payload.get("issues") or [])
     auto_fix_actions: list[dict[str, Any]] = []
@@ -10104,13 +11398,14 @@ def ops_guardian_scan(payload: AiOpsScanRequest, request: Request) -> JSONRespon
 @app.post("/ops/guardian/actions")
 def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONResponse:
     uid, actor = _require_permission(request, PERM_GUARDIAN_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=uid)
     try:
         action = _ai_ops_validate_action(payload.action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     severity = _ai_ops_action_severity(action)
-    authorized, auth_uid, auth_reason = _ai_ops_admin_authorized(request, payload.adminToken)
+    authorized, auth_uid, auth_reason = _ai_ops_admin_authorized(request, None)
     if severity == "major":
         if not authorized:
             approval, created = _ai_ops_create_approval(
@@ -10216,7 +11511,8 @@ def ops_guardian_approval_decision(
     request: Request,
 ) -> JSONResponse:
     uid_actor, actor = _require_permission(request, PERM_GUARDIAN_MUTATE)
-    authorized, uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
+    _require_admin_mutation_unlock(request, expected_uid=uid_actor)
+    authorized, uid, reason = _ai_ops_admin_authorized(request, None)
     if not authorized:
         raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
     with AI_OPS_LOCK:
@@ -10301,6 +11597,75 @@ def ops_guardian_frontend_errors(payload: FrontendErrorReportRequest, request: R
 def _require_stripe_ready() -> None:
     if not _stripe_available():
         raise HTTPException(status_code=503, detail="Stripe is not configured.")
+
+
+def _ensure_subscription_schedule_for_loyalty(
+    *,
+    subscription_id: str,
+    plan_key: str,
+    uid: str,
+) -> dict[str, Any]:
+    safe_subscription_id = str(subscription_id or "").strip()
+    safe_plan_key = _plan_key_from_name(plan_key)
+    if not safe_subscription_id:
+        return {"ok": False, "reason": "missing_subscription_id"}
+    if safe_plan_key not in set(PAID_PLAN_KEYS):
+        return {"ok": False, "reason": "plan_not_paid"}
+    if stripe is None:
+        return {"ok": False, "reason": "stripe_unavailable"}
+    recurring_price_id = _stripe_price_id_for_plan(safe_plan_key, phase="recurring")
+    if not recurring_price_id:
+        return {"ok": False, "reason": "missing_recurring_price"}
+
+    try:
+        sub = stripe.Subscription.retrieve(safe_subscription_id)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"subscription_retrieve_failed:{exc}"}
+
+    existing_schedule_id = str(sub.get("schedule") or "").strip() if isinstance(sub, dict) else ""
+    if existing_schedule_id:
+        return {"ok": True, "alreadyConfigured": True, "scheduleId": existing_schedule_id}
+
+    def _lookup_existing_schedule() -> str:
+        try:
+            latest = stripe.Subscription.retrieve(safe_subscription_id)  # type: ignore[attr-defined]
+        except Exception:
+            return ""
+        return str((latest or {}).get("schedule") or "").strip() if isinstance(latest, dict) else ""
+
+    try:
+        created = stripe.SubscriptionSchedule.create(  # type: ignore[attr-defined]
+            from_subscription=safe_subscription_id,
+            end_behavior="release",
+            metadata={
+                "uid": str(uid or "").strip(),
+                "plan": safe_plan_key,
+                "voiceflowLoyaltySchedule": "1",
+                "voiceflowRecurringPriceId": recurring_price_id,
+            },
+        )
+        schedule_id = str((created or {}).get("id") or "").strip()
+        if schedule_id:
+            try:
+                stripe.SubscriptionSchedule.modify(  # type: ignore[attr-defined]
+                    schedule_id,
+                    phases=[
+                        {
+                            "items": [{"price": recurring_price_id, "quantity": 1}],
+                        }
+                    ],
+                    proration_behavior="none",
+                )
+            except Exception:
+                # Some stripe SDK versions reject phase mutation for from_subscription schedules.
+                # Metadata still records desired recurring price for manual inspection if needed.
+                pass
+        return {"ok": True, "scheduleId": schedule_id}
+    except Exception as exc:  # noqa: BLE001
+        existing_schedule_id = _lookup_existing_schedule()
+        if existing_schedule_id:
+            return {"ok": True, "alreadyConfigured": True, "scheduleId": existing_schedule_id}
+        return {"ok": False, "reason": f"schedule_create_failed:{exc}"}
 
 
 def _sync_entitlement_from_subscription(
@@ -10892,6 +12257,16 @@ def _support_try_ai_autoreply(
 
 
 def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
+    def _entitlement_view(entitlement_payload: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        plan_name = _normalize_plan_name(str(entitlement_payload.get("plan") or "Free"))
+        plan_key = _plan_key_from_name(plan_name)
+        guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
+        return (
+            plan_name,
+            {"earlyAccess": _plan_has_early_access(plan_key)},
+            {"maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 1))},
+        )
+
     safe_limit = max(1, min(200, int(limit)))
     needle = str(search or "").strip().lower()
     users: list[dict[str, Any]] = []
@@ -10915,6 +12290,7 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                 haystack = f"{uid} {email} {display_name} {user_id}".lower()
                 if needle not in haystack:
                     continue
+            plan_name, features, limits = _entitlement_view(entitlement)
             users.append(
                 {
                     "uid": uid,
@@ -10923,8 +12299,10 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                     "displayName": display_name,
                     "disabled": disabled,
                     "admin": _as_bool(custom_claims.get("admin")) or _firestore_user_is_admin(uid),
-                    "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+                    "plan": plan_name,
                     "status": str(entitlement.get("status") or "free_active"),
+                    "features": features,
+                    "limits": limits,
                     "wallet": {
                         "paidVfBalance": _as_positive_number(entitlement.get("paidVfBalance")),
                         "vffBalance": _as_positive_number(entitlement.get("vffBalance")),
@@ -10952,6 +12330,7 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                     haystack = f"{uid} {user_id}".lower()
                     if needle not in haystack:
                         continue
+                plan_name, features, limits = _entitlement_view(entitlement)
                 users.append(
                     {
                         "uid": uid,
@@ -10960,8 +12339,10 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                         "displayName": uid,
                         "disabled": False,
                         "admin": uid in VF_ADMIN_APPROVER_UIDS or uid.startswith("local_admin"),
-                        "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+                        "plan": plan_name,
                         "status": str(entitlement.get("status") or "free_active"),
+                        "features": features,
+                        "limits": limits,
                         "wallet": {
                             "paidVfBalance": _as_positive_number(entitlement.get("paidVfBalance")),
                             "vffBalance": _as_positive_number(entitlement.get("vffBalance")),
@@ -10985,6 +12366,7 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
             haystack = f"{uid} {user_id}".lower()
             if needle not in haystack:
                 continue
+        plan_name, features, limits = _entitlement_view(entitlement)
         users.append(
             {
                 "uid": uid,
@@ -10993,8 +12375,10 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                 "displayName": uid,
                 "disabled": False,
                 "admin": _firestore_user_is_admin(uid),
-                "plan": _normalize_plan_name(str(entitlement.get("plan") or "Free")),
+                "plan": plan_name,
                 "status": str(entitlement.get("status") or "free_active"),
+                "features": features,
+                "limits": limits,
                 "wallet": {
                     "paidVfBalance": _as_positive_number(entitlement.get("paidVfBalance")),
                     "vffBalance": _as_positive_number(entitlement.get("vffBalance")),
@@ -11512,6 +12896,53 @@ def _reset_daily_usage_all(*, dry_run: bool, requested_by: str) -> dict[str, Any
     return summary
 
 
+@app.post("/admin/session-unlock/issue")
+def admin_session_unlock_issue(request: Request) -> JSONResponse:
+    uid = _require_admin_uid(request)
+    issued = _admin_unlock_issue_for_request(request, uid)
+    status_payload = _admin_unlock_status_for_request(request, uid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "uid": uid,
+            "unlockKey": issued.get("unlockKey"),
+            "keyExpiresAtMs": issued.get("keyExpiresAtMs"),
+            "keyExpiresAt": issued.get("keyExpiresAt"),
+            "status": status_payload,
+        }
+    )
+
+
+@app.post("/admin/session-unlock/verify")
+def admin_session_unlock_verify(
+    payload: AdminSessionUnlockVerifyRequest,
+    request: Request,
+) -> JSONResponse:
+    uid = _require_admin_uid(request)
+    verified = _admin_unlock_verify_for_request(
+        request,
+        uid=uid,
+        unlock_key=payload.unlockKey,
+    )
+    status_payload = _admin_unlock_status_for_request(request, uid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "uid": uid,
+            "unlockToken": verified.get("unlockToken"),
+            "expiresAtMs": verified.get("expiresAtMs"),
+            "expiresAt": verified.get("expiresAt"),
+            "status": status_payload,
+        }
+    )
+
+
+@app.get("/admin/session-unlock/status")
+def admin_session_unlock_status(request: Request) -> JSONResponse:
+    uid = _require_admin_uid(request)
+    return JSONResponse({"ok": True, "uid": uid, "status": _admin_unlock_status_for_request(request, uid)})
+
+
 @app.get("/admin/usage/reset-daily-all/status")
 def admin_daily_usage_reset_status(request: Request) -> JSONResponse:
     _require_permission(request, PERM_OPS_READ)
@@ -11524,6 +12955,7 @@ def admin_daily_usage_reset_status(request: Request) -> JSONResponse:
 @app.post("/admin/usage/reset-daily-all")
 def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONResponse:
     admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
     summary = _reset_daily_usage_all(dry_run=bool(dryRun), requested_by=admin_uid)
     _audit_append_event(
         action="daily_usage_reset",
@@ -11613,6 +13045,7 @@ def admin_list_users(request: Request, q: str = "", limit: int = 50) -> JSONResp
 @app.patch("/admin/users/{target_uid}")
 def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -11658,6 +13091,7 @@ def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: R
 @app.post("/admin/users/{target_uid}/reset-password")
 def admin_reset_user_password(target_uid: str, payload: AdminResetPasswordRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -11678,6 +13112,7 @@ def admin_reset_user_password(target_uid: str, payload: AdminResetPasswordReques
 @app.post("/admin/users/{target_uid}/revoke-sessions")
 def admin_revoke_user_sessions(target_uid: str, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -11702,6 +13137,7 @@ def admin_force_change_user_id(
     request: Request,
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -11733,6 +13169,7 @@ def admin_force_change_user_id(
 @app.delete("/admin/users/{target_uid}")
 def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
@@ -11836,6 +13273,7 @@ def admin_list_teams(
 @app.post("/admin/teams")
 def admin_create_team(payload: TeamCreateRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_TEAMS_ENABLED:
         raise HTTPException(status_code=404, detail="Teams feature is disabled.")
     owner_uid = str(payload.ownerUid or "").strip()
@@ -11893,6 +13331,7 @@ def admin_create_team(payload: TeamCreateRequest, request: Request) -> JSONRespo
 @app.patch("/admin/teams/{team_id}")
 def admin_patch_team(team_id: str, payload: TeamPatchRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_TEAMS_ENABLED:
         raise HTTPException(status_code=404, detail="Teams feature is disabled.")
     safe_team_id = str(team_id or "").strip()
@@ -11978,6 +13417,7 @@ def admin_team_add_member(
     request: Request,
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_TEAMS_ENABLED:
         raise HTTPException(status_code=404, detail="Teams feature is disabled.")
     safe_team_id = str(team_id or "").strip()
@@ -12034,6 +13474,7 @@ def admin_team_patch_member(
     request: Request,
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_TEAMS_ENABLED:
         raise HTTPException(status_code=404, detail="Teams feature is disabled.")
     safe_team_id = str(team_id or "").strip()
@@ -12076,6 +13517,7 @@ def admin_team_patch_member(
 @app.delete("/admin/teams/{team_id}/members/{member_uid}")
 def admin_team_remove_member(team_id: str, member_uid: str, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_TEAMS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_TEAMS_ENABLED:
         raise HTTPException(status_code=404, detail="Teams feature is disabled.")
     safe_team_id = str(team_id or "").strip()
@@ -12260,6 +13702,7 @@ def admin_support_reply(
     request: Request,
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_SUPPORT_REPLY)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_SUPPORT_INBOX_ENABLED:
         raise HTTPException(status_code=404, detail="Support inbox is disabled.")
     safe_id = str(conversation_id or "").strip()
@@ -12308,6 +13751,7 @@ def admin_support_reply(
 @app.post("/admin/support/conversations/{conversation_id}/resolve")
 def admin_support_resolve(conversation_id: str, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_SUPPORT_REPLY)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     if not VF_SUPPORT_INBOX_ENABLED:
         raise HTTPException(status_code=404, detail="Support inbox is disabled.")
     safe_id = str(conversation_id or "").strip()
@@ -12344,7 +13788,7 @@ def admin_support_ai_policy(request: Request) -> JSONResponse:
 @app.patch("/admin/support/ai-policy")
 def admin_patch_support_ai_policy(payload: SupportAiPolicyPatchRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_SUPPORT_AI_CONFIG)
-    _require_admin_approval_token(payload.adminToken)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     before = _support_ai_policy_get()
     after = _support_ai_policy_patch(
         {
@@ -12398,6 +13842,7 @@ def admin_rbac_users(
 @app.put("/admin/rbac/users/{target_uid}")
 def admin_rbac_assign_user(target_uid: str, payload: AdminRoleAssignmentRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_RBAC_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     safe_target_uid = str(target_uid or "").strip()
     if not safe_target_uid:
         raise HTTPException(status_code=400, detail="Missing target uid.")
@@ -12432,6 +13877,7 @@ def admin_rbac_assign_user(target_uid: str, payload: AdminRoleAssignmentRequest,
 @app.post("/admin/rbac/users/{target_uid}/disable")
 def admin_rbac_disable_user(target_uid: str, payload: AdminRoleStatusRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_RBAC_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     safe_target_uid = str(target_uid or "").strip()
     if not safe_target_uid:
         raise HTTPException(status_code=400, detail="Missing target uid.")
@@ -12471,6 +13917,7 @@ def admin_rbac_disable_user(target_uid: str, payload: AdminRoleStatusRequest, re
 @app.post("/admin/rbac/users/{target_uid}/enable")
 def admin_rbac_enable_user(target_uid: str, payload: AdminRoleStatusRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_RBAC_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     safe_target_uid = str(target_uid or "").strip()
     if not safe_target_uid:
         raise HTTPException(status_code=400, detail="Missing target uid.")
@@ -12577,6 +14024,7 @@ def admin_audit_verify_chain(
 @app.post("/admin/coupons")
 def admin_create_coupon(payload: CouponCreateRequest, request: Request) -> JSONResponse:
     admin_uid, actor = _require_permission(request, PERM_COUPONS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
     now_dt = _utc_now()
     code = _normalize_coupon_code(payload.code)
     if not code:
@@ -12794,6 +14242,7 @@ def admin_list_coupons(
 @app.patch("/admin/coupons/{coupon_id}")
 def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_COUPONS_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     safe_coupon_id = str(coupon_id or "").strip()
     if not safe_coupon_id:
         raise HTTPException(status_code=400, detail="Missing coupon id.")
@@ -12938,8 +14387,14 @@ def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Req
 def admin_gemini_pools(request: Request) -> JSONResponse:
     _require_permission(request, PERM_OPS_READ)
     config, meta = _load_gemini_api_pools(force=True)
-    config_public = dict(config)
-    config_public["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
+    config_public = _sanitize_gemini_pool_config_for_response(config)
+    single_pool_marker = dict(config_public.get("singlePool") or {})
+    if not single_pool_marker:
+        single_pool_marker = {
+            "enabled": bool(VF_GEMINI_SINGLE_POOL_ENFORCE),
+            "canonicalPoolId": "free",
+            "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
+        }
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
     validation = _gemini_pools_validation(config)
@@ -12952,6 +14407,7 @@ def admin_gemini_pools(request: Request) -> JSONResponse:
             "validation": validation,
             "warnings": warnings,
             "sourcePolicy": _sanitize_gemini_source_policy_for_response(dict(config.get("sourcePolicy") or {})),
+            "singlePool": single_pool_marker,
             "backend": backend_snapshot,
             "runtime": runtime_snapshot,
         }
@@ -12961,12 +14417,17 @@ def admin_gemini_pools(request: Request) -> JSONResponse:
 @app.put("/admin/gemini/pools")
 def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     current_config, _current_meta = _load_gemini_api_pools(force=True)
     current_source_policy = dict(current_config.get("sourcePolicy") or {})
     applied_overrides: list[str] = []
     local_warnings: list[str] = []
 
     raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    try:
+        raw_payload = _restore_masked_gemini_keys_from_payload(raw_payload, current_config=current_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     source_policy_requested = isinstance(raw_payload.get("sourcePolicy"), dict)
     raw_source_policy = dict(raw_payload.get("sourcePolicy") or {}) if source_policy_requested else {}
     vertex_service_account_json = str(
@@ -13050,6 +14511,10 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
     normalized, vertex_free_changed, vertex_free_pool = _rewrite_free_plan_pool_for_vertex(normalized)
     if vertex_free_changed:
         applied_overrides.append(f"vertex_free_plan_pool:{vertex_free_pool}")
+    single_pool_warnings: list[str] = []
+    normalized, single_pool_changed, single_pool_warnings = _enforce_single_free_gemini_pool(normalized)
+    if single_pool_changed:
+        applied_overrides.append("single_pool_enforced:free")
     validation = _gemini_pools_validation(normalized)
     if not bool(validation.get("isValid")):
         raise HTTPException(
@@ -13093,9 +14558,8 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
         BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
     runtime_reload = _runtime_gemini_pool_reload()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
-    merged_warnings = [*local_warnings, *list(sync_warnings)]
-    saved_public = dict(saved)
-    saved_public["sourcePolicy"] = _sanitize_gemini_source_policy_for_response(dict(saved.get("sourcePolicy") or {}))
+    merged_warnings = [*local_warnings, *list(sync_warnings), *list(single_pool_warnings)]
+    saved_public = _sanitize_gemini_pool_config_for_response(saved)
     response_payload = {
         "ok": bool(runtime_reload.get("ok")),
         "detail": "Gemini API pools updated.",
@@ -13108,6 +14572,7 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
         "deletedPools": deleted_pools,
         "planPoolChanges": plan_pool_changes,
         "keyDiffByPool": key_diff_by_pool,
+        "singlePool": dict(saved_public.get("singlePool") or {}),
         "backend": _backend_gemini_pool_snapshot(),
         "runtimeReload": runtime_reload,
         "runtime": runtime_snapshot,
@@ -13138,6 +14603,7 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
 @app.post("/admin/gemini/pools/reload")
 def admin_gemini_pools_reload(request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     config, meta = _load_gemini_api_pools(force=True)
     source_policy = dict(config.get("sourcePolicy") or {})
     provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
@@ -13211,12 +14677,9 @@ def admin_alerts_policies(request: Request, limit: int = 100) -> JSONResponse:
 def admin_alerts_create_policy(
     payload: AlertPolicyCreateRequest,
     request: Request,
-    adminToken: str = "",
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     now_iso = _utc_now().isoformat()
     row = {
         "name": _truncate_text(payload.name, 120),
@@ -13251,12 +14714,9 @@ def admin_alerts_patch_policy(
     policy_id: str,
     payload: AlertPolicyPatchRequest,
     request: Request,
-    adminToken: str = "",
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     current = _alert_get_policy(policy_id)
     if not isinstance(current, dict):
         raise HTTPException(status_code=404, detail="Alert policy not found.")
@@ -13306,12 +14766,9 @@ def admin_alerts_destinations(request: Request, limit: int = 100) -> JSONRespons
 def admin_alerts_create_destination(
     payload: AlertDestinationCreateRequest,
     request: Request,
-    adminToken: str = "",
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     now_iso = _utc_now().isoformat()
     safe_type = str(payload.type or "webhook").strip().lower()
     if safe_type != "webhook":
@@ -13345,12 +14802,9 @@ def admin_alerts_patch_destination(
     destination_id: str,
     payload: AlertDestinationPatchRequest,
     request: Request,
-    adminToken: str = "",
 ) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     current = _alert_get_destination(destination_id)
     if not isinstance(current, dict):
         raise HTTPException(status_code=404, detail="Alert destination not found.")
@@ -13392,9 +14846,7 @@ def admin_alerts_events(request: Request, status: str = "", limit: int = 200) ->
 @app.post("/admin/alerts/events/{event_id}/ack")
 def admin_alerts_event_ack(event_id: str, payload: AlertEventDecisionRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     event = _alert_get_event(event_id)
     if not isinstance(event, dict):
         raise HTTPException(status_code=404, detail="Alert event not found.")
@@ -13420,9 +14872,7 @@ def admin_alerts_event_ack(event_id: str, payload: AlertEventDecisionRequest, re
 @app.post("/admin/alerts/events/{event_id}/resolve")
 def admin_alerts_event_resolve(event_id: str, payload: AlertEventDecisionRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_ALERTS_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     event = _alert_get_event(event_id)
     if not isinstance(event, dict):
         raise HTTPException(status_code=404, detail="Alert event not found.")
@@ -13456,6 +14906,7 @@ def admin_scheduler_tasks(request: Request, limit: int = 200) -> JSONResponse:
 @app.post("/admin/scheduler/tasks")
 def admin_scheduler_create_task(payload: ScheduledTaskCreateRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_SCHEDULER_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     safe_task_type, safe_cron, safe_timezone, safe_policy = _scheduler_task_payload_validate(
         task_type=payload.taskType,
         cron_expr=payload.cronExpr,
@@ -13495,6 +14946,7 @@ def admin_scheduler_create_task(payload: ScheduledTaskCreateRequest, request: Re
 @app.patch("/admin/scheduler/tasks/{task_id}")
 def admin_scheduler_patch_task(task_id: str, payload: ScheduledTaskPatchRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_SCHEDULER_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     current = _scheduler_get_task(task_id)
     if not isinstance(current, dict):
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -13545,9 +14997,7 @@ def admin_scheduler_patch_task(task_id: str, payload: ScheduledTaskPatchRequest,
 @app.post("/admin/scheduler/tasks/{task_id}/run")
 def admin_scheduler_run_task(task_id: str, payload: ScheduledTaskRunRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_SCHEDULER_WRITE)
-    authorized, _auth_uid, reason = _ai_ops_admin_authorized(request, payload.adminToken)
-    if not authorized:
-        raise HTTPException(status_code=403, detail=f"Admin authorization failed: {reason}")
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     run = _scheduler_run_task(
         str(task_id or "").strip(),
         requested_by=actor_uid,
@@ -13761,7 +15211,7 @@ def _coupon_plan_allowed_for_checkout(coupon: dict[str, Any], plan_token: str) -
         stripe_coupons_by_plan=(coupon.get("stripeCouponsByPlan") if isinstance(coupon.get("stripeCouponsByPlan"), dict) else None),
     )
     applies_to = sorted(plan_discounts.keys()) or _normalize_coupon_plan_scope(coupon.get("appliesToPlans"))
-    safe_plan = str(plan_token or "").strip().lower()
+    safe_plan = _normalize_coupon_plan_token(plan_token)
     return safe_plan in set(applies_to)
 
 
@@ -13837,7 +15287,7 @@ def _coupon_reservation_expires_at(now: Optional[datetime] = None) -> datetime:
 def _reserve_subscription_coupon_for_checkout(uid: str, code: str, plan_token: str) -> dict[str, Any]:
     safe_uid = str(uid or "").strip()
     safe_code = _normalize_coupon_code(code)
-    safe_plan = str(plan_token or "").strip().lower()
+    safe_plan = _normalize_coupon_plan_token(plan_token)
     if not safe_uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
     if not safe_code:
@@ -14170,12 +15620,14 @@ def _finalize_subscription_coupon_redemption(
 def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Request) -> JSONResponse:
     _require_stripe_ready()
     uid = _require_request_uid(request)
-    plan_token = str(payload.plan or "").strip().lower()
-    price_id = _stripe_price_id_for_plan(plan_token)
+    plan_token = _plan_key_from_name(str(payload.plan or "").strip().lower())
+    if plan_token not in set(PAID_PLAN_KEYS):
+        raise HTTPException(status_code=400, detail="Unsupported plan. Use starter, creator, pro, or scale.")
+    price_id = _stripe_price_id_for_plan(plan_token, phase="first")
     if not price_id:
-        raise HTTPException(status_code=400, detail="Unsupported plan. Use pro or plus.")
-    if not STRIPE_PRICE_PRO_INR or not STRIPE_PRICE_PLUS_INR:
-        raise HTTPException(status_code=503, detail="Stripe prices are not configured.")
+        raise HTTPException(status_code=503, detail="Stripe first-cycle price is not configured for selected plan.")
+    if not _stripe_plan_prices_configured():
+        raise HTTPException(status_code=503, detail="Stripe plan price catalog is not fully configured.")
 
     reserved_coupon: dict[str, Any] = {}
     reservation_id = ""
@@ -14247,6 +15699,7 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
             "success_url": success_url,
             "cancel_url": cancel_url,
             "allow_promotion_codes": True,
+            "automatic_tax": {"enabled": False},
             "metadata": session_metadata,
             "subscription_data": {"metadata": subscription_metadata},
         }
@@ -14279,7 +15732,14 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
     uid = _require_request_uid(request)
     entitlement = _load_entitlement(uid)
     plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
-    final_amount_inr = _token_pack_amount_inr_for_plan(plan_name)
+    try:
+        pack_key = _normalize_token_pack_key(str(payload.pack or "standard"), strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    pack_cfg = _token_pack_config(pack_key)
+    pack_vf = _token_pack_vf_for_pack(pack_key)
+    standard_amount_inr = max(1, int(pack_cfg.get("priceInr") or 1))
+    final_amount_inr = _token_pack_amount_inr_for_plan(plan_name, pack_key)
     customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
     if not customer_id:
         try:
@@ -14303,7 +15763,7 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
                 {
                     "price_data": {
                         "currency": "inr",
-                        "product_data": {"name": f"VoiceFlow {VF_TOKEN_PACK_VF_AMOUNT:,} paid VF pack"},
+                        "product_data": {"name": f"VoiceFlow {pack_vf:,} paid VF pack ({pack_key})"},
                         "unit_amount": final_amount_inr * 100,
                     },
                     "quantity": 1,
@@ -14314,7 +15774,9 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
             metadata={
                 "kind": "token_pack",
                 "uid": uid,
-                "packVf": str(VF_TOKEN_PACK_VF_AMOUNT),
+                "packKey": pack_key,
+                "packVf": str(pack_vf),
+                "standardAmountInr": str(standard_amount_inr),
                 "finalAmountInr": str(final_amount_inr),
             },
         )
@@ -14326,7 +15788,9 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
             "ok": True,
             "url": session.get("url"),
             "sessionId": session.get("id"),
-            "packVf": VF_TOKEN_PACK_VF_AMOUNT,
+            "packKey": pack_key,
+            "packVf": pack_vf,
+            "standardAmountInr": standard_amount_inr,
             "finalAmountInr": final_amount_inr,
         }
     )
@@ -14356,6 +15820,8 @@ async def billing_webhook(request: Request) -> JSONResponse:
     _require_stripe_ready()
     payload_raw = await request.body()
     signature = request.headers.get("stripe-signature")
+    if VF_IS_PRODUCTION and not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Stripe webhook secret is required in production.")
     try:
         if STRIPE_WEBHOOK_SECRET:
             event = stripe.Webhook.construct_event(  # type: ignore[attr-defined]
@@ -14364,6 +15830,8 @@ async def billing_webhook(request: Request) -> JSONResponse:
                 secret=STRIPE_WEBHOOK_SECRET,
             )
         else:
+            if not VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED:
+                raise HTTPException(status_code=400, detail="Unsigned Stripe webhook payload is not allowed.")
             event = json.loads(payload_raw.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}") from exc
@@ -14381,7 +15849,14 @@ async def billing_webhook(request: Request) -> JSONResponse:
                     uid = _resolve_uid_from_customer(str(data_obj.get("customer") or ""))
                 if uid:
                     session_id = str(data_obj.get("id") or "")
-                    pack_vf = _as_positive_int(metadata.get("packVf") or VF_TOKEN_PACK_VF_AMOUNT)
+                    raw_pack_key = str(metadata.get("packKey") or "standard")
+                    pack_key = _normalize_token_pack_key(raw_pack_key)
+                    pack_vf = _as_positive_int(metadata.get("packVf") or _token_pack_vf_for_pack(pack_key) or VF_TOKEN_PACK_VF_AMOUNT)
+                    standard_amount_inr = _as_positive_int(
+                        metadata.get("standardAmountInr")
+                        or (_token_pack_config(pack_key).get("priceInr") if pack_key in TOKEN_PACK_CATALOG else 0)
+                    )
+                    final_amount_inr = _as_positive_int(metadata.get("finalAmountInr"))
                     tx_id = f"stripe_checkout_token_pack_{session_id}" if session_id else ""
                     _credit_paid_vf(
                         uid=uid,
@@ -14391,6 +15866,10 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         metadata={
                             "eventType": event_type,
                             "sessionId": session_id,
+                            "packKey": pack_key,
+                            "packVf": pack_vf,
+                            "standardAmountInr": standard_amount_inr,
+                            "finalAmountInr": final_amount_inr,
                             "amountTotal": _as_positive_int(data_obj.get("amount_total")),
                             "currency": str(data_obj.get("currency") or "inr"),
                         },
@@ -14401,6 +15880,7 @@ async def billing_webhook(request: Request) -> JSONResponse:
                 subscription_id = str(data_obj.get("subscription") or "")
                 billing_country = ((data_obj.get("customer_details") or {}).get("address") or {}).get("country")
                 session_id = str(data_obj.get("id") or "")
+                plan_token = _plan_key_from_name(str(metadata.get("plan") or "free"))
                 coupon_reservation_id = str(metadata.get("couponReservationId") or "").strip()
                 if subscription_id and stripe is not None:
                     sub = stripe.Subscription.retrieve(subscription_id)  # type: ignore[attr-defined]
@@ -14422,6 +15902,12 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         price_id=price_id,
                         billing_country=billing_country,
                     )
+                    if subscription_id:
+                        _ = _ensure_subscription_schedule_for_loyalty(
+                            subscription_id=subscription_id,
+                            plan_key=plan_token,
+                            uid=uid,
+                        )
                     if coupon_reservation_id:
                         _finalize_subscription_coupon_redemption(
                             session_id=session_id,
@@ -14434,7 +15920,6 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         net_amount = max(0.0, _safe_float(data_obj.get("amount_total"), 0.0) / 100.0)
                         discount_amount = max(0.0, gross_amount - net_amount)
                         coupon_kind = str(metadata.get("couponType") or COUPON_TYPE_SUBSCRIPTION_DISCOUNT)
-                        plan_token = str(metadata.get("plan") or "unknown")
                         _analytics_record_coupon_event(
                             "checkout_completed",
                             BILLING_PROVIDER_STRIPE,
@@ -14683,7 +16168,10 @@ def _build_tts_upstream_payload(
         if allowlist_gated:
             upstream_payload["voicePolicy"] = "free_allowlist_applied"
         pools_config, _ = _load_gemini_api_pools()
-        upstream_payload["poolHint"] = resolve_gemini_plan_pool_hint(pools_config, plan_key)
+        upstream_payload["poolHint"] = resolve_gemini_plan_pool_hint(
+            pools_config,
+            _tts_pool_hint_plan_key(plan_key),
+        )
     elif engine == "KOKORO" and voice_id:
         upstream_payload["voiceId"] = voice_id
 
@@ -14741,10 +16229,10 @@ def _build_tts_history_item(
 
 
 def _tts_job_lane_for_plan(plan_key: str) -> str:
-    token = str(plan_key or "").strip().lower()
-    if token in {"plus", "pro-plus", "pro_plus", "proplus"}:
+    token = _plan_key_from_name(plan_key)
+    if token == "scale":
         return normalize_lane("pro_plus")
-    if token == "pro":
+    if token in {"pro", "starter", "creator"}:
         return normalize_lane("pro")
     return normalize_lane("free")
 
@@ -15579,6 +17067,126 @@ def _load_live_chunk_audio_base64(chunk: dict[str, Any]) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+def _dubbing_live_job_dir(job_id: str) -> Path:
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(job_id or "").strip()) or "unknown_job"
+    return DUBBING_LIVE_ARTIFACTS_DIR / safe_job_id
+
+
+def _persist_dubbing_live_chunk(job_id: str, index: int, wav_bytes: bytes, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    safe_index = max(0, int(index))
+    job_dir = _dubbing_live_job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    path = job_dir / f"chunk_{safe_index:04d}.wav"
+    content = bytes(wav_bytes or b"")
+    path.write_bytes(content)
+    wav_info = _read_wav_info(content)
+    return {
+        "index": safe_index,
+        "contentType": str((meta or {}).get("contentType") or "audio/wav"),
+        "durationMs": int(wav_info.get("durationMs") or 0),
+        "sampleRate": int(wav_info.get("sampleRate") or 0),
+        "speakerId": str((meta or {}).get("speakerId") or "SPEAKER_00"),
+        "engine": str((meta or {}).get("engine") or ""),
+        "voiceId": str((meta or {}).get("voiceId") or ""),
+        "textChars": int((meta or {}).get("textChars") or 0),
+        "path": str(path),
+        "sizeBytes": len(content),
+    }
+
+
+def _cleanup_dubbing_live_artifacts(job_id: str) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    job_dir = _dubbing_live_job_dir(safe_job_id)
+    if not job_dir.exists():
+        return
+    _cleanup_paths(str(job_dir))
+
+
+def _cleanup_expired_dubbing_live_artifacts() -> None:
+    now_ms = int(time.time() * 1000)
+    ttl_ms = max(60_000, int(VF_DUB_LIVE_ARTIFACT_TTL_MS))
+    if not DUBBING_LIVE_ARTIFACTS_DIR.exists():
+        return
+    for child in list(DUBBING_LIVE_ARTIFACTS_DIR.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            mtime_ms = int(child.stat().st_mtime * 1000)
+        except Exception:
+            continue
+        if mtime_ms <= 0:
+            continue
+        if (now_ms - mtime_ms) < ttl_ms:
+            continue
+        _cleanup_paths(str(child))
+
+
+def _load_dubbing_live_chunks_from_artifacts(job_id: str) -> list[dict[str, Any]]:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return []
+    job_dir = _dubbing_live_job_dir(safe_job_id)
+    if not job_dir.exists() or not job_dir.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for child in sorted(job_dir.glob("chunk_*.wav")):
+        if not child.is_file():
+            continue
+        match = re.match(r"^chunk_(\d+)\.wav$", child.name, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            index = int(match.group(1))
+        except Exception:
+            continue
+        try:
+            data = child.read_bytes()
+            wav_info = _read_wav_info(data)
+            size_bytes = len(data)
+        except Exception:
+            wav_info = {"durationMs": 0, "sampleRate": 0}
+            size_bytes = 0
+        out.append(
+            {
+                "index": int(index),
+                "contentType": "audio/wav",
+                "durationMs": int(wav_info.get("durationMs") or 0),
+                "sampleRate": int(wav_info.get("sampleRate") or 0),
+                "speakerId": "SPEAKER_00",
+                "engine": "",
+                "voiceId": "",
+                "textChars": 0,
+                "path": str(child.resolve()),
+                "sizeBytes": size_bytes,
+            }
+        )
+    out.sort(key=lambda item: int(item.get("index") or 0))
+    return out
+
+
+def _resolve_dubbing_job_chunk(job: dict[str, Any], chunk_index: int) -> Optional[dict[str, Any]]:
+    safe_index = max(0, int(chunk_index))
+    source_chunks = [
+        item
+        for item in list(job.get("liveChunks") or [])
+        if isinstance(item, dict)
+    ]
+    if not source_chunks:
+        source_chunks = _load_dubbing_live_chunks_from_artifacts(str(job.get("id") or ""))
+    for item in source_chunks:
+        try:
+            raw_index = item.get("index")
+            if raw_index is None:
+                continue
+            if int(raw_index) == safe_index:
+                return dict(item)
+        except Exception:
+            continue
+    return None
+
+
 def _resolve_tts_job_chunk(job: dict[str, Any], chunk_index: int) -> Optional[dict[str, Any]]:
     safe_index = max(0, int(chunk_index))
     live_state = job.get("liveState") if isinstance(job.get("liveState"), dict) else {}
@@ -15612,11 +17220,33 @@ def _convert_tts_audio_with_llvc_runtime(
     voice_id: str,
     voice_name: str,
 ) -> tuple[bytes, dict[str, str]]:
-    model_name, profile_id = _resolve_mapped_model_name(engine, voice_id, voice_name=voice_name)
+    safe_engine = _normalize_engine_name(engine)
+    requested_token = str(voice_name or voice_id or "").strip()
+    resolved_voice_token = requested_token
+    if _is_gem_runtime_engine(safe_engine):
+        resolved_voice_token = _resolve_gem_runtime_voice_name(requested_token, fallback="Fenrir")
+    model_name, profile_id = _resolve_mapped_model_name(
+        safe_engine,
+        resolved_voice_token or voice_id,
+        voice_name=resolved_voice_token or voice_name,
+    )
     if not model_name:
-        raise RuntimeError(f"No mapped LLVC model for {engine}:{voice_id or voice_name}.")
-    profile = _resolve_mapped_profile(engine, voice_id, voice_name=voice_name)
+        model_name, profile_id = _resolve_mapped_model_name(
+            safe_engine,
+            voice_id,
+            voice_name=voice_name,
+        )
+    if not model_name:
+        raise RuntimeError(f"No mapped LLVC model for {safe_engine}:{resolved_voice_token or voice_id or voice_name}.")
+    profile = _resolve_mapped_profile(
+        safe_engine,
+        resolved_voice_token or voice_id,
+        voice_name=resolved_voice_token or voice_name,
+    )
+    if not isinstance(profile, dict):
+        profile = _resolve_mapped_profile(safe_engine, voice_id, voice_name=voice_name)
     profile_pitch_shift = _post_tts_llvc_pitch_shift_for_profile(profile)
+    llvc_runtime_url = _next_llvc_runtime_url()
 
     temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_llvc_")
     input_path = Path(temp_dir) / "tts_input.wav"
@@ -15626,20 +17256,29 @@ def _convert_tts_audio_with_llvc_runtime(
         "x-vf-post-tts-pitch-shift": str(int(profile_pitch_shift)),
         "x-vf-post-tts-age-group": str(profile.get("ageGroup") or "") if isinstance(profile, dict) else "",
         "x-vf-post-tts-gender": str(profile.get("gender") or "") if isinstance(profile, dict) else "",
+        "x-vf-post-tts-voice-token": str(resolved_voice_token or voice_id or voice_name),
+        "x-vf-post-tts-engine": str(safe_engine),
+        "x-vf-post-tts-llvc-endpoint": str(llvc_runtime_url),
     }
     try:
         input_path.write_bytes(audio_bytes)
         with input_path.open("rb") as handle:
-            response = requests.post(
-                f"{LLVC_RUNTIME_URL}/v1/convert",
-                files={"file": ("tts_input.wav", handle, "audio/wav")},
-                data={
-                    "model_name": str(model_name),
-                    "preset": _normalize_llvc_preset(VF_TTS_POST_LLVC_PRESET),
-                    "pitch_shift": str(int(profile_pitch_shift)),
-                },
-                timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
-            )
+            acquired = _TTS_LIVE_LLVC_SEMAPHORE.acquire(timeout=max(1.0, float(VF_TTS_POST_LLVC_TIMEOUT_SEC)))
+            if not acquired:
+                raise RuntimeError("LLVC conversion queue timeout.")
+            try:
+                response = requests.post(
+                    f"{llvc_runtime_url}/v1/convert",
+                    files={"file": ("tts_input.wav", handle, "audio/wav")},
+                    data={
+                        "model_name": str(model_name),
+                        "preset": _normalize_llvc_preset(VF_TTS_POST_LLVC_PRESET),
+                        "pitch_shift": str(int(profile_pitch_shift)),
+                    },
+                    timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
+                )
+            finally:
+                _TTS_LIVE_LLVC_SEMAPHORE.release()
         if not response.ok:
             detail = response.text[:260] if response.text else f"HTTP {response.status_code}"
             raise RuntimeError(f"LLVC runtime conversion failed: {detail}")
@@ -15758,14 +17397,55 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 min_value=24,
                 max_value=VF_TTS_LIVE_CHUNK_WORDS_MAX,
             )
-            live_chunks = _split_text_live_chunks(
-                engine=engine,
-                text=text,
-                language=str(upstream_payload.get("language") or ""),
-                chunk_chars=chunk_chars,
-                chunk_words=chunk_words,
-                multi_speaker_payload=upstream_payload,
+            first_chunk_chars = _safe_bounded_int(
+                current.get("liveFirstChunkChars"),
+                default=min(chunk_chars, VF_TTS_LIVE_FIRST_CHUNK_CHARS),
+                min_value=120,
+                max_value=chunk_chars,
             )
+            first_chunk_words = _safe_bounded_int(
+                current.get("liveFirstChunkWords"),
+                default=min(chunk_words, VF_TTS_LIVE_FIRST_CHUNK_WORDS),
+                min_value=24,
+                max_value=chunk_words,
+            )
+            has_explicit_line_map = isinstance(upstream_payload.get("multi_speaker_line_map"), list) and bool(
+                list(upstream_payload.get("multi_speaker_line_map") or [])
+            )
+            live_chunks: list[dict[str, Any]] = []
+            if (
+                not has_explicit_line_map
+                and first_chunk_chars < chunk_chars
+                and first_chunk_words < chunk_words
+                and str(text or "").strip()
+            ):
+                fast_first = _split_plain_text_live_chunks(
+                    text,
+                    max_chars=first_chunk_chars,
+                    max_words=first_chunk_words,
+                )
+                if fast_first:
+                    first_chunk = dict(fast_first[0])
+                    remaining_text = " ".join(
+                        str(item.get("text") or "").strip()
+                        for item in fast_first[1:]
+                        if str(item.get("text") or "").strip()
+                    ).strip()
+                    remaining_chunks = _split_plain_text_live_chunks(
+                        remaining_text,
+                        max_chars=chunk_chars,
+                        max_words=chunk_words,
+                    ) if remaining_text else []
+                    live_chunks = [first_chunk, *remaining_chunks]
+            if not live_chunks:
+                live_chunks = _split_text_live_chunks(
+                    engine=engine,
+                    text=text,
+                    language=str(upstream_payload.get("language") or ""),
+                    chunk_chars=chunk_chars,
+                    chunk_words=chunk_words,
+                    multi_speaker_payload=upstream_payload,
+                )
             if not live_chunks:
                 live_chunks = [
                     {
@@ -15804,20 +17484,44 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             diagnostics_header = ""
             media_type = "audio/wav"
 
-            for chunk_index, chunk in enumerate(live_chunks):
-                latest = _TTS_JOB_QUEUE.get(job_id)
-                if isinstance(latest, dict):
-                    latest_status = str(latest.get("status") or "").strip().lower()
-                    if latest_status == "cancelled":
-                        _record_tts_terminal_event(
-                            job_id=job_id,
-                            engine=safe_engine,
-                            status="cancelled",
-                            reason="cancelled_by_user",
-                            status_code=409,
-                        )
-                        return
+            pipeline_enabled = (
+                VF_TTS_LIVE_PIPELINE_ENABLED
+                and len(live_chunks) > 1
+                and (VF_TTS_LIVE_SYNTH_CONCURRENCY > 1 or VF_TTS_LIVE_LLVC_CONCURRENCY > 1)
+            )
+            synth_concurrency = max(1, min(int(VF_TTS_LIVE_SYNTH_CONCURRENCY), len(live_chunks)))
+            llvc_concurrency = max(1, min(int(VF_TTS_LIVE_LLVC_CONCURRENCY), len(live_chunks)))
+            live_chunks_state = list(live_state.get("chunks") or [])
 
+            def _live_job_cancelled() -> bool:
+                latest = _TTS_JOB_QUEUE.get(job_id)
+                if not isinstance(latest, dict):
+                    return False
+                latest_status = str(latest.get("status") or "").strip().lower()
+                return latest_status == "cancelled"
+
+            def _mark_live_cancelled() -> None:
+                _record_tts_terminal_event(
+                    job_id=job_id,
+                    engine=safe_engine,
+                    status="cancelled",
+                    reason="cancelled_by_user",
+                    status_code=409,
+                )
+
+            def _mark_live_failed(*, status_code: int, detail: Any, error_tag: str) -> None:
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=int(status_code),
+                    detail=detail,
+                    error_tag=error_tag,
+                )
+
+            def _synthesize_live_chunk(chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
+                if _live_job_cancelled():
+                    return {"ok": False, "cancelled": True, "index": int(chunk_index)}
                 chunk_payload = _build_live_chunk_upstream_payload(
                     engine=engine,
                     base_payload=upstream_payload,
@@ -15825,7 +17529,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 )
                 chunk_started_ms = int(time.time() * 1000)
                 try:
-                    runtime_response = _runtime_http_request(
+                    runtime_chunk_response = _runtime_http_request(
                         "POST",
                         upstream_url,
                         json=chunk_payload,
@@ -15841,23 +17545,20 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         status_code=502,
                         elapsed_ms=chunk_elapsed,
                     )
-                    detail = {
-                        "error": f"TTS runtime is unreachable during live chunk synthesis: {exc}",
-                        "errorCode": ENGINE_OVERLOADED,
-                        "reason": "runtime_unreachable",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                        "chunkIndex": int(chunk_index),
+                    return {
+                        "ok": False,
+                        "index": int(chunk_index),
+                        "status_code": 502,
+                        "error_tag": f"runtime_unreachable:{exc}",
+                        "detail": {
+                            "error": f"TTS runtime is unreachable during live chunk synthesis: {exc}",
+                            "errorCode": ENGINE_OVERLOADED,
+                            "reason": "runtime_unreachable",
+                            "trace_id": trace_id,
+                            "jobId": job_id,
+                            "chunkIndex": int(chunk_index),
+                        },
                     }
-                    _mark_job_failed_and_revert_usage(
-                        job_id=job_id,
-                        uid=uid,
-                        request_id=request_id,
-                        status_code=502,
-                        detail=detail,
-                        error_tag=f"runtime_unreachable:{exc}",
-                    )
-                    return
 
                 chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
                 _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=chunk_elapsed)
@@ -15865,37 +17566,31 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     engine=engine,
                     endpoint=runtime_path,
                     method="POST",
-                    status_code=int(runtime_response.status_code),
+                    status_code=int(runtime_chunk_response.status_code),
                     elapsed_ms=chunk_elapsed,
                 )
-                if not runtime_response.ok:
-                    detail = _decode_runtime_error_detail(runtime_response)
-                    mapped_status = _map_runtime_failure_status(engine, int(runtime_response.status_code), detail)
-                    response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
-                    if isinstance(detail, dict) and response_trace_id and not detail.get("trace_id"):
-                        detail = {**detail, "trace_id": response_trace_id}
-                    _mark_job_failed_and_revert_usage(
-                        job_id=job_id,
-                        uid=uid,
-                        request_id=request_id,
-                        status_code=mapped_status,
-                        detail=detail or "TTS runtime failed.",
-                        error_tag=f"runtime_error:{mapped_status}",
-                    )
-                    return
+                if not runtime_chunk_response.ok:
+                    detail = _decode_runtime_error_detail(runtime_chunk_response)
+                    mapped_status = _map_runtime_failure_status(engine, int(runtime_chunk_response.status_code), detail)
+                    response_trace = str(runtime_chunk_response.headers.get("x-voiceflow-trace-id") or "").strip()
+                    if isinstance(detail, dict) and response_trace and not detail.get("trace_id"):
+                        detail = {**detail, "trace_id": response_trace}
+                    return {
+                        "ok": False,
+                        "index": int(chunk_index),
+                        "status_code": int(mapped_status),
+                        "error_tag": f"runtime_error:{mapped_status}",
+                        "detail": detail or "TTS runtime failed.",
+                    }
 
-                media_type = str(runtime_response.headers.get("content-type") or media_type or "audio/wav")
-                response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or response_trace_id or "").strip()
-                diagnostics_header = str(runtime_response.headers.get("x-voiceflow-diagnostics") or diagnostics_header or "").strip()
-
-                chunk_audio = bytes(runtime_response.content or b"")
+                chunk_audio = bytes(runtime_chunk_response.content or b"")
                 if len(chunk_audio) < 100:
-                    _mark_job_failed_and_revert_usage(
-                        job_id=job_id,
-                        uid=uid,
-                        request_id=request_id,
-                        status_code=502,
-                        detail={
+                    return {
+                        "ok": False,
+                        "index": int(chunk_index),
+                        "status_code": 502,
+                        "error_tag": "runtime_empty_audio",
+                        "detail": {
                             "error": "Live chunk synthesis returned empty audio.",
                             "errorCode": ENGINE_OVERLOADED,
                             "reason": "runtime_empty_audio",
@@ -15903,46 +17598,82 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                             "jobId": job_id,
                             "chunkIndex": int(chunk_index),
                         },
-                        error_tag="runtime_empty_audio",
-                    )
-                    return
+                    }
 
+                return {
+                    "ok": True,
+                    "index": int(chunk_index),
+                    "chunk": dict(chunk),
+                    "chunkPayload": chunk_payload,
+                    "audio": chunk_audio,
+                    "mediaType": str(runtime_chunk_response.headers.get("content-type") or "audio/wav"),
+                    "responseTraceId": str(runtime_chunk_response.headers.get("x-voiceflow-trace-id") or "").strip(),
+                    "diagnosticsHeader": str(runtime_chunk_response.headers.get("x-voiceflow-diagnostics") or "").strip(),
+                }
+
+            def _convert_live_chunk(result: dict[str, Any]) -> dict[str, Any]:
+                if not result.get("ok"):
+                    return result
+                converted_audio = bytes(result.get("audio") or b"")
+                conversion_headers: dict[str, str] = {}
                 if VF_TTS_POST_LLVC_ENABLED and not post_tts_disable:
                     conversion_started_ms = int(time.time() * 1000)
                     try:
-                        converted_audio_bytes, conversion_headers = _convert_tts_audio_with_llvc_runtime(
-                            audio_bytes=chunk_audio,
+                        llvc_audio, llvc_headers = _convert_tts_audio_with_llvc_runtime(
+                            audio_bytes=converted_audio,
                             engine=engine,
                             voice_id=voice_id,
-                            voice_name=voice_name or str(chunk_payload.get("voiceName") or ""),
+                            voice_name=voice_name or str((result.get("chunkPayload") or {}).get("voiceName") or ""),
                         )
                         conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
                         _record_tts_live_chunk_llvc_latency(elapsed_ms=conversion_elapsed_ms)
-                        if len(converted_audio_bytes) < 100:
+                        if len(llvc_audio) < 100:
                             raise RuntimeError("Converted live chunk is empty.")
-                        chunk_audio = converted_audio_bytes
-                        post_conversion_headers.update(conversion_headers)
+                        converted_audio = llvc_audio
+                        conversion_headers.update(llvc_headers)
                     except Exception as exc:
                         conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
                         _record_tts_live_chunk_llvc_latency(elapsed_ms=conversion_elapsed_ms)
                         if VF_TTS_POST_LLVC_REQUIRED:
-                            detail = _post_tts_conversion_failure_detail(
-                                exc=exc,
-                                trace_id=trace_id,
-                                job_id=job_id,
-                                chunk_index=int(chunk_index),
-                            )
-                            _mark_job_failed_and_revert_usage(
-                                job_id=job_id,
-                                uid=uid,
-                                request_id=request_id,
-                                status_code=503,
-                                detail=detail,
-                                error_tag="post_tts_conversion_failed",
-                            )
-                            return
-                        post_conversion_headers["x-vf-post-tts-conversion"] = "bypassed_error"
-                        post_conversion_headers["x-vf-post-tts-error"] = str(exc).replace("\n", " ").replace("\r", " ")[:180]
+                            return {
+                                "ok": False,
+                                "index": int(result.get("index") or 0),
+                                "status_code": 503,
+                                "error_tag": "post_tts_conversion_failed",
+                                "detail": _post_tts_conversion_failure_detail(
+                                    exc=exc,
+                                    trace_id=trace_id,
+                                    job_id=job_id,
+                                    chunk_index=int(result.get("index") or 0),
+                                ),
+                            }
+                        conversion_headers["x-vf-post-tts-conversion"] = "bypassed_error"
+                        conversion_headers["x-vf-post-tts-error"] = str(exc).replace("\n", " ").replace("\r", " ")[:180]
+                return {
+                    **result,
+                    "ok": True,
+                    "audio": converted_audio,
+                    "conversionHeaders": conversion_headers,
+                }
+
+            def _emit_live_chunk(result: dict[str, Any]) -> bool:
+                nonlocal live_chunks_state
+                nonlocal live_state
+                nonlocal response_trace_id
+                nonlocal diagnostics_header
+                nonlocal media_type
+                nonlocal first_chunk_recorded
+                if _live_job_cancelled():
+                    _mark_live_cancelled()
+                    return False
+                chunk_index = int(result.get("index") or 0)
+                chunk_audio = bytes(result.get("audio") or b"")
+                conversion_headers = dict(result.get("conversionHeaders") or {})
+                if conversion_headers:
+                    post_conversion_headers.update(conversion_headers)
+                media_type = str(result.get("mediaType") or media_type or "audio/wav")
+                response_trace_id = str(result.get("responseTraceId") or response_trace_id or "").strip()
+                diagnostics_header = str(result.get("diagnosticsHeader") or diagnostics_header or "").strip()
 
                 try:
                     chunk_meta = _persist_live_chunk(
@@ -15950,7 +17681,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         chunk_index,
                         chunk_audio,
                         meta={
-                            "textChars": int(chunk.get("textChars") or len(str(chunk.get("text") or ""))),
+                            "textChars": int((result.get("chunk") or {}).get("textChars") or len(str((result.get("chunk") or {}).get("text") or ""))),
                             "engine": safe_engine,
                             "traceId": response_trace_id or trace_id,
                         },
@@ -15961,10 +17692,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         f"engine={safe_engine} err={exc}",
                         flush=True,
                     )
-                    _mark_job_failed_and_revert_usage(
-                        job_id=job_id,
-                        uid=uid,
-                        request_id=request_id,
+                    _mark_live_failed(
                         status_code=500,
                         detail={
                             "error": f"Failed to persist live chunk: {exc}",
@@ -15976,8 +17704,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         },
                         error_tag="live_chunk_persist_failed",
                     )
-                    return
-                live_chunks_state = list(live_state.get("chunks") or [])
+                    return False
                 live_chunks_state.append(chunk_meta)
                 playable_duration_ms = sum(int(item.get("durationMs") or 0) for item in live_chunks_state)
                 live_state = {
@@ -15985,7 +17712,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     "playableChunks": len(live_chunks_state),
                     "playableDurationMs": int(playable_duration_ms),
                     "chunkCursorNext": int(chunk_index + 1),
-                    "chunks": live_chunks_state,
+                    "chunks": list(live_chunks_state),
                 }
                 _TTS_JOB_QUEUE.update(job_id, {"liveState": live_state})
                 chunk_audio_bytes.append(chunk_audio)
@@ -15999,6 +17726,104 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         f"engine={safe_engine} trace={response_trace_id or trace_id}",
                         flush=True,
                     )
+                return True
+
+            def _handle_live_result_failure(result: dict[str, Any]) -> bool:
+                if bool(result.get("cancelled")):
+                    _mark_live_cancelled()
+                    return False
+                _mark_live_failed(
+                    status_code=int(result.get("status_code") or 500),
+                    detail=result.get("detail") or {
+                        "error": "Live chunk processing failed.",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "live_chunk_failed",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                    },
+                    error_tag=str(result.get("error_tag") or "live_chunk_failed"),
+                )
+                return False
+
+            if pipeline_enabled:
+                ready_by_index: dict[int, dict[str, Any]] = {}
+                next_emit_index = 0
+                synth_futures: dict[Future[dict[str, Any]], int] = {}
+                llvc_futures: dict[Future[dict[str, Any]], int] = {}
+                with ThreadPoolExecutor(max_workers=synth_concurrency) as synth_executor, ThreadPoolExecutor(
+                    max_workers=llvc_concurrency
+                ) as llvc_executor:
+                    for chunk_index, chunk in enumerate(live_chunks):
+                        synth_future = synth_executor.submit(_synthesize_live_chunk, int(chunk_index), dict(chunk))
+                        synth_futures[synth_future] = int(chunk_index)
+
+                    for synth_future in as_completed(list(synth_futures.keys())):
+                        try:
+                            synth_result = synth_future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            synth_result = {
+                                "ok": False,
+                                "status_code": 500,
+                                "error_tag": "live_chunk_synth_internal_error",
+                                "detail": {
+                                    "error": f"Live chunk synth stage failed: {exc}",
+                                    "errorCode": ENGINE_OVERLOADED,
+                                    "reason": "live_chunk_synth_internal_error",
+                                    "trace_id": trace_id,
+                                    "jobId": job_id,
+                                },
+                            }
+                        if not bool(synth_result.get("ok")):
+                            for pending in synth_futures.keys():
+                                pending.cancel()
+                            for pending in llvc_futures.keys():
+                                pending.cancel()
+                            _handle_live_result_failure(synth_result)
+                            return
+                        llvc_future = llvc_executor.submit(_convert_live_chunk, synth_result)
+                        llvc_futures[llvc_future] = int(synth_result.get("index") or 0)
+
+                    for llvc_future in as_completed(list(llvc_futures.keys())):
+                        try:
+                            converted_result = llvc_future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            converted_result = {
+                                "ok": False,
+                                "status_code": 500,
+                                "error_tag": "live_chunk_conversion_internal_error",
+                                "detail": {
+                                    "error": f"Live chunk conversion stage failed: {exc}",
+                                    "errorCode": ENGINE_OVERLOADED,
+                                    "reason": "live_chunk_conversion_internal_error",
+                                    "trace_id": trace_id,
+                                    "jobId": job_id,
+                                },
+                            }
+                        if not bool(converted_result.get("ok")):
+                            for pending in llvc_futures.keys():
+                                pending.cancel()
+                            _handle_live_result_failure(converted_result)
+                            return
+
+                        converted_index = int(converted_result.get("index") or 0)
+                        ready_by_index[converted_index] = converted_result
+                        while next_emit_index in ready_by_index:
+                            emit_result = ready_by_index.pop(next_emit_index)
+                            if not _emit_live_chunk(emit_result):
+                                return
+                            next_emit_index += 1
+            else:
+                for chunk_index, chunk in enumerate(live_chunks):
+                    synth_result = _synthesize_live_chunk(int(chunk_index), dict(chunk))
+                    if not bool(synth_result.get("ok")):
+                        _handle_live_result_failure(synth_result)
+                        return
+                    converted_result = _convert_live_chunk(synth_result)
+                    if not bool(converted_result.get("ok")):
+                        _handle_live_result_failure(converted_result)
+                        return
+                    if not _emit_live_chunk(converted_result):
+                        return
 
             _record_tts_live_chunk_count(chunk_count=len(chunk_audio_bytes))
             try:
@@ -16334,7 +18159,7 @@ def _tts_worker_loop(worker_id: str) -> None:
 
 
 def _ensure_tts_workers_started() -> None:
-    if not VF_TTS_QUEUE_ENABLED:
+    if not VF_TTS_QUEUE_ENABLED or not VF_SERVICE_IS_WORKER or VF_TTS_QUEUE_WORKER_COUNT <= 0:
         return
     with _TTS_JOB_WORKER_LOCK:
         if len(_TTS_JOB_WORKER_THREADS) >= VF_TTS_QUEUE_WORKER_COUNT:
@@ -16534,7 +18359,13 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
     request_id = str(payload.request_id or idempotency_key or uuid.uuid4().hex).strip()
     trace_id = str(payload.trace_id or request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
 
-    plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(uid, len(text), trace_id)
+    plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
+        uid,
+        len(text),
+        trace_id,
+        engine=engine,
+        bypass=admin_limit_bypass,
+    )
     quota_headers: dict[str, str] = {}
     if not admin_limit_bypass:
         quota_headers = _precheck_tts_success_quota(uid, plan_name, plan_key, trace_id)
@@ -16833,6 +18664,32 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "job": _tts_job_status_payload(cancelled, include_result=False)})
 
 
+@app.get("/models/kokoro/status")
+def kokoro_model_status() -> JSONResponse:
+    payload = _kokoro_model_status_payload()
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/models/{model_path:path}")
+def serve_local_model_file(model_path: str) -> Response:
+    safe_model_path = str(model_path or "").strip().lstrip("/")
+    if not safe_model_path:
+        raise HTTPException(status_code=404, detail="Model file not found.")
+    candidate = (LOCAL_MODEL_MIRROR_ROOT / safe_model_path).resolve()
+    try:
+        candidate.relative_to(LOCAL_MODEL_MIRROR_ROOT)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Model file not found.") from exc
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Model file not found.")
+    guessed_media_type = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
+    return FileResponse(
+        str(candidate),
+        media_type=guessed_media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @app.get("/runtime/logs/tail", response_model=RuntimeLogTailResponse)
 def tail_runtime_logs(
     request: Request,
@@ -16914,6 +18771,7 @@ def tail_runtime_logs(
 @app.post("/tts/engines/switch", response_model=TtsEngineSwitchResponse)
 def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     try:
         engine = _normalize_engine_name(payload.engine)
         health_url = TTS_ENGINE_HEALTH_URLS[engine]
@@ -17032,6 +18890,7 @@ async def extract_audio_from_video(
 @app.post("/services/dubbing/prepare")
 def prepare_dubbing_services(payload: PrepareDubbingServicesRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     engines = ["GEM", "KOKORO"]
     results: list[dict[str, Any]] = []
     overall_ok = True
@@ -17333,7 +19192,8 @@ def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
                 "gender": str(item.get("gender") or "unknown"),
                 "source": str(item.get("source") or "voice-map"),
             }
-            normalized.append(_apply_mapped_voice_fields("GEM", voice_id, entry))
+            mapped_entry = _apply_mapped_voice_fields("GEM", voice_id, entry)
+            normalized.append(_annotate_voice_access_fields(normalized_engine, mapped_entry))
         if normalized:
             return normalized
 
@@ -17346,7 +19206,8 @@ def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
             "gender": "unknown",
             "source": "gateway-fallback",
         }
-        return [_apply_mapped_voice_fields("GEM", "v1", fallback)]
+        mapped_fallback = _apply_mapped_voice_fields("GEM", "v1", fallback)
+        return [_annotate_voice_access_fields(normalized_engine, mapped_fallback)]
 
     base_url = KOKORO_RUNTIME_URL
     try:
@@ -17366,13 +19227,20 @@ def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
                 voice_id = f"voice_{idx}"
             name = str(voice.get("name") or voice.get("voice") or voice_id).strip() or voice_id
             normalized.append(
-                _apply_mapped_voice_fields(normalized_engine, voice_id, {
-                    "voice_id": voice_id,
-                    "name": name,
-                    "language": str(voice.get("language") or "unknown"),
-                    "gender": str(voice.get("gender") or "unknown"),
-                    "source": str(voice.get("source") or "runtime"),
-                })
+                _annotate_voice_access_fields(
+                    normalized_engine,
+                    _apply_mapped_voice_fields(
+                        normalized_engine,
+                        voice_id,
+                        {
+                            "voice_id": voice_id,
+                            "name": name,
+                            "language": str(voice.get("language") or "unknown"),
+                            "gender": str(voice.get("gender") or "unknown"),
+                            "source": str(voice.get("source") or "runtime"),
+                        },
+                    ),
+                )
             )
         return normalized
     except Exception:
@@ -17463,6 +19331,76 @@ def _safe_sha256(path: Path) -> Optional[str]:
         for chunk in iter(lambda: handle.read(1_048_576), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _load_video_pipeline_asset_sources() -> list[dict[str, Any]]:
+    try:
+        if not VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST.exists():
+            return []
+        payload = json.loads(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST.read_text(encoding="utf-8-sig"))
+        rows = payload.get("assets") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return []
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            output.append(dict(row))
+        return output
+    except Exception:
+        return []
+
+
+def _video_pipeline_assets_status() -> dict[str, Any]:
+    entries = _load_video_pipeline_asset_sources()
+    rows: list[dict[str, Any]] = []
+    required_missing: list[str] = []
+    optional_missing: list[str] = []
+
+    for entry in entries:
+        asset_id = str(entry.get("id") or "").strip()
+        output_rel = str(entry.get("outputPath") or "").strip().replace("\\", "/").lstrip("/")
+        if not asset_id or not output_rel:
+            continue
+        required = bool(entry.get("required", True))
+        target = (APP_ROOT / output_rel).resolve()
+        exists = target.exists()
+        row = {
+            "id": asset_id,
+            "required": required,
+            "path": str(target),
+            "exists": exists,
+        }
+        rows.append(row)
+        if exists:
+            continue
+        if required:
+            required_missing.append(asset_id)
+        else:
+            optional_missing.append(asset_id)
+
+    return {
+        "manifestPath": str(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST),
+        "downloadManifestPath": str(VIDEO_PIPELINE_ASSET_DOWNLOAD_MANIFEST),
+        "requiredMissing": required_missing,
+        "optionalMissing": optional_missing,
+        "ready": len(required_missing) == 0,
+        "assets": rows,
+    }
+
+
+def _extract_phase_error_code(exc: Exception) -> str:
+    raw = str(exc or "").strip()
+    if not raw.startswith("phase_failed:"):
+        return "STAGE_FAILED"
+    try:
+        _, phase, _reason = raw.split(":", 2)
+    except Exception:
+        return "STAGE_FAILED"
+    token = re.sub(r"[^A-Za-z0-9]+", "_", str(phase or "").strip()).strip("_").upper()
+    if not token:
+        return "STAGE_FAILED"
+    return f"PHASE_FAILED_{token}"
 
 
 def _runtime_online(url: str) -> bool:
@@ -17646,9 +19584,35 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
     selected_routes: list[dict[str, Any]] = []
     quality_gate: dict[str, Any] = {"passed": False, "reasons": []}
     preflight: dict[str, Any] = {"ok": False, "checks": [], "failureCount": 0}
+    speaker_stats: dict[str, Any] = {
+        "detectedSpeakers": 0,
+        "mappedSpeakers": 0,
+        "fallbackBindings": [],
+        "driftAlerts": [],
+    }
+    qos_state: dict[str, Any] = {
+        "selectedProfile": "cpu_quality",
+        "downgraded": False,
+        "reason": "",
+        "gpuUsed": False,
+    }
     clone_scope = "job_only"
     engine_selected = "AUTO_RELIABLE"
     engine_executed = "GEM"
+    processing_profile = "cpu_quality"
+    multispeaker_policy = "hybrid_auto"
+    voice_binding_policy = "stable_fallback"
+    qos_policy = "adaptive_hq_first"
+    hardware_policy = "gpu_preferred"
+    timeout_policy = "adaptive"
+    live_play_mode = "off"
+    live_chunk_target_ms = 3000
+    live_include_chunk_audio = False
+    max_speaker_count = 8
+    live_enabled = False
+    live_chunks_meta: list[dict[str, Any]] = []
+    live_next_cursor = 0
+    clip_window: dict[str, int] | None = None
     fallback_used = False
     fallback_reason: Optional[str] = None
     supports_one_shot_clone_at_decision = True
@@ -17686,11 +19650,11 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             status="running",
             stage="preflight",
             progress=1,
-            pipelineVersion="v2",
+            pipelineVersion=VF_DUB_PIPELINE_VERSION,
             errorCode=None,
             stageTimeline=stage_timeline,
         )
-        _append_dubbing_log(job_id, "Starting dubbing pipeline v2")
+        _append_dubbing_log(job_id, f"Starting dubbing pipeline {VF_DUB_PIPELINE_VERSION}")
 
         from video_dubbing.config import build_config, run_strict_preflight
         from video_dubbing.main import run_pipeline
@@ -17711,7 +19675,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             report_path.write_text(
                 json.dumps(
                     {
-                        "pipelineVersion": "v2",
+                        "pipelineVersion": VF_DUB_PIPELINE_VERSION,
                         "jobId": job_id,
                         "preflight": preflight,
                         "stageTimeline": stage_timeline,
@@ -17725,13 +19689,21 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                         "synthesisFailures": [],
                         "qualityGate": {"passed": False, "reasons": ["preflight_failed"]},
                         "speakerSynthesisStats": {},
+                        "speakerStats": speaker_stats,
                         "engineSelected": engine_selected,
                         "engineExecuted": engine_executed,
                         "engineSelectedDisplay": _conversion_policy_display_name(engine_selected),
                         "engineExecutedDisplay": _executed_engine_display_name(engine_executed),
+                        "qosState": qos_state,
                         "fallbackUsed": fallback_used,
                         "fallbackReason": fallback_reason,
                         "supportsOneShotCloneAtDecision": supports_one_shot_clone_at_decision,
+                        "directorJson": {},
+                        "isochronyStats": {},
+                        "llvcMetrics": {},
+                        "lipsyncMetrics": {},
+                        "assets": _video_pipeline_assets_status(),
+                        "thinkingPolicy": {},
                     },
                     indent=2,
                 ),
@@ -17743,10 +19715,12 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 speakerProfiles=[],
                 speakerSynthesisStats={},
                 qualityGate={"passed": False, "reasons": ["preflight_failed"]},
+                speakerStats=speaker_stats,
                 engineSelected=engine_selected,
                 engineExecuted=engine_executed,
                 engineSelectedDisplay=_conversion_policy_display_name(engine_selected),
                 engineExecutedDisplay=_executed_engine_display_name(engine_executed),
+                qosState=qos_state,
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
@@ -17761,27 +19735,100 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         if tts_route not in {"auto", "gem_only", "kokoro_only"}:
             tts_route = "auto"
         engine_executed = _default_engine_for_tts_route(tts_route)
-        multispeaker_policy = str(advanced.get("multispeaker_policy") or "auto_diarize").strip().lower()
+        multispeaker_policy = _normalize_multispeaker_policy(
+            str(advanced.get("multispeaker_policy") or "hybrid_auto"),
+            default="hybrid_auto",
+        )
+        voice_binding_policy = _normalize_voice_binding_policy(
+            str(advanced.get("voice_binding_policy") or "stable_fallback"),
+            default="stable_fallback",
+        )
+        qos_policy = _normalize_qos_policy(
+            str(advanced.get("qos_policy") or "adaptive_hq_first"),
+            default="adaptive_hq_first",
+        )
+        hardware_policy = _normalize_hardware_policy(
+            str(advanced.get("hardware_policy") or "gpu_preferred"),
+            default="gpu_preferred",
+        )
+        timeout_policy = _normalize_timeout_policy(
+            str(advanced.get("timeout_policy") or "adaptive"),
+            default="adaptive",
+        )
+        live_play_mode = _normalize_live_play_mode(
+            str(advanced.get("live_play_mode") or "progressive_audio"),
+            default="progressive_audio",
+        )
+        live_chunk_target_ms = _safe_bounded_int(
+            advanced.get("live_chunk_target_ms"),
+            default=3000,
+            min_value=600,
+            max_value=12000,
+        )
+        live_include_chunk_audio = bool(advanced.get("live_include_chunk_audio"))
+        max_speaker_count = _safe_bounded_int(
+            advanced.get("max_speaker_count"),
+            default=8,
+            min_value=1,
+            max_value=16,
+        )
+        live_enabled = bool(VF_DUB_LIVE_PLAY_ENABLED and live_play_mode == "progressive_audio")
         segment_failure_policy = str(advanced.get("segment_failure_policy") or "hard_fail").strip().lower()
         clone_scope = str(advanced.get("clone_scope") or "job_only").strip().lower()
         transcript_override = str(advanced.get("transcript_override") or "").strip()
-        _ = transcript_override  # Reserved for future stage override injection.
-        _ = multispeaker_policy
+        processing_profile = _normalize_dubbing_processing_profile(
+            str(advanced.get("processing_profile") or "cpu_quality"),
+            default="cpu_quality",
+        )
+        processing_profile, qos_state, profile_overrides = _select_dubbing_qos_state(
+            requested_profile=processing_profile,
+            qos_policy=qos_policy,
+            hardware_policy=hardware_policy,
+            transcript_override=transcript_override,
+        )
+        clip_window = _normalize_dubbing_clip_window(advanced.get("clip_window"))
         _ = clone_scope
         clone_required = clone_scope == "job_only" or bool(input_voice_map)
         _ = clone_required
         supports_one_shot_clone_at_decision = False
 
+        _cleanup_expired_dubbing_live_artifacts()
+        _cleanup_dubbing_live_artifacts(job_id)
+        _update_dubbing_job(
+            job_id,
+            qosState=qos_state,
+            live={
+                "enabled": live_enabled,
+                "mode": live_play_mode if live_enabled else "off",
+                "playableChunks": 0,
+                "playableDurationMs": 0,
+            },
+            chunkCursorNext=0,
+            liveChunks=[],
+        )
+
+        pipeline_source_path = source_path
+        if clip_window is not None:
+            clipped_suffix = source_path.suffix if source_path.suffix else ".mp4"
+            clipped_path = job_dir / f"source_clip_{int(clip_window['start_ms'])}_{int(clip_window['end_ms'])}{clipped_suffix}"
+            pipeline_source_path = _trim_media_to_clip_window(
+                source_path,
+                clipped_path,
+                start_ms=int(clip_window["start_ms"]),
+                end_ms=int(clip_window["end_ms"]),
+            )
+            _append_dubbing_log(
+                job_id,
+                f"Applied clip window start_ms={clip_window['start_ms']} end_ms={clip_window['end_ms']}",
+            )
+
         stage_map = {
-            "stage1_preprocess": ("preprocess", 12),
-            "stage2_diarize": ("diarize", 22),
-            "stage3_emotion": ("emotion_detect", 34),
-            "stage4_segment_detect": ("segment_detect", 44),
-            "stage5_translate": ("translate", 54),
-            "stage6_tts": ("tts", 70),
-            "stage7_world": ("prosody_transfer", 82),
-            "stage8_reconstruct": ("reconstruct", 92),
-            "stage9_lipsync": ("lip_sync", 97),
+            "acoustic_isolation": ("acoustic_isolation", 12),
+            "director": ("director", 28),
+            "isochrony_translation": ("isochrony_translation", 44),
+            "base_tts": ("base_tts", 62),
+            "llvc_timbre_transfer": ("llvc_timbre_transfer", 80),
+            "visual_lipsync": ("visual_lipsync", 96),
         }
 
         def _pipeline_logger(message: str) -> None:
@@ -17800,8 +19847,9 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             speakers = sorted({str(seg.get("speaker") or "SPEAKER_00") for seg in segments})
             if len(speakers) == 0 and len(segments) > 0:
                 raise RuntimeError("speaker_detection_empty")
+            preferred_seed = input_voice_map if input_voice_map else initial
             resolved_map, routed = _auto_route_dubbing_voices(
-                preferred_map=input_voice_map if input_voice_map else initial,
+                preferred_map=preferred_seed if isinstance(preferred_seed, dict) else {},
                 speakers=speakers,
                 tts_route=tts_route,
             )
@@ -17814,17 +19862,91 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             for seg in segments:
                 speaker = str(seg.get("speaker") or "SPEAKER_00")
                 seg["tts_engine"] = selected_engine_by_speaker.get(speaker, default_engine)
+                chosen_voice = str(resolved_map.get(speaker) or resolved_map.get("default") or "").strip()
+                if chosen_voice:
+                    seg["voice_id"] = chosen_voice
             selected_routes[:] = routed
+            speaker_stats["mappedSpeakers"] = len([speaker for speaker in speakers if speaker in resolved_map])
             return resolved_map
 
+        def _pipeline_live_chunk(chunk: dict[str, Any]) -> None:
+            nonlocal live_next_cursor
+            if not live_enabled:
+                return
+            if _is_job_cancelled(job_id):
+                return
+            if not isinstance(chunk, dict):
+                return
+            chunk_bytes = bytes(chunk.get("audio_bytes") or b"")
+            if not chunk_bytes:
+                return
+            chunk_index = int(chunk.get("index") or live_next_cursor)
+            safe_speaker = str(chunk.get("speaker") or "SPEAKER_00")
+            safe_engine = str(chunk.get("engine") or "")
+            safe_voice = str(chunk.get("voice_id") or "")
+            text_chars = int(chunk.get("text_chars") or 0)
+            persisted = _persist_dubbing_live_chunk(
+                job_id,
+                chunk_index,
+                chunk_bytes,
+                meta={
+                    "speakerId": safe_speaker,
+                    "engine": safe_engine,
+                    "voiceId": safe_voice,
+                    "textChars": text_chars,
+                    "contentType": str(chunk.get("content_type") or "audio/wav"),
+                },
+            )
+            existing_indexes = {
+                int(item.get("index"))
+                for item in live_chunks_meta
+                if isinstance(item, dict) and item.get("index") is not None
+            }
+            persisted_index = int(persisted.get("index")) if persisted.get("index") is not None else -1
+            if persisted_index in existing_indexes:
+                live_chunks_meta[:] = [
+                    item
+                    for item in live_chunks_meta
+                    if (int(item.get("index")) if item.get("index") is not None else -1) != persisted_index
+                ]
+            live_chunks_meta.append(persisted)
+            live_chunks_meta.sort(key=lambda item: int(item.get("index") or 0))
+            live_next_cursor = max(live_next_cursor, int(persisted.get("index") or 0) + 1)
+            playable_duration_ms = sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)
+            _update_dubbing_job(
+                job_id,
+                live={
+                    "enabled": True,
+                    "mode": live_play_mode,
+                    "playableChunks": len(live_chunks_meta),
+                    "playableDurationMs": int(playable_duration_ms),
+                    "chunkCursorNext": int(live_next_cursor),
+                },
+                chunkCursorNext=int(live_next_cursor),
+                liveChunks=list(live_chunks_meta),
+            )
+
         result = run_pipeline(
-            source_path=source_path,
+            source_path=pipeline_source_path,
             output_dir=job_dir,
             target_language=target_language,
             tts_route=tts_route,
             voice_map=input_voice_map,
-            strict=True,
+            strict=VF_DUB_STRICT_CORE_PHASES,
+            transcript_override=transcript_override,
+            config_overrides=profile_overrides,
             voice_map_resolver=_resolve_voice_map,
+            runtime_options={
+                "multispeaker_policy": multispeaker_policy,
+                "voice_binding_policy": voice_binding_policy,
+                "qos_policy": qos_policy,
+                "hardware_policy": hardware_policy,
+                "timeout_policy": timeout_policy,
+                "live_play_mode": live_play_mode if live_enabled else "off",
+                "live_chunk_target_ms": live_chunk_target_ms,
+                "max_speaker_count": max_speaker_count,
+                "live_chunk_callback": _pipeline_live_chunk if live_enabled else None,
+            },
             logger=_pipeline_logger,
         )
         close_stage("completed")
@@ -17865,6 +19987,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         tts_requests = list(result.get("tts_requests") or [])
         engine_executed = _resolve_engine_executed_from_requests(tts_requests)
         synthesis_failures = list(result.get("synthesis_failures") or [])
+        fallback_bindings = list(result.get("speaker_fallback_bindings") or [])
         for speaker in speakers:
             speaker_synthesis_stats[speaker] = {"segments": 0, "ok": 0, "failed": 0}
         for req in tts_requests:
@@ -17876,9 +19999,60 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             else:
                 stats["failed"] += 1
 
+        speaker_voice_history: dict[str, set[str]] = {}
+        for req in tts_requests:
+            speaker = str(req.get("speaker") or "SPEAKER_00")
+            voice_id = str(req.get("voice_id") or "").strip()
+            if not voice_id:
+                continue
+            values = speaker_voice_history.setdefault(speaker, set())
+            values.add(voice_id)
+        drift_alerts: list[dict[str, Any]] = []
+        for speaker, voices in speaker_voice_history.items():
+            if len(voices) <= 1:
+                continue
+            drift_alerts.append(
+                {
+                    "speaker": speaker,
+                    "voiceIds": sorted(voices),
+                    "reason": "multi_voice_detected",
+                }
+            )
+        speaker_stats = {
+            "detectedSpeakers": len(speakers),
+            "mappedSpeakers": max(
+                int(speaker_stats.get("mappedSpeakers") or 0),
+                len(
+                    [
+                        speaker
+                        for speaker in speakers
+                        if str(
+                            (
+                                result.get("voice_map_resolved")
+                                if isinstance(result.get("voice_map_resolved"), dict)
+                                else {}
+                            ).get(speaker)
+                            or ""
+                        ).strip()
+                    ]
+                ),
+            ),
+            "fallbackBindings": fallback_bindings,
+            "driftAlerts": drift_alerts,
+        }
+        fallback_used = fallback_used or bool(fallback_bindings)
+        if fallback_used and not fallback_reason:
+            fallback_reason = "speaker_binding_fallback"
+
         if synthesis_failures and segment_failure_policy == "hard_fail":
             raise RuntimeError(f"tts_segment_failures:{len(synthesis_failures)}")
 
+        director_json = dict(result.get("director_json") or {})
+        isochrony_stats = dict(result.get("isochrony_stats") or {})
+        llvc_metrics = dict(result.get("llvc_metrics") or {})
+        lipsync_metrics = dict(result.get("lipsync_metrics") or {})
+        assets_payload = dict(result.get("assets") or _video_pipeline_assets_status())
+        thinking_policy = dict(result.get("thinking_policy") or {})
         output_files = _build_dubbing_output_files(result)
         segment_stats = {
             "count": len(segments),
@@ -17889,7 +20063,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         if synthesis_failures:
             quality_gate["reasons"].append("segment_synthesis_failed")
         report_payload = {
-            "pipelineVersion": "v2",
+            "pipelineVersion": VF_DUB_PIPELINE_VERSION,
             "jobId": job_id,
             "preflight": preflight,
             "stageTimeline": stage_timeline,
@@ -17903,13 +20077,30 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             "synthesisFailures": synthesis_failures,
             "qualityGate": quality_gate,
             "speakerSynthesisStats": speaker_synthesis_stats,
+            "speakerStats": speaker_stats,
             "engineSelected": engine_selected,
             "engineExecuted": engine_executed,
             "engineSelectedDisplay": _conversion_policy_display_name(engine_selected),
             "engineExecutedDisplay": _executed_engine_display_name(engine_executed),
+            "processingProfile": processing_profile,
+            "clipWindow": clip_window,
+            "qosState": qos_state,
+            "live": {
+                "enabled": bool(live_enabled),
+                "mode": live_play_mode if live_enabled else "off",
+                "playableChunks": len(live_chunks_meta),
+                "playableDurationMs": int(sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)),
+                "chunkCursorNext": int(live_next_cursor),
+            },
             "fallbackUsed": fallback_used,
             "fallbackReason": fallback_reason,
             "supportsOneShotCloneAtDecision": supports_one_shot_clone_at_decision,
+            "directorJson": director_json,
+            "isochronyStats": isochrony_stats,
+            "llvcMetrics": llvc_metrics,
+            "lipsyncMetrics": lipsync_metrics,
+            "assets": assets_payload,
+            "thinkingPolicy": thinking_policy,
         }
         report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 
@@ -17921,7 +20112,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             resultPath=str(chosen),
             alignment=alignment,
             script=_build_script_from_segments(segments),
-            pipelineVersion="v2",
+            pipelineVersion=VF_DUB_PIPELINE_VERSION,
             errorCode=None,
             preflight=preflight,
             stageTimeline=stage_timeline,
@@ -17929,14 +20120,33 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             outputFiles=output_files,
             speakerProfiles=speaker_profiles,
             speakerSynthesisStats=speaker_synthesis_stats,
+            speakerStats=speaker_stats,
             qualityGate=quality_gate,
             engineSelected=engine_selected,
             engineExecuted=engine_executed,
             engineSelectedDisplay=_conversion_policy_display_name(engine_selected),
             engineExecutedDisplay=_executed_engine_display_name(engine_executed),
+            processingProfile=processing_profile,
+            clipWindow=clip_window,
+            qosState=qos_state,
+            live={
+                "enabled": bool(live_enabled),
+                "mode": live_play_mode if live_enabled else "off",
+                "playableChunks": len(live_chunks_meta),
+                "playableDurationMs": int(sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)),
+                "chunkCursorNext": int(live_next_cursor),
+            },
+            chunkCursorNext=int(live_next_cursor),
+            liveChunks=list(live_chunks_meta),
             fallbackUsed=fallback_used,
             fallbackReason=fallback_reason,
             supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
+            directorJson=director_json,
+            isochronyStats=isochrony_stats,
+            llvcMetrics=llvc_metrics,
+            lipsyncMetrics=lipsync_metrics,
+            assets=assets_payload,
+            thinkingPolicy=thinking_policy,
         )
         _append_dubbing_log(job_id, "Dubbing completed.")
     except Exception as exc:  # noqa: BLE001
@@ -17951,18 +20161,31 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 stageTimeline=stage_timeline,
                 speakerProfiles=speaker_profiles,
                 speakerSynthesisStats=speaker_synthesis_stats,
+                speakerStats=speaker_stats,
                 qualityGate=quality_gate,
                 engineSelected=engine_selected,
                 engineExecuted=engine_executed,
                 engineSelectedDisplay=_conversion_policy_display_name(engine_selected),
                 engineExecutedDisplay=_executed_engine_display_name(engine_executed),
+                processingProfile=processing_profile,
+                clipWindow=clip_window,
+                qosState=qos_state,
+                live={
+                    "enabled": bool(live_enabled),
+                    "mode": live_play_mode if live_enabled else "off",
+                    "playableChunks": len(live_chunks_meta),
+                    "playableDurationMs": int(sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)),
+                    "chunkCursorNext": int(live_next_cursor),
+                },
+                chunkCursorNext=int(live_next_cursor),
+                liveChunks=list(live_chunks_meta),
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
             )
             _append_dubbing_log(job_id, "Dubbing cancelled.")
         else:
-            error_code = "PRECHECK_FAILED" if "strict_preflight_failed" in str(exc) else "STAGE_FAILED"
+            error_code = "PRECHECK_FAILED" if "strict_preflight_failed" in str(exc) else _extract_phase_error_code(exc)
             quality_gate["passed"] = False
             if str(exc):
                 quality_gate["reasons"] = [str(exc)]
@@ -17975,11 +20198,24 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 stageTimeline=stage_timeline,
                 speakerProfiles=speaker_profiles,
                 speakerSynthesisStats=speaker_synthesis_stats,
+                speakerStats=speaker_stats,
                 qualityGate=quality_gate,
                 engineSelected=engine_selected,
                 engineExecuted=engine_executed,
                 engineSelectedDisplay=_conversion_policy_display_name(engine_selected),
                 engineExecutedDisplay=_executed_engine_display_name(engine_executed),
+                processingProfile=processing_profile,
+                clipWindow=clip_window,
+                qosState=qos_state,
+                live={
+                    "enabled": bool(live_enabled),
+                    "mode": live_play_mode if live_enabled else "off",
+                    "playableChunks": len(live_chunks_meta),
+                    "playableDurationMs": int(sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)),
+                    "chunkCursorNext": int(live_next_cursor),
+                },
+                chunkCursorNext=int(live_next_cursor),
+                liveChunks=list(live_chunks_meta),
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
@@ -17990,7 +20226,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 report_path.write_text(
                     json.dumps(
                         {
-                            "pipelineVersion": "v2",
+                            "pipelineVersion": VF_DUB_PIPELINE_VERSION,
                             "jobId": job_id,
                             "preflight": preflight,
                             "stageTimeline": stage_timeline,
@@ -18004,13 +20240,30 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                             "synthesisFailures": synthesis_failures,
                             "qualityGate": quality_gate,
                             "speakerSynthesisStats": speaker_synthesis_stats,
+                            "speakerStats": speaker_stats,
                             "engineSelected": engine_selected,
                             "engineExecuted": engine_executed,
                             "engineSelectedDisplay": _conversion_policy_display_name(engine_selected),
                             "engineExecutedDisplay": _executed_engine_display_name(engine_executed),
+                            "processingProfile": processing_profile,
+                            "clipWindow": clip_window,
+                            "qosState": qos_state,
+                            "live": {
+                                "enabled": bool(live_enabled),
+                                "mode": live_play_mode if live_enabled else "off",
+                                "playableChunks": len(live_chunks_meta),
+                                "playableDurationMs": int(sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)),
+                                "chunkCursorNext": int(live_next_cursor),
+                            },
                             "fallbackUsed": fallback_used,
                             "fallbackReason": fallback_reason,
                             "supportsOneShotCloneAtDecision": supports_one_shot_clone_at_decision,
+                            "directorJson": {},
+                            "isochronyStats": {},
+                            "llvcMetrics": {},
+                            "lipsyncMetrics": {},
+                            "assets": _video_pipeline_assets_status(),
+                            "thinkingPolicy": {},
                             "error": str(exc),
                         },
                         indent=2,
@@ -18022,11 +20275,24 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 reportPath=str(report_path),
                 speakerProfiles=speaker_profiles,
                 speakerSynthesisStats=speaker_synthesis_stats,
+                speakerStats=speaker_stats,
                 qualityGate=quality_gate,
                 engineSelected=engine_selected,
                 engineExecuted=engine_executed,
                 engineSelectedDisplay=_conversion_policy_display_name(engine_selected),
                 engineExecutedDisplay=_executed_engine_display_name(engine_executed),
+                processingProfile=processing_profile,
+                clipWindow=clip_window,
+                qosState=qos_state,
+                live={
+                    "enabled": bool(live_enabled),
+                    "mode": live_play_mode if live_enabled else "off",
+                    "playableChunks": len(live_chunks_meta),
+                    "playableDurationMs": int(sum(int(item.get("durationMs") or 0) for item in live_chunks_meta)),
+                    "chunkCursorNext": int(live_next_cursor),
+                },
+                chunkCursorNext=int(live_next_cursor),
+                liveChunks=list(live_chunks_meta),
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
@@ -18172,6 +20438,28 @@ async def video_transcribe(
                     seg["emotionConfidence"] = confidence
 
         script = _build_script_from_segments(segments)
+        director_segments: list[dict[str, Any]] = []
+        for index, seg in enumerate(segments):
+            start_ms = int(round(float(seg.get("start") or 0.0) * 1000.0))
+            end_ms = int(round(float(seg.get("end") or seg.get("start") or 0.0) * 1000.0))
+            if end_ms <= start_ms:
+                end_ms = start_ms + 240
+            director_segments.append(
+                {
+                    "index": index,
+                    "speaker": str(seg.get("speaker") or "Speaker 1"),
+                    "text": str(seg.get("text") or ""),
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "affective_tags": [str(seg.get("emotion") or "neutral").strip().lower() or "neutral"],
+                }
+            )
+        director = {
+            "modelPreferred": VF_DUB_DIRECTOR_MODEL,
+            "modelResolved": VF_DUB_DIRECTOR_MODEL,
+            "segments": director_segments,
+            "sceneComplexity": "low" if len(director_segments) <= 12 else "medium",
+        }
         return JSONResponse(
             {
                 "ok": True,
@@ -18179,6 +20467,7 @@ async def video_transcribe(
                 "segments": segments,
                 "script": script,
                 "durationSec": _wav_duration_seconds(str(asr_path)),
+                "director": director,
             }
         )
     finally:
@@ -18187,9 +20476,10 @@ async def video_transcribe(
 
 @app.post("/video/separate-stem")
 async def video_separate_stem(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     stem: str = Form("speech"),
-    model_name: str = Form(SEPARATION_MODEL),
+    model_name: str = Form(VF_DUB_PHASE1_MODEL),
 ) -> FileResponse:
     if not ENABLE_SOURCE_SEPARATION:
         raise HTTPException(status_code=503, detail="Source separation is disabled.")
@@ -18204,19 +20494,37 @@ async def video_separate_stem(
         written_bytes = await _write_upload_file_chunked(file, source_path)
         if written_bytes <= 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-        speech_path, background_path, _cache_key = _ensure_source_separation(source_path, model_name)
+        from video_dubbing.config import build_config
+        from video_dubbing.pipeline import phase1_acoustic_isolation
+
+        effective_model = str(model_name or "").strip() or VF_DUB_PHASE1_MODEL
+        cfg = build_config(Path(temp_dir))
+        cfg.phase1_model = effective_model
+        cfg.dereverb_model = VF_DUB_DEREVERB_MODEL
+        ctx: dict[str, Any] = {
+            "source_path": str(source_path),
+            "target_language": "auto",
+            "output_dir": str(cfg.output_root),
+            "assets": {},
+        }
+        phase1_acoustic_isolation.run(ctx, cfg, lambda _message: None)
+        speech_path = Path(str(ctx.get("vocals_dry") or ""))
+        background_path = Path(str(ctx.get("music_effects") or ""))
         selected = speech_path if stem_token == "speech" else background_path
+        if not selected.exists():
+            raise RuntimeError(f"phase1 output missing for stem={stem_token}")
+        background_tasks.add_task(_cleanup_paths, temp_dir)
         return FileResponse(
             str(selected),
             media_type="audio/wav",
             filename=f"{stem_token}_stem.wav",
         )
     except HTTPException:
+        _cleanup_paths(temp_dir)
         raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Failed to separate stems: {exc}") from exc
-    finally:
         _cleanup_paths(temp_dir)
+        raise HTTPException(status_code=500, detail=f"Failed to separate stems: {exc}") from exc
 
 
 @app.post("/video/mux-dub")
@@ -18405,7 +20713,43 @@ async def create_dubbing_job_v2(
     if tts_route not in {"auto", "gem_only", "kokoro_only"}:
         raise HTTPException(status_code=400, detail="advanced.tts_route must be auto, gem_only, or kokoro_only")
     advanced_payload["tts_route"] = tts_route
-    advanced_payload["multispeaker_policy"] = "auto_diarize"
+    advanced_payload["multispeaker_policy"] = _normalize_multispeaker_policy(
+        str(advanced_payload.get("multispeaker_policy") or "hybrid_auto"),
+        default="hybrid_auto",
+    )
+    advanced_payload["voice_binding_policy"] = _normalize_voice_binding_policy(
+        str(advanced_payload.get("voice_binding_policy") or "stable_fallback"),
+        default="stable_fallback",
+    )
+    advanced_payload["qos_policy"] = _normalize_qos_policy(
+        str(advanced_payload.get("qos_policy") or "adaptive_hq_first"),
+        default="adaptive_hq_first",
+    )
+    advanced_payload["hardware_policy"] = _normalize_hardware_policy(
+        str(advanced_payload.get("hardware_policy") or "gpu_preferred"),
+        default="gpu_preferred",
+    )
+    advanced_payload["timeout_policy"] = _normalize_timeout_policy(
+        str(advanced_payload.get("timeout_policy") or "adaptive"),
+        default="adaptive",
+    )
+    advanced_payload["live_play_mode"] = _normalize_live_play_mode(
+        str(advanced_payload.get("live_play_mode") or "progressive_audio"),
+        default="progressive_audio",
+    )
+    advanced_payload["live_chunk_target_ms"] = _safe_bounded_int(
+        advanced_payload.get("live_chunk_target_ms"),
+        default=3000,
+        min_value=600,
+        max_value=12000,
+    )
+    advanced_payload["live_include_chunk_audio"] = bool(advanced_payload.get("live_include_chunk_audio"))
+    advanced_payload["max_speaker_count"] = _safe_bounded_int(
+        advanced_payload.get("max_speaker_count"),
+        default=8,
+        min_value=1,
+        max_value=16,
+    )
     if "segment_failure_policy" not in advanced_payload:
         advanced_payload["segment_failure_policy"] = "hard_fail"
     if str(advanced_payload.get("segment_failure_policy")).strip().lower() not in {"hard_fail"}:
@@ -18416,6 +20760,16 @@ async def create_dubbing_job_v2(
         raise HTTPException(status_code=400, detail="advanced.clone_scope only supports job_only")
     if "voice_map" in advanced_payload and not isinstance(advanced_payload["voice_map"], dict):
         advanced_payload["voice_map"] = {}
+    profile = _normalize_dubbing_processing_profile(str(advanced_payload.get("processing_profile") or "cpu_quality"))
+    advanced_payload["processing_profile"] = profile
+    try:
+        normalized_clip_window = _normalize_dubbing_clip_window(advanced_payload.get("clip_window"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if normalized_clip_window is None:
+        advanced_payload.pop("clip_window", None)
+    else:
+        advanced_payload["clip_window"] = normalized_clip_window
 
     normalized_target_language = _normalize_target_language(target_language)
     job_payload = {
@@ -18430,6 +20784,8 @@ async def create_dubbing_job_v2(
 
     with DUBBING_JOB_LOCK:
         default_engine_executed = _default_engine_for_tts_route(tts_route)
+        initial_live_mode = str(advanced_payload.get("live_play_mode") or "off")
+        initial_live_enabled = bool(VF_DUB_LIVE_PLAY_ENABLED and initial_live_mode == "progressive_audio")
         DUBBING_JOBS[job_id] = {
             "id": job_id,
             "status": "queued",
@@ -18440,7 +20796,7 @@ async def create_dubbing_job_v2(
             "cancelRequested": False,
             "logs": [],
             "resultPath": None,
-            "pipelineVersion": "v2",
+            "pipelineVersion": VF_DUB_PIPELINE_VERSION,
             "preflight": None,
             "stageTimeline": [],
             "reportPath": None,
@@ -18456,6 +20812,34 @@ async def create_dubbing_job_v2(
             "fallbackUsed": False,
             "fallbackReason": None,
             "supportsOneShotCloneAtDecision": False,
+            "directorJson": None,
+            "isochronyStats": None,
+            "llvcMetrics": None,
+            "lipsyncMetrics": None,
+            "assets": None,
+            "thinkingPolicy": None,
+            "processingProfile": profile,
+            "clipWindow": normalized_clip_window,
+            "speakerStats": {
+                "detectedSpeakers": 0,
+                "mappedSpeakers": 0,
+                "fallbackBindings": [],
+                "driftAlerts": [],
+            },
+            "qosState": {
+                "selectedProfile": profile,
+                "downgraded": False,
+                "reason": "",
+                "gpuUsed": False,
+            },
+            "live": {
+                "enabled": initial_live_enabled,
+                "mode": initial_live_mode if initial_live_enabled else "off",
+                "playableChunks": 0,
+                "playableDurationMs": 0,
+            },
+            "chunkCursorNext": 0,
+            "liveChunks": [],
         }
 
     thread = threading.Thread(target=_run_dubbing_job_v2, args=(job_id, job_payload), daemon=True)
@@ -18464,12 +20848,111 @@ async def create_dubbing_job_v2(
 
 
 @app.get("/dubbing/jobs/{job_id}")
-def get_dubbing_job(job_id: str) -> JSONResponse:
+def get_dubbing_job(
+    job_id: str,
+    includeChunks: bool = False,
+    chunkCursor: int = 0,
+    chunkLimit: int = Query(default=VF_DUB_LIVE_CHUNK_LIMIT_DEFAULT, ge=1, le=VF_DUB_LIVE_CHUNK_LIMIT_MAX),
+    includeChunkAudio: bool = False,
+) -> JSONResponse:
+    _cleanup_expired_dubbing_live_artifacts()
     with DUBBING_JOB_LOCK:
         job = DUBBING_JOBS.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        return JSONResponse({"ok": True, "job": job})
+        payload = dict(job)
+
+    live_payload = payload.get("live") if isinstance(payload.get("live"), dict) else {}
+    source_chunks = [
+        item
+        for item in list(payload.get("liveChunks") or [])
+        if isinstance(item, dict)
+    ]
+    if not source_chunks:
+        source_chunks = _load_dubbing_live_chunks_from_artifacts(job_id)
+    if source_chunks:
+        source_chunks.sort(key=lambda item: int(item.get("index") or 0))
+        playable_chunks = len(source_chunks)
+        playable_duration_ms = sum(int(item.get("durationMs") or 0) for item in source_chunks)
+        payload["live"] = {
+            "enabled": bool(live_payload.get("enabled") if isinstance(live_payload, dict) else False),
+            "mode": str(live_payload.get("mode") if isinstance(live_payload, dict) else "off"),
+            "playableChunks": max(int(live_payload.get("playableChunks") or 0) if isinstance(live_payload, dict) else 0, playable_chunks),
+            "playableDurationMs": max(
+                int(live_payload.get("playableDurationMs") or 0) if isinstance(live_payload, dict) else 0,
+                int(playable_duration_ms),
+            ),
+            "chunkCursorNext": max(
+                int(live_payload.get("chunkCursorNext") or 0) if isinstance(live_payload, dict) else 0,
+                int(source_chunks[-1].get("index") or 0) + 1,
+            ),
+        }
+        payload["chunkCursorNext"] = int(payload["live"]["chunkCursorNext"])
+    elif isinstance(live_payload, dict):
+        payload["live"] = {
+            "enabled": bool(live_payload.get("enabled")),
+            "mode": str(live_payload.get("mode") or "off"),
+            "playableChunks": int(live_payload.get("playableChunks") or 0),
+            "playableDurationMs": int(live_payload.get("playableDurationMs") or 0),
+            "chunkCursorNext": int(live_payload.get("chunkCursorNext") or payload.get("chunkCursorNext") or 0),
+        }
+        payload["chunkCursorNext"] = int(payload["live"]["chunkCursorNext"])
+
+    if includeChunks:
+        safe_cursor = max(0, int(chunkCursor or 0))
+        safe_limit = _safe_bounded_int(
+            chunkLimit,
+            default=VF_DUB_LIVE_CHUNK_LIMIT_DEFAULT,
+            min_value=1,
+            max_value=VF_DUB_LIVE_CHUNK_LIMIT_MAX,
+        )
+        visible = [
+            item
+            for item in source_chunks
+            if item.get("index") is not None and int(item.get("index")) >= safe_cursor
+        ][:safe_limit]
+        chunk_payloads: list[dict[str, Any]] = []
+        for item in visible:
+            safe_index = int(item.get("index") or 0)
+            chunk_item = {
+                "index": safe_index,
+                "contentType": str(item.get("contentType") or "audio/wav"),
+                "durationMs": int(item.get("durationMs") or 0),
+                "speakerId": str(item.get("speakerId") or "SPEAKER_00"),
+                "engine": str(item.get("engine") or ""),
+                "voiceId": str(item.get("voiceId") or ""),
+                "textChars": int(item.get("textChars") or 0),
+                "downloadUrl": f"/dubbing/jobs/{job_id}/chunks/{safe_index}",
+            }
+            if includeChunkAudio:
+                chunk_item["audioBase64"] = _load_live_chunk_audio_base64(item)
+            chunk_payloads.append(chunk_item)
+        payload["chunks"] = chunk_payloads
+        if chunk_payloads:
+            payload["chunkCursorNext"] = max(int(payload.get("chunkCursorNext") or 0), int(chunk_payloads[-1]["index"]) + 1)
+
+    return JSONResponse({"ok": True, "job": payload})
+
+
+@app.get("/dubbing/jobs/{job_id}/chunks/{chunk_index}")
+def download_dubbing_chunk(job_id: str, chunk_index: int) -> FileResponse:
+    with DUBBING_JOB_LOCK:
+        job = DUBBING_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+    chunk_meta = _resolve_dubbing_job_chunk(job, chunk_index)
+    if not isinstance(chunk_meta, dict):
+        raise HTTPException(status_code=404, detail="Chunk not found")
+    chunk_path = Path(str(chunk_meta.get("path") or "")).resolve()
+    if not chunk_path.exists() or not chunk_path.is_file():
+        raise HTTPException(status_code=404, detail="Chunk file not found")
+    media_type = str(chunk_meta.get("contentType") or "audio/wav")
+    return FileResponse(
+        str(chunk_path),
+        media_type=media_type,
+        filename=f"{job_id}_chunk_{max(0, int(chunk_index)):04d}.wav",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/dubbing/jobs/{job_id}/cancel")
@@ -18535,6 +21018,7 @@ def list_llvc_models() -> JSONResponse:
 @app.post("/llvc/load-model")
 def load_llvc_model(payload: LoadLlvcModelRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     try:
         llvc_runtime.load_model(payload.modelName, payload.version)
     except Exception as exc:
@@ -18563,11 +21047,15 @@ async def convert_llvc(
     rms_mix_rate: float = Form(1.0),
     protect: float = Form(0.33),
     f0_method: str = Form("rmvpe"),
+    separate_stem: str = Form("true"),
 ) -> FileResponse:
     safe_preset = _normalize_llvc_preset(preset)
     selected_engine = "LLVC"
     executed_engine = "LLVC"
     fallback_used = False
+    source_separated = False
+    separation_model_used = ""
+    runtime_headers: dict[str, str] = {}
 
     temp_dir = tempfile.mkdtemp(prefix="vf_llvc_")
     source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source_audio")
@@ -18578,12 +21066,21 @@ async def convert_llvc(
         if await _write_upload_file_chunked(file, source_path) <= 0:
             raise HTTPException(status_code=400, detail="Uploaded source audio is empty.")
 
-        _convert_media_to_wav(str(source_path), str(normalized_wav), sample_rate=40000)
+        separate_enabled = _as_bool(separate_stem)
+        if separate_enabled:
+            if not source_separation_runtime.ensure_available():
+                raise RuntimeError(source_separation_runtime.import_error or "Demucs runtime unavailable.")
+            speech_path, _background_path, _cache_key = _ensure_source_separation(source_path, SEPARATION_MODEL)
+            _convert_media_to_wav(str(speech_path), str(normalized_wav), sample_rate=40000, channels=1)
+            source_separated = True
+            separation_model_used = str(SEPARATION_MODEL)
+        else:
+            _convert_media_to_wav(str(source_path), str(normalized_wav), sample_rate=40000)
 
         llvc_ok, llvc_detail = llvc_adapter.health()
         if not llvc_ok:
             raise RuntimeError(f"LLVC unavailable: {llvc_detail}")
-        llvc_adapter.convert(
+        runtime_headers = llvc_adapter.convert(
             str(normalized_wav),
             str(output_path),
             model_name=model_name,
@@ -18613,14 +21110,26 @@ async def convert_llvc(
             "x-vf-llvc-fallback": "1" if fallback_used else "0",
             "x-vf-llvc-fallback-reason": "",
             "x-vf-supports-one-shot-clone-at-decision": "0",
+            "x-vf-source-separated": "1" if source_separated else "0",
+            "x-vf-separation-model": separation_model_used,
+            "x-vf-llvc-model-resolved": str(
+                runtime_headers.get("x-vf-llvc-model-resolved")
+                or runtime_headers.get("x-vf-llvc-model")
+                or model_name
+            ),
+            "x-vf-llvc-backend-mode": str(runtime_headers.get("x-vf-llvc-backend-mode") or ""),
         },
     )
 
 
 @app.on_event("startup")
 def _phase2_startup() -> None:
-    _ensure_scheduler_started()
-    if VF_SUPPORT_INBOX_ENABLED:
+    if VF_SERVICE_IS_API:
+        _ensure_scheduler_started()
+    if VF_SERVICE_IS_WORKER:
+        _ensure_tts_workers_started()
+    _log_kokoro_model_mirror_status()
+    if VF_SERVICE_IS_API and VF_SUPPORT_INBOX_ENABLED:
         try:
             _support_ai_policy_get()
         except Exception:
@@ -18635,8 +21144,8 @@ def _phase2_shutdown() -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("VF_BACKEND_HOST", "127.0.0.1")
-    port = int(os.getenv("VF_BACKEND_PORT", "7800"))
+    host = os.getenv("VF_BACKEND_HOST", "0.0.0.0")
+    port = int((os.getenv("PORT") or os.getenv("VF_BACKEND_PORT") or "7800").strip() or "7800")
     uvicorn.run(app, host=host, port=port, reload=False)
 
 

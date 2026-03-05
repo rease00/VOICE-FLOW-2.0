@@ -466,7 +466,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     try:
         if not path.exists() or not path.is_file():
             return None
-        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig", errors="ignore"))
         if isinstance(payload, dict):
             return payload
     except Exception:

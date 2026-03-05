@@ -37,6 +37,36 @@ def test_tts_engines_voices_contract_gem_fallback() -> None:
     assert isinstance(payload["voices"], list)
     assert payload["voices"]
     assert "voice_id" in payload["voices"][0]
+    assert payload["voices"][0].get("access_tier") in {"free", "pro"}
+    assert isinstance(payload["voices"][0].get("is_plan_restricted"), bool)
+
+
+def test_tts_engines_voices_contract_kokoro_access_tiers(monkeypatch) -> None:
+    class _FakeResponse:
+        def __init__(self) -> None:
+            self.ok = True
+
+        def json(self):
+            return {
+                "voices": [
+                    {"voice_id": "af_heart", "name": "Free Voice", "language": "en", "gender": "female"},
+                    {"voice_id": "hf_beta", "name": "Pro Voice", "language": "hi", "gender": "female"},
+                ]
+            }
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *args, **kwargs: _FakeResponse())
+    response = client.get("/tts/engines/voices", params={"engine": "KOKORO"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["engine"] == "KOKORO"
+    assert isinstance(payload["voices"], list)
+    assert payload["voices"]
+    by_id = {str(item.get("voice_id") or ""): item for item in payload["voices"]}
+    assert by_id["af_heart"]["access_tier"] == "free"
+    assert by_id["af_heart"]["is_plan_restricted"] is False
+    assert by_id["hf_beta"]["access_tier"] == "pro"
+    assert by_id["hf_beta"]["is_plan_restricted"] is True
 
 
 def test_tts_voice_mapping_catalog_contract() -> None:
@@ -51,15 +81,18 @@ def test_tts_voice_mapping_catalog_contract() -> None:
 
 def test_video_separate_stem_contract(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(backend_app, "ENABLE_SOURCE_SEPARATION", True)
+    from video_dubbing.pipeline import phase1_acoustic_isolation
 
-    def fake_ensure_source_separation(_source_path: Path, _model_name: str):
+    def fake_phase1_run(ctx: dict, _cfg, _log):
         speech = tmp_path / "speech.wav"
         background = tmp_path / "background.wav"
         speech.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
         background.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        return speech, background, "cache-key"
+        ctx["vocals_dry"] = str(speech)
+        ctx["music_effects"] = str(background)
+        return ctx
 
-    monkeypatch.setattr(backend_app, "_ensure_source_separation", fake_ensure_source_separation)
+    monkeypatch.setattr(phase1_acoustic_isolation, "run", fake_phase1_run)
 
     response = client.post(
         "/video/separate-stem",
@@ -121,6 +154,8 @@ def test_video_transcribe_compat_capture_emotions_alias(monkeypatch, tmp_path: P
     payload = response.json()
     assert payload["ok"] is True
     assert payload["segments"][0]["emotion"] == "Happy"
+    assert isinstance(payload.get("director"), dict)
+    assert payload["director"].get("modelPreferred") == backend_app.VF_DUB_DIRECTOR_MODEL
 
 
 def test_video_mux_dub_accepts_legacy_mix_alias(monkeypatch, tmp_path: Path) -> None:

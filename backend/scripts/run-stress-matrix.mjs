@@ -24,6 +24,7 @@ const steps = [
     args: ["run", "ci:reliability"],
     env: {
       VF_ENABLE_LOAD_GATE: "1",
+      VF_ENABLE_LOAD_GATE_100: "1",
       VF_ENABLE_LIVE_AUDIT_GATE: "1",
       VF_ENABLE_LLVC_MAPPING_AUDIT_GATE: "1",
     },
@@ -31,6 +32,8 @@ const steps = [
   { name: "audit:tts:live:50", args: ["run", "audit:tts:live:50"] },
   { name: "test:load:50:node", args: ["run", "test:load:50:node"] },
   { name: "test:load:50:k6", args: ["run", "test:load:50:k6"] },
+  { name: "test:load:100:node", args: ["run", "test:load:100:node"] },
+  { name: "test:load:100:k6", args: ["run", "test:load:100:k6"] },
 ];
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

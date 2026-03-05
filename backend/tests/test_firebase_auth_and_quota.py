@@ -28,6 +28,8 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_USAGE_MONTHLY.clear()
     backend_app._INMEMORY_USAGE_DAILY.clear()
     backend_app._INMEMORY_USAGE_EVENTS.clear()
+    backend_app._INMEMORY_USER_PROFILES.clear()
+    backend_app._INMEMORY_USER_ID_INDEX.clear()
     backend_app._INMEMORY_GENERATION_HISTORY.clear()
     backend_app._INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
     backend_app._INMEMORY_STRIPE_CUSTOMERS.clear()
@@ -50,7 +52,13 @@ def _submit_tts_and_wait_status(
         return submit.status_code, submit
 
     submit_payload = submit.json() if submit.headers.get("content-type", "").startswith("application/json") else {}
-    job_id = str((submit_payload or {}).get("jobId") or (submit_payload or {}).get("requestId") or "").strip()
+    job_id = str(
+        (submit_payload or {}).get("jobId")
+        or (submit_payload or {}).get("job_id")
+        or (submit_payload or {}).get("requestId")
+        or (submit_payload or {}).get("request_id")
+        or ""
+    ).strip()
     if not job_id:
         return submit.status_code, submit
 
@@ -159,6 +167,25 @@ def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
     assert "Daily generation limit reached" in str(third.json()["detail"])
 
 
+def test_tts_synthesize_blocks_gem_for_free_plan(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/tts/synthesize",
+        headers={"x-dev-uid": "free_gem_block_user"},
+        json={"engine": "GEM", "text": "forbidden on free plan", "voice_id": "Fenrir"},
+    )
+    assert response.status_code == 403
+    detail = response.json().get("detail") or {}
+    assert detail.get("errorCode") == "VF_TTS_ENGINE_PLAN_FORBIDDEN"
+    assert detail.get("plan") == "Free"
+    assert detail.get("engine") == "GEM"
+    assert set(detail.get("allowedEngines") or []) == {"KOKORO", "GOOD", "NEURAL2"}
+
+
 def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -178,7 +205,7 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     headers = {"x-dev-uid": uid}
     failed_code, _ = _submit_tts_and_wait_status(
         client,
-        payload={"engine": "GEM", "text": "runtime fail"},
+        payload={"engine": "GOOD", "text": "runtime fail"},
         headers=headers,
     )
     assert failed_code == 500
@@ -188,6 +215,44 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     payload = ent.json()["entitlements"]
     assert payload["daily"]["generationUsed"] == 0
     assert payload["monthly"]["vfUsed"] == 0
+
+
+def test_entitlements_include_engine_char_caps_and_early_access(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    scale_uid = "entitlements_scale_user"
+    free_uid = "entitlements_free_user"
+    backend_app._user_profile_upsert(
+        scale_uid,
+        user_id="entscale1",
+        created_by="test",
+        updated_by="test",
+        allow_existing_immutable=True,
+    )
+    backend_app._user_profile_upsert(
+        free_uid,
+        user_id="entfree1",
+        created_by="test",
+        updated_by="test",
+        allow_existing_immutable=True,
+    )
+    backend_app._write_entitlement(scale_uid, {"plan": "Scale"})
+
+    client = TestClient(backend_app.app)
+    scale_response = client.get("/account/entitlements", headers={"x-dev-uid": scale_uid})
+    assert scale_response.status_code == 200
+    scale_ent = scale_response.json()["entitlements"]
+    assert bool((scale_ent.get("features") or {}).get("earlyAccess")) is True
+    assert int((scale_ent.get("limits") or {}).get("maxCharsPerGeneration") or 0) == 15000
+    assert "GEM" in list((scale_ent.get("limits") or {}).get("allowedEngines") or [])
+
+    free_response = client.get("/account/entitlements", headers={"x-dev-uid": free_uid})
+    assert free_response.status_code == 200
+    free_ent = free_response.json()["entitlements"]
+    assert bool((free_ent.get("features") or {}).get("earlyAccess")) is False
+    assert int((free_ent.get("limits") or {}).get("maxCharsPerGeneration") or 0) == 8000
+    assert "GEM" not in list((free_ent.get("limits") or {}).get("allowedEngines") or [])
 
 
 def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> None:
@@ -265,7 +330,7 @@ class _DummyStripe:
                 "items": {
                     "data": [
                         {
-                            "price": {"id": backend_app.STRIPE_PRICE_PRO_INR},
+                            "price": {"id": backend_app.STRIPE_PRICE_PRO_MAX_INR},
                         }
                     ]
                 },
@@ -278,8 +343,8 @@ def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
     monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
     monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_INR", "price_pro_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PLUS_INR", "price_plus_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_MAX_INR", "price_pro_max_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
 
     client = TestClient(backend_app.app)
     event_payload = {
@@ -400,11 +465,13 @@ def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
                 "metadata": {
                     "kind": "token_pack",
                     "uid": "wallet_user_1",
-                    "packVf": "100000",
-                    "finalAmountInr": "499",
+                    "packKey": "micro",
+                    "packVf": "50000",
+                    "standardAmountInr": "550",
+                    "finalAmountInr": "550",
                 },
                 "customer": "cus_wallet_1",
-                "amount_total": 49900,
+                "amount_total": 55000,
                 "currency": "inr",
             }
         },
@@ -414,4 +481,4 @@ def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     entitlement = backend_app._load_entitlement("wallet_user_1")
-    assert entitlement["paidVfBalance"] == 100000
+    assert entitlement["paidVfBalance"] == 50000

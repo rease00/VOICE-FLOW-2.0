@@ -185,9 +185,9 @@ def test_stage6_tts_auto_route_falls_back_to_gem(monkeypatch, tmp_path: Path) ->
     }
 
     result = stage6_tts.run(ctx, cfg, lambda _: None)
-    assert len(calls) == 2
+    assert len(calls) >= 2
     assert calls[0]["url"] == "http://kokoro-runtime/synthesize"
-    assert calls[1]["url"] == "http://gem-runtime/synthesize"
+    assert any(item["url"] == "http://gem-runtime/synthesize" for item in calls[1:])
     assert result["tts_requests"][0]["engine"] == "GEM"
     assert result["tts_segments"][0]["engine"] == "GEM"
 

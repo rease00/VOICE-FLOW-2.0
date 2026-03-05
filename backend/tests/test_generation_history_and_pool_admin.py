@@ -107,11 +107,25 @@ def _make_key(seed: int) -> str:
     return f"AIza{seed:030d}"
 
 
+def _assert_masked_pool_keys(config: dict[str, object], pool_name: str, expected_count: int) -> None:
+    pools = config.get("pools")
+    assert isinstance(pools, dict)
+    pool_row = pools.get(pool_name)
+    assert isinstance(pool_row, dict)
+    keys = list(pool_row.get("keys") or [])
+    assert len(keys) == expected_count
+    assert all(str(item).startswith("__vf_masked_key__:") for item in keys)
+    metadata = list(pool_row.get("keyMetadata") or [])
+    assert len(metadata) == expected_count
+
+
 def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_ENTITLEMENTS.clear()
     backend_app._INMEMORY_USAGE_MONTHLY.clear()
     backend_app._INMEMORY_USAGE_DAILY.clear()
     backend_app._INMEMORY_USAGE_EVENTS.clear()
+    backend_app._INMEMORY_USER_PROFILES.clear()
+    backend_app._INMEMORY_USER_ID_INDEX.clear()
     backend_app._INMEMORY_STRIPE_CUSTOMERS.clear()
     backend_app._INMEMORY_WALLET_DAILY.clear()
     backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
@@ -126,6 +140,16 @@ def _reset_inmemory_state() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_gemini_pool_config_file(monkeypatch, tmp_path: Path) -> None:
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps({"version": 1, "pools": {"free": {"keys": []}}}, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+
+
+@pytest.fixture(autouse=True)
 def _disable_post_tts_llvc(monkeypatch):
     monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", False)
     monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_REQUIRED", False)
@@ -137,6 +161,7 @@ def test_tts_synthesize_writes_compressed_history_blob(monkeypatch) -> None:
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
     client = TestClient(backend_app.app)
     uid = "history_user_1"
+    backend_app._write_entitlement(uid, {"plan": "Pro"})
     headers = {"x-dev-uid": uid}
 
     response = client.post(
@@ -335,11 +360,12 @@ def test_admin_gemini_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path:
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["config"]["pools"]["free"]["keys"] == [free_a, free_b]
-    assert payload["config"]["pools"]["pro"]["keys"] == [pro_key]
+    _assert_masked_pool_keys(payload["config"], "free", 2)
+    assert set((payload["config"].get("pools") or {}).keys()) == {"free"}
+    assert payload["config"]["planPools"] == {"free": "free", "pro": "free", "plus": "free"}
     assert payload["sourcePolicy"]["freePoolLocked"] is True
     assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "api_file_authoritative"
-    assert payload.get("warnings") == []
+    assert any("Single-pool mode" in str(item) for item in list(payload.get("warnings") or []))
 
     persisted = json.loads(pools_path.read_text(encoding="utf-8"))
     assert persisted["pools"]["free"]["keys"] == [free_a, free_b]
@@ -409,8 +435,9 @@ def test_admin_gemini_pools_put_ignores_free_edits_when_locked(monkeypatch, tmp_
     assert update.status_code == 200
     payload = update.json()
     assert "free_pool_locked_by_api_file" in list(payload.get("appliedOverrides") or [])
-    assert payload["config"]["pools"]["free"]["keys"] == [free_key]
-    assert payload["config"]["pools"]["pro"]["keys"] == [pro_key]
+    _assert_masked_pool_keys(payload["config"], "free", 1)
+    assert set((payload["config"].get("pools") or {}).keys()) == {"free"}
+    assert "single_pool_enforced:free" in list(payload.get("appliedOverrides") or [])
 
 
 def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Path) -> None:
@@ -453,7 +480,7 @@ def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: 
     client = TestClient(backend_app.app)
     initial = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
     assert initial.status_code == 200
-    assert initial.json()["config"]["pools"]["free"]["keys"] == [free_key]
+    _assert_masked_pool_keys(initial.json()["config"], "free", 1)
 
     keys_path.unlink()
     backend_app._GEMINI_POOLS_CACHE = None
@@ -467,7 +494,7 @@ def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: 
     refreshed = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
     assert refreshed.status_code == 200
     payload = refreshed.json()
-    assert payload["config"]["pools"]["free"]["keys"] == [free_key]
+    _assert_masked_pool_keys(payload["config"], "free", 1)
     assert list(payload.get("warnings") or [])
 
 
@@ -541,14 +568,14 @@ def test_admin_gemini_pools_supports_custom_pool_and_plan_mapping(monkeypatch, t
     )
     assert update.status_code == 200
     payload = update.json()
-    assert payload["config"]["planPools"]["plus"] == "enterprise_gold"
-    assert payload["config"]["pools"]["enterprise_gold"]["keys"] == [custom_key]
-    assert payload["config"]["defaultFallbackChain"] == ["enterprise_gold", "pro", "free"]
-    assert "enterprise_gold" in payload["config"]["fallbackChains"]
+    assert payload["config"]["planPools"] == {"free": "free", "pro": "free", "plus": "free"}
+    assert payload["config"]["defaultFallbackChain"] == ["free"]
+    _assert_masked_pool_keys(payload["config"], "free", 1)
+    assert set((payload["config"].get("pools") or {}).keys()) == {"free"}
 
     refreshed = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
     assert refreshed.status_code == 200
-    assert refreshed.json()["config"]["pools"]["enterprise_gold"]["keys"] == [custom_key]
+    _assert_masked_pool_keys(refreshed.json()["config"], "free", 1)
 
 
 def test_admin_gemini_pools_delete_free_disables_authoritative_mode(monkeypatch, tmp_path: Path) -> None:
@@ -619,7 +646,8 @@ def test_admin_gemini_pools_delete_free_disables_authoritative_mode(monkeypatch,
     assert update.status_code == 200
     payload = update.json()
     assert "free_pool_authoritative_mode_disabled" in list(payload.get("appliedOverrides") or [])
-    assert "free" not in payload["config"]["pools"]
+    assert "free" in payload["config"]["pools"]
+    _assert_masked_pool_keys(payload["config"], "free", 1)
     assert payload["sourcePolicy"]["freePoolLocked"] is False
     assert str(payload["sourcePolicy"]["freePoolMode"] or "").strip().lower() == "config_managed"
 
@@ -627,7 +655,7 @@ def test_admin_gemini_pools_delete_free_disables_authoritative_mode(monkeypatch,
     backend_app._GEMINI_POOLS_META = {}
     after = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
     assert after.status_code == 200
-    assert "free" not in after.json()["config"]["pools"]
+    _assert_masked_pool_keys(after.json()["config"], "free", 1)
 
 
 def test_admin_gemini_plan_mapping_missing_pool_falls_back_to_default_chain(monkeypatch, tmp_path: Path) -> None:
@@ -694,10 +722,11 @@ def test_admin_gemini_plan_mapping_missing_pool_falls_back_to_default_chain(monk
     )
     assert update.status_code == 200
     payload = update.json()
-    assert payload["validation"]["missingPlanPools"]["plus"] == "enterprise_missing"
+    assert payload["validation"]["missingPlanPools"] == {}
+    assert payload["config"]["planPools"] == {"free": "free", "pro": "free", "plus": "free"}
     keys = backend_app._resolve_gemini_plan_key_pool("plus")
-    assert pro_key in keys
     assert free_key in keys
+    assert pro_key not in keys
 
 
 def test_admin_integrations_usage_requires_admin(monkeypatch) -> None:
@@ -838,25 +867,24 @@ def test_tts_synthesize_enforces_free_plan_success_limit(monkeypatch) -> None:
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": "burst_free_user"}
     payload = {
-        "engine": "GEM",
+        "engine": "GOOD",
         "text": "burst limit test",
-        "voice_id": "Fenrir",
+        "voice_id": "v2",
     }
 
-    first = client.post("/tts/synthesize", headers=headers, json=payload)
-    second = client.post("/tts/synthesize", headers=headers, json=payload)
-    third = client.post("/tts/synthesize", headers=headers, json=payload)
+    free_limit = max(1, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_FREE", 2) or 2))
+    responses = [client.post("/tts/synthesize", headers=headers, json=payload) for _ in range(free_limit)]
+    blocked = client.post("/tts/synthesize", headers=headers, json=payload)
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert third.status_code == 429
-    detail = third.json().get("detail") or {}
+    assert all(resp.status_code == 200 for resp in responses)
+    assert blocked.status_code == 429
+    detail = blocked.json().get("detail") or {}
     assert detail.get("errorCode") == "RATE_LIMIT_USER"
     assert detail.get("reason") == "plan_success_limit_exceeded"
     assert detail.get("plan") == "Free"
-    assert first.headers.get("x-ratelimit-success-limit") == "2"
-    assert first.headers.get("x-ratelimit-success-remaining") == "1"
-    assert second.headers.get("x-ratelimit-success-remaining") == "0"
+    assert responses[0].headers.get("x-ratelimit-success-limit") == str(free_limit)
+    assert responses[0].headers.get("x-ratelimit-success-remaining") == str(max(0, free_limit - 1))
+    assert responses[-1].headers.get("x-ratelimit-success-remaining") == "0"
 
 
 def test_tts_synthesize_enforces_plan_char_limit(monkeypatch) -> None:
@@ -869,9 +897,9 @@ def test_tts_synthesize_enforces_plan_char_limit(monkeypatch) -> None:
         "/tts/synthesize",
         headers=headers,
         json={
-            "engine": "GEM",
+            "engine": "GOOD",
             "text": too_long_text,
-            "voice_id": "Fenrir",
+            "voice_id": "v2",
         },
     )
     assert response.status_code == 400
@@ -880,7 +908,7 @@ def test_tts_synthesize_enforces_plan_char_limit(monkeypatch) -> None:
     assert int(detail.get("maxChars") or 0) == 8000
 
 
-def test_tts_synthesize_enforces_pro_and_plus_success_limits(monkeypatch) -> None:
+def test_tts_synthesize_enforces_pro_and_scale_success_limits(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
@@ -893,7 +921,7 @@ def test_tts_synthesize_enforces_pro_and_plus_success_limits(monkeypatch) -> Non
 
     payload = {"engine": "GEM", "text": "burst plan test", "voice_id": "Fenrir"}
 
-    for _ in range(5):
+    for _ in range(10):
         assert client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload).status_code == 200
     pro_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload)
     assert pro_blocked.status_code == 429
@@ -905,7 +933,7 @@ def test_tts_synthesize_enforces_pro_and_plus_success_limits(monkeypatch) -> Non
     plus_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": plus_uid}, json=payload)
     assert plus_blocked.status_code == 429
     assert (plus_blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
-    assert (plus_blocked.json().get("detail") or {}).get("plan") == "Plus"
+    assert (plus_blocked.json().get("detail") or {}).get("plan") == "Scale"
 
 
 def test_tts_success_limit_does_not_count_failed_generation(monkeypatch) -> None:
@@ -924,16 +952,20 @@ def test_tts_success_limit_does_not_count_failed_generation(monkeypatch) -> None
     monkeypatch.setattr(backend_app.requests, "post", _runtime)
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": "success_only_user"}
-    payload = {"engine": "GEM", "text": "success-only limit", "voice_id": "Fenrir"}
+    payload = {"engine": "GOOD", "text": "success-only limit", "voice_id": "v2"}
 
     first = client.post("/tts/synthesize", headers=headers, json=payload)
     failed = client.post("/tts/synthesize", headers=headers, json=payload)
-    second_success = client.post("/tts/synthesize", headers=headers, json=payload)
+    free_limit = max(1, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_FREE", 2) or 2))
+    additional_successes = [
+        client.post("/tts/synthesize", headers=headers, json=payload)
+        for _ in range(max(0, free_limit - 1))
+    ]
     blocked = client.post("/tts/synthesize", headers=headers, json=payload)
 
     assert first.status_code == 200
     assert failed.status_code >= 500
-    assert second_success.status_code == 200
+    assert all(resp.status_code == 200 for resp in additional_successes)
     assert blocked.status_code == 429
     assert (blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
 
@@ -944,20 +976,28 @@ def test_tts_success_limit_idempotency_key_does_not_double_count(monkeypatch) ->
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
     client = TestClient(backend_app.app)
     uid = "idempotency_user"
-    payload = {"engine": "GEM", "text": "idempotency success test", "voice_id": "Fenrir"}
+    payload = {"engine": "GOOD", "text": "idempotency success test", "voice_id": "v2"}
 
+    free_limit = max(2, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_FREE", 2) or 2))
     first = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-1"}, json=payload)
     second_same = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-1"}, json=payload)
-    third = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-2"}, json=payload)
-    blocked = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-3"}, json=payload)
+    extra_unique = [
+        client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": f"idem-{idx}"}, json=payload)
+        for idx in range(2, free_limit + 1)
+    ]
+    blocked = client.post(
+        "/tts/synthesize",
+        headers={"x-dev-uid": uid, "Idempotency-Key": f"idem-{free_limit + 1}"},
+        json=payload,
+    )
 
     assert first.status_code == 200
     assert second_same.status_code == 200
-    assert third.status_code == 200
+    assert all(resp.status_code == 200 for resp in extra_unique)
     assert blocked.status_code == 429
-    assert first.headers.get("x-ratelimit-success-remaining") == "1"
-    assert second_same.headers.get("x-ratelimit-success-remaining") == "1"
-    assert third.headers.get("x-ratelimit-success-remaining") == "0"
+    assert first.headers.get("x-ratelimit-success-remaining") == str(max(0, free_limit - 1))
+    assert second_same.headers.get("x-ratelimit-success-remaining") == str(max(0, free_limit - 1))
+    assert extra_unique[-1].headers.get("x-ratelimit-success-remaining") == "0"
 
 
 def test_wallet_spendable_now_includes_vff_for_gem() -> None:

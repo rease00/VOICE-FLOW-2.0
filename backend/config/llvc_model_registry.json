@@ -3,259 +3,387 @@
   "models": [
     {
       "id": "llvc_hq_cpu",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "hq",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "llvc_default",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
       "sampleRate": 32000,
       "qualityTier": "standard",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p01_india_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p02_india_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p03_us_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p04_us_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p05_uk_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p06_uk_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p07_canada_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p08_canada_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p09_au_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p10_au_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p11_jp_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p12_jp_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p13_br_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p14_br_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p15_es_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p16_es_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p17_india_boy",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p18_india_girl",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p19_india_old_man",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p20_uk_old_woman",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p21_novel_artist_m",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p22_novel_artist_f",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p23_de_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p24_de_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p25_fr_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p26_fr_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p27_ae_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p28_ae_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p29_ru_m_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     },
     {
       "id": "p30_ru_f_adult",
-      "checkpointPath": "",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
       "configPath": "",
-      "sampleRate": 40000,
+      "sampleRate": 32000,
       "qualityTier": "profile",
-      "enabled": true
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
     }
   ]
 }

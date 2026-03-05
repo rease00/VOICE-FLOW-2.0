@@ -299,6 +299,87 @@ def test_tts_job_strict_post_tts_failure_populates_reason_error_code_and_trace_i
     assert str(error.get("trace_id") or "").strip() != ""
 
 
+def test_tts_job_live_pipeline_llvc_concurrency_respects_limit(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_STREAM_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_PIPELINE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_SYNTH_CONCURRENCY", 2)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_LLVC_CONCURRENCY", 2)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_REQUIRED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:live-pipeline:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_split_text_live_chunks",
+        lambda **_kwargs: [
+            {"text": "chunk one", "textChars": 9, "wordCount": 2},
+            {"text": "chunk two", "textChars": 9, "wordCount": 2},
+            {"text": "chunk three", "textChars": 11, "wordCount": 2},
+            {"text": "chunk four", "textChars": 10, "wordCount": 2},
+        ],
+    )
+
+    class _OkResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.ok = True
+            self.content = _tiny_wav_bytes(720)
+            self.headers = {"content-type": "audio/wav", "x-voiceflow-trace-id": "trace_live_pipeline"}
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *_args, **_kwargs: _OkResponse())
+
+    tracker = {"active": 0, "max": 0}
+    tracker_lock = threading.Lock()
+
+    def _fake_convert(*_args, **_kwargs):
+        with tracker_lock:
+            tracker["active"] += 1
+            tracker["max"] = max(tracker["max"], tracker["active"])
+        time.sleep(0.04)
+        with tracker_lock:
+            tracker["active"] -= 1
+        return _tiny_wav_bytes(720), {"x-vf-post-tts-conversion": "llvc"}
+
+    monkeypatch.setattr(backend_app, "_convert_tts_audio_with_llvc_runtime", _fake_convert)
+
+    job_payload = {
+        "jobId": "live_pipeline_job_1",
+        "uid": "live_pipeline_user",
+        "requestId": "live_pipeline_req_1",
+        "traceId": "live_pipeline_trace_1",
+        "engine": "GEM",
+        "text": "live pipeline strict llvc",
+        "voiceId": "Fenrir",
+        "voiceName": "Fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {
+            "text": "live pipeline strict llvc",
+            "multi_speaker_line_map": [{"lineIndex": 0, "speaker": "Narrator", "text": "line"}],
+        },
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+        "liveStream": True,
+    }
+    backend_app._process_tts_job(job_payload, "worker-live-pipeline")
+
+    assert tracker["max"] <= 2
+    assert tracker["max"] >= 2
+    chunk_samples = list(backend_app._TTS_QUEUE_TELEMETRY.get("liveChunkCount") or [])
+    assert chunk_samples
+    assert int(chunk_samples[-1]) == 4
+
+
 def test_tts_synthesize_wait_ms_query_override(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)

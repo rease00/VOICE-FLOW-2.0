@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseBool } from './lib/audit-helpers.mjs';
+import { buildAuditHeaders, classifyAuditFailure, fetchJsonWithTimeout, parseBool } from './lib/audit-helpers.mjs';
 import { probeCommand, runCommand } from './lib/process-runner.mjs';
 
 const ROOT = process.cwd();
@@ -40,7 +40,14 @@ const pollMs = Math.max(100, asInt(args.get('poll-ms') || process.env.VF_LOAD_PO
 const timeoutMs = Math.max(1_000, asInt(args.get('timeout-ms') || process.env.VF_LOAD_JOB_TIMEOUT_MS, 120_000));
 const syncWaitMs = Math.max(0, asInt(args.get('sync-wait-ms') || process.env.VF_LOAD_SYNC_WAIT_MS, 3_000));
 const uid = String(args.get('uid') || process.env.VF_LOAD_UID || 'k6_load_user').trim() || 'k6_load_user';
+const baseUrl = String(args.get('base-url') || process.env.VF_MEDIA_BACKEND_URL || 'http://127.0.0.1:7800').trim().replace(/\/+$/, '');
 const requireK6 = parseBool(args.get('require-k6') ?? process.env.VF_REQUIRE_K6, false);
+const queueSampleMs = Math.max(250, asInt(args.get('queue-sample-ms') || process.env.VF_LOAD_QUEUE_SAMPLE_MS, 1000));
+const maxQueueDepth = Math.max(1, asInt(args.get('max-queue-depth') || process.env.VF_LOAD_MAX_QUEUE_DEPTH, Math.max(100, vus * 4)));
+const maxOldestQueuedAgeMs = Math.max(
+  1,
+  asInt(args.get('max-oldest-age-ms') || process.env.VF_LOAD_MAX_OLDEST_QUEUED_AGE_MS, Math.max(timeoutMs, 120_000))
+);
 
 const timestamp = Date.now();
 const summaryPath = path.join(ARTIFACT_DIR, `k6-summary-${mode}-c${vus}-${timestamp}.json`);
@@ -50,6 +57,22 @@ const verdictPath = path.join(ARTIFACT_DIR, `k6-verdict-${mode}-c${vus}-${timest
 const readJsonFile = async (filePath) => {
   const raw = await fs.readFile(filePath, 'utf8');
   return JSON.parse(raw);
+};
+
+const percentile = (values, ratio) => {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.round((sorted.length - 1) * ratio)));
+  return Number(sorted[index] || 0);
+};
+
+const parseQueueMetrics = (payload) => {
+  const queue = payload && typeof payload === 'object' ? payload.queue : null;
+  const telemetry = payload && typeof payload === 'object' ? payload.telemetry : null;
+  return {
+    depthTotal: Math.max(0, Number(queue && queue.total ? queue.total : 0) || 0),
+    oldestAgeMs: Math.max(0, Number(telemetry && telemetry.oldestQueuedAgeMs ? telemetry.oldestQueuedAgeMs : 0) || 0),
+  };
 };
 
 const main = async () => {
@@ -63,6 +86,7 @@ const main = async () => {
       schemaVersion: '1.0.0',
       generatedAt: new Date().toISOString(),
       target: {
+        baseUrl,
         mode,
         uid,
         vus,
@@ -92,6 +116,9 @@ const main = async () => {
         syncWaitMs,
         uid,
         requireK6,
+        queueSampleMs,
+        maxQueueDepth,
+        maxOldestQueuedAgeMs,
       },
       artifacts: {
         summaryPath: path.relative(ROOT, summaryPath).replace(/\\/g, '/'),
@@ -116,8 +143,58 @@ const main = async () => {
     return;
   }
 
+  const { headers: queueProbeHeaders } = buildAuditHeaders(
+    { Accept: 'application/json' },
+    { scriptName: `test:load:k6:c${vus}`, defaultDevUid: uid }
+  );
+
+  const queueTelemetry = [];
+  let queueSamplerActive = true;
+  let queueSamplerInFlight = false;
+  const sampleQueueMetrics = async (phase = 'interval') => {
+    if (!queueSamplerActive || queueSamplerInFlight) return;
+    queueSamplerInFlight = true;
+    try {
+      const probe = await fetchJsonWithTimeout(
+        `${baseUrl}/admin/tts/queue/metrics`,
+        {
+          method: 'GET',
+          headers: queueProbeHeaders,
+        },
+        Math.min(timeoutMs, 15_000),
+      );
+      if (!probe.ok) {
+        queueTelemetry.push({
+          at: new Date().toISOString(),
+          phase,
+          ok: false,
+          status: probe.status,
+          classification: classifyAuditFailure(probe),
+        });
+        return;
+      }
+      const parsed = parseQueueMetrics(probe.payload);
+      queueTelemetry.push({
+        at: new Date().toISOString(),
+        phase,
+        ok: true,
+        status: probe.status,
+        depthTotal: parsed.depthTotal,
+        oldestAgeMs: parsed.oldestAgeMs,
+      });
+    } finally {
+      queueSamplerInFlight = false;
+    }
+  };
+
+  await sampleQueueMetrics('start');
+  const queueSamplerTimer = setInterval(() => {
+    void sampleQueueMetrics('interval');
+  }, queueSampleMs);
+
   const k6Args = ['run', SCRIPT_PATH, '--summary-export', rawSummaryExportPath];
   const env = {
+    VF_MEDIA_BACKEND_URL: baseUrl,
     VF_LOAD_VUS: String(vus),
     VF_LOAD_DURATION: duration,
     VF_LOAD_MODE: mode,
@@ -132,10 +209,17 @@ const main = async () => {
     AUDIT_REQUIRE_AUTH: String(process.env.AUDIT_REQUIRE_AUTH || ''),
   };
 
-  const runResult = await runCommand(K6_BIN, k6Args, {
-    env,
-    stdio: 'inherit',
-  });
+  let runResult;
+  try {
+    runResult = await runCommand(K6_BIN, k6Args, {
+      env,
+      stdio: 'inherit',
+    });
+  } finally {
+    queueSamplerActive = false;
+    clearInterval(queueSamplerTimer);
+    await sampleQueueMetrics('end');
+  }
   let summaryPayload = null;
   let verdictReasons = [];
   let passed = runResult.ok;
@@ -156,10 +240,54 @@ const main = async () => {
     verdictReasons.push(`k6_exit_code_${runResult.code}`);
   }
 
+  const queueDepthValues = queueTelemetry
+    .map((sample) => Number(sample.depthTotal || 0))
+    .filter((value) => Number.isFinite(value));
+  const queueOldestAgeValues = queueTelemetry
+    .map((sample) => Number(sample.oldestAgeMs || 0))
+    .filter((value) => Number.isFinite(value));
+  const queueSummary = {
+    sampleCount: queueTelemetry.length,
+    maxDepth: queueDepthValues.length ? Math.max(...queueDepthValues) : 0,
+    p95Depth: percentile(queueDepthValues, 0.95),
+    lastDepth: queueDepthValues.length ? Number(queueDepthValues[queueDepthValues.length - 1] || 0) : 0,
+    maxOldestAgeMs: queueOldestAgeValues.length ? Math.max(...queueOldestAgeValues) : 0,
+    p95OldestAgeMs: percentile(queueOldestAgeValues, 0.95),
+    lastOldestAgeMs: queueOldestAgeValues.length ? Number(queueOldestAgeValues[queueOldestAgeValues.length - 1] || 0) : 0,
+    fetchErrors: queueTelemetry.filter((sample) => !sample.ok).length,
+  };
+  if (queueSummary.maxDepth > maxQueueDepth) {
+    verdictReasons.push(`queue_depth_exceeded:${queueSummary.maxDepth}>${maxQueueDepth}`);
+  }
+  if (queueSummary.maxOldestAgeMs > maxOldestQueuedAgeMs) {
+    verdictReasons.push(`queue_oldest_age_exceeded:${queueSummary.maxOldestAgeMs}>${maxOldestQueuedAgeMs}`);
+  }
+  if (queueSummary.sampleCount === 0 || queueSummary.fetchErrors > 0) {
+    verdictReasons.push(`queue_telemetry_incomplete:samples=${queueSummary.sampleCount}:errors=${queueSummary.fetchErrors}`);
+  }
+  if (summaryPayload && typeof summaryPayload === 'object') {
+    summaryPayload.queue = {
+      thresholds: {
+        maxDepth: maxQueueDepth,
+        maxOldestAgeMs: maxOldestQueuedAgeMs,
+      },
+      summary: queueSummary,
+      samples: queueTelemetry.slice(-200),
+    };
+    summaryPayload.verdict = {
+      ...(summaryPayload.verdict || {}),
+      passed: verdictReasons.length === 0,
+      reasons: verdictReasons,
+    };
+    await fs.writeFile(summaryPath, `${JSON.stringify(summaryPayload, null, 2)}\n`, 'utf8');
+  }
+  passed = passed && verdictReasons.length === 0;
+
   const verdictPayload = {
     schemaVersion: '1.0.0',
     generatedAt: new Date().toISOString(),
     config: {
+      baseUrl,
       mode,
       vus,
       duration,
@@ -168,6 +296,9 @@ const main = async () => {
       syncWaitMs,
       uid,
       requireK6,
+      queueSampleMs,
+      maxQueueDepth,
+      maxOldestQueuedAgeMs,
     },
     artifacts: {
       summaryPath: path.relative(ROOT, summaryPath).replace(/\\/g, '/'),
@@ -176,6 +307,14 @@ const main = async () => {
     verdict: {
       passed,
       reasons: verdictReasons,
+    },
+    queue: {
+      thresholds: {
+        maxDepth: maxQueueDepth,
+        maxOldestAgeMs: maxOldestQueuedAgeMs,
+      },
+      summary: queueSummary,
+      samples: queueTelemetry.slice(-200),
     },
     k6: {
       exitCode: runResult.code,
@@ -188,6 +327,10 @@ const main = async () => {
   console.log(`[run-k6-load] summary: ${path.relative(ROOT, summaryPath).replace(/\\/g, '/')}`);
   console.log(`[run-k6-load] verdict: ${path.relative(ROOT, verdictPath).replace(/\\/g, '/')}`);
   console.log(`[run-k6-load] passed: ${passed}`);
+  console.log(
+    `[run-k6-load] queue maxDepth=${queueSummary.maxDepth} maxOldestAgeMs=${queueSummary.maxOldestAgeMs} ` +
+    `samples=${queueSummary.sampleCount}`,
+  );
 
   if (!passed) {
     process.exit(1);

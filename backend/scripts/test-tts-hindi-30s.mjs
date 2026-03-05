@@ -20,10 +20,12 @@ const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_AUDIT_TIMEOUT_MS || 180_000
 const MEDIA_BACKEND_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
 const SWITCH_TIMEOUT_MS = Number(process.env.VF_TTS_AUDIT_SWITCH_TIMEOUT_MS || 90_000);
 const SWITCH_POLL_MS = Number(process.env.VF_TTS_AUDIT_SWITCH_POLL_MS || 1_200);
+const ADMIN_UNLOCK_TIMEOUT_MS = Number(process.env.VF_TTS_AUDIT_ADMIN_UNLOCK_TIMEOUT_MS || 15_000);
 const SKIP_RUNTIME_SWITCH = ['1', 'true', 'yes'].includes((process.env.VF_TTS_AUDIT_SKIP_SWITCH || '').trim().toLowerCase());
 const RETRY_MAX = Math.max(0, Number(process.env.VF_TTS_AUDIT_RETRY_MAX || 2));
 const RETRY_BASE_MS = Math.max(100, Number(process.env.VF_TTS_AUDIT_RETRY_BASE_MS || 800));
 const AUDIT_UID = String(process.env.VF_TTS_AUDIT_UID || 'local_admin').trim() || 'local_admin';
+const ADMIN_UNLOCK_TOKEN = String(process.env.AUDIT_ADMIN_UNLOCK_TOKEN || '').trim();
 const { headers: AUDIT_AUTH_HEADERS, auth: AUDIT_AUTH } = buildAuditHeaders(
   { Accept: 'application/json' },
   { scriptName: 'audit:tts:hindi', defaultDevUid: AUDIT_UID }
@@ -190,6 +192,61 @@ const parseJsonSafe = async (response) => {
   }
 };
 
+const normalizeBearer = (value) => {
+  const token = String(value || '').trim();
+  if (!token) return '';
+  return token.toLowerCase().startsWith('bearer ') ? token : `Bearer ${token}`;
+};
+
+let cachedSwitchHeaders = null;
+const resolveSwitchHeaders = async () => {
+  if (cachedSwitchHeaders) return cachedSwitchHeaders;
+  const baseHeaders = { ...AUDIT_AUTH_HEADERS, 'Content-Type': 'application/json' };
+
+  if (SKIP_RUNTIME_SWITCH) {
+    cachedSwitchHeaders = baseHeaders;
+    return cachedSwitchHeaders;
+  }
+
+  const providedUnlock = normalizeBearer(ADMIN_UNLOCK_TOKEN);
+  if (providedUnlock) {
+    cachedSwitchHeaders = { ...baseHeaders, 'X-Admin-Unlock': providedUnlock };
+    return cachedSwitchHeaders;
+  }
+
+  const issue = await fetchJsonWithTimeout(
+    `${MEDIA_BACKEND_URL}/admin/session-unlock/issue`,
+    {
+      method: 'POST',
+      headers: AUDIT_AUTH_HEADERS,
+    },
+    ADMIN_UNLOCK_TIMEOUT_MS
+  );
+  if (!issue.ok) {
+    throw new Error(`admin unlock issue failed (${issue.status}): ${JSON.stringify(issue.payload || '')}`);
+  }
+  const unlockKey = String(issue?.payload?.unlockKey || '').trim();
+  if (!unlockKey) throw new Error('admin unlock issue missing unlockKey.');
+
+  const verify = await fetchJsonWithTimeout(
+    `${MEDIA_BACKEND_URL}/admin/session-unlock/verify`,
+    {
+      method: 'POST',
+      headers: { ...AUDIT_AUTH_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unlockKey }),
+    },
+    ADMIN_UNLOCK_TIMEOUT_MS
+  );
+  if (!verify.ok) {
+    throw new Error(`admin unlock verify failed (${verify.status}): ${JSON.stringify(verify.payload || '')}`);
+  }
+  const unlockToken = normalizeBearer(verify?.payload?.unlockToken || '');
+  if (!unlockToken) throw new Error('admin unlock verify missing unlockToken.');
+
+  cachedSwitchHeaders = { ...baseHeaders, 'X-Admin-Unlock': unlockToken };
+  return cachedSwitchHeaders;
+};
+
 const runBackendPreflight = async () => {
   const checks = [];
   const targets = [
@@ -223,11 +280,12 @@ const runBackendPreflight = async () => {
 
 const switchRuntimeEngine = async (engine) => {
   const started = Date.now();
+  const switchHeaders = await resolveSwitchHeaders();
   const response = await fetchWithTimeout(
     `${MEDIA_BACKEND_URL}/tts/engines/switch`,
     {
       method: 'POST',
-      headers: { ...AUDIT_AUTH_HEADERS, 'Content-Type': 'application/json' },
+      headers: switchHeaders,
       body: JSON.stringify({ engine, gpu: false }),
     },
     SWITCH_TIMEOUT_MS

@@ -10,6 +10,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 const ENV_FILES = [path.join(ROOT, ".env"), path.join(ROOT, "..", ".env")];
+const VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST = path.resolve(
+  ROOT,
+  String(
+    process.env.VF_VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST || path.join("config", "video_pipeline_asset_sources.json")
+  ).trim() || path.join("config", "video_pipeline_asset_sources.json")
+);
+const VIDEO_ASSET_CHECK_STRICT = toBoolEnv(process.env.VF_VIDEO_ASSET_CHECK_STRICT, false);
 
 function parseEnvValue(rawValue) {
   const trimmed = rawValue.trim();
@@ -890,6 +897,99 @@ async function getJson(url) {
   }
 }
 
+function normalizeRelativeAssetPath(relPath) {
+  const token = String(relPath || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!token) return "";
+  const cleaned = token
+    .split("/")
+    .filter((part) => part && part !== ".")
+    .join("/");
+  if (!cleaned || cleaned.startsWith("..")) return "";
+  return cleaned;
+}
+
+function runVideoPipelineAssetCheck() {
+  if (!fs.existsSync(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST)) {
+    return {
+      serviceId: "video-assets",
+      service: "Video Pipeline Assets",
+      status: "FAIL",
+      attempts: 1,
+      elapsedSec: "0.0",
+      detail:
+        `Asset manifest missing: ${VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST}. ` +
+        `Run: npm run download:video:pipeline:assets`,
+    };
+  }
+
+  let payload = null;
+  try {
+    const rawManifestText = fs.readFileSync(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST, "utf8");
+    const manifestText = rawManifestText.startsWith("\uFEFF") ? rawManifestText.slice(1) : rawManifestText;
+    payload = JSON.parse(manifestText);
+  } catch (error) {
+    return {
+      serviceId: "video-assets",
+      service: "Video Pipeline Assets",
+      status: "FAIL",
+      attempts: 1,
+      elapsedSec: "0.0",
+      detail:
+        `Asset manifest parse failed: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Run: npm run download:video:pipeline:assets`,
+    };
+  }
+
+  const entries = Array.isArray(payload?.assets) ? payload.assets : [];
+  const requiredMissing = [];
+  const optionalMissing = [];
+  for (const rawEntry of entries) {
+    if (!rawEntry || typeof rawEntry !== "object") continue;
+    const id = String(rawEntry.id || "").trim();
+    const outputRel = normalizeRelativeAssetPath(rawEntry.outputPath);
+    const required = rawEntry.required !== false;
+    if (!id || !outputRel) continue;
+    const targetPath = path.resolve(ROOT, outputRel);
+    if (fs.existsSync(targetPath)) continue;
+    if (required) requiredMissing.push(id);
+    else optionalMissing.push(id);
+  }
+
+  if (requiredMissing.length > 0) {
+    return {
+      serviceId: "video-assets",
+      service: "Video Pipeline Assets",
+      status: VIDEO_ASSET_CHECK_STRICT ? "FAIL" : "WARN",
+      attempts: 1,
+      elapsedSec: "0.0",
+      detail:
+        `Missing required assets: ${requiredMissing.join(", ")}. ` +
+        `Run: npm run download:video:pipeline:assets` +
+        (VIDEO_ASSET_CHECK_STRICT ? "" : " (non-strict mode keeps services:check non-blocking)"),
+    };
+  }
+
+  if (optionalMissing.length > 0) {
+    return {
+      serviceId: "video-assets",
+      service: "Video Pipeline Assets",
+      status: "WARN",
+      attempts: 1,
+      elapsedSec: "0.0",
+      detail: `Optional assets missing: ${optionalMissing.join(", ")}.`,
+    };
+  }
+
+  return {
+    serviceId: "video-assets",
+    service: "Video Pipeline Assets",
+    status: "PASS",
+    attempts: 1,
+    elapsedSec: "0.0",
+    detail: "ok",
+  };
+}
+
 async function runCheck(check) {
   const started = Date.now();
   let attempts = 0;
@@ -938,7 +1038,7 @@ async function runCheck(check) {
 async function runChecks(options = {}) {
   const failOnError = options.failOnError !== false;
   console.log("\nRunning endpoint validation...");
-  const results = await Promise.all(
+  const endpointResults = await Promise.all(
     CHECKS.map(async (check) => {
       const result = await runCheck(check);
       if (result.status === "FAIL") {
@@ -954,6 +1054,16 @@ async function runChecks(options = {}) {
       return result;
     })
   );
+  const results = [...endpointResults];
+  const assetResult = runVideoPipelineAssetCheck();
+  if (assetResult.status === "FAIL") {
+    console.error(`[fail] ${assetResult.service}: ${assetResult.detail}`);
+  } else if (assetResult.status === "WARN") {
+    console.warn(`[warn] ${assetResult.service}: ${assetResult.detail}`);
+  } else {
+    console.log(`[ok] ${assetResult.service}`);
+  }
+  results.push(assetResult);
   console.table(results);
   if (failOnError && results.some((item) => item.status === "FAIL")) {
     throw new Error("One or more endpoint checks failed.");
@@ -986,6 +1096,10 @@ async function runDoctor(gpuMode, maxAttempts = DOCTOR_MAX_ATTEMPTS) {
       printServiceStatusSummary();
       console.log("\nDoctor completed successfully.");
       return;
+    }
+    const assetFailure = failed.find((item) => String(item.serviceId || "") === "video-assets");
+    if (assetFailure) {
+      throw new Error(String(assetFailure.detail || "Video pipeline assets are missing."));
     }
 
     if (attempt >= maxAttempts) break;

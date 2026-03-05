@@ -146,13 +146,100 @@ def test_guardian_major_approval_executes_with_valid_admin(monkeypatch) -> None:
 
     decided = client.post(
         f"/ops/guardian/approvals/{approval_id}/decision",
-        json={"approved": True, "adminToken": "secret"},
+        json={"approved": True},
         headers={"x-dev-uid": "admin_user"},
     )
     assert decided.status_code == 200
     payload = decided.json()
     assert payload["approval"]["status"] == "executed"
     assert payload["execution"]["ok"] is True
+
+
+def test_guardian_minor_action_allows_firestore_admin_without_token_when_unconfigured(monkeypatch) -> None:
+    _reset_ai_ops_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVAL_TOKEN", "")
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset())
+    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", lambda _token: {"uid": "firestore_admin_user"})
+    monkeypatch.setattr(backend_app, "_firestore_user_is_admin", lambda uid: str(uid) == "firestore_admin_user")
+    monkeypatch.setattr(
+        backend_app,
+        "_require_admin_mutation_unlock",
+        lambda request, expected_uid=None: str(expected_uid or "firestore_admin_user"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_ai_ops_execute_action",
+        lambda action, payload, gpu=False, initiator="", approval_id=None: {
+            "ok": True,
+            "action": action,
+            "payload": payload,
+            "gpu": bool(gpu),
+            "initiator": initiator,
+            "approvalId": approval_id,
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/ops/guardian/actions",
+        json={"action": "refresh_gemini_pool"},
+        headers={"Authorization": "Bearer token_firestore_admin"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("action") == "refresh_gemini_pool"
+    assert payload.get("severity") == "minor"
+
+
+def test_guardian_minor_action_rejects_admin_when_allowlist_configured_and_uid_missing(monkeypatch) -> None:
+    _reset_ai_ops_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVAL_TOKEN", "")
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset({"different_admin"}))
+    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", lambda _token: {"uid": "firestore_admin_user"})
+    monkeypatch.setattr(backend_app, "_firestore_user_is_admin", lambda uid: str(uid) == "firestore_admin_user")
+    monkeypatch.setattr(
+        backend_app,
+        "_require_admin_mutation_unlock",
+        lambda request, expected_uid=None: str(expected_uid or "firestore_admin_user"),
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/ops/guardian/actions",
+        json={"action": "refresh_gemini_pool"},
+        headers={"Authorization": "Bearer token_firestore_admin"},
+    )
+    assert response.status_code == 403
+    detail = str(response.json().get("detail") or "")
+    assert "uid_not_allowlisted" in detail
+
+
+def test_guardian_minor_action_ignores_legacy_admin_token_when_configured(monkeypatch) -> None:
+    _reset_ai_ops_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVAL_TOKEN", "secret")
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset())
+    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", lambda _token: {"uid": "firestore_admin_user"})
+    monkeypatch.setattr(backend_app, "_firestore_user_is_admin", lambda uid: str(uid) == "firestore_admin_user")
+    monkeypatch.setattr(
+        backend_app,
+        "_require_admin_mutation_unlock",
+        lambda request, expected_uid=None: str(expected_uid or "firestore_admin_user"),
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/ops/guardian/actions",
+        json={"action": "refresh_gemini_pool"},
+        headers={"Authorization": "Bearer token_firestore_admin"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("action") == "refresh_gemini_pool"
+    assert payload.get("severity") == "minor"
 
 
 def test_guardian_concurrency_guard_observe_vs_enforce(monkeypatch) -> None:
@@ -227,3 +314,32 @@ def test_guardian_mutate_requires_guardian_mutate_permission(monkeypatch) -> Non
     )
     assert mutate_scan.status_code == 403
     assert "guardian.mutate" in str(mutate_scan.json().get("detail"))
+
+
+def test_guardian_scan_requires_unlock_and_short_circuits_when_missing(monkeypatch) -> None:
+    _reset_ai_ops_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_verify_firebase_id_token",
+        lambda _token: {"uid": "guardian_admin", "admin": True, "iat": 1710000200},
+    )
+
+    calls = {"status": 0}
+
+    def _status_stub(*, include_route_stats: bool = False):
+        _ = include_route_stats
+        calls["status"] += 1
+        return {"ok": True, "issues": []}
+
+    monkeypatch.setattr(backend_app, "_ai_ops_build_status", _status_stub)
+    client = TestClient(backend_app.app)
+
+    response = client.post(
+        "/ops/guardian/scan",
+        json={"autoFixMinor": False},
+        headers={"Authorization": "Bearer guardian_admin"},
+    )
+    assert response.status_code == 403
+    assert "x-admin-unlock" in str((response.json() or {}).get("detail") or "").lower()
+    assert calls["status"] == 0

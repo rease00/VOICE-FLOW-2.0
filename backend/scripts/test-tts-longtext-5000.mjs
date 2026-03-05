@@ -12,6 +12,25 @@ const REPORT_PATH = path.join(ROOT, 'artifacts', 'tts_longtext_5000_audit_report
 const GEM_URL = normalizeBaseUrl(process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
 const KOKORO_URL = normalizeBaseUrl(process.env.VF_KOKORO_RUNTIME_URL, 'http://127.0.0.1:7820');
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_LONGTEXT_TIMEOUT_MS || 240000);
+const KOKORO_REQUEST_TIMEOUT_MS = Math.max(
+  REQUEST_TIMEOUT_MS,
+  Number(process.env.VF_TTS_LONGTEXT_KOKORO_TIMEOUT_MS || 300000),
+);
+const KOKORO_MAX_WORDS_PER_REQUEST = Math.max(
+  200,
+  Number(process.env.VF_TTS_LONGTEXT_KOKORO_MAX_WORDS_PER_REQUEST || 1400),
+);
+const GEMINI_QUOTA_PREFLIGHT_WORDS = Math.max(
+  12,
+  Number(process.env.VF_TTS_LONGTEXT_GEMINI_QUOTA_PREFLIGHT_WORDS || 80),
+);
+const GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.VF_TTS_LONGTEXT_GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS || 30_000),
+);
+const ALLOW_PREFLIGHT_FAILURE = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.VF_TTS_LONGTEXT_ALLOW_PREFLIGHT_FAILURE || '').trim().toLowerCase(),
+);
 const RETRY_MAX = Math.max(0, Number(process.env.VF_TTS_LONGTEXT_RETRY_MAX || 2));
 const RETRY_BASE_MS = Math.max(100, Number(process.env.VF_TTS_LONGTEXT_RETRY_BASE_MS || 800));
 
@@ -22,9 +41,9 @@ const EN_UNITS = [
 ];
 
 const HI_UNITS = [
-  'एक दिन मोहन की माँ ने उसे सब्ज़ी लेने भेजा।',
-  'मोहन ने हँसते हुए कहा कि वह जल्दी लौट आएगा।',
-  'माँ ने प्यार से कहा कि रास्ते में ध्यान रखना।',
+  '\u090f\u0915 \u0926\u093f\u0928 \u092e\u094b\u0939\u0928 \u0915\u0940 \u092e\u093e\u0901 \u0928\u0947 \u0909\u0938\u0947 \u0938\u092c\u094d\u091c\u093c\u0940 \u0932\u0947\u0928\u0947 \u092d\u0947\u091c\u093e\u0964',
+  '\u092e\u094b\u0939\u0928 \u0928\u0947 \u0939\u0901\u0938\u0924\u0947 \u0939\u0941\u090f \u0915\u0939\u093e \u0915\u093f \u0935\u0939 \u091c\u0932\u094d\u0926\u0940 \u0932\u094c\u091f \u0906\u090f\u0917\u093e\u0964',
+  '\u092e\u093e\u0901 \u0928\u0947 \u092a\u094d\u092f\u093e\u0930 \u0938\u0947 \u0915\u0939\u093e \u0915\u093f \u0930\u093e\u0938\u094d\u0924\u0947 \u092e\u0947\u0902 \u0927\u094d\u092f\u093e\u0928 \u0930\u0916\u0928\u093e\u0964',
 ];
 
 const ENGINES = {
@@ -39,6 +58,14 @@ const ENGINES = {
     language: { en: 'en', hi: 'hi' },
   },
 };
+
+const LONGTEXT_ENGINES = String(process.env.VF_TTS_LONGTEXT_ENGINES || "GEM,KOKORO")
+  .split(",")
+  .map((item) => String(item || "").trim().toUpperCase())
+  .filter(Boolean);
+const ACTIVE_ENGINES = Array.from(new Set(LONGTEXT_ENGINES.length > 0 ? LONGTEXT_ENGINES : ["GEM", "KOKORO"]))
+  .filter((engine) => Object.prototype.hasOwnProperty.call(ENGINES, engine));
+const PRIMARY_GEM_ENGINE = ACTIVE_ENGINES.find((engine) => engine !== "KOKORO") || ACTIVE_ENGINES[0] || "GEM";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -132,19 +159,86 @@ const sanitizeErrorDetail = (detail) => {
   return clone;
 };
 
-const classifyTransportError = (error) => {
+const classifyTransportError = (error, timeoutMs) => {
   const name = String(error?.name || '');
   const message = String(error?.message || '');
   if (name.toLowerCase() === 'aborterror' || message.toLowerCase().includes('aborted')) {
     return {
       code: 'REQUEST_TIMEOUT',
-      message: `request timed out after ${REQUEST_TIMEOUT_MS}ms`,
+      message: `request timed out after ${timeoutMs}ms`,
     };
   }
   return {
     code: 'NETWORK_ERROR',
     message: message || 'network request failed',
   };
+};
+
+const extractErrorCode = (error) => {
+  if (!error || typeof error !== 'object') return '';
+  const direct = String(error.errorCode || error.code || '').trim();
+  if (direct) return direct.toUpperCase();
+  const nested = error.detail;
+  if (nested && typeof nested === 'object') {
+    const nestedCode = String(nested.errorCode || nested.code || '').trim();
+    if (nestedCode) return nestedCode.toUpperCase();
+  }
+  return '';
+};
+
+const toLowerText = (value) => {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.toLowerCase();
+  try {
+    return JSON.stringify(value).toLowerCase();
+  } catch {
+    return String(value).toLowerCase();
+  }
+};
+
+const isQuotaBlockedFailure = ({ status, failureClass, error }) => {
+  const failureToken = String(failureClass || '').trim().toLowerCase();
+  const code = extractErrorCode(error);
+  const detailText = toLowerText(error);
+  if (failureToken === 'quota_or_throttle' || status === 429) return true;
+  if (code.includes('RATE_LIMIT') || code.includes('QUOTA') || code.includes('OVERLOADED') || code.includes('API_KEY_MISSING')) {
+    return true;
+  }
+  return (
+    detailText.includes('quota') ||
+    detailText.includes('rate limit') ||
+    detailText.includes('all keys rate limited') ||
+    detailText.includes('pool overloaded')
+  );
+};
+
+const normalizeLongtextFailureClass = (result) => {
+  if (!result || result.ok) return 'ok';
+  const status = Number(result.status || 0);
+  const failureToken = String(result.failureClass || '').trim().toLowerCase();
+  if (isQuotaBlockedFailure({ status, failureClass: failureToken, error: result.error })) return 'quota_blocked';
+  if (failureToken === 'timeout') return 'timeout';
+  if (failureToken === 'backend_unavailable') return 'backend_unavailable';
+  if (failureToken === 'backend_error') return 'backend_error';
+  if (failureToken === 'auth') return 'auth_error';
+  if (failureToken === 'quality_regression') return 'quality_regression';
+  if (failureToken === 'client_error') return 'client_error';
+  if (status >= 500) return 'backend_error';
+  if (status >= 400) return 'client_error';
+  return 'unknown';
+};
+
+const buildChunkWordPlan = (totalWords, maxWordsPerChunk) => {
+  const safeTotal = Math.max(1, Number(totalWords) || 1);
+  const safeChunk = Math.max(1, Number(maxWordsPerChunk) || safeTotal);
+  const chunks = [];
+  let remaining = safeTotal;
+  while (remaining > 0) {
+    const take = Math.min(safeChunk, remaining);
+    chunks.push(take);
+    remaining -= take;
+  }
+  return chunks;
 };
 
 const summarizeErrorForLog = (error) => {
@@ -213,7 +307,14 @@ const runRuntimePreflight = async () => {
   };
 };
 
-const synthesize = async ({ engine, language, words, traceId }) => {
+const synthesizeSingle = async ({
+  engine,
+  language,
+  words,
+  traceId,
+  timeoutMs,
+  retryMax = RETRY_MAX,
+}) => {
   const runtime = ENGINES[engine];
   const unitBank = language === 'hi' ? HI_UNITS : EN_UNITS;
   const text = buildTextToWords(unitBank, words);
@@ -243,10 +344,10 @@ const synthesize = async ({ engine, language, words, traceId }) => {
     async () => {
       let response;
       try {
-        response = await postJsonWithTimeout(runtime.url, payload);
+        response = await postJsonWithTimeout(runtime.url, payload, timeoutMs);
       } catch (error) {
         const elapsedMs = Date.now() - started;
-        const transport = classifyTransportError(error);
+        const transport = classifyTransportError(error, timeoutMs);
         return {
           ok: false,
           status: 0,
@@ -285,19 +386,118 @@ const synthesize = async ({ engine, language, words, traceId }) => {
         sampleRate: wav.sampleRate,
         channels: wav.channels,
         bitsPerSample: wav.bitsPerSample,
-        failureClass: qualityOk ? null : 'client_error',
+        failureClass: qualityOk ? null : 'quality_regression',
       };
     },
     {
-      maxRetries: RETRY_MAX,
+      maxRetries: retryMax,
       baseDelayMs: RETRY_BASE_MS,
       shouldRetry: (result) => !result.ok && isTransientFailureClass(String(result.failureClass || '')),
     }
   );
 };
 
+const synthesize = async ({ engine, language, words, traceId }) => {
+  const timeoutMs = engine === 'KOKORO' ? KOKORO_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+  if (engine !== 'KOKORO' || words <= KOKORO_MAX_WORDS_PER_REQUEST) {
+    return synthesizeSingle({ engine, language, words, traceId, timeoutMs });
+  }
+
+  const wordChunks = buildChunkWordPlan(words, KOKORO_MAX_WORDS_PER_REQUEST);
+  const chunkResults = [];
+  let totalElapsedMs = 0;
+  let totalBytes = 0;
+  let totalWordCount = 0;
+  let totalDurationSec = 0;
+  let sampleRate = 0;
+  let channels = 0;
+  let bitsPerSample = 0;
+
+  for (let index = 0; index < wordChunks.length; index += 1) {
+    const chunkWords = wordChunks[index];
+    const chunkTraceId = `${traceId}_chunk_${index + 1}`;
+    // Keep retries tightly bounded for chunked long-text calls to control gate duration.
+    // eslint-disable-next-line no-await-in-loop
+    const chunk = await synthesizeSingle({
+      engine,
+      language,
+      words: chunkWords,
+      traceId: chunkTraceId,
+      timeoutMs,
+      retryMax: Math.min(1, RETRY_MAX),
+    });
+    chunkResults.push({
+      index: index + 1,
+      traceId: chunkTraceId,
+      words: chunkWords,
+      ok: chunk.ok,
+      status: chunk.status,
+      failureClass: chunk.failureClass || null,
+    });
+
+    if (!chunk.ok) {
+      return {
+        ...chunk,
+        engine,
+        language,
+        chunked: true,
+        chunkIndex: index + 1,
+        chunkCount: wordChunks.length,
+        chunkWordPlan: wordChunks,
+        chunkResults,
+      };
+    }
+
+    totalElapsedMs += Number(chunk.elapsedMs || 0);
+    totalBytes += Number(chunk.bytes || 0);
+    totalWordCount += Number(chunk.wordCount || 0);
+    totalDurationSec += Number(chunk.durationSec || 0);
+    sampleRate = Number(chunk.sampleRate || sampleRate || 0);
+    channels = Number(chunk.channels || channels || 0);
+    bitsPerSample = Number(chunk.bitsPerSample || bitsPerSample || 0);
+  }
+
+  const wordsPerSec = totalWordCount / Math.max(0.001, totalDurationSec);
+  return {
+    ok: true,
+    status: 200,
+    elapsedMs: totalElapsedMs,
+    bytes: totalBytes,
+    wordCount: totalWordCount,
+    durationSec: Number(totalDurationSec.toFixed(3)),
+    wordsPerSec: Number(wordsPerSec.toFixed(3)),
+    sampleRate,
+    channels,
+    bitsPerSample,
+    failureClass: null,
+    chunked: true,
+    chunkCount: wordChunks.length,
+    chunkWordPlan: wordChunks,
+    chunkResults,
+  };
+};
+
+const runGeminiQuotaPrecheck = async () => {
+  const traceId = `vf_longtxt_quota_precheck_${Date.now().toString(36)}`;
+  const result = await synthesizeSingle({
+    engine: PRIMARY_GEM_ENGINE,
+    language: 'en',
+    words: GEMINI_QUOTA_PREFLIGHT_WORDS,
+    traceId,
+    timeoutMs: GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS,
+    retryMax: 0,
+  });
+  return {
+    ...result,
+    traceId,
+    words: GEMINI_QUOTA_PREFLIGHT_WORDS,
+    timeoutMs: GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS,
+    classification: normalizeLongtextFailureClass(result),
+  };
+};
+
 const runSmoke = async (report) => {
-  for (const engine of ['GEM', 'KOKORO']) {
+  for (const engine of ACTIVE_ENGINES) {
     for (const language of ['hi', 'en']) {
       const traceId = `vf_longtxt_${engine.toLowerCase()}_${language}_${Date.now().toString(36)}`;
       const result = await synthesize({
@@ -312,6 +512,7 @@ const runSmoke = async (report) => {
         language,
         expected: 'success',
         ...result,
+        classification: normalizeLongtextFailureClass(result),
       });
       await sleep(200);
     }
@@ -319,7 +520,7 @@ const runSmoke = async (report) => {
 };
 
 const runMatrix = async (report) => {
-  for (const engine of ['GEM', 'KOKORO']) {
+  for (const engine of ACTIVE_ENGINES) {
     for (const words of [4999, 5000, 5001]) {
       const traceId = `vf_longtxt_${engine.toLowerCase()}_${words}_${Date.now().toString(36)}`;
       const result = await synthesize({
@@ -338,6 +539,7 @@ const runMatrix = async (report) => {
         expected,
         ...result,
         assertionOk: ok,
+        classification: ok ? 'ok' : normalizeLongtextFailureClass(result),
       });
       await sleep(200);
     }
@@ -355,11 +557,23 @@ const main = async () => {
       max: RETRY_MAX,
       baseMs: RETRY_BASE_MS,
     },
+    tuning: {
+      requestTimeoutMs: REQUEST_TIMEOUT_MS,
+      kokoroRequestTimeoutMs: KOKORO_REQUEST_TIMEOUT_MS,
+      kokoroMaxWordsPerRequest: KOKORO_MAX_WORDS_PER_REQUEST,
+      geminiQuotaPrecheckWords: GEMINI_QUOTA_PREFLIGHT_WORDS,
+      geminiQuotaPrecheckTimeoutMs: GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS,
+      engines: ACTIVE_ENGINES,
+      quotaPrecheckEngine: PRIMARY_GEM_ENGINE,
+      allowPrecheckFailure: ALLOW_PREFLIGHT_FAILURE,
+    },
     runtimes: {
       GEM: GEM_URL,
       KOKORO: KOKORO_URL,
     },
     tests: [],
+    quotaPrecheck: null,
+    verdict: null,
     passed: false,
   };
 
@@ -378,6 +592,51 @@ const main = async () => {
     process.exit(1);
   }
 
+  const quotaPrecheck = await runGeminiQuotaPrecheck();
+  report.quotaPrecheck = quotaPrecheck;
+  if (!quotaPrecheck.ok) {
+    const precheckClass = String(quotaPrecheck.classification || 'unknown');
+    const precheckReliability = new Set(['timeout', 'backend_unavailable', 'backend_error', 'quality_regression']);
+    const isReliabilityFailure = precheckReliability.has(precheckClass);
+    const isQuotaFailure = precheckClass === 'quota_blocked';
+    if (ALLOW_PREFLIGHT_FAILURE) {
+      report.precheckBypassed = {
+        enabled: true,
+        failureClass: precheckClass,
+        status: quotaPrecheck.status,
+        error: quotaPrecheck.error || null,
+      };
+      console.log(
+        `[WARN] gemini quota precheck class=${quotaPrecheck.classification} status=${quotaPrecheck.status} ` +
+        `error=${summarizeErrorForLog(quotaPrecheck.error)}; continuing because VF_TTS_LONGTEXT_ALLOW_PREFLIGHT_FAILURE=1`
+      );
+    } else {
+    report.finishedAt = new Date().toISOString();
+    report.failed = 0;
+    report.passed = false;
+    report.failureReason = precheckClass || 'quota_precheck_failed';
+    report.verdict = {
+      passed: false,
+      gateFailureClass: precheckClass || 'quota_precheck_failed',
+      reliabilityFailures: isReliabilityFailure ? 1 : 0,
+      quotaBlockedFailures: isQuotaFailure ? 1 : 0,
+      policyFailures: (!isReliabilityFailure && !isQuotaFailure) ? 1 : 0,
+      byClass: {
+        [precheckClass]: 1,
+      },
+    };
+    await fs.mkdir(path.dirname(REPORT_PATH), { recursive: true });
+    await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+    console.log(`Long-text report written to ${path.relative(ROOT, REPORT_PATH).replace(/\\/g, '/')}`);
+    console.log(`Mode: ${MODE}`);
+    console.log(
+      `[FAIL] gemini quota precheck class=${quotaPrecheck.classification} status=${quotaPrecheck.status} ` +
+      `error=${summarizeErrorForLog(quotaPrecheck.error)}`
+    );
+    process.exit(1);
+    }
+  }
+
   if (MODE === 'matrix') {
     await runSmoke(report);
     await runMatrix(report);
@@ -391,9 +650,34 @@ const main = async () => {
     }
     return !test.ok;
   });
+  const byClass = failed.reduce((acc, test) => {
+    const token = String(test.classification || normalizeLongtextFailureClass(test) || 'unknown');
+    acc[token] = Number(acc[token] || 0) + 1;
+    return acc;
+  }, {});
+  const reliabilityFailureClasses = new Set(['timeout', 'backend_unavailable', 'backend_error', 'quality_regression']);
+  const reliabilityFailures = Object.entries(byClass).reduce(
+    (sum, [token, count]) => (reliabilityFailureClasses.has(token) ? sum + Number(count || 0) : sum),
+    0
+  );
+  const quotaBlockedFailures = Number(byClass.quota_blocked || 0);
+  const policyFailures = failed.length - reliabilityFailures - quotaBlockedFailures;
+  const gateFailureClass = failed.length === 0
+    ? 'none'
+    : (quotaBlockedFailures > 0
+      ? 'quota_blocked'
+      : (reliabilityFailures > 0 ? 'runtime_reliability' : 'policy_failure'));
   report.failed = failed.length;
   report.passed = failed.length === 0;
   report.finishedAt = new Date().toISOString();
+  report.verdict = {
+    passed: report.passed,
+    gateFailureClass,
+    reliabilityFailures,
+    quotaBlockedFailures,
+    policyFailures: Math.max(0, policyFailures),
+    byClass,
+  };
 
   await fs.mkdir(path.dirname(REPORT_PATH), { recursive: true });
   await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
@@ -405,9 +689,14 @@ const main = async () => {
     for (const entry of failed.slice(0, 12)) {
       console.log(
         `[FAIL] ${entry.kind} ${entry.engine} ${entry.language || ''} words=${entry.words || entry.wordCount || '-'} ` +
-        `status=${entry.status} error=${summarizeErrorForLog(entry.error)}`
+        `status=${entry.status} class=${entry.classification || normalizeLongtextFailureClass(entry)} ` +
+        `error=${summarizeErrorForLog(entry.error)}`
       );
     }
+    console.log(
+      `[FAIL] verdict class=${gateFailureClass} reliability=${reliabilityFailures} quota_blocked=${quotaBlockedFailures} ` +
+      `policy=${Math.max(0, policyFailures)}`
+    );
     process.exitCode = 1;
   }
 };

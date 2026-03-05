@@ -14,16 +14,18 @@ except Exception:  # pragma: no cover - optional dependency
 
 DEFAULT_PLAN_LIMITS = {
     "free": 2,
-    "pro": 5,
-    "plus": 10,
+    "starter": 5,
+    "creator": 5,
+    "pro": 10,
+    "scale": 10,
 }
 
 
 def normalize_plan_key(plan_key: str) -> str:
     token = str(plan_key or "").strip().lower()
-    if token in {"plus", "pro-plus", "pro_plus", "proplus"}:
-        return "plus"
-    if token in {"pro", "free"}:
+    if token in {"plus", "pro-plus", "pro_plus", "proplus", "scale"}:
+        return "scale"
+    if token in {"starter", "creator", "pro", "free"}:
         return token
     return "free"
 

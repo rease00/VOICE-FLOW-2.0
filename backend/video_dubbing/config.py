@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import shutil
@@ -18,6 +18,7 @@ class DubbingConfig:
     whisper_sample_rate: int = 16000
     gemini_runtime_url: str = "http://127.0.0.1:7810"
     kokoro_runtime_url: str = "http://127.0.0.1:7820"
+    llvc_runtime_url: str = "http://127.0.0.1:7830"
     whisper_model: str = "small"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
@@ -31,6 +32,20 @@ class DubbingConfig:
     gemini_pair_group_max_concurrency: int = 7
     gemini_pair_group_retry_once: bool = True
     gemini_pair_group_timeout_sec: int = 240
+    pipeline_version: str = "2026.1"
+    phase1_model: str = "BS-Roformer-Viperx-1297"
+    dereverb_model: str = "uvr_deecho_dereverb"
+    director_model: str = "gemini-3-flash"
+    tts_model: str = "gemini-2.5-flash-preview-tts"
+    allow_model_fallback: bool = True
+    isochrony_tolerance_pct: float = 10.0
+    thinking_low_scene_max_speakers: int = 1
+    llvc_preset: str = "llvc_hq_cpu"
+    wav2lip_onnx_path: Path | None = None
+    lpips_asset_path: Path | None = None
+    phase1_asset_path: Path | None = None
+    dereverb_asset_path: Path | None = None
+    strict_core_phases: bool = True
 
     @property
     def segments_dir(self) -> Path:
@@ -52,11 +67,44 @@ class DubbingConfig:
     def emotion_dir(self) -> Path:
         return self.output_root / "emotion"
 
+    @property
+    def cache_dir(self) -> Path:
+        return self.output_root / "cache"
+
+
+
+def _env_path(value: str) -> Path | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    try:
+        return Path(token).expanduser().resolve()
+    except Exception:
+        return Path(token)
+
+
 
 def build_config(work_root: Path | str | None = None) -> DubbingConfig:
     project_root = Path(__file__).resolve().parent.parent
     base = Path(work_root) if work_root else (project_root / "video_dubbing" / "output")
     models_root = project_root / "video_dubbing" / "models"
+
+    wav2lip_onnx_path = _env_path(os.getenv("VF_DUB_WAV2LIP_ONNX_PATH", ""))
+    if wav2lip_onnx_path is None:
+        wav2lip_onnx_path = (project_root / "models" / "video-pipeline" / "wav2lip" / "wav2lip.onnx").resolve()
+
+    lpips_asset_path = _env_path(os.getenv("VF_DUB_LPIPS_ASSET_PATH", ""))
+    if lpips_asset_path is None:
+        lpips_asset_path = (project_root / "models" / "video-pipeline" / "lpips" / "lpips.onnx").resolve()
+
+    phase1_asset_path = _env_path(os.getenv("VF_DUB_PHASE1_ASSET_PATH", ""))
+    if phase1_asset_path is None:
+        phase1_asset_path = (project_root / "models" / "video-pipeline" / "uvr" / "BS-Roformer-Viperx-1297.onnx").resolve()
+
+    dereverb_asset_path = _env_path(os.getenv("VF_DUB_DEREVERB_ASSET_PATH", ""))
+    if dereverb_asset_path is None:
+        dereverb_asset_path = (project_root / "models" / "video-pipeline" / "uvr" / "dereverb.onnx").resolve()
+
     cfg = DubbingConfig(
         project_root=project_root,
         work_root=base,
@@ -66,6 +114,7 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         whisper_sample_rate=int(os.getenv("VF_DUB_WHISPER_SR", "16000")),
         gemini_runtime_url=os.getenv("VF_GEMINI_RUNTIME_URL", "http://127.0.0.1:7810").rstrip("/"),
         kokoro_runtime_url=os.getenv("VF_KOKORO_RUNTIME_URL", "http://127.0.0.1:7820").rstrip("/"),
+        llvc_runtime_url=os.getenv("VF_LLVC_RUNTIME_URL", "http://127.0.0.1:7830").rstrip("/"),
         whisper_model=os.getenv("VF_WHISPER_MODEL", "small"),
         whisper_device=os.getenv("VF_WHISPER_DEVICE", "cpu"),
         whisper_compute_type=os.getenv("VF_WHISPER_COMPUTE", "int8"),
@@ -76,8 +125,29 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         mix_stretch_min_rate=float(os.getenv("VF_DUB_MIX_STRETCH_MIN_RATE", "0.85")),
         mix_stretch_max_rate=float(os.getenv("VF_DUB_MIX_STRETCH_MAX_RATE", "1.35")),
         gemini_pair_group_max_concurrency=int(os.getenv("VF_GEMINI_PAIR_GROUP_MAX_CONCURRENCY", "7")),
-        gemini_pair_group_retry_once=str(os.getenv("VF_GEMINI_PAIR_GROUP_RETRY_ONCE", "true")).strip().lower() in {"1", "true", "yes", "on"},
+        gemini_pair_group_retry_once=str(os.getenv("VF_GEMINI_PAIR_GROUP_RETRY_ONCE", "true")).strip().lower()
+        in {"1", "true", "yes", "on"},
         gemini_pair_group_timeout_sec=int(os.getenv("VF_GEMINI_PAIR_GROUP_TIMEOUT_SEC", "240")),
+        pipeline_version=str(os.getenv("VF_DUB_PIPELINE_VERSION", "2026.1") or "2026.1").strip() or "2026.1",
+        phase1_model=str(os.getenv("VF_DUB_PHASE1_MODEL", "BS-Roformer-Viperx-1297") or "BS-Roformer-Viperx-1297").strip()
+        or "BS-Roformer-Viperx-1297",
+        dereverb_model=str(os.getenv("VF_DUB_DEREVERB_MODEL", "uvr_deecho_dereverb") or "uvr_deecho_dereverb").strip()
+        or "uvr_deecho_dereverb",
+        director_model=str(os.getenv("VF_DUB_DIRECTOR_MODEL", "gemini-3-flash") or "gemini-3-flash").strip() or "gemini-3-flash",
+        tts_model=str(os.getenv("VF_DUB_TTS_MODEL", "gemini-2.5-flash-preview-tts") or "gemini-2.5-flash-preview-tts").strip()
+        or "gemini-2.5-flash-preview-tts",
+        allow_model_fallback=str(os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK", "1")).strip().lower() in {"1", "true", "yes", "on"},
+        isochrony_tolerance_pct=float(os.getenv("VF_DUB_ISOCHRONY_TOLERANCE_PCT", "10")),
+        thinking_low_scene_max_speakers=max(
+            1,
+            int((os.getenv("VF_DUB_THINKING_LOW_SCENE_MAX_SPEAKERS") or "1").strip() or "1"),
+        ),
+        llvc_preset=str(os.getenv("VF_DUB_LLVC_PRESET", "llvc_hq_cpu") or "llvc_hq_cpu").strip() or "llvc_hq_cpu",
+        wav2lip_onnx_path=wav2lip_onnx_path,
+        lpips_asset_path=lpips_asset_path,
+        phase1_asset_path=phase1_asset_path,
+        dereverb_asset_path=dereverb_asset_path,
+        strict_core_phases=str(os.getenv("VF_DUB_STRICT_CORE_PHASES", "1")).strip().lower() in {"1", "true", "yes", "on"},
     )
 
     if cfg.mix_stretch_min_rate <= 0:
@@ -94,6 +164,8 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         cfg.gemini_pair_group_max_concurrency = 7
     if cfg.gemini_pair_group_timeout_sec <= 0:
         cfg.gemini_pair_group_timeout_sec = 240
+    if cfg.isochrony_tolerance_pct < 1:
+        cfg.isochrony_tolerance_pct = 1.0
 
     nllb_raw = os.getenv("VF_NLLB_CT2_PATH", "").strip()
     if nllb_raw:
@@ -102,10 +174,19 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         default_nllb = models_root / "nllb_ct2"
         cfg.nllb_ct2_path = default_nllb if default_nllb.exists() else None
 
-    for path in [cfg.output_root, cfg.segments_dir, cfg.refs_dir, cfg.tts_dir, cfg.world_dir, cfg.emotion_dir]:
+    for path in [
+        cfg.output_root,
+        cfg.segments_dir,
+        cfg.refs_dir,
+        cfg.tts_dir,
+        cfg.world_dir,
+        cfg.emotion_dir,
+        cfg.cache_dir,
+    ]:
         path.mkdir(parents=True, exist_ok=True)
 
     return cfg
+
 
 
 def run_strict_preflight(cfg: DubbingConfig, source_path: Path) -> dict:
@@ -129,67 +210,38 @@ def run_strict_preflight(cfg: DubbingConfig, source_path: Path) -> dict:
         "Install FFmpeg and ensure ffmpeg executable is available in PATH.",
     )
     check(
-        "demucs_cli",
-        bool(shutil.which("demucs")),
-        "demucs command found" if shutil.which("demucs") else "demucs command not found",
-        "Install demucs and ensure the demucs entrypoint is available in PATH.",
-    )
-    check(
         "source_media",
         source_path.exists(),
         f"Source file: {source_path}",
         "Provide a valid source media file.",
     )
-    check(
-        "pyannote_token",
-        bool(cfg.pyannote_token.strip()),
-        "PYANNOTE_AUTH_TOKEN configured" if cfg.pyannote_token.strip() else "PYANNOTE_AUTH_TOKEN missing",
-        "Set PYANNOTE_AUTH_TOKEN environment variable for diarization.",
-    )
-    check(
-        "nllb_model",
-        bool(cfg.nllb_ct2_path and cfg.nllb_ct2_path.exists()),
-        f"NLLB path: {cfg.nllb_ct2_path}" if cfg.nllb_ct2_path else "NLLB path not configured",
-        "Set VF_NLLB_CT2_PATH or place model at video_dubbing/models/nllb_ct2.",
-    )
-    is_video = source_path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
-    check(
-        "latentsync_cmd",
-        bool(cfg.latent_sync_cmd) if is_video else True,
-        "LatentSync command configured" if cfg.latent_sync_cmd else ("LatentSync not required for audio input" if not is_video else "LatentSync command missing"),
-        "Set VF_LATENTSYNC_CMD with '{input}' and '{output}' placeholders." if is_video else "No action required for audio-only input.",
-    )
-    try:
-        from faster_whisper import WhisperModel  # type: ignore
 
-        _ = WhisperModel(cfg.whisper_model, device=cfg.whisper_device, compute_type=cfg.whisper_compute_type)
-        check("whisper_runtime", True, "Whisper runtime initialized", "Install faster-whisper and model dependencies.")
-    except Exception as exc:
-        check("whisper_runtime", False, f"Whisper init failed: {exc}", "Install faster-whisper and required runtime libraries.")
-
-    try:
-        from speechbrain.inference.classifiers import EncoderClassifier  # type: ignore
-
-        _ = EncoderClassifier
-        check("speechbrain_runtime", True, "SpeechBrain module import ok", "Install speechbrain package.")
-    except Exception as exc:
+    required_assets = [
+        ("phase1_asset", cfg.phase1_asset_path, "Download UVR phase1 model assets."),
+        ("dereverb_asset", cfg.dereverb_asset_path, "Download dereverb assets."),
+        ("wav2lip_asset", cfg.wav2lip_onnx_path, "Download Wav2Lip ONNX assets."),
+    ]
+    for name, asset_path, remediation in required_assets:
         check(
-            "speechbrain_runtime",
-            True,
-            f"SpeechBrain unavailable (fallback mode): {exc}",
-            "Install a compatible speechbrain+torchaudio stack for model-based emotion detection.",
+            name,
+            bool(asset_path and asset_path.exists()),
+            f"Asset path: {asset_path}" if asset_path else "Asset path not configured",
+            remediation,
         )
 
-    try:
-        import pyworld  # type: ignore  # noqa: F401
-
-        check("pyworld_runtime", True, "pyworld module import ok", "Install pyworld package.")
-    except Exception as exc:
-        check("pyworld_runtime", False, f"pyworld import failed: {exc}", "Install pyworld package.")
+    # Optional validation asset: warning-only.
+    if cfg.lpips_asset_path and not cfg.lpips_asset_path.exists():
+        check(
+            "lpips_asset_optional",
+            True,
+            f"Optional LPIPS asset missing: {cfg.lpips_asset_path}",
+            "Optional: download LPIPS assets for face-preservation validation.",
+        )
 
     runtime_checks = [
         ("gem_runtime", cfg.gemini_runtime_url, "Start GEM runtime on configured URL."),
         ("kokoro_runtime", cfg.kokoro_runtime_url, "Start KOKORO runtime on configured URL."),
+        ("llvc_runtime", cfg.llvc_runtime_url, "Start LLVC runtime on configured URL."),
     ]
     for name, runtime_url, remediation in runtime_checks:
         try:

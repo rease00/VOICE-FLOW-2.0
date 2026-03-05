@@ -1,5 +1,7 @@
 import base64
 import concurrent.futures
+import hmac
+import hashlib
 import io
 import json
 import os
@@ -69,6 +71,14 @@ except Exception:
 
 APP_NAME = "gemini-runtime"
 GEMINI_RUNTIME_ADMIN_TOKEN = str(os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
+VF_GEMINI_SINGLE_POOL_ENFORCE = (
+    str(os.getenv("VF_GEMINI_SINGLE_POOL_ENFORCE") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+
+def _constant_time_equal(left: str, right: str) -> bool:
+    return hmac.compare_digest(str(left or "").encode("utf-8"), str(right or "").encode("utf-8"))
 
 
 def _require_runtime_admin(request: Request) -> None:
@@ -76,12 +86,12 @@ def _require_runtime_admin(request: Request) -> None:
     if not expected:
         raise HTTPException(status_code=503, detail="Runtime admin token is not configured.")
     provided_header = str(request.headers.get("x-admin-token") or "").strip()
-    if provided_header and provided_header == expected:
+    if provided_header and _constant_time_equal(provided_header, expected):
         return
     auth_header = str(request.headers.get("authorization") or "").strip()
     if auth_header.lower().startswith("bearer "):
         bearer = auth_header.split(" ", 1)[1].strip()
-        if bearer and bearer == expected:
+        if bearer and _constant_time_equal(bearer, expected):
             return
     raise HTTPException(status_code=403, detail="Admin authorization failed.")
 
@@ -169,8 +179,8 @@ TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
             "gemini-2.5-flash-preview-tts",
         ],
         "GEM": [
-            "gemini-2.5-pro-preview-tts",
             "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-pro-preview-tts",
         ],
     },
     SOURCE_POLICY_PROVIDER_VERTEX: {
@@ -697,6 +707,175 @@ def _sanitize_source_policy_for_response(source_policy: dict[str, Any]) -> dict[
     return policy
 
 
+RUNTIME_GEMINI_MASKED_KEY_TOKEN_PREFIX = "__vf_masked_key__:"
+RUNTIME_GEMINI_MASKED_KEY_TOKEN_RE = re.compile(r"^__vf_masked_key__:(?P<fp>[0-9a-f]{12})(?::(?P<hint>[a-z0-9]{0,8}))?$")
+
+
+def _runtime_gemini_key_fingerprint(value: str) -> str:
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
+def _runtime_mask_gemini_key_for_response(value: str) -> tuple[str, dict[str, Any]]:
+    token = str(value or "").strip()
+    if not token:
+        return "", {"fingerprint": "", "masked": ""}
+    fingerprint = _runtime_gemini_key_fingerprint(token)
+    suffix = re.sub(r"[^a-z0-9]", "", token[-4:].lower())[:8]
+    placeholder = f"{RUNTIME_GEMINI_MASKED_KEY_TOKEN_PREFIX}{fingerprint}"
+    if suffix:
+        placeholder = f"{placeholder}:{suffix}"
+    masked = f"{token[:4]}...{token[-4:]}" if len(token) >= 8 else ("*" * len(token))
+    return placeholder, {"fingerprint": fingerprint, "masked": masked}
+
+
+def _runtime_build_gemini_fingerprint_lookup(config: dict[str, Any]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    for pool_name in list_runtime_pool_names(config):
+        keys = list((pools.get(pool_name) or {}).get("keys") or [])
+        for key in keys:
+            safe_key = str(key or "").strip()
+            if not safe_key:
+                continue
+            fingerprint = _runtime_gemini_key_fingerprint(safe_key)
+            if fingerprint and fingerprint not in lookup:
+                lookup[fingerprint] = safe_key
+    return lookup
+
+
+def _restore_masked_runtime_gemini_keys_from_payload(
+    raw_payload: dict[str, Any],
+    *,
+    current_config: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(raw_payload, dict):
+        return {}
+    pools = raw_payload.get("pools")
+    if not isinstance(pools, dict):
+        return dict(raw_payload)
+
+    fingerprint_lookup = _runtime_build_gemini_fingerprint_lookup(current_config)
+    restored_payload = dict(raw_payload)
+    restored_pools: dict[str, Any] = {}
+    for pool_name, pool_value in pools.items():
+        row = dict(pool_value) if isinstance(pool_value, dict) else {}
+        keys_raw = row.get("keys")
+        if isinstance(keys_raw, list):
+            restored_keys: list[str] = []
+            seen: set[str] = set()
+            for item in keys_raw:
+                token = str(item or "").strip()
+                if not token:
+                    continue
+                match = RUNTIME_GEMINI_MASKED_KEY_TOKEN_RE.match(token)
+                if match:
+                    fingerprint = str(match.group("fp") or "").strip().lower()
+                    resolved = str(fingerprint_lookup.get(fingerprint) or "").strip()
+                    if not resolved:
+                        raise ValueError(
+                            "Masked Gemini key placeholder could not be resolved. Refresh admin Gemini pools and retry."
+                        )
+                    token = resolved
+                if token in seen:
+                    continue
+                seen.add(token)
+                restored_keys.append(token)
+            row["keys"] = restored_keys
+        restored_pools[str(pool_name)] = row
+    restored_payload["pools"] = restored_pools
+    return restored_payload
+
+
+def _sanitize_runtime_pool_config_for_response(config: dict[str, Any]) -> dict[str, Any]:
+    public_config = dict(config or {})
+    source_policy = public_config.get("sourcePolicy") if isinstance(public_config.get("sourcePolicy"), dict) else {}
+    public_config["sourcePolicy"] = _sanitize_source_policy_for_response(dict(source_policy or {}))
+
+    pools = public_config.get("pools") if isinstance(public_config.get("pools"), dict) else {}
+    sanitized_pools: dict[str, Any] = {}
+    key_metadata: dict[str, list[dict[str, Any]]] = {}
+    for pool_name, pool_value in pools.items():
+        pool_row = dict(pool_value) if isinstance(pool_value, dict) else {}
+        keys_raw = pool_row.get("keys")
+        masked_keys: list[str] = []
+        metadata_rows: list[dict[str, Any]] = []
+        if isinstance(keys_raw, list):
+            for index, key in enumerate(keys_raw):
+                placeholder, metadata = _runtime_mask_gemini_key_for_response(str(key or "").strip())
+                if not placeholder:
+                    continue
+                masked_keys.append(placeholder)
+                metadata_rows.append(
+                    {
+                        "index": index,
+                        "fingerprint": str(metadata.get("fingerprint") or ""),
+                        "masked": str(metadata.get("masked") or ""),
+                    }
+                )
+        pool_row["keys"] = masked_keys
+        pool_row["keyMetadata"] = metadata_rows
+        sanitized_pools[str(pool_name)] = pool_row
+        key_metadata[str(pool_name)] = metadata_rows
+    public_config["pools"] = sanitized_pools
+    public_config["keyMetadata"] = key_metadata
+    return public_config
+
+
+def _enforce_single_free_runtime_pool(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    normalized = normalize_pool_config(config)
+    if not VF_GEMINI_SINGLE_POOL_ENFORCE:
+        return normalized, False, []
+
+    warnings: list[str] = []
+    all_keys = flatten_pool_keys(normalized)
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    direct_free_keys = list((pools.get("free") or {}).get("keys") or [])
+    source_policy = normalized.get("sourcePolicy") if isinstance(normalized.get("sourcePolicy"), dict) else {}
+    provider_token = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    free_pool_locked = provider_token != SOURCE_POLICY_PROVIDER_VERTEX and bool(source_policy.get("freePoolLocked"))
+    if len(pools.keys()) > 1:
+        warnings.append("Single-pool mode forced all Gemini pools to canonical pool 'free'.")
+    effective_keys = list(all_keys)
+    if free_pool_locked:
+        effective_keys = list(direct_free_keys)
+        if len(all_keys) != len(direct_free_keys):
+            warnings.append(
+                "Single-pool mode ignored non-free keys because authoritative free-pool lock is enabled."
+            )
+    elif len(all_keys) != len(direct_free_keys):
+        warnings.append("Single-pool mode collapsed multi-pool key membership into canonical pool 'free'.")
+
+    unique_keys: list[str] = []
+    seen: set[str] = set()
+    for key in effective_keys:
+        token = str(key or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        unique_keys.append(token)
+
+    next_config = dict(normalized)
+    next_config["pools"] = {"free": {"keys": unique_keys}}
+    next_config["fallbackChains"] = {"free": ["free"]}
+    next_config["defaultFallbackChain"] = ["free"]
+    next_config["planPools"] = {"free": "free", "pro": "free", "plus": "free"}
+    constraints = dict(next_config.get("constraints") or {})
+    constraints["uniqueKeyMembership"] = True
+    next_config["constraints"] = constraints
+    next_config["singlePool"] = {
+        "enabled": True,
+        "canonicalPoolId": "free",
+        "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
+    }
+    changed = json.dumps(normalized, sort_keys=True) != json.dumps(next_config, sort_keys=True)
+    return next_config, changed, warnings
+
+
 def _rewrite_free_plan_pool_for_vertex(config: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
     normalized = normalize_pool_config(config)
     source_policy = dict(normalized.get("sourcePolicy") or {})
@@ -808,7 +987,9 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
                 config["pools"] = pools
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_runtime_free_pool(config)
-        if synced_changed:
+        single_pool_warnings: list[str] = []
+        config, single_pool_changed, single_pool_warnings = _enforce_single_free_runtime_pool(config)
+        if synced_changed or single_pool_changed:
             try:
                 config = save_pool_config_shared(
                     file_path=file_path,
@@ -820,7 +1001,7 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
                     "Authoritative free-pool sync could not be persisted; using in-memory pool config."
                 )
         meta = dict(meta if isinstance(meta, dict) else {})
-        meta["warnings"] = list(sync_warnings)
+        meta["warnings"] = [*list(sync_warnings), *list(single_pool_warnings)]
         meta["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
         _API_POOLS_CACHE = dict(config)
         _API_POOLS_META = dict(meta)
@@ -1062,8 +1243,14 @@ def _build_pool_summary(pool_name: str, config: dict[str, Any]) -> dict[str, Any
 
 def _admin_api_pools_payload() -> dict[str, Any]:
     config, meta = _load_api_pool_config()
-    config_public = dict(config)
-    config_public["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
+    config_public = _sanitize_runtime_pool_config_for_response(config)
+    single_pool_marker = dict(config_public.get("singlePool") or {})
+    if not single_pool_marker:
+        single_pool_marker = {
+            "enabled": bool(VF_GEMINI_SINGLE_POOL_ENFORCE),
+            "canonicalPoolId": "free",
+            "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
+        }
     duplicates = duplicate_key_memberships(config)
     all_keys = flatten_pool_keys(config)
     summaries = {
@@ -1092,6 +1279,7 @@ def _admin_api_pools_payload() -> dict[str, Any]:
         },
         "warnings": list((meta or {}).get("warnings") or []),
         "sourcePolicy": _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {})),
+        "singlePool": single_pool_marker,
         "poolSummaries": summaries,
         "allKeyCount": len(all_keys),
     }
@@ -3188,7 +3376,7 @@ def admin_api_pool(request: Request) -> JSONResponse:
     payload["keyFilePath"] = _resolved_key_file_path()
     payload["effectiveTtsLimits"] = _effective_tts_route_limits()
     payload["recentErrorClassCounts"] = _recent_error_class_counts()
-    payload["poolConfig"] = config
+    payload["poolConfig"] = _sanitize_runtime_pool_config_for_response(config)
     payload["poolConfigMeta"] = meta
     payload["warnings"] = list((meta or {}).get("warnings") or [])
     payload["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
@@ -3215,7 +3403,7 @@ def admin_api_pool_reload(request: Request) -> JSONResponse:
     payload["effectiveTtsLimits"] = _effective_tts_route_limits()
     payload["recentErrorClassCounts"] = _recent_error_class_counts()
     config, meta = _load_api_pool_config()
-    payload["poolConfig"] = config
+    payload["poolConfig"] = _sanitize_runtime_pool_config_for_response(config)
     payload["poolConfigMeta"] = meta
     payload["warnings"] = list((meta or {}).get("warnings") or [])
     payload["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
@@ -3236,6 +3424,10 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
     applied_overrides: list[str] = []
     local_warnings: list[str] = []
     raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    try:
+        raw_payload = _restore_masked_runtime_gemini_keys_from_payload(raw_payload, current_config=current_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     source_policy_requested = isinstance(raw_payload.get("sourcePolicy"), dict)
     raw_source_policy = dict(raw_payload.get("sourcePolicy") or {}) if source_policy_requested else {}
     vertex_service_account_json = str(
@@ -3318,6 +3510,10 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
     normalized, vertex_free_changed, vertex_free_pool = _rewrite_free_plan_pool_for_vertex(normalized)
     if vertex_free_changed:
         applied_overrides.append(f"vertex_free_plan_pool:{vertex_free_pool}")
+    single_pool_warnings: list[str] = []
+    normalized, single_pool_changed, single_pool_warnings = _enforce_single_free_runtime_pool(normalized)
+    if single_pool_changed:
+        applied_overrides.append("single_pool_enforced:free")
     duplicates = duplicate_key_memberships(normalized)
     if duplicates and bool((normalized.get("constraints") or {}).get("uniqueKeyMembership", True)):
         raise HTTPException(
@@ -3337,8 +3533,7 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
     all_keys = flatten_pool_keys(saved)
     if all_keys:
         _RUNTIME_ALLOCATOR.ensure_keys(all_keys)
-    saved_public = dict(saved)
-    saved_public["sourcePolicy"] = _sanitize_source_policy_for_response(dict(saved.get("sourcePolicy") or {}))
+    saved_public = _sanitize_runtime_pool_config_for_response(saved)
     return JSONResponse(
         {
             "ok": True,
@@ -3346,7 +3541,7 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
             "engine": APP_NAME,
             "timestampMs": int(time.time() * 1000),
             "config": saved_public,
-            "warnings": [*local_warnings, *list(sync_warnings)],
+            "warnings": [*local_warnings, *list(sync_warnings), *list(single_pool_warnings)],
             "sourcePolicy": _sanitize_source_policy_for_response(dict(saved.get("sourcePolicy") or {})),
             "appliedOverrides": applied_overrides,
             "poolSummaries": {
