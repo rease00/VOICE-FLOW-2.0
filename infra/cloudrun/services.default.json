@@ -1,0 +1,123 @@
+{
+  "region": "us-central1",
+  "artifactRegistryRepo": "voiceflow",
+  "services": [
+    {
+      "name": "voiceflow-gemini-runtime",
+      "imageName": "voiceflow-gemini-runtime",
+      "dockerfile": "infra/cloudrun/docker/Dockerfile.gemini-runtime",
+      "ingress": "internal",
+      "allowUnauthenticated": true,
+      "minInstances": 1,
+      "maxInstances": 20,
+      "concurrency": 10,
+      "cpu": "2",
+      "memory": "2Gi",
+      "cpuAlwaysAllocated": true,
+      "env": {
+        "PORT": "8080"
+      },
+      "secretEnv": {
+        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token"
+      }
+    },
+    {
+      "name": "voiceflow-kokoro-runtime",
+      "imageName": "voiceflow-kokoro-runtime",
+      "dockerfile": "infra/cloudrun/docker/Dockerfile.kokoro-runtime",
+      "ingress": "internal",
+      "allowUnauthenticated": true,
+      "minInstances": 1,
+      "maxInstances": 20,
+      "concurrency": 4,
+      "cpu": "4",
+      "memory": "8Gi",
+      "cpuAlwaysAllocated": true,
+      "env": {
+        "PORT": "8080"
+      },
+      "secretEnv": {}
+    },
+    {
+      "name": "voiceflow-llvc-runtime",
+      "imageName": "voiceflow-llvc-runtime",
+      "dockerfile": "infra/cloudrun/docker/Dockerfile.llvc-runtime",
+      "ingress": "internal",
+      "allowUnauthenticated": true,
+      "minInstances": 0,
+      "maxInstances": 10,
+      "concurrency": 1,
+      "cpu": "4",
+      "memory": "8Gi",
+      "cpuAlwaysAllocated": true,
+      "env": {
+        "PORT": "8080"
+      },
+      "secretEnv": {}
+    },
+    {
+      "name": "voiceflow-api",
+      "imageName": "voiceflow-backend",
+      "dockerfile": "infra/cloudrun/docker/Dockerfile.backend",
+      "ingress": "all",
+      "allowUnauthenticated": true,
+      "minInstances": 2,
+      "maxInstances": 50,
+      "concurrency": 80,
+      "cpu": "2",
+      "memory": "2Gi",
+      "cpuAlwaysAllocated": true,
+      "env": {
+        "PORT": "8080",
+        "VF_ENV": "production",
+        "VF_SERVICE_ROLE": "api",
+        "VF_TTS_QUEUE_WORKER_COUNT": "0",
+        "VF_AUTH_ENFORCE": "1",
+        "VF_DEV_UID_HEADER_ENABLED": "0",
+        "VF_ENABLE_DEV_ADMIN_LOGIN": "0",
+        "VF_REDIS_URL": "__REDIS_URL__",
+        "VF_GEMINI_RUNTIME_URL": "__GEMINI_RUNTIME_URL__",
+        "VF_KOKORO_RUNTIME_URL": "__KOKORO_RUNTIME_URL__",
+        "VF_LLVC_RUNTIME_URL": "__LLVC_RUNTIME_URL__"
+      },
+      "secretEnv": {
+        "FIREBASE_SERVICE_ACCOUNT_JSON": "firebase-service-account-json",
+        "STRIPE_SECRET_KEY": "stripe-secret-key",
+        "STRIPE_WEBHOOK_SECRET": "stripe-webhook-secret",
+        "VF_ADMIN_UNLOCK_SIGNING_SECRET": "vf-admin-unlock-signing-secret",
+        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token"
+      }
+    },
+    {
+      "name": "voiceflow-worker",
+      "imageName": "voiceflow-backend",
+      "dockerfile": "infra/cloudrun/docker/Dockerfile.backend",
+      "ingress": "internal",
+      "allowUnauthenticated": true,
+      "minInstances": 2,
+      "maxInstances": 50,
+      "concurrency": 1,
+      "cpu": "2",
+      "memory": "2Gi",
+      "cpuAlwaysAllocated": true,
+      "env": {
+        "PORT": "8080",
+        "VF_ENV": "production",
+        "VF_SERVICE_ROLE": "worker",
+        "VF_TTS_QUEUE_WORKER_COUNT": "4",
+        "VF_AUTH_ENFORCE": "1",
+        "VF_DEV_UID_HEADER_ENABLED": "0",
+        "VF_ENABLE_DEV_ADMIN_LOGIN": "0",
+        "VF_REDIS_URL": "__REDIS_URL__",
+        "VF_GEMINI_RUNTIME_URL": "__GEMINI_RUNTIME_URL__",
+        "VF_KOKORO_RUNTIME_URL": "__KOKORO_RUNTIME_URL__",
+        "VF_LLVC_RUNTIME_URL": "__LLVC_RUNTIME_URL__"
+      },
+      "secretEnv": {
+        "FIREBASE_SERVICE_ACCOUNT_JSON": "firebase-service-account-json",
+        "VF_ADMIN_UNLOCK_SIGNING_SECRET": "vf-admin-unlock-signing-secret",
+        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token"
+      }
+    }
+  ]
+}

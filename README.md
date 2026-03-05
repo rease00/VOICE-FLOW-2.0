@@ -300,6 +300,22 @@ Notes:
 - Runtime pool reload endpoint:
   - `POST /v1/admin/api-pool/reload` on Gemini runtime (`7810`)
 
+## Billing + Access Policy (2026)
+
+- Canonical plans: `Free`, `Starter`, `Creator`, `Pro`, `Scale`.
+- TTS engine access:
+  - Free: `KOKORO`, `GOOD`, `NEURAL2` only (Prime `GEM` blocked).
+  - Paid (`Starter|Creator|Pro|Scale`): all engines.
+- Per-generation character cap:
+  - Free: `8,000`
+  - Starter/Creator/Pro: `10,000`
+  - Scale: `15,000`
+- Scale includes `features.earlyAccess=true` for future launches.
+- Entitlements API (`GET /account/entitlements`) includes:
+  - `limits.maxCharsPerGeneration`
+  - `limits.allowedEngines`
+  - `features.earlyAccess`
+
 ## Admin SaaS Control Plane (Phase 1)
 
 - Admin panel layout is now priority-ordered and responsive:
@@ -315,12 +331,16 @@ Notes:
 - Subscription coupons:
   - support `percent` and `fixed_inr`
   - are constrained to first invoice (`duration=once`)
-  - support plan scoping (`pro`, `plus`, or both)
+  - support plan scoping (`starter`, `creator`, `pro`, `scale`; legacy `plus` aliases to `scale`)
   - are auto-synced to Stripe promotion artifacts on create
 - Checkout now supports internal coupon application:
   - `POST /billing/checkout-session` accepts optional `couponCode`
+  - canonical checkout plans are `starter|creator|pro|scale` (`plus` input remains alias-compatible)
   - reservation/finalization flow is used for subscription coupons to keep policy enforcement safe under concurrency
   - Stripe promotion-code entry remains enabled in hosted checkout as fallback
+- Token pack checkout:
+  - `POST /billing/token-pack/checkout-session` accepts `pack`=`micro|standard|mega|ultra`
+  - pricing matrix is fixed all-inclusive INR; Scale plan receives 20% pack discount
 - Security hardening:
   - runtime-sensitive routes (`/runtime/logs/tail`, `/tts/engines/switch`, `/services/dubbing/prepare`, `/llvc/load-model`) are admin-gated
   - mutating guardian operations are admin-gated

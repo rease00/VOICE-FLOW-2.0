@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app/backend
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg git build-essential libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/engines/llvc-runtime/requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r /tmp/requirements.txt
+
+COPY backend/ /app/backend/
+
+ENV PYTHONPATH=/app/backend:/app/backend/engines/llvc-runtime \
+    PORT=8080
+
+WORKDIR /app/backend/engines/llvc-runtime
+
+EXPOSE 8080
+
+CMD ["python", "app.py"]
