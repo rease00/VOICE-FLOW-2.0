@@ -4,11 +4,13 @@ import { toCompactToastCopy } from './format';
 import type { AppNotification } from './types';
 import { useNotifications } from './NotificationProvider';
 
+const TOAST_AUTO_HIDE_MS = 3000;
+
 const TOAST_DURATION_MS: Record<AppNotification['severity'], number> = {
-  success: 4000,
-  info: 4000,
-  warning: 7000,
-  error: 9000,
+  success: TOAST_AUTO_HIDE_MS,
+  info: TOAST_AUTO_HIDE_MS,
+  warning: TOAST_AUTO_HIDE_MS,
+  error: TOAST_AUTO_HIDE_MS,
   critical: 0,
 };
 
@@ -48,17 +50,10 @@ const resolveToastRightOffset = (): string => {
   return 'calc(min(28rem, 96vw) + 1rem)';
 };
 
-const resolveToastBottomOffset = (): string => {
+const resolveToastTopOffset = (): string => {
   if (typeof window === 'undefined') return '1rem';
   if (window.innerWidth < 768) {
-    if (typeof document !== 'undefined') {
-      const fromCssVar = window
-        .getComputedStyle(document.documentElement)
-        .getPropertyValue('--vf-toast-mobile-safe-bottom')
-        .trim();
-      if (fromCssVar) return fromCssVar;
-    }
-    return 'calc(5.25rem + env(safe-area-inset-bottom))';
+    return 'calc(0.75rem + env(safe-area-inset-top))';
   }
   return '1rem';
 };
@@ -237,7 +232,7 @@ export const NotificationUI: React.FC = () => {
   const [filter, setFilter] = useState<'active' | 'all' | 'unread' | 'critical' | 'resolved'>('active');
   const [isDarkUi, setIsDarkUi] = useState<boolean>(() => readDarkTheme());
   const [toastRightOffset, setToastRightOffset] = useState<string>(() => resolveToastRightOffset());
-  const [toastBottomOffset, setToastBottomOffset] = useState<string>(() => resolveToastBottomOffset());
+  const [toastTopOffset, setToastTopOffset] = useState<string>(() => resolveToastTopOffset());
   const panelRef = useRef<HTMLDivElement | null>(null);
   const {
     notifications,
@@ -267,7 +262,7 @@ export const NotificationUI: React.FC = () => {
     const syncThemeAndLayout = () => {
       setIsDarkUi(readDarkTheme());
       setToastRightOffset(resolveToastRightOffset());
-      setToastBottomOffset(resolveToastBottomOffset());
+      setToastTopOffset(resolveToastTopOffset());
     };
     syncThemeAndLayout();
 
@@ -331,9 +326,9 @@ export const NotificationUI: React.FC = () => {
     <>
       <div data-testid="notification-root" className="pointer-events-none fixed inset-0 z-[115]">
         <div
-          className="pointer-events-none fixed inset-x-2 flex max-h-[50vh] w-fit flex-col items-end gap-2 overflow-y-auto pr-1 md:inset-x-auto md:bottom-4"
+          className="pointer-events-none fixed inset-x-2 flex max-h-[50vh] w-fit flex-col items-end gap-2 overflow-y-auto pr-1 md:inset-x-auto md:top-4"
           style={{
-            bottom: toastBottomOffset,
+            top: toastTopOffset,
             right: toastRightOffset,
           }}
         >

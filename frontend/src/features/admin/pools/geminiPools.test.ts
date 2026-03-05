@@ -48,13 +48,13 @@ describe('geminiPools helpers', () => {
     const base = {
       planPools: {
         free: 'free',
-        pro: 'pro',
-        plus: 'pro_plus',
+        pro: 'free',
+        plus: 'free',
       },
     };
     const updated = setPlanPoolInConfig(base, 'plus', 'enterprise_gold');
     expect(updated.planPools?.plus).toBe('enterprise_gold');
     expect(updated.planPools?.free).toBe('free');
-    expect(updated.planPools?.pro).toBe('pro');
+    expect(updated.planPools?.pro).toBe('free');
   });
 });

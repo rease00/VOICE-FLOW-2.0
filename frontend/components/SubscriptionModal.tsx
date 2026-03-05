@@ -6,6 +6,7 @@ import { useBillingActions } from '../src/features/billing/hooks/useBillingActio
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson } from '../src/shared/storage/localStore';
+import type { BillingPlanKey } from '../services/accountService';
 
 const resolveBackendUrl = (): string => {
   const parsed = readStorageJson<{ mediaBackendUrl?: string }>(STORAGE_KEYS.settings);
@@ -13,62 +14,76 @@ const resolveBackendUrl = (): string => {
 };
 
 interface PlanCardConfig {
-  id: 'starter' | 'creator' | 'pro' | 'scale';
+  id: BillingPlanKey;
   title: string;
-  priceLabel: string;
+  month1Label: string;
+  recurringLabel: string;
   description: string;
   bullets: string[];
-  actionPlan?: 'pro' | 'plus';
+  actionPlan: BillingPlanKey;
   highlight?: boolean;
   ribbon?: string;
-  note?: string;
 }
 
 export const SubscriptionModal: React.FC = () => {
   const { showSubscriptionModal, setShowSubscriptionModal, stats, refreshEntitlements } = useUser();
   const billingActions = useBillingActions({ baseUrl: resolveBackendUrl() });
-  const [isLoading, setIsLoading] = useState<'pro' | 'plus' | 'portal' | null>(null);
+  const [isLoading, setIsLoading] = useState<BillingPlanKey | 'portal' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [subscriptionCouponCode, setSubscriptionCouponCode] = useState('');
 
   const planBadge = useMemo(() => stats.planName, [stats.planName]);
   if (!showSubscriptionModal) return null;
 
-  const currentCardId: PlanCardConfig['id'] = planBadge === 'Plus' ? 'scale' : planBadge === 'Pro' ? 'pro' : 'starter';
+  const currentCardId: PlanCardConfig['id'] | null = planBadge === 'Starter'
+    ? 'starter'
+    : planBadge === 'Creator'
+      ? 'creator'
+      : planBadge === 'Pro'
+        ? 'pro'
+        : planBadge === 'Scale' || planBadge === 'Plus'
+          ? 'scale'
+          : null;
 
   const plans: PlanCardConfig[] = [
     {
       id: 'starter',
       title: 'Starter',
-      priceLabel: 'Preview tier',
-      description: 'For hobbyists creating projects with AI audio.',
-      bullets: ['30,000 credits style layout', 'Preview card only', 'No direct checkout from this card'],
+      month1Label: 'Month 1: ₹450',
+      recurringLabel: 'Then ₹405 / month',
+      description: 'Best for consistent monthly AI audio output.',
+      bullets: ['50,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
+      actionPlan: 'starter',
     },
     {
       id: 'creator',
       title: 'Creator',
-      priceLabel: 'Preview tier',
-      description: 'For creators making premium content for global audiences.',
-      bullets: ['100,000 credits style layout', 'Most popular visual treatment', 'No direct checkout from this card'],
+      month1Label: 'Month 1: ₹1,200',
+      recurringLabel: 'Then ₹1,080 / month',
+      description: 'For creators publishing regularly at higher volume.',
+      bullets: ['150,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
+      actionPlan: 'creator',
       highlight: true,
       ribbon: 'Most Popular',
     },
     {
       id: 'pro',
       title: 'Pro',
-      priceLabel: 'INR 699 / month',
-      description: 'Mapped to your current Pro checkout plan.',
-      bullets: ['200,000 VF / month', 'Higher monthly capacity and burst limits', 'Live checkout enabled'],
+      month1Label: 'Month 1: ₹2,400',
+      recurringLabel: 'Then ₹2,160 / month',
+      description: 'For heavy production workloads and team throughput.',
+      bullets: ['300,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'pro',
     },
     {
       id: 'scale',
       title: 'Scale',
-      priceLabel: 'INR 2,000 / month',
-      description: 'Large capacity visual tier mapped to current Plus checkout.',
-      bullets: ['500,000 VF / month', 'Highest monthly capacity and burst limits', 'Live checkout enabled'],
-      actionPlan: 'plus',
-      note: 'Uses current Plus checkout under the hood.',
+      month1Label: 'Month 1: ₹4,300',
+      recurringLabel: 'Then ₹3,440 / month',
+      description: 'For highest-volume pipelines and release velocity.',
+      bullets: ['600,000 VF monthly cap', 'All engines, 15k chars per generation', 'Early access to all future features'],
+      actionPlan: 'scale',
+      ribbon: 'Early Access',
     },
   ];
 
@@ -77,7 +92,7 @@ export const SubscriptionModal: React.FC = () => {
     setError(null);
   };
 
-  const startCheckout = async (plan: 'pro' | 'plus') => {
+  const startCheckout = async (plan: BillingPlanKey) => {
     setError(null);
     setIsLoading(plan);
     try {
@@ -159,7 +174,6 @@ export const SubscriptionModal: React.FC = () => {
               const loadingKey = plan.actionPlan ? plan.actionPlan : null;
               const isLoadingCard = loadingKey !== null && isLoading === loadingKey;
               const isCurrent = isCurrentPlanCard(plan);
-              const isClickable = Boolean(plan.actionPlan);
 
               return (
                 <article
@@ -178,20 +192,19 @@ export const SubscriptionModal: React.FC = () => {
                   )}
 
                   <h3 className="text-[28px] leading-none font-bold text-gray-900">{plan.title}</h3>
-                  <p className="mt-2 text-2xl font-extrabold text-gray-900">{plan.priceLabel}</p>
+                  <p className="mt-2 text-xl font-extrabold text-gray-900">{plan.month1Label}</p>
+                  <p className="mt-1 text-sm font-semibold text-gray-600">{plan.recurringLabel}</p>
                   <p className="mt-2 text-sm text-gray-600 min-h-[3rem]">{plan.description}</p>
 
                   <button
-                    onClick={() => (plan.actionPlan ? void startCheckout(plan.actionPlan) : undefined)}
-                    disabled={!isClickable || Boolean(isLoading) || isCurrent}
+                    onClick={() => void startCheckout(plan.actionPlan)}
+                    disabled={Boolean(isLoading) || isCurrent}
                     className={[
                       'mt-4 h-10 rounded-xl text-sm font-semibold border transition-colors',
-                      isClickable
-                        ? 'border-gray-900 bg-gray-900 text-white hover:bg-black disabled:opacity-60'
-                        : 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed',
+                      'border-gray-900 bg-gray-900 text-white hover:bg-black disabled:opacity-60',
                     ].join(' ')}
                   >
-                    {isCurrent ? 'Current Plan' : isClickable ? 'Subscribe' : 'Preview'}
+                    {isCurrent ? 'Current Plan' : 'Subscribe'}
                   </button>
 
                   {isLoadingCard && (
@@ -210,11 +223,6 @@ export const SubscriptionModal: React.FC = () => {
                     ))}
                   </div>
 
-                  {plan.note && (
-                    <p className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-2 py-1.5 text-[11px] font-medium text-amber-800">
-                      {plan.note}
-                    </p>
-                  )}
                 </article>
               );
             })}

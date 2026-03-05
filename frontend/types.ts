@@ -19,6 +19,8 @@ export interface VoiceOption {
   isDownloaded?: boolean;
   isCloned?: boolean;
   previewUrl?: string;
+  accessTier?: 'free' | 'pro';
+  isPlanRestricted?: boolean;
 }
 
 export interface ClonedVoice extends VoiceOption {
@@ -102,6 +104,8 @@ export interface GenerationSettings {
   conversionPolicy?: 'AUTO_RELIABLE' | 'LLVC_ONLY' | undefined;
   geminiTtsServiceUrl?: string | undefined;
   kokoroTtsServiceUrl?: string | undefined;
+  kokoroExecutionMode?: 'browser_webgpu' | 'backend_runtime' | undefined;
+  kokoroStandbyIdleMs?: number | undefined;
 
   // Studio controls
   musicTrackId?: string | undefined;
@@ -118,6 +122,7 @@ export interface GenerationSettings {
 
   // Frontend UI preferences
   uiMotionLevel?: 'off' | 'balanced' | 'rich' | undefined;
+  autoPlayGeneratedAudio?: boolean | undefined;
 }
 
 export type ScriptBlockType = 'dialogue' | 'sfx' | 'direction';
@@ -335,10 +340,17 @@ export interface UserStats {
   generationsUsed: number;
   generationsLimit: number;
   isPremium: boolean;
-  planName: 'Free' | 'Pro' | 'Plus' | 'Enterprise';
+  planName: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | 'Plus' | 'Enterprise';
   lastResetDate?: string | undefined;
   vfUsage: VfUsageStats;
   wallet: UserWalletStats;
+  limits?: {
+    maxCharsPerGeneration: number;
+    allowedEngines: GenerationSettings['engine'][];
+  };
+  features?: {
+    earlyAccess: boolean;
+  };
 }
 
 export interface UserProfile {
@@ -469,6 +481,39 @@ export interface DubbingSegment {
   emotionTags?: string[] | undefined;
 }
 
+export type DubbingClipLayer = 'V1' | 'V2';
+export type DubbingClipStatus =
+  | 'idle'
+  | 'queued'
+  | 'transcribing'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type CpuDubbingProfile = 'cpu_quality' | 'cpu_balanced' | 'cpu_fast';
+
+export interface DubbingClip {
+  id: string;
+  file: File;
+  objectUrl: string;
+  durationMs: number;
+  trimInMs: number;
+  trimOutMs: number;
+  layer: DubbingClipLayer;
+  script: string;
+  status: DubbingClipStatus;
+  jobId?: string | undefined;
+  resultUrl?: string | null | undefined;
+  reportUrl?: string | null | undefined;
+  error?: string | undefined;
+}
+
+export interface DubbingClipboard {
+  clip: DubbingClip;
+  copiedAt: number;
+}
+
 export interface DubbingJobRequest {
   sourceFile: File;
   targetLanguage: string;
@@ -500,8 +545,60 @@ export interface DubbingJobStatus {
   progress?: number;
   stage?: string;
   error?: string;
-  pipelineVersion?: 'v1' | 'v2';
+  pipelineVersion?: 'v1' | 'v2' | '2026.1' | string;
+  stageTimeline?: Array<{
+    stage:
+      | 'acoustic_isolation'
+      | 'director'
+      | 'isochrony_translation'
+      | 'base_tts'
+      | 'llvc_timbre_transfer'
+      | 'visual_lipsync'
+      | string;
+    status: string;
+    startMs?: number | null;
+    endMs?: number | null;
+    durationMs?: number | null;
+  }>;
+  outputFiles?: Record<string, unknown>;
+  directorJson?: Record<string, unknown> | null;
+  isochronyStats?: Record<string, unknown> | null;
+  llvcMetrics?: Record<string, unknown> | null;
+  lipsyncMetrics?: Record<string, unknown> | null;
+  assets?: Record<string, unknown> | null;
+  thinkingPolicy?: Record<string, unknown> | null;
   speakerProfiles?: DubbingSpeakerProfile[];
+  live?: {
+    enabled?: boolean;
+    mode?: string;
+    playableChunks?: number;
+    playableDurationMs?: number;
+    chunkCursorNext?: number;
+  };
+  chunks?: Array<{
+    index: number;
+    contentType?: string;
+    durationMs?: number;
+    speakerId?: string;
+    engine?: string;
+    voiceId?: string;
+    textChars?: number;
+    downloadUrl?: string;
+    audioBase64?: string;
+  }>;
+  chunkCursorNext?: number;
+  speakerStats?: {
+    detectedSpeakers?: number;
+    mappedSpeakers?: number;
+    fallbackBindings?: Array<Record<string, unknown>>;
+    driftAlerts?: Array<Record<string, unknown>>;
+  };
+  qosState?: {
+    selectedProfile?: string;
+    downgraded?: boolean;
+    reason?: string;
+    gpuUsed?: boolean;
+  };
 }
 
 export interface DubbingReport {

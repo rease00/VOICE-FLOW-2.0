@@ -1,4 +1,5 @@
 import type {
+  NotificationAudience,
   NotificationCategory,
   NotificationChannel,
   NotificationEventCode,
@@ -11,6 +12,7 @@ export interface NotificationCatalogEntry {
   message: string;
   severity: NotificationSeverity;
   category: NotificationCategory;
+  audience: NotificationAudience;
   channel: NotificationChannel;
   sticky: boolean;
   dedupeCooldownMs: number;
@@ -27,13 +29,14 @@ const entry = (
   channel: NotificationChannel,
   sticky: boolean,
   dedupeCooldownMs: number,
-  options?: Pick<NotificationCatalogEntry, 'resolveEventCodes' | 'actionableToast'>
+  options?: Partial<Pick<NotificationCatalogEntry, 'resolveEventCodes' | 'actionableToast' | 'audience'>>
 ): NotificationCatalogEntry => ({
   eventCode,
   title,
   message,
   severity,
   category,
+  audience: options?.audience || 'all',
   channel,
   sticky,
   dedupeCooldownMs,
@@ -444,7 +447,7 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     'toast',
     false,
     8_000,
-    { actionableToast: true }
+    { actionableToast: true, audience: 'admin' }
   ),
   'admin.pool.reload.failed': entry(
     'admin.pool.reload.failed',
@@ -454,7 +457,8 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     'system',
     'toast',
     false,
-    10_000
+    10_000,
+    { audience: 'admin' }
   ),
   'admin.guard.action.submitted': entry(
     'admin.guard.action.submitted',
@@ -464,7 +468,8 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     'system',
     'inbox',
     false,
-    10_000
+    10_000,
+    { audience: 'admin' }
   ),
   'admin.guard.action.failed': entry(
     'admin.guard.action.failed',
@@ -474,7 +479,8 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     'system',
     'toast',
     false,
-    10_000
+    10_000,
+    { audience: 'admin' }
   ),
   'admin.access.load.failed': entry(
     'admin.access.load.failed',
@@ -484,7 +490,8 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     'system',
     'toast',
     false,
-    12_000
+    12_000,
+    { audience: 'admin' }
   ),
   'app.crash.captured': entry(
     'app.crash.captured',

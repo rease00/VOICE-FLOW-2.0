@@ -5,8 +5,13 @@ import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisCo
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
 import { resolveApiBaseUrl } from "../src/shared/api/config";
-import { fetchTtsJobChunkAudio } from "../src/shared/api/gatewayClient";
+import { extractAudioFromVideo as gatewayExtractAudioFromVideo, fetchTtsJobChunkAudio } from "../src/shared/api/gatewayClient";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
+import {
+  kokoroBrowserRuntime,
+  shouldUseBrowserKokoroExecution,
+  type KokoroLiveChunk,
+} from "./kokoroBrowserRuntime";
 import {
   MAX_WORDS_PER_WINDOW,
   MAX_WORDS_PER_REQUEST,
@@ -58,6 +63,11 @@ interface GatewayAudioChunkPayload {
   textChars?: number | undefined;
   traceId?: string | undefined;
   audioBase64: string;
+}
+
+export interface GenerateSpeechOptions {
+  context?: 'studio' | 'preview' | 'dubbing';
+  preferLiveChunks?: boolean;
 }
 
 const resolveGeminiApiKey = (settings: Pick<GenerationSettings, 'geminiApiKey'>): string => {
@@ -883,32 +893,27 @@ export function audioBufferToWav(buffer: AudioBuffer): Blob {
 
 export const extractAudioFromVideo = async (videoFile: File, backendUrl?: string): Promise<Blob> => {
   const baseUrl = backendUrl || resolveMediaBackendBaseUrl({});
-  const formData = new FormData();
-  formData.append("file", videoFile);
-  
+
   try {
-    const response = await fetch(`${baseUrl}/audio/extract-from-video`, {
-      method: "POST",
-      body: formData,
+    const audioBlob = await gatewayExtractAudioFromVideo(videoFile, {
+      baseUrl,
     });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      const errorMsg = response.status === 413 
-        ? "Video file is too large. Maximum 500MB."
-        : response.status === 400
-        ? `Invalid video format: ${errorText}`
-        : `Failed to extract audio (HTTP ${response.status})`;
-      throw new Error(errorMsg);
-    }
-    
-    const audioBlob = await response.blob();
     if (!audioBlob.size) {
       throw new Error("Extracted audio is empty.");
     }
-    
     return audioBlob;
-  } catch (error) {
+  } catch (error: unknown) {
+    const maybeHttp = error as { status?: number; detail?: string };
+    if (maybeHttp?.status === 401 || maybeHttp?.status === 403) {
+      throw new Error("Authentication failed while extracting audio. Sign in again and retry.");
+    }
+    if (maybeHttp?.status === 413) {
+      throw new Error("Video file is too large. Maximum 500MB.");
+    }
+    if (maybeHttp?.status === 400) {
+      const detail = String(maybeHttp?.detail || '').trim();
+      throw new Error(`Invalid video format${detail ? `: ${detail}` : ''}`);
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Unable to extract audio from video: ${message}`);
   }
@@ -2145,7 +2150,8 @@ export const generateSpeech = async (
   voiceName: string,
   settings: GenerationSettings,
   mode: 'speech' | 'singing' = 'speech',
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: GenerateSpeechOptions
 ): Promise<AudioBuffer> => {
   const ctx = getAudioContext();
   const runtimeSettings = settings as GenerationSettings & {
@@ -2185,6 +2191,7 @@ export const generateSpeech = async (
         : 'GEM';
   const primaryEngine = isPrimaryTtsEngine(activeEngine) ? activeEngine : null;
   const traceId = createSynthesisTraceId(runtimeEngine);
+  const context = options?.context;
   
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   if (!text || text.trim().length === 0) throw new Error("Input text is empty.");
@@ -3130,7 +3137,8 @@ export const generateSpeech = async (
             effectiveVoiceName, 
             segSettings, 
             mode, 
-            signal
+            signal,
+            options
           );
           
           segmentResults.push({ index: seg.originalIndex, buffer: buf });
@@ -3241,6 +3249,111 @@ export const generateSpeech = async (
 
   // --- KOKORO RUNTIME ---
   if (activeEngine === 'KOKORO') {
+    const useBrowserKokoro = shouldUseBrowserKokoroExecution(
+      activeEngine,
+      context,
+      settings.kokoroExecutionMode
+    );
+    if (useBrowserKokoro) {
+      const backendBase = resolveMediaBackendBaseUrl(settings);
+      const targetVoiceId = String(settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
+      const jobId = `kokoro-browser-${traceId}`;
+      const startedAt = Date.now();
+      let firstChunkAtMs = 0;
+      const chunkEmitTasks: Array<Promise<void>> = [];
+
+      const emitChunk = (chunk: KokoroLiveChunk): void => {
+        const task = (async () => {
+          const chunkBuffer = ctx.createBuffer(1, chunk.audioData.length, Math.max(1, chunk.sampleRate));
+          chunkBuffer.copyToChannel(chunk.audioData, 0);
+          const chunkBlob = audioBufferToWav(chunkBuffer);
+          const chunkArray = await chunkBlob.arrayBuffer();
+          const audioBase64 = await arrayBufferToBase64(chunkArray);
+          emitGatewayAudioChunk({
+            jobId,
+            index: chunk.index,
+            engine: 'KOKORO',
+            contentType: 'audio/wav',
+            durationMs: chunk.durationMs,
+            textChars: Math.max(0, String(chunk.text || '').length),
+            traceId,
+            audioBase64,
+          });
+        })();
+        chunkEmitTasks.push(task);
+        void task.catch(() => {
+          // Best-effort live chunk emission.
+        });
+      };
+
+      emitGatewayProgress({
+        jobId,
+        status: 'queued',
+        engine: 'KOKORO',
+        queueAgeMs: 0,
+        queueDepth: 0,
+        stage: 'Preparing Basic WebGPU runtime...',
+        progressPct: 10,
+      });
+
+      const synthResult = await kokoroBrowserRuntime.synthesizeLive({
+        text: processedText,
+        voiceId: targetVoiceId,
+        speed: settings.speed,
+        backendBaseUrl: backendBase,
+        ...(signal ? { signal } : {}),
+        onProgress: (progress, stage) => {
+          emitGatewayProgress({
+            jobId,
+            status: 'running',
+            engine: 'KOKORO',
+            queueAgeMs: Math.max(0, Date.now() - startedAt),
+            queueDepth: 0,
+            stage,
+            progressPct: Math.max(10, Math.min(97, Math.round(progress))),
+          });
+        },
+        onChunk: (chunk) => {
+          if (!firstChunkAtMs) {
+            firstChunkAtMs = Date.now();
+            emitGatewayProgress({
+              jobId,
+              status: 'running',
+              engine: 'KOKORO',
+              queueAgeMs: Math.max(0, firstChunkAtMs - startedAt),
+              queueDepth: 0,
+              stage: 'First live chunk ready.',
+              progressPct: 22,
+            });
+          }
+          emitChunk(chunk);
+        },
+      });
+
+      if (chunkEmitTasks.length > 0) {
+        await Promise.all(chunkEmitTasks);
+      }
+
+      emitGatewayProgress({
+        jobId,
+        status: 'completed',
+        engine: 'KOKORO',
+        queueAgeMs: Math.max(0, Date.now() - startedAt),
+        queueDepth: 0,
+        stage: 'Synthesis completed. Preparing playback...',
+        progressPct: 98,
+      });
+
+      const mergedBuffer = ctx.createBuffer(
+        1,
+        synthResult.mergedAudio.length,
+        Math.max(1, synthResult.sampleRate)
+      );
+      mergedBuffer.copyToChannel(synthResult.mergedAudio, 0);
+      kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 30000);
+      return mergedBuffer;
+    }
+
     const runtimeUrl = normalizeRuntimeUrl(settings.kokoroTtsServiceUrl, 'http://127.0.0.1:7820');
     const targetVoiceId = String(settings.voiceId || voiceName || 'hf_alpha').trim() || 'hf_alpha';
     const synthKokoroChunk = async (chunkText: string, attempt: number): Promise<AudioBuffer> => {

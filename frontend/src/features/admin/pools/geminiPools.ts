@@ -79,8 +79,8 @@ export const deletePoolFromConfig = (
   delete fallbackChains[poolName];
   const planPools = {
     free: String(config.planPools?.free || 'free'),
-    pro: String(config.planPools?.pro || 'pro'),
-    plus: String(config.planPools?.plus || 'pro_plus'),
+    pro: String(config.planPools?.pro || 'free'),
+    plus: String(config.planPools?.plus || 'free'),
   };
   for (const planKey of ['free', 'pro', 'plus'] as const) {
     if (planPools[planKey] === poolName) {
@@ -106,8 +106,8 @@ export const setPlanPoolInConfig = (
     ...config,
     planPools: {
       free: String(config.planPools?.free || 'free'),
-      pro: String(config.planPools?.pro || 'pro'),
-      plus: String(config.planPools?.plus || 'pro_plus'),
+      pro: String(config.planPools?.pro || 'free'),
+      plus: String(config.planPools?.plus || 'free'),
       [planKey]: String(poolName || ''),
     },
   };

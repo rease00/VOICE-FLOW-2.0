@@ -10,7 +10,7 @@ export const useStudioGenerate = () => {
     signal?: AbortSignal
   ) => {
     const voiceName = String(settings.voiceId || '').trim() || 'alloy';
-    return generateSpeech(text, voiceName, settings, mode, signal);
+    return generateSpeech(text, voiceName, settings, mode, signal, { context: 'studio', preferLiveChunks: true });
   }, []);
 
   return { synthesize };

@@ -4,6 +4,8 @@ export type NotificationCategory = 'system' | 'activity' | 'security' | 'tips';
 
 export type NotificationChannel = 'toast' | 'inbox' | 'silent';
 
+export type NotificationAudience = 'all' | 'admin' | 'user';
+
 export type NotificationStatus = 'active' | 'resolved';
 
 export const NOTIFICATION_EVENT_CODES = [
@@ -72,6 +74,7 @@ export interface AppNotification {
   details?: string | undefined;
   severity: NotificationSeverity;
   category: NotificationCategory;
+  audience: NotificationAudience;
   channel: NotificationChannel;
   status: NotificationStatus;
   resolvedAt: number | null;
@@ -99,6 +102,7 @@ export interface NotificationInput {
   details?: string;
   severity?: NotificationSeverity;
   category?: NotificationCategory;
+  audience?: NotificationAudience;
   channel?: NotificationChannel;
   status?: NotificationStatus;
   resolvedAt?: number | null;
@@ -122,6 +126,7 @@ export interface NotificationEmitPayload {
   details?: string;
   severity?: NotificationSeverity;
   category?: NotificationCategory;
+  audience?: NotificationAudience;
   channel?: NotificationChannel;
   sticky?: boolean;
   dedupeKey?: string;

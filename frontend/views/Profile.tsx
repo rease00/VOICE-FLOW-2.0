@@ -11,6 +11,7 @@ import { readStorageJson, readStorageString } from '../src/shared/storage/localS
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 import {
+  createPortalSession,
   fetchAccountProfile,
   fetchMySupportConversations,
   markSupportConversationUnresolved,
@@ -79,6 +80,14 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
   const [supportConversations, setSupportConversations] = useState<SupportConversation[]>([]);
   const [isLoadingSupport, setIsLoadingSupport] = useState(false);
   const [isSendingSupport, setIsSendingSupport] = useState(false);
+  const [isOpeningPortal, setIsOpeningPortal] = useState(false);
+  const planToken = String(stats.planName || '').trim().toLowerCase();
+  const hasPaidSubscription = planToken === 'starter'
+    || planToken === 'creator'
+    || planToken === 'pro'
+    || planToken === 'scale'
+    || planToken === 'plus'
+    || planToken === 'enterprise';
 
   const loadAccountAndSupport = async () => {
     const baseUrl = readSettingsBackendUrl();
@@ -228,6 +237,32 @@ export const Profile: React.FC<{ setScreen: (s: AppScreen) => void }> = ({ setSc
                   <ShieldCheck size={14} className="text-emerald-600" />
                   Admin account has full access and no usage cap.
                 </div>
+              )}
+              {!isAdmin && hasPaidSubscription && (
+                <button
+                  onClick={() => {
+                    setIsOpeningPortal(true);
+                    void (async () => {
+                      try {
+                        const payload = await createPortalSession(readSettingsBackendUrl(), window.location.href);
+                        if (!payload.url) throw new Error('Billing portal URL is missing.');
+                        window.location.href = payload.url;
+                      } catch (error) {
+                        emit('custom.message', {
+                          title: 'Billing',
+                          message: sanitizeUiText(error instanceof Error ? error.message : 'Could not open billing portal.'),
+                          dedupeKey: 'profile-billing-portal-failed',
+                        });
+                      } finally {
+                        setIsOpeningPortal(false);
+                      }
+                    })();
+                  }}
+                  disabled={isOpeningPortal}
+                  className={`mt-3 h-8 rounded-lg border px-3 text-xs font-semibold disabled:opacity-60 ${isDarkUi ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25' : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'}`}
+                >
+                  {isOpeningPortal ? 'Opening...' : 'Manage / Cancel Subscription'}
+                </button>
               )}
             </div>
 

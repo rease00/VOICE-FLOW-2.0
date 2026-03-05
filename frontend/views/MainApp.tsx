@@ -12,17 +12,57 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
-import { GenerationSettings, AppScreen, ClonedVoice, DubSegment, CharacterProfile, VoiceOption, StudioEditorMode } from '../types';
+import {
+  GenerationSettings,
+  AppScreen,
+  ClonedVoice,
+  DubSegment,
+  CharacterProfile,
+  VoiceOption,
+  StudioEditorMode,
+  DubbingClip,
+  DubbingClipboard,
+  CpuDubbingProfile,
+} from '../types';
 import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, proofreadScript, DirectorOptions, parseScriptToSegments, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT, TTS_GATEWAY_AUDIO_CHUNK_EVENT, guessGenderFromName, guessAgeGroupFromSpeaker, normalizeSpeakerMapKey, resolveSpeakerMappedVoiceId } from '../services/geminiService';
-import { buildDubAlignmentReport, extractAndSeparateDubbingStems, mixFinalDub } from '../services/dubbingService';
+import { extractAndSeparateDubbingStems } from '../services/dubbingService';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { useUser } from '../contexts/UserContext';
 import { AdModal } from '../components/AdModal';
 import { applyStudioAudioMix } from '../services/studioMixService';
-import { checkMediaBackendHealth, convertLlvcCover, listLlvcModels, loadLlvcModel, muxDubbedVideo, resolveMediaBackendUrl, switchTtsEngineRuntime, transcribeVideoWithBackend } from '../services/mediaBackendService';
+import {
+  clearAllClips,
+  copyClip,
+  cutClip,
+  moveClipLayer,
+  pasteClipAfterSelection,
+  pushUndoHistory,
+  redoTimeline,
+  removeCompletedClips,
+  removeClip,
+  splitClipAtPlayhead,
+  trimClipWindow,
+  undoTimeline,
+} from '../services/dubbingTimelineService';
+import {
+  cancelDubbingJob,
+  checkMediaBackendHealth,
+  convertLlvcCover,
+  createDubbingJobV2,
+  downloadDubbingChunk,
+  downloadDubbingReport,
+  downloadDubbingResult,
+  getDubbingJob,
+  listLlvcModels,
+  loadLlvcModel,
+  resolveMediaBackendUrl,
+  switchTtsEngineRuntime,
+  transcribeVideoWithBackend,
+} from '../services/mediaBackendService';
 import { fetchEngineRuntimeVoices, getStaticVoiceFallback } from '../services/ttsVoiceRegistryService';
 import { normalizeEmotionTag } from '../services/emotionTagRules';
 import { getEngineDisplayName } from '../services/engineDisplay';
+import { kokoroBrowserRuntime } from '../services/kokoroBrowserRuntime';
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
@@ -39,7 +79,6 @@ import { useBillingActions } from '../src/features/billing/hooks/useBillingActio
 import { fetchTtsEnginesStatus } from '../src/shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
 import { requestJson } from '../src/shared/api/httpClient';
-import { blobUrlToFile } from '../services/blobFileService';
 import {
   normalizeAssistantProviderControlsEnabled,
   normalizePreferUserGeminiKey,
@@ -48,6 +87,7 @@ import {
 import { ASSISTANT_PROVIDER_UI_LABELS, sanitizeUiText } from '../src/shared/ui/terminology';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import type { NotificationEventCode } from '../src/shared/notifications/types';
+import type { TokenPackKey } from '../services/accountService';
 
 const AdminTabContent = lazy(async () =>
   import('../src/features/admin/components/AdminTabContent').then((module) => ({ default: module.AdminTabContent }))
@@ -169,12 +209,38 @@ const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]>
 };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
 const DEFAULT_KOKORO_VOICE_ID = KOKORO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
-const FREE_TIER_MAX_SPEAKERS_PER_ENGINE = 10;
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
   GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'bf_emma', 'bf_isabella', 'am_fenrir', 'am_michael', 'am_onyx', 'bm_george'],
+};
+const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; standardInr: number; scaleInr: number }> = {
+  micro: { label: 'Micro', vf: 50000, standardInr: 550, scaleInr: 440 },
+  standard: { label: 'Standard', vf: 150000, standardInr: 1450, scaleInr: 1160 },
+  mega: { label: 'Mega', vf: 300000, standardInr: 2900, scaleInr: 2320 },
+  ultra: { label: 'Ultra', vf: 600000, standardInr: 5200, scaleInr: 4160 },
+};
+
+const normalizePlanToken = (planName: unknown): 'free' | 'starter' | 'creator' | 'pro' | 'scale' => {
+  const token = String(planName || '').trim().toLowerCase();
+  if (token === 'starter') return 'starter';
+  if (token === 'creator') return 'creator';
+  if (token === 'pro') return 'pro';
+  if (token === 'scale' || token === 'plus' || token === 'pro_plus' || token === 'pro-plus') return 'scale';
+  return 'free';
+};
+
+const normalizeAllowedEngines = (value: unknown): GenerationSettings['engine'][] => {
+  if (!Array.isArray(value)) return [];
+  const out = new Set<GenerationSettings['engine']>();
+  value.forEach((item) => {
+    const token = String(item || '').trim().toUpperCase();
+    if (token === 'KOKORO' || token === 'GOOD' || token === 'NEURAL2' || token === 'GEM') {
+      out.add(token as GenerationSettings['engine']);
+    }
+  });
+  return Array.from(out);
 };
 
 const DEFAULT_SETTINGS: GenerationSettings = {
@@ -198,6 +264,8 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   llvcModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.GEM,
   kokoroTtsServiceUrl: FALLBACK_RUNTIME_URLS.KOKORO,
+  kokoroExecutionMode: 'browser_webgpu',
+  kokoroStandbyIdleMs: 30000,
 
   musicTrackId: 'm_none',
   musicVolume: 0.3,
@@ -209,6 +277,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   multiSpeakerEnabled: true,
   speakerMapping: {},
   uiMotionLevel: 'balanced',
+  autoPlayGeneratedAudio: true,
 };
 
 const normalizeServiceSetting = (value: unknown, fallback: string): string => (
@@ -274,6 +343,13 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     llvcModel: typeof value.llvcModel === 'string' ? value.llvcModel : DEFAULT_SETTINGS.llvcModel,
     geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.GEM),
     kokoroTtsServiceUrl: normalizeServiceSetting(value.kokoroTtsServiceUrl, DEFAULT_SETTINGS.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO),
+    kokoroExecutionMode: value.kokoroExecutionMode === 'backend_runtime' ? 'backend_runtime' : 'browser_webgpu',
+    kokoroStandbyIdleMs: typeof value.kokoroStandbyIdleMs === 'number' && Number.isFinite(value.kokoroStandbyIdleMs)
+      ? Math.max(1000, Math.round(value.kokoroStandbyIdleMs))
+      : (DEFAULT_SETTINGS.kokoroStandbyIdleMs || 30000),
+    autoPlayGeneratedAudio: typeof value.autoPlayGeneratedAudio === 'boolean'
+      ? value.autoPlayGeneratedAudio
+      : (DEFAULT_SETTINGS.autoPlayGeneratedAudio !== false),
   };
 
   const validVoiceIds = new Set([
@@ -298,6 +374,72 @@ const DUBBING_SOURCE_LANGUAGE_OPTIONS: Array<{ code: string; label: string }> = 
   { code: 'zh', label: 'Chinese' },
   { code: 'ja', label: 'Japanese' },
   { code: 'ru', label: 'Russian' },
+];
+
+const VIDEO_PIPELINE_2026_PHASES: Array<{ title: string; body: string }> = [
+  {
+    title: 'Phase 1: Deep Acoustic Deconstruction (Acoustic Isolation)',
+    body: 'Isolate dialogue from M&E, then dereverb to produce a dry vocal stem for clean remixing. Default stack: UVR5-compatible BS-Roformer-Viperx-1297 with UVR DeEcho/DeReverb.',
+  },
+  {
+    title: 'Phase 2: Multimodal Analysis (Director Layer)',
+    body: 'Gemini 3 Flash builds Director JSON with speaker diarization, affective tags (whisper, grit, sarcasm), and exact start_ms/end_ms timing markers.',
+  },
+  {
+    title: 'Phase 3: Isochrony-Aware Translation (Sync Script)',
+    body: 'Translation is iteratively rewritten until syllable ratio stays within configured tolerance (default +-10%) so timing remains aligned.',
+  },
+  {
+    title: 'Phase 4: Base Performance Generation (Gemini TTS)',
+    body: 'Gemini 2.5 Flash TTS generates the acting base with director tags injected and segment-level dynamic speaking_rate fitted to duration windows.',
+  },
+  {
+    title: 'Phase 5: CPU-Optimized Timbre Transfer (LLVC)',
+    body: 'LLVC applies original speaker timbre onto translated performance while preserving rhythm and expressive cues, with per-segment RTF tracking.',
+  },
+  {
+    title: 'Phase 6: Visual Lip-Sync (Final Assembly)',
+    body: 'Wav2Lip-ONNX re-animates mouth movement to match target phonemes. LPIPS validation runs when available, otherwise warns and continues.',
+  },
+];
+
+const VIDEO_PIPELINE_2026_SUMMARY_ROWS: Array<{ step: string; tool: string; modality: string; benefit: string }> = [
+  {
+    step: 'Isolation',
+    tool: 'UVR5 (RoFormer)',
+    modality: 'Audio',
+    benefit: 'Removes music bleed and original room reverb.',
+  },
+  {
+    step: 'Logic',
+    tool: 'Gemini 3 Flash',
+    modality: 'Multimodal',
+    benefit: 'Precise emotional and temporal mapping.',
+  },
+  {
+    step: 'Translation',
+    tool: 'IAMT Prompting',
+    modality: 'Text',
+    benefit: 'Syllable-matched for duration alignment.',
+  },
+  {
+    step: 'Base Vocal',
+    tool: 'Gemini 2.5 TTS',
+    modality: 'Audio',
+    benefit: 'High-fidelity emotional performance.',
+  },
+  {
+    step: 'Cloning',
+    tool: 'LLVC',
+    modality: 'Audio',
+    benefit: 'CPU-friendly timbre transfer with acting preserved.',
+  },
+  {
+    step: 'Lip-Sync',
+    tool: 'Wav2Lip-ONNX',
+    modality: 'Video',
+    benefit: 'Aligns mouth movement at 256x256 output path.',
+  },
 ];
 
 const cleanDubbingLine = (line: string): string => (
@@ -353,6 +495,39 @@ const runDubbingEditorTool = (
 
   // compact
   return lines.filter(Boolean).join('\n').trim();
+};
+
+const DUBBING_TIMELINE_LAYERS: Array<DubbingClip['layer']> = ['V1', 'V2'];
+
+const DUBBING_CPU_PROFILE_LABELS: Record<CpuDubbingProfile, string> = {
+  cpu_quality: 'CPU Quality',
+  cpu_balanced: 'CPU Balanced',
+  cpu_fast: 'CPU Fast',
+};
+
+const buildDubbingClipId = (): string => `dub_clip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+const createDubbingClip = (file: File, objectUrl: string, durationMs: number = 0): DubbingClip => ({
+  id: buildDubbingClipId(),
+  file,
+  objectUrl,
+  durationMs: Math.max(0, Math.round(durationMs || 0)),
+  trimInMs: 0,
+  trimOutMs: Math.max(240, Math.round(durationMs || 0)),
+  layer: 'V1',
+  script: '',
+  status: 'idle',
+  jobId: '',
+  resultUrl: null,
+  reportUrl: null,
+  error: '',
+});
+
+const formatClipDuration = (ms: number): string => {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const mm = Math.floor(total / 60);
+  const ss = String(total % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
 };
 
 // --- SYSTEM RESOURCE MONITOR ---
@@ -523,6 +698,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [couponCode, setCouponCode] = useState('');
   const [isRedeemingCoupon, setIsRedeemingCoupon] = useState(false);
   const [isBuyingTokenPack, setIsBuyingTokenPack] = useState(false);
+  const [selectedTokenPack, setSelectedTokenPack] = useState<TokenPackKey>('standard');
   const [isRefreshingHistory, setIsRefreshingHistory] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [expandedHistoryItemKey, setExpandedHistoryItemKey] = useState<string | null>(null);
@@ -582,9 +758,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [dubScript, setDubScript] = useState('');
+  const [dubbingClips, setDubbingClips] = useState<DubbingClip[]>([]);
+  const [selectedDubbingClipId, setSelectedDubbingClipId] = useState('');
+  const [dubbingClipboard, setDubbingClipboard] = useState<DubbingClipboard | null>(null);
+  const [dubbingHistoryPast, setDubbingHistoryPast] = useState<DubbingClip[][]>([]);
+  const [dubbingHistoryFuture, setDubbingHistoryFuture] = useState<DubbingClip[][]>([]);
+  const [dubbingCpuProfile, setDubbingCpuProfile] = useState<CpuDubbingProfile>('cpu_quality');
+  const [isDubbingAdvancedOpen, setIsDubbingAdvancedOpen] = useState(false);
+  const [dubbingPlayheadMs, setDubbingPlayheadMs] = useState(0);
   const [dubAudioUrl, setDubAudioUrl] = useState<string | null>(null);
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
   const [isPlayingDub, setIsPlayingDub] = useState(false);
+  const [isVideoPipelineGuideOpen, setIsVideoPipelineGuideOpen] = useState(false);
+  const [dubbingJobResultUrl, setDubbingJobResultUrl] = useState<string | null>(null);
+  const [dubbingReportUrl, setDubbingReportUrl] = useState<string | null>(null);
   const directorOptions: DirectorOptions = {
       style: 'natural',
       tone: 'neutral'
@@ -594,7 +781,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [videoVolume, setVideoVolume] = useState(1.0);
   const [dubVolume, setDubVolume] = useState(1.0);
   const [renderedDubVideoUrl, setRenderedDubVideoUrl] = useState<string | null>(null);
-  const [isRenderingDubVideo, setIsRenderingDubVideo] = useState(false);
 
   // --- Real Media Backend State (LLVC + Video Tools) ---
   const [backendHealth, setBackendHealth] = useState<BackendHealthState | null>(null);
@@ -637,9 +823,106 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const dubAudioRef = useRef<HTMLAudioElement>(null);
   const llvcSourceMediaRef = useRef<HTMLMediaElement | null>(null);
   const dubbingStemsRef = useRef<CachedDubbingStems | null>(null);
+  const activeDubbingJobIdRef = useRef<string>('');
+  const dubbingLiveAudioRef = useRef<HTMLAudioElement | null>(null);
+  const dubbingLiveChunkUrlsRef = useRef<string[]>([]);
+  const dubbingLiveQueueRef = useRef<string[]>([]);
+  const dubbingLiveSeenChunkKeysRef = useRef<Set<string>>(new Set());
+  const dubbingLiveChunkCursorRef = useRef<number>(0);
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const studioMainRef = useRef<HTMLDivElement>(null);
+  const selectedDubbingClip = useMemo(
+    () => dubbingClips.find((clip) => clip.id === selectedDubbingClipId) || null,
+    [dubbingClips, selectedDubbingClipId]
+  );
+
+  const mutateDubbingTimeline = useCallback(
+    (mutator: (current: DubbingClip[]) => DubbingClip[]) => {
+      setDubbingClips((current) => {
+        const next = mutator(current);
+        if (next === current) return current;
+        setDubbingHistoryPast((past) => pushUndoHistory(past, current));
+        setDubbingHistoryFuture([]);
+        return next;
+      });
+    },
+    []
+  );
+
+  const syncSelectedClipPatch = useCallback(
+    (patch: Partial<DubbingClip>) => {
+      if (!selectedDubbingClipId) return;
+      setDubbingClips((current) =>
+        current.map((clip) => (clip.id === selectedDubbingClipId ? { ...clip, ...patch } : clip))
+      );
+    },
+    [selectedDubbingClipId]
+  );
+
+  const resolveClipDurationMs = useCallback(async (file: File): Promise<number> => {
+    if (typeof document === 'undefined') return 0;
+    return new Promise((resolve) => {
+      const probe = document.createElement('video');
+      const objectUrl = URL.createObjectURL(file);
+      const cleanup = () => {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch {}
+      };
+      probe.preload = 'metadata';
+      probe.onloadedmetadata = () => {
+        const durationSec = Number(probe.duration || 0);
+        cleanup();
+        resolve(Number.isFinite(durationSec) && durationSec > 0 ? Math.round(durationSec * 1000) : 0);
+      };
+      probe.onerror = () => {
+        cleanup();
+        resolve(0);
+      };
+      probe.src = objectUrl;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (dubbingClips.length <= 0) {
+      if (selectedDubbingClipId) setSelectedDubbingClipId('');
+      return;
+    }
+    const selectedExists = dubbingClips.some((clip) => clip.id === selectedDubbingClipId);
+    if (!selectedExists) {
+      setSelectedDubbingClipId(dubbingClips[0]?.id || '');
+    }
+  }, [dubbingClips, selectedDubbingClipId]);
+
+  useEffect(() => {
+    if (!selectedDubbingClip) {
+      setVideoFile(null);
+      setVideoUrl(null);
+      setDubScript('');
+      setDubAudioUrl(null);
+      return;
+    }
+    setVideoFile(selectedDubbingClip.file);
+    setVideoUrl(selectedDubbingClip.objectUrl);
+    setDubScript(selectedDubbingClip.script || '');
+    setDubbingPlayheadMs((current) =>
+      Math.max(selectedDubbingClip.trimInMs, Math.min(current, selectedDubbingClip.trimOutMs))
+    );
+    const selectedResultUrl = selectedDubbingClip.resultUrl ? String(selectedDubbingClip.resultUrl) : null;
+    setDubAudioUrl(selectedResultUrl);
+  }, [selectedDubbingClip]);
+
+  useEffect(() => {
+    if (!selectedDubbingClipId) return;
+    setDubbingClips((current) =>
+      current.map((clip) => {
+        if (clip.id !== selectedDubbingClipId) return clip;
+        if ((clip.script || '') === dubScript) return clip;
+        return { ...clip, script: dubScript };
+      })
+    );
+  }, [dubScript, selectedDubbingClipId]);
 
   // --- PREVIEW STATE ---
   const [previewState, setPreviewState] = useState<{ id: string, status: 'loading' | 'playing' } | null>(null);
@@ -661,6 +944,37 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<GenerationSettings['engine'], VoiceOption[]>>(
     EMPTY_RUNTIME_CATALOG
   );
+
+  const normalizedPlanToken = normalizePlanToken(stats.planName);
+  const isPaidBillingPlan = normalizedPlanToken !== 'free';
+  const isFreeTierUser = !hasUnlimitedAccess && !isPaidBillingPlan;
+  const entitlementAllowedEngines = useMemo(
+    () => normalizeAllowedEngines(stats.limits?.allowedEngines),
+    [stats.limits?.allowedEngines]
+  );
+  const planAllowedEngines: GenerationSettings['engine'][] = useMemo(
+    () => (
+      hasUnlimitedAccess
+        ? [...ENGINE_ORDER]
+        : entitlementAllowedEngines.length > 0
+          ? entitlementAllowedEngines
+          : isPaidBillingPlan
+            ? [...ENGINE_ORDER]
+            : ['KOKORO', 'GOOD', 'NEURAL2']
+    ),
+    [entitlementAllowedEngines, hasUnlimitedAccess, isPaidBillingPlan]
+  );
+  const maxCharsPerGeneration = Math.max(
+    1,
+    Number(
+      stats.limits?.maxCharsPerGeneration ||
+      (normalizedPlanToken === 'scale' ? 15000 : isPaidBillingPlan ? 10000 : 8000)
+    )
+  );
+  const selectedTokenPackMeta = TOKEN_PACK_MATRIX[selectedTokenPack];
+  const selectedTokenPackPriceInr = normalizedPlanToken === 'scale'
+    ? selectedTokenPackMeta.scaleInr
+    : selectedTokenPackMeta.standardInr;
 
   const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !hasUnlimitedAccess;
   const currentEngineSpendable = Math.max(
@@ -890,6 +1204,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       message: safeMessage,
       severity: type === 'success' ? 'success' : type === 'error' ? 'error' : 'info',
       category: type === 'error' ? 'system' : 'activity',
+      channel: 'toast',
     });
   }, [emit, mapLegacyToastEvent, toUserFriendlySystemMessage]);
 
@@ -929,6 +1244,54 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           updatedAt: Date.now(),
       }));
   }, []);
+  const resetDubbingLivePlayback = useCallback(() => {
+      const player = dubbingLiveAudioRef.current;
+      if (player) {
+          try {
+              player.pause();
+              player.src = '';
+          } catch {}
+      }
+      for (const url of dubbingLiveChunkUrlsRef.current) {
+          try {
+              URL.revokeObjectURL(url);
+          } catch {}
+      }
+      dubbingLiveChunkUrlsRef.current = [];
+      dubbingLiveQueueRef.current = [];
+      dubbingLiveSeenChunkKeysRef.current = new Set();
+      dubbingLiveChunkCursorRef.current = 0;
+  }, []);
+  const pumpDubbingLivePlayback = useCallback(() => {
+      if (typeof Audio === 'undefined') return;
+      if (!dubbingLiveAudioRef.current) {
+          const player = new Audio();
+          player.preload = 'auto';
+          player.onended = () => {
+              const queue = dubbingLiveQueueRef.current;
+              const next = queue.shift();
+              if (!next) return;
+              player.src = next;
+              void player.play().catch(() => undefined);
+          };
+          dubbingLiveAudioRef.current = player;
+      }
+      const player = dubbingLiveAudioRef.current;
+      if (!player) return;
+      if (!player.paused) return;
+      const queue = dubbingLiveQueueRef.current;
+      const next = queue.shift();
+      if (!next) return;
+      player.src = next;
+      void player.play().catch(() => undefined);
+  }, []);
+  const enqueueDubbingLiveChunk = useCallback((blob: Blob) => {
+      if (!blob || blob.size <= 0) return;
+      const url = URL.createObjectURL(blob);
+      dubbingLiveChunkUrlsRef.current.push(url);
+      dubbingLiveQueueRef.current.push(url);
+      pumpDubbingLivePlayback();
+  }, [pumpDubbingLivePlayback]);
   const mediaBackendUrl = resolveMediaBackendUrl(settings);
   const billingActions = useBillingActions({ baseUrl: mediaBackendUrl });
   const isGemRuntimeEngine = useCallback(
@@ -947,7 +1310,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (normalized) return normalized;
       return normalizeRuntimeUrl(getDefaultRuntimeUrlForEngine(engine));
   };
-  const isFreeTierUser = !hasUnlimitedAccess;
+  const isEnginePlanAllowed = useCallback(
+      (engine: GenerationSettings['engine']) => hasUnlimitedAccess || planAllowedEngines.includes(engine),
+      [hasUnlimitedAccess, planAllowedEngines]
+  );
+  const resolveVoiceAccessTier = useCallback(
+      (engine: GenerationSettings['engine'], voice: VoiceOption): 'free' | 'pro' => {
+          const explicit = String(voice.accessTier || '').trim().toLowerCase();
+          if (explicit === 'free' || explicit === 'pro') return explicit as 'free' | 'pro';
+          const allowlist = FREE_TIER_ALLOWED_VOICE_IDS[engine] || [];
+          const allowed = new Set(allowlist.map((token) => String(token || '').trim().toLowerCase()));
+          return allowed.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro';
+      },
+      []
+  );
+  const isVoiceLockedForFreeTier = useCallback(
+      (engine: GenerationSettings['engine'], voice: VoiceOption): boolean => {
+          if (!isFreeTierUser) return false;
+          return resolveVoiceAccessTier(engine, voice) === 'pro';
+      },
+      [isFreeTierUser, resolveVoiceAccessTier]
+  );
   const findSpeakerMappingKey = useCallback((mapping: Record<string, string> | undefined, speaker: string): string => {
       if (!mapping || typeof mapping !== 'object') return '';
       const rawSpeaker = String(speaker || '');
@@ -983,15 +1366,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const applyFreeTierVoiceGate = useCallback(
       (engine: GenerationSettings['engine'], voices: VoiceOption[]): VoiceOption[] => {
-          if (!isFreeTierUser) return voices;
-          const allowlist = FREE_TIER_ALLOWED_VOICE_IDS[engine] || [];
-          if (!allowlist.length) return voices.slice(0, FREE_TIER_MAX_SPEAKERS_PER_ENGINE);
-          const allowedSet = new Set(allowlist);
-          const filtered = voices.filter((voice) => allowedSet.has(String(voice.id || '').trim()));
-          if (filtered.length > 0) return filtered;
-          return voices.slice(0, FREE_TIER_MAX_SPEAKERS_PER_ENGINE);
+          return voices.map((voice) => {
+              const tier = resolveVoiceAccessTier(engine, voice);
+              return {
+                  ...voice,
+                  accessTier: tier,
+                  isPlanRestricted: typeof voice.isPlanRestricted === 'boolean' ? voice.isPlanRestricted : tier === 'pro',
+              };
+          });
       },
-      [isFreeTierUser]
+      [resolveVoiceAccessTier]
   );
 
   const getVideoCacheKey = useCallback((file: File): string => {
@@ -1094,12 +1478,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return 'Adult';
   }, [resolveVoiceAgeGroup]);
 
-  const withVoiceMeta = useCallback((voice: VoiceOption, engine: GenerationSettings['engine']): VoiceOption => ({
-      ...voice,
-      engine,
-      country: resolveVoiceCountry(voice),
-      ageGroup: resolveVoiceAgeGroup(voice),
-  }), [resolveVoiceAgeGroup, resolveVoiceCountry]);
+  const withVoiceMeta = useCallback((voice: VoiceOption, engine: GenerationSettings['engine']): VoiceOption => {
+      const tier = resolveVoiceAccessTier(engine, voice);
+      return {
+          ...voice,
+          engine,
+          country: resolveVoiceCountry(voice),
+          ageGroup: resolveVoiceAgeGroup(voice),
+          accessTier: tier,
+          isPlanRestricted: typeof voice.isPlanRestricted === 'boolean' ? voice.isPlanRestricted : tier === 'pro',
+      };
+  }, [resolveVoiceAccessTier, resolveVoiceAgeGroup, resolveVoiceCountry]);
 
   const getStaticVoicesForEngine = useCallback((engine: GenerationSettings['engine']): VoiceOption[] => {
       if (isGemRuntimeEngine(engine)) {
@@ -1171,21 +1560,66 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const catalog = getEngineVoiceCatalog(engine);
           if (!catalog.length) return candidateId;
           const validIds = new Set(catalog.map((voice) => voice.id));
-          const fallbackVoiceId = catalog[0]?.id || candidateId;
-          return validIds.has(candidateId) ? candidateId : fallbackVoiceId;
+          const freeVoiceId = catalog.find((voice) => resolveVoiceAccessTier(engine, voice) === 'free')?.id || '';
+          const fallbackVoiceId = freeVoiceId || catalog[0]?.id || candidateId;
+          const resolvedId = validIds.has(candidateId) ? candidateId : fallbackVoiceId;
+          if (!isFreeTierUser) return resolvedId;
+          const resolvedVoice = catalog.find((voice) => voice.id === resolvedId);
+          if (resolvedVoice && resolveVoiceAccessTier(engine, resolvedVoice) === 'pro') {
+              return fallbackVoiceId;
+          }
+          return resolvedId;
       },
-      [getEngineVoiceCatalog]
+      [getEngineVoiceCatalog, isFreeTierUser, resolveVoiceAccessTier]
   );
 
   const selectVoiceIdFromCatalog = useCallback(
-      (catalog: VoiceOption[], candidateId: string): string => {
+      (engine: GenerationSettings['engine'], catalog: VoiceOption[], candidateId: string): string => {
           if (!catalog.length) return candidateId;
           const validIds = new Set(catalog.map((voice) => voice.id));
-          const fallbackVoiceId = catalog[0]?.id || candidateId;
-          return validIds.has(candidateId) ? candidateId : fallbackVoiceId;
+          const freeVoiceId = catalog.find((voice) => resolveVoiceAccessTier(engine, voice) === 'free')?.id || '';
+          const fallbackVoiceId = freeVoiceId || catalog[0]?.id || candidateId;
+          const resolvedId = validIds.has(candidateId) ? candidateId : fallbackVoiceId;
+          if (!isFreeTierUser) return resolvedId;
+          const resolvedVoice = catalog.find((voice) => voice.id === resolvedId);
+          if (resolvedVoice && resolveVoiceAccessTier(engine, resolvedVoice) === 'pro') {
+              return fallbackVoiceId;
+          }
+          return resolvedId;
       },
-      []
+      [isFreeTierUser, resolveVoiceAccessTier]
   );
+
+  useEffect(() => {
+      if (isEnginePlanAllowed(settings.engine)) return;
+      const fallbackEngine = planAllowedEngines[0] || 'KOKORO';
+      const fallbackVoiceId = getValidVoiceIdForEngine(fallbackEngine, settings.voiceId);
+      setSettings((prev) => ({ ...prev, engine: fallbackEngine, voiceId: fallbackVoiceId }));
+      if (!hasUnlimitedAccess && !isPaidBillingPlan) {
+          showToast('Prime engine is locked on Free. Upgrading unlocks all engines.', 'info');
+          setShowSubscriptionModal(true);
+      }
+  }, [
+      getValidVoiceIdForEngine,
+      hasUnlimitedAccess,
+      isEnginePlanAllowed,
+      isPaidBillingPlan,
+      planAllowedEngines,
+      settings.engine,
+      settings.voiceId,
+      setShowSubscriptionModal,
+      showToast,
+  ]);
+
+  useEffect(() => {
+      if (!isFreeTierUser) return;
+      const validVoiceId = getValidVoiceIdForEngine(settings.engine, settings.voiceId);
+      if (!validVoiceId || validVoiceId === settings.voiceId) return;
+      setSettings((prev) => {
+          if (prev.voiceId === validVoiceId) return prev;
+          return { ...prev, voiceId: validVoiceId };
+      });
+  }, [getValidVoiceIdForEngine, isFreeTierUser, settings.engine, settings.voiceId]);
 
   const normalizeLanguageCode = useCallback((value?: string | null): string => {
       const raw = String(value || '').trim().toLowerCase();
@@ -1417,7 +1851,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const scopedCatalog = getLanguageScopedVoiceCatalog(settings.engine, activeScriptLanguageCode);
       const catalog = scopedCatalog.length > 0 ? scopedCatalog : getEngineVoiceCatalog(settings.engine);
-      if (!catalog.length) {
+      const effectiveCatalog = isFreeTierUser
+          ? catalog.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'free')
+          : catalog;
+      if (!effectiveCatalog.length) {
           showToast('No voices available for auto-assignment.', 'error');
           return;
       }
@@ -1470,7 +1907,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               const tone = inferSpeakerTone(sample);
               const rememberedVoiceId = getVoiceForCharacter(normalizedSpeaker);
 
-              const ranked = catalog
+              const ranked = effectiveCatalog
                   .map((voice, index) => {
                       const meta = `${voice.name || ''} ${voice.id || ''} ${voice.accent || ''} ${voice.country || ''} ${voice.ageGroup || ''}`.toLowerCase();
                       const ageLabel = resolveVoiceAgeGroup(voice).toLowerCase();
@@ -1521,7 +1958,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               const selectedVoice =
                   ranked.find((entry) => !usedVoiceIds.has(entry.voice.id))?.voice ||
                   ranked[0]?.voice ||
-                  catalog[0];
+                  effectiveCatalog[0];
 
               if (!selectedVoice) return;
               nextMapping[normalizedSpeaker] = selectedVoice.id;
@@ -1573,8 +2010,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       inferSpeakerAge,
       inferSpeakerGender,
       inferSpeakerTone,
+      isFreeTierUser,
       isStudioMultiSpeakerEnabled,
       resolveMappedVoiceForSpeaker,
+      resolveVoiceAccessTier,
       resolveVoiceAgeGroup,
       settings.engine,
       settings.speakerMapping,
@@ -1593,7 +2032,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 : 'border-indigo-200 bg-indigo-50 text-indigo-700',
               bar: darkTheme ? 'bg-indigo-400' : 'bg-indigo-500',
               title: 'Generating dub track',
-              subtitle: 'Processing your media with studio voice mapping.',
+              subtitle: dubbingUiState.stage || 'Processing backend 2026 dubbing pipeline.',
               progressPct: Math.max(14, Math.min(94, Number(dubbingUiState.progress || 0))),
           };
       }
@@ -1617,7 +2056,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 : 'border-emerald-200 bg-emerald-50 text-emerald-700',
               bar: darkTheme ? 'bg-emerald-400' : 'bg-emerald-500',
               title: 'Dub track is ready',
-              subtitle: 'Preview, export, or continue editing your script.',
+              subtitle: dubbingUiState.stage || 'Preview, export, or continue editing your script.',
               progressPct: 100,
           };
       }
@@ -1628,10 +2067,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             : 'border-gray-200 bg-gray-50 text-gray-600',
           bar: darkTheme ? 'bg-slate-400' : 'bg-gray-300',
           title: 'Ready for dubbing',
-          subtitle: 'Upload a source video and press Generate Dub Track.',
+          subtitle: 'Upload source clips, select language, and press AI Dub.',
           progressPct: 0,
       };
-  }, [dubbingUiState.phase, dubbingUiState.progress, resolvedTheme]);
+  }, [dubbingUiState.phase, dubbingUiState.progress, dubbingUiState.stage, resolvedTheme]);
 
   const refreshEngineVoiceCatalog = useCallback(
       async (engine: GenerationSettings['engine'], _runtimeUrl?: string): Promise<VoiceOption[]> => {
@@ -1676,6 +2115,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const refreshTtsRuntimeStatus = async () => {
       const statuses = await Promise.all(
           ENGINE_ORDER.map(async (engine) => {
+              if (engine === 'KOKORO' && settings.kokoroExecutionMode !== 'backend_runtime') {
+                  const browserState = kokoroBrowserRuntime.getState();
+                  if (browserState === 'ready') {
+                      return [engine, { state: 'online', detail: 'Browser WebGPU runtime ready' }] as const;
+                  }
+                  if (browserState === 'warming') {
+                      return [engine, { state: 'starting', detail: 'Preparing browser WebGPU runtime...' }] as const;
+                  }
+                  if (browserState === 'suspended') {
+                      return [engine, { state: 'standby', detail: 'Browser runtime suspended (auto-resume on generate)' }] as const;
+                  }
+                  return [engine, { state: 'standby', detail: 'Browser runtime idle' }] as const;
+              }
               const status = await probeRuntimeStatus(engine);
               if (
                   managedActiveEngine &&
@@ -1712,6 +2164,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       options?: { timeoutMs?: number; silent?: boolean; syncVoiceId?: string; requireAccess?: boolean }
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       const engineLabel = getEngineDisplayName(engine);
+      if (!isEnginePlanAllowed(engine)) {
+          throw new Error(`${engineLabel} is not enabled for your current plan.`);
+      }
       let runtimeUrl = getRuntimeUrlForEngine(engine);
       try {
           const statusPayload = await fetchTtsEnginesStatus(engine, mediaBackendUrl);
@@ -1763,7 +2218,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               const fallbackCatalog = refreshedCatalog.length > 0
                   ? refreshedCatalog
                   : getEngineVoiceCatalog(engine);
-              const validVoiceId = selectVoiceIdFromCatalog(fallbackCatalog, candidateVoiceId);
+              const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
               syncedVoiceId = validVoiceId;
               setSettings(prev => ({ ...prev, engine, voiceId: validVoiceId }));
           }
@@ -1828,7 +2283,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               const fallbackCatalog = refreshedCatalog.length > 0
                   ? refreshedCatalog
                   : getEngineVoiceCatalog(engine);
-              const validVoiceId = selectVoiceIdFromCatalog(fallbackCatalog, candidateVoiceId);
+              const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
               syncedVoiceId = validVoiceId;
               setSettings(prev => ({ ...prev, engine, voiceId: validVoiceId }));
           }
@@ -2182,11 +2637,45 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [
       settings.geminiTtsServiceUrl,
       settings.kokoroTtsServiceUrl,
+      settings.kokoroExecutionMode,
       managedActiveEngine,
       isGenerating,
       engineSwitchInProgress,
       refreshTtsAccessState,
   ]);
+
+  useEffect(() => {
+      if (settings.engine !== 'KOKORO' || settings.kokoroExecutionMode === 'backend_runtime') return;
+      let cancelled = false;
+      void (async () => {
+          try {
+              await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
+              await kokoroBrowserRuntime.ensureReady({
+                  backendBaseUrl: mediaBackendUrl,
+                  voiceId: settings.voiceId,
+                  speed: settings.speed,
+              });
+              if (cancelled) return;
+              setManagedActiveEngine('KOKORO');
+              setTtsRuntimeStatus((prev) => ({
+                  ...prev,
+                  KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
+              }));
+          } catch (error: any) {
+              if (cancelled) return;
+              setTtsRuntimeStatus((prev) => ({
+                  ...prev,
+                  KOKORO: {
+                      state: 'offline',
+                      detail: error?.message || 'Browser WebGPU runtime unavailable.',
+                  },
+              }));
+          }
+      })();
+      return () => {
+          cancelled = true;
+      };
+  }, [mediaBackendUrl, settings.engine, settings.kokoroExecutionMode, settings.speed, settings.voiceId]);
 
   useEffect(() => {
       const validVoiceId = getValidVoiceIdForEngine(settings.engine, settings.voiceId);
@@ -2433,13 +2922,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return () => {
           if (llvcCoverUrl) URL.revokeObjectURL(llvcCoverUrl);
           if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
+          if (dubbingJobResultUrl) URL.revokeObjectURL(dubbingJobResultUrl);
+          if (dubbingReportUrl) URL.revokeObjectURL(dubbingReportUrl);
+          resetDubbingLivePlayback();
           if (dubbingStemsRef.current) {
               URL.revokeObjectURL(dubbingStemsRef.current.speechObjectUrl);
               URL.revokeObjectURL(dubbingStemsRef.current.backgroundObjectUrl);
               dubbingStemsRef.current = null;
           }
       };
-  }, [llvcCoverUrl, renderedDubVideoUrl]);
+  }, [llvcCoverUrl, renderedDubVideoUrl, dubbingJobResultUrl, dubbingReportUrl, resetDubbingLivePlayback]);
 
   useEffect(() => {
       document.body.classList.toggle('theme-dark', resolvedTheme === 'dark');
@@ -2641,11 +3133,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           generationAbortController.current?.abort();
           generationAbortController.current = null;
           setProcessingStage(sanitizeUiText('Cancelling generation...'));
+          const activeDubJobId = String(activeDubbingJobIdRef.current || '').trim();
+          if (activeDubJobId) {
+              void cancelDubbingJob(mediaBackendUrl, activeDubJobId).catch(() => undefined);
+          }
       } else {
           stopSimulation();
       }
 
       activeGatewayJobIdRef.current = '';
+      activeDubbingJobIdRef.current = '';
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
       emit('generation.cancelled', {
@@ -2655,12 +3152,47 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           channel: 'inbox',
       });
   };
+
+  const shouldUseBrowserKokoro = (
+      engine: GenerationSettings['engine'],
+      context: 'studio' | 'preview' | 'dubbing'
+  ): boolean => (
+      engine === 'KOKORO' &&
+      settings.kokoroExecutionMode !== 'backend_runtime' &&
+      context !== 'dubbing'
+  );
   
   const performGeneration = async (scriptText: string, signal?: AbortSignal) => {
       if (!scriptText.trim()) throw new Error("Text is empty");
-      setLiveProgress(14, `Checking ${settings.engine} runtime...`);
-      const engineState = await ensureEngineOnline(settings.engine, { silent: true, syncVoiceId: settings.voiceId, requireAccess: true });
-      setLiveProgress(28, 'Runtime ready. Preparing voice selection...');
+      const browserKokoro = shouldUseBrowserKokoro(settings.engine, 'studio');
+      setLiveProgress(14, browserKokoro ? 'Preparing Basic WebGPU runtime...' : `Checking ${settings.engine} runtime...`);
+      let engineState: { runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string };
+      if (browserKokoro) {
+          const access = await refreshTtsAccessState(true);
+          if (!access.ok) {
+              throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
+          }
+          await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
+          await kokoroBrowserRuntime.ensureReady({
+              backendBaseUrl: mediaBackendUrl,
+              voiceId: settings.voiceId,
+              speed: settings.speed,
+              ...(signal ? { signal } : {}),
+          });
+          setManagedActiveEngine('KOKORO');
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
+          }));
+          engineState = {
+              runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
+              catalog: getEngineVoiceCatalog('KOKORO'),
+              syncedVoiceId: settings.voiceId,
+          };
+      } else {
+          engineState = await ensureEngineOnline(settings.engine, { silent: true, syncVoiceId: settings.voiceId, requireAccess: true });
+      }
+      setLiveProgress(28, browserKokoro ? 'WebGPU runtime ready. Preparing voice selection...' : 'Runtime ready. Preparing voice selection...');
       
       // Auto-Add Characters to Library before generation
       if (isStudioMultiSpeakerEnabled && detectedSpeakers.length > 0) {
@@ -2675,6 +3207,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? freshCatalog
           : getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode, [requestedVoiceId]);
       const voiceId = selectVoiceIdFromCatalog(
+          settings.engine,
           scopedCatalog.length > 0 ? scopedCatalog : freshCatalog,
           requestedVoiceId
       );
@@ -2692,7 +3225,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       // Pass signal to generateSpeech and then apply studio-level audio mix.
       setLiveProgress(40, 'Generating audio...');
-      const ttsBuffer = await generateSpeech(scriptText, engineVoiceName, generationSettings, 'speech', signal);
+      const ttsBuffer = await generateSpeech(
+          scriptText,
+          engineVoiceName,
+          generationSettings,
+          'speech',
+          signal,
+          { context: 'studio', preferLiveChunks: true }
+      );
+      if (browserKokoro) {
+          kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 30000);
+      }
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
       const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings);
       setLiveProgress(90, 'Rendering final audio buffer...');
@@ -2704,6 +3247,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerate = async () => {
     if (!text.trim()) return showToast("Please enter some text.", "info");
+    if (!hasUnlimitedAccess && text.length > maxCharsPerGeneration) {
+      return showToast(`This plan allows up to ${maxCharsPerGeneration.toLocaleString()} characters per generation.`, 'error');
+    }
     if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
     if (isWalletBlocked) {
       if (hasAdClaimsRemaining) {
@@ -2790,7 +3336,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setCharForm({
               id: Date.now().toString(),
               name: '',
-              voiceId: presetVoiceId || defaultCatalog[0]?.id || DEFAULT_GEM_VOICE_ID,
+              voiceId: getValidVoiceIdForEngine(
+                  settings.engine,
+                  presetVoiceId || defaultCatalog[0]?.id || DEFAULT_GEM_VOICE_ID
+              ),
               gender: 'Unknown',
               age: 'Adult',
               avatarColor: randomColor
@@ -2836,7 +3385,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setPreviewState({ id: voiceId, status: 'loading' });
 
       try {
-          await ensureEngineOnline(engine, { silent: true, syncVoiceId: voiceId, requireAccess: true });
+          const browserKokoro = shouldUseBrowserKokoro(engine, 'preview');
+          if (browserKokoro) {
+              const access = await refreshTtsAccessState(true);
+              if (!access.ok) {
+                  throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
+              }
+              await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
+              await kokoroBrowserRuntime.ensureReady({
+                  backendBaseUrl: mediaBackendUrl,
+                  voiceId,
+                  speed: 1.0,
+              });
+              setManagedActiveEngine('KOKORO');
+              setTtsRuntimeStatus((prev) => ({
+                  ...prev,
+                  KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
+              }));
+          } else {
+              await ensureEngineOnline(engine, { silent: true, syncVoiceId: voiceId, requireAccess: true });
+          }
 
           const previewSettings: GenerationSettings = {
               ...settings,
@@ -2856,7 +3424,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             voiceParam = voiceId;
           }
 
-          const buffer = await generateSpeech(text, voiceParam, previewSettings, 'speech');
+          const buffer = await generateSpeech(
+              text,
+              voiceParam,
+              previewSettings,
+              'speech',
+              undefined,
+              { context: 'preview', preferLiveChunks: true }
+          );
           const blob = audioBufferToWav(buffer);
           const url = URL.createObjectURL(blob);
           
@@ -2867,6 +3442,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           audio.onended = () => {
               setPreviewState(null);
               URL.revokeObjectURL(url);
+              if (engine === 'KOKORO' && settings.kokoroExecutionMode !== 'backend_runtime') {
+                  kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 30000);
+              }
           };
           
           await audio.play();
@@ -2888,30 +3466,199 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // --- Video Dubbing Functions ---
 
-  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          clearDubbingStemCache();
-          if (videoUrl) URL.revokeObjectURL(videoUrl);
-          if (dubAudioUrl) {
-              URL.revokeObjectURL(dubAudioUrl);
-          }
-          if (renderedDubVideoUrl) {
-              URL.revokeObjectURL(renderedDubVideoUrl);
-              setRenderedDubVideoUrl(null);
-          }
-          setVideoFile(file);
-          setVideoUrl(URL.createObjectURL(file));
-          setDubScript('');
-          setDubAudioUrl(null);
+  const releaseClipArtifacts = useCallback((clip: DubbingClip | null | undefined) => {
+      if (!clip) return;
+      try { if (clip.objectUrl) URL.revokeObjectURL(clip.objectUrl); } catch {}
+      try { if (clip.resultUrl) URL.revokeObjectURL(String(clip.resultUrl)); } catch {}
+      try { if (clip.reportUrl) URL.revokeObjectURL(String(clip.reportUrl)); } catch {}
+  }, []);
+
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []).filter((file) => Boolean(file));
+      if (files.length <= 0) return;
+      clearDubbingStemCache();
+      const nextClips: DubbingClip[] = [];
+      for (const file of files) {
+          const objectUrl = URL.createObjectURL(file);
+          const durationMs = await resolveClipDurationMs(file);
+          nextClips.push(createDubbingClip(file, objectUrl, durationMs));
+      }
+      mutateDubbingTimeline((current) => [...current, ...nextClips]);
+      const firstAdded = nextClips[0];
+      if (firstAdded) {
+          setSelectedDubbingClipId(firstAdded.id);
           patchDubbingUiState({
               phase: 'idle',
               progress: 0,
-              stage: `Source loaded: ${file.name}`,
+              stage: `Loaded ${nextClips.length} source clip${nextClips.length === 1 ? '' : 's'}`,
               error: '',
           });
       }
+      e.target.value = '';
   };
+
+  const handleRetryClip = useCallback((clipId: string) => {
+      setDubbingClips((current) =>
+          current.map((clip) =>
+              clip.id === clipId
+                  ? { ...clip, status: 'idle', error: '', jobId: '', resultUrl: null, reportUrl: null }
+                  : clip
+          )
+      );
+  }, []);
+
+  const handleRemoveClipFromQueue = useCallback(
+      async (clipId: string, options?: { skipHistory?: boolean }) => {
+          const clip = dubbingClips.find((item) => item.id === clipId) || null;
+          if (!clip) return;
+          const jobId = String(clip.jobId || '').trim();
+          if (jobId) {
+              try {
+                  await cancelDubbingJob(mediaBackendUrl, jobId);
+              } catch {
+                  // best effort cancel
+              }
+          }
+          releaseClipArtifacts(clip);
+          if (options?.skipHistory) {
+              setDubbingClips((current) => removeClip(current, clipId).clips);
+          } else {
+              mutateDubbingTimeline((current) => removeClip(current, clipId).clips);
+          }
+      },
+      [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]
+  );
+
+  const handleRemoveSelectedClip = useCallback(async () => {
+      if (!selectedDubbingClipId) return;
+      await handleRemoveClipFromQueue(selectedDubbingClipId);
+  }, [handleRemoveClipFromQueue, selectedDubbingClipId]);
+
+  const handleRemoveCompletedQueue = useCallback(() => {
+      const completed = dubbingClips.filter((clip) => clip.status === 'completed');
+      completed.forEach((clip) => releaseClipArtifacts(clip));
+      mutateDubbingTimeline((current) => removeCompletedClips(current));
+  }, [dubbingClips, mutateDubbingTimeline, releaseClipArtifacts]);
+
+  const handleClearDubbingQueue = useCallback(async () => {
+      for (const clip of dubbingClips) {
+          const jobId = String(clip.jobId || '').trim();
+          if (jobId) {
+              try {
+                  await cancelDubbingJob(mediaBackendUrl, jobId);
+              } catch {}
+          }
+          releaseClipArtifacts(clip);
+      }
+      mutateDubbingTimeline(() => clearAllClips());
+      setSelectedDubbingClipId('');
+      patchDubbingUiState({
+          phase: 'idle',
+          progress: 0,
+          stage: 'Queue cleared',
+          error: '',
+      });
+  }, [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]);
+
+  const handleTimelineUndo = useCallback(() => {
+      setDubbingHistoryPast((past) => {
+          const undone = undoTimeline(past, dubbingClips, dubbingHistoryFuture);
+          if (undone.changed) {
+              setDubbingClips(undone.current);
+              setDubbingHistoryFuture(undone.future);
+          }
+          return undone.past;
+      });
+  }, [dubbingClips, dubbingHistoryFuture]);
+
+  const handleTimelineRedo = useCallback(() => {
+      setDubbingHistoryFuture((future) => {
+          const redone = redoTimeline(dubbingHistoryPast, dubbingClips, future);
+          if (redone.changed) {
+              setDubbingClips(redone.current);
+              setDubbingHistoryPast(redone.past);
+          }
+          return redone.future;
+      });
+  }, [dubbingClips, dubbingHistoryPast]);
+
+  const handleDubbingTimelineTool = useCallback((tool: 'cut' | 'copy' | 'paste' | 'split' | 'trim_in' | 'trim_out' | 'layer' | 'remove') => {
+      if (!selectedDubbingClipId) {
+          showToast('Select a clip first.', 'info');
+          return;
+      }
+      if (tool === 'copy') {
+          const copied = copyClip(dubbingClips, selectedDubbingClipId);
+          if (!copied) {
+              showToast('Unable to copy selected clip.', 'error');
+              return;
+          }
+          setDubbingClipboard(copied);
+          showToast('Clip copied.', 'success');
+          return;
+      }
+      if (tool === 'paste') {
+          let pastedAny = false;
+          mutateDubbingTimeline((current) => {
+              const pasted = pasteClipAfterSelection(current, selectedDubbingClipId, dubbingClipboard);
+              pastedAny = Boolean(pasted.pastedId);
+              if (pasted.pastedId) setSelectedDubbingClipId(String(pasted.pastedId));
+              return pasted.clips;
+          });
+          showToast(pastedAny ? 'Clip pasted.' : 'Clipboard is empty.', pastedAny ? 'success' : 'info');
+          return;
+      }
+      if (tool === 'cut') {
+          mutateDubbingTimeline((current) => cutClip(current, selectedDubbingClipId).clips);
+          showToast('Clip cut from timeline.', 'success');
+          return;
+      }
+      if (tool === 'split') {
+          let didSplit = false;
+          mutateDubbingTimeline((current) => {
+              const split = splitClipAtPlayhead(current, selectedDubbingClipId, dubbingPlayheadMs);
+              didSplit = Boolean(split.splitIds);
+              if (split.splitIds?.[1]) setSelectedDubbingClipId(String(split.splitIds[1]));
+              return split.clips;
+          });
+          showToast(
+              didSplit ? 'Clip split at playhead.' : 'Move playhead inside clip window to split.',
+              didSplit ? 'success' : 'info'
+          );
+          return;
+      }
+      if (tool === 'trim_in') {
+          mutateDubbingTimeline((current) =>
+              trimClipWindow(current, selectedDubbingClipId, { trimInMs: Math.max(0, dubbingPlayheadMs) })
+          );
+          showToast('Trim-in updated.', 'success');
+          return;
+      }
+      if (tool === 'trim_out') {
+          mutateDubbingTimeline((current) =>
+              trimClipWindow(current, selectedDubbingClipId, { trimOutMs: Math.max(0, dubbingPlayheadMs) })
+          );
+          showToast('Trim-out updated.', 'success');
+          return;
+      }
+      if (tool === 'layer') {
+          const target = dubbingClips.find((clip) => clip.id === selectedDubbingClipId);
+          const nextLayer: DubbingClip['layer'] = target?.layer === 'V2' ? 'V1' : 'V2';
+          mutateDubbingTimeline((current) => moveClipLayer(current, selectedDubbingClipId, nextLayer));
+          showToast(`Moved clip to Layer ${nextLayer}.`, 'success');
+          return;
+      }
+      void handleRemoveSelectedClip();
+      showToast('Clip removed.', 'success');
+  }, [
+      dubbingClips,
+      dubbingClipboard,
+      dubbingPlayheadMs,
+      handleRemoveSelectedClip,
+      mutateDubbingTimeline,
+      selectedDubbingClipId,
+      showToast,
+  ]);
 
   const handleTranslateVideo = async (mode: 'transcribe' | 'translate' = 'transcribe') => {
       if (!videoFile) return showToast("Upload a video first", "info");
@@ -3016,313 +3763,317 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
 
   const handleGenerateDub = async () => {
-      if (!dubScript) return showToast("Generate a script first", "info");
-    if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
-    if (isWalletBlocked) {
-      if (hasAdClaimsRemaining) {
-        setShowAdModal(true);
-        return;
+      if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
+      if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
+      if (isWalletBlocked) {
+          if (hasAdClaimsRemaining) {
+              setShowAdModal(true);
+              return;
+          }
+          return showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`, 'error');
       }
-      return showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`, 'error');
-    }
+
+      if (generationAbortController.current) generationAbortController.current.abort();
+      const controller = new AbortController();
+      generationAbortController.current = controller;
+      activeDubbingJobIdRef.current = '';
+      if (dubbingJobResultUrl) {
+          URL.revokeObjectURL(dubbingJobResultUrl);
+          setDubbingJobResultUrl(null);
+      }
+      if (dubbingReportUrl) {
+          URL.revokeObjectURL(dubbingReportUrl);
+          setDubbingReportUrl(null);
+      }
+      if (renderedDubVideoUrl) {
+          URL.revokeObjectURL(renderedDubVideoUrl);
+          setRenderedDubVideoUrl(null);
+      }
+      if (dubAudioUrl) {
+          URL.revokeObjectURL(dubAudioUrl);
+          setDubAudioUrl(null);
+      }
+
+      const phaseLabels: Record<string, string> = {
+          acoustic_isolation: 'Phase 1/6: Acoustic isolation',
+          director: 'Phase 2/6: Director analysis',
+          isochrony_translation: 'Phase 3/6: Isochrony translation',
+          base_tts: 'Phase 4/6: Base TTS',
+          llvc_timbre_transfer: 'Phase 5/6: LLVC timbre transfer',
+          visual_lipsync: 'Phase 6/6: Visual lip-sync',
+          preflight: 'Preflight checks',
+          queued: 'Queued',
+      };
+
+      resetDubbingLivePlayback();
+      startSimulation(26, 'Submitting backend dubbing job...', 'live');
       patchDubbingUiState({
           phase: 'running',
-          progress: 5,
-          stage: 'Preparing dubbing job...',
+          progress: 6,
+          stage: 'Queue started (CPU sequential mode)',
           error: '',
       });
       emit('generation.started', {
           title: 'Generation Started',
-          message: 'Generation started for dubbing workflow.',
+          message: 'Generation started for dubbing queue workflow.',
           dedupeKey: 'generation-started-dubbing',
           channel: 'inbox',
       });
-      let engineState: { runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string };
-      let stemCache: CachedDubbingStems | null = null;
-      const wantsTonePreservation = Boolean(settings.preserveDubVoiceTone);
-      if (wantsTonePreservation && !settings.llvcModel) {
-          patchDubbingUiState({
-              phase: 'error',
-              progress: 100,
-              stage: 'Tone model required',
-              error: 'Enable tone preservation requires selecting an LLVC model in AI Covers.',
-          });
-          return showToast('Enable tone preservation requires selecting an LLVC model in AI Covers.', 'info');
-      }
-      try {
-          if (videoFile) {
-              setProcessingStage(sanitizeUiText('Preparing dubbing stems...'));
-              patchDubbingUiState({
-                  phase: 'running',
-                  progress: 10,
-                  stage: 'Preparing dubbing stems...',
-                  error: '',
-              });
-              stemCache = await ensureDubbingStemCache(videoFile);
-          }
-          engineState = await ensureEngineOnline(settings.engine, { silent: true, timeoutMs: 60000, syncVoiceId: settings.voiceId, requireAccess: true });
-          if (wantsTonePreservation && settings.llvcModel) {
-              setProcessingStage(sanitizeUiText(`Loading LLVC tone model (${settings.llvcModel})...`));
-              patchDubbingUiState({
-                  phase: 'running',
-                  progress: 18,
-                  stage: `Loading LLVC model (${settings.llvcModel})...`,
-                  error: '',
-              });
-              await loadLlvcModel(mediaBackendUrl, settings.llvcModel);
-          }
-      } catch (error: any) {
-          patchDubbingUiState({
-              phase: 'error',
-              progress: 100,
-              stage: 'Runtime unavailable',
-              error: error?.message || 'Selected runtime is not available.',
-          });
-          return showToast(error?.message || 'Selected runtime is not available.', 'error');
-      }
 
-      // Setup Abort Controller
-      if (generationAbortController.current) generationAbortController.current.abort();
-      const controller = new AbortController();
-      generationAbortController.current = controller;
-
-      // 1. Auto-Add Characters
-      const { speakersList } = parseMultiSpeakerScript(dubScript);
-      if (speakersList.length > 0) syncCast(speakersList);
-
-      // 2. Parse Script & Estimate
-      const segmentsRaw = parseScriptToSegments(dubScript);
-      if (segmentsRaw.length === 0) return showToast("No valid dialogue lines found.", "error");
-      const freshCatalog = engineState.catalog.length > 0
-          ? engineState.catalog
-          : getEngineVoiceCatalog(settings.engine);
-      const baseVoiceId = engineState.syncedVoiceId || settings.voiceId;
-      const mappedVoiceIds = Object.values(settings.speakerMapping || {})
-          .map((voiceId) => String(voiceId || '').trim())
-          .filter((voiceId) => Boolean(voiceId));
-      const dubbingVoiceCatalog = isGemRuntimeEngine(settings.engine)
-          ? freshCatalog
-          : getLanguageScopedVoiceCatalog(settings.engine, dubbingTextLanguageCode, [baseVoiceId, ...mappedVoiceIds]);
-      const dubbingValidVoiceIds = new Set(freshCatalog.map((voice) => voice.id));
-      const fallbackDubVoiceId = selectVoiceIdFromCatalog(
-          dubbingVoiceCatalog.length > 0 ? dubbingVoiceCatalog : freshCatalog,
-          baseVoiceId
-      );
-      
-      const estTime = (segmentsRaw.length / 2) + 3; // Optimized Estimate due to batching
-      
-      startSimulation(estTime, `Preparing dubbing backend jobs (${segmentsRaw.length} segments)...`, 'live');
-      setLiveProgress(12, `Analyzing ${segmentsRaw.length} segments...`);
-      patchDubbingUiState({
-          phase: 'running',
-          progress: 12,
-          stage: `Analyzing ${segmentsRaw.length} segments...`,
-          error: '',
-      });
-
-      try {
-          // 3. Generate Audio for each segment (BATCHED)
-          const processedSegments: DubSegment[] = [];
-          const alignmentEntries: Array<{ speaker: string; targetDuration: number; generatedDuration: number }> = [];
-          const BATCH_SIZE = settings.engine === 'KOKORO' ? 2 : 4;
-          const applyTonePreservation = Boolean(wantsTonePreservation && settings.llvcModel);
-          
-          for (let i = 0; i < segmentsRaw.length; i += BATCH_SIZE) {
-               if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-               
-               const batch = segmentsRaw.slice(i, i + BATCH_SIZE);
-               
-               // Update Progress UI
-               setProcessingStage(sanitizeUiText(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(segmentsRaw.length / BATCH_SIZE)}...`));
-               const percent = Math.round(((i) / segmentsRaw.length) * 80);
-               setProgress(Math.max(10, percent));
-               patchDubbingUiState({
-                   phase: 'running',
-                   progress: Math.max(10, percent),
-                   stage: `Processing batch ${Math.floor(i/BATCH_SIZE) + 1} of ${Math.ceil(segmentsRaw.length/BATCH_SIZE)}...`,
-                   error: '',
-               });
-
-               const batchPromises = batch.map(async (seg) => {
-                   const isSfx = seg.speaker.toUpperCase() === 'SFX';
-                   const mappedVoiceId = resolveMappedVoiceForSpeaker(seg.speaker) || getVoiceForCharacter(seg.speaker) || baseVoiceId;
-                   const resolvedVoiceId = dubbingValidVoiceIds.has(mappedVoiceId)
-                     ? mappedVoiceId
-                     : fallbackDubVoiceId;
-                   let effectiveVoiceName = "Fenrir"; 
-                   let effectiveVoiceId = resolvedVoiceId;
-
-                   if (settings.engine === 'KOKORO') {
-                        effectiveVoiceName = effectiveVoiceId;
-                   } else {
-                       const v = getVoiceById(effectiveVoiceId) || clonedVoices.find(x => x.id === effectiveVoiceId);
-                       if (v) effectiveVoiceName = v.geminiVoiceName;
-                   }
-                   
-                   const segmentEmotion = isSfx
-                     ? 'Neutral'
-                     : (normalizeEmotionTag(String(seg.emotion || '')) || seg.emotion || settings.emotion || 'Neutral');
-                   const baseEmotion =
-                     normalizeEmotionTag(String(settings.emotion || '')) ||
-                     settings.emotion ||
-                     'Neutral';
-                   const segSettings = {
-                       ...settings,
-                       voiceId: effectiveVoiceId,
-                       emotion: segmentEmotion,
-                       runtimeVoiceCatalog: freshCatalog,
-                   } as GenerationSettings & { runtimeVoiceCatalog?: VoiceOption[] };
-                   
-                   try {
-                       const generationText = isSfx ? `[SFX: ${seg.text}]` : seg.text;
-                       const buffer = await generateSpeech(generationText, effectiveVoiceName, segSettings, 'speech', controller.signal);
-                       let outputBlob = audioBufferToWav(buffer);
-                       if (applyTonePreservation && !isSfx && settings.llvcModel) {
-                           try {
-                               const sourceVoiceFile = new File([outputBlob], `dub_segment_${Math.round(seg.startTime * 1000)}.wav`, { type: 'audio/wav' });
-                               outputBlob = await convertLlvcCover(mediaBackendUrl, sourceVoiceFile, settings.llvcModel, {
-                                   pitchShift: 0,
-                                   indexRate: 0.55,
-                                   filterRadius: 3,
-                                   rmsMixRate: 1.0,
-                                   protect: 0.40,
-                                   f0Method: 'rmvpe',
-                               });
-                           } catch (toneError) {
-                               console.warn(`Tone preservation pass failed for segment @${seg.startTime.toFixed(2)}s. Continuing with raw TTS.`, toneError);
-                           }
-                       }
-                       const url = URL.createObjectURL(outputBlob);
-                       const targetEnd =
-                         typeof seg.endTime === 'number' && seg.endTime > seg.startTime
-                           ? seg.endTime
-                           : seg.startTime + buffer.duration;
-                       
-                       return {
-                           segment: {
-                               id: Math.random().toString(),
-                               startTime: seg.startTime,
-                               endTime: targetEnd,
-                               speaker: isSfx ? 'SFX' : seg.speaker,
-                               text: seg.text,
-                               translatedText: seg.text,
-                               emotion: segmentEmotion,
-                               gender: 'Unknown',
-                               age: 'Adult',
-                               audioUrl: url
-                           } as DubSegment,
-                           alignment: {
-                               speaker: isSfx ? 'SFX' : seg.speaker,
-                               targetDuration: Math.max(0.01, targetEnd - seg.startTime),
-                               generatedDuration: Math.max(0.01, buffer.duration),
-                           },
-                       };
-                   } catch (e: any) {
-                       if (e.name === 'AbortError') throw e;
-                       console.warn(`Failed segment for ${seg.speaker}:`, e);
-                       return null;
-                   }
-               });
-               
-               const batchResults = await Promise.all(batchPromises);
-               (batchResults.filter(Boolean) as Array<{ segment: DubSegment; alignment: { speaker: string; targetDuration: number; generatedDuration: number } }>).forEach((entry) => {
-                   processedSegments.push(entry.segment);
-                   alignmentEntries.push(entry.alignment);
-               });
-          }
-
-          if (processedSegments.length === 0) throw new Error("Failed to generate any audio segments.");
-          const alignmentReport = buildDubAlignmentReport(
-              segmentsRaw.length,
-              processedSegments.length,
-              alignmentEntries
-          );
-
-          setProgress(90);
-          setProcessingStage(sanitizeUiText('Mixing dubbed speech with separated SFX/bed...'));
-          setTimeLeft(2);
-          patchDubbingUiState({
-              phase: 'running',
-              progress: 90,
-              stage: 'Mixing dubbed speech...',
-              error: '',
-          });
-
-          // 4. Get Background Audio
-          let bgBuffer: AudioBuffer;
-          if (stemCache) {
-               bgBuffer = stemCache.backgroundBuffer;
-          } else if (videoFile) {
-               const fallbackStems = await ensureDubbingStemCache(videoFile);
-               bgBuffer = fallbackStems.backgroundBuffer;
-          } else {
-               const ctx = getAudioContext();
-               bgBuffer = ctx.createBuffer(2, 48000 * 60, 48000); 
-          }
-
-          // 5. Mix
-          const mixedUrl = await mixFinalDub(bgBuffer, processedSegments, settings);
-          
-          if (dubAudioUrl) URL.revokeObjectURL(dubAudioUrl);
-          setDubAudioUrl(mixedUrl);
-          setLiveProgress(97, "Finalizing dubbed output...");
-          patchDubbingUiState({
-              phase: 'running',
-              progress: 97,
-              stage: 'Finalizing dubbed output...',
-              error: '',
-          });
-          if (renderedDubVideoUrl) {
-              URL.revokeObjectURL(renderedDubVideoUrl);
-              setRenderedDubVideoUrl(null);
-          }
-          setVideoVolume(1.0); 
-          setDubVolume(1.0);
-
-          const alignmentSummary = `Lip-sync ${alignmentReport.lipSyncScore}/100 | coverage ${alignmentReport.coveragePct}%`;
-          generationFailureBurstRef.current = 0;
-          showToast(`Dubbing complete. ${alignmentSummary}`, alignmentReport.ok ? "success" : "info");
+      const queue = dubbingClips.filter((clip) => clip.status !== 'completed');
+      if (queue.length <= 0) {
           patchDubbingUiState({
               phase: 'done',
               progress: 100,
-              stage: alignmentReport.ok ? 'Dubbing complete' : 'Dubbing complete (with warnings)',
+              stage: 'All clips already completed',
               error: '',
           });
+          stopSimulation();
+          generationAbortController.current = null;
+          return;
+      }
 
-          if (videoFile) {
-              setIsRenderingDubVideo(true);
+      try {
+          const targetLanguageHint =
+              targetLang === 'Hinglish'
+                  ? 'hi'
+                  : (String(targetLang || settings.language || 'auto').toLowerCase() || 'auto');
+          let completedCount = 0;
+          for (let index = 0; index < queue.length; index += 1) {
+              if (controller.signal.aborted) break;
+              const clip = queue[index];
+              if (!clip) continue;
               try {
-                  setLiveProgress(99, "Attaching dubbed audio to video...");
-                  const dubAudioFile = await blobUrlToFile(mixedUrl, 'dub_track.wav', 'audio/wav');
-                  const renderedBlob = await muxDubbedVideo(mediaBackendUrl, videoFile, dubAudioFile, {
-                      speechGain: 1.0,
-                      backgroundGain: 0,
-                      normalize: true,
-                  });
-                  if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
-                  setRenderedDubVideoUrl(URL.createObjectURL(renderedBlob));
-              } catch (muxError: any) {
+                  setSelectedDubbingClipId(clip.id);
+                  setDubbingClips((current) =>
+                      current.map((item) => (item.id === clip.id ? { ...item, status: 'running', error: '' } : item))
+                  );
                   patchDubbingUiState({
-                      phase: 'done',
-                      progress: 100,
-                      stage: 'Dub audio complete (video mux failed)',
-                      error: muxError?.message || 'Video mux failed.',
+                      phase: 'running',
+                      progress: Math.max(8, Math.round((index / Math.max(1, queue.length)) * 92)),
+                      stage: `Processing clip ${index + 1}/${queue.length}: ${clip.file.name}`,
+                      error: '',
                   });
-                  showToast(muxError?.message || 'Dub audio generated but video mux failed.', 'error');
-              } finally {
-                  setIsRenderingDubVideo(false);
+
+                  let resolvedScript = String(clip.script || '').trim();
+                  if (!resolvedScript) {
+                      setDubbingClips((current) =>
+                          current.map((item) => (item.id === clip.id ? { ...item, status: 'transcribing', error: '' } : item))
+                      );
+                      const transcribeResult = await transcribeVideoWithBackend(mediaBackendUrl, clip.file, {
+                          language: settings.dubbingSourceLanguage || 'auto',
+                          task: 'transcribe',
+                          captureEmotions: true,
+                          speakerLabel: 'Speaker 1',
+                      });
+                      resolvedScript = String(transcribeResult.script || '').trim();
+                      setDubbingClips((current) =>
+                          current.map((item) =>
+                              item.id === clip.id ? { ...item, script: resolvedScript, status: 'queued', error: '' } : item
+                          )
+                      );
+                      if (selectedDubbingClipId === clip.id) setDubScript(resolvedScript);
+                  }
+                  if (!resolvedScript) {
+                      throw new Error(`Clip ${clip.file.name} has empty script after transcription.`);
+                  }
+
+                  const advancedPayload: Record<string, unknown> = {
+                      processing_profile: dubbingCpuProfile,
+                      tts_route: settings.engine === 'KOKORO' ? 'kokoro_only' : 'auto',
+                      engine_policy: 'auto_reliable',
+                      multispeaker_policy: 'hybrid_auto',
+                      voice_binding_policy: 'stable_fallback',
+                      qos_policy: 'adaptive_hq_first',
+                      hardware_policy: 'gpu_preferred',
+                      timeout_policy: 'adaptive',
+                      live_play_mode: 'progressive_audio',
+                      live_chunk_target_ms: 3000,
+                      live_include_chunk_audio: false,
+                      max_speaker_count: 8,
+                      segment_failure_policy: 'hard_fail',
+                      clone_scope: 'job_only',
+                      transcript_override: resolvedScript,
+                      clip_window: { start_ms: Math.max(0, clip.trimInMs), end_ms: Math.max(clip.trimInMs + 240, clip.trimOutMs) },
+                      voice_map: settings.speakerMapping || {},
+                      preserve_voice_tone: Boolean(settings.preserveDubVoiceTone),
+                  };
+                  if (settings.llvcModel) {
+                      advancedPayload.llvc_model = settings.llvcModel;
+                  }
+
+                  const created = await createDubbingJobV2(mediaBackendUrl, clip.file, {
+                      targetLanguage: targetLanguageHint,
+                      mode: 'strict_full',
+                      output: 'audio+video',
+                      advanced: advancedPayload,
+                  });
+                  const jobId = String(created.job_id || '').trim();
+                  if (!jobId) throw new Error('Backend did not return a dubbing job id.');
+                  activeDubbingJobIdRef.current = jobId;
+                  setDubbingClips((current) =>
+                      current.map((item) => (item.id === clip.id ? { ...item, status: 'running', jobId, error: '' } : item))
+                  );
+                  dubbingLiveChunkCursorRef.current = 0;
+                  dubbingLiveSeenChunkKeysRef.current = new Set();
+
+                  while (!controller.signal.aborted) {
+                      const statusPayload = await getDubbingJob(mediaBackendUrl, jobId, {
+                          includeChunks: true,
+                          chunkCursor: Math.max(0, Math.floor(Number(dubbingLiveChunkCursorRef.current || 0))),
+                          chunkLimit: 4,
+                          includeChunkAudio: false,
+                      });
+                      const job = statusPayload?.job || {};
+                      const jobStatus = String(job.status || '').toLowerCase();
+                      const stageKey = String(job.stage || '').trim();
+                      const progressPct = Math.max(0, Math.min(100, Number(job.progress || 0)));
+                      const stageLabel = phaseLabels[stageKey] || (stageKey ? stageKey.replace(/_/g, ' ') : 'Running backend pipeline');
+                      const chunks = Array.isArray((job as any).chunks) ? (job as any).chunks : [];
+                      const speakerStats = ((job as any).speakerStats && typeof (job as any).speakerStats === 'object')
+                          ? (job as any).speakerStats as Record<string, unknown>
+                          : {};
+                      const qosState = ((job as any).qosState && typeof (job as any).qosState === 'object')
+                          ? (job as any).qosState as Record<string, unknown>
+                          : {};
+                      const detectedSpeakers = Number(speakerStats.detectedSpeakers || 0);
+                      const selectedProfile = String(qosState.selectedProfile || '').trim();
+
+                      for (const chunk of chunks) {
+                          if (!chunk || typeof chunk !== 'object') continue;
+                          const chunkIndex = Number((chunk as any).index);
+                          if (!Number.isFinite(chunkIndex) || chunkIndex < 0) continue;
+                          const safeIndex = Math.round(chunkIndex);
+                          const chunkKey = `${jobId}:${safeIndex}`;
+                          if (dubbingLiveSeenChunkKeysRef.current.has(chunkKey)) continue;
+
+                          try {
+                              const chunkBlob = await downloadDubbingChunk(mediaBackendUrl, jobId, safeIndex);
+                              if (chunkBlob.size > 0) {
+                                  enqueueDubbingLiveChunk(chunkBlob);
+                                  dubbingLiveSeenChunkKeysRef.current.add(chunkKey);
+                              }
+                          } catch {
+                              const inlineBase64 = String((chunk as any).audioBase64 || '').trim();
+                              if (!inlineBase64) continue;
+                              try {
+                                  const binary = atob(inlineBase64);
+                                  const bytes = new Uint8Array(binary.length);
+                                  for (let i = 0; i < binary.length; i += 1) {
+                                      bytes[i] = binary.charCodeAt(i);
+                                  }
+                                  const blob = new Blob([bytes], { type: String((chunk as any).contentType || 'audio/wav') });
+                                  enqueueDubbingLiveChunk(blob);
+                                  dubbingLiveSeenChunkKeysRef.current.add(chunkKey);
+                              } catch {
+                                  // ignore malformed inline chunk payload
+                              }
+                          }
+                      }
+
+                      const responseChunkCursorNext = Number((job as any).chunkCursorNext || ((job as any).live || {}).chunkCursorNext || 0);
+                      if (Number.isFinite(responseChunkCursorNext) && responseChunkCursorNext >= 0) {
+                          dubbingLiveChunkCursorRef.current = Math.max(dubbingLiveChunkCursorRef.current, Math.round(responseChunkCursorNext));
+                      } else if (chunks.length > 0) {
+                          const maxChunkIndex = chunks.reduce((max: number, item: any) => {
+                              const idx = Number(item?.index);
+                              if (!Number.isFinite(idx)) return max;
+                              return Math.max(max, Math.round(idx));
+                          }, -1);
+                          if (maxChunkIndex >= 0) {
+                              dubbingLiveChunkCursorRef.current = Math.max(dubbingLiveChunkCursorRef.current, maxChunkIndex + 1);
+                          }
+                      }
+
+                      if (jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'cancelling') {
+                          const safeProgress = Math.max(10, Math.min(97, progressPct || 10));
+                          setLiveProgress(safeProgress, stageLabel);
+                          const speakerToken = detectedSpeakers > 0 ? `spk:${detectedSpeakers}` : 'spk:-';
+                          const qosToken = selectedProfile ? `qos:${selectedProfile}` : 'qos:auto';
+                          patchDubbingUiState({
+                              phase: 'running',
+                              progress: safeProgress,
+                              stage: `${stageLabel} (${index + 1}/${queue.length}) • ${speakerToken} • ${qosToken}`,
+                              error: '',
+                          });
+                      }
+
+                      if (jobStatus === 'completed') {
+                          const [resultBlob, reportBlob] = await Promise.all([
+                              downloadDubbingResult(mediaBackendUrl, jobId),
+                              downloadDubbingReport(mediaBackendUrl, jobId).catch(() => null),
+                          ]);
+                          const resultUrl = URL.createObjectURL(resultBlob);
+                          const reportUrl = reportBlob ? URL.createObjectURL(reportBlob) : null;
+                          setDubbingClips((current) =>
+                              current.map((item) =>
+                                  item.id === clip.id
+                                      ? { ...item, status: 'completed', jobId, resultUrl, reportUrl, error: '' }
+                                      : item
+                              )
+                          );
+                          setDubbingJobResultUrl(resultUrl);
+                          setDubbingReportUrl(reportUrl);
+                          const outputFiles = job.outputFiles as Record<string, any> | undefined;
+                          const hasVideoOutput =
+                              String(resultBlob.type || '').toLowerCase().includes('video') || Boolean(outputFiles?.video?.path);
+                          if (hasVideoOutput) {
+                              setRenderedDubVideoUrl(resultUrl);
+                          } else {
+                              setDubAudioUrl(resultUrl);
+                          }
+                          completedCount += 1;
+                          break;
+                      }
+
+                      if (jobStatus === 'failed') {
+                          throw new Error(String(job.error || job.errorCode || 'Dubbing job failed.'));
+                      }
+                      if (jobStatus === 'cancelled') {
+                          throw new DOMException('Dubbing cancelled', 'AbortError');
+                      }
+
+                      await new Promise((resolve) => setTimeout(resolve, 1600));
+                  }
+              } catch (clipError: any) {
+                  if (clipError?.name === 'AbortError') {
+                      throw clipError;
+                  }
+                  setDubbingClips((current) =>
+                      current.map((item) =>
+                          item.id === clip.id
+                              ? { ...item, status: 'failed', error: clipError?.message || 'Clip dubbing failed' }
+                              : item
+                      )
+                  );
+                  continue;
               }
           }
-
+          generationFailureBurstRef.current = 0;
+          patchDubbingUiState({
+              phase: completedCount > 0 ? 'done' : 'idle',
+              progress: completedCount > 0 ? 100 : 0,
+              stage: completedCount > 0
+                  ? `AI Dub completed for ${completedCount}/${queue.length} clips`
+                  : 'AI Dub queue finished',
+              error: '',
+          });
+          showToast(`AI Dub completed for ${completedCount}/${queue.length} clips.`, completedCount > 0 ? 'success' : 'info');
       } catch (e: any) {
-          if (e.name === 'AbortError') {
-              // handled by cancel
+          if (e?.name === 'AbortError') {
+              patchDubbingUiState({
+                  phase: 'idle',
+                  progress: 0,
+                  stage: 'Dubbing cancelled',
+                  error: '',
+              });
+              showToast('Dubbing cancelled.', 'info');
           } else {
               syncRuntimeBlockedStateFromError(settings.engine, e);
               generationFailureBurstRef.current += 1;
               emit('generation.failed', {
                   title: 'Generation Failure',
-                  message: e.message || 'Generation failed. Check runtime health and retry.',
+                  message: e?.message || 'Generation failed. Check backend health and retry.',
                   dedupeKey: 'generation-failed-dubbing',
                   action: {
                       label: 'Open Settings',
@@ -3333,10 +4084,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   phase: 'error',
                   progress: 100,
                   stage: 'Dubbing failed',
-                  error: e.message || 'Unknown dubbing error',
+                  error: e?.message || 'Unknown dubbing error',
               });
+              showToast(e?.message || 'Dubbing failed.', 'error');
           }
       } finally {
+          activeDubbingJobIdRef.current = '';
+          resetDubbingLivePlayback();
           stopSimulation();
           generationAbortController.current = null;
       }
@@ -3566,30 +4320,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
-  const handleRenderDubbedVideo = async () => {
-      if (!videoFile) return showToast('Upload a video first.', 'info');
-      if (!dubAudioUrl) return showToast('Generate dub track first.', 'info');
-
-      setIsRenderingDubVideo(true);
-      try {
-          const dubAudioFile = await blobUrlToFile(dubAudioUrl, 'dub_track.wav', 'audio/wav');
-          const renderedBlob = await muxDubbedVideo(mediaBackendUrl, videoFile, dubAudioFile, {
-              speechGain: 1.0,
-              backgroundGain: 0,
-              normalize: true,
-          });
-
-          if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
-          const nextUrl = URL.createObjectURL(renderedBlob);
-          setRenderedDubVideoUrl(nextUrl);
-          showToast('Dubbed video rendered.', 'success');
-      } catch (e: any) {
-          showToast(e?.message || 'Video render failed.', 'error');
-      } finally {
-          setIsRenderingDubVideo(false);
-      }
-  };
-
   // --- Derived State for Gallery ---
   const galleryVoicePool = useMemo(() => {
       const dedup = new Map<string, VoiceOption>();
@@ -3618,6 +4348,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const uniqueAccents = Array.from(new Set(galleryVoicePool.map((voice) => resolveVoiceCountry(voice)))).sort();
   const studioVoiceOptions = getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode);
+  const studioFreeVoiceOptions = useMemo(
+      () => studioVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'free'),
+      [resolveVoiceAccessTier, settings.engine, studioVoiceOptions]
+  );
+  const studioProVoiceOptions = useMemo(
+      () => studioVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'pro'),
+      [resolveVoiceAccessTier, settings.engine, studioVoiceOptions]
+  );
   const castVoiceOptions = getLanguageScopedVoiceCatalog(
       settings.engine,
       activeScriptLanguageCode,
@@ -3627,6 +4365,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               .map((speaker) => resolveMappedVoiceForSpeaker(speaker))
               .filter((voiceId): voiceId is string => Boolean(voiceId)),
       ]
+  );
+  const castFreeVoiceOptions = useMemo(
+      () => castVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'free'),
+      [castVoiceOptions, resolveVoiceAccessTier, settings.engine]
+  );
+  const castProVoiceOptions = useMemo(
+      () => castVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'pro'),
+      [castVoiceOptions, resolveVoiceAccessTier, settings.engine]
   );
   const getEngineLabel = (engine: GenerationSettings['engine']) => getEngineDisplayName(engine);
   const getEngineSubLabel = (engine: GenerationSettings['engine']) => (
@@ -3660,17 +4406,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
   const activateTtsEngine = async (engine: GenerationSettings['engine']) => {
       if (engineSwitchInProgress) return;
+      if (!isEnginePlanAllowed(engine)) {
+          if (!hasUnlimitedAccess && !isPaidBillingPlan) {
+              setShowSubscriptionModal(true);
+              showToast('Prime engine is available on paid plans. Upgrade to continue.', 'info');
+          } else {
+              showToast(`${getEngineLabel(engine)} is not enabled for this plan.`, 'info');
+          }
+          return;
+      }
       if (engine === settings.engine && ttsRuntimeStatus[engine].state === 'online') return;
 
       const nextVoiceId = getValidVoiceIdForEngine(engine, settings.voiceId);
 
       setSettings(prev => {
           const catalog = getEngineVoiceCatalog(engine);
-          const fallbackVoiceId = catalog[0]?.id || nextVoiceId || prev.voiceId;
-          const validIds = new Set(catalog.map((voice) => voice.id));
+          const fallbackVoiceId = getValidVoiceIdForEngine(engine, catalog[0]?.id || nextVoiceId || prev.voiceId);
           const refreshedMapping: Record<string, string> = {};
           Object.entries(prev.speakerMapping || {}).forEach(([speaker, mappedVoiceId]) => {
-              refreshedMapping[speaker] = validIds.has(mappedVoiceId) ? mappedVoiceId : fallbackVoiceId;
+              refreshedMapping[speaker] = getValidVoiceIdForEngine(engine, mappedVoiceId || fallbackVoiceId);
           });
           return {
               ...prev,
@@ -3681,7 +4435,38 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
 
       try {
-          await ensureEngineOnline(engine, { syncVoiceId: nextVoiceId });
+          const browserKokoro = shouldUseBrowserKokoro(engine, 'studio');
+          if (!browserKokoro) {
+              await ensureEngineOnline(engine, { syncVoiceId: nextVoiceId });
+              return;
+          }
+          setManagedActiveEngine('KOKORO');
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'starting', detail: 'Preparing browser WebGPU runtime...' },
+          }));
+          void (async () => {
+              try {
+                  await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
+                  await kokoroBrowserRuntime.ensureReady({
+                      backendBaseUrl: mediaBackendUrl,
+                      voiceId: nextVoiceId,
+                      speed: settings.speed,
+                  });
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
+                  }));
+              } catch (error: any) {
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      KOKORO: {
+                          state: 'offline',
+                          detail: error?.message || 'Browser WebGPU runtime unavailable.',
+                      },
+                  }));
+              }
+          })();
       } catch (error: any) {
           showToast(`Failed to activate ${getEngineLabel(engine)}: ${error?.message || 'Unknown error'}`, 'error');
       }
@@ -3748,8 +4533,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleBuyTokenPack = async () => {
       setIsBuyingTokenPack(true);
       try {
-          const result = await billingActions.startTokenPackCheckout();
+          const result = await billingActions.startTokenPackCheckout(selectedTokenPack);
           if (!result.url) throw new Error('Checkout URL is missing.');
+          if (Number.isFinite(result.packVf) && Number.isFinite(result.finalAmountInr)) {
+              showToast(
+                  `Checkout: ${(result.packVf || 0).toLocaleString()} VF for ₹${(result.finalAmountInr || 0).toLocaleString()}.`,
+                  'info'
+              );
+          }
           window.location.href = result.url;
       } catch (error: any) {
           showToast(error?.message || 'Could not start token pack checkout.', 'error');
@@ -3909,6 +4700,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
               Ads today: {Math.max(0, Number(stats.wallet?.adClaimsToday || 0))}/{Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3))}
             </div>
+            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+              Per-generation cap: {maxCharsPerGeneration.toLocaleString()} chars
+            </div>
+            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+              Engines: {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+            </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
@@ -3933,8 +4730,35 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 }`}
               >
                 {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-                100k pack
+                {`${selectedTokenPackMeta.label} ${Math.round(selectedTokenPackMeta.vf / 1000)}k`}
               </button>
+            </div>
+            <div className="mt-2">
+              <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                Token Pack
+              </label>
+              <select
+                value={selectedTokenPack}
+                onChange={(event) => setSelectedTokenPack(event.target.value as TokenPackKey)}
+                className={`h-8 w-full rounded-lg border px-2 text-[11px] font-semibold outline-none transition-colors ${
+                  isDarkUi
+                    ? 'border-slate-700 bg-slate-950/70 text-slate-100 focus:border-cyan-400'
+                    : 'border-gray-200 bg-white text-gray-900 focus:border-cyan-300'
+                }`}
+              >
+                {(Object.keys(TOKEN_PACK_MATRIX) as TokenPackKey[]).map((packKey) => {
+                  const item = TOKEN_PACK_MATRIX[packKey];
+                  const displayPrice = normalizedPlanToken === 'scale' ? item.scaleInr : item.standardInr;
+                  return (
+                    <option key={packKey} value={packKey}>
+                      {`${item.label} • ${item.vf.toLocaleString()} VF • ₹${displayPrice.toLocaleString()}`}
+                    </option>
+                  );
+                })}
+              </select>
+              <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+                Checkout price: ₹{selectedTokenPackPriceInr.toLocaleString()} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
+              </div>
             </div>
             <div className="mt-2 flex items-center gap-1">
               <input
@@ -4287,6 +5111,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               const status = ttsRuntimeStatus[engine];
                               const pending = engineSwitchInProgress === engine;
                               const switchLocked = Boolean(engineSwitchInProgress) && !pending;
+                              const planLockedEngine = !isEnginePlanAllowed(engine);
                               const showAccessBlockedNote = status.state === 'online' && ttsAccessState.blocked;
                               const accessBlockedDetail = sanitizeUiText(
                                 ttsAccessState.detail || 'Sign in again to enable AI/TTS requests.'
@@ -4297,6 +5122,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       type="button"
                                       onClick={() => {
                                           if (switchLocked || pending) return;
+                                          if (planLockedEngine) {
+                                              setShowSubscriptionModal(true);
+                                              showToast('Prime engine is available on paid plans. Upgrade to continue.', 'info');
+                                              return;
+                                          }
                                           void activateTtsEngine(engine);
                                       }}
                                       className={`p-2.5 rounded-xl border transition-all flex items-center gap-2.5 ${
@@ -4307,7 +5137,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           : isDarkUi
                                             ? 'border-slate-700 bg-slate-950/75 hover:bg-slate-900'
                                             : 'border-gray-200 bg-white hover:border-indigo-200'
-                                      } ${(switchLocked || pending) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                                      } ${(switchLocked || pending || planLockedEngine) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
                                   >
                                       {engine === 'GEM' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       {engine === 'GOOD' && <Wand2 size={18} className={`shrink-0 ${isActive ? 'text-blue-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
@@ -4319,6 +5149,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           {showAccessBlockedNote && (
                                               <div className={`mt-1 text-[10px] font-medium ${isDarkUi ? 'text-amber-300' : 'text-amber-700'}`}>
                                                   {accessBlockedDetail}
+                                              </div>
+                                          )}
+                                          {planLockedEngine && (
+                                              <div className={`mt-1 text-[10px] font-medium ${isDarkUi ? 'text-amber-300' : 'text-amber-700'}`}>
+                                                  Upgrade required for this engine.
                                               </div>
                                           )}
                                       </div>
@@ -4564,8 +5399,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     <button
                       type="button"
                       onClick={() => {
-                        const activeIndex = ENGINE_ORDER.indexOf(settings.engine);
-                        const nextEngine: GenerationSettings['engine'] = ENGINE_ORDER[(activeIndex + 1) % ENGINE_ORDER.length] ?? 'KOKORO';
+                        const cycleOrder = planAllowedEngines.length > 0 ? planAllowedEngines : ENGINE_ORDER;
+                        const activeIndex = cycleOrder.indexOf(settings.engine);
+                        const nextEngine: GenerationSettings['engine'] = cycleOrder[(activeIndex + 1) % cycleOrder.length] ?? 'KOKORO';
                         void activateTtsEngine(nextEngine);
                       }}
                       className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-[10px] font-bold uppercase tracking-wide ${
@@ -4737,6 +5573,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       isGenerating={isGenerating}
                                       liveChunks={liveAudioChunks}
                                       isLiveStreaming={isGenerating}
+                                      autoPlayOnFirstChunk={settings.autoPlayGeneratedAudio !== false}
                                       onReset={() => {
                                         setGeneratedAudioUrl(null);
                                         setLiveAudioChunks([]);
@@ -4770,35 +5607,68 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </div>
 	                                </div>
 	                                
-	                                <div className="flex flex-wrap gap-2 max-h-60 overflow-y-auto custom-scrollbar mb-4">
-	                                    {studioVoiceOptions.map((v: any) => {
-	                                        const isSelected = settings.voiceId === v.id;
-	                                        return (
-	                                            <button
-	                                                key={v.id}
-	                                                onClick={() => setSettings(s => ({ ...s, voiceId: v.id }))}
-	                                                className={`vf-voice-chip ${isSelected ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
-	                                            >
-	                                                <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{v.name[0]}</div>
-                                                    <div className="flex flex-col items-start leading-tight">
-                                                        <span>{v.name}</span>
-                                                        <span className={`text-[10px] font-semibold ${isSelected ? 'text-white/80' : 'text-gray-500'}`}>
-                                                            {resolveVoicePersonaLabel(v)}
-                                                        </span>
-                                                    </div>
-	                                            </button>
-	                                        )
-	                                    })}
-	                                    {/* Add Clones */}
-	                                    {isGemRuntimeEngine(settings.engine) && clonedVoices.map(v => (
-	                                        <button
-	                                            key={v.id}
-	                                            onClick={() => setSettings(s => ({...s, voiceId: v.id}))}
-	                                            className={`vf-voice-chip ${settings.voiceId === v.id ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${settings.voiceId === v.id ? 'bg-amber-600 text-white border-amber-600' : 'bg-amber-50 text-amber-700 border-amber-100'}`}
-	                                        >
-	                                             <Fingerprint size={14}/> {v.name}
-	                                        </button>
-	                                    ))}
+	                                <div className="max-h-60 overflow-y-auto custom-scrollbar mb-4 space-y-3">
+                                        <div>
+                                            <div className="mb-2 flex items-center justify-between">
+                                                <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Free Speakers</span>
+                                                <span className="text-[10px] font-semibold text-gray-500">{studioFreeVoiceOptions.length}</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {studioFreeVoiceOptions.map((v: any) => {
+                                                    const isSelected = settings.voiceId === v.id;
+                                                    return (
+                                                        <button
+                                                            key={v.id}
+                                                            onClick={() => setSettings(s => ({ ...s, voiceId: v.id }))}
+                                                            className={`vf-voice-chip ${isSelected ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
+                                                        >
+                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{v.name[0]}</div>
+                                                            <div className="flex flex-col items-start leading-tight">
+                                                                <span>{v.name}</span>
+                                                                <span className={`text-[10px] font-semibold ${isSelected ? 'text-white/80' : 'text-gray-500'}`}>
+                                                                    {resolveVoicePersonaLabel(v)}
+                                                                </span>
+                                                            </div>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="mb-2 flex items-center justify-between">
+                                                <span className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Pro Speakers</span>
+                                                <span className="text-[10px] font-semibold text-gray-500">{studioProVoiceOptions.length}</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {studioProVoiceOptions.map((v: any) => {
+                                                    const isSelected = settings.voiceId === v.id;
+                                                    const locked = isVoiceLockedForFreeTier(settings.engine, v);
+                                                    return (
+                                                        <button
+                                                            key={v.id}
+                                                            onClick={() => {
+                                                                if (locked) {
+                                                                    setShowSubscriptionModal(true);
+                                                                    return;
+                                                                }
+                                                                setSettings((s) => ({ ...s, voiceId: v.id }));
+                                                            }}
+                                                            className={`vf-voice-chip flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${locked ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
+                                                            title={locked ? 'Upgrade to use Pro voices' : undefined}
+                                                        >
+                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected && !locked ? 'bg-white/20' : 'bg-amber-200'}`}>{v.name[0]}</div>
+                                                            <div className="flex flex-col items-start leading-tight">
+                                                                <span>{v.name}</span>
+                                                                <span className={`text-[10px] font-semibold ${isSelected && !locked ? 'text-white/80' : 'text-amber-700'}`}>
+                                                                    {locked ? 'Pro - Upgrade' : resolveVoicePersonaLabel(v)}
+                                                                </span>
+                                                            </div>
+                                                            {locked && <Lock size={12} />}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
 	                                </div>
                                 
                                 {/* Emotion/Speed Selector */}
@@ -4987,10 +5857,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 <span className="text-xs font-bold text-gray-700 truncate">{speaker}</span>
                                                 <select 
                                                     className="text-[10px] font-bold bg-gray-50 rounded p-1 outline-none max-w-[150px] disabled:opacity-60"
-                                                    value={resolveMappedVoiceForSpeaker(speaker) || castVoiceOptions[0]?.id || ''}
+                                                    value={resolveMappedVoiceForSpeaker(speaker) || castFreeVoiceOptions[0]?.id || castVoiceOptions[0]?.id || ''}
                                                     disabled={!isStudioMultiSpeakerEnabled}
                                                     onChange={(e) => {
                                                         const newVoiceId = e.target.value;
+                                                        const selectedVoice = castVoiceOptions.find((voice) => voice.id === newVoiceId);
+                                                        if (selectedVoice && isVoiceLockedForFreeTier(settings.engine, selectedVoice)) {
+                                                            setShowSubscriptionModal(true);
+                                                            return;
+                                                        }
                                                         setSettings((s) => ({
                                                             ...s,
                                                             speakerMapping: upsertSpeakerVoiceMapping(speaker, newVoiceId, s.speakerMapping),
@@ -5014,11 +5889,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                         }
 	                                                    }}
 			                                                >
-			                                                     {castVoiceOptions.map((v: any) => (
-			                                                         <option key={v.id} value={v.id}>
-                                                                 {`${v.name} (${resolveVoicePersonaLabel(v)})`}
-                                                             </option>
-			                                                     ))}
+                                                         {castFreeVoiceOptions.length > 0 && (
+                                                             <optgroup label="Free Speakers">
+                                                                 {castFreeVoiceOptions.map((v: any) => (
+                                                                     <option key={v.id} value={v.id}>
+                                                                         {`${v.name} (${resolveVoicePersonaLabel(v)})`}
+                                                                     </option>
+                                                                 ))}
+                                                             </optgroup>
+                                                         )}
+                                                         {castProVoiceOptions.length > 0 && (
+                                                             <optgroup label="Pro Speakers">
+                                                                 {castProVoiceOptions.map((v: any) => (
+                                                                     <option
+                                                                         key={v.id}
+                                                                         value={v.id}
+                                                                         disabled={isVoiceLockedForFreeTier(settings.engine, v)}
+                                                                     >
+                                                                         {`${v.name} (${resolveVoicePersonaLabel(v)}) - Pro`}
+                                                                     </option>
+                                                                 ))}
+                                                             </optgroup>
+                                                         )}
 			                                                </select>
 			                                            </div>
 			                                        ))}
@@ -5161,6 +6053,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                      {filteredVoices.map(v => {
                                          const isLoading = previewState?.id === v.id && previewState.status === 'loading';
                                          const isPlaying = previewState?.id === v.id && previewState.status === 'playing';
+                                         const voiceEngine = (v.engine || settings.engine) as GenerationSettings['engine'];
+                                         const accessTier = resolveVoiceAccessTier(voiceEngine, v);
+                                         const isLocked = isVoiceLockedForFreeTier(voiceEngine, v);
                                          
                                          return (
                                              <div key={v.id} className="bg-white p-4 rounded-2xl border border-gray-200 hover:border-indigo-200 hover:shadow-md transition-all group flex flex-col gap-3">
@@ -5172,6 +6067,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                             <div>
                                                                 <h4 className="font-bold text-gray-900 text-sm">{v.name}</h4>
                                                                 <div className="text-[10px] text-gray-500 font-medium">{resolveVoicePersonaLabel(v)}</div>
+                                                                <div className={`inline-flex mt-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                                                                    accessTier === 'free'
+                                                                        ? 'bg-emerald-100 text-emerald-700'
+                                                                        : 'bg-amber-100 text-amber-700'
+                                                                }`}>
+                                                                    {accessTier}
+                                                                </div>
                                                             </div>
                                                         </div>
                                                      
@@ -5184,10 +6086,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                  </div>
                                                  
                                                  <button 
-                                                    onClick={() => openCharacterModal(undefined, v.id)}
-                                                    className="w-full py-2 rounded-lg border border-gray-200 text-xs font-bold text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200 transition-colors flex items-center justify-center gap-2"
+                                                    onClick={() => {
+                                                        if (isLocked) {
+                                                            setShowSubscriptionModal(true);
+                                                            return;
+                                                        }
+                                                        openCharacterModal(undefined, v.id);
+                                                    }}
+                                                    className={`w-full py-2 rounded-lg border text-xs font-bold transition-colors flex items-center justify-center gap-2 ${
+                                                        isLocked
+                                                            ? 'border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100'
+                                                            : 'border-gray-200 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200'
+                                                    }`}
                                                  >
-                                                     <Plus size={14}/> Create Character
+                                                     {isLocked ? <Lock size={14}/> : <Plus size={14}/>} {isLocked ? 'Upgrade for Pro Voice' : 'Create Character'}
                                                  </button>
                                              </div>
                                          )
@@ -5241,11 +6153,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                         <div>
 	                                              <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Voice</label>
 	                                              <select value={charForm.voiceId} onChange={e => setCharForm({...charForm, voiceId: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none font-medium">
-                                                      {galleryVoicePool.map((voice) => (
-                                                          <option key={voice.id} value={voice.id}>
-                                                              {`${voice.name} (${resolveVoicePersonaLabel(voice)})`}
-                                                          </option>
-                                                      ))}
+                                                      <optgroup label="Free Speakers">
+                                                          {galleryVoicePool
+                                                              .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'free')
+                                                              .map((voice) => (
+                                                                  <option key={voice.id} value={voice.id}>
+                                                                      {`${voice.name} (${resolveVoicePersonaLabel(voice)})`}
+                                                                  </option>
+                                                              ))}
+                                                      </optgroup>
+                                                      <optgroup label="Pro Speakers">
+                                                          {galleryVoicePool
+                                                              .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'pro')
+                                                              .map((voice) => (
+                                                                  <option
+                                                                      key={voice.id}
+                                                                      value={voice.id}
+                                                                      disabled={isVoiceLockedForFreeTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice)}
+                                                                  >
+                                                                      {`${voice.name} (${resolveVoicePersonaLabel(voice)}) - Pro`}
+                                                                  </option>
+                                                              ))}
+                                                      </optgroup>
 	                                              </select>
 	                                         </div>
 
@@ -5747,37 +6676,34 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           isDarkUi ? 'bg-slate-800' : 'bg-slate-200/70'
                                         }`}><UploadCloud size={32} className={isDarkUi ? 'text-indigo-400' : 'text-indigo-500'}/></div>
                                         <p className={`font-bold ${isDarkUi ? 'text-slate-200' : 'text-slate-700'}`}>Upload Video Source</p>
-                                        <div className="relative group/btn mt-6"><input type="file" accept="video/*" onChange={handleVideoUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10" /><Button variant="secondary">Select File</Button></div>
+                                        <div className="relative group/btn mt-6"><input type="file" accept="video/*" multiple onChange={handleVideoUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10" /><Button variant="secondary">Select Files</Button></div>
                                     </div>
                                 )}
                             </div>
-                            {dubAudioUrl && (
+                            {dubbingJobResultUrl && dubbingUiState.phase === 'done' && (
                                 <div className={`rounded-2xl p-4 flex flex-wrap items-center gap-3 ${
                                   isDarkUi
                                     ? 'bg-slate-900/75 border border-slate-700 text-slate-200'
                                     : 'bg-white border border-gray-200 text-slate-700'
                                 }`}>
-                                    <Button onClick={handleRenderDubbedVideo} disabled={isRenderingDubVideo || !videoFile}>
-                                        {isRenderingDubVideo ? <><Loader2 className="animate-spin mr-2" /> Rendering...</> : <><Video size={16} className="mr-2" /> Render Dubbed Video</>}
-                                    </Button>
                                     <a
-                                        href={dubAudioUrl}
-                                        download="dub_track.wav"
+                                        href={dubbingJobResultUrl}
+                                        download={renderedDubVideoUrl ? 'dubbed_video_final.mp4' : 'dubbed_audio_final.wav'}
                                         className={`text-xs font-bold inline-flex items-center gap-1.5 ${
                                           isDarkUi ? 'text-indigo-300 hover:text-indigo-200' : 'text-indigo-600 hover:text-indigo-800'
                                         }`}
                                     >
-                                        <Download size={12} /> Download Dub Track
+                                        <Download size={12} /> Download Output
                                     </a>
-                                    {renderedDubVideoUrl && (
+                                    {dubbingReportUrl && (
                                         <a
-                                            href={renderedDubVideoUrl}
-                                            download="dubbed_output.mp4"
+                                            href={dubbingReportUrl}
+                                            download="dubbing_report.json"
                                             className={`text-xs font-bold inline-flex items-center gap-1.5 ${
                                               isDarkUi ? 'text-emerald-300 hover:text-emerald-200' : 'text-emerald-600 hover:text-emerald-800'
                                             }`}
                                         >
-                                            <Download size={12} /> Download Dubbed Video
+                                            <Download size={12} /> Download Report
                                         </a>
                                     )}
                                 </div>
@@ -5819,25 +6745,105 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                        }`}>
                                          {dubbingUiState.error}
                                        </p>
+                                      )}
+                                  </SectionCard>
+                                 <SectionCard className={`rounded-2xl border ${isDarkUi ? 'border-slate-700 bg-slate-900/70 text-slate-200' : 'border-slate-200 bg-white text-slate-700'}`}>
+                                     <button
+                                       type="button"
+                                       onClick={() => setIsVideoPipelineGuideOpen((prev) => !prev)}
+                                       className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left"
+                                     >
+                                       <div>
+                                         <p className="text-xs font-black uppercase tracking-wide opacity-80">Guide</p>
+                                         <p className="text-sm font-semibold">Video Pipeline (2026)</p>
+                                       </div>
+                                       {isVideoPipelineGuideOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                     </button>
+                                     {isVideoPipelineGuideOpen && (
+                                       <div className={`border-t px-4 py-3 space-y-3 text-xs leading-relaxed ${isDarkUi ? 'border-slate-700 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
+                                         <p>
+                                           The 2026 dubbing stack uses a hybrid architecture: Gemini orchestrates content, timing, and emotion while LLVC applies voice identity with CPU-first conversion.
+                                         </p>
+                                         <div className="space-y-2">
+                                           {VIDEO_PIPELINE_2026_PHASES.map((phase) => (
+                                             <div key={phase.title} className={`rounded-xl border p-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-950/40' : 'border-slate-200 bg-slate-50'}`}>
+                                               <p className={`font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{phase.title}</p>
+                                               <p className="mt-1">{phase.body}</p>
+                                             </div>
+                                           ))}
+                                         </div>
+                                         <div className="overflow-x-auto rounded-xl border border-current/20">
+                                           <table className="min-w-full text-left text-[11px]">
+                                             <thead className={isDarkUi ? 'bg-slate-800/80 text-slate-200' : 'bg-slate-100 text-slate-700'}>
+                                               <tr>
+                                                 <th className="px-2.5 py-2 font-semibold">Step</th>
+                                                 <th className="px-2.5 py-2 font-semibold">Tool/Model</th>
+                                                 <th className="px-2.5 py-2 font-semibold">Modality</th>
+                                                 <th className="px-2.5 py-2 font-semibold">Accuracy Benefit</th>
+                                               </tr>
+                                             </thead>
+                                             <tbody>
+                                               {VIDEO_PIPELINE_2026_SUMMARY_ROWS.map((row) => (
+                                                 <tr key={row.step} className={isDarkUi ? 'border-t border-slate-800' : 'border-t border-slate-200'}>
+                                                   <td className="px-2.5 py-2">{row.step}</td>
+                                                   <td className="px-2.5 py-2">{row.tool}</td>
+                                                   <td className="px-2.5 py-2">{row.modality}</td>
+                                                   <td className="px-2.5 py-2">{row.benefit}</td>
+                                                 </tr>
+                                               ))}
+                                             </tbody>
+                                           </table>
+                                         </div>
+                                         <div className={`rounded-lg border px-3 py-2 ${isDarkUi ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-800'}`}>
+                                           Pro-tip: use thinking level low for straightforward single-speaker segments, and switch to high for complex multi-speaker overlap scenes.
+                                         </div>
+                                       </div>
                                      )}
                                  </SectionCard>
-  	                             <SectionCard className={`rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[420px] ${isDarkUi ? 'bg-slate-950/70 border-slate-700' : ''}`}>
+                                 <SectionCard className={`rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[420px] ${isDarkUi ? 'bg-slate-950/70 border-slate-700' : ''}`}>
                                  <div className={`px-4 py-3 border-b space-y-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-900/70' : 'border-gray-100 bg-gray-50/70'}`}>
-                                      <div className="flex flex-wrap items-center justify-between gap-2">
-                                          <div className="flex flex-wrap items-center gap-2">
-                                          <button
-                                            onClick={() => handleTranslateVideo('transcribe')}
-                                            disabled={!videoFile || isProcessingVideo}
-                                            className={`h-8 px-3 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors disabled:opacity-60 ${
-                                              isDarkUi
-                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                            }`}
-                                            title="Transcribe Video (Original Language)"
-                                          >
-                                              {isProcessingVideo ? <Loader2 size={14} className="animate-spin"/> : <FileText size={14}/>}
-                                              <span>Transcribe</span>
-                                          </button>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                          <div className="relative">
+                                              <input
+                                                type="file"
+                                                accept="video/*"
+                                                multiple
+                                                onChange={handleVideoUpload}
+                                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                                title="Add one or more videos to queue"
+                                              />
+                                              <button
+                                                type="button"
+                                                className={`h-8 px-3 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors ${
+                                                  isDarkUi
+                                                    ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                    : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                                }`}
+                                              >
+                                                <Plus size={14} />
+                                                <span>Add Videos</span>
+                                              </button>
+                                          </div>
+                                          <div className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 ${
+                                            isDarkUi ? 'border-slate-600 bg-slate-800' : 'border-gray-200 bg-white'
+                                          }`}>
+                                              <Film size={12} className={isDarkUi ? 'text-slate-400' : 'text-gray-500'} />
+                                              <select
+                                                  value={selectedDubbingClipId}
+                                                  onChange={(e) => setSelectedDubbingClipId(e.target.value)}
+                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-[11rem] vf-theme-select ${
+                                                    isDarkUi ? 'text-slate-200' : 'text-gray-700'
+                                                  }`}
+                                                  title="Active clip"
+                                              >
+                                                  <option value="">Select active clip</option>
+                                                  {dubbingClips.map((clip, index) => (
+                                                      <option key={clip.id} value={clip.id}>
+                                                          {index + 1}. {clip.file.name} ({formatClipDuration(clip.trimOutMs - clip.trimInMs)})
+                                                      </option>
+                                                  ))}
+                                              </select>
+                                          </div>
                                           <div className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 ${
                                             isDarkUi ? 'border-slate-600 bg-slate-800' : 'border-gray-200 bg-white'
                                           }`}>
@@ -5855,85 +6861,153 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                   ))}
                                               </select>
                                           </div>
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                              <button
-                                                onClick={() => handleDirectorAI(dubScript, 'video_dub')}
-                                                disabled={isAiWriting}
-                                                className={`h-8 text-[11px] font-bold px-3 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors ${
-                                                  isDarkUi
-                                                    ? 'bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30 border border-indigo-400/40'
-                                                    : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 shadow-sm shadow-indigo-200/50'
-                                                }`}
-                                              >
-                                                  {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>}
-                                                  <span>Assign Speakers</span>
-                                              </button>
-                                              <button
-                                                onClick={() => setDubScript('')}
-                                                className={`h-8 w-8 rounded-lg transition-colors inline-flex items-center justify-center ${
-                                                  isDarkUi
-                                                    ? 'text-slate-400 hover:text-rose-300 hover:bg-rose-500/10'
-                                                    : 'text-gray-400 hover:text-red-600 hover:bg-red-50'
-                                                }`}
-                                                title="Clear"
-                                              >
-                                                <Trash2 size={14}/>
-                                              </button>
-                                          </div>
+                                          <button
+                                            onClick={handleGenerateDub}
+                                            disabled={isGenerating || dubbingClips.length === 0}
+                                            className={`h-8 text-[11px] font-bold px-3 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors ${
+                                              isDarkUi
+                                                ? 'bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30 border border-indigo-400/40'
+                                                : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 shadow-sm shadow-indigo-200/50'
+                                            }`}
+                                            title="One-click AI dubbing for queue"
+                                          >
+                                            {isGenerating ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                                            <span>AI Dub</span>
+                                          </button>
+                                          <button
+                                            onClick={() => handleTranslateVideo('transcribe')}
+                                            disabled={!selectedDubbingClip || isProcessingVideo}
+                                            className={`h-8 px-3 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors disabled:opacity-60 ${
+                                              isDarkUi
+                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
+                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
+                                            }`}
+                                            title="Transcribe active clip"
+                                          >
+                                              {isProcessingVideo ? <Loader2 size={14} className="animate-spin"/> : <FileText size={14}/>}
+                                              <span>Transcribe</span>
+                                          </button>
+                                          <button
+                                            onClick={() => { void handleRemoveSelectedClip(); }}
+                                            disabled={!selectedDubbingClip}
+                                            className={`h-8 px-2.5 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors disabled:opacity-60 ${
+                                              isDarkUi
+                                                ? 'text-rose-200 hover:text-rose-100 hover:bg-rose-500/10 border-rose-400/35 bg-rose-500/5'
+                                                : 'text-rose-700 hover:text-rose-800 hover:bg-rose-50 border-rose-200 bg-white'
+                                            }`}
+                                            title="Remove active clip from queue"
+                                          >
+                                            <Trash2 size={14} />
+                                            <span>Remove</span>
+                                          </button>
                                       </div>
 
-                                      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-                                          <span className={`shrink-0 text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Tools</span>
-                                          <button
-                                            onClick={() => handleDubbingEditorTool('clean')}
-                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
-                                              isDarkUi
-                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                            }`}
-                                            title="Normalize punctuation and spacing"
-                                          >
-                                            Clean
-                                          </button>
-                                          <button
-                                            onClick={() => handleDubbingEditorTool('speakerize')}
-                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
-                                              isDarkUi
-                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                            }`}
-                                            title="Ensure Speaker labels in each dialogue line"
-                                          >
-                                            Speakerize
-                                          </button>
-                                          <button
-                                            onClick={() => handleDubbingEditorTool('dedupe')}
-                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
-                                              isDarkUi
-                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                            }`}
-                                            title="Remove duplicate consecutive lines"
-                                          >
-                                            Dedupe
-                                          </button>
-                                          <button
-                                            onClick={() => handleDubbingEditorTool('compact')}
-                                            className={`shrink-0 h-8 px-2.5 text-[11px] font-semibold rounded-lg border transition-colors ${
-                                              isDarkUi
-                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                            }`}
-                                            title="Compact to non-empty lines"
-                                          >
-                                            Compact
-                                          </button>
-                                          <ProofreadCluster
-                                              isBusy={isAiWriting}
-                                              onProofread={(mode) => { void handleProofread(mode); }}
-                                          />
-                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => setIsDubbingAdvancedOpen((prev) => !prev)}
+                                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-[11px] font-bold ${
+                                          isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-200' : 'border-slate-200 bg-white text-slate-700'
+                                        }`}
+                                      >
+                                        <span>Advanced</span>
+                                        {isDubbingAdvancedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                      </button>
+
+                                      {isDubbingAdvancedOpen && (
+                                        <div className={`space-y-2 rounded-xl border p-2.5 ${
+                                          isDarkUi ? 'border-slate-700 bg-slate-950/40' : 'border-slate-200 bg-slate-50'
+                                        }`}>
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className={`text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Script</span>
+                                            <button onClick={() => handleDubbingEditorTool('clean')} className="h-7 px-2 text-[10px] font-semibold rounded border">Clean</button>
+                                            <button onClick={() => handleDubbingEditorTool('speakerize')} className="h-7 px-2 text-[10px] font-semibold rounded border">Speakerize</button>
+                                            <button onClick={() => handleDubbingEditorTool('dedupe')} className="h-7 px-2 text-[10px] font-semibold rounded border">Dedupe</button>
+                                            <button onClick={() => handleDubbingEditorTool('compact')} className="h-7 px-2 text-[10px] font-semibold rounded border">Compact</button>
+                                          </div>
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className={`text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Timeline</span>
+                                            <button onClick={() => handleDubbingTimelineTool('cut')} className="h-7 px-2 text-[10px] font-semibold rounded border">Cut</button>
+                                            <button onClick={() => handleDubbingTimelineTool('copy')} className="h-7 px-2 text-[10px] font-semibold rounded border">Copy</button>
+                                            <button onClick={() => handleDubbingTimelineTool('paste')} className="h-7 px-2 text-[10px] font-semibold rounded border">Paste</button>
+                                            <button onClick={() => handleDubbingTimelineTool('split')} className="h-7 px-2 text-[10px] font-semibold rounded border">Split</button>
+                                            <button onClick={() => handleDubbingTimelineTool('trim_in')} className="h-7 px-2 text-[10px] font-semibold rounded border">Trim In</button>
+                                            <button onClick={() => handleDubbingTimelineTool('trim_out')} className="h-7 px-2 text-[10px] font-semibold rounded border">Trim Out</button>
+                                            <button onClick={() => handleDubbingTimelineTool('layer')} className="h-7 px-2 text-[10px] font-semibold rounded border">Move Layer</button>
+                                            <button onClick={() => handleDubbingTimelineTool('remove')} className="h-7 px-2 text-[10px] font-semibold rounded border">Remove</button>
+                                            <button onClick={handleTimelineUndo} className="h-7 px-2 text-[10px] font-semibold rounded border">Undo</button>
+                                            <button onClick={handleTimelineRedo} className="h-7 px-2 text-[10px] font-semibold rounded border">Redo</button>
+                                          </div>
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className={`text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Queue</span>
+                                            <button onClick={() => handleRetryClip(selectedDubbingClipId)} className="h-7 px-2 text-[10px] font-semibold rounded border" disabled={!selectedDubbingClipId}>Retry</button>
+                                            <button onClick={() => { void handleRemoveSelectedClip(); }} className="h-7 px-2 text-[10px] font-semibold rounded border" disabled={!selectedDubbingClipId}>Remove Selected</button>
+                                            <button onClick={handleRemoveCompletedQueue} className="h-7 px-2 text-[10px] font-semibold rounded border">Remove Completed</button>
+                                            <button onClick={() => { void handleClearDubbingQueue(); }} className="h-7 px-2 text-[10px] font-semibold rounded border">Remove All</button>
+                                            <div className={`flex items-center gap-1 rounded border px-1.5 ${isDarkUi ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'}`}>
+                                              <span className="text-[10px] font-semibold">CPU</span>
+                                              <select
+                                                value={dubbingCpuProfile}
+                                                onChange={(e) => setDubbingCpuProfile(e.target.value as CpuDubbingProfile)}
+                                                className="h-6 bg-transparent text-[10px] font-semibold outline-none"
+                                              >
+                                                {Object.entries(DUBBING_CPU_PROFILE_LABELS).map(([value, label]) => (
+                                                  <option key={value} value={value}>{label}</option>
+                                                ))}
+                                              </select>
+                                            </div>
+                                          </div>
+                                          {selectedDubbingClip && (
+                                            <div className="space-y-1">
+                                              <div className="text-[10px] font-semibold opacity-80">Playhead / Trim</div>
+                                              <input
+                                                type="range"
+                                                min={selectedDubbingClip.trimInMs}
+                                                max={selectedDubbingClip.trimOutMs}
+                                                value={Math.max(selectedDubbingClip.trimInMs, Math.min(dubbingPlayheadMs, selectedDubbingClip.trimOutMs))}
+                                                onChange={(e) => setDubbingPlayheadMs(Number(e.target.value))}
+                                                className="w-full accent-indigo-500"
+                                              />
+                                            </div>
+                                          )}
+                                          <div className="space-y-1">
+                                            <div className="text-[10px] font-semibold opacity-80">Mini Timeline</div>
+                                            {DUBBING_TIMELINE_LAYERS.map((layer) => (
+                                              <div key={layer} className="flex flex-wrap items-center gap-1">
+                                                <span className="text-[10px] font-bold">{layer}</span>
+                                                {dubbingClips.filter((clip) => clip.layer === layer).map((clip, index) => (
+                                                  <div key={clip.id} className="inline-flex items-center gap-1">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setSelectedDubbingClipId(clip.id)}
+                                                      className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
+                                                        clip.id === selectedDubbingClipId
+                                                          ? 'border-indigo-400 bg-indigo-500/20 text-indigo-100'
+                                                          : isDarkUi
+                                                            ? 'border-slate-700 bg-slate-900 text-slate-200'
+                                                            : 'border-slate-200 bg-white text-slate-700'
+                                                      }`}
+                                                    >
+                                                      {index + 1}. {clip.file.name}
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => { void handleRemoveClipFromQueue(clip.id); }}
+                                                      className={`h-5 w-5 rounded border text-[10px] font-bold ${
+                                                        isDarkUi
+                                                          ? 'border-rose-400/35 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                                                          : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                                                      }`}
+                                                      title="Remove clip"
+                                                    >
+                                                      x
+                                                    </button>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
                                  </div>
                                  
                                  <DubbingTranslateBar
@@ -5957,21 +7031,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     }`} 
                                  />
                                   
-	                                 <div className={`px-4 py-3 border-t flex items-center justify-between ${
-                                     isDarkUi ? 'bg-slate-900/75 border-slate-700' : 'bg-gray-50 border-gray-100'
-                                   }`}>
-	                                     <div className="w-full">
-	                                         <Button 
-	                                            onClick={handleGenerateDub} 
-	                                            disabled={isGenerating || !dubScript} 
-	                                            fullWidth 
-	                                            className="shadow-lg shadow-indigo-200 bg-gradient-to-r from-blue-600 to-indigo-600"
-	                                         >
-	                                             {isGenerating ? <><Loader2 className="animate-spin mr-2"/> Processing Dub...</> : <><Film size={18} className="mr-2"/> Generate Dub Track</>}
-	                                         </Button>
-	                                     </div>
-	                                 </div>
-	                             </SectionCard>
+                                  <div className={`px-4 py-3 border-t text-[11px] font-semibold flex items-center justify-between ${
+                                    isDarkUi ? 'bg-slate-900/75 border-slate-700 text-slate-300' : 'bg-gray-50 border-gray-100 text-gray-600'
+                                  }`}>
+                                      <span>
+                                        Queue: {dubbingClips.length} clip{dubbingClips.length === 1 ? '' : 's'}
+                                      </span>
+                                      <span>
+                                        Completed: {dubbingClips.filter((clip) => clip.status === 'completed').length}
+                                      </span>
+                                  </div>
+                              </SectionCard>
                         </div>
                     </div>
                 )}

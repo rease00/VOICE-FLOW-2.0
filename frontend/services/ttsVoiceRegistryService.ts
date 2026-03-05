@@ -11,6 +11,13 @@ const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
   KOKORO: [],
 };
 
+const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
+  GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'bf_emma', 'bf_isabella', 'am_fenrir', 'am_michael', 'am_onyx', 'bm_george'],
+};
+
 const inferCountryFromAccent = (accent?: string): string => {
   const value = String(accent || '').toLowerCase();
   if (!value) return 'Unknown';
@@ -66,11 +73,21 @@ const normalizeAgeGroup = (raw: unknown): string => {
 };
 
 const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption): VoiceOption => {
+  const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
+  const explicitTier = String(voice.accessTier || '').trim().toLowerCase();
+  const accessTier: 'free' | 'pro' =
+    explicitTier === 'free'
+      ? 'free'
+      : explicitTier === 'pro'
+        ? 'pro'
+        : (allowlist.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro');
   const out: VoiceOption = {
     ...voice,
     country: voice.country || inferCountryFromAccent(voice.accent),
     ageGroup: voice.ageGroup || 'Unknown',
     engine,
+    accessTier,
+    isPlanRestricted: typeof voice.isPlanRestricted === 'boolean' ? voice.isPlanRestricted : accessTier === 'pro',
   };
   return out;
 };
@@ -94,6 +111,14 @@ const toVoiceOption = (
   const ageGroup = normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age);
   const country = String(raw.country || raw.country_code || inferCountryFromAccent(accent)).trim() || 'Unknown';
   const geminiVoiceName = String(raw.voice || raw.voice_id || raw.id || id).trim();
+  const explicitTier = String(raw.access_tier || raw.accessTier || '').trim().toLowerCase();
+  const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
+  const accessTier: 'free' | 'pro' =
+    explicitTier === 'free'
+      ? 'free'
+      : explicitTier === 'pro'
+        ? 'pro'
+        : (allowlist.has(id.toLowerCase()) ? 'free' : 'pro');
 
   const output: VoiceOption = {
     id,
@@ -104,6 +129,8 @@ const toVoiceOption = (
     country,
     ageGroup,
     engine,
+    accessTier,
+    isPlanRestricted: typeof raw.is_plan_restricted === 'boolean' ? raw.is_plan_restricted : accessTier === 'pro',
   };
   if (typeof raw.source === 'string') {
     output.source = raw.source;

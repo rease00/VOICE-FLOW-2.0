@@ -6,7 +6,15 @@ import type {
   VideoTranscriptionResponse,
 } from '../src/shared/api/contracts';
 import {
+  cancelDubbingJob as gatewayCancelDubbingJob,
+  createDubbingJobV2 as gatewayCreateDubbingJobV2,
+  downloadDubbingChunk as gatewayDownloadDubbingChunk,
+  downloadDubbingReport as gatewayDownloadDubbingReport,
+  downloadDubbingResult as gatewayDownloadDubbingResult,
+  extractAudioFromVideo as gatewayExtractAudioFromVideo,
   fetchTtsEngineCapabilities as fetchGatewayTtsEngineCapabilities,
+  getDubbingJob as gatewayGetDubbingJob,
+  getDubbingJobWithOptions as gatewayGetDubbingJobWithOptions,
   muxDubbedVideo as gatewayMuxDubbedVideo,
   separateStem,
   switchTtsEngine,
@@ -35,7 +43,17 @@ export interface MediaBackendHealth {
     model?: string;
     device?: string;
     cacheDir?: string;
+    dereverbModel?: string;
+    dereverbReady?: boolean;
     error?: string | null;
+  };
+  lipsync?: {
+    runtime?: string;
+    assetPath?: string;
+    assetReady?: boolean;
+    lpipsAssetPath?: string;
+    lpipsReady?: boolean;
+    ready?: boolean;
   };
 }
 
@@ -44,6 +62,57 @@ export type TtsEngineSwitchResult = TtsEngineSwitchResponse;
 export type RuntimeLogTailResult = RuntimeLogTailResponse;
 export type TtsEngineCapabilitiesResult = TtsEngineCapabilitiesResponse & {
   engines: Partial<Record<GenerationSettings['engine'], RuntimeCapabilities>>;
+};
+export type DubbingJobCreateResult = { ok: boolean; job_id: string };
+export type DubbingJobStatusResult = {
+  ok: boolean;
+  job: {
+    status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'cancelling';
+    stage?: string;
+    progress?: number;
+    error?: string;
+    reportPath?: string | null;
+    resultPath?: string | null;
+    stageTimeline?: Array<{ stage: string; status: string; startMs?: number | null; endMs?: number | null; durationMs?: number | null }>;
+    directorJson?: Record<string, unknown> | null;
+    isochronyStats?: Record<string, unknown> | null;
+    llvcMetrics?: Record<string, unknown> | null;
+    lipsyncMetrics?: Record<string, unknown> | null;
+    assets?: Record<string, unknown> | null;
+    thinkingPolicy?: Record<string, unknown> | null;
+    live?: {
+      enabled?: boolean;
+      mode?: string;
+      playableChunks?: number;
+      playableDurationMs?: number;
+      chunkCursorNext?: number;
+    };
+    chunks?: Array<{
+      index: number;
+      contentType?: string;
+      durationMs?: number;
+      speakerId?: string;
+      engine?: string;
+      voiceId?: string;
+      textChars?: number;
+      downloadUrl?: string;
+      audioBase64?: string;
+    }>;
+    chunkCursorNext?: number;
+    speakerStats?: {
+      detectedSpeakers?: number;
+      mappedSpeakers?: number;
+      fallbackBindings?: Array<Record<string, unknown>>;
+      driftAlerts?: Array<Record<string, unknown>>;
+    };
+    qosState?: {
+      selectedProfile?: string;
+      downgraded?: boolean;
+      reason?: string;
+      gpuUsed?: boolean;
+    };
+    [key: string]: unknown;
+  };
 };
 
 const toBaseUrl = (input?: string): string => resolveApiBaseUrl(input);
@@ -93,6 +162,7 @@ export const convertLlvcCover = async (
     rmsMixRate?: number;
     protect?: number;
     f0Method?: 'rmvpe' | 'harvest' | 'crepe' | 'pm';
+    separateStem?: boolean;
   }
 ): Promise<Blob> => {
   const form = new FormData();
@@ -106,6 +176,7 @@ export const convertLlvcCover = async (
   form.append('rms_mix_rate', String(options?.rmsMixRate ?? 1.0));
   form.append('protect', String(options?.protect ?? 0.33));
   form.append('f0_method', options?.f0Method || 'rmvpe');
+  form.append('separate_stem', String(options?.separateStem ?? true));
 
   return requestBlob(
     '/llvc/convert',
@@ -136,6 +207,15 @@ export const transcribeVideoWithBackend = async (
     ...(options?.speakerLabel ? { speakerLabel: options.speakerLabel } : {}),
   };
   return transcribeVideo(videoFile, request);
+};
+
+export const extractAudioFromVideoWithBackend = async (
+  baseUrl: string,
+  sourceFile: File
+): Promise<Blob> => {
+  return gatewayExtractAudioFromVideo(sourceFile, {
+    baseUrl: toBaseUrl(baseUrl),
+  });
 };
 
 export const separateVideoStemWithBackend = async (
@@ -199,4 +279,67 @@ export const tailRuntimeLog = async (
     ...(typeof options?.lineLimit === 'number' ? { lineLimit: options.lineLimit } : {}),
   };
   return tailRuntimeLogs(service, request);
+};
+
+export const createDubbingJobV2 = async (
+  baseUrl: string,
+  sourceFile: File,
+  options?: {
+    targetLanguage?: string;
+    mode?: 'strict_full';
+    output?: 'audio' | 'video' | 'audio+video';
+    advanced?: Record<string, unknown>;
+  }
+): Promise<DubbingJobCreateResult> => {
+  return gatewayCreateDubbingJobV2(sourceFile, {
+    baseUrl: toBaseUrl(baseUrl),
+    targetLanguage: options?.targetLanguage || 'auto',
+    mode: options?.mode || 'strict_full',
+    output: options?.output || 'audio+video',
+    advanced: options?.advanced || {},
+  });
+};
+
+export const getDubbingJob = async (
+  baseUrl: string,
+  jobId: string,
+  options?: {
+    includeChunks?: boolean;
+    chunkCursor?: number;
+    chunkLimit?: number;
+    includeChunkAudio?: boolean;
+  }
+): Promise<DubbingJobStatusResult> => {
+  const hasAdvancedOptions = Boolean(
+    options
+    && (
+      options.includeChunks
+      || typeof options.chunkCursor === 'number'
+      || typeof options.chunkLimit === 'number'
+      || typeof options.includeChunkAudio === 'boolean'
+    )
+  );
+  if (hasAdvancedOptions) {
+    return gatewayGetDubbingJobWithOptions(jobId, {
+      ...(options || {}),
+      baseUrl: toBaseUrl(baseUrl),
+    }) as Promise<DubbingJobStatusResult>;
+  }
+  return gatewayGetDubbingJob(jobId, toBaseUrl(baseUrl)) as Promise<DubbingJobStatusResult>;
+};
+
+export const cancelDubbingJob = async (baseUrl: string, jobId: string): Promise<{ ok: boolean; job_id: string }> => {
+  return gatewayCancelDubbingJob(jobId, toBaseUrl(baseUrl));
+};
+
+export const downloadDubbingReport = async (baseUrl: string, jobId: string): Promise<Blob> => {
+  return gatewayDownloadDubbingReport(jobId, toBaseUrl(baseUrl));
+};
+
+export const downloadDubbingResult = async (baseUrl: string, jobId: string): Promise<Blob> => {
+  return gatewayDownloadDubbingResult(jobId, toBaseUrl(baseUrl));
+};
+
+export const downloadDubbingChunk = async (baseUrl: string, jobId: string, chunkIndex: number): Promise<Blob> => {
+  return gatewayDownloadDubbingChunk(jobId, chunkIndex, toBaseUrl(baseUrl));
 };

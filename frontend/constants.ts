@@ -317,5 +317,12 @@ export const INITIAL_STATS: UserStats = {
   planName: 'Free',
   vfUsage: createEmptyVfUsageStats(),
   wallet: createEmptyWalletStats(),
+  limits: {
+    maxCharsPerGeneration: 8000,
+    allowedEngines: ['KOKORO', 'GOOD', 'NEURAL2'],
+  },
+  features: {
+    earlyAccess: false,
+  },
 };
 

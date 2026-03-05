@@ -1,10 +1,37 @@
-import { authFetch } from './authHttpClient';
+﻿import { authFetch } from './authHttpClient';
 import { AccountEntitlements } from './accountService';
 import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 
 const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
+};
+
+let adminUnlockTokenMemory = '';
+
+export const setAdminUnlockToken = (token: string): void => {
+  adminUnlockTokenMemory = String(token || '').trim();
+};
+
+export const clearAdminUnlockToken = (): void => {
+  adminUnlockTokenMemory = '';
+};
+
+export const getAdminUnlockToken = (): string => adminUnlockTokenMemory;
+
+const adminAuthFetch: typeof authFetch = (url, init, options) => {
+  const method = String(init?.method || 'GET').toUpperCase();
+  if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
+    const token = getAdminUnlockToken();
+    if (token) {
+      const headers = new Headers(init?.headers || {});
+      if (!headers.has('X-Admin-Unlock')) {
+        headers.set('X-Admin-Unlock', `Bearer ${token}`);
+      }
+      return authFetch(url, { ...(init || {}), headers }, options);
+    }
+  }
+  return authFetch(url, init, options);
 };
 
 export interface AdminUserSummary {
@@ -17,8 +44,14 @@ export interface AdminUserSummary {
   role?: string;
   permissions?: string[];
   status?: string;
-  plan: 'Free' | 'Pro' | 'Plus';
+  plan: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
   accountStatus?: string;
+  features?: {
+    earlyAccess?: boolean;
+  };
+  limits?: {
+    maxCharsPerGeneration?: number;
+  };
   wallet: {
     paidVfBalance: number;
     vffBalance: number;
@@ -61,6 +94,45 @@ export interface AdminCoupon {
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface AdminSessionUnlockStatus {
+  recordId?: string;
+  hasIssuedKey?: boolean;
+  isLocked?: boolean;
+  lockedUntil?: string;
+  lockedUntilMs?: number;
+  isUnlocked?: boolean;
+  unlockExpiresAt?: string;
+  unlockExpiresAtMs?: number;
+  keyExpiresAt?: string;
+  keyExpiresAtMs?: number;
+  failedAttempts?: number;
+  attemptsRemaining?: number;
+}
+
+export interface AdminSessionUnlockIssuePayload {
+  ok: boolean;
+  uid?: string;
+  unlockKey?: string;
+  keyExpiresAt?: string;
+  keyExpiresAtMs?: number;
+  status?: AdminSessionUnlockStatus;
+}
+
+export interface AdminSessionUnlockVerifyPayload {
+  ok: boolean;
+  uid?: string;
+  unlockToken?: string;
+  expiresAt?: string;
+  expiresAtMs?: number;
+  status?: AdminSessionUnlockStatus;
+}
+
+export interface AdminSessionUnlockStatusPayload {
+  ok: boolean;
+  uid?: string;
+  status?: AdminSessionUnlockStatus;
 }
 
 export interface GeminiPoolStatusPayload {
@@ -133,7 +205,14 @@ export interface GeminiSourcePolicy {
 export interface GeminiPoolConfig {
   version?: number;
   updatedAt?: string;
-  pools?: Record<string, { keys?: string[] }>;
+  pools?: Record<string, {
+    keys?: string[];
+    keyMetadata?: Array<{
+      index?: number;
+      fingerprint?: string;
+      masked?: string;
+    }>;
+  }>;
   fallbackChains?: Record<string, string[]>;
   planPools?: {
     free?: string;
@@ -145,6 +224,20 @@ export interface GeminiPoolConfig {
     uniqueKeyMembership?: boolean;
   };
   sourcePolicy?: GeminiSourcePolicy;
+  keyMetadata?: Record<string, Array<{
+    index?: number;
+    fingerprint?: string;
+    masked?: string;
+  }>>;
+  singlePool?: {
+    enabled?: boolean;
+    canonicalPoolId?: string;
+    effectivePlanPools?: {
+      free?: string;
+      pro?: string;
+      plus?: string;
+    };
+  };
 }
 
 export interface GeminiPoolValidation {
@@ -171,6 +264,46 @@ export interface GeminiPoolSummary {
   };
 }
 
+export interface GeminiModelWindowUsage {
+  requests?: number;
+  tokens?: number;
+  inFlightRequests?: number;
+  inFlightTokens?: number;
+  successes?: number;
+  failures?: number;
+  rateLimited?: number;
+}
+
+export interface GeminiModelRemainingCapacity {
+  rpm?: number;
+  tpm?: number;
+  atLimit?: boolean;
+}
+
+export interface GeminiModelWindowMeta {
+  startedAtMs?: number;
+  resetsInMs?: number;
+}
+
+export interface GeminiPoolModelStatus {
+  model?: string;
+  status?: string;
+  readyInMs?: number;
+  rpm?: number;
+  tpm?: number;
+  enabledFor?: string[];
+  routed?: boolean;
+  usage?: GeminiModelWindowUsage;
+  remaining?: GeminiModelRemainingCapacity;
+  window?: GeminiModelWindowMeta;
+  pool?: {
+    keyCount?: number;
+    atCapacityKeys?: number;
+    availableKeys?: number;
+    nextResetInMs?: number;
+  };
+}
+
 export interface GeminiPoolKeyStatus {
   index?: number;
   fingerprint?: string;
@@ -178,46 +311,70 @@ export interface GeminiPoolKeyStatus {
   inFlight?: number;
   readyInMs?: number;
   rateLimitStrikes?: number;
-  usage?: Record<string, number | null | undefined>;
+  usage?: GeminiModelWindowUsage;
   limit?: {
+    dailyLimit?: number | null;
+    remaining?: number | null;
     atLimit?: boolean;
-    [key: string]: unknown;
   };
   health?: {
     healthy?: boolean;
     reason?: string;
-    [key: string]: unknown;
   };
-  models?: Array<Record<string, unknown>>;
+  models?: GeminiPoolModelStatus[];
+  [key: string]: unknown;
+}
+
+export interface GeminiPoolAllocatorSnapshot {
+  ok?: boolean;
+  window?: {
+    type?: string;
+    seconds?: number;
+    timestampMs?: number;
+  };
+  allocator?: {
+    version?: number;
+    defaultWaitTimeoutMs?: number;
+    windowSeconds?: number;
+  };
+  pool?: {
+    keyCount?: number;
+    healthyKeys?: number;
+    unhealthyKeys?: number;
+    atLimitKeys?: number;
+    inFlightTotal?: number;
+    keyDailyLimit?: number | null;
+    overallDailyLimit?: number | null;
+    overallUsed?: number | null;
+    overallRemaining?: number | null;
+    overallAtLimit?: boolean;
+    rotationMode?: string;
+    nextIndex?: number;
+  };
+  keys?: GeminiPoolKeyStatus[];
+  models?: GeminiPoolModelStatus[];
+}
+
+export interface GeminiPoolUsageEntry {
+  pool?: string;
+  directKeyCount?: number;
+  effectiveKeyCount?: number;
+  effectiveChain?: string[];
+  direct?: GeminiPoolAllocatorSnapshot;
+  effective?: GeminiPoolAllocatorSnapshot;
+}
+
+export interface GeminiPoolUsageResponseBlock {
+  ok?: boolean;
+  usage?: Record<string, GeminiPoolUsageEntry>;
+  endpoint?: string;
   [key: string]: unknown;
 }
 
 export interface GeminiPoolsUsagePayload {
   ok: boolean;
-  backend?: {
-    ok?: boolean;
-    usage?: Record<string, {
-      pool?: string;
-      directKeyCount?: number;
-      effectiveKeyCount?: number;
-      effectiveChain?: string[];
-      direct?: Record<string, unknown>;
-      effective?: Record<string, unknown>;
-    }>;
-    [key: string]: unknown;
-  };
-  runtime?: {
-    ok?: boolean;
-    usage?: Record<string, {
-      pool?: string;
-      directKeyCount?: number;
-      effectiveKeyCount?: number;
-      effectiveChain?: string[];
-      direct?: Record<string, unknown>;
-      effective?: Record<string, unknown>;
-    }>;
-    [key: string]: unknown;
-  };
+  backend?: GeminiPoolUsageResponseBlock;
+  runtime?: GeminiPoolUsageResponseBlock;
 }
 
 export interface DailyUsageResetSummary {
@@ -518,7 +675,7 @@ export const fetchAdminUsers = async (
   const query = new URLSearchParams();
   if (options?.q?.trim()) query.set('q', options.q.trim());
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  const payload = await readJsonOrThrow<{ users?: AdminUserSummary[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ users?: AdminUserSummary[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/users${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -529,14 +686,14 @@ export const fetchAdminUsers = async (
 export const patchAdminUser = async (
   uid: string,
   patch: {
-    plan?: 'Free' | 'Pro' | 'Plus' | string;
+    plan?: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | string;
     paidVfDelta?: number;
     vffDelta?: number;
     disabled?: boolean;
   },
   baseUrl?: string
 ): Promise<AccountEntitlements> => {
-  const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements }>(await authFetch(
+  const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(uid)}`,
     {
       method: 'PATCH',
@@ -553,7 +710,7 @@ export const forceAdminUserIdChange = async (
   input: { userId: string; reason?: string },
   baseUrl?: string
 ): Promise<{ uid: string; userId: string }> => {
-  const payload = await readJsonOrThrow<{ profile?: { uid?: string; userId?: string } }>(await authFetch(
+  const payload = await readJsonOrThrow<{ profile?: { uid?: string; userId?: string } }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(uid)}/force-user-id`,
     {
       method: 'POST',
@@ -569,7 +726,7 @@ export const forceAdminUserIdChange = async (
 };
 
 export const resetAdminUserPassword = async (uid: string, newPassword: string, baseUrl?: string): Promise<void> => {
-  const response = await authFetch(
+  const response = await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(uid)}/reset-password`,
     {
       method: 'POST',
@@ -582,7 +739,7 @@ export const resetAdminUserPassword = async (uid: string, newPassword: string, b
 };
 
 export const revokeAdminUserSessions = async (uid: string, baseUrl?: string): Promise<void> => {
-  const response = await authFetch(
+  const response = await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(uid)}/revoke-sessions`,
     { method: 'POST' },
     { requireAuth: true }
@@ -591,7 +748,7 @@ export const revokeAdminUserSessions = async (uid: string, baseUrl?: string): Pr
 };
 
 export const deleteAdminUser = async (uid: string, baseUrl?: string): Promise<void> => {
-  const response = await authFetch(
+  const response = await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/users/${encodeURIComponent(uid)}`,
     { method: 'DELETE' },
     { requireAuth: true }
@@ -623,7 +780,7 @@ export const createAdminCoupon = async (
   },
   baseUrl?: string
 ): Promise<AdminCoupon> => {
-  const payload = await readJsonOrThrow<{ coupon: AdminCoupon }>(await authFetch(
+  const payload = await readJsonOrThrow<{ coupon: AdminCoupon }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/coupons`,
     {
       method: 'POST',
@@ -642,7 +799,7 @@ export const generateAdminCouponCode = async (
   const query = new URLSearchParams();
   if (options?.prefix?.trim()) query.set('prefix', options.prefix.trim());
   if (Number.isFinite(options?.length)) query.set('length', String(options?.length));
-  const payload = await readJsonOrThrow<{ code?: string }>(await authFetch(
+  const payload = await readJsonOrThrow<{ code?: string }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/coupons/generate-code${query.toString() ? `?${query.toString()}` : ''}`,
     { method: 'POST' },
     { requireAuth: true }
@@ -659,7 +816,7 @@ export const fetchAdminCoupons = async (
   const query = new URLSearchParams();
   query.set('limit', String(limit));
   if (couponType) query.set('couponType', couponType);
-  const payload = await readJsonOrThrow<{ coupons?: AdminCoupon[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ coupons?: AdminCoupon[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/coupons?${query.toString()}`,
     undefined,
     { requireAuth: true }
@@ -687,7 +844,7 @@ export const patchAdminCoupon = async (
   },
   baseUrl?: string
 ): Promise<AdminCoupon> => {
-  const payload = await readJsonOrThrow<{ coupon: AdminCoupon }>(await authFetch(
+  const payload = await readJsonOrThrow<{ coupon: AdminCoupon }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/coupons/${encodeURIComponent(couponId)}`,
     {
       method: 'PATCH',
@@ -700,7 +857,7 @@ export const patchAdminCoupon = async (
 };
 
 export const fetchGeminiPoolStatus = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pool/status`,
     undefined,
     { requireAuth: true }
@@ -708,7 +865,7 @@ export const fetchGeminiPoolStatus = async (baseUrl?: string): Promise<GeminiPoo
 );
 
 export const reloadGeminiPool = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pool/reload`,
     { method: 'POST' },
     { requireAuth: true }
@@ -716,7 +873,7 @@ export const reloadGeminiPool = async (baseUrl?: string): Promise<GeminiPoolStat
 );
 
 export const fetchGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pools`,
     undefined,
     { requireAuth: true }
@@ -724,7 +881,7 @@ export const fetchGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStat
 );
 
 export const reloadGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pools/reload`,
     { method: 'POST' },
     { requireAuth: true }
@@ -735,7 +892,7 @@ export const updateGeminiPools = async (
   input: GeminiPoolConfig,
   baseUrl?: string
 ): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await authFetch(
+  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pools`,
     {
       method: 'PUT',
@@ -747,7 +904,7 @@ export const updateGeminiPools = async (
 );
 
 export const fetchGeminiPoolsUsage = async (baseUrl?: string): Promise<GeminiPoolsUsagePayload> => (
-  readJsonOrThrow<GeminiPoolsUsagePayload>(await authFetch(
+  readJsonOrThrow<GeminiPoolsUsagePayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pools/usage`,
     undefined,
     { requireAuth: true }
@@ -755,7 +912,7 @@ export const fetchGeminiPoolsUsage = async (baseUrl?: string): Promise<GeminiPoo
 );
 
 export const resetDailyUsageAll = async (baseUrl?: string, dryRun = false): Promise<DailyUsageResetSummary> => (
-  readJsonOrThrow<DailyUsageResetSummary>(await authFetch(
+  readJsonOrThrow<DailyUsageResetSummary>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/usage/reset-daily-all${dryRun ? '?dryRun=1' : ''}`,
     { method: 'POST' },
     { requireAuth: true }
@@ -763,7 +920,7 @@ export const resetDailyUsageAll = async (baseUrl?: string, dryRun = false): Prom
 );
 
 export const fetchDailyUsageResetStatus = async (baseUrl?: string): Promise<DailyUsageResetStatusPayload> => (
-  readJsonOrThrow<DailyUsageResetStatusPayload>(await authFetch(
+  readJsonOrThrow<DailyUsageResetStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/usage/reset-daily-all/status`,
     undefined,
     { requireAuth: true }
@@ -771,7 +928,7 @@ export const fetchDailyUsageResetStatus = async (baseUrl?: string): Promise<Dail
 );
 
 export const fetchAdminIntegrationsUsage = async (baseUrl?: string): Promise<AdminIntegrationsUsagePayload> => (
-  readJsonOrThrow<AdminIntegrationsUsagePayload>(await authFetch(
+  readJsonOrThrow<AdminIntegrationsUsagePayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/integrations/usage`,
     undefined,
     { requireAuth: true }
@@ -779,7 +936,7 @@ export const fetchAdminIntegrationsUsage = async (baseUrl?: string): Promise<Adm
 );
 
 export const fetchAdminTtsGatewayStatus = async (baseUrl?: string): Promise<Record<string, unknown>> => (
-  readJsonOrThrow<Record<string, unknown>>(await authFetch(
+  readJsonOrThrow<Record<string, unknown>>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/tts/gateway/status`,
     undefined,
     { requireAuth: true }
@@ -787,8 +944,42 @@ export const fetchAdminTtsGatewayStatus = async (baseUrl?: string): Promise<Reco
 );
 
 export const fetchAdminTtsQueueMetrics = async (baseUrl?: string): Promise<Record<string, unknown>> => (
-  readJsonOrThrow<Record<string, unknown>>(await authFetch(
+  readJsonOrThrow<Record<string, unknown>>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/tts/queue/metrics`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const issueAdminSessionUnlock = async (baseUrl?: string): Promise<AdminSessionUnlockIssuePayload> => (
+  readJsonOrThrow<AdminSessionUnlockIssuePayload>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/session-unlock/issue`,
+    { method: 'POST' },
+    { requireAuth: true }
+  ))
+);
+
+export const verifyAdminSessionUnlock = async (
+  unlockKey: string,
+  baseUrl?: string
+): Promise<AdminSessionUnlockVerifyPayload> => {
+  const payload = await readJsonOrThrow<AdminSessionUnlockVerifyPayload>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/session-unlock/verify`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unlockKey }),
+    },
+    { requireAuth: true }
+  ));
+  const token = String(payload?.unlockToken || '').trim();
+  if (token) setAdminUnlockToken(token);
+  return payload;
+};
+
+export const fetchAdminSessionUnlockStatus = async (baseUrl?: string): Promise<AdminSessionUnlockStatusPayload> => (
+  readJsonOrThrow<AdminSessionUnlockStatusPayload>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/session-unlock/status`,
     undefined,
     { requireAuth: true }
   ))
@@ -798,7 +989,7 @@ export const fetchOpsGuardianStatus = async (
   baseUrl?: string,
   includeRouteStats = false
 ): Promise<OpsGuardianStatusPayload> => (
-  readJsonOrThrow<OpsGuardianStatusPayload>(await authFetch(
+  readJsonOrThrow<OpsGuardianStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/ops/guardian/status${includeRouteStats ? '?include_route_stats=1' : ''}`,
     undefined,
     { requireAuth: true }
@@ -809,7 +1000,7 @@ export const fetchOpsGuardianApprovals = async (
   baseUrl?: string,
   status = 'pending'
 ): Promise<OpsGuardianApprovalsPayload> => (
-  readJsonOrThrow<OpsGuardianApprovalsPayload>(await authFetch(
+  readJsonOrThrow<OpsGuardianApprovalsPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/ops/guardian/approvals?status=${encodeURIComponent(status)}`,
     undefined,
     { requireAuth: true }
@@ -818,10 +1009,10 @@ export const fetchOpsGuardianApprovals = async (
 
 export const runOpsGuardianAction = async (
   action: string,
-  options?: { payload?: Record<string, unknown>; adminToken?: string; gpu?: boolean; requireApproval?: boolean },
+  options?: { payload?: Record<string, unknown>; gpu?: boolean; requireApproval?: boolean },
   baseUrl?: string
 ): Promise<Record<string, unknown>> => (
-  readJsonOrThrow<Record<string, unknown>>(await authFetch(
+  readJsonOrThrow<Record<string, unknown>>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/ops/guardian/actions`,
     {
       method: 'POST',
@@ -829,7 +1020,6 @@ export const runOpsGuardianAction = async (
       body: JSON.stringify({
         action,
         payload: options?.payload || {},
-        adminToken: options?.adminToken || '',
         gpu: Boolean(options?.gpu),
         requireApproval: options?.requireApproval !== false,
       }),
@@ -839,7 +1029,7 @@ export const runOpsGuardianAction = async (
 );
 
 export const fetchAdminRbacRoles = async (baseUrl?: string): Promise<AdminRoleCatalogPayload> => (
-  readJsonOrThrow<AdminRoleCatalogPayload>(await authFetch(
+  readJsonOrThrow<AdminRoleCatalogPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/rbac/roles`,
     undefined,
     { requireAuth: true }
@@ -854,7 +1044,7 @@ export const fetchAdminRbacUsers = async (
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
   if (options?.cursor) query.set('cursor', String(options.cursor));
   if (options?.q) query.set('q', String(options.q));
-  return readJsonOrThrow<AdminRoleAssignmentsPayload>(await authFetch(
+  return readJsonOrThrow<AdminRoleAssignmentsPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/rbac/users${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -871,7 +1061,7 @@ export const assignAdminRbacUser = async (
   },
   baseUrl?: string
 ): Promise<AdminRoleAssignment> => {
-  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await authFetch(
+  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/rbac/users/${encodeURIComponent(uid)}`,
     {
       method: 'PUT',
@@ -888,7 +1078,7 @@ export const disableAdminRbacUser = async (
   note: string,
   baseUrl?: string
 ): Promise<AdminRoleAssignment> => {
-  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await authFetch(
+  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/rbac/users/${encodeURIComponent(uid)}/disable`,
     {
       method: 'POST',
@@ -905,7 +1095,7 @@ export const enableAdminRbacUser = async (
   note: string,
   baseUrl?: string
 ): Promise<AdminRoleAssignment> => {
-  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await authFetch(
+  const payload = await readJsonOrThrow<{ assignment: AdminRoleAssignment }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/rbac/users/${encodeURIComponent(uid)}/enable`,
     {
       method: 'POST',
@@ -943,7 +1133,7 @@ export const fetchAdminAuditEvents = async (
   if (options?.to) query.set('to', String(options.to));
   if (options?.cursor) query.set('cursor', String(options.cursor));
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  return readJsonOrThrow<AuditEventsPayload>(await authFetch(
+  return readJsonOrThrow<AuditEventsPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/audit/events${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -951,7 +1141,7 @@ export const fetchAdminAuditEvents = async (
 };
 
 export const fetchAdminAuditEventById = async (eventId: string, baseUrl?: string): Promise<AuditEvent> => {
-  const payload = await readJsonOrThrow<{ event: AuditEvent }>(await authFetch(
+  const payload = await readJsonOrThrow<{ event: AuditEvent }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/audit/events/${encodeURIComponent(eventId)}`,
     undefined,
     { requireAuth: true }
@@ -967,7 +1157,7 @@ export const verifyAdminAuditChain = async (
   if (Number.isFinite(options?.fromSeq)) query.set('fromSeq', String(options?.fromSeq));
   if (Number.isFinite(options?.toSeq)) query.set('toSeq', String(options?.toSeq));
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  return readJsonOrThrow<AuditVerifyPayload>(await authFetch(
+  return readJsonOrThrow<AuditVerifyPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/audit/verify-chain${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -975,7 +1165,7 @@ export const verifyAdminAuditChain = async (
 };
 
 export const fetchAlertPolicies = async (baseUrl?: string, limit = 100): Promise<AlertPolicy[]> => {
-  const payload = await readJsonOrThrow<{ items?: AlertPolicy[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: AlertPolicy[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/alerts/policies?limit=${encodeURIComponent(String(limit))}`,
     undefined,
     { requireAuth: true }
@@ -985,11 +1175,10 @@ export const fetchAlertPolicies = async (baseUrl?: string, limit = 100): Promise
 
 export const createAlertPolicy = async (
   input: Omit<AlertPolicy, 'id'>,
-  adminToken: string,
   baseUrl?: string
 ): Promise<AlertPolicy> => {
-  const payload = await readJsonOrThrow<{ policy: AlertPolicy }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/admin/alerts/policies?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+  const payload = await readJsonOrThrow<{ policy: AlertPolicy }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/policies`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1003,11 +1192,10 @@ export const createAlertPolicy = async (
 export const patchAlertPolicy = async (
   policyId: string,
   patch: Partial<Omit<AlertPolicy, 'id'>>,
-  adminToken: string,
   baseUrl?: string
 ): Promise<AlertPolicy> => {
-  const payload = await readJsonOrThrow<{ policy: AlertPolicy }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/admin/alerts/policies/${encodeURIComponent(policyId)}?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+  const payload = await readJsonOrThrow<{ policy: AlertPolicy }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/policies/${encodeURIComponent(policyId)}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -1019,7 +1207,7 @@ export const patchAlertPolicy = async (
 };
 
 export const fetchAlertDestinations = async (baseUrl?: string, limit = 100): Promise<AlertDestination[]> => {
-  const payload = await readJsonOrThrow<{ items?: AlertDestination[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: AlertDestination[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/alerts/destinations?limit=${encodeURIComponent(String(limit))}`,
     undefined,
     { requireAuth: true }
@@ -1029,11 +1217,10 @@ export const fetchAlertDestinations = async (baseUrl?: string, limit = 100): Pro
 
 export const createAlertDestination = async (
   input: Omit<AlertDestination, 'id'>,
-  adminToken: string,
   baseUrl?: string
 ): Promise<AlertDestination> => {
-  const payload = await readJsonOrThrow<{ destination: AlertDestination }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/admin/alerts/destinations?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+  const payload = await readJsonOrThrow<{ destination: AlertDestination }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/destinations`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1047,11 +1234,10 @@ export const createAlertDestination = async (
 export const patchAlertDestination = async (
   destinationId: string,
   patch: Partial<Omit<AlertDestination, 'id'>>,
-  adminToken: string,
   baseUrl?: string
 ): Promise<AlertDestination> => {
-  const payload = await readJsonOrThrow<{ destination: AlertDestination }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/admin/alerts/destinations/${encodeURIComponent(destinationId)}?adminToken=${encodeURIComponent(String(adminToken || ''))}`,
+  const payload = await readJsonOrThrow<{ destination: AlertDestination }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/alerts/destinations/${encodeURIComponent(destinationId)}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -1069,7 +1255,7 @@ export const fetchAlertEvents = async (
   const query = new URLSearchParams();
   if (options?.status) query.set('status', options.status);
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  const payload = await readJsonOrThrow<{ items?: AlertEvent[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: AlertEvent[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/alerts/events${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1077,26 +1263,26 @@ export const fetchAlertEvents = async (
   return Array.isArray(payload?.items) ? payload.items : [];
 };
 
-export const ackAlertEvent = async (eventId: string, adminToken: string, note = '', baseUrl?: string): Promise<AlertEvent> => {
-  const payload = await readJsonOrThrow<{ event: AlertEvent }>(await authFetch(
+export const ackAlertEvent = async (eventId: string, note = '', baseUrl?: string): Promise<AlertEvent> => {
+  const payload = await readJsonOrThrow<{ event: AlertEvent }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/alerts/events/${encodeURIComponent(eventId)}/ack`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminToken, note }),
+      body: JSON.stringify({ note }),
     },
     { requireAuth: true }
   ));
   return payload.event;
 };
 
-export const resolveAlertEvent = async (eventId: string, adminToken: string, note = '', baseUrl?: string): Promise<AlertEvent> => {
-  const payload = await readJsonOrThrow<{ event: AlertEvent }>(await authFetch(
+export const resolveAlertEvent = async (eventId: string, note = '', baseUrl?: string): Promise<AlertEvent> => {
+  const payload = await readJsonOrThrow<{ event: AlertEvent }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/alerts/events/${encodeURIComponent(eventId)}/resolve`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminToken, note }),
+      body: JSON.stringify({ note }),
     },
     { requireAuth: true }
   ));
@@ -1104,7 +1290,7 @@ export const resolveAlertEvent = async (eventId: string, adminToken: string, not
 };
 
 export const fetchSchedulerTasks = async (baseUrl?: string, limit = 200): Promise<ScheduledTask[]> => {
-  const payload = await readJsonOrThrow<{ items?: ScheduledTask[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: ScheduledTask[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/scheduler/tasks?limit=${encodeURIComponent(String(limit))}`,
     undefined,
     { requireAuth: true }
@@ -1116,7 +1302,7 @@ export const createSchedulerTask = async (
   input: Omit<ScheduledTask, 'id' | 'lastRunAt' | 'lastResult' | 'nextRunAt' | 'createdAt' | 'updatedAt'>,
   baseUrl?: string
 ): Promise<ScheduledTask> => {
-  const payload = await readJsonOrThrow<{ task: ScheduledTask }>(await authFetch(
+  const payload = await readJsonOrThrow<{ task: ScheduledTask }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/scheduler/tasks`,
     {
       method: 'POST',
@@ -1133,7 +1319,7 @@ export const patchSchedulerTask = async (
   patch: Partial<Omit<ScheduledTask, 'id' | 'taskType'>>,
   baseUrl?: string
 ): Promise<ScheduledTask> => {
-  const payload = await readJsonOrThrow<{ task: ScheduledTask }>(await authFetch(
+  const payload = await readJsonOrThrow<{ task: ScheduledTask }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/scheduler/tasks/${encodeURIComponent(taskId)}`,
     {
       method: 'PATCH',
@@ -1147,16 +1333,15 @@ export const patchSchedulerTask = async (
 
 export const runSchedulerTask = async (
   taskId: string,
-  adminToken: string,
   dryRun?: boolean,
   baseUrl?: string
 ): Promise<ScheduledTaskRun> => {
-  const payload = await readJsonOrThrow<{ run: ScheduledTaskRun }>(await authFetch(
+  const payload = await readJsonOrThrow<{ run: ScheduledTaskRun }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/scheduler/tasks/${encodeURIComponent(taskId)}/run`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminToken, dryRun }),
+      body: JSON.stringify({ dryRun }),
     },
     { requireAuth: true }
   ));
@@ -1170,7 +1355,7 @@ export const fetchSchedulerRuns = async (
   const query = new URLSearchParams();
   if (options?.taskId) query.set('taskId', String(options.taskId));
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  const payload = await readJsonOrThrow<{ items?: ScheduledTaskRun[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: ScheduledTaskRun[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/scheduler/runs${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1179,7 +1364,7 @@ export const fetchSchedulerRuns = async (
 };
 
 export const fetchSchedulerRunById = async (runId: string, baseUrl?: string): Promise<ScheduledTaskRun> => {
-  const payload = await readJsonOrThrow<{ run: ScheduledTaskRun }>(await authFetch(
+  const payload = await readJsonOrThrow<{ run: ScheduledTaskRun }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/scheduler/runs/${encodeURIComponent(runId)}`,
     undefined,
     { requireAuth: true }
@@ -1196,7 +1381,7 @@ export const fetchCouponAnalyticsSummary = async (
   if (options?.to) query.set('to', options.to);
   if (options?.plan) query.set('plan', options.plan);
   if (options?.couponKind) query.set('couponKind', options.couponKind);
-  const payload = await readJsonOrThrow<{ summary: CouponAnalyticsSummary; count: number }>(await authFetch(
+  const payload = await readJsonOrThrow<{ summary: CouponAnalyticsSummary; count: number }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/analytics/coupons/summary${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1214,7 +1399,7 @@ export const fetchCouponAnalyticsTimeseries = async (
   if (options?.groupBy) query.set('groupBy', options.groupBy);
   if (options?.plan) query.set('plan', options.plan);
   if (options?.couponKind) query.set('couponKind', options.couponKind);
-  const payload = await readJsonOrThrow<{ groupBy: string; series: CouponAnalyticsPoint[]; count: number }>(await authFetch(
+  const payload = await readJsonOrThrow<{ groupBy: string; series: CouponAnalyticsPoint[]; count: number }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/analytics/coupons/timeseries${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1230,7 +1415,7 @@ export const fetchCouponAnalyticsImpact = async (
   const query = new URLSearchParams();
   if (options?.from) query.set('from', options.from);
   if (options?.to) query.set('to', options.to);
-  const payload = await readJsonOrThrow<{ couponCode: string; overall: CouponAnalyticsSummary; byPlan: CouponAnalyticsPoint[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ couponCode: string; overall: CouponAnalyticsSummary; byPlan: CouponAnalyticsPoint[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/analytics/coupons/${encodeURIComponent(couponCode)}/impact${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1245,7 +1430,7 @@ export const fetchAdminTeams = async (
   const query = new URLSearchParams();
   if (options?.q) query.set('q', String(options.q));
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  const payload = await readJsonOrThrow<{ items?: AdminTeam[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: AdminTeam[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1257,7 +1442,7 @@ export const createAdminTeam = async (
   input: { name: string; slug: string; ownerUid: string; seatLimit?: number; status?: string },
   baseUrl?: string
 ): Promise<AdminTeam> => {
-  const payload = await readJsonOrThrow<{ team: AdminTeam }>(await authFetch(
+  const payload = await readJsonOrThrow<{ team: AdminTeam }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams`,
     {
       method: 'POST',
@@ -1274,7 +1459,7 @@ export const patchAdminTeam = async (
   patch: { name?: string; slug?: string; ownerUid?: string; seatLimit?: number; status?: string },
   baseUrl?: string
 ): Promise<AdminTeam> => {
-  const payload = await readJsonOrThrow<{ team: AdminTeam }>(await authFetch(
+  const payload = await readJsonOrThrow<{ team: AdminTeam }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}`,
     {
       method: 'PATCH',
@@ -1291,7 +1476,7 @@ export const fetchAdminTeamMembers = async (
   baseUrl?: string,
   limit = 500
 ): Promise<AdminTeamMember[]> => {
-  const payload = await readJsonOrThrow<{ items?: AdminTeamMember[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: AdminTeamMember[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members?limit=${encodeURIComponent(String(limit))}`,
     undefined,
     { requireAuth: true }
@@ -1304,7 +1489,7 @@ export const createAdminTeamMember = async (
   input: { uid: string; role?: string; status?: string },
   baseUrl?: string
 ): Promise<AdminTeamMember> => {
-  const payload = await readJsonOrThrow<{ member: AdminTeamMember }>(await authFetch(
+  const payload = await readJsonOrThrow<{ member: AdminTeamMember }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members`,
     {
       method: 'POST',
@@ -1322,7 +1507,7 @@ export const patchAdminTeamMember = async (
   patch: { role?: string; status?: string },
   baseUrl?: string
 ): Promise<AdminTeamMember> => {
-  const payload = await readJsonOrThrow<{ member: AdminTeamMember }>(await authFetch(
+  const payload = await readJsonOrThrow<{ member: AdminTeamMember }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(uid)}`,
     {
       method: 'PATCH',
@@ -1339,7 +1524,7 @@ export const deleteAdminTeamMember = async (
   uid: string,
   baseUrl?: string
 ): Promise<void> => {
-  const response = await authFetch(
+  const response = await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(uid)}`,
     { method: 'DELETE' },
     { requireAuth: true }
@@ -1355,7 +1540,7 @@ export const fetchAdminSupportConversations = async (
   if (options?.status) query.set('status', String(options.status));
   if (options?.q) query.set('q', String(options.q));
   if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
-  const payload = await readJsonOrThrow<{ items?: SupportConversation[] }>(await authFetch(
+  const payload = await readJsonOrThrow<{ items?: SupportConversation[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/support/conversations${query.toString() ? `?${query.toString()}` : ''}`,
     undefined,
     { requireAuth: true }
@@ -1367,7 +1552,7 @@ export const fetchAdminSupportConversationById = async (
   conversationId: string,
   baseUrl?: string
 ): Promise<{ conversation: SupportConversation; messages: SupportMessage[] }> => {
-  return readJsonOrThrow<{ conversation: SupportConversation; messages: SupportMessage[] }>(await authFetch(
+  return readJsonOrThrow<{ conversation: SupportConversation; messages: SupportMessage[] }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(conversationId)}`,
     undefined,
     { requireAuth: true }
@@ -1379,7 +1564,7 @@ export const replyAdminSupportConversation = async (
   text: string,
   baseUrl?: string
 ): Promise<{ conversation: SupportConversation; message: SupportMessage }> => (
-  readJsonOrThrow<{ conversation: SupportConversation; message: SupportMessage }>(await authFetch(
+  readJsonOrThrow<{ conversation: SupportConversation; message: SupportMessage }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(conversationId)}/reply`,
     {
       method: 'POST',
@@ -1394,7 +1579,7 @@ export const resolveAdminSupportConversation = async (
   conversationId: string,
   baseUrl?: string
 ): Promise<SupportConversation> => {
-  const payload = await readJsonOrThrow<{ conversation: SupportConversation }>(await authFetch(
+  const payload = await readJsonOrThrow<{ conversation: SupportConversation }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/support/conversations/${encodeURIComponent(conversationId)}/resolve`,
     {
       method: 'POST',
@@ -1405,7 +1590,7 @@ export const resolveAdminSupportConversation = async (
 };
 
 export const fetchAdminSupportAiPolicy = async (baseUrl?: string): Promise<SupportAiPolicy> => {
-  const payload = await readJsonOrThrow<{ policy: SupportAiPolicy }>(await authFetch(
+  const payload = await readJsonOrThrow<{ policy: SupportAiPolicy }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/support/ai-policy`,
     undefined,
     { requireAuth: true }
@@ -1414,10 +1599,10 @@ export const fetchAdminSupportAiPolicy = async (baseUrl?: string): Promise<Suppo
 };
 
 export const patchAdminSupportAiPolicy = async (
-  patch: Partial<SupportAiPolicy> & { adminToken: string },
+  patch: Partial<SupportAiPolicy>,
   baseUrl?: string
 ): Promise<SupportAiPolicy> => {
-  const payload = await readJsonOrThrow<{ policy: SupportAiPolicy }>(await authFetch(
+  const payload = await readJsonOrThrow<{ policy: SupportAiPolicy }>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/support/ai-policy`,
     {
       method: 'PATCH',

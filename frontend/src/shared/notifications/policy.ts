@@ -1,42 +1,101 @@
 import { getNotificationCatalogEntry } from './catalog';
 import type { NotificationCatalogEntry } from './catalog';
 import type {
+  NotificationAudience,
   NotificationChannel,
   NotificationEmitPayload,
   NotificationEventCode,
   NotificationSeverity,
 } from './types';
 
-const SUCCESS_TOAST_ALLOWLIST = new Set<NotificationEventCode>([
+// Immediate action/result feedback that should surface as popup toasts.
+const TOAST_ACTION_EVENT_CODES = new Set<NotificationEventCode>([
   'generation.completed',
+  'generation.failed',
+  'generation.cancelled',
+  'auth.signin.success',
+  'auth.signin.failed',
+  'auth.signup.success',
+  'auth.signup.failed',
+  'auth.reset.failed',
+  'billing.checkout.success',
+  'billing.coupon.success',
+  'billing.coupon.failed',
+  'profile.userid.saved',
+  'profile.userid.failed',
+  'support.message.failed',
 ]);
 
+// Operationally urgent events that should always interrupt with a toast.
+const TOAST_PRIORITY_EVENT_CODES = new Set<NotificationEventCode>([
+  'connectivity.offline',
+  'backend.offline',
+  'runtime.offline',
+  'runtime.activation_failed',
+  'generation.failed_repeated',
+  'quota.daily.reached',
+  'app.crash.captured',
+  'admin.pool.reload.failed',
+  'admin.guard.action.failed',
+  'admin.access.load.failed',
+]);
+
+// Passive telemetry updates that belong in the inbox unless explicitly overridden.
 const INBOX_ONLY_EVENT_CODES = new Set<NotificationEventCode>([
   'generation.started',
+  'connectivity.online',
   'runtime.starting',
   'runtime.online',
   'backend.online',
   'runtime.recovered',
+  'quota.daily.80',
+  'quota.daily.95',
+  'wallet.low_balance',
+  'auth.reset.success',
+  'billing.checkout.cancel',
+  'billing.history.refresh.success',
+  'support.message.sent',
+  'support.conversation.unresolved',
 ]);
 
-const isGenerationRelatedToastEvent = (eventCode: NotificationEventCode): boolean =>
-  eventCode.startsWith('generation.') || eventCode.startsWith('quota.daily.');
+// Admin control-plane notifications that must never surface for non-admin users.
+const ADMIN_ONLY_EVENT_CODES = new Set<NotificationEventCode>([
+  'admin.pool.reload.success',
+  'admin.pool.reload.failed',
+  'admin.guard.action.submitted',
+  'admin.guard.action.failed',
+  'admin.access.load.failed',
+]);
 
 export interface ResolvedNotificationPolicy {
   catalog: NotificationCatalogEntry;
   severity: NotificationSeverity;
   category: NotificationCatalogEntry['category'];
+  audience: NotificationAudience;
   channel: NotificationChannel;
   sticky: boolean;
   dedupeCooldownMs: number;
   resolveEventCodes: NotificationEventCode[];
 }
 
+export interface NotificationPolicyContext {
+  isAdmin?: boolean;
+}
+
+const isAudienceAllowed = (audience: NotificationAudience, context: NotificationPolicyContext): boolean => {
+  if (audience !== 'admin') return true;
+  return context.isAdmin === true;
+};
+
+export const isAdminOnlyNotificationEvent = (eventCode: NotificationEventCode): boolean =>
+  ADMIN_ONLY_EVENT_CODES.has(eventCode);
+
 const shouldUseToastForWarning = (
   eventCode: NotificationEventCode,
   catalog: NotificationCatalogEntry,
   payload: NotificationEmitPayload
 ): boolean => {
+  if (TOAST_PRIORITY_EVENT_CODES.has(eventCode)) return true;
   if (payload.channel === 'toast') return true;
   if (catalog.actionableToast) return true;
   if (payload.sticky === true) return true;
@@ -44,36 +103,45 @@ const shouldUseToastForWarning = (
   return eventCode === 'quota.daily.reached';
 };
 
+const shouldUseToastForSuccessOrInfo = (
+  eventCode: NotificationEventCode,
+  catalog: NotificationCatalogEntry,
+  payload: NotificationEmitPayload
+): boolean => {
+  if (payload.channel === 'toast') return true;
+  if (TOAST_ACTION_EVENT_CODES.has(eventCode)) return true;
+  if (catalog.actionableToast && payload.action) return true;
+  return false;
+};
+
 export const resolveNotificationPolicy = (
   eventCode: NotificationEventCode,
-  payload: NotificationEmitPayload = {}
+  payload: NotificationEmitPayload = {},
+  context: NotificationPolicyContext = {}
 ): ResolvedNotificationPolicy => {
   const catalog = getNotificationCatalogEntry(eventCode);
   const severity = (payload.severity || catalog.severity) as NotificationSeverity;
   const category = payload.category || catalog.category;
+  const audience = payload.audience || catalog.audience || 'all';
   const sticky = payload.sticky === true || catalog.sticky || severity === 'critical';
   const requestedChannel = payload.channel;
   let channel: NotificationChannel = requestedChannel || catalog.channel;
 
-  if (severity === 'critical' || severity === 'error') {
+  if (requestedChannel === 'silent') {
+    channel = 'silent';
+  } else if (!isAudienceAllowed(audience, context)) {
+    channel = 'silent';
+  } else if (TOAST_PRIORITY_EVENT_CODES.has(eventCode)) {
+    channel = 'toast';
+  } else if (severity === 'critical' || severity === 'error') {
     channel = requestedChannel || 'toast';
   } else if (severity === 'warning') {
     channel = shouldUseToastForWarning(eventCode, catalog, payload) ? 'toast' : 'inbox';
   } else {
-    const allowToast = SUCCESS_TOAST_ALLOWLIST.has(eventCode);
-    if (!allowToast && !requestedChannel) {
-      channel = 'inbox';
-    } else if (!allowToast && channel === 'toast' && requestedChannel !== 'toast') {
-      channel = 'inbox';
-    }
+    channel = shouldUseToastForSuccessOrInfo(eventCode, catalog, payload) ? 'toast' : 'inbox';
   }
 
-  if (INBOX_ONLY_EVENT_CODES.has(eventCode) && requestedChannel !== 'toast') {
-    channel = 'inbox';
-  }
-
-  // Product rule: show popup toasts only for generation-related events.
-  if (channel === 'toast' && !isGenerationRelatedToastEvent(eventCode)) {
+  if (INBOX_ONLY_EVENT_CODES.has(eventCode) && requestedChannel !== 'toast' && channel !== 'silent') {
     channel = 'inbox';
   }
 
@@ -81,6 +149,7 @@ export const resolveNotificationPolicy = (
     catalog,
     severity,
     category,
+    audience,
     channel,
     sticky,
     dedupeCooldownMs: Math.max(1000, Number(payload.dedupeKey ? catalog.dedupeCooldownMs : catalog.dedupeCooldownMs || 6000)),

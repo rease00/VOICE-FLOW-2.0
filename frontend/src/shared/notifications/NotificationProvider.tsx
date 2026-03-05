@@ -5,7 +5,11 @@ import { readStorageJson, writeStorageJson } from '../storage/localStore';
 import { sanitizeUiText } from '../ui/terminology';
 import { getNotificationCatalogEntry } from './catalog';
 import { toUserMessage } from './format';
-import { buildEventDedupeKey, resolveNotificationPolicy } from './policy';
+import {
+  buildEventDedupeKey,
+  isAdminOnlyNotificationEvent,
+  resolveNotificationPolicy,
+} from './policy';
 import {
   applyPrefsFilter,
   archiveResolved,
@@ -33,6 +37,7 @@ import type {
   NotifyOptions,
 } from './types';
 import { isNotificationEventCode } from './types';
+import { useUser } from '../../../contexts/UserContext';
 
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   allowTips: true,
@@ -45,7 +50,6 @@ const TOAST_MIN_GAP_MS = 1200;
 const TOAST_VISIBLE_LIMIT = 2;
 const GENERATION_FAILURE_WINDOW_MS = 3 * 60 * 1000;
 const GENERATION_FAILURE_ESCALATION_MS = 5 * 60 * 1000;
-const INBOX_ONLY_MODE = true;
 const NON_RUNTIME_GENERATION_FAILURE_HINTS = [
   'sign in',
   'authentication',
@@ -99,6 +103,7 @@ const coerceStoredNotification = (input: unknown, nowMs: number): AppNotificatio
   const details = sanitizeUiText(String(raw.details || '').trim());
   const severity = String(raw.severity || '').trim() as NotificationSeverity;
   const category = String(raw.category || '').trim();
+  const audience = String(raw.audience || '').trim();
   const channel = String(raw.channel || '').trim();
   const status = String(raw.status || '').trim();
   const createdAt = Number(raw.createdAt || nowMs);
@@ -113,8 +118,10 @@ const coerceStoredNotification = (input: unknown, nowMs: number): AppNotificatio
     : raw.toastVisible === true
       ? 'toast'
       : 'inbox';
-  const hydratedChannel: AppNotification['channel'] =
-    INBOX_ONLY_MODE && normalizedChannel === 'toast' ? 'inbox' : normalizedChannel;
+  const audienceValues: AppNotification['audience'][] = ['all', 'admin', 'user'];
+  const normalizedAudience = audienceValues.includes(audience as AppNotification['audience'])
+    ? (audience as AppNotification['audience'])
+    : 'all';
   const normalizedStatus = (['active', 'resolved'] as const).includes(status as 'active')
     ? (status as AppNotification['status'])
     : 'active';
@@ -128,7 +135,8 @@ const coerceStoredNotification = (input: unknown, nowMs: number): AppNotificatio
     ...(details ? { details } : {}),
     severity,
     category: category as AppNotification['category'],
-    channel: hydratedChannel,
+    audience: normalizedAudience,
+    channel: normalizedChannel,
     status: normalizedStatus,
     resolvedAt: Number.isFinite(Number(raw.resolvedAt)) ? Number(raw.resolvedAt) : null,
     resolvedBy: String(raw.resolvedBy || '').trim() || null,
@@ -137,7 +145,7 @@ const coerceStoredNotification = (input: unknown, nowMs: number): AppNotificatio
     readAt: Number.isFinite(Number(raw.readAt)) ? Number(raw.readAt) : null,
     sticky: raw.sticky === true || severity === 'critical',
     dedupeKey: String(raw.dedupeKey || '').trim() || undefined,
-    toastVisible: normalizedStatus === 'active' && hydratedChannel === 'toast' && raw.toastVisible === true,
+    toastVisible: normalizedStatus === 'active' && normalizedChannel === 'toast' && raw.toastVisible === true,
     action:
       raw.action && typeof raw.action === 'object'
         ? {
@@ -244,15 +252,21 @@ interface NotificationsContextValue {
 const NotificationsContext = createContext<NotificationsContextValue | undefined>(undefined);
 
 export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const { isAdmin } = useUser();
   const now = Date.now();
   const initialNotifications = useMemo(() => {
     const parsed = readStorageJson<unknown[]>(STORAGE_KEYS.notifications);
     const rows = Array.isArray(parsed) ? parsed : [];
     const normalized = rows
       .map((row) => coerceStoredNotification(row, now))
-      .filter((row): row is AppNotification => Boolean(row));
+      .filter((row): row is AppNotification => {
+        if (!row) return false;
+        if (row.audience === 'admin' && !isAdmin) return false;
+        if (!isAdmin && isAdminOnlyNotificationEvent(row.eventCode)) return false;
+        return true;
+      });
     return limitNotifications(pruneExpiredNotifications(normalized, now), NOTIFICATION_MAX_ITEMS);
-  }, [now]);
+  }, [isAdmin, now]);
   const initialPrefs = useMemo(
     () => coerceNotificationPrefs(readStorageJson(STORAGE_KEYS.notificationPrefs)),
     []
@@ -296,7 +310,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     (eventCode: NotificationEventCode, payload?: NotificationEmitPayload, options?: EmitOptions): string => {
       const nowMs = Date.now();
       const safePayload: NotificationEmitPayload = payload || {};
-      const policy = resolveNotificationPolicy(eventCode, safePayload);
+      const policy = resolveNotificationPolicy(eventCode, safePayload, { isAdmin });
       const entityKey = String(safePayload.entityKey || '').trim();
       const useFriendlyErrorMessage = policy.severity === 'critical' || policy.severity === 'error';
       const fallbackMessage = safePayload.message || policy.catalog.message || 'Notification';
@@ -354,9 +368,6 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       if (hasActiveOutage && (eventCode === 'generation.failed' || eventCode === 'generation.failed_repeated')) {
         channel = 'inbox';
       }
-      if (INBOX_ONLY_MODE && channel === 'toast') {
-        channel = 'inbox';
-      }
 
       const title =
         sanitizeUiText(String(safePayload.title || policy.catalog.title || '').trim()) ||
@@ -384,6 +395,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
         ...(details ? { details } : {}),
         severity: policy.severity,
         category: policy.category,
+        audience: policy.audience,
         channel,
         status,
         resolvedAt: null,
@@ -437,12 +449,23 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       }
       return deduped.notification.id;
     },
-    [canShowToast, commitNotifications]
+    [canShowToast, commitNotifications, isAdmin]
   );
 
   useEffect(() => {
     emitRef.current = emit;
   }, [emit]);
+
+  useEffect(() => {
+    if (isAdmin) return;
+    const filtered = notificationsRef.current.filter((item) => {
+      if (item.audience === 'admin') return false;
+      if (isAdminOnlyNotificationEvent(item.eventCode)) return false;
+      return true;
+    });
+    if (filtered.length === notificationsRef.current.length) return;
+    commitNotifications(filtered);
+  }, [commitNotifications, isAdmin]);
 
   const notify = useCallback(
     (input: NotificationInput, options?: NotifyOptions): string => {
@@ -455,6 +478,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
         ...(input.details ? { details: input.details } : {}),
         ...(input.severity ? { severity: input.severity } : {}),
         ...(input.category ? { category: input.category } : {}),
+        ...(input.audience ? { audience: input.audience } : {}),
         ...(input.channel ? { channel: input.channel } : {}),
         ...(input.sticky === true ? { sticky: true } : {}),
         ...(input.dedupeKey ? { dedupeKey: input.dedupeKey } : {}),

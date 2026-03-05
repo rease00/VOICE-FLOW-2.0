@@ -7,6 +7,8 @@ import type {
   TtsVoiceMappingCatalogResponse,
   TtsEngineVoicesResponse,
   VideoTranscriptionResponse,
+  CreateDubbingJobV2Response,
+  DubbingJobStatusResponse,
 } from './contracts';
 import { requestBlob, requestJson } from './httpClient';
 
@@ -108,6 +110,22 @@ export const transcribeVideo = async (
   );
 };
 
+export const extractAudioFromVideo = async (
+  file: File,
+  options?: { baseUrl?: string }
+): Promise<Blob> => {
+  const form = new FormData();
+  form.append('file', file);
+  return requestBlob(
+    '/audio/extract-from-video',
+    {
+      method: 'POST',
+      body: form,
+    },
+    withBaseUrl(options?.baseUrl)
+  );
+};
+
 export const separateStem = async (
   file: File,
   options?: { stem?: 'speech' | 'background'; modelName?: string; baseUrl?: string }
@@ -171,4 +189,104 @@ export const fetchTtsJobChunkAudio = async (
     withBaseUrl(baseUrl)
   );
   return blob.arrayBuffer();
+};
+
+export const createDubbingJobV2 = async (
+  sourceFile: File,
+  options?: {
+    targetLanguage?: string;
+    mode?: 'strict_full';
+    output?: 'audio' | 'video' | 'audio+video';
+    advanced?: Record<string, unknown>;
+    baseUrl?: string;
+  }
+): Promise<CreateDubbingJobV2Response> => {
+  const form = new FormData();
+  form.append('source_file', sourceFile);
+  form.append('target_language', options?.targetLanguage || 'auto');
+  form.append('mode', options?.mode || 'strict_full');
+  form.append('output', options?.output || 'audio+video');
+  form.append('advanced', JSON.stringify(options?.advanced || {}));
+  return requestJson<CreateDubbingJobV2Response>(
+    '/dubbing/jobs/v2',
+    {
+      method: 'POST',
+      body: form,
+    },
+    withBaseUrl(options?.baseUrl)
+  );
+};
+
+export const getDubbingJob = async (jobId: string, baseUrl?: string): Promise<DubbingJobStatusResponse> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  return requestJson<DubbingJobStatusResponse>(
+    `/dubbing/jobs/${safeJobId}`,
+    undefined,
+    withBaseUrl(baseUrl)
+  );
+};
+
+export const getDubbingJobWithOptions = async (
+  jobId: string,
+  options?: {
+    includeChunks?: boolean;
+    chunkCursor?: number;
+    chunkLimit?: number;
+    includeChunkAudio?: boolean;
+    baseUrl?: string;
+  }
+): Promise<DubbingJobStatusResponse> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  const searchParams = new URLSearchParams();
+  if (options?.includeChunks) searchParams.set('includeChunks', '1');
+  if (typeof options?.chunkCursor === 'number' && Number.isFinite(options.chunkCursor)) {
+    searchParams.set('chunkCursor', String(Math.max(0, Math.floor(options.chunkCursor))));
+  }
+  if (typeof options?.chunkLimit === 'number' && Number.isFinite(options.chunkLimit)) {
+    searchParams.set('chunkLimit', String(Math.max(1, Math.floor(options.chunkLimit))));
+  }
+  if (typeof options?.includeChunkAudio === 'boolean') {
+    searchParams.set('includeChunkAudio', options.includeChunkAudio ? '1' : '0');
+  }
+  const path = searchParams.toString()
+    ? `/dubbing/jobs/${safeJobId}?${searchParams.toString()}`
+    : `/dubbing/jobs/${safeJobId}`;
+  return requestJson<DubbingJobStatusResponse>(
+    path,
+    undefined,
+    withBaseUrl(options?.baseUrl)
+  );
+};
+
+export const cancelDubbingJob = async (jobId: string, baseUrl?: string): Promise<{ ok: boolean; job_id: string }> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  return requestJson<{ ok: boolean; job_id: string }>(
+    `/dubbing/jobs/${safeJobId}/cancel`,
+    { method: 'POST' },
+    withBaseUrl(baseUrl)
+  );
+};
+
+export const downloadDubbingReport = async (jobId: string, baseUrl?: string): Promise<Blob> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  return requestBlob(`/dubbing/jobs/${safeJobId}/report`, undefined, withBaseUrl(baseUrl));
+};
+
+export const downloadDubbingResult = async (jobId: string, baseUrl?: string): Promise<Blob> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  return requestBlob(`/dubbing/jobs/${safeJobId}/result`, undefined, withBaseUrl(baseUrl));
+};
+
+export const downloadDubbingChunk = async (
+  jobId: string,
+  chunkIndex: number,
+  baseUrl?: string
+): Promise<Blob> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  const safeChunkIndex = Math.max(0, Math.floor(Number(chunkIndex || 0)));
+  return requestBlob(
+    `/dubbing/jobs/${safeJobId}/chunks/${safeChunkIndex}`,
+    undefined,
+    withBaseUrl(baseUrl)
+  );
 };

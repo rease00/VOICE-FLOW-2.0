@@ -26,17 +26,48 @@ describe('notification policy', () => {
     expect(policy.channel).toBe('inbox');
   });
 
-  it('forces non-generation success events to inbox', () => {
+  it('allows requested custom info messages to surface as popups', () => {
+    const policy = resolveNotificationPolicy('custom.message', {
+      severity: 'info',
+      message: 'Enter text first.',
+      channel: 'toast',
+    });
+    expect(policy.channel).toBe('toast');
+  });
+
+  it('surfaces user-action success events as toast', () => {
     const policy = resolveNotificationPolicy('billing.coupon.success', {
       message: 'Coupon applied.',
     });
-    expect(policy.channel).toBe('inbox');
+    expect(policy.channel).toBe('toast');
   });
 
-  it('forces non-generation error events to inbox', () => {
+  it('surfaces auth failures as toast', () => {
     const policy = resolveNotificationPolicy('auth.signin.failed', {
       message: 'Sign-in failed.',
     });
-    expect(policy.channel).toBe('inbox');
+    expect(policy.channel).toBe('toast');
+  });
+
+  it('suppresses admin-only events for non-admin users', () => {
+    const policy = resolveNotificationPolicy(
+      'admin.pool.reload.failed',
+      {
+        message: 'Failed to reload primary AI pool.',
+      },
+      { isAdmin: false }
+    );
+    expect(policy.channel).toBe('silent');
+  });
+
+  it('shows admin-only events for admin users', () => {
+    const policy = resolveNotificationPolicy(
+      'admin.pool.reload.failed',
+      {
+        message: 'Failed to reload primary AI pool.',
+      },
+      { isAdmin: true }
+    );
+    expect(policy.channel).toBe('toast');
   });
 });

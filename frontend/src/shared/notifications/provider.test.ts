@@ -17,6 +17,7 @@ const createNotification = (overrides: Partial<AppNotification> = {}): AppNotifi
   details: overrides.details,
   severity: overrides.severity || 'info',
   category: overrides.category || 'activity',
+  audience: overrides.audience || 'all',
   channel: overrides.channel || 'inbox',
   status: overrides.status || 'active',
   resolvedAt: overrides.resolvedAt ?? null,

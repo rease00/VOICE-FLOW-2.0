@@ -8,6 +8,15 @@ interface AppErrorBoundaryState {
   message: string;
 }
 
+const isRecoverableAllowlistError = (message: string): boolean => {
+  const lowered = String(message || '').trim().toLowerCase();
+  if (!lowered) return false;
+  return (
+    lowered.includes('admin authorization failed: uid_not_allowlisted')
+    || lowered.includes('uid_not_allowlisted')
+  );
+};
+
 export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [uiError, setUiError] = useState<AppErrorBoundaryState>({ message: '' });
   const { emit } = useNotifications();
@@ -38,6 +47,24 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
     const onUnhandledRejection = (event: PromiseRejectionEvent): void => {
       const reason = event.reason;
       const message = sanitizeUiText(reason?.message || String(reason || 'Unhandled rejection'));
+      if (isRecoverableAllowlistError(message)) {
+        event.preventDefault();
+        emit('custom.message', {
+          title: 'Admin Access Blocked',
+          message: 'This admin action is restricted for your account.',
+          details: 'Add your Firebase UID to VF_ADMIN_APPROVER_UIDS in backend env, then restart backend services.',
+          sticky: true,
+          dedupeKey: 'admin-uid-not-allowlisted',
+        });
+        void reportFrontendError({
+          message,
+          severity: 'warn',
+          stack: typeof reason?.stack === 'string' ? reason.stack : undefined,
+          component: 'AppErrorBoundary',
+          metadata: { kind: 'unhandledrejection', reason: 'uid_not_allowlisted' },
+        });
+        return;
+      }
       console.error('[ui.error_boundary.unhandled_rejection]', reason);
       emit('app.crash.captured', {
         title: 'Unhandled Failure',

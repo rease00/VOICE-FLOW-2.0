@@ -8,9 +8,11 @@ import {
   type AdminRoleAssignment,
   type AdminRoleCatalogPayload,
   type AdminUserSummary,
+  clearAdminUnlockToken,
   type AlertDestination,
   type AlertEvent,
   type AlertPolicy,
+  type AdminSessionUnlockStatusPayload,
   type AuditEvent,
   type AuditVerifyPayload,
   type CouponAnalyticsPoint,
@@ -22,6 +24,7 @@ import {
   fetchAdminAuditEvents,
   fetchAdminIntegrationsUsage,
   fetchAdminRbacRoles,
+  fetchAdminSessionUnlockStatus,
   fetchAdminRbacUsers,
   fetchAdminTtsGatewayStatus,
   fetchAdminTtsQueueMetrics,
@@ -33,11 +36,16 @@ import {
   fetchCouponAnalyticsTimeseries,
   fetchDailyUsageResetStatus,
   fetchGeminiPools,
+  type GeminiPoolAllocatorSnapshot,
+  type GeminiPoolModelStatus,
+  type GeminiPoolUsageEntry,
   fetchGeminiPoolsUsage,
   type GeminiPoolConfig,
   type GeminiPoolKeyStatus,
   type GeminiPoolStatusPayload,
   type GeminiPoolsUsagePayload,
+  getAdminUnlockToken,
+  issueAdminSessionUnlock,
   patchAlertDestination,
   patchAlertPolicy,
   assignAdminRbacUser,
@@ -60,6 +68,7 @@ import {
   runSchedulerTask,
   type ScheduledTask,
   type ScheduledTaskRun,
+  verifyAdminSessionUnlock,
   verifyAdminAuditChain,
 } from '../services/adminService';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
@@ -94,7 +103,7 @@ interface AdminPanelProps {
   onRefreshEntitlements: () => Promise<void>;
 }
 
-const planOptions = ['Free', 'Pro', 'Plus'] as const;
+const planOptions = ['Free', 'Starter', 'Creator', 'Pro', 'Scale'] as const;
 type AdminUserPatch = Parameters<ReturnType<typeof useAdminUsers>['patchAdminUser']>[1];
 type AdminUserDraft = Partial<Pick<AdminUserPatch, 'plan' | 'disabled' | 'paidVfDelta' | 'vffDelta'>>;
 const createCouponPlanDraftRow = (plan = '', percentOff = '20', amountOffInr = '100'): CouponPlanDraftRow => ({
@@ -143,7 +152,21 @@ const isForbiddenError = (error: unknown): boolean => {
   return Number((error as { status?: number }).status || 0) === 403;
 };
 
+const isUidAllowlistAuthorizationError = (error: unknown): boolean => {
+  const message = String((error as { message?: string })?.message || "").trim().toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes("admin authorization failed: uid_not_allowlisted")
+    || message.includes("uid_not_allowlisted")
+  );
+};
+
 const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (isUidAllowlistAuthorizationError(error)) {
+    return sanitizeUiText(
+      'Admin action blocked. Add your Firebase UID to VF_ADMIN_APPROVER_UIDS in backend env, then restart backend services.'
+    );
+  }
   if (error && typeof error === 'object' && typeof (error as { message?: string }).message === 'string') {
     return sanitizeUiText(String((error as { message: string }).message));
   }
@@ -199,8 +222,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const [newCouponNote, setNewCouponNote] = useState('');
   const [newCouponDiscountType, setNewCouponDiscountType] = useState<'percent' | 'fixed_inr'>('percent');
   const [couponPlanRows, setCouponPlanRows] = useState<CouponPlanDraftRow[]>(() => [
-    createCouponPlanDraftRow('pro', '20', '100'),
-    createCouponPlanDraftRow('plus', '25', '150'),
+    createCouponPlanDraftRow('starter', '15', '80'),
+    createCouponPlanDraftRow('pro', '20', '120'),
   ]);
 
   const [rbacCatalog, setRbacCatalog] = useState<AdminRoleCatalogPayload | null>(null);
@@ -282,9 +305,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     byPlan: CouponAnalyticsPoint[];
   } | null>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
+  const [adminUnlockStatusPayload, setAdminUnlockStatusPayload] = useState<AdminSessionUnlockStatusPayload | null>(null);
+  const [adminUnlockKeyInput, setAdminUnlockKeyInput] = useState('');
+  const [latestAdminUnlockKey, setLatestAdminUnlockKey] = useState('');
+  const [isIssuingAdminUnlockKey, setIsIssuingAdminUnlockKey] = useState(false);
+  const [isVerifyingAdminUnlockKey, setIsVerifyingAdminUnlockKey] = useState(false);
+  const [isRefreshingAdminUnlockStatus, setIsRefreshingAdminUnlockStatus] = useState(false);
 
   const notifyError = (error: unknown, fallback: string) => {
-    if (isForbiddenError(error)) return;
+    if (isForbiddenError(error) && !isUidAllowlistAuthorizationError(error)) return;
     onToast(sanitizeUiText(getErrorMessage(error, fallback)), 'error');
   };
 
@@ -485,7 +514,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
 
   const updateGeminiPoolEditorConfig = (mutator: (previous: GeminiPoolConfig) => GeminiPoolConfig) => {
     setGeminiPoolEditor((previous) => {
-      const base: GeminiPoolConfig = previous || { pools: {}, fallbackChains: {}, planPools: { free: 'free', pro: 'pro', plus: 'pro_plus' }, defaultFallbackChain: ['pro_plus', 'pro', 'free'], constraints: { uniqueKeyMembership: true } };
+      const base: GeminiPoolConfig = previous || { pools: {}, fallbackChains: {}, planPools: { free: 'free', pro: 'free', plus: 'free' }, defaultFallbackChain: ['free'], constraints: { uniqueKeyMembership: true } };
       return mutator(base);
     });
   };
@@ -663,6 +692,78 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     }
   };
 
+  const reloadAdminUnlockStatusSafely = async () => {
+    setIsRefreshingAdminUnlockStatus(true);
+    try {
+      const payload = await fetchAdminSessionUnlockStatus(mediaBackendUrl);
+      setAdminUnlockStatusPayload(payload);
+      if (!Boolean(payload?.status?.isUnlocked)) {
+        clearAdminUnlockToken();
+      }
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load admin unlock status.');
+    } finally {
+      setIsRefreshingAdminUnlockStatus(false);
+    }
+  };
+
+  const handleIssueAdminUnlockKey = async () => {
+    setIsIssuingAdminUnlockKey(true);
+    try {
+      clearAdminUnlockToken();
+      const payload = await issueAdminSessionUnlock(mediaBackendUrl);
+      const key = String(payload?.unlockKey || '').trim().toUpperCase();
+      setLatestAdminUnlockKey(key);
+      setAdminUnlockKeyInput(key);
+      if (payload?.status) {
+        setAdminUnlockStatusPayload({
+          ok: Boolean(payload.ok),
+          ...(payload.uid ? { uid: payload.uid } : {}),
+          status: payload.status,
+        });
+      } else {
+        await reloadAdminUnlockStatusSafely();
+      }
+      onToast('Admin unlock key issued.', 'success');
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to issue admin unlock key.');
+    } finally {
+      setIsIssuingAdminUnlockKey(false);
+    }
+  };
+
+  const handleVerifyAdminUnlockKey = async () => {
+    const unlockKey = String(adminUnlockKeyInput || '').trim();
+    if (!unlockKey) {
+      onToast('Enter unlock key first.', 'info');
+      return;
+    }
+    setIsVerifyingAdminUnlockKey(true);
+    try {
+      const payload = await verifyAdminSessionUnlock(unlockKey, mediaBackendUrl);
+      if (payload?.status) {
+        setAdminUnlockStatusPayload({
+          ok: Boolean(payload.ok),
+          ...(payload.uid ? { uid: payload.uid } : {}),
+          status: payload.status,
+        });
+      } else {
+        await reloadAdminUnlockStatusSafely();
+      }
+      setAdminUnlockKeyInput('');
+      onToast('Admin session unlocked for 15 minutes.', 'success');
+    } catch (error: unknown) {
+      notifyError(error, 'Invalid unlock key.');
+    } finally {
+      setIsVerifyingAdminUnlockKey(false);
+    }
+  };
+
+  const handleClearAdminUnlockToken = () => {
+    clearAdminUnlockToken();
+    onToast('Local admin unlock token cleared.', 'info');
+  };
+
   useEffect(() => {
     void reloadUsersSafely('');
     void reloadCouponsSafely();
@@ -674,14 +775,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     void reloadSchedulerSafely();
     void reloadAuditSafely();
     void reloadAnalyticsSafely();
+    void reloadAdminUnlockStatusSafely();
     void hydrateGeneratedCouponCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaBackendUrl]);
 
-  const withSaving = async (key: string, action: () => Promise<void>) => {
+  const withSaving = async (key: string, action: () => Promise<void>, fallback = 'Admin action failed.') => {
     setIsSaving(key);
     try {
       await action();
+    } catch (error: unknown) {
+      notifyError(error, fallback);
     } finally {
       setIsSaving('');
     }
@@ -737,6 +841,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const canSchedulerWrite = can('scheduler.write');
   const canAuditRead = can('audit.read');
   const canAnalyticsRead = can('analytics.read');
+  const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite;
+  const adminUnlockStatus = adminUnlockStatusPayload?.status || null;
+  const adminUnlockTokenPresent = Boolean(getAdminUnlockToken());
+  const adminUnlockActive = Boolean(adminUnlockStatus?.isUnlocked) && adminUnlockTokenPresent;
   const sanitizePlanToken = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const updateCouponPlanRow = (rowId: string, patch: Partial<Omit<CouponPlanDraftRow, 'id'>>) => {
     setCouponPlanRows((previous) => previous.map((row) => (row.id === rowId ? { ...row, ...patch } : row)));
@@ -746,8 +854,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     setCouponPlanRows((previous) => {
       if (safePlan && previous.some((row) => sanitizePlanToken(row.plan) === safePlan)) return previous;
       const defaultsByPlan: Record<string, { percentOff: string; amountOffInr: string }> = {
-        pro: { percentOff: '20', amountOffInr: '100' },
-        plus: { percentOff: '25', amountOffInr: '150' },
+        starter: { percentOff: '15', amountOffInr: '80' },
+        creator: { percentOff: '18', amountOffInr: '100' },
+        pro: { percentOff: '20', amountOffInr: '120' },
+        scale: { percentOff: '25', amountOffInr: '150' },
       };
       const defaults = defaultsByPlan[safePlan] || { percentOff: '20', amountOffInr: '100' };
       return [...previous, createCouponPlanDraftRow(safePlan || '', defaults.percentOff, defaults.amountOffInr)];
@@ -947,16 +1057,86 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const selectedPoolKeys = Array.isArray(geminiConfig?.pools?.[selectedPoolName]?.keys)
     ? (geminiConfig?.pools?.[selectedPoolName]?.keys as string[])
     : [];
-  const backendUsageByPool = (geminiPoolsUsage?.backend?.usage || {}) as Record<string, Record<string, unknown>>;
-  const selectedPoolUsage = (backendUsageByPool?.[selectedPoolName] || {}) as Record<string, unknown>;
-  const selectedPoolDirectSnapshot = (selectedPoolUsage?.direct || {}) as Record<string, unknown>;
-  const selectedPoolDirectKeyStatuses = Array.isArray(selectedPoolDirectSnapshot?.keys)
-    ? (selectedPoolDirectSnapshot.keys as GeminiPoolKeyStatus[])
+  const selectedPoolKeyMetadata = Array.isArray((geminiConfig?.pools?.[selectedPoolName] as { keyMetadata?: unknown } | undefined)?.keyMetadata)
+    ? ((geminiConfig?.pools?.[selectedPoolName] as { keyMetadata?: unknown } | undefined)?.keyMetadata as Array<Record<string, unknown>>)
     : [];
-  const selectedPoolRows = selectedPoolKeys.map((key, index) => ({
-    key: String(key || '').trim(),
-    status: selectedPoolDirectKeyStatuses[index] || null,
-  }));
+  const backendUsageByPool = (geminiPoolsUsage?.backend?.usage || {}) as Record<string, GeminiPoolUsageEntry>;
+  const runtimeUsageByPool = (geminiPoolsUsage?.runtime?.usage || {}) as Record<string, GeminiPoolUsageEntry>;
+  const selectedBackendUsage = (backendUsageByPool?.[selectedPoolName] || {}) as GeminiPoolUsageEntry;
+  const selectedRuntimeUsage = (runtimeUsageByPool?.[selectedPoolName] || {}) as GeminiPoolUsageEntry;
+  const selectedBackendSnapshot = (selectedBackendUsage?.direct || {}) as GeminiPoolAllocatorSnapshot;
+  const selectedRuntimeSnapshot = (selectedRuntimeUsage?.direct || {}) as GeminiPoolAllocatorSnapshot;
+  const selectedBackendKeyStatuses = Array.isArray(selectedBackendSnapshot?.keys)
+    ? (selectedBackendSnapshot.keys as GeminiPoolKeyStatus[])
+    : [];
+  const selectedRuntimeKeyStatuses = Array.isArray(selectedRuntimeSnapshot?.keys)
+    ? (selectedRuntimeSnapshot.keys as GeminiPoolKeyStatus[])
+    : [];
+  const selectedBackendModels = Array.isArray(selectedBackendSnapshot?.models)
+    ? (selectedBackendSnapshot.models as GeminiPoolModelStatus[])
+    : [];
+  const selectedRuntimeModels = Array.isArray(selectedRuntimeSnapshot?.models)
+    ? (selectedRuntimeSnapshot.models as GeminiPoolModelStatus[])
+    : [];
+  const poolModelPressureLabel = (models: GeminiPoolModelStatus[]): string => {
+    if (!models.length) return '-';
+    const pressured = models.filter((model) => {
+      const status = String(model.status || '').trim().toLowerCase();
+      const atCapacity = asNumber(model.pool?.atCapacityKeys) > 0;
+      const rpmRemaining = asNumber(model.remaining?.rpm);
+      const tpmRemaining = asNumber(model.remaining?.tpm);
+      return atCapacity || status === 'rate_limited' || status === 'auth_issue' || rpmRemaining <= 0 || tpmRemaining <= 0;
+    });
+    if (!pressured.length) return 'Normal';
+    return pressured
+      .slice(0, 3)
+      .map((model) => {
+        const modelId = String(model.model || 'model');
+        const atCapacity = asNumber(model.pool?.atCapacityKeys);
+        const keyCount = asNumber(model.pool?.keyCount);
+        if (keyCount > 0) return `${modelId} ${atCapacity}/${keyCount}`;
+        return modelId;
+      })
+      .join(' | ');
+  };
+  const keyDriftWarnings = (backendStatus: GeminiPoolKeyStatus | null, runtimeStatus: GeminiPoolKeyStatus | null): string[] => {
+    const warnings: string[] = [];
+    if (!backendStatus && !runtimeStatus) return warnings;
+    if (!backendStatus || !runtimeStatus) {
+      warnings.push('missing_snapshot');
+      return warnings;
+    }
+    const backendState = String(backendStatus.status || '').trim().toLowerCase();
+    const runtimeState = String(runtimeStatus.status || '').trim().toLowerCase();
+    if (backendState && runtimeState && backendState !== runtimeState) warnings.push('status');
+    const backendReason = String(backendStatus.health?.reason || '').trim().toLowerCase();
+    const runtimeReason = String(runtimeStatus.health?.reason || '').trim().toLowerCase();
+    if (backendReason && runtimeReason && backendReason !== runtimeReason) warnings.push('health');
+    if (asNumber(backendStatus.inFlight) !== asNumber(runtimeStatus.inFlight)) warnings.push('inflight');
+    if (asNumber(backendStatus.usage?.requests) !== asNumber(runtimeStatus.usage?.requests)) warnings.push('requests');
+    return warnings;
+  };
+  const keyPressureLabel = (status: GeminiPoolKeyStatus | null): string => {
+    if (!status || !Array.isArray(status.models) || status.models.length === 0) return '-';
+    return poolModelPressureLabel(status.models as GeminiPoolModelStatus[]);
+  };
+  const selectedPoolRows = selectedPoolKeys.map((key, index) => {
+    const keyToken = String(key || '').trim();
+    const metadata = selectedPoolKeyMetadata[index] || {};
+    const maskedLabel = String(metadata.masked || '').trim();
+    const fingerprint = String(metadata.fingerprint || '').trim();
+    const backendStatus = selectedBackendKeyStatuses[index] || null;
+    const runtimeStatus = selectedRuntimeKeyStatuses[index] || null;
+    const driftWarnings = keyDriftWarnings(backendStatus, runtimeStatus);
+    return {
+      keyToken,
+      keyLabel: maskedLabel || keyToken,
+      fingerprint,
+      backendStatus,
+      runtimeStatus,
+      driftWarnings,
+    };
+  });
   const geminiSourcePolicy = (geminiConfig?.sourcePolicy || {}) as Record<string, unknown>;
   const geminiSourceProvider = String(geminiSourcePolicy.provider || 'gemini_api').trim().toLowerCase() === 'vertex'
     ? 'vertex'
@@ -971,6 +1151,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   ];
   const duplicateKeysValidation = geminiPoolStatus?.validation?.duplicateKeys || {};
   const hasDuplicateKeys = Object.keys(duplicateKeysValidation || {}).length > 0;
+  const selectedPoolDriftWarnings = selectedPoolRows
+    .flatMap((row) => row.driftWarnings.map((token) => `${row.fingerprint || row.keyLabel}:${token}`));
   const lastRun = dailyUsageResetStatus?.lastRun;
 
   const handleExportAuditCsv = () => {
@@ -1019,6 +1201,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
               void reloadSchedulerSafely();
               void reloadAuditSafely();
               void reloadAnalyticsSafely();
+              void reloadAdminUnlockStatusSafely();
             }}
             className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
           >
@@ -1027,6 +1210,75 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
           </button>
         </div>
         <p className="text-xs text-gray-500">Priority order: Users, Access Control, Coupons, Primary AI Pool, Ops.</p>
+      </section>
+
+      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
+            <Key size={16} className="text-indigo-600" />
+            Admin Mutation Unlock
+          </div>
+          <div className={`rounded px-2 py-1 text-[11px] font-semibold ${
+            adminUnlockActive ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+          }`}>
+            {adminUnlockActive ? 'Unlocked' : 'Locked'}
+          </div>
+        </div>
+        {!canUseAdminUnlock ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+            Unlock not required for your current read-only permissions.
+          </div>
+        ) : (
+          <div className="space-y-2 text-xs">
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div>Issued key: <strong>{latestAdminUnlockKey || '-'}</strong></div>
+                <div>Key expires: <strong>{formatDate(adminUnlockStatus?.keyExpiresAt || '')}</strong></div>
+                <div>Attempts left: <strong>{asNumber(adminUnlockStatus?.attemptsRemaining || 0)}</strong></div>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div>Unlocked until: <strong>{formatDate(adminUnlockStatus?.unlockExpiresAt || '')}</strong></div>
+                <div>Locked until: <strong>{formatDate(adminUnlockStatus?.lockedUntil || '')}</strong></div>
+                <div>Local token: <strong>{adminUnlockTokenPresent ? 'present' : 'missing'}</strong></div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => { void handleIssueAdminUnlockKey(); }}
+                disabled={isIssuingAdminUnlockKey}
+                className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
+              >
+                {isIssuingAdminUnlockKey ? 'Issuing...' : 'Issue Key'}
+              </button>
+              <input
+                value={adminUnlockKeyInput}
+                onChange={(event) => setAdminUnlockKeyInput(event.target.value.toUpperCase())}
+                placeholder="Enter unlock key"
+                className="h-8 min-w-[14rem] rounded border border-gray-200 px-2 font-mono text-[11px]"
+              />
+              <button
+                onClick={() => { void handleVerifyAdminUnlockKey(); }}
+                disabled={isVerifyingAdminUnlockKey}
+                className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 disabled:opacity-60"
+              >
+                {isVerifyingAdminUnlockKey ? 'Verifying...' : 'Verify & Unlock'}
+              </button>
+              <button
+                onClick={handleClearAdminUnlockToken}
+                className="rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700"
+              >
+                Clear Local Token
+              </button>
+              <button
+                onClick={() => { void reloadAdminUnlockStatusSafely(); }}
+                disabled={isRefreshingAdminUnlockStatus}
+                className="rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700 disabled:opacity-60"
+              >
+                {isRefreshingAdminUnlockStatus ? 'Refreshing...' : 'Refresh Status'}
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="hidden rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -1357,6 +1609,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                             </option>
                           ))}
                         </select>
+                        <div className="mt-1 text-[10px] text-gray-500">
+                          Cap: {Math.max(0, Number(row.limits?.maxCharsPerGeneration || 0)).toLocaleString()} chars
+                          {row.features?.earlyAccess ? ' • Early access' : ''}
+                        </div>
                       </td>
                       <td className="px-2 py-2">
                         <div className="text-[11px] text-gray-700">Paid VF: {effectivePaidBalance.toLocaleString()}</div>
@@ -1515,8 +1771,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <div className="text-[11px] font-semibold text-gray-700">Plan-specific discounts</div>
                         <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => addCouponPlanRow('starter')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Starter</button>
+                          <button type="button" onClick={() => addCouponPlanRow('creator')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Creator</button>
                           <button type="button" onClick={() => addCouponPlanRow('pro')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Pro</button>
-                          <button type="button" onClick={() => addCouponPlanRow('plus')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Plus</button>
+                          <button type="button" onClick={() => addCouponPlanRow('scale')} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">+ Scale</button>
                           <button type="button" onClick={() => addCouponPlanRow()} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">+ Add plan</button>
                         </div>
                       </div>
@@ -1526,7 +1784,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                             <input
                               value={row.plan}
                               onChange={(event) => updateCouponPlanRow(row.id, { plan: event.target.value })}
-                              placeholder="Plan key (pro, plus, enterprise)"
+                              placeholder="Plan key (starter, creator, pro, scale)"
                               className="col-span-6 h-9 rounded-lg border border-gray-200 px-2.5 text-xs"
                             />
                             {newCouponDiscountType === 'percent' ? (
@@ -1637,8 +1895,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
         {!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : isLoadingGeminiPool ? <div className="text-xs text-gray-500">Loading primary AI pool status...</div> : (
           <div className="space-y-3 text-xs">
             <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Backend</div><div>Keys: <strong>{asNumber((backendPool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((backendPool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((backendPool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((backendPool as Record<string, unknown>).unhealthyKeys)}</strong></div></div>
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runtime</div><div>Keys: <strong>{asNumber((runtimePool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((runtimePool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((runtimePool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((runtimePool as Record<string, unknown>).unhealthyKeys)}</strong></div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Backend</div><div>Keys: <strong>{asNumber((backendPool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((backendPool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((backendPool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((backendPool as Record<string, unknown>).unhealthyKeys)}</strong></div><div>In-flight: <strong>{asNumber((selectedBackendSnapshot.pool as Record<string, unknown> | undefined)?.inFlightTotal)}</strong></div><div>Model pressure: <strong>{poolModelPressureLabel(selectedBackendModels)}</strong></div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runtime</div><div>Keys: <strong>{asNumber((runtimePool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((runtimePool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((runtimePool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((runtimePool as Record<string, unknown>).unhealthyKeys)}</strong></div><div>In-flight: <strong>{asNumber((selectedRuntimeSnapshot.pool as Record<string, unknown> | undefined)?.inFlightTotal)}</strong></div><div>Model pressure: <strong>{poolModelPressureLabel(selectedRuntimeModels)}</strong></div></div>
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Sources</div><div>File exists: <strong>{(sourceDiag as Record<string, unknown>).fileExists ? 'Yes' : 'No'}</strong></div><div>File keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).fileKeyCount)}</strong></div><div>Env keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).envPoolKeyCount)}</strong></div></div>
             </div>
 
@@ -1652,6 +1910,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
             {hasDuplicateKeys && (
               <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-red-800">
                 Duplicate key membership detected. Remove duplicate keys from multiple pools before saving.
+              </div>
+            )}
+            {selectedPoolDriftWarnings.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
+                <div className="mb-1 font-semibold">Backend/Runtime drift warnings</div>
+                {selectedPoolDriftWarnings.slice(0, 16).map((item) => (
+                  <div key={`drift-${item}`}>{sanitizeUiText(item)}</div>
+                ))}
               </div>
             )}
 
@@ -1835,33 +2101,66 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                         <tr>
                           <th className="px-2 py-2 text-left">#</th>
                           <th className="px-2 py-2 text-left">API key</th>
-                          <th className="px-2 py-2 text-left">Status</th>
-                          <th className="px-2 py-2 text-left">Health reason</th>
+                          <th className="px-2 py-2 text-left">Backend snapshot</th>
+                          <th className="px-2 py-2 text-left">Runtime snapshot</th>
+                          <th className="px-2 py-2 text-left">Drift</th>
                           <th className="px-2 py-2 text-left">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {selectedPoolRows.length === 0 && (
                           <tr>
-                            <td className="px-2 py-3 text-gray-500" colSpan={5}>No keys in this pool.</td>
+                            <td className="px-2 py-3 text-gray-500" colSpan={7}>No keys in this pool.</td>
                           </tr>
                         )}
                         {selectedPoolRows.map((row, index) => {
-                          const tone = classifyGeminiPoolKeyTone(row.status);
+                          const backendTone = classifyGeminiPoolKeyTone(row.backendStatus);
+                          const runtimeTone = classifyGeminiPoolKeyTone(row.runtimeStatus);
+                          const tone = backendTone === 'bad' || runtimeTone === 'bad'
+                            ? 'bad'
+                            : backendTone === 'warn' || runtimeTone === 'warn'
+                              ? 'warn'
+                              : 'neutral';
                           const rowClass = tone === 'bad'
                             ? 'bg-red-50 text-red-800'
                             : tone === 'warn'
                               ? 'bg-amber-50 text-amber-800'
                               : '';
+                          const renderSnapshotCell = (status: GeminiPoolKeyStatus | null) => (
+                            <div className="space-y-0.5 text-[10px] leading-tight">
+                              <div>Status: <strong>{String(status?.status || 'unknown')}</strong></div>
+                              <div>Health: <strong>{String(status?.health?.reason || '-')}</strong></div>
+                              <div>In-flight: <strong>{asNumber(status?.inFlight)}</strong></div>
+                              <div>RPM used: <strong>{asNumber(status?.usage?.requests)}</strong></div>
+                              <div>TPM used: <strong>{asNumber(status?.usage?.tokens)}</strong></div>
+                              <div>RPM remaining: <strong>{asNumber(status?.models?.[0]?.remaining?.rpm)}</strong></div>
+                              <div>TPM remaining: <strong>{asNumber(status?.models?.[0]?.remaining?.tpm)}</strong></div>
+                              <div>Model pressure: <strong>{keyPressureLabel(status)}</strong></div>
+                            </div>
+                          );
                           return (
                             <tr key={`pool-key-${selectedPoolName}-${index}`} className={`border-t border-gray-100 ${rowClass}`}>
                               <td className="px-2 py-2">{index + 1}</td>
-                              <td className="px-2 py-2 font-mono">{row.key}</td>
-                              <td className="px-2 py-2">{String(row.status?.status || 'unknown')}</td>
-                              <td className="px-2 py-2">{String(row.status?.health?.reason || '-')}</td>
+                              <td className="px-2 py-2 font-mono">
+                                <div>{row.keyLabel}</div>
+                                {row.fingerprint ? <div className="text-[10px] text-gray-500">fp:{row.fingerprint}</div> : null}
+                              </td>
+                              <td className="px-2 py-2 align-top">{renderSnapshotCell(row.backendStatus)}</td>
+                              <td className="px-2 py-2 align-top">{renderSnapshotCell(row.runtimeStatus)}</td>
+                              <td className="px-2 py-2 align-top">
+                                {row.driftWarnings.length > 0 ? (
+                                  <div className="space-y-0.5 text-[10px]">
+                                    {row.driftWarnings.map((token) => (
+                                      <div key={`drift-token-${row.fingerprint}-${token}`}>{token}</div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-[10px] text-gray-500">none</span>
+                                )}
+                              </td>
                               <td className="px-2 py-2">
                                 <button
-                                  onClick={() => handleDeleteGeminiPoolKey(selectedPoolName, row.key)}
+                                  onClick={() => handleDeleteGeminiPoolKey(selectedPoolName, row.keyToken)}
                                   disabled={!canOpsMutate}
                                   className="rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700 disabled:opacity-60"
                                 >
@@ -1917,21 +2216,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
         {opsTab === 'guardian' && (!canGuardianRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `guardian.read` permission.</div> : (
           <div className="space-y-3 text-xs">
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Guardian status</div><div>Pending approvals: <strong>{asNumber(opsGuardian?.pendingApprovalCount)}</strong></div><div>Issues: <strong>{Array.isArray(opsGuardian?.issues) ? opsGuardian.issues.length : 0}</strong></div></div>
-            {canGuardianMutate && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Guarded actions</div><div className="flex flex-wrap gap-2"><button onClick={() => { const token = window.prompt('Enter admin approval token'); if (!token) return; void withSaving('ops_refresh_pool', async () => { await runOpsGuardianAction('refresh_gemini_pool', { adminToken: token }, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">Refresh Primary AI Pool</button><button onClick={() => { const token = window.prompt('Enter admin approval token'); if (!token) return; void withSaving('ops_soft_shedding', async () => { await runOpsGuardianAction('enable_soft_shedding', { adminToken: token }, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">Enable Soft Shedding</button></div></div>}
+            {canGuardianMutate && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Guarded actions</div><div className="flex flex-wrap gap-2"><button onClick={() => { void withSaving('ops_refresh_pool', async () => { await runOpsGuardianAction('refresh_gemini_pool', undefined, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">Refresh Primary AI Pool</button><button onClick={() => { void withSaving('ops_soft_shedding', async () => { await runOpsGuardianAction('enable_soft_shedding', undefined, mediaBackendUrl); await reloadOpsSafely(); onToast('Action submitted.', 'success'); }); }} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">Enable Soft Shedding</button></div></div>}
           </div>
         ))}
 
         {opsTab === 'alerts' && (!canAlertsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `alerts.read` permission.</div> : (
           <div className="space-y-2 text-xs">
-            {canAlertsWrite && <div className="grid gap-2 md:grid-cols-2"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create policy</div><div className="grid gap-2"><input value={newAlertName} onChange={(event) => setNewAlertName(event.target.value)} placeholder="name" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newAlertMetricKey} onChange={(event) => setNewAlertMetricKey(event.target.value)} placeholder="metricKey" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving('alert_create', async () => { await createAlertPolicy({ name: newAlertName || `policy-${Date.now()}`, metricKey: newAlertMetricKey, operator: newAlertOperator, threshold: asNumber(newAlertThreshold), windowSec: Math.max(10, asNumber(newAlertWindowSec)), cooldownSec: Math.max(10, asNumber(newAlertCooldownSec)), severity: newAlertSeverity || 'warning', enabled: true, channels: newAlertUseWebhook ? ['in_app', 'webhook'] : ['in_app'] }, token, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Create</button></div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create destination</div><div className="grid gap-2"><input value={newDestinationName} onChange={(event) => setNewDestinationName(event.target.value)} placeholder="name" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newDestinationUrl} onChange={(event) => setNewDestinationUrl(event.target.value)} placeholder="https://webhook" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving('dest_create', async () => { await createAlertDestination({ type: 'webhook', name: newDestinationName || `dest-${Date.now()}`, url: newDestinationUrl, ...(newDestinationSecretRef.trim() ? { secretRef: newDestinationSecretRef.trim() } : {}), enabled: true }, token, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Create</button></div></div></div>}
-            <div className="grid gap-2 md:grid-cols-3"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Policies</div>{alertPolicies.slice(0, 8).map((policy) => <div key={policy.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{policy.name}</div>{canAlertsWrite && <button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving(`policy_toggle_${policy.id}`, async () => { await patchAlertPolicy(policy.id, { enabled: !policy.enabled }, token, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="mt-1 rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{policy.enabled ? 'Disable' : 'Enable'}</button>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Destinations</div>{alertDestinations.slice(0, 8).map((destination) => <div key={destination.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{destination.name}</div><div className="truncate text-[10px] text-gray-600">{destination.url}</div>{canAlertsWrite && <button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving(`dest_toggle_${destination.id}`, async () => { await patchAlertDestination(destination.id, { enabled: !destination.enabled }, token, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="mt-1 rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{destination.enabled ? 'Disable' : 'Enable'}</button>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Events</div>{alertEvents.slice(0, 8).map((eventItem) => <div key={eventItem.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{eventItem.policyId}</div><div className="text-[10px] text-gray-600">{eventItem.status}</div>{canAlertsWrite && eventItem.status !== 'resolved' && <div className="mt-1 flex gap-1"><button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving(`event_ack_${eventItem.id}`, async () => { await ackAlertEvent(eventItem.id, token, '', mediaBackendUrl); await reloadAlertsSafely(); }); }} className="rounded border border-blue-200 px-2 py-1 text-[10px] font-semibold text-blue-700">Ack</button><button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving(`event_resolve_${eventItem.id}`, async () => { await resolveAlertEvent(eventItem.id, token, '', mediaBackendUrl); await reloadAlertsSafely(); }); }} className="rounded border border-emerald-200 px-2 py-1 text-[10px] font-semibold text-emerald-700">Resolve</button></div>}</div>)}</div></div>
+            {canAlertsWrite && <div className="grid gap-2 md:grid-cols-2"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create policy</div><div className="grid gap-2"><input value={newAlertName} onChange={(event) => setNewAlertName(event.target.value)} placeholder="name" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newAlertMetricKey} onChange={(event) => setNewAlertMetricKey(event.target.value)} placeholder="metricKey" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { void withSaving('alert_create', async () => { await createAlertPolicy({ name: newAlertName || `policy-${Date.now()}`, metricKey: newAlertMetricKey, operator: newAlertOperator, threshold: asNumber(newAlertThreshold), windowSec: Math.max(10, asNumber(newAlertWindowSec)), cooldownSec: Math.max(10, asNumber(newAlertCooldownSec)), severity: newAlertSeverity || 'warning', enabled: true, channels: newAlertUseWebhook ? ['in_app', 'webhook'] : ['in_app'] }, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Create</button></div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create destination</div><div className="grid gap-2"><input value={newDestinationName} onChange={(event) => setNewDestinationName(event.target.value)} placeholder="name" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newDestinationUrl} onChange={(event) => setNewDestinationUrl(event.target.value)} placeholder="https://webhook" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { void withSaving('dest_create', async () => { await createAlertDestination({ type: 'webhook', name: newDestinationName || `dest-${Date.now()}`, url: newDestinationUrl, ...(newDestinationSecretRef.trim() ? { secretRef: newDestinationSecretRef.trim() } : {}), enabled: true }, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Create</button></div></div></div>}
+            <div className="grid gap-2 md:grid-cols-3"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Policies</div>{alertPolicies.slice(0, 8).map((policy) => <div key={policy.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{policy.name}</div>{canAlertsWrite && <button onClick={() => { void withSaving(`policy_toggle_${policy.id}`, async () => { await patchAlertPolicy(policy.id, { enabled: !policy.enabled }, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="mt-1 rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{policy.enabled ? 'Disable' : 'Enable'}</button>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Destinations</div>{alertDestinations.slice(0, 8).map((destination) => <div key={destination.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{destination.name}</div><div className="truncate text-[10px] text-gray-600">{destination.url}</div>{canAlertsWrite && <button onClick={() => { void withSaving(`dest_toggle_${destination.id}`, async () => { await patchAlertDestination(destination.id, { enabled: !destination.enabled }, mediaBackendUrl); await reloadAlertsSafely(); }); }} className="mt-1 rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{destination.enabled ? 'Disable' : 'Enable'}</button>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Events</div>{alertEvents.slice(0, 8).map((eventItem) => <div key={eventItem.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{eventItem.policyId}</div><div className="text-[10px] text-gray-600">{eventItem.status}</div>{canAlertsWrite && eventItem.status !== 'resolved' && <div className="mt-1 flex gap-1"><button onClick={() => { void withSaving(`event_ack_${eventItem.id}`, async () => { await ackAlertEvent(eventItem.id, '', mediaBackendUrl); await reloadAlertsSafely(); }); }} className="rounded border border-blue-200 px-2 py-1 text-[10px] font-semibold text-blue-700">Ack</button><button onClick={() => { void withSaving(`event_resolve_${eventItem.id}`, async () => { await resolveAlertEvent(eventItem.id, '', mediaBackendUrl); await reloadAlertsSafely(); }); }} className="rounded border border-emerald-200 px-2 py-1 text-[10px] font-semibold text-emerald-700">Resolve</button></div>}</div>)}</div></div>
           </div>
         ))}
 
         {opsTab === 'scheduler' && (!canSchedulerRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `scheduler.read` permission.</div> : (
           <div className="space-y-2 text-xs">
             {canSchedulerWrite && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create task</div><div className="grid gap-2 md:grid-cols-3"><select value={newTaskType} onChange={(event) => setNewTaskType(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="usage_reset_daily">usage_reset_daily</option><option value="guardian_scan">guardian_scan</option><option value="usage_export_daily">usage_export_daily</option><option value="coupon_abuse_scan">coupon_abuse_scan</option></select><input value={newTaskCron} onChange={(event) => setNewTaskCron(event.target.value)} placeholder="cronExpr" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newTaskTimezone} onChange={(event) => setNewTaskTimezone(event.target.value)} placeholder="timezone" className="h-8 rounded border border-gray-200 px-2 text-xs" /></div><button onClick={() => { void withSaving('task_create', async () => { await createSchedulerTask({ taskType: newTaskType, cronExpr: newTaskCron, timezone: newTaskTimezone, enabled: newTaskEnabled, dryRun: newTaskDryRun, concurrencyPolicy: newTaskConcurrencyPolicy }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="mt-2 h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Create</button></div>}
-            <div className="grid gap-2 md:grid-cols-2"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Tasks</div>{schedulerTasks.slice(0, 10).map((task) => <div key={task.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{task.taskType}</div><div className="text-[10px] text-gray-600">{task.cronExpr} | {formatDate(task.nextRunAt || '')}</div>{canSchedulerWrite && <div className="mt-1 flex gap-1"><button onClick={() => { void withSaving(`task_toggle_${task.id}`, async () => { await patchSchedulerTask(task.id, { enabled: !task.enabled }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{task.enabled ? 'Disable' : 'Enable'}</button><button onClick={() => { const token = window.prompt('Enter approval token'); if (!token) return; void withSaving(`task_run_${task.id}`, async () => { await runSchedulerTask(task.id, token, task.dryRun, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-indigo-200 px-2 py-1 text-[10px] font-semibold text-indigo-700">Run</button></div>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runs</div>{schedulerRuns.slice(0, 12).map((run) => <div key={run.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{run.taskId}</div><div className="text-[10px] text-gray-600">{run.status} | {formatDate(run.startedAt || '')}</div></div>)}</div></div>
+            <div className="grid gap-2 md:grid-cols-2"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Tasks</div>{schedulerTasks.slice(0, 10).map((task) => <div key={task.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{task.taskType}</div><div className="text-[10px] text-gray-600">{task.cronExpr} | {formatDate(task.nextRunAt || '')}</div>{canSchedulerWrite && <div className="mt-1 flex gap-1"><button onClick={() => { void withSaving(`task_toggle_${task.id}`, async () => { await patchSchedulerTask(task.id, { enabled: !task.enabled }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{task.enabled ? 'Disable' : 'Enable'}</button><button onClick={() => { void withSaving(`task_run_${task.id}`, async () => { await runSchedulerTask(task.id, task.dryRun, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-indigo-200 px-2 py-1 text-[10px] font-semibold text-indigo-700">Run</button></div>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runs</div>{schedulerRuns.slice(0, 12).map((run) => <div key={run.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{run.taskId}</div><div className="text-[10px] text-gray-600">{run.status} | {formatDate(run.startedAt || '')}</div></div>)}</div></div>
           </div>
         ))}
 
@@ -1945,7 +2244,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
 
         {opsTab === 'analytics' && (!canAnalyticsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `analytics.read` permission.</div> : (
           <div className="space-y-2 text-xs">
-            <div className="grid gap-2 md:grid-cols-5"><input type="date" value={analyticsFrom} onChange={(event) => setAnalyticsFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" /><input type="date" value={analyticsTo} onChange={(event) => setAnalyticsTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" /><select value={analyticsPlan} onChange={(event) => setAnalyticsPlan(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="">All plans</option><option value="pro">pro</option><option value="plus">plus</option></select><select value={analyticsCouponKind} onChange={(event) => setAnalyticsCouponKind(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="">All kinds</option><option value="wallet_credit">wallet_credit</option><option value="subscription_discount">subscription_discount</option></select><button onClick={() => { void reloadAnalyticsSafely(); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Apply</button></div>
+            <div className="grid gap-2 md:grid-cols-5"><input type="date" value={analyticsFrom} onChange={(event) => setAnalyticsFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" /><input type="date" value={analyticsTo} onChange={(event) => setAnalyticsTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" /><select value={analyticsPlan} onChange={(event) => setAnalyticsPlan(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="">All plans</option><option value="starter">starter</option><option value="creator">creator</option><option value="pro">pro</option><option value="scale">scale</option></select><select value={analyticsCouponKind} onChange={(event) => setAnalyticsCouponKind(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="">All kinds</option><option value="wallet_credit">wallet_credit</option><option value="subscription_discount">subscription_discount</option></select><button onClick={() => { void reloadAnalyticsSafely(); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Apply</button></div>
             <div className="grid gap-2 md:grid-cols-4"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Conversion</div><div className="text-lg font-bold text-gray-900">{toPercentLabel(analyticsSummary?.conversionRate)}</div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Completion</div><div className="text-lg font-bold text-gray-900">{toPercentLabel(analyticsSummary?.checkoutCompletionRate)}</div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">D30 churn</div><div className="text-lg font-bold text-gray-900">{toPercentLabel(analyticsSummary?.d30ChurnRate)}</div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Efficiency</div><div className="text-lg font-bold text-gray-900">{asNumber(analyticsSummary?.discountEfficiency).toFixed(2)}</div></div></div>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Impact</div><div className="flex gap-2"><input value={analyticsImpactCode} onChange={(event) => setAnalyticsImpactCode(event.target.value.toUpperCase())} placeholder="Coupon code" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { const code = analyticsImpactCode.trim().toUpperCase(); if (!code) return; void withSaving('impact_fetch', async () => { const payload = await fetchCouponAnalyticsImpact(code, mediaBackendUrl, { from: analyticsFrom, to: analyticsTo }); setAnalyticsImpact(payload); }); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Load</button></div>{analyticsImpact && <div className="mt-2">Coupon {analyticsImpact.couponCode}: conversion {toPercentLabel(analyticsImpact.overall.conversionRate)}, churn {toPercentLabel(analyticsImpact.overall.d30ChurnRate)}</div>}</div>
             <div className="max-h-36 overflow-auto rounded-xl border border-gray-100"><table className="min-w-full text-xs"><thead className="sticky top-0 bg-gray-50 text-gray-600"><tr><th className="px-2 py-2 text-left">Date</th><th className="px-2 py-2 text-left">Plan</th><th className="px-2 py-2 text-left">Started</th><th className="px-2 py-2 text-left">Activated</th></tr></thead><tbody>{analyticsSeries.slice(0, 60).map((point, idx) => <tr key={`${point.bucket || point.date || 'bucket'}-${idx}`} className="border-t border-gray-100"><td className="px-2 py-2">{point.bucket || point.date || '-'}</td><td className="px-2 py-2">{point.plan || '-'}</td><td className="px-2 py-2">{asNumber(point.checkoutsStarted)}</td><td className="px-2 py-2">{asNumber(point.subscriptionsActivated)}</td></tr>)}</tbody></table></div>
@@ -1955,4 +2254,3 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     </div>
   );
 };
-

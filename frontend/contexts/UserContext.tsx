@@ -123,15 +123,41 @@ const localAdminBackendAuthMismatchMessage =
   'Local admin login is enabled in frontend, but backend auth enforcement is ON. ' +
   'Set VF_AUTH_ENFORCE=0 for local admin mode, or disable local admin login and sign in with Firebase.';
 
+const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'starter') return 'Starter';
+  if (token === 'creator') return 'Creator';
+  if (token === 'pro') return 'Pro';
+  if (token === 'scale' || token === 'plus' || token === 'pro_plus' || token === 'pro-plus') return 'Scale';
+  if (token === 'enterprise') return 'Enterprise';
+  return 'Free';
+};
+
+const isPaidPlanName = (planName: UserStats['planName']): boolean =>
+  planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
+
+const normalizeAllowedEngines = (input: unknown): Array<'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM'> => {
+  if (!Array.isArray(input)) return ['KOKORO', 'GOOD', 'NEURAL2'];
+  const allowed = new Set<'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM'>();
+  input.forEach((value) => {
+    const token = String(value || '').trim().toUpperCase();
+    if (token === 'KOKORO' || token === 'GOOD' || token === 'NEURAL2' || token === 'GEM') {
+      allowed.add(token);
+    }
+  });
+  return allowed.size > 0 ? Array.from(allowed) : ['KOKORO', 'GOOD', 'NEURAL2'];
+};
+
 const normalizeStoredStats = (stored: any): UserStats => {
   const walletFallback = createEmptyWalletStats();
+  const planName = normalizePlanNameForStats(stored?.planName);
   const merged: UserStats = {
     ...INITIAL_STATS,
     ...stored,
     generationsUsed: Number.isFinite(stored?.generationsUsed) ? Math.max(0, Math.floor(stored.generationsUsed)) : INITIAL_STATS.generationsUsed,
     generationsLimit: Number.isFinite(stored?.generationsLimit) ? Math.max(0, Math.floor(stored.generationsLimit)) : INITIAL_STATS.generationsLimit,
-    isPremium: Boolean(stored?.isPremium),
-    planName: stored?.planName === 'Pro' || stored?.planName === 'Plus' || stored?.planName === 'Enterprise' ? stored.planName : 'Free',
+    isPremium: Boolean(stored?.isPremium) || isPaidPlanName(planName),
+    planName,
     lastResetDate: typeof stored?.lastResetDate === 'string' ? stored.lastResetDate : undefined,
     vfUsage: ensureVfUsageStats(stored?.vfUsage),
     wallet: {
@@ -143,6 +169,13 @@ const normalizeStoredStats = (stored: any): UserStats => {
         NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
         GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
       },
+    },
+    limits: {
+      maxCharsPerGeneration: Math.max(1, Number(stored?.limits?.maxCharsPerGeneration || INITIAL_STATS.limits?.maxCharsPerGeneration || 8000)),
+      allowedEngines: normalizeAllowedEngines(stored?.limits?.allowedEngines || INITIAL_STATS.limits?.allowedEngines),
+    },
+    features: {
+      earlyAccess: Boolean(stored?.features?.earlyAccess),
     },
   };
   return ensureStatsUsageWindows(merged);
@@ -167,6 +200,7 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   const dailyByEngine = entitlements.daily?.byEngine || {};
   const walletFallback = createEmptyWalletStats();
   const wallet = entitlements.wallet || walletFallback;
+  const planName = normalizePlanNameForStats(entitlements.plan);
 
   const dailyTotalChars = Object.values(dailyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
   const monthlyTotalChars = Object.values(monthlyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
@@ -175,8 +209,8 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
     ...prev,
     generationsUsed: Math.max(0, Number(entitlements.daily?.generationUsed || 0)),
     generationsLimit: Math.max(1, Number(entitlements.daily?.generationLimit || 30)),
-    isPremium: entitlements.plan === 'Pro' || entitlements.plan === 'Plus',
-    planName: entitlements.plan,
+    isPremium: isPaidPlanName(planName),
+    planName,
     lastResetDate: entitlements.daily?.periodKey,
     vfUsage: {
       ...usage,
@@ -246,6 +280,13 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       adClaimsToday: Math.max(0, Number(wallet.adClaimsToday || 0)),
       adClaimsDailyLimit: Math.max(1, Number(wallet.adClaimsDailyLimit || walletFallback.adClaimsDailyLimit)),
       vffMonthKey: wallet.vffMonthKey,
+    },
+    limits: {
+      maxCharsPerGeneration: Math.max(1, Number(entitlements?.limits?.maxCharsPerGeneration || prev.limits?.maxCharsPerGeneration || 8000)),
+      allowedEngines: normalizeAllowedEngines(entitlements?.limits?.allowedEngines || prev.limits?.allowedEngines),
+    },
+    features: {
+      earlyAccess: Boolean(entitlements?.features?.earlyAccess),
     },
   });
 };

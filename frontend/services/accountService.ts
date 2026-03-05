@@ -7,9 +7,14 @@ const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
 };
 
+export type BillingPlanName = 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
+export type BillingPlanKey = 'starter' | 'creator' | 'pro' | 'scale';
+export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
+export type TtsEngineKey = 'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM';
+
 export interface AccountEntitlements {
   uid: string;
-  plan: 'Free' | 'Pro' | 'Plus';
+  plan: BillingPlanName;
   status: string;
   monthly: {
     vfLimit: number;
@@ -39,8 +44,13 @@ export interface AccountEntitlements {
     billingCountry?: string | null;
   };
   limits: {
-    vfRates: Record<string, number>;
+    vfRates: Record<TtsEngineKey, number>;
     monthlyPlanCaps: Record<string, number>;
+    maxCharsPerGeneration: number;
+    allowedEngines: TtsEngineKey[];
+  };
+  features: {
+    earlyAccess: boolean;
   };
   wallet?: {
     monthlyFreeRemaining: number;
@@ -142,7 +152,7 @@ export const upsertAccountProfile = async (
 };
 
 export const createCheckoutSession = async (
-  plan: 'pro' | 'plus',
+  plan: BillingPlanKey | 'plus',
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string; couponCode?: string }
 ): Promise<{ url: string; sessionId?: string }> => {
@@ -181,15 +191,24 @@ export const createPortalSession = async (baseUrl?: string, returnUrl?: string):
 };
 
 export const createTokenPackCheckoutSession = async (
+  pack: TokenPackKey,
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string }
-): Promise<{ url: string; sessionId?: string; packVf?: number; finalAmountInr?: number }> => {
-  const payload = await readJsonOrThrow<{ url?: string; sessionId?: string; packVf?: number; finalAmountInr?: number }>(await authFetch(
+): Promise<{ url: string; sessionId?: string; packKey?: TokenPackKey; packVf?: number; standardAmountInr?: number; finalAmountInr?: number }> => {
+  const payload = await readJsonOrThrow<{
+    url?: string;
+    sessionId?: string;
+    packKey?: TokenPackKey;
+    packVf?: number;
+    standardAmountInr?: number;
+    finalAmountInr?: number;
+  }>(await authFetch(
     `${toBaseUrl(baseUrl)}/billing/token-pack/checkout-session`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        pack,
         successUrl: options?.successUrl,
         cancelUrl: options?.cancelUrl,
       }),
@@ -197,12 +216,16 @@ export const createTokenPackCheckoutSession = async (
     { requireAuth: true }
   ));
   const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
+  const packKey = payload?.packKey ? String(payload.packKey) as TokenPackKey : undefined;
   const packVf = Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined;
+  const standardAmountInr = Number.isFinite(payload?.standardAmountInr) ? Number(payload.standardAmountInr) : undefined;
   const finalAmountInr = Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined;
   return {
     url: String(payload?.url || ''),
     ...(sessionId ? { sessionId } : {}),
+    ...(packKey ? { packKey } : {}),
     ...(packVf !== undefined ? { packVf } : {}),
+    ...(standardAmountInr !== undefined ? { standardAmountInr } : {}),
     ...(finalAmountInr !== undefined ? { finalAmountInr } : {}),
   };
 };
