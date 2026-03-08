@@ -92,14 +92,14 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
-            "__LLVC_RUNTIME_URL__" {
-                $runtimeUrl = [string]$RuntimeUrls["voiceflow-llvc-runtime"]
+            "__VOICE_TRANSFER_RUNTIME_URL__" {
+                $runtimeUrl = [string]$RuntimeUrls["voiceflow-voice-transfer-runtime"]
                 if (-not $runtimeUrl) {
                     if ($DryRun) {
-                        $resolved[$key] = "https://voiceflow-llvc-runtime.a.run.app"
+                        $resolved[$key] = "https://voiceflow-voice-transfer-runtime.a.run.app"
                         break
                     }
-                    throw "LLVC runtime URL is not available yet."
+                    throw "Voice Transfer runtime URL is not available yet."
                 }
                 $resolved[$key] = $runtimeUrl
             }
@@ -218,7 +218,28 @@ foreach ($svc in $deployOrder) {
     $envMap = Convert-ObjectToMap -InputObject $svc.env
     $resolvedEnvMap = Resolve-EnvMap -RawMap $envMap -RuntimeUrls $runtimeUrls -RedisValue $RedisUrl
     $secretEnvMap = Convert-ObjectToMap -InputObject $svc.secretEnv
-    $serviceAccount = [string]$svc.serviceAccount
+    $serviceAccount = ""
+    if ($svc.PSObject.Properties.Name -contains "serviceAccount") {
+        $serviceAccount = [string]$svc.serviceAccount
+    }
+    $timeoutSeconds = 0
+    if ($svc.PSObject.Properties.Name -contains "timeoutSeconds") {
+        try {
+            $timeoutSeconds = [int]$svc.timeoutSeconds
+        }
+        catch {
+            $timeoutSeconds = 0
+        }
+    }
+    $executionEnvironment = ""
+    if ($svc.PSObject.Properties.Name -contains "executionEnvironment") {
+        $executionEnvironment = [string]$svc.executionEnvironment
+    }
+    $hasStartupCpuBoost = $svc.PSObject.Properties.Name -contains "startupCpuBoost"
+    $startupCpuBoost = $false
+    if ($hasStartupCpuBoost) {
+        $startupCpuBoost = [bool]$svc.startupCpuBoost
+    }
 
     $deployArgs = @(
         "run", "deploy", $name,
@@ -235,6 +256,14 @@ foreach ($svc in $deployOrder) {
         "--memory", [string]$svc.memory
     )
 
+    if ($timeoutSeconds -gt 0) {
+        $deployArgs += @("--timeout", "$($timeoutSeconds)s")
+    }
+
+    if ($executionEnvironment) {
+        $deployArgs += @("--execution-environment", $executionEnvironment)
+    }
+
     if ([bool]$svc.allowUnauthenticated) {
         $deployArgs += "--allow-unauthenticated"
     }
@@ -244,6 +273,15 @@ foreach ($svc in $deployOrder) {
 
     if ([bool]$svc.cpuAlwaysAllocated) {
         $deployArgs += "--no-cpu-throttling"
+    }
+
+    if ($hasStartupCpuBoost) {
+        if ($startupCpuBoost) {
+            $deployArgs += "--cpu-boost"
+        }
+        else {
+            $deployArgs += "--no-cpu-boost"
+        }
     }
 
     if ($VpcConnector) {
@@ -289,7 +327,7 @@ foreach ($svc in $deployOrder) {
 Write-Host ""
 Write-Host "Cloud Run deployment completed."
 Write-Host "Runtime URLs:"
-foreach ($key in @("voiceflow-gemini-runtime", "voiceflow-kokoro-runtime", "voiceflow-llvc-runtime")) {
+foreach ($key in @("voiceflow-gemini-runtime", "voiceflow-kokoro-runtime", "voiceflow-voice-transfer-runtime")) {
     $value = [string]$runtimeUrls[$key]
     if ($value) {
         Write-Host "  $key = $value"

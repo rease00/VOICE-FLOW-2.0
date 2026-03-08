@@ -6,7 +6,7 @@ This folder contains Cloud Run production deployment assets for the split topolo
 - `voiceflow-worker` (internal ingress)
 - `voiceflow-gemini-runtime` (internal ingress)
 - `voiceflow-kokoro-runtime` (internal ingress)
-- `voiceflow-llvc-runtime` (internal ingress)
+- `voiceflow-voice-transfer-runtime` (internal ingress)
 
 The API and worker use the same backend image with role-based startup:
 
@@ -20,6 +20,7 @@ The API and worker use the same backend image with role-based startup:
 - `deploy.ps1`: build + deploy script for all services.
 - `rollout-traffic.ps1`: staged traffic rollout (`10% -> 50% -> 100%`) with optional auto-rollback checks.
 - `docker/`: container definitions.
+- `../../.gcloudignore`: Cloud Build upload filter to avoid sending local dev artifacts/media.
 
 ## Prerequisites
 
@@ -62,9 +63,20 @@ Deploy without rebuilding images:
 - Worker: `min=2`, `max=50`, concurrency `1`, CPU always allocated
 - Gemini runtime: `min=1`, `max=20`
 - Kokoro runtime: `min=1`, `max=20`
-- LLVC runtime: `min=0`, `max=10`
+- Voice Transfer runtime: `min=0`, `max=10`
+- Execution environment: `gen2`
+- Startup CPU boost: enabled
+- Request timeouts: service-specific (`300s` to `1200s`)
 
 Adjust max instances after staging load tests.
+
+## Service Config Knobs
+
+`deploy.ps1` now consumes these optional fields from each service entry in `services.default.json`:
+
+- `timeoutSeconds` -> `gcloud run deploy --timeout`
+- `executionEnvironment` -> `gcloud run deploy --execution-environment`
+- `startupCpuBoost` -> `gcloud run deploy --cpu-boost|--no-cpu-boost`
 
 ## Rollout and Rollback
 
