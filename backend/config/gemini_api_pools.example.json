@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "updatedAt": "1970-01-01T00:00:00+00:00",
+  "pools": {
+    "free": { "keys": [] },
+    "pro": { "keys": [] },
+    "pro_plus": { "keys": [] }
+  },
+  "fallbackChains": {
+    "free": ["free"],
+    "pro": ["pro", "free"],
+    "pro_plus": ["pro_plus", "pro", "free"]
+  },
+  "planPools": {
+    "free": "free",
+    "pro": "pro",
+    "plus": "pro_plus"
+  },
+  "defaultFallbackChain": ["pro_plus", "pro", "free"],
+  "constraints": {
+    "uniqueKeyMembership": true
+  },
+  "sourcePolicy": {
+    "provider": "gemini_api",
+    "freePoolMode": "config_managed",
+    "freePoolFilePath": "",
+    "freePoolLocked": false,
+    "ttsModelFallbackEnabled": false,
+    "failureMode": "keep_last_good",
+    "lastSyncAt": "",
+    "lastSyncStatus": "uninitialized",
+    "lastSyncHash": "",
+    "fileKeyCount": 0,
+    "vertexProject": "",
+    "vertexLocation": "",
+    "vertexServiceAccountRef": ""
+  }
+}

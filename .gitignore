@@ -49,6 +49,7 @@ tsc-errors.txt
 # Local secrets and credentials (never commit)
 API.txt
 FIREBASE.txt
+backend/config/gemini_api_pools.json
 *firebase-adminsdk*.json
 *serviceAccount*.json
 *.pem

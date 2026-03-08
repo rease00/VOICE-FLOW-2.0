@@ -261,7 +261,8 @@
    - Check first:
    - `GET /admin/gemini/pools`.
    - Runtime `GET /v1/admin/api-pools`.
-   - Key source files (`API.txt`, `gemini_api_pools.json`) and fallback chains.
+   - Key source files (`API.txt`, local `backend/config/gemini_api_pools.json`) and fallback chains.
+   - Use tracked template `backend/config/gemini_api_pools.example.json` for schema only; never commit live pool state.
 4. Post-TTS conversion failure:
    - Symptom: failed job with `reason=post_tts_conversion_failed`.
    - Check first:
