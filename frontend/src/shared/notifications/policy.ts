@@ -56,14 +56,36 @@ const INBOX_ONLY_EVENT_CODES = new Set<NotificationEventCode>([
   'billing.history.refresh.success',
   'support.message.sent',
   'support.conversation.unresolved',
+  'support.reply.received',
+  'support.conversation.resolved',
+  'tts.job.completed',
+  'tts.job.failed',
+  'tts.job.cancelled',
+  'dubbing.job.completed',
+  'dubbing.job.failed',
+  'dubbing.job.cancelled',
+  'admin.alert.opened',
+  'admin.approval.pending',
+  'admin.audit.chain.mismatch',
+  'admin.session.unlock.issued',
+  'admin.session.unlock.verified',
+  'admin.scheduler.run.accepted',
+  'admin.rbac.saved',
 ]);
 
 // Admin control-plane notifications that must never surface for non-admin users.
 const ADMIN_ONLY_EVENT_CODES = new Set<NotificationEventCode>([
+  'admin.alert.opened',
+  'admin.approval.pending',
+  'admin.audit.chain.mismatch',
   'admin.pool.reload.success',
   'admin.pool.reload.failed',
   'admin.guard.action.submitted',
   'admin.guard.action.failed',
+  'admin.session.unlock.issued',
+  'admin.session.unlock.verified',
+  'admin.scheduler.run.accepted',
+  'admin.rbac.saved',
   'admin.access.load.failed',
 ]);
 

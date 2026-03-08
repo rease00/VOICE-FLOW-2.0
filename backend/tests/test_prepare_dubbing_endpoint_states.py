@@ -144,3 +144,41 @@ def test_prepare_returns_starting_and_failed_states_consistently(monkeypatch) ->
     assert kokoro["state"] == "failed"
     assert kokoro["ok"] is False
     assert kokoro["attemptedSwitch"] is True
+
+
+def test_prepare_forces_cpu_only_for_kokoro_when_gpu_requested(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    health_map = _engines_by_health_url()
+    call_counts: dict[str, int] = {}
+    switch_calls: list[tuple[str, bool, int, bool]] = []
+
+    def _probe(url: str, timeout_sec: float = 2.5):
+        del timeout_sec
+        engine = _next_engine_for_health_url(health_map, call_counts, url)
+        if engine in {"GEM", "KOKORO"}:
+            return False, "offline"
+        return True, "Runtime online"
+
+    def _switch(engine: str, gpu: bool, retries: int = 2, keep_others: bool = True):
+        switch_calls.append((engine, gpu, retries, keep_others))
+        return f"switched:{engine}"
+
+    def _wait(url: str, timeout_ms: int, poll_interval_ms: int = 1200):
+        del url, timeout_ms, poll_interval_ms
+        return True, "Runtime online", 750
+
+    monkeypatch.setattr(backend_app, "_probe_runtime_health", _probe)
+    monkeypatch.setattr(backend_app, "_run_tts_switch_with_retry", _switch)
+    monkeypatch.setattr(backend_app, "_wait_for_runtime_online", _wait)
+
+    client = TestClient(backend_app.app)
+    response = client.post("/services/dubbing/prepare", json={"gpu": True}, headers={"x-dev-uid": "local_admin"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert switch_calls == [("GEM", True, 2, True), ("KOKORO", False, 2, True)]
+
+    gem = next(item for item in payload["services"] if item["engine"] == "GEM")
+    kokoro = next(item for item in payload["services"] if item["engine"] == "KOKORO")
+    assert gem["attemptedSwitch"] is True
+    assert kokoro["attemptedSwitch"] is True

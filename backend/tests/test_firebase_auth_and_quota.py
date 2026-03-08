@@ -298,6 +298,25 @@ class _DummyStripe:
             _ = kwargs
             return {"id": "cus_test_123"}
 
+        @staticmethod
+        def retrieve(customer_id, **kwargs):
+            _ = kwargs
+            return {
+                "id": customer_id,
+                "invoice_settings": {
+                    "default_payment_method": {
+                        "id": "pm_test_123",
+                        "card": {
+                            "brand": "visa",
+                            "last4": "4242",
+                            "exp_month": 12,
+                            "exp_year": 2030,
+                            "funding": "credit",
+                        },
+                    }
+                },
+            }
+
     class checkout:
         class Session:
             @staticmethod
@@ -323,17 +342,71 @@ class _DummyStripe:
 
     class Subscription:
         @staticmethod
-        def retrieve(subscription_id):
-            _ = subscription_id
+        def retrieve(subscription_id, **kwargs):
+            _ = kwargs
             return {
+                "id": subscription_id,
                 "status": "active",
+                "current_period_start": 1761955200,
+                "current_period_end": 1764547200,
+                "cancel_at_period_end": False,
+                "default_payment_method": {
+                    "id": "pm_test_123",
+                    "card": {
+                        "brand": "visa",
+                        "last4": "4242",
+                        "exp_month": 12,
+                        "exp_year": 2030,
+                        "funding": "credit",
+                    },
+                },
                 "items": {
                     "data": [
                         {
-                            "price": {"id": backend_app.STRIPE_PRICE_PRO_MAX_INR},
+                            "price": {"id": backend_app.STRIPE_PRICE_PRO_RECURRING_INR},
                         }
                     ]
                 },
+                "latest_invoice": {"id": "in_test_001"},
+            }
+
+    class Invoice:
+        @staticmethod
+        def list(**kwargs):
+            _ = kwargs
+            return {
+                "data": [
+                    {
+                        "id": "in_test_001",
+                        "number": "VF-1001",
+                        "status": "paid",
+                        "description": "VoiceFlow Pro monthly",
+                        "currency": "inr",
+                        "amount_due": 216000,
+                        "amount_paid": 216000,
+                        "amount_remaining": 0,
+                        "created": 1761955200,
+                        "status_transitions": {"paid_at": 1761955300},
+                        "hosted_invoice_url": "https://invoice.test/1001",
+                        "invoice_pdf": "https://invoice.test/1001.pdf",
+                        "billing_reason": "subscription_cycle",
+                    },
+                    {
+                        "id": "in_test_002",
+                        "number": "VF-1000",
+                        "status": "paid",
+                        "description": "VoiceFlow Pro monthly",
+                        "currency": "inr",
+                        "amount_due": 216000,
+                        "amount_paid": 216000,
+                        "amount_remaining": 0,
+                        "created": 1759276800,
+                        "status_transitions": {"paid_at": 1759276900},
+                        "hosted_invoice_url": "https://invoice.test/1000",
+                        "invoice_pdf": "https://invoice.test/1000.pdf",
+                        "billing_reason": "subscription_cycle",
+                    },
+                ]
             }
 
 
@@ -363,6 +436,47 @@ def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     ent = backend_app._load_entitlement("stripe_user_1")
     assert ent["plan"] == "Pro"
     assert ent["monthlyVfLimit"] == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"]
+
+
+def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
+    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_MAX_INR", "price_pro_max_test")
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
+
+    uid = "billing_summary_user"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Pro",
+        "status": "active",
+        "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
+        "dailyGenerationLimit": backend_app.PLAN_LIMITS["pro"]["dailyGenerationLimit"],
+        "stripeCustomerId": "cus_test_123",
+        "subscriptionId": "sub_test_123",
+        "billingCountry": "IN",
+    }
+    backend_app._INMEMORY_USER_PROFILES[uid] = {
+        "uid": uid,
+        "userId": "summary_user",
+        "displayName": "Summary User",
+        "email": "summary@example.com",
+        "createdAt": "2026-01-01T00:00:00+00:00",
+    }
+
+    client = TestClient(backend_app.app)
+    response = client.get("/billing/account-summary", headers={"x-dev-uid": uid})
+    assert response.status_code == 200
+    payload = response.json()["summary"]
+    assert payload["plan"]["key"] == "pro"
+    assert payload["plan"]["pricing"]["discountPercent"] == 10
+    assert payload["billing"]["hasPortalAccess"] is True
+    assert payload["subscription"]["active"] is True
+    assert payload["subscription"]["latestInvoiceId"] == "in_test_001"
+    assert payload["paymentMethod"]["last4"] == "4242"
+    assert len(payload["invoices"]) == 2
+    assert payload["invoices"][0]["amountPaidMinor"] == 216000
 
 
 def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:

@@ -18,7 +18,7 @@ class DubbingConfig:
     whisper_sample_rate: int = 16000
     gemini_runtime_url: str = "http://127.0.0.1:7810"
     kokoro_runtime_url: str = "http://127.0.0.1:7820"
-    llvc_runtime_url: str = "http://127.0.0.1:7830"
+    voice_transfer_runtime_url: str = "http://127.0.0.1:7830"
     whisper_model: str = "small"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
@@ -35,12 +35,14 @@ class DubbingConfig:
     pipeline_version: str = "2026.1"
     phase1_model: str = "BS-Roformer-Viperx-1297"
     dereverb_model: str = "uvr_deecho_dereverb"
-    director_model: str = "gemini-3-flash"
+    director_model: str = "gemini-2.5-flash"
     tts_model: str = "gemini-2.5-flash-preview-tts"
-    allow_model_fallback: bool = True
+    allow_model_fallback: bool = False
+    source_language_mode: str = "auto_per_segment"
+    language_coverage_profile: str = "core12"
     isochrony_tolerance_pct: float = 10.0
     thinking_low_scene_max_speakers: int = 1
-    llvc_preset: str = "llvc_hq_cpu"
+    voice_transfer_preset: str = "tts_realtime"
     wav2lip_onnx_path: Path | None = None
     lpips_asset_path: Path | None = None
     phase1_asset_path: Path | None = None
@@ -70,6 +72,14 @@ class DubbingConfig:
     @property
     def cache_dir(self) -> Path:
         return self.output_root / "cache"
+
+    @property
+    def llvc_runtime_url(self) -> str:
+        return self.voice_transfer_runtime_url
+
+    @property
+    def llvc_preset(self) -> str:
+        return self.voice_transfer_preset
 
 
 
@@ -114,7 +124,11 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         whisper_sample_rate=int(os.getenv("VF_DUB_WHISPER_SR", "16000")),
         gemini_runtime_url=os.getenv("VF_GEMINI_RUNTIME_URL", "http://127.0.0.1:7810").rstrip("/"),
         kokoro_runtime_url=os.getenv("VF_KOKORO_RUNTIME_URL", "http://127.0.0.1:7820").rstrip("/"),
-        llvc_runtime_url=os.getenv("VF_LLVC_RUNTIME_URL", "http://127.0.0.1:7830").rstrip("/"),
+        voice_transfer_runtime_url=(
+            os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL")
+            or os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL")
+            or "http://127.0.0.1:7830"
+        ).rstrip("/"),
         whisper_model=os.getenv("VF_WHISPER_MODEL", "small"),
         whisper_device=os.getenv("VF_WHISPER_DEVICE", "cpu"),
         whisper_compute_type=os.getenv("VF_WHISPER_COMPUTE", "int8"),
@@ -133,16 +147,23 @@ def build_config(work_root: Path | str | None = None) -> DubbingConfig:
         or "BS-Roformer-Viperx-1297",
         dereverb_model=str(os.getenv("VF_DUB_DEREVERB_MODEL", "uvr_deecho_dereverb") or "uvr_deecho_dereverb").strip()
         or "uvr_deecho_dereverb",
-        director_model=str(os.getenv("VF_DUB_DIRECTOR_MODEL", "gemini-3-flash") or "gemini-3-flash").strip() or "gemini-3-flash",
+        director_model=str(os.getenv("VF_DUB_DIRECTOR_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash").strip() or "gemini-2.5-flash",
         tts_model=str(os.getenv("VF_DUB_TTS_MODEL", "gemini-2.5-flash-preview-tts") or "gemini-2.5-flash-preview-tts").strip()
         or "gemini-2.5-flash-preview-tts",
-        allow_model_fallback=str(os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK", "1")).strip().lower() in {"1", "true", "yes", "on"},
+        allow_model_fallback=str(os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"},
+        source_language_mode=str(os.getenv("VF_DUB_SOURCE_LANGUAGE_MODE", "auto_per_segment") or "auto_per_segment").strip() or "auto_per_segment",
+        language_coverage_profile=str(os.getenv("VF_DUB_LANGUAGE_COVERAGE_PROFILE", "core12") or "core12").strip() or "core12",
         isochrony_tolerance_pct=float(os.getenv("VF_DUB_ISOCHRONY_TOLERANCE_PCT", "10")),
         thinking_low_scene_max_speakers=max(
             1,
             int((os.getenv("VF_DUB_THINKING_LOW_SCENE_MAX_SPEAKERS") or "1").strip() or "1"),
         ),
-        llvc_preset=str(os.getenv("VF_DUB_LLVC_PRESET", "llvc_hq_cpu") or "llvc_hq_cpu").strip() or "llvc_hq_cpu",
+        voice_transfer_preset=str(
+            os.getenv("VF_DUB_VOICE_TRANSFER_PRESET")
+            or os.getenv("VF_DUB_VOICE_TRANSFER_PRESET")
+            or "tts_realtime"
+        ).strip()
+        or "tts_realtime",
         wav2lip_onnx_path=wav2lip_onnx_path,
         lpips_asset_path=lpips_asset_path,
         phase1_asset_path=phase1_asset_path,
@@ -241,7 +262,7 @@ def run_strict_preflight(cfg: DubbingConfig, source_path: Path) -> dict:
     runtime_checks = [
         ("gem_runtime", cfg.gemini_runtime_url, "Start GEM runtime on configured URL."),
         ("kokoro_runtime", cfg.kokoro_runtime_url, "Start KOKORO runtime on configured URL."),
-        ("llvc_runtime", cfg.llvc_runtime_url, "Start LLVC runtime on configured URL."),
+        ("voice_transfer_runtime", cfg.voice_transfer_runtime_url, "Start voice-transfer runtime on configured URL."),
     ]
     for name, runtime_url, remediation in runtime_checks:
         try:
@@ -250,6 +271,13 @@ def run_strict_preflight(cfg: DubbingConfig, source_path: Path) -> dict:
             check(name, status_ok, f"{name} health at {runtime_url}", remediation)
         except (urllib_error.URLError, TimeoutError, OSError) as exc:
             check(name, False, f"{name} unreachable: {exc}", remediation)
+
+    check(
+        "pyannote_auth_token",
+        bool(str(cfg.pyannote_token or "").strip()),
+        "PYANNOTE_AUTH_TOKEN configured" if str(cfg.pyannote_token or "").strip() else "PYANNOTE_AUTH_TOKEN missing",
+        "Set PYANNOTE_AUTH_TOKEN for mandatory speaker diarization.",
+    )
 
     ok = all(bool(item["ok"]) for item in checks)
     failures = [item for item in checks if not bool(item["ok"])]

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const mockCreateDubbingJobV2 = vi.fn(async () => ({ ok: true, job_id: 'job_123' }));
-const mockGetDubbingJob = vi.fn(async () => ({ ok: true, job: { status: 'running', stage: 'director', progress: 28 } }));
-const mockGetDubbingJobWithOptions = vi.fn(async () => ({ ok: true, job: { status: 'running', stage: 'base_tts', progress: 66, chunks: [] } }));
+const mockGetDubbingJob = vi.fn(async () => ({ ok: true, job: { status: 'running', stage: 'speaker_segmentation', progress: 28 } }));
+const mockGetDubbingJobWithOptions = vi.fn(async () => ({ ok: true, job: { status: 'running', stage: 'tts', progress: 66, chunks: [] } }));
 const mockCancelDubbingJob = vi.fn(async () => ({ ok: true, job_id: 'job_123' }));
 const mockDownloadChunk = vi.fn(async () => new Blob(['00'], { type: 'audio/wav' }));
 const mockDownloadReport = vi.fn(async () => new Blob(['{}'], { type: 'application/json' }));
@@ -59,6 +59,7 @@ describe('mediaBackendService dubbing v2 wrappers', () => {
     expect(passedFile.name).toBe('clip.mp4');
     expect(options.baseUrl).toBe('http://127.0.0.1:7800');
     expect(options.targetLanguage).toBe('hi');
+    expect((options.advanced as Record<string, unknown>).tts_route).toBe('auto');
   });
 
   it('polls, cancels, and downloads job artifacts via gateway', async () => {

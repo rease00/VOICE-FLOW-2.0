@@ -224,6 +224,53 @@ def test_grouped_synthesis_reassembles_audio_in_line_index_order() -> None:
         runtime._synthesize_pcm_with_key_pool = original
 
 
+def test_grouped_synthesis_reports_key_selection_history() -> None:
+    runtime = _load_gemini_runtime_module()
+    auth_mode, source_policy = _runtime_auth_context(runtime)
+    speakers = ["A", "B", "C", "D", "E"]
+    line_map = _line_map_for_speakers(speakers)
+    speaker_voices = _speaker_voices(speakers)
+    key_pool = [_make_key(14), _make_key(15), _make_key(16)]
+
+    original = runtime._synthesize_pcm_with_key_pool
+
+    def _stub_synthesize_pcm_with_key_pool(**kwargs):
+        line_ids = _parse_line_ids(str(kwargs.get("text_input") or ""))
+        first_line_id = line_ids[0] if line_ids else 0
+        key_index = 0 if first_line_id == 0 else (2 if first_line_id == 2 else 1)
+        return _pcm_for_line_ids(line_ids), "gemini-2.5-flash-preview-tts", "multi-speaker", key_index
+
+    try:
+        runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
+        result = runtime._synthesize_studio_pair_groups(
+            trace_id="trace_key_history",
+            engine="GEM",
+            auth_mode=auth_mode,
+            source_policy=source_policy,
+            target_voice="Fenrir",
+            language_code="en",
+            speaker_hint="",
+            normalized_speaker_voices=speaker_voices,
+            normalized_line_map=line_map,
+            primary_key_pool=key_pool,
+            fallback_request_key=None,
+            effective_key_pool=key_pool,
+            requested_concurrency=7,
+            retry_once=True,
+        )
+        diagnostics = dict(result.get("diagnostics") or {})
+        assert int(result.get("keySelectionIndex", -1)) == 1
+        assert int(result.get("firstKeySelectionIndex", -1)) == 0
+        assert int(result.get("finalKeySelectionIndex", -1)) == 1
+        assert list(result.get("keySelectionIndexes") or []) == [0, 2, 1]
+        assert int(diagnostics.get("keySelectionIndex", -1)) == 1
+        assert int(diagnostics.get("firstKeySelectionIndex", -1)) == 0
+        assert int(diagnostics.get("finalKeySelectionIndex", -1)) == 1
+        assert list(diagnostics.get("keySelectionIndexes") or []) == [0, 2, 1]
+    finally:
+        runtime._synthesize_pcm_with_key_pool = original
+
+
 def test_grouped_synthesis_retries_failed_group_once() -> None:
     runtime = _load_gemini_runtime_module()
     auth_mode, source_policy = _runtime_auth_context(runtime)

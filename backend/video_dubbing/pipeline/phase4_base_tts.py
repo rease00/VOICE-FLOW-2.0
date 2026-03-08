@@ -74,8 +74,8 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
         for runtime_name, base_url in (("gemini", cfg.gemini_runtime_url), ("kokoro", cfg.kokoro_runtime_url)):
             payload = {
                 "text": text,
-                "voiceName": str(segment.get("voice_id") or "alloy"),
-                "voice_id": str(segment.get("voice_id") or "alloy"),
+                "voiceName": str(segment.get("voice_id") or "achernar"),
+                "voice_id": str(segment.get("voice_id") or "achernar"),
                 "language": str(ctx.get("target_language") or "hi"),
                 "emotion": tags[0] if tags else "neutral",
                 "speaker": speaker,
@@ -125,7 +125,7 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
                 "index": index,
                 "speaker": speaker,
                 "engine": runtime.upper(),
-                "voice_id": str(segment.get("voice_id") or "alloy"),
+                "voice_id": str(segment.get("voice_id") or "achernar"),
                 "ok": ok,
                 "error": err or None,
                 "model": cfg.tts_model,

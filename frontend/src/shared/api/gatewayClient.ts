@@ -3,6 +3,7 @@ import type {
   RuntimeLogTailResponse,
   TtsEngineCapabilitiesResponse,
   TtsEngineStatusResponse,
+  TtsJobStatusResponse,
   TtsEngineSwitchResponse,
   TtsVoiceMappingCatalogResponse,
   TtsEngineVoicesResponse,
@@ -12,9 +13,20 @@ import type {
 } from './contracts';
 import { requestBlob, requestJson } from './httpClient';
 
-export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime' | 'llvc-runtime';
+export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime' | 'voice-transfer-runtime';
 
 const withBaseUrl = (baseUrl?: string): { baseUrl?: string } => (baseUrl ? { baseUrl } : {});
+
+const decodeBase64ToArrayBuffer = (value: string): ArrayBuffer => {
+  const safe = String(value || '').trim();
+  if (!safe) return new ArrayBuffer(0);
+  const binary = atob(safe);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+};
 
 export const fetchTtsEnginesStatus = async (
   engine?: GenerationSettings['engine'],
@@ -189,6 +201,86 @@ export const fetchTtsJobChunkAudio = async (
     withBaseUrl(baseUrl)
   );
   return blob.arrayBuffer();
+};
+
+export const createTtsJob = async (
+  payload: Record<string, unknown>,
+  options?: { baseUrl?: string }
+): Promise<TtsJobStatusResponse> => {
+  return requestJson<TtsJobStatusResponse>(
+    '/tts/jobs',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+  );
+};
+
+export const getTtsJob = async (
+  jobId: string,
+  options?: {
+    includeResult?: boolean;
+    includeChunks?: boolean;
+    chunkCursor?: number;
+    chunkLimit?: number;
+    includeChunkAudio?: boolean;
+    baseUrl?: string;
+  }
+): Promise<TtsJobStatusResponse> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  const searchParams = new URLSearchParams();
+  if (options?.includeResult) searchParams.set('includeResult', '1');
+  if (options?.includeChunks) searchParams.set('includeChunks', '1');
+  if (typeof options?.chunkCursor === 'number' && Number.isFinite(options.chunkCursor)) {
+    searchParams.set('chunkCursor', String(Math.max(0, Math.floor(options.chunkCursor))));
+  }
+  if (typeof options?.chunkLimit === 'number' && Number.isFinite(options.chunkLimit)) {
+    searchParams.set('chunkLimit', String(Math.max(1, Math.floor(options.chunkLimit))));
+  }
+  if (typeof options?.includeChunkAudio === 'boolean') {
+    searchParams.set('includeChunkAudio', options.includeChunkAudio ? '1' : '0');
+  }
+  const path = searchParams.toString()
+    ? `/tts/jobs/${safeJobId}?${searchParams.toString()}`
+    : `/tts/jobs/${safeJobId}`;
+  return requestJson<TtsJobStatusResponse>(
+    path,
+    undefined,
+    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+  );
+};
+
+export const cancelTtsJob = async (
+  jobId: string,
+  options?: { baseUrl?: string }
+): Promise<TtsJobStatusResponse> => {
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  return requestJson<TtsJobStatusResponse>(
+    `/tts/jobs/${safeJobId}`,
+    { method: 'DELETE' },
+    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+  );
+};
+
+export const fetchTtsJobResult = async (
+  jobId: string,
+  options?: { baseUrl?: string }
+): Promise<{ audioBytes: ArrayBuffer; mediaType: string; headers: Record<string, string> }> => {
+  const response = await getTtsJob(jobId, {
+    includeResult: true,
+    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+  });
+  const audioBase64 = String(response.result?.audioBase64 || '').trim();
+  if (!audioBase64) {
+    throw new Error('TTS job result is missing audio payload.');
+  }
+  return {
+    audioBytes: decodeBase64ToArrayBuffer(audioBase64),
+    mediaType: String(response.result?.mediaType || 'audio/wav'),
+    headers: response.result?.headers || {},
+  };
 };
 
 export const createDubbingJobV2 = async (

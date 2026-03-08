@@ -28,7 +28,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
 
 - Start frontend only: `npm run start:frontend`
 - Start backend services only: `npm run start:backend`
-- Start backend services in GPU mode: `npm run start:backend:gpu`
+- Start backend services in GPU mode for eligible runtimes: `npm run start:backend:gpu`
 
 `start:backend` is idempotent: it reuses healthy running services, reconciles PID files to active listeners, and only restarts when runtime code/dependencies changed.
 
@@ -140,10 +140,10 @@ python scripts/firebase_project_wipe.py --apply --confirm WIPE_FIREBASE_NOW
 - `--apply` requires explicit confirmation token.
 - Use `--skip-firestore` or `--skip-auth-users` for partial cleanup.
 
-## Real LLVC + Media Backend
+## Real Voice Transfer + Media Backend
 
 The app now supports a real local media backend for:
-- LLVC cover conversion (`KoeAI/LLVC`)
+- Voice transfer cover conversion (`w-okada`)
 - FFmpeg-based media utilities
 
 ## Isolated Python Runtimes (Per-Engine venv)
@@ -152,7 +152,7 @@ All backends now run locally using Python, each in its own virtual environment:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
 - `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
-- `LLVC runtime` on `7830` (isolated `KoeAI/LLVC` inference service)
+- `Voice Transfer runtime` on `7830` (isolated timbre-transfer inference service)
 
 Runtime/backend URLs are wired internally to local defaults in the app.
 
@@ -161,7 +161,7 @@ Runtime/backend URLs are wired internally to local defaults in the app.
 Create/update venvs, start all local services, and validate endpoints:
 - `npm run services:bootstrap`
 
-GPU-capable host:
+GPU-capable host (Gemini/voice-transfer can prefer GPU; Kokoro remains CPU-only):
 - `npm run services:bootstrap:gpu`
 
 Validate endpoints only:
@@ -174,7 +174,7 @@ Stop all bootstrapped services:
 - `npm run services:down`
 
 Dev orchestration env knobs (optional):
-- `VF_DEV_BOOTSTRAP_MODE=cpu|gpu` (default `cpu`)
+- `VF_DEV_BOOTSTRAP_MODE=cpu|gpu` (default `cpu`; Kokoro stays CPU-only in both modes)
 - `VF_DEV_BOOTSTRAP_RETRIES=<n>` (default `3`)
 - `VF_DEV_RETRY_BASE_MS=<ms>` (default `1500`)
 - `VF_DEV_RETRY_MAX_MS=<ms>` (default `10000`)
@@ -190,14 +190,15 @@ Health checks include:
 - `http://127.0.0.1:7800/health` (media backend)
 - `http://127.0.0.1:7810/health` (Gemini runtime)
 - `http://127.0.0.1:7820/health` (Kokoro runtime)
-- `http://127.0.0.1:7830/v1/health` (LLVC runtime)
+- `http://127.0.0.1:7830/v1/health` (Voice Transfer runtime)
 
 Notes:
 - Each runtime gets an isolated venv under `backend/.venvs/`.
 - First bootstrap installs Python dependencies for each runtime.
-- `services:bootstrap:gpu` sets GPU-first runtime envs where available.
-- For isolated LLVC runtime dependencies, install with `npm run backend:install:llvc`.
+- `services:bootstrap:gpu` sets GPU-first runtime envs for eligible runtimes; Kokoro ignores GPU mode and stays on CPU.
 - Kokoro runtime includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and runs in strict no-fallback mode.
+- `KOKORO_DEVICE` is retained for compatibility, but the Kokoro runtime is hard-pinned to CPU.
+- Browser-side Kokoro execution is disabled. The app uses the backend Python Kokoro runtime instead of frontend-local inference.
 - Runtime PID files are reconciled against live port listeners to avoid Windows launcher-PID drift.
 - Service logs auto-rotate on startup/restart.
 
@@ -207,9 +208,9 @@ Set these only when you need hard interpreter isolation:
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
 - `VF_PYTHON_BIN_KOKORO_RUNTIME`
-- `VF_PYTHON_BIN_LLVC_RUNTIME`
+- `VF_PYTHON_BIN_VOICE_TRANSFER_RUNTIME`
 
-`llvc-runtime` enforces Python `3.11.x` and bootstrap will fail fast on mismatch.
+`voice-transfer-runtime` enforces Python `3.11.x` and bootstrap will fail fast on mismatch.
 
 ### Bootstrap Log Rotation
 
@@ -227,13 +228,33 @@ If a service appears to restart repeatedly, verify listeners directly:
 - `npm run backend -- services:check`
 - `npm run backend -- audit:bootstrap:idempotency`
 
-### LLVC model folder
+### Voice Transfer model folder
 
-Put your LLVC model files under:
-- `backend/models/llvc/<model-name>/model.pth`
-- `backend/models/llvc/<model-name>/model.index` (optional)
+Put your voice-transfer model files under:
+- `backend/models/voice-transfer/<model-name>/model.pth`
+- `backend/models/voice-transfer/<model-name>/model.index` (optional)
 
-Then open Voice Lab -> `AI Covers (LLVC)` -> `Refresh Models`.
+Then open Voice Lab -> `AI Covers (Voice Transfer)` -> `Refresh Models`.
+
+### Voice Transfer OpenVINO (optional)
+
+The default voice-transfer ONNX provider mode is `auto`.
+On CPU/default bootstraps, `auto` now prefers OpenVINO first and bootstrap installs `onnxruntime-openvino` by default.
+On GPU bootstraps, the runtime keeps the generic `onnxruntime` wheel and the existing CUDA -> DML -> CPU fallback path.
+
+If you want the Intel OpenVINO execution provider instead:
+- install `onnxruntime-openvino`
+- on Windows, install the OpenVINO runtime/toolkit and load `setupvars.bat` before bootstrap
+- set `VF_VOICE_TRANSFER_ONNX_PROVIDER=openvino`
+- optionally set `VF_VOICE_TRANSFER_OPENVINO_DEVICE_TYPE` to `CPU`, `GPU`, `NPU`, or `AUTO:GPU,NPU,CPU`
+
+### Voice Transfer CPU Defaults
+
+CPU-oriented defaults now bias toward lower latency and cheaper pitch extraction:
+- `VF_VOICE_TRANSFER_EXTRA_CONVERT_SIZE=256`
+- default F0 extractor stays `rmvpe`
+- CPU runtime requests that ask for `harvest` or `crepe*` are coerced back to `rmvpe`
+- `pm` remains allowed and is mapped to the runtime's `dio` path
 
 ### Deep audit command
 
@@ -342,7 +363,7 @@ Notes:
   - `POST /billing/token-pack/checkout-session` accepts `pack`=`micro|standard|mega|ultra`
   - pricing matrix is fixed all-inclusive INR; Scale plan receives 20% pack discount
 - Security hardening:
-  - runtime-sensitive routes (`/runtime/logs/tail`, `/tts/engines/switch`, `/services/dubbing/prepare`, `/llvc/load-model`) are admin-gated
+  - runtime-sensitive routes (`/runtime/logs/tail`, `/tts/engines/switch`, `/services/dubbing/prepare`, `/voice-transfer/load-model`) are admin-gated
   - mutating guardian operations are admin-gated
   - Gemini runtime `/v1/admin/api-pool*` routes require `GEMINI_RUNTIME_ADMIN_TOKEN`
   - production defaults should remain strict (`VF_AUTH_ENFORCE=1`, `VITE_ENABLE_DEV_UID_HEADER=0`)

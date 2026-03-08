@@ -18,6 +18,13 @@ from shared.gemini_multi_speaker import (
 from video_dubbing.config import DubbingConfig
 from video_dubbing.utils.audio_utils import save_audio
 from video_dubbing.utils.language_utils import normalize_language_code
+from video_dubbing.utils.token_usage import (
+    estimate_gemini_prompt_tokens,
+    estimate_tts_output_tokens,
+    record_exact_tokens,
+    record_reserved_tokens,
+    usage_metadata_from_payload,
+)
 
 
 LiveChunkCallback = Callable[[dict[str, Any]], None]
@@ -52,6 +59,18 @@ def _decode_runtime_diagnostics(response: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     return None
+
+
+def _decode_usage_metadata(response: Any) -> dict[str, int] | None:
+    raw = str(getattr(response, "headers", {}).get("x-voiceflow-usage") or "").strip()
+    if not raw:
+        return None
+    try:
+        decoded = unquote(raw)
+        payload = json.loads(decoded)
+    except Exception:
+        return None
+    return usage_metadata_from_payload(payload)
 
 
 def _is_transient_runtime_error(exc: Exception) -> bool:
@@ -100,15 +119,15 @@ def _select_engine(
     target_language: str,
     tts_route: str,
 ) -> str:
-    forced = str(segment.get("tts_engine") or "").strip().upper()
-    if forced in {"GEM", "KOKORO"}:
-        return forced
-
     route = (tts_route or "auto").strip().lower()
     if route == "gem_only":
         return "GEM"
     if route == "kokoro_only":
         return "KOKORO"
+
+    forced = str(segment.get("tts_engine") or "").strip().upper()
+    if forced in {"GEM", "KOKORO"}:
+        return forced
 
     text = str(segment.get("translated_text") or segment.get("text") or "")
     lang = normalize_language_code(target_language, default="en")
@@ -133,6 +152,7 @@ def _build_payload(
     emotion: Any,
     language: str,
     trace_id: str,
+    model_candidates: Optional[list[str]] = None,
 ) -> tuple[str, dict[str, Any]]:
     endpoint = "/synthesize"
     if engine == "GEM":
@@ -145,6 +165,9 @@ def _build_payload(
             "speaker": speaker,
             "trace_id": trace_id,
         }
+        safe_candidates = [str(item or "").strip() for item in list(model_candidates or []) if str(item or "").strip()]
+        if safe_candidates:
+            payload["modelCandidates"] = safe_candidates
         return endpoint, payload
 
     payload = {
@@ -155,6 +178,9 @@ def _build_payload(
         "emotion": emotion,
         "trace_id": trace_id,
     }
+    safe_candidates = [str(item or "").strip() for item in list(model_candidates or []) if str(item or "").strip()]
+    if safe_candidates:
+        payload["modelCandidates"] = safe_candidates
     return endpoint, payload
 
 
@@ -167,14 +193,15 @@ def _runtime_url(cfg: DubbingConfig, engine: str) -> str:
 def _default_voice_id(engine: str) -> str:
     if engine == "KOKORO":
         return "hf_alpha"
-    return "alloy"
+    return "achernar"
 
 
-def _voice_candidates_for_engine(engine: str, preferred_voice: str) -> list[str]:
+def _voice_candidates_for_engine(engine: str, preferred_voice: str, *, allow_fallback: bool = True) -> list[str]:
     preferred = str(preferred_voice or "").strip() or _default_voice_id(engine)
     default_voice = _default_voice_id(engine)
     out: list[str] = []
-    for candidate in [preferred, default_voice]:
+    source = [preferred, default_voice] if allow_fallback else [preferred]
+    for candidate in source:
         token = str(candidate or "").strip()
         if not token:
             continue
@@ -284,6 +311,7 @@ def _try_grouped_gemini(
     timeout_policy: str,
     log: Callable[[str], None],
     tts_requests: list[dict[str, Any]],
+    model_candidates: Optional[list[str]] = None,
     live_chunk_callback: Optional[LiveChunkCallback] = None,
 ) -> list[dict[str, Any]] | None:
     plan = _build_grouped_plan(segments)
@@ -302,6 +330,9 @@ def _try_grouped_gemini(
         "multi_speaker_retry_once": bool(cfg.gemini_pair_group_retry_once),
         "multi_speaker_line_map": list(plan["line_map"]),
     }
+    safe_candidates = [str(item or "").strip() for item in list(model_candidates or []) if str(item or "").strip()]
+    if safe_candidates:
+        payload["modelCandidates"] = safe_candidates
 
     try:
         group_timeout_sec = _compute_group_timeout_sec(str(plan["script_text"]), timeout_policy, cfg)
@@ -430,12 +461,18 @@ def _try_grouped_gemini(
 def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> dict[str, Any]:
     segments: list[dict[str, Any]] = list(ctx.get("segments") or [])
     if not segments:
-        raise RuntimeError("phase_failed:base_tts:no_segments")
+        raise RuntimeError("phase_failed:tts:no_segments")
 
     target_lang = normalize_language_code(str(ctx.get("target_language") or "hi"), default="hi")
     tts_route = str(ctx.get("tts_route") or "auto").strip().lower()
     timeout_policy = str(ctx.get("timeout_policy") or "adaptive").strip().lower()
     voice_binding_policy = str(ctx.get("voice_binding_policy") or "stable_fallback").strip().lower()
+    strict_gemini_only = bool(ctx.get("strict_gemini_only"))
+    strict_no_fallback = bool(ctx.get("strict_no_fallback"))
+    if strict_gemini_only:
+        tts_route = "gem_only"
+    pinned_tts_model = str(ctx.get("tts_model") or cfg.tts_model).strip() or cfg.tts_model
+    model_candidates = [pinned_tts_model] if pinned_tts_model else []
     max_speaker_count = max(1, int(ctx.get("max_speaker_count") or 8))
     live_chunk_callback = ctx.get("live_chunk_callback")
     if not callable(live_chunk_callback):
@@ -486,7 +523,11 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
     failures: list[dict[str, Any]] = []
     fallback_bindings: list[dict[str, Any]] = []
 
-    can_try_grouped = tts_route != "kokoro_only"
+    can_try_grouped = (
+        len(segments) >= 2
+        and tts_route != "kokoro_only"
+        and bool(str(cfg.gemini_runtime_url or "").strip())
+    )
     if can_try_grouped:
         all_gem = True
         for segment in segments:
@@ -502,6 +543,7 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
                 timeout_policy=timeout_policy,
                 log=log,
                 tts_requests=tts_requests,
+                model_candidates=model_candidates,
                 live_chunk_callback=live_chunk_callback,
             )
             if grouped_result is not None:
@@ -513,7 +555,7 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
             if not text:
                 continue
 
-            speaker = str(segment.get("speaker") or "SPEAKER_00")
+            speaker = str(segment.get("speaker") or "SPEAKER_00").strip() or "SPEAKER_00"
             primary_engine = _select_engine(segment, target_language=target_lang, tts_route=tts_route)
             engines = _engine_order(primary_engine, tts_route)
             preferred_voice = str(
@@ -523,6 +565,41 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
             ).strip() or _default_voice_id(primary_engine)
             trace_id = f"dub_{speaker}_{index}".replace(" ", "_")
             timeout_sec = _compute_chunk_timeout_sec(text, timeout_policy)
+            segment_duration_sec = max(
+                0.0,
+                float(segment.get("end") or 0.0) - float(segment.get("start") or 0.0),
+            )
+            reserved_prompt_tokens = 0
+            reserved_output_tokens = 0
+            if primary_engine == "GEM":
+                _, reservation_payload = _build_payload(
+                    engine=primary_engine,
+                    text=text,
+                    voice_id=preferred_voice,
+                    speaker=speaker,
+                    emotion=segment.get("emotion"),
+                    language=target_lang,
+                    trace_id=trace_id,
+                    model_candidates=model_candidates,
+                )
+                reserved_prompt_tokens = estimate_gemini_prompt_tokens(
+                    json.dumps(reservation_payload, ensure_ascii=False, separators=(",", ":")),
+                    task="tts",
+                )
+                reserved_output_tokens = estimate_tts_output_tokens(segment_duration_sec)
+                record_reserved_tokens(
+                    ctx,
+                    stage="tts",
+                    segment_index=index,
+                    speaker=speaker,
+                    prompt_tokens=reserved_prompt_tokens,
+                    output_tokens=reserved_output_tokens,
+                    extra={
+                        "traceId": trace_id,
+                        "modelReserved": model_candidates[0] if model_candidates else None,
+                        "reservationMode": "estimated_local",
+                    },
+                )
 
             audio = np.zeros(1, dtype=np.float32)
             sample_rate = 24000
@@ -532,11 +609,16 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
             error_reason = ""
             speaker_wav = None
             runtime_diagnostics: dict[str, Any] | None = None
+            usage_metadata: dict[str, int] | None = None
             strategy = "segmented"
 
             for engine in engines:
                 runtime_url = _runtime_url(cfg, engine)
-                voice_candidates = _voice_candidates_for_engine(engine, preferred_voice)
+                voice_candidates = _voice_candidates_for_engine(
+                    engine,
+                    preferred_voice,
+                    allow_fallback=not strict_no_fallback,
+                )
                 for voice_id in voice_candidates:
                     endpoint_path, payload = _build_payload(
                         engine=engine,
@@ -546,6 +628,7 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
                         emotion=segment.get("emotion"),
                         language=target_lang,
                         trace_id=trace_id,
+                        model_candidates=model_candidates,
                     )
                     endpoint = f"{runtime_url}{endpoint_path}"
                     for attempt in range(2):
@@ -560,6 +643,7 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
                             ok = True
                             error_reason = ""
                             runtime_diagnostics = _decode_runtime_diagnostics(response)
+                            usage_metadata = _decode_usage_metadata(response)
                             break
                         except Exception as exc:
                             error_reason = str(exc)
@@ -605,6 +689,9 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
                     "ok": ok,
                     "error": error_reason or None,
                     "runtime_diagnostics": runtime_diagnostics,
+                    "usageMetadata": usage_metadata,
+                    "reservedPromptTokens": reserved_prompt_tokens,
+                    "reservedOutputTokens": reserved_output_tokens,
                     "strategy": strategy,
                 }
             )
@@ -617,22 +704,43 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
                         "reason": error_reason or "empty_audio",
                     }
                 )
-            elif callable(live_chunk_callback):
-                try:
-                    chunk_bytes = _encode_wav_bytes(audio, sample_rate)
-                    live_chunk_callback(
-                        {
-                            "index": int(index),
-                            "speaker": speaker,
-                            "engine": selected_engine,
-                            "voice_id": selected_voice,
-                            "audio_bytes": chunk_bytes,
-                            "content_type": "audio/wav",
-                            "text_chars": len(text),
+            else:
+                if selected_engine == "GEM":
+                    effective_usage_metadata = usage_metadata
+                    if effective_usage_metadata is None:
+                        fallback_prompt_tokens = max(0, int(reserved_prompt_tokens or 0))
+                        fallback_output_tokens = max(0, int(reserved_output_tokens or 0))
+                        if fallback_prompt_tokens <= 0:
+                            _, effective_payload = _build_payload(
+                                engine=selected_engine,
+                                text=text,
+                                voice_id=selected_voice,
+                                speaker=speaker,
+                                emotion=segment.get("emotion"),
+                                language=target_lang,
+                                trace_id=trace_id,
+                                model_candidates=model_candidates,
+                            )
+                            fallback_prompt_tokens = estimate_gemini_prompt_tokens(
+                                json.dumps(effective_payload, ensure_ascii=False, separators=(",", ":")),
+                                task="tts",
+                            )
+                        if fallback_output_tokens <= 0:
+                            fallback_output_tokens = estimate_tts_output_tokens(segment_duration_sec)
+                        effective_usage_metadata = {
+                            "promptTokens": fallback_prompt_tokens,
+                            "outputTokens": fallback_output_tokens,
+                            "totalTokens": fallback_prompt_tokens + fallback_output_tokens,
                         }
+                        tts_requests[-1]["usageMetadata"] = effective_usage_metadata
+                    record_exact_tokens(
+                        ctx,
+                        stage="tts",
+                        segment_index=index,
+                        speaker=speaker,
+                        usage_metadata=effective_usage_metadata,
+                        extra={"traceId": trace_id, "voiceId": selected_voice},
                     )
-                except Exception as exc:
-                    log(f"stage6 live chunk callback failed index={index}: {exc}")
 
     ctx["base_tts_segments"] = generated
     ctx["tts_segments"] = generated

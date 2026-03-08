@@ -21,7 +21,17 @@ from video_dubbing.pipeline.pipeline_contracts import PHASE_ORDER, validate_stag
 def _apply_config_overrides(cfg: DubbingConfig, overrides: dict[str, Any] | None) -> None:
     if not isinstance(overrides, dict):
         return
+    aliases = {
+        "llvc_preset": "voice_transfer_preset",
+    }
     for key, value in overrides.items():
+        resolved_key = aliases.get(key, key)
+        if resolved_key == "voice_transfer_preset":
+            try:
+                value = str(value or "").strip() or cfg.voice_transfer_preset
+            except Exception:
+                value = cfg.voice_transfer_preset
+        key = resolved_key
         if not hasattr(cfg, key):
             continue
         try:
@@ -87,17 +97,29 @@ def run_pipeline(
     ctx["live_play_mode"] = str(runtime_options_payload.get("live_play_mode") or "off").strip().lower()
     ctx["live_chunk_target_ms"] = int(runtime_options_payload.get("live_chunk_target_ms") or 3000)
     ctx["max_speaker_count"] = int(runtime_options_payload.get("max_speaker_count") or 8)
+    ctx["source_language_mode"] = str(runtime_options_payload.get("source_language_mode") or cfg.source_language_mode).strip().lower()
+    ctx["language_coverage_profile"] = str(runtime_options_payload.get("language_coverage_profile") or cfg.language_coverage_profile).strip().lower()
+    ctx["strict_gemini_only"] = bool(runtime_options_payload.get("strict_gemini_only"))
+    ctx["strict_no_fallback"] = bool(runtime_options_payload.get("strict_no_fallback"))
+    ctx["director_model"] = str(runtime_options_payload.get("director_model") or cfg.director_model).strip() or cfg.director_model
+    ctx["tts_model"] = str(runtime_options_payload.get("tts_model") or cfg.tts_model).strip() or cfg.tts_model
+    ctx["voice_model"] = str(runtime_options_payload.get("voice_model") or "").strip()
+    ctx["policy_enforcement"] = (
+        dict(runtime_options_payload.get("policy_enforcement"))
+        if isinstance(runtime_options_payload.get("policy_enforcement"), dict)
+        else {}
+    )
     live_chunk_callback = runtime_options_payload.get("live_chunk_callback")
     if callable(live_chunk_callback):
         ctx["live_chunk_callback"] = live_chunk_callback
 
     phases = {
         "acoustic_isolation": phase1_acoustic_isolation.run,
-        "director": phase2_director_multimodal.run,
-        "isochrony_translation": phase3_isochrony_translation.run,
-        "base_tts": stage6_tts.run,
-        "llvc_timbre_transfer": phase5_llvc_timbre_transfer.run,
-        "visual_lipsync": phase6_lipsync_onnx.run,
+        "speaker_segmentation": phase2_director_multimodal.run,
+        "translation": phase3_isochrony_translation.run,
+        "tts": stage6_tts.run,
+        "voice_transfer": phase5_llvc_timbre_transfer.run,
+        "video_lipsync": phase6_lipsync_onnx.run,
     }
 
     resolved_voice_map = dict(voice_map or {})
@@ -119,7 +141,7 @@ def run_pipeline(
 
         safe_default = str(resolved_voice_map.get("default") or "").strip()
         if not safe_default:
-            safe_default = "alloy"
+            safe_default = "achernar"
 
         for segment in segments:
             speaker = str(segment.get("speaker") or "SPEAKER_00").strip() or "SPEAKER_00"
@@ -132,7 +154,7 @@ def run_pipeline(
 
     for phase_name in PHASE_ORDER:
         validate_stage_contract(phase_name, ctx, when="before")
-        if phase_name == "base_tts":
+        if phase_name == "tts":
             _apply_voice_bindings_before_tts()
         log(f"[stage:start] {phase_name}")
         phases[phase_name](ctx, cfg, log)
@@ -155,11 +177,15 @@ def run_pipeline(
         "voice_map_resolved": ctx.get("voice_map_resolved") or {},
         "director_json": ctx.get("director_json") or {},
         "isochrony_stats": ctx.get("isochrony_stats") or {},
-        "llvc_metrics": ctx.get("llvc_metrics") or {},
-        "lipsync_metrics": ctx.get("lipsync_metrics") or {},
+        "voice_transfer_metrics": ctx.get("voice_transfer_metrics") or {},
+        "video_sync_metrics": ctx.get("video_sync_metrics") or {},
+        "token_usage": ctx.get("token_usage") or {},
         "assets": ctx.get("assets") or {},
         "thinking_policy": ctx.get("thinking_policy") or {},
+        "json_diagnostics": ctx.get("json_diagnostics") or [],
         "speaker_fallback_bindings": ctx.get("speaker_fallback_bindings") or [],
+        "language_stats": ctx.get("language_stats") or {},
+        "policy_enforcement": ctx.get("policy_enforcement") or {},
         "pipeline_version": ctx.get("pipeline_version") or cfg.pipeline_version,
         "language": ctx.get("language") or "auto",
         "logs": logs,
@@ -185,7 +211,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent / "output"))
     parser.add_argument("--target-language", default="hi")
     parser.add_argument("--tts-route", default="auto", choices=["auto", "gem_only", "kokoro_only"])
-    parser.add_argument("--voice-map", default="{}", help='JSON, e.g. {"SPEAKER_00":"alloy"}')
+    parser.add_argument("--voice-map", default="{}", help='JSON, e.g. {"SPEAKER_00":"achernar"}')
     args = parser.parse_args()
 
     voice_map = _parse_voice_map(args.voice_map)

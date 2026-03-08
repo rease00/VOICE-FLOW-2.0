@@ -7,15 +7,16 @@ from pathlib import Path
 
 import app as backend_app
 from fastapi.testclient import TestClient
+from video_dubbing.utils.json_mode_parser import JsonModePipelineError
 
 
 PHASES = [
     "acoustic_isolation",
-    "director",
-    "isochrony_translation",
-    "base_tts",
-    "llvc_timbre_transfer",
-    "visual_lipsync",
+    "speaker_segmentation",
+    "translation",
+    "tts",
+    "voice_transfer",
+    "video_lipsync",
 ]
 
 
@@ -115,8 +116,9 @@ def test_run_dubbing_job_v2_emits_phase_timeline_and_metrics(monkeypatch, tmp_pa
             "speaker_profiles": [],
             "director_json": {"segments": [], "sceneComplexity": "low"},
             "isochrony_stats": {"segmentCount": 1, "withinToleranceCount": 1},
-            "llvc_metrics": {"segmentCount": 1, "avgRtf": 0.08},
-            "lipsync_metrics": {"engine": "wav2lip-onnx"},
+            "voice_transfer_metrics": {"segmentCount": 1, "avgRtf": 0.08},
+            "video_sync_metrics": {"engine": "video_lipsync"},
+            "token_usage": {"billingMode": "gemini_tokens", "reserved": 24, "exact": 20, "debitedVf": 20, "byStage": {}, "bySegment": []},
             "assets": {"ready": True},
             "thinking_policy": {"default": "low", "complexScene": "high", "thinkingLevel": "low"},
             "language": "en",
@@ -137,6 +139,7 @@ def test_run_dubbing_job_v2_emits_phase_timeline_and_metrics(monkeypatch, tmp_pa
             "processing_profile": "cpu_quality",
             "segment_failure_policy": "hard_fail",
             "clone_scope": "job_only",
+            "voice_model": "p17_india_boy",
             "voice_map": {},
             "transcript_override": "Speaker 1: scripted line",
         },
@@ -153,8 +156,9 @@ def test_run_dubbing_job_v2_emits_phase_timeline_and_metrics(monkeypatch, tmp_pa
     assert [str(item.get("stage") or "") for item in stage_timeline] == PHASES
     assert isinstance(job.get("directorJson"), dict)
     assert isinstance(job.get("isochronyStats"), dict)
-    assert isinstance(job.get("llvcMetrics"), dict)
-    assert isinstance(job.get("lipsyncMetrics"), dict)
+    assert isinstance(job.get("voiceTransferMetrics"), dict)
+    assert isinstance(job.get("videoSyncMetrics"), dict)
+    assert isinstance(job.get("tokenUsage"), dict)
     assert isinstance(job.get("assets"), dict)
     assert isinstance(job.get("thinkingPolicy"), dict)
     assert isinstance(job.get("outputFiles"), dict)
@@ -193,7 +197,7 @@ def test_run_dubbing_job_v2_sets_phase_error_code_on_core_failure(monkeypatch, t
         "run_strict_preflight",
         lambda _cfg, _source: {"ok": True, "checks": [], "failureCount": 0},
     )
-    monkeypatch.setattr(vd_main, "run_pipeline", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("phase_failed:base_tts:segment_failures=1")))
+    monkeypatch.setattr(vd_main, "run_pipeline", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("phase_failed:tts:segment_failures=1")))
 
     payload = {
         "jobId": job_id,
@@ -207,6 +211,7 @@ def test_run_dubbing_job_v2_sets_phase_error_code_on_core_failure(monkeypatch, t
             "tts_route": "auto",
             "segment_failure_policy": "hard_fail",
             "clone_scope": "job_only",
+            "voice_model": "p17_india_boy",
             "voice_map": {},
         },
     }
@@ -217,8 +222,88 @@ def test_run_dubbing_job_v2_sets_phase_error_code_on_core_failure(monkeypatch, t
         job = dict(backend_app.DUBBING_JOBS[job_id])
 
     assert job.get("status") == "failed"
-    assert job.get("errorCode") == "PHASE_FAILED_BASE_TTS"
+    assert job.get("errorCode") == "PHASE_FAILED_TTS"
     assert job.get("pipelineVersion") == backend_app.VF_DUB_PIPELINE_VERSION
+
+
+def test_run_dubbing_job_v2_report_includes_json_diagnostics_on_parse_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    job_id = "job2026jsondiag"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    source = job_dir / "source.mp4"
+    source.write_bytes(b"00")
+    _seed_job(job_id)
+
+    monkeypatch.setattr(
+        backend_app,
+        "_auto_route_dubbing_voices",
+        lambda preferred_map, speakers, tts_route: ({"default": "alloy"}, []),
+    )
+
+    import video_dubbing.config as vd_config
+    import video_dubbing.main as vd_main
+
+    monkeypatch.setattr(
+        vd_config,
+        "run_strict_preflight",
+        lambda _cfg, _source: {"ok": True, "checks": [], "failureCount": 0},
+    )
+    monkeypatch.setattr(
+        vd_main,
+        "run_pipeline",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            JsonModePipelineError(
+                "phase_failed:speaker_segmentation:gemini_refine_failed:json_parse_failed:invalid",
+                diagnostics=[
+                    {
+                        "stage": "phase2_director_refine",
+                        "attempt": 2,
+                        "repaired": False,
+                        "errorKind": "invalid",
+                        "snippet": "x" * 500,
+                    }
+                ],
+            )
+        ),
+    )
+
+    payload = {
+        "jobId": job_id,
+        "jobDir": str(job_dir),
+        "sourcePath": str(source),
+        "target_language": "hi",
+        "mode": "strict_full",
+        "output": "audio+video",
+        "advanced": {
+            "engine_policy": "auto_reliable",
+            "tts_route": "auto",
+            "segment_failure_policy": "hard_fail",
+            "clone_scope": "job_only",
+            "voice_model": "p17_india_boy",
+            "voice_map": {},
+        },
+    }
+
+    backend_app._run_dubbing_job_v2(job_id, payload)
+
+    with backend_app.DUBBING_JOB_LOCK:
+        job = dict(backend_app.DUBBING_JOBS[job_id])
+
+    assert job.get("status") == "failed"
+    diagnostics = list(job.get("jsonDiagnostics") or [])
+    assert len(diagnostics) == 1
+    assert str(diagnostics[0].get("errorKind") or "") == "invalid"
+    assert len(str(diagnostics[0].get("snippet") or "")) <= 240
+
+    report_path = Path(str(job.get("reportPath") or ""))
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report_diagnostics = list(report.get("jsonDiagnostics") or [])
+    assert len(report_diagnostics) == 1
+    assert str(report_diagnostics[0].get("stage") or "") == "phase2_director_refine"
 
 
 def test_run_dubbing_job_v2_applies_clip_window_trim_before_pipeline(monkeypatch, tmp_path: Path) -> None:
@@ -277,8 +362,9 @@ def test_run_dubbing_job_v2_applies_clip_window_trim_before_pipeline(monkeypatch
             "speaker_profiles": [],
             "director_json": {"segments": [], "sceneComplexity": "low"},
             "isochrony_stats": {"segmentCount": 1, "withinToleranceCount": 1},
-            "llvc_metrics": {"segmentCount": 1, "avgRtf": 0.08},
-            "lipsync_metrics": {"engine": "wav2lip-onnx"},
+            "voice_transfer_metrics": {"segmentCount": 1, "avgRtf": 0.08},
+            "video_sync_metrics": {"engine": "video_lipsync"},
+            "token_usage": {"billingMode": "gemini_tokens", "reserved": 24, "exact": 20, "debitedVf": 20, "byStage": {}, "bySegment": []},
             "assets": {"ready": True},
             "thinking_policy": {"default": "low", "complexScene": "high", "thinkingLevel": "low"},
             "language": "en",
@@ -300,6 +386,7 @@ def test_run_dubbing_job_v2_applies_clip_window_trim_before_pipeline(monkeypatch
             "processing_profile": "cpu_quality",
             "segment_failure_policy": "hard_fail",
             "clone_scope": "job_only",
+            "voice_model": "p17_india_boy",
             "voice_map": {},
             "clip_window": {"start_ms": 110, "end_ms": 880},
         },
@@ -330,7 +417,7 @@ def test_dubbing_job_status_include_chunks_and_chunk_download(monkeypatch, tmp_p
         backend_app.DUBBING_JOBS[job_id] = {
             "id": job_id,
             "status": "running",
-            "stage": "base_tts",
+            "stage": "tts",
             "progress": 64,
             "createdAt": 0,
             "updatedAt": 0,

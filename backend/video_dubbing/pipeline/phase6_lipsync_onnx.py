@@ -1,6 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -8,16 +8,15 @@ from video_dubbing.config import DubbingConfig
 from video_dubbing.pipeline import stage8_reconstruct
 
 
-
 def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> dict[str, Any]:
-    llvc_segments = list(ctx.get("llvc_segments") or [])
+    voice_transfer_segments = list(ctx.get("voice_transfer_segments") or [])
     segments = list(ctx.get("segments") or [])
 
     if not segments:
-        raise RuntimeError("phase_failed:visual_lipsync:no_segments")
+        raise RuntimeError("phase_failed:video_lipsync:no_segments")
 
     world_segments: list[dict[str, Any]] = []
-    for item in llvc_segments:
+    for item in voice_transfer_segments:
         world_segments.append(
             {
                 "index": int(item.get("index") or 0),
@@ -37,17 +36,21 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
     try:
         stage8_reconstruct.run(temp_ctx, cfg, log)
     except Exception as exc:
-        raise RuntimeError(f"phase_failed:visual_lipsync:reconstruct:{exc}") from exc
+        raise RuntimeError(f"phase_failed:video_lipsync:timeline_mix:{exc}") from exc
 
     dubbed_video_raw = Path(str(temp_ctx.get("dubbed_video_raw") or "")).resolve()
     dubbed_video_final = cfg.output_root / "dubbed_video_final.mp4"
+    if not dubbed_video_raw.exists():
+        raise RuntimeError("phase_failed:video_lipsync:timeline_mix_missing_video")
+    if not str(cfg.latent_sync_cmd or "").strip():
+        raise RuntimeError("phase_failed:video_lipsync:runtime_unconfigured")
 
     try:
-        if dubbed_video_raw.exists():
-            shutil.copyfile(dubbed_video_raw, dubbed_video_final)
-            log("phase6 wav2lip-onnx pass completed (runtime-ready path)")
+        cmd = str(cfg.latent_sync_cmd).format(input=str(dubbed_video_raw), output=str(dubbed_video_final))
+        subprocess.run(cmd, check=True, shell=True, capture_output=True)
+        log("phase6 video lip-sync completed")
     except Exception as exc:
-        raise RuntimeError(f"phase_failed:visual_lipsync:lipsync_copy:{exc}") from exc
+        raise RuntimeError(f"phase_failed:video_lipsync:runtime_failed:{exc}") from exc
 
     lpips_ready = bool(cfg.lpips_asset_path and cfg.lpips_asset_path.exists())
     lpips_validation = {
@@ -58,15 +61,16 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
     }
 
     metrics = {
-        "engine": "wav2lip-onnx",
+        "engine": "video_lipsync",
         "assetPath": str(cfg.wav2lip_onnx_path) if cfg.wav2lip_onnx_path else None,
         "assetReady": bool(cfg.wav2lip_onnx_path and cfg.wav2lip_onnx_path.exists()),
+        "commandConfigured": bool(str(cfg.latent_sync_cmd or "").strip()),
         "lpips": lpips_validation,
     }
 
     ctx["dubbed_audio"] = str(temp_ctx.get("dubbed_audio") or "")
     ctx["dubbed_video_raw"] = str(temp_ctx.get("dubbed_video_raw") or "")
-    ctx["dubbed_video_final"] = str(dubbed_video_final if dubbed_video_final.exists() else temp_ctx.get("dubbed_video_raw") or "")
+    ctx["dubbed_video_final"] = str(dubbed_video_final if dubbed_video_final.exists() else "")
     ctx["alignment"] = list(temp_ctx.get("alignment") or [])
-    ctx["lipsync_metrics"] = metrics
+    ctx["video_sync_metrics"] = metrics
     return ctx

@@ -30,30 +30,38 @@ export interface LongTextPreflightResult {
   reason?: string;
 }
 
+export interface LiveChunkRequestProfile {
+  liveChunkChars: number;
+  liveChunkWords: number;
+}
+
 export const MAX_WORDS_PER_REQUEST = 5000;
 export const MAX_WORDS_PER_WINDOW = 500;
 export const RETRY_ATTEMPTS_PER_CHUNK = 3;
 export const RETRY_BACKOFF_MS: readonly [number, number] = [500, 1200];
+const SENTENCE_OVERFLOW_RATIO = 1.35;
+const SENTENCE_OVERFLOW_CHAR_GRACE = 96;
+const SENTENCE_OVERFLOW_WORD_GRACE = 18;
 
 const QUALITY_CHUNK_PROFILES: Record<
   PrimaryTtsEngine,
   { hi: ChunkingProfile; default: ChunkingProfile }
 > = {
   KOKORO: {
-    hi: { hardCharCap: 160, targetCharCap: 130, maxWordsPerChunk: 30, joinCrossfadeMs: 15 },
-    default: { hardCharCap: 220, targetCharCap: 180, maxWordsPerChunk: 45, joinCrossfadeMs: 15 },
+    hi: { hardCharCap: 200, targetCharCap: 150, maxWordsPerChunk: 34, joinCrossfadeMs: 24 },
+    default: { hardCharCap: 180, targetCharCap: 140, maxWordsPerChunk: 32, joinCrossfadeMs: 12 },
   },
   GEM: {
-    hi: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
-    default: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+    hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
+    default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
   },
   GOOD: {
-    hi: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
-    default: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+    hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
+    default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
   },
   NEURAL2: {
-    hi: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
-    default: { hardCharCap: 620, targetCharCap: 420, maxWordsPerChunk: 80, joinCrossfadeMs: 10 },
+    hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
+    default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
   },
 };
 
@@ -66,6 +74,24 @@ const toLanguage = (value?: string): string => {
   const base = raw.split(/[-_]/)[0] || 'en';
   return base;
 };
+
+const resolveOverflowCharCap = (limit: number): number => (
+  Math.max(limit, Math.round(limit * SENTENCE_OVERFLOW_RATIO), limit + SENTENCE_OVERFLOW_CHAR_GRACE)
+);
+
+const resolveOverflowWordCap = (limit: number): number => (
+  Math.max(limit, Math.round(limit * SENTENCE_OVERFLOW_RATIO), limit + SENTENCE_OVERFLOW_WORD_GRACE)
+);
+
+const canKeepUnitIntact = (
+  charCount: number,
+  wordCount: number,
+  charLimit: number,
+  wordLimit: number,
+): boolean => (
+  charCount <= resolveOverflowCharCap(charLimit)
+  && wordCount <= resolveOverflowWordCap(wordLimit)
+);
 
 export const normalizeForSegmentation = (text: string): string => {
   return String(text || '')
@@ -142,9 +168,7 @@ const splitOversizedByWords = (
         current = '';
         currentWords = 0;
       }
-      for (let i = 0; i < safeWord.length; i += hardCharCap) {
-        result.push(safeWord.slice(i, i + hardCharCap));
-      }
+      result.push(safeWord);
       continue;
     }
 
@@ -182,11 +206,17 @@ export const buildLongTextChunks = (input: {
       granularUnits.push(sentence);
       continue;
     }
+    if (canKeepUnitIntact(sentence.length, sentenceWords, profile.hardCharCap, profile.maxWordsPerChunk)) {
+      granularUnits.push(sentence);
+      continue;
+    }
 
     const phraseUnits = splitWithPattern(sentence, PHRASE_PATTERN);
     for (const phrase of phraseUnits) {
       const phraseWords = countWords(phrase);
       if (phrase.length <= profile.hardCharCap && phraseWords <= profile.maxWordsPerChunk) {
+        granularUnits.push(phrase);
+      } else if (canKeepUnitIntact(phrase.length, phraseWords, profile.hardCharCap, profile.maxWordsPerChunk)) {
         granularUnits.push(phrase);
       } else {
         granularUnits.push(
@@ -217,7 +247,10 @@ export const buildLongTextChunks = (input: {
     const text = unit.trim();
     if (!text) continue;
     const unitWords = countWords(text);
-    if (unit.length > profile.hardCharCap || unitWords > profile.maxWordsPerChunk) {
+    if (
+      (unit.length > profile.hardCharCap || unitWords > profile.maxWordsPerChunk)
+      && !canKeepUnitIntact(unit.length, unitWords, profile.hardCharCap, profile.maxWordsPerChunk)
+    ) {
       flushCurrent();
       const splitUnits = splitOversizedByWords(text, profile.hardCharCap, profile.maxWordsPerChunk);
       for (const splitText of splitUnits) {
@@ -252,9 +285,44 @@ const splitOversizedByWordLimit = (unit: string, maxWords: number): string[] => 
   if (words.length === 0) return [];
 
   const windows: string[] = [];
-  for (let i = 0; i < words.length; i += maxWords) {
-    windows.push(words.slice(i, i + maxWords).join(' '));
+  for (let i = 0; i < words.length;) {
+    const remaining = words.length - i;
+    const take = Math.min(maxWords, remaining);
+    windows.push(words.slice(i, i + take).join(' '));
+    i += take;
   }
+  return windows;
+};
+
+const splitOversizedByCharLimit = (unit: string, maxChars: number): string[] => {
+  const words = String(unit || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const windows: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const safeWord = String(word || '').trim();
+    if (!safeWord) continue;
+    if (safeWord.length > maxChars) {
+      if (current) {
+        windows.push(current);
+        current = '';
+      }
+      windows.push(safeWord);
+      continue;
+    }
+
+    const candidate = current ? `${current} ${safeWord}` : safeWord;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      if (current) windows.push(current);
+      current = safeWord;
+    }
+  }
+
+  if (current) windows.push(current);
   return windows;
 };
 
@@ -287,10 +355,16 @@ export const buildSentenceAlignedWordWindows = (
       granularUnits.push(sentence);
       continue;
     }
+    if (canKeepUnitIntact(sentence.length, sentenceWords, Number.MAX_SAFE_INTEGER, safeMaxWords)) {
+      granularUnits.push(sentence);
+      continue;
+    }
     const phraseUnits = splitWithPattern(sentence, PHRASE_PATTERN);
     for (const phrase of phraseUnits) {
       const phraseWords = countWords(phrase);
       if (phraseWords <= safeMaxWords) {
+        granularUnits.push(phrase);
+      } else if (canKeepUnitIntact(phrase.length, phraseWords, Number.MAX_SAFE_INTEGER, safeMaxWords)) {
         granularUnits.push(phrase);
       } else {
         granularUnits.push(...splitOversizedByWordLimit(phrase, safeMaxWords));
@@ -319,7 +393,10 @@ export const buildSentenceAlignedWordWindows = (
     const safe = unit.trim();
     if (!safe) continue;
     const unitWords = countWords(safe);
-    if (unitWords > safeMaxWords) {
+    if (
+      unitWords > safeMaxWords
+      && !canKeepUnitIntact(safe.length, unitWords, Number.MAX_SAFE_INTEGER, safeMaxWords)
+    ) {
       flushCurrent();
       for (const split of splitOversizedByWordLimit(safe, safeMaxWords)) {
         windows.push({
@@ -341,6 +418,99 @@ export const buildSentenceAlignedWordWindows = (
       flushCurrent();
       current = safe;
       currentWords = unitWords;
+    }
+  }
+
+  flushCurrent();
+  return windows;
+};
+
+export const buildSentenceAlignedCharWindows = (
+  text: string,
+  maxCharsPerWindow: number
+): LongTextChunk[] => {
+  const safeMaxChars = Math.max(1, Number(maxCharsPerWindow) || 1);
+  const normalized = normalizeForSegmentation(text);
+  if (!normalized) return [];
+
+  if (normalized.length <= safeMaxChars) {
+    return [
+      {
+        index: 0,
+        text: normalized,
+        charCount: normalized.length,
+        wordCount: countWords(normalized),
+      },
+    ];
+  }
+
+  const sentenceUnits = splitWithPattern(normalized, SENTENCE_PATTERN);
+  const granularUnits: string[] = [];
+
+  for (const sentence of sentenceUnits) {
+    const sentenceWords = countWords(sentence);
+    if (
+      sentence.length <= safeMaxChars
+      || canKeepUnitIntact(sentence.length, sentenceWords, safeMaxChars, Number.MAX_SAFE_INTEGER)
+    ) {
+      granularUnits.push(sentence);
+      continue;
+    }
+
+    const phraseUnits = splitWithPattern(sentence, PHRASE_PATTERN);
+    for (const phrase of phraseUnits) {
+      const phraseWords = countWords(phrase);
+      if (
+        phrase.length <= safeMaxChars
+        || canKeepUnitIntact(phrase.length, phraseWords, safeMaxChars, Number.MAX_SAFE_INTEGER)
+      ) {
+        granularUnits.push(phrase);
+      } else {
+        granularUnits.push(...splitOversizedByCharLimit(phrase, safeMaxChars));
+      }
+    }
+  }
+
+  const windows: LongTextChunk[] = [];
+  let current = '';
+
+  const flushCurrent = () => {
+    const value = current.trim();
+    if (!value) return;
+    windows.push({
+      index: windows.length,
+      text: value,
+      charCount: value.length,
+      wordCount: countWords(value),
+    });
+    current = '';
+  };
+
+  for (const unit of granularUnits) {
+    const safe = unit.trim();
+    if (!safe) continue;
+    if (
+      safe.length > safeMaxChars
+      && !canKeepUnitIntact(safe.length, countWords(safe), safeMaxChars, Number.MAX_SAFE_INTEGER)
+    ) {
+      flushCurrent();
+      for (const split of splitOversizedByCharLimit(safe, safeMaxChars)) {
+        windows.push({
+          index: windows.length,
+          text: split,
+          charCount: split.length,
+          wordCount: countWords(split),
+        });
+      }
+      continue;
+    }
+
+    const candidate = current ? `${current} ${safe}` : safe;
+    if (candidate.length <= safeMaxChars) {
+      current = candidate;
+    } else {
+      flushCurrent();
+      current = safe;
     }
   }
 
@@ -424,4 +594,15 @@ export const mergeChunkBuffersWithCrossfade = (
   }
 
   return output;
+};
+
+export const resolveLiveChunkRequest = (
+  engine: PrimaryTtsEngine,
+  language?: string,
+): LiveChunkRequestProfile => {
+  const profile = getChunkProfile(engine, language);
+  return {
+    liveChunkChars: Math.max(72, Math.min(profile.targetCharCap, 96)),
+    liveChunkWords: Math.max(12, Math.min(profile.maxWordsPerChunk, 18)),
+  };
 };

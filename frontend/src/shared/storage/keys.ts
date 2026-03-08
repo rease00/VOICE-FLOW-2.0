@@ -9,10 +9,13 @@ export const STORAGE_KEYS = {
   uiFontScale: 'vf_ui_font_scale',
   uiMotionLevel: 'vf_ui_motion_level',
   studioEditorMode: 'vf_studio_editor_mode',
+  studioQueue: 'vf_studio_queue',
+  readerPreferences: 'vf_reader_preferences',
   localAdminSession: 'vf_local_admin_session',
   driveGoogleTokenCache: 'vf_drive_google_token_cache',
   clonedVoices: 'vf_clones',
   notifications: 'vf_notifications',
+  notificationStateVersion: 'vf_notification_state_version',
   notificationPrefs: 'vf_notification_prefs',
 } as const;
 

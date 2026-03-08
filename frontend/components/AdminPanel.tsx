@@ -13,6 +13,7 @@ import {
   type AlertEvent,
   type AlertPolicy,
   type AdminSessionUnlockStatusPayload,
+  type AudioMetadataRecord,
   type AuditEvent,
   type AuditVerifyPayload,
   type CouponAnalyticsPoint,
@@ -21,6 +22,9 @@ import {
   type DailyUsageResetSummary,
   disableAdminRbacUser,
   enableAdminRbacUser,
+  exportAdminAudioMetadataCsv,
+  fetchAdminAudioMetadata,
+  fetchAdminAudioMetadataById,
   fetchAdminAuditEvents,
   fetchAdminIntegrationsUsage,
   fetchAdminRbacRoles,
@@ -82,6 +86,7 @@ import {
   parseGeminiKeysInput,
   setSourcePolicyProvider,
   setPlanPoolInConfig,
+  setTtsModelFallbackEnabled,
   setVertexSourcePolicyFields,
 } from '../src/features/admin/pools/geminiPools';
 
@@ -101,6 +106,7 @@ interface AdminPanelProps {
   mediaBackendUrl: string;
   onToast: (message: string, kind?: ToastKind) => void;
   onRefreshEntitlements: () => Promise<void>;
+  initialOpsTab?: OpsTab;
 }
 
 const planOptions = ['Free', 'Starter', 'Creator', 'Pro', 'Scale'] as const;
@@ -191,7 +197,12 @@ const csvEscape = (value: unknown): string => {
   return `"${text.replaceAll('"', '""')}"`;
 };
 
-export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast, onRefreshEntitlements }) => {
+export const AdminPanel: React.FC<AdminPanelProps> = ({
+  mediaBackendUrl,
+  onToast,
+  onRefreshEntitlements,
+  initialOpsTab = 'usage',
+}) => {
   const { user } = useUser();
   const {
     sortedUsers,
@@ -250,7 +261,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const [isDryRunningDailyReset, setIsDryRunningDailyReset] = useState(false);
   const [isExecutingDailyReset, setIsExecutingDailyReset] = useState(false);
 
-  const [opsTab, setOpsTab] = useState<OpsTab>('usage');
+  const [opsTab, setOpsTab] = useState<OpsTab>(initialOpsTab);
   const [opsUsage, setOpsUsage] = useState<Record<string, unknown> | null>(null);
   const [opsGuardian, setOpsGuardian] = useState<OpsGuardianStatusPayload | null>(null);
   const [opsApprovals, setOpsApprovals] = useState<OpsGuardianApprovalsPayload | null>(null);
@@ -290,6 +301,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const [auditActorUid, setAuditActorUid] = useState('');
   const [auditAction, setAuditAction] = useState('');
   const [auditResourceType, setAuditResourceType] = useState('');
+  const [audioMetadataRecords, setAudioMetadataRecords] = useState<AudioMetadataRecord[]>([]);
+  const [selectedAudioMetadataRecord, setSelectedAudioMetadataRecord] = useState<AudioMetadataRecord | null>(null);
+  const [isLoadingAudioMetadata, setIsLoadingAudioMetadata] = useState(false);
+  const [isExportingAudioMetadata, setIsExportingAudioMetadata] = useState(false);
+  const [audioMetadataUid, setAudioMetadataUid] = useState('');
+  const [audioMetadataUserId, setAudioMetadataUserId] = useState('');
+  const [audioMetadataIdentityValue, setAudioMetadataIdentityValue] = useState('');
+  const [audioMetadataPaymentRef, setAudioMetadataPaymentRef] = useState('');
+  const [audioMetadataStatus, setAudioMetadataStatus] = useState('');
+  const [audioMetadataEngine, setAudioMetadataEngine] = useState('');
+  const [audioMetadataFrom, setAudioMetadataFrom] = useState('');
+  const [audioMetadataTo, setAudioMetadataTo] = useState('');
 
   const now = new Date();
   const [analyticsFrom, setAnalyticsFrom] = useState(toDateInput(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000)));
@@ -447,6 +470,83 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       notifyError(error, 'Failed to load audit events.');
     } finally {
       setIsLoadingAudit(false);
+    }
+  };
+
+  const reloadAudioMetadataSafely = async () => {
+    setIsLoadingAudioMetadata(true);
+    try {
+      const options: {
+        uid?: string;
+        userId?: string;
+        identityValue?: string;
+        paymentRef?: string;
+        status?: string;
+        engine?: string;
+        from?: string;
+        to?: string;
+        limit: number;
+      } = { limit: 200 };
+      if (audioMetadataUid.trim()) options.uid = audioMetadataUid.trim();
+      if (audioMetadataUserId.trim()) options.userId = audioMetadataUserId.trim();
+      if (audioMetadataIdentityValue.trim()) options.identityValue = audioMetadataIdentityValue.trim();
+      if (audioMetadataPaymentRef.trim()) options.paymentRef = audioMetadataPaymentRef.trim();
+      if (audioMetadataStatus.trim()) options.status = audioMetadataStatus.trim();
+      if (audioMetadataEngine.trim()) options.engine = audioMetadataEngine.trim();
+      if (audioMetadataFrom.trim()) options.from = audioMetadataFrom.trim();
+      if (audioMetadataTo.trim()) options.to = audioMetadataTo.trim();
+      const payload = await fetchAdminAudioMetadata(mediaBackendUrl, options);
+      setAudioMetadataRecords(payload.items || []);
+      setSelectedAudioMetadataRecord((previous) => {
+        if (!previous) return null;
+        const next = (payload.items || []).find((item) => item.auditId === previous.auditId);
+        if (!next) return null;
+        return {
+          ...next,
+          ...(previous.inputText ? { inputText: previous.inputText } : {}),
+        };
+      });
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load audio metadata records.');
+    } finally {
+      setIsLoadingAudioMetadata(false);
+    }
+  };
+
+  const handleLoadAudioMetadataRecord = async (auditId: string) => {
+    const safeAuditId = String(auditId || '').trim();
+    if (!safeAuditId) return;
+    try {
+      const record = await fetchAdminAudioMetadataById(safeAuditId, mediaBackendUrl);
+      setSelectedAudioMetadataRecord(record);
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load audio metadata detail.');
+    }
+  };
+
+  const handleExportAudioMetadataCsv = async () => {
+    setIsExportingAudioMetadata(true);
+    try {
+      const blob = await exportAdminAudioMetadataCsv(mediaBackendUrl, {
+        ...(audioMetadataUid.trim() ? { uid: audioMetadataUid.trim() } : {}),
+        ...(audioMetadataUserId.trim() ? { userId: audioMetadataUserId.trim() } : {}),
+        ...(audioMetadataIdentityValue.trim() ? { identityValue: audioMetadataIdentityValue.trim() } : {}),
+        ...(audioMetadataPaymentRef.trim() ? { paymentRef: audioMetadataPaymentRef.trim() } : {}),
+        ...(audioMetadataStatus.trim() ? { status: audioMetadataStatus.trim() } : {}),
+        ...(audioMetadataEngine.trim() ? { engine: audioMetadataEngine.trim() } : {}),
+        ...(audioMetadataFrom.trim() ? { from: audioMetadataFrom.trim() } : {}),
+        ...(audioMetadataTo.trim() ? { to: audioMetadataTo.trim() } : {}),
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `audio-metadata-${Date.now()}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to export audio metadata CSV.');
+    } finally {
+      setIsExportingAudioMetadata(false);
     }
   };
 
@@ -613,6 +713,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     });
   };
 
+  const handleTtsModelFallbackChange = (enabled: boolean) => {
+    updateGeminiPoolEditorConfig((previous) => (
+      setTtsModelFallbackEnabled(previous, enabled) as GeminiPoolConfig
+    ));
+  };
+
   const handleSaveGeminiPools = async () => {
     if (!geminiPoolEditor) {
       onToast('No pool changes to save.', 'info');
@@ -774,6 +880,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     void reloadAlertsSafely();
     void reloadSchedulerSafely();
     void reloadAuditSafely();
+    void reloadAudioMetadataSafely();
     void reloadAnalyticsSafely();
     void reloadAdminUnlockStatusSafely();
     void hydrateGeneratedCouponCode();
@@ -791,13 +898,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
     }
   };
 
+  useEffect(() => {
+    setOpsTab(initialOpsTab);
+  }, [initialOpsTab]);
+
   const currentActorAssignment = useMemo(() => {
+    if (user?.adminActor) {
+      return {
+        uid: String(user.adminActor.uid || user.uid || '').trim(),
+        userId: user.adminActor.userId,
+        role: String(user.adminActor.role || 'super_admin'),
+        status: String(user.adminActor.status || 'active'),
+        allowOverrides: [],
+        denyOverrides: [],
+      } as AdminRoleAssignment;
+    }
     const uid = String(user?.uid || '').trim();
     if (!uid) return null;
     return rbacAssignments.find((item) => String(item.uid || '').trim() === uid) || null;
-  }, [rbacAssignments, user?.uid]);
+  }, [rbacAssignments, user?.adminActor, user?.uid]);
 
   const currentPermissions = useMemo(() => {
+    if (user?.adminActor && Array.isArray(user.adminActor.permissions)) {
+      const direct = new Set<AdminPermission>();
+      user.adminActor.permissions.forEach((permission) => {
+        if (allPermissions.includes(permission as AdminPermission)) {
+          direct.add(permission as AdminPermission);
+        }
+      });
+      if (String(user.adminActor.status || '').toLowerCase() === 'disabled') {
+        direct.clear();
+      }
+      return direct;
+    }
     const fallbackRole = user?.isAdmin ? 'super_admin' : 'read_only_ops';
     const role = String(currentActorAssignment?.role || fallbackRole);
     const next = new Set<AdminPermission>();
@@ -816,11 +949,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       next.clear();
     }
     return next;
-  }, [currentActorAssignment, rbacCatalog, user?.isAdmin]);
+  }, [currentActorAssignment, rbacCatalog, user?.adminActor, user?.isAdmin]);
 
   const can = (permission: AdminPermission): boolean => {
-    if (!rbacCatalog) return Boolean(user?.isAdmin);
     const actorRole = String(currentActorAssignment?.role || (user?.isAdmin ? 'super_admin' : 'read_only_ops'));
+    if (!rbacCatalog) {
+      return actorRole === 'super_admin' || currentPermissions.has(permission);
+    }
     if (actorRole === 'super_admin') return true;
     return currentPermissions.has(permission);
   };
@@ -1141,6 +1276,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
   const geminiSourceProvider = String(geminiSourcePolicy.provider || 'gemini_api').trim().toLowerCase() === 'vertex'
     ? 'vertex'
     : 'gemini_api';
+  const ttsModelFallbackEnabled = Boolean(geminiSourcePolicy.ttsModelFallbackEnabled);
   const vertexProject = String(geminiSourcePolicy.vertexProject || '');
   const vertexLocation = String(geminiSourcePolicy.vertexLocation || '');
   const vertexServiceAccountRef = String(geminiSourcePolicy.vertexServiceAccountRef || '');
@@ -1200,6 +1336,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
               void reloadAlertsSafely();
               void reloadSchedulerSafely();
               void reloadAuditSafely();
+              void reloadAudioMetadataSafely();
               void reloadAnalyticsSafely();
               void reloadAdminUnlockStatusSafely();
             }}
@@ -1945,6 +2082,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
                   <div>Selected pool: <strong>{selectedPoolName || '-'}</strong></div>
                 </div>
               </div>
+              <label className="mt-2 flex items-start gap-3 rounded border border-gray-200 bg-white p-3 text-[11px] text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={ttsModelFallbackEnabled}
+                  onChange={(event) => handleTtsModelFallbackChange(event.target.checked)}
+                  disabled={!canOpsMutate}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <div className="space-y-1">
+                  <div className="font-semibold text-gray-800">Enable Gemini TTS model fallback</div>
+                  <div>
+                    Current mode: <strong>{ttsModelFallbackEnabled ? 'Fallback enabled' : 'Strict primary model only'}</strong>
+                  </div>
+                  <div className="text-gray-600">
+                    Off means each Gemini-backed engine uses only its configured primary TTS model. On allows the runtime to try alternate configured Gemini TTS models when the primary model is unavailable.
+                  </div>
+                </div>
+              </label>
               {geminiSourceProvider === 'vertex' && (
                 <div className="mt-2 grid gap-2 md:grid-cols-2">
                   <label className="space-y-1">
@@ -2183,7 +2338,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
       <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Activity size={16} className="text-indigo-600" />Ops</div>
-          <button onClick={() => { void reloadOpsSafely(); void reloadAlertsSafely(); void reloadSchedulerSafely(); void reloadAuditSafely(); void reloadAnalyticsSafely(); }} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700"><RefreshCw size={13} />Refresh</button>
+          <button onClick={() => { void reloadOpsSafely(); void reloadAlertsSafely(); void reloadSchedulerSafely(); void reloadAuditSafely(); void reloadAudioMetadataSafely(); void reloadAnalyticsSafely(); }} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700"><RefreshCw size={13} />Refresh</button>
         </div>
         <div className="mb-3 flex flex-wrap gap-2">
           {([
@@ -2229,16 +2384,140 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ mediaBackendUrl, onToast
 
         {opsTab === 'scheduler' && (!canSchedulerRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `scheduler.read` permission.</div> : (
           <div className="space-y-2 text-xs">
-            {canSchedulerWrite && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create task</div><div className="grid gap-2 md:grid-cols-3"><select value={newTaskType} onChange={(event) => setNewTaskType(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="usage_reset_daily">usage_reset_daily</option><option value="guardian_scan">guardian_scan</option><option value="usage_export_daily">usage_export_daily</option><option value="coupon_abuse_scan">coupon_abuse_scan</option></select><input value={newTaskCron} onChange={(event) => setNewTaskCron(event.target.value)} placeholder="cronExpr" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newTaskTimezone} onChange={(event) => setNewTaskTimezone(event.target.value)} placeholder="timezone" className="h-8 rounded border border-gray-200 px-2 text-xs" /></div><button onClick={() => { void withSaving('task_create', async () => { await createSchedulerTask({ taskType: newTaskType, cronExpr: newTaskCron, timezone: newTaskTimezone, enabled: newTaskEnabled, dryRun: newTaskDryRun, concurrencyPolicy: newTaskConcurrencyPolicy }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="mt-2 h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Create</button></div>}
+            {canSchedulerWrite && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create task</div><div className="grid gap-2 md:grid-cols-3"><select value={newTaskType} onChange={(event) => setNewTaskType(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="usage_reset_daily">usage_reset_daily</option><option value="guardian_scan">guardian_scan</option><option value="usage_export_daily">usage_export_daily</option><option value="coupon_abuse_scan">coupon_abuse_scan</option><option value="audio_generation_audit_retention_cleanup">audio_generation_audit_retention_cleanup</option></select><input value={newTaskCron} onChange={(event) => setNewTaskCron(event.target.value)} placeholder="cronExpr" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newTaskTimezone} onChange={(event) => setNewTaskTimezone(event.target.value)} placeholder="timezone" className="h-8 rounded border border-gray-200 px-2 text-xs" /></div><button onClick={() => { void withSaving('task_create', async () => { await createSchedulerTask({ taskType: newTaskType, cronExpr: newTaskCron, timezone: newTaskTimezone, enabled: newTaskEnabled, dryRun: newTaskDryRun, concurrencyPolicy: newTaskConcurrencyPolicy }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="mt-2 h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Create</button></div>}
             <div className="grid gap-2 md:grid-cols-2"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Tasks</div>{schedulerTasks.slice(0, 10).map((task) => <div key={task.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{task.taskType}</div><div className="text-[10px] text-gray-600">{task.cronExpr} | {formatDate(task.nextRunAt || '')}</div>{canSchedulerWrite && <div className="mt-1 flex gap-1"><button onClick={() => { void withSaving(`task_toggle_${task.id}`, async () => { await patchSchedulerTask(task.id, { enabled: !task.enabled }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{task.enabled ? 'Disable' : 'Enable'}</button><button onClick={() => { void withSaving(`task_run_${task.id}`, async () => { await runSchedulerTask(task.id, task.dryRun, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-indigo-200 px-2 py-1 text-[10px] font-semibold text-indigo-700">Run</button></div>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runs</div>{schedulerRuns.slice(0, 12).map((run) => <div key={run.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{run.taskId}</div><div className="text-[10px] text-gray-600">{run.status} | {formatDate(run.startedAt || '')}</div></div>)}</div></div>
           </div>
         ))}
 
         {opsTab === 'audit' && (!canAuditRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `audit.read` permission.</div> : (
-          <div className="space-y-2 text-xs">
-            <div className="grid gap-2 md:grid-cols-4"><input value={auditActorUid} onChange={(event) => setAuditActorUid(event.target.value)} placeholder="actorUid" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={auditAction} onChange={(event) => setAuditAction(event.target.value)} placeholder="action" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={auditResourceType} onChange={(event) => setAuditResourceType(event.target.value)} placeholder="resourceType" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { void reloadAuditSafely(); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Search</button></div>
-            <div className="flex gap-2"><button onClick={() => { void withSaving('audit_verify', async () => { const payload = await verifyAdminAuditChain(mediaBackendUrl, { limit: 2000 }); setAuditVerify(payload); }); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">Verify</button><button onClick={handleExportAuditCsv} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">Export CSV</button>{auditVerify && <span className={`rounded px-2 py-1 text-[10px] font-semibold ${auditVerify.ok ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>{auditVerify.ok ? `healthy (${auditVerify.checked})` : `mismatch ${auditVerify.mismatchAtSequence || '-'}`}</span>}</div>
-            <div className="max-h-48 overflow-auto rounded-xl border border-gray-100"><table className="min-w-full text-xs"><thead className="sticky top-0 bg-gray-50 text-gray-600"><tr><th className="px-2 py-2 text-left">Seq</th><th className="px-2 py-2 text-left">When</th><th className="px-2 py-2 text-left">Actor</th><th className="px-2 py-2 text-left">Action</th></tr></thead><tbody>{auditEvents.map((eventItem) => <tr key={eventItem.eventId} className="border-t border-gray-100"><td className="px-2 py-2">{asNumber(eventItem.sequence)}</td><td className="px-2 py-2">{formatDate(eventItem.ts)}</td><td className="px-2 py-2">{eventItem.actorUid}</td><td className="px-2 py-2">{eventItem.action}</td></tr>)}</tbody></table></div>
+          <div className="space-y-4 text-xs">
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 font-semibold text-gray-800">Audit Ledger</div>
+              <div className="grid gap-2 md:grid-cols-4">
+                <input value={auditActorUid} onChange={(event) => setAuditActorUid(event.target.value)} placeholder="actorUid" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input value={auditAction} onChange={(event) => setAuditAction(event.target.value)} placeholder="action" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input value={auditResourceType} onChange={(event) => setAuditResourceType(event.target.value)} placeholder="resourceType" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <button onClick={() => { void reloadAuditSafely(); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Search</button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button onClick={() => { void withSaving('audit_verify', async () => { const payload = await verifyAdminAuditChain(mediaBackendUrl, { limit: 2000 }); setAuditVerify(payload); }); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">Verify</button>
+                <button onClick={handleExportAuditCsv} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">Export CSV</button>
+                {auditVerify && <span className={`rounded px-2 py-1 text-[10px] font-semibold ${auditVerify.ok ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>{auditVerify.ok ? `healthy (${auditVerify.checked})` : `mismatch ${auditVerify.mismatchAtSequence || '-'}`}</span>}
+              </div>
+              <div className="mt-2 max-h-48 overflow-auto rounded-xl border border-gray-100 bg-white">
+                <table className="min-w-full text-xs">
+                  <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-2 py-2 text-left">Seq</th>
+                      <th className="px-2 py-2 text-left">When</th>
+                      <th className="px-2 py-2 text-left">Actor</th>
+                      <th className="px-2 py-2 text-left">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditEvents.map((eventItem) => (
+                      <tr key={eventItem.eventId} className="border-t border-gray-100">
+                        <td className="px-2 py-2">{asNumber(eventItem.sequence)}</td>
+                        <td className="px-2 py-2">{formatDate(eventItem.ts)}</td>
+                        <td className="px-2 py-2">{eventItem.actorUid}</td>
+                        <td className="px-2 py-2">{eventItem.action}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="font-semibold text-gray-800">Audio Metadata</div>
+                {isLoadingAudioMetadata ? <div className="text-[10px] text-gray-500">Loading...</div> : null}
+              </div>
+              <div className="grid gap-2 md:grid-cols-4">
+                <input value={audioMetadataUid} onChange={(event) => setAudioMetadataUid(event.target.value)} placeholder="uid" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input value={audioMetadataUserId} onChange={(event) => setAudioMetadataUserId(event.target.value)} placeholder="userId" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input value={audioMetadataIdentityValue} onChange={(event) => setAudioMetadataIdentityValue(event.target.value)} placeholder="identity" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input value={audioMetadataPaymentRef} onChange={(event) => setAudioMetadataPaymentRef(event.target.value)} placeholder="paymentRef" className="h-8 rounded border border-gray-200 px-2 text-xs" />
+              </div>
+              <div className="mt-2 grid gap-2 md:grid-cols-4">
+                <select value={audioMetadataStatus} onChange={(event) => setAudioMetadataStatus(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs">
+                  <option value="">All statuses</option>
+                  <option value="received">received</option>
+                  <option value="queued">queued</option>
+                  <option value="running">running</option>
+                  <option value="completed">completed</option>
+                  <option value="failed">failed</option>
+                  <option value="cancelled">cancelled</option>
+                </select>
+                <select value={audioMetadataEngine} onChange={(event) => setAudioMetadataEngine(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs">
+                  <option value="">All engines</option>
+                  <option value="GEM">GEM</option>
+                  <option value="KOKORO">KOKORO</option>
+                </select>
+                <input type="date" value={audioMetadataFrom} onChange={(event) => setAudioMetadataFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
+                <input type="date" value={audioMetadataTo} onChange={(event) => setAudioMetadataTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button onClick={() => { void reloadAudioMetadataSafely(); }} className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700">Search</button>
+                <button onClick={() => { void handleExportAudioMetadataCsv(); }} disabled={isExportingAudioMetadata} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700 disabled:opacity-60">{isExportingAudioMetadata ? 'Exporting...' : 'Export CSV'}</button>
+                {selectedAudioMetadataRecord && <button onClick={() => setSelectedAudioMetadataRecord(null)} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">Clear detail</button>}
+                <span className="self-center text-[10px] text-gray-500">{audioMetadataRecords.length} records</span>
+              </div>
+              <div className="mt-2 max-h-72 overflow-auto rounded-xl border border-gray-100 bg-white">
+                <table className="min-w-full text-xs">
+                  <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-2 py-2 text-left">When</th>
+                      <th className="px-2 py-2 text-left">Identity</th>
+                      <th className="px-2 py-2 text-left">Status</th>
+                      <th className="px-2 py-2 text-left">Engine</th>
+                      <th className="px-2 py-2 text-left">IP</th>
+                      <th className="px-2 py-2 text-left">Payment</th>
+                      <th className="px-2 py-2 text-left">Text</th>
+                      <th className="px-2 py-2 text-left">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {audioMetadataRecords.length === 0 && (
+                      <tr>
+                        <td className="px-2 py-3 text-gray-500" colSpan={8}>No audio metadata records found.</td>
+                      </tr>
+                    )}
+                    {audioMetadataRecords.map((record) => (
+                      <tr key={record.auditId} className="border-t border-gray-100 align-top">
+                        <td className="px-2 py-2">{formatDate(record.submittedAt)}</td>
+                        <td className="px-2 py-2">
+                          <div>{record.identityValue || record.userId || record.uid || '-'}</div>
+                          <div className="text-[10px] text-gray-500">{record.uid || '-'}</div>
+                        </td>
+                        <td className="px-2 py-2">{record.status || '-'}</td>
+                        <td className="px-2 py-2">{record.engine || '-'}</td>
+                        <td className="px-2 py-2 font-mono text-[10px]">{record.sourceIp || '-'}</td>
+                        <td className="px-2 py-2">{record.paymentRef || '-'}</td>
+                        <td className="px-2 py-2">
+                          <div className="max-w-xs whitespace-pre-wrap break-words">{record.textPreview || '-'}</div>
+                        </td>
+                        <td className="px-2 py-2">
+                          <button onClick={() => { void handleLoadAudioMetadataRecord(record.auditId); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">View</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {selectedAudioMetadataRecord && (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-gray-100 bg-white p-3">
+                    <div className="mb-2 font-semibold text-gray-800">Full Input Text</div>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] text-gray-700">{selectedAudioMetadataRecord.inputText || ''}</pre>
+                  </div>
+                  <div className="rounded-xl border border-gray-100 bg-white p-3">
+                    <div className="mb-2 font-semibold text-gray-800">Stored Record</div>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] text-gray-700">{JSON.stringify(selectedAudioMetadataRecord, null, 2)}</pre>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         ))}
 

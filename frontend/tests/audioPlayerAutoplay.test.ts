@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldAutoplayFirstLiveChunk } from '../components/AudioPlayer';
+import { shouldAutoplayFirstLiveChunk } from '../components/audioPlayerAutoplay';
 
 describe('shouldAutoplayFirstLiveChunk', () => {
   it('returns true only when first live chunk is waiting and autoplay is enabled', () => {

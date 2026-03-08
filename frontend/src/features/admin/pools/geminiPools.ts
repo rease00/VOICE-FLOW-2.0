@@ -25,6 +25,7 @@ export interface EditableGeminiPoolConfig {
   };
   sourcePolicy?: {
     provider?: 'gemini_api' | 'vertex';
+    ttsModelFallbackEnabled?: boolean;
     vertexProject?: string;
     vertexLocation?: string;
     vertexServiceAccountRef?: string;
@@ -176,6 +177,19 @@ export const setSourcePolicyProvider = (
     sourcePolicy: {
       ...(config.sourcePolicy || {}),
       provider: safeProvider,
+    },
+  };
+};
+
+export const setTtsModelFallbackEnabled = (
+  config: EditableGeminiPoolConfig,
+  enabled: boolean
+): EditableGeminiPoolConfig => {
+  return {
+    ...config,
+    sourcePolicy: {
+      ...(config.sourcePolicy || {}),
+      ttsModelFallbackEnabled: Boolean(enabled),
     },
   };
 };

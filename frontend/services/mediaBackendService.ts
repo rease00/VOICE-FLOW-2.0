@@ -28,7 +28,13 @@ import { requestBlob, requestJson } from '../src/shared/api/httpClient';
 export interface MediaBackendHealth {
   ok: boolean;
   ffmpeg?: { available: boolean; path?: string | null; error?: string | null };
-  llvc?: { available: boolean; currentModel?: string | null; modelsDir?: string; error?: string | null };
+  voiceTransfer?: {
+    available: boolean;
+    currentModel?: string | null;
+    modelsDir?: string;
+    error?: string | null;
+    backendMode?: string | null;
+  };
   whisper?: {
     loaded: boolean;
     model?: string;
@@ -76,8 +82,9 @@ export type DubbingJobStatusResult = {
     stageTimeline?: Array<{ stage: string; status: string; startMs?: number | null; endMs?: number | null; durationMs?: number | null }>;
     directorJson?: Record<string, unknown> | null;
     isochronyStats?: Record<string, unknown> | null;
-    llvcMetrics?: Record<string, unknown> | null;
-    lipsyncMetrics?: Record<string, unknown> | null;
+    voiceTransferMetrics?: Record<string, unknown> | null;
+    videoSyncMetrics?: Record<string, unknown> | null;
+    tokenUsage?: Record<string, unknown> | null;
     assets?: Record<string, unknown> | null;
     thinkingPolicy?: Record<string, unknown> | null;
     live?: {
@@ -95,6 +102,9 @@ export type DubbingJobStatusResult = {
       engine?: string;
       voiceId?: string;
       textChars?: number;
+      timelineStartMs?: number;
+      timelineEndMs?: number;
+      previewKind?: string;
       downloadUrl?: string;
       audioBase64?: string;
     }>;
@@ -111,6 +121,20 @@ export type DubbingJobStatusResult = {
       reason?: string;
       gpuUsed?: boolean;
     };
+    languageStats?: {
+      mixedSourceDetected?: boolean;
+      dominantSourceLanguage?: string;
+      segmentLanguageCounts?: Record<string, number>;
+      targetLanguageApplied?: string;
+      unsupportedSegments?: Array<Record<string, unknown>> | number;
+    };
+    policyEnforcement?: {
+      requestedTtsRoute?: string;
+      appliedTtsRoute?: string;
+      pinnedDirectorModel?: string;
+      pinnedTtsModel?: string;
+      strictNoFallback?: boolean;
+    };
     [key: string]: unknown;
   };
 };
@@ -125,8 +149,8 @@ export const checkMediaBackendHealth = async (baseUrl: string): Promise<MediaBac
   return requestJson<MediaBackendHealth>('/health', undefined, { baseUrl: toBaseUrl(baseUrl) });
 };
 
-export const listLlvcModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {
-  const payload = await requestJson<{ models?: string[]; currentModel?: string }>('/llvc/models', undefined, {
+export const listVoiceTransferModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {
+  const payload = await requestJson<{ models?: string[]; currentModel?: string }>('/voice-transfer/models', undefined, {
     baseUrl: toBaseUrl(baseUrl),
   });
   const response: { models: string[]; currentModel?: string } = {
@@ -138,9 +162,9 @@ export const listLlvcModels = async (baseUrl: string): Promise<{ models: string[
   return response;
 };
 
-export const loadLlvcModel = async (baseUrl: string, modelName: string): Promise<void> => {
+export const loadVoiceTransferModel = async (baseUrl: string, modelName: string): Promise<void> => {
   await requestJson<{ ok: boolean }>(
-    '/llvc/load-model',
+    '/voice-transfer/load-model',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -150,12 +174,12 @@ export const loadLlvcModel = async (baseUrl: string, modelName: string): Promise
   );
 };
 
-export const convertLlvcCover = async (
+export const convertVoiceTransferCover = async (
   baseUrl: string,
   sourceAudio: File,
   modelName: string,
   options?: {
-    preset?: 'tts_realtime' | 'cover_hq' | 'llvc_hq_cpu';
+    preset?: 'tts_realtime';
     pitchShift?: number;
     indexRate?: number;
     filterRadius?: number;
@@ -166,10 +190,10 @@ export const convertLlvcCover = async (
   }
 ): Promise<Blob> => {
   const form = new FormData();
-  // Backend accepts audio/video source and normalizes it to WAV before LLVC conversion.
+  // Backend accepts audio/video source and normalizes it to WAV before voice transfer.
   form.append('file', sourceAudio);
   form.append('model_name', modelName);
-  form.append('preset', options?.preset || 'llvc_hq_cpu');
+  form.append('preset', options?.preset || 'tts_realtime');
   form.append('pitch_shift', String(Math.round(options?.pitchShift ?? 0)));
   form.append('index_rate', String(options?.indexRate ?? 0.5));
   form.append('filter_radius', String(options?.filterRadius ?? 3));
@@ -179,7 +203,7 @@ export const convertLlvcCover = async (
   form.append('separate_stem', String(options?.separateStem ?? true));
 
   return requestBlob(
-    '/llvc/convert',
+    '/voice-transfer/convert',
     {
       method: 'POST',
       body: form,
@@ -291,12 +315,19 @@ export const createDubbingJobV2 = async (
     advanced?: Record<string, unknown>;
   }
 ): Promise<DubbingJobCreateResult> => {
+  const rawAdvanced = (options?.advanced && typeof options.advanced === 'object')
+    ? options.advanced
+    : {};
+  const advanced = {
+    ...rawAdvanced,
+    tts_route: String((rawAdvanced as Record<string, unknown>).tts_route || 'auto').trim() || 'auto',
+  };
   return gatewayCreateDubbingJobV2(sourceFile, {
     baseUrl: toBaseUrl(baseUrl),
     targetLanguage: options?.targetLanguage || 'auto',
     mode: options?.mode || 'strict_full',
     output: options?.output || 'audio+video',
-    advanced: options?.advanced || {},
+    advanced,
   });
 };
 

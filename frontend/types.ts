@@ -100,11 +100,10 @@ export interface GenerationSettings {
   // Local backend / runtime wiring
   mediaBackendUrl?: string | undefined;
   backendApiKey?: string | undefined;
-  llvcModel?: string | undefined;
-  conversionPolicy?: 'AUTO_RELIABLE' | 'LLVC_ONLY' | undefined;
+  voiceModel?: string | undefined;
+  conversionPolicy?: 'AUTO_RELIABLE' | 'VOICE_TRANSFER_ONLY' | undefined;
   geminiTtsServiceUrl?: string | undefined;
   kokoroTtsServiceUrl?: string | undefined;
-  kokoroExecutionMode?: 'browser_webgpu' | 'backend_runtime' | undefined;
   kokoroStandbyIdleMs?: number | undefined;
 
   // Studio controls
@@ -274,6 +273,39 @@ export interface Draft {
   lastModified: number;
 }
 
+export type StudioQueueItemStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface StudioQueueItem {
+  id: string;
+  order: number;
+  label: string;
+  status: StudioQueueItemStatus;
+  sourceText: string;
+  charCount: number;
+  jobId?: string | undefined;
+  audioCacheKey?: string | undefined;
+  error?: string | undefined;
+  settingsSnapshot: GenerationSettings;
+  createdAt: number;
+  completedAt?: number | undefined;
+}
+
+export type StudioQueueMasterStatus = 'idle' | 'building' | 'ready';
+
+export interface StudioQueueState {
+  items: StudioQueueItem[];
+  activeItemId?: string | undefined;
+  masterOrder: string;
+  masterStatus: StudioQueueMasterStatus;
+  queueModeEnabled: boolean;
+  sourceHash: string;
+}
+
 export interface CharacterProfile {
   id: string;
   name: string;
@@ -365,6 +397,14 @@ export interface UserProfile {
   uid?: string | undefined;
   phoneNumber?: string | undefined;
   providers?: string[] | undefined;
+  adminActor?: {
+    uid?: string;
+    userId?: string;
+    role: string;
+    status: string;
+    permissions: string[];
+    source?: string;
+  } | null;
 }
 
 export interface HistoryItem {
@@ -421,6 +461,7 @@ export interface UserContextType {
   isAuthenticated: boolean;
   isAdmin: boolean;
   hasUnlimitedAccess: boolean;
+  refreshAdminActor?: () => Promise<void>;
 }
 
 export interface LanguageOption {
@@ -549,11 +590,11 @@ export interface DubbingJobStatus {
   stageTimeline?: Array<{
     stage:
       | 'acoustic_isolation'
-      | 'director'
-      | 'isochrony_translation'
-      | 'base_tts'
-      | 'llvc_timbre_transfer'
-      | 'visual_lipsync'
+      | 'speaker_segmentation'
+      | 'translation'
+      | 'tts'
+      | 'voice_transfer'
+      | 'video_lipsync'
       | string;
     status: string;
     startMs?: number | null;
@@ -563,8 +604,9 @@ export interface DubbingJobStatus {
   outputFiles?: Record<string, unknown>;
   directorJson?: Record<string, unknown> | null;
   isochronyStats?: Record<string, unknown> | null;
-  llvcMetrics?: Record<string, unknown> | null;
-  lipsyncMetrics?: Record<string, unknown> | null;
+  voiceTransferMetrics?: Record<string, unknown> | null;
+  videoSyncMetrics?: Record<string, unknown> | null;
+  tokenUsage?: Record<string, unknown> | null;
   assets?: Record<string, unknown> | null;
   thinkingPolicy?: Record<string, unknown> | null;
   speakerProfiles?: DubbingSpeakerProfile[];
@@ -583,6 +625,9 @@ export interface DubbingJobStatus {
     engine?: string;
     voiceId?: string;
     textChars?: number;
+    timelineStartMs?: number;
+    timelineEndMs?: number;
+    previewKind?: string;
     downloadUrl?: string;
     audioBase64?: string;
   }>;
@@ -607,3 +652,244 @@ export interface DubbingReport {
   summary?: Record<string, unknown>;
   [key: string]: unknown;
 }
+
+export interface ReaderCatalogRegion {
+  id: string;
+  label: string;
+  locale?: string;
+  languageCodes?: string[];
+  sharedCount?: number;
+  emptyState?: string;
+}
+
+export interface ReaderCatalogItem {
+  id: string;
+  title: string;
+  author: string;
+  regionId: string;
+  regionLabel?: string;
+  sourceLanguage?: string;
+  languageLabel?: string;
+  contentKind: 'book' | 'comic';
+  surface: 'books' | 'comics' | 'uploads';
+  provider: string;
+  license: string;
+  sourceUrl?: string;
+  summary?: string;
+  excerpt?: string;
+  sampleText?: string;
+  contentUrl?: string;
+  archiveTxtUrl?: string;
+  coverUrl?: string;
+  supportsReadHere?: boolean;
+  ownershipBasis?: string;
+  textPath?: string;
+  manifestPath?: string;
+  fileNames?: string[];
+  direction?: string;
+  readingModeDefault?: string;
+  collectionLabel?: string;
+  sessionId?: string;
+  resume?: ReaderResumeState;
+  readiness?: ReaderReadiness;
+  prep?: ReaderPreparation;
+  stats?: ReaderItemStats;
+  translationSupport?: {
+    page: boolean;
+    tts: boolean;
+  };
+  sourceMeta?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ReaderResumeState {
+  hasProgress: boolean;
+  consumedChars: number;
+  currentPanelIndex: number;
+  progressPct: number;
+  updatedAt?: string;
+  sessionId?: string;
+}
+
+export interface ReaderReadiness {
+  state: 'ready' | 'preparing' | 'blocked';
+  label: string;
+  playableItems: number;
+  reason?: string;
+}
+
+export interface ReaderPreparation {
+  state: 'queued' | 'running' | 'ready' | 'error' | 'degraded';
+  stage: 'manifest' | 'assets' | 'ocr' | 'audio';
+  completedItems: number;
+  totalItems: number;
+  failedItems: number;
+  message?: string;
+}
+
+export interface ReaderItemStats {
+  totalChars?: number;
+  totalPanels?: number;
+  pageCount?: number;
+  fileCount?: number;
+}
+
+export interface ReaderLibrary {
+  surface: 'all' | 'books' | 'comics' | 'uploads';
+  regionId: string;
+  regions: ReaderCatalogRegion[];
+  items: ReaderCatalogItem[];
+  activeSession?: ReaderSession | null;
+  activeSessions?: ReaderSession[];
+  counts: {
+    all: number;
+    visible: number;
+    books: number;
+    comics: number;
+    uploads: number;
+    resumable: number;
+  };
+  facets: {
+    providers: string[];
+    collections: string[];
+    progressStates: string[];
+  };
+  shelves: {
+    continueReading: ReaderCatalogItem[];
+    trending: ReaderCatalogItem[];
+    newArrivals: ReaderCatalogItem[];
+    recentlyImported: ReaderCatalogItem[];
+  };
+}
+
+export interface ReaderVoiceCast {
+  [speaker: string]: string;
+}
+
+export interface ReaderAudioWindow {
+  index: number;
+  startChar?: number;
+  endChar?: number;
+  charCount?: number;
+  text?: string;
+  sourceText?: string;
+  translatedText?: string;
+  displayText?: string;
+  translationStatus?: 'pending' | 'ready' | 'error';
+  estimatedReadMs?: number;
+  status?: string;
+  purged?: boolean;
+  exported?: boolean;
+  jobId?: string;
+  job?: {
+    jobId?: string;
+    status?: string;
+    playableChunks?: number;
+    playableDurationMs?: number;
+    downloadUrl?: string;
+  };
+}
+
+export interface ReaderPanelManifest {
+  panelId: string;
+  pageId: string;
+  index: number;
+  direction: string;
+  text: string;
+  sourceText?: string;
+  translatedText?: string;
+  displayText?: string;
+  translationStatus?: 'pending' | 'ready' | 'error';
+  estimatedReadMs?: number;
+  speaker?: string;
+  emotion?: string;
+  sfx?: string[];
+  imagePath?: string;
+  imageUrl?: string;
+  audioJobId?: string;
+  audioStatus?: string;
+  purged?: boolean;
+  audioJob?: {
+    jobId?: string;
+    status?: string;
+    playableChunks?: number;
+    playableDurationMs?: number;
+    downloadUrl?: string;
+  };
+}
+
+export interface ReaderSession {
+  id: string;
+  title: string;
+  contentKind: 'book' | 'comic';
+  surface: 'books' | 'comics' | 'uploads';
+  regionId: string;
+  direction: string;
+  readingMode?: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  pageViewMode: 'original' | 'translated';
+  ttsLanguageMode: 'auto' | 'source' | 'target';
+  translationState: 'idle' | 'warming' | 'ready' | 'error';
+  translationLeadRatio?: number;
+  voiceFallbacks?: Record<string, { requestedVoiceId: string; resolvedVoiceId: string; reason: string }>;
+  multiSpeakerEnabled: boolean;
+  effectiveMultiSpeakerMode?: 'single' | 'line_map' | 'studio_pair_groups';
+  workKey: string;
+  sourceKind: 'catalog' | 'upload' | string;
+  provider?: string;
+  license?: string;
+  coverUrl?: string;
+  summary?: string;
+  sourceUrl?: string;
+  collectionLabel?: string;
+  musicTrackId: string;
+  autoAdvanceProfile?: 'off' | 'audio_sync' | 'slow' | 'medium' | 'fast' | string;
+  castMemory: ReaderVoiceCast;
+  consumedChars: number;
+  totalChars: number;
+  currentPanelIndex: number;
+  totalPanels: number;
+  progressPct: number;
+  readiness?: ReaderReadiness;
+  prep?: ReaderPreparation;
+  resumeToken?: string;
+  activeItemIndex?: number;
+  stats?: ReaderItemStats;
+  cachedChars: number;
+  cacheLimitChars: number;
+  deleteAtMs: number;
+  warningActive: boolean;
+  savepointDownloadUrl: string;
+  billing: {
+    vfPerChar: number;
+    rule: string;
+    label: string;
+  };
+  limits: {
+    textWindowChars: number;
+    prefetchThresholdChars: number;
+    panelBatchSize: number;
+    panelTriggerIndex: number;
+    deleteWarningMs: number;
+  };
+  windows: ReaderAudioWindow[];
+  panels: ReaderPanelManifest[];
+}
+
+export interface ReaderSessionProgress {
+  consumedChars?: number;
+  currentPanelIndex?: number;
+  targetLanguage?: string;
+  pageViewMode?: 'original' | 'translated';
+}
+
+export interface ReaderLegalAck {
+  accepted: boolean;
+  acceptedAt?: string;
+  title: string;
+  message: string;
+}
+
+export interface ReaderUpload extends ReaderCatalogItem {}

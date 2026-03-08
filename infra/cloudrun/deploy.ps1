@@ -240,6 +240,7 @@ foreach ($svc in $deployOrder) {
     if ($hasStartupCpuBoost) {
         $startupCpuBoost = [bool]$svc.startupCpuBoost
     }
+    $hasCpuAlwaysAllocated = $svc.PSObject.Properties.Name -contains "cpuAlwaysAllocated"
 
     $deployArgs = @(
         "run", "deploy", $name,
@@ -271,8 +272,13 @@ foreach ($svc in $deployOrder) {
         $deployArgs += "--no-allow-unauthenticated"
     }
 
-    if ([bool]$svc.cpuAlwaysAllocated) {
-        $deployArgs += "--no-cpu-throttling"
+    if ($hasCpuAlwaysAllocated) {
+        if ([bool]$svc.cpuAlwaysAllocated) {
+            $deployArgs += "--no-cpu-throttling"
+        }
+        else {
+            $deployArgs += "--cpu-throttling"
+        }
     }
 
     if ($hasStartupCpuBoost) {

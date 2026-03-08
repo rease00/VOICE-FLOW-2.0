@@ -38,6 +38,7 @@ class LaneLease:
     model_id: str
     key_index: int
     model_index: int
+    key_pool_size: int
     reserved_tokens: int
     reserved_at_ms: int
 
@@ -228,16 +229,25 @@ class GeminiRateAllocator:
         *,
         auth_disable_ms: int = 600_000,
         wait_slice_ms: int = 500,
+        key_rotation_burst: Optional[int] = None,
     ) -> None:
         self.config = config
         self._window_ms = int(config.window_seconds) * 1000
         self._auth_disable_ms = max(1_000, int(auth_disable_ms))
         self._wait_slice_ms = max(100, int(wait_slice_ms))
+        self._key_rotation_burst_override = (
+            max(1, int(key_rotation_burst))
+            if key_rotation_burst is not None
+            else None
+        )
 
         self._lock = threading.Lock()
         self._lane_states: dict[tuple[str, str], _LaneState] = {}
         self._key_states: dict[str, _KeyState] = {}
         self._next_key_index = 0
+        self._active_burst_key = ""
+        self._active_burst_count = 0
+        self._active_burst_target = 0
 
         routed_models: set[str] = set()
         for route in self.config.routes.values():
@@ -297,6 +307,15 @@ class GeminiRateAllocator:
             seen.add(index)
             ordered.append(index)
         start = self._next_key_index % size
+        burst_key = str(self._active_burst_key or "").strip()
+        if (
+            self._active_burst_target > 1
+            and self._active_burst_count > 0
+            and burst_key
+            and burst_key in key_pool
+            and burst_key not in blocked_keys
+        ):
+            start = key_pool.index(burst_key)
         for offset in range(size):
             index = (start + offset) % size
             if index in seen:
@@ -304,6 +323,61 @@ class GeminiRateAllocator:
             seen.add(index)
             ordered.append(index)
         return ordered
+
+    def _rotation_burst_target(self, model_id: str) -> int:
+        override = self._key_rotation_burst_override
+        if override is not None:
+            return max(1, int(override))
+        return 1
+
+    def _record_key_rotation_selection(
+        self,
+        *,
+        key_pool: list[str],
+        key: str,
+        key_index: int,
+        model_id: str,
+    ) -> None:
+        size = len(key_pool)
+        if size <= 0:
+            self._next_key_index = 0
+            self._active_burst_key = ""
+            self._active_burst_count = 0
+            self._active_burst_target = 0
+            return
+
+        target_burst = self._rotation_burst_target(model_id)
+        if target_burst <= 1:
+            self._next_key_index = (key_index + 1) % size
+            self._active_burst_key = ""
+            self._active_burst_count = 0
+            self._active_burst_target = 0
+            return
+
+        selected_key = str(key or "").strip()
+        if (
+            selected_key
+            and selected_key == self._active_burst_key
+            and self._active_burst_count > 0
+            and self._active_burst_target == target_burst
+        ):
+            next_burst_count = self._active_burst_count + 1
+        else:
+            self._active_burst_key = selected_key
+            self._active_burst_target = int(target_burst)
+            next_burst_count = 1
+
+        if next_burst_count >= target_burst:
+            self._next_key_index = (key_index + 1) % size
+            self._active_burst_key = ""
+            self._active_burst_count = 0
+            self._active_burst_target = 0
+            return
+
+        self._active_burst_key = selected_key
+        self._active_burst_count = next_burst_count
+        self._active_burst_target = int(target_burst)
+        self._next_key_index = key_index
 
     def _lane_ready_wait_ms(
         self,
@@ -419,13 +493,12 @@ class GeminiRateAllocator:
                         lane.in_flight_requests = int(lane.in_flight_requests) + 1
                         lane.in_flight_tokens = int(lane.in_flight_tokens) + safe_requested_tokens
                         key_state.in_flight_total = int(key_state.in_flight_total) + 1
-                        if len(key_pool) > 0:
-                            self._next_key_index = (key_index + 1) % len(key_pool)
                         lease = LaneLease(
                             key=key,
                             model_id=model_id,
                             key_index=key_index,
                             model_index=model_index,
+                            key_pool_size=len(key_pool),
                             reserved_tokens=safe_requested_tokens,
                             reserved_at_ms=now_ms,
                         )
@@ -466,6 +539,7 @@ class GeminiRateAllocator:
         success: bool,
         used_tokens: Optional[int] = None,
         error_kind: Optional[str] = None,
+        commit_usage: Optional[bool] = None,
     ) -> None:
         if lease is None:
             return
@@ -475,23 +549,35 @@ class GeminiRateAllocator:
             key_state = self._key_state(lease.key)
             lane = self._lane_state(lease.key, lease.model_id)
             self._reset_lane_if_window_rolled(lane, now_ms)
+            normalized_error = str(error_kind or "").strip().lower()
+            should_commit_usage = (
+                bool(commit_usage)
+                if commit_usage is not None
+                else bool(success) or normalized_error in {"auth", "rate_limit", "timeout"}
+            )
 
             lane.in_flight_requests = max(0, int(lane.in_flight_requests) - 1)
             lane.in_flight_tokens = max(0, int(lane.in_flight_tokens) - int(lease.reserved_tokens))
             key_state.in_flight_total = max(0, int(key_state.in_flight_total) - 1)
 
-            lane.requests = int(lane.requests) + 1
-            lane.tokens = int(lane.tokens) + safe_used_tokens
-            key_state.requests_total = int(key_state.requests_total) + 1
+            if should_commit_usage:
+                lane.requests = int(lane.requests) + 1
+                lane.tokens = int(lane.tokens) + safe_used_tokens
+                key_state.requests_total = int(key_state.requests_total) + 1
 
             if success:
                 lane.success_total = int(lane.success_total) + 1
                 key_state.success_total = int(key_state.success_total) + 1
+                self._record_key_rotation_selection(
+                    key_pool=[lease.key] * max(1, int(lease.key_pool_size)),
+                    key=lease.key,
+                    key_index=int(lease.key_index),
+                    model_id=lease.model_id,
+                )
             else:
                 lane.failure_total = int(lane.failure_total) + 1
                 key_state.failure_total = int(key_state.failure_total) + 1
 
-            normalized_error = str(error_kind or "").strip().lower()
             if normalized_error == "auth":
                 key_state.auth_failures_total = int(key_state.auth_failures_total) + 1
                 key_state.auth_disabled_until_ms = max(
@@ -705,10 +791,25 @@ class GeminiRateAllocator:
                     "overallUsed": None,
                     "overallRemaining": None,
                     "overallAtLimit": False,
-                    "rotationMode": "round_robin_forward",
+                    "rotationMode": (
+                        "round_robin_burst_fixed"
+                        if (self._key_rotation_burst_override or 0) > 1
+                        else "round_robin_forward"
+                    ),
+                    "rotationBurst": (
+                        int(self._key_rotation_burst_override)
+                        if self._key_rotation_burst_override is not None
+                        else None
+                    ),
+                    "activeBurstCount": int(self._active_burst_count),
+                    "activeBurstTarget": int(self._active_burst_target),
+                    "activeBurstKey": (
+                        api_key_fingerprint(self._active_burst_key)
+                        if self._active_burst_key
+                        else "none"
+                    ),
                     "nextIndex": int(self._next_key_index if len(safe_pool) > 0 else 0),
                 },
                 "keys": key_entries,
                 "models": model_entries,
             }
-

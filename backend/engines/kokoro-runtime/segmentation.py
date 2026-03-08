@@ -2,20 +2,23 @@ import re
 from typing import Dict, List
 
 MAX_WORDS_PER_REQUEST = 5000
-SEGMENTATION_PROFILE = "quality-first"
+SEGMENTATION_PROFILE = "latency-balanced"
+SENTENCE_OVERFLOW_RATIO = 1.35
+SENTENCE_OVERFLOW_CHAR_GRACE = 96
+SENTENCE_OVERFLOW_WORD_GRACE = 18
 
 CHUNKING_PROFILES: Dict[str, Dict[str, int]] = {
     "hi": {
-        "hard_char_cap": 240,
-        "target_char_cap": 190,
-        "max_words_per_chunk": 42,
-        "join_crossfade_ms": 32,
+        "hard_char_cap": 200,
+        "target_char_cap": 150,
+        "max_words_per_chunk": 34,
+        "join_crossfade_ms": 24,
     },
     "default": {
-        "hard_char_cap": 220,
-        "target_char_cap": 180,
-        "max_words_per_chunk": 45,
-        "join_crossfade_ms": 15,
+        "hard_char_cap": 180,
+        "target_char_cap": 140,
+        "max_words_per_chunk": 32,
+        "join_crossfade_ms": 12,
     },
 }
 
@@ -39,6 +42,21 @@ def is_hindi_language(lang_code: str, text: str) -> bool:
     if normalized_lang in {"h", "hi", "hin"}:
         return True
     return bool(re.search(r"[\u0900-\u097F]", str(text or "")))
+
+
+def _resolve_overflow_char_cap(limit: int) -> int:
+    return max(limit, round(limit * SENTENCE_OVERFLOW_RATIO), limit + SENTENCE_OVERFLOW_CHAR_GRACE)
+
+
+def _resolve_overflow_word_cap(limit: int) -> int:
+    return max(limit, round(limit * SENTENCE_OVERFLOW_RATIO), limit + SENTENCE_OVERFLOW_WORD_GRACE)
+
+
+def _can_keep_unit_intact(char_count: int, word_count: int, hard_limit: int, max_words_per_chunk: int) -> bool:
+    return (
+        char_count <= _resolve_overflow_char_cap(hard_limit)
+        and word_count <= _resolve_overflow_word_cap(max_words_per_chunk)
+    )
 
 
 def _split_with_pattern(text: str, pattern: str) -> List[str]:
@@ -67,12 +85,8 @@ def _split_oversized_by_words(unit: str, hard_limit: int, max_words_per_chunk: i
             result.append(current)
             current = ""
             current_words = 0
-        if len(word) <= hard_limit:
-            current = word
-            current_words = 1
-            continue
-        for index in range(0, len(word), hard_limit):
-            result.append(word[index : index + hard_limit])
+        current = word
+        current_words = 1
 
     if current:
         result.append(current)
@@ -101,10 +115,15 @@ def chunk_text_for_tts(text: str, lang_code: str) -> List[str]:
         if len(sentence) <= hard_limit and sentence_words <= max_words_per_chunk:
             granular_units.append(sentence)
             continue
+        if _can_keep_unit_intact(len(sentence), sentence_words, hard_limit, max_words_per_chunk):
+            granular_units.append(sentence)
+            continue
         phrase_units = _split_with_pattern(sentence, PHRASE_PATTERN)
         for phrase in phrase_units:
             phrase_words = count_words(phrase)
             if len(phrase) <= hard_limit and phrase_words <= max_words_per_chunk:
+                granular_units.append(phrase)
+            elif _can_keep_unit_intact(len(phrase), phrase_words, hard_limit, max_words_per_chunk):
                 granular_units.append(phrase)
             else:
                 granular_units.extend(
@@ -119,7 +138,9 @@ def chunk_text_for_tts(text: str, lang_code: str) -> List[str]:
         if not unit:
             continue
         unit_words = count_words(unit)
-        if len(unit) > hard_limit or unit_words > max_words_per_chunk:
+        if (len(unit) > hard_limit or unit_words > max_words_per_chunk) and not _can_keep_unit_intact(
+            len(unit), unit_words, hard_limit, max_words_per_chunk
+        ):
             if current:
                 chunks.append(current)
                 current = ""

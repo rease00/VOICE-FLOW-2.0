@@ -15,8 +15,29 @@ const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]
   GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'bf_emma', 'bf_isabella', 'am_fenrir', 'am_michael', 'am_onyx', 'bm_george'],
+  KOKORO: [
+    'af_heart',
+    'af_bella',
+    'af_nova',
+    'af_sarah',
+    'am_fenrir',
+    'am_michael',
+    'am_onyx',
+    'am_echo',
+    'bf_emma',
+    'bf_isabella',
+    'bm_george',
+    'bm_fable',
+    'hf_alpha',
+    'hf_beta',
+    'hm_omega',
+    'hm_psi',
+  ],
 };
+
+const KOKORO_VOICE_INDEX = new Map(
+  KOKORO_VOICES.map((voice) => [String(voice.id || '').trim().toLowerCase(), voice] as const)
+);
 
 const inferCountryFromAccent = (accent?: string): string => {
   const value = String(accent || '').toLowerCase();
@@ -105,12 +126,25 @@ const toVoiceOption = (
   index: number
 ): VoiceOption => {
   const id = String(raw.voice_id || raw.id || raw.voiceId || raw.voice || `voice_${index}`).trim();
-  const name = String(raw.mapped_name || raw.name || raw.voice || raw.label || id).trim();
-  const accent = String(raw.accent || raw.language || 'Unknown').trim();
-  const gender = normalizeGender(raw.gender);
-  const ageGroup = normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age);
-  const country = String(raw.country || raw.country_code || inferCountryFromAccent(accent)).trim() || 'Unknown';
-  const geminiVoiceName = String(raw.voice || raw.voice_id || raw.id || id).trim();
+  const kokoroCanonical = engine === 'KOKORO' ? KOKORO_VOICE_INDEX.get(id.toLowerCase()) : undefined;
+  const name = String(
+    kokoroCanonical?.name
+    || raw.mapped_name
+    || raw.name
+    || raw.voice
+    || raw.label
+    || id
+  ).trim();
+  const accent = String(kokoroCanonical?.accent || raw.accent || raw.language || 'Unknown').trim();
+  const gender = kokoroCanonical?.gender || normalizeGender(raw.gender);
+  const ageGroup = String(kokoroCanonical?.ageGroup || normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age)).trim() || 'Unknown';
+  const country = String(
+    kokoroCanonical?.country
+    || raw.country
+    || raw.country_code
+    || inferCountryFromAccent(accent)
+  ).trim() || 'Unknown';
+  const geminiVoiceName = String(kokoroCanonical?.geminiVoiceName || raw.voice || raw.voice_id || raw.id || id).trim();
   const explicitTier = String(raw.access_tier || raw.accessTier || '').trim().toLowerCase();
   const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
   const accessTier: 'free' | 'pro' =

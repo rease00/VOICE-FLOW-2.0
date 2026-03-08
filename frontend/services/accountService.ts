@@ -64,6 +64,85 @@ export interface AccountEntitlements {
   };
 }
 
+export interface AccountBillingPlanSummary {
+  key: 'free' | BillingPlanKey;
+  name: BillingPlanName;
+  status: string;
+  monthlyVfLimit: number;
+  dailyGenerationLimit: number;
+  maxCharsPerGeneration: number;
+  allowedEngines: TtsEngineKey[];
+  earlyAccess: boolean;
+  pricing: {
+    firstCycleInr: number;
+    recurringInr: number;
+    discountPercent: number;
+  };
+}
+
+export interface AccountInvoiceSummary {
+  id: string;
+  number?: string | null;
+  status: string;
+  description?: string | null;
+  currency: string;
+  amountDueMinor: number;
+  amountPaidMinor: number;
+  amountRemainingMinor: number;
+  createdAt?: string | null;
+  dueAt?: string | null;
+  paidAt?: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  hostedInvoiceUrl?: string | null;
+  invoicePdf?: string | null;
+  billingReason?: string | null;
+}
+
+export interface AccountBillingSummary {
+  generatedAt?: string;
+  profile: {
+    uid: string;
+    userId?: string | null;
+    displayName?: string | null;
+    email?: string | null;
+    status?: string | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+  };
+  plan: AccountBillingPlanSummary;
+  billing: {
+    stripeReady: boolean;
+    hasPortalAccess: boolean;
+    stripeCustomerId?: string | null;
+    billingCountry?: string | null;
+    currencyMode?: string | null;
+  };
+  subscription: {
+    id?: string | null;
+    status: string;
+    active: boolean;
+    cancelAtPeriodEnd: boolean;
+    cancelAt?: string | null;
+    currentPeriodStart?: string | null;
+    currentPeriodEnd?: string | null;
+    nextBillingAt?: string | null;
+    startedAt?: string | null;
+    trialEnd?: string | null;
+    latestInvoiceId?: string | null;
+  };
+  paymentMethod?: {
+    id?: string | null;
+    brand?: string | null;
+    last4?: string | null;
+    funding?: string | null;
+    expMonth?: number | null;
+    expYear?: number | null;
+  } | null;
+  invoices: AccountInvoiceSummary[];
+  warnings: string[];
+}
+
 export interface AccountUserProfile {
   uid: string;
   userId: string;
@@ -188,6 +267,13 @@ export const createPortalSession = async (baseUrl?: string, returnUrl?: string):
     { requireAuth: true }
   ));
   return { url: String(payload?.url || '') };
+};
+
+export const fetchAccountBillingSummary = async (baseUrl?: string): Promise<AccountBillingSummary> => {
+  const payload = await readJsonOrThrow<{ summary: AccountBillingSummary }>(
+    await authFetch(`${toBaseUrl(baseUrl)}/billing/account-summary`, undefined, { requireAuth: true })
+  );
+  return payload?.summary as AccountBillingSummary;
 };
 
 export const createTokenPackCheckoutSession = async (

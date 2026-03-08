@@ -25,6 +25,7 @@ const createNotification = (overrides: Partial<AppNotification> = {}): AppNotifi
   severity: overrides.severity || 'info',
   category: overrides.category || 'activity',
   audience: overrides.audience || 'all',
+  scope: overrides.scope || 'ephemeral',
   channel: overrides.channel || 'inbox',
   status: overrides.status || 'active',
   resolvedAt: overrides.resolvedAt ?? null,
@@ -42,6 +43,10 @@ const basePrefs: NotificationPrefs = {
   allowTips: true,
   allowSystemInfo: true,
   playSound: false,
+  emailAsyncJobs: true,
+  emailBilling: true,
+  emailSupport: true,
+  emailAdminAlerts: false,
 };
 
 describe('notification store', () => {
@@ -103,6 +108,10 @@ describe('notification store', () => {
       allowTips: false,
       allowSystemInfo: false,
       playSound: false,
+      emailAsyncJobs: true,
+      emailBilling: true,
+      emailSupport: true,
+      emailAdminAlerts: false,
     };
     const criticalSystem = createNotification({ severity: 'critical', category: 'system' });
     const infoSystem = createNotification({ severity: 'info', category: 'system' });

@@ -18,8 +18,12 @@ def _load_kokoro_runtime_module():
     fake_kokoro = pytypes.ModuleType("kokoro")
 
     class _StubPipeline:
-        def __init__(self, lang_code: str) -> None:
+        created: list[dict[str, object]] = []
+
+        def __init__(self, lang_code: str, device: str | None = None) -> None:
             self.lang_code = lang_code
+            self.device = device
+            self.__class__.created.append({"lang_code": lang_code, "device": device})
 
         def __call__(self, *_: object, **__: object):
             return iter([])
@@ -30,6 +34,7 @@ def _load_kokoro_runtime_module():
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._stub_pipeline_cls = _StubPipeline
     return module
 
 
@@ -37,6 +42,81 @@ def test_kokoro_batch_endpoint_present() -> None:
     runtime = _load_kokoro_runtime_module()
     paths = {getattr(route, "path", "") for route in runtime.app.routes}
     assert "/synthesize/batch" in paths
+
+
+def test_kokoro_runtime_forces_cpu_pipeline_device() -> None:
+    runtime = _load_kokoro_runtime_module()
+    runtime._stub_pipeline_cls.created.clear()
+
+    pipeline = runtime.kokoro_full._pipeline_for("h")
+
+    assert pipeline.device == "cpu"
+    assert runtime._stub_pipeline_cls.created == [{"lang_code": "h", "device": "cpu"}]
+
+
+def test_kokoro_runtime_ignores_non_cpu_device_env(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_DEVICE", "cuda")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+
+    runtime = _load_kokoro_runtime_module()
+
+    assert runtime.KOKORO_DEVICE == "cpu"
+    assert runtime.os.environ.get("KOKORO_DEVICE") == "cpu"
+    assert runtime.os.environ.get("CUDA_VISIBLE_DEVICES") == ""
+    assert runtime.kokoro_full._pipeline_device == "cpu"
+
+
+def test_kokoro_health_and_capabilities_report_cpu_only() -> None:
+    runtime = _load_kokoro_runtime_module()
+    client = TestClient(runtime.app)
+
+    health_response = client.get("/health")
+    assert health_response.status_code == 200
+    health_payload = health_response.json()
+    assert health_payload["device"] == "cpu"
+    assert health_payload["device_mode"] == "cpu"
+    assert health_payload["provider"] == "cpu"
+    assert health_payload["gpu_enabled"] is False
+    assert health_payload["openvino_enabled"] is False
+    assert health_payload["idle_unload_ms"] == 120000
+
+    capabilities_response = client.get("/v1/capabilities")
+    assert capabilities_response.status_code == 200
+    capabilities_payload = capabilities_response.json()
+    assert capabilities_payload["metadata"]["deviceMode"] == "cpu"
+    assert capabilities_payload["metadata"]["provider"] == "cpu"
+    assert capabilities_payload["metadata"]["gpuEnabled"] is False
+    assert capabilities_payload["metadata"]["openvinoEnabled"] is False
+    assert capabilities_payload["metadata"]["idleUnloadMs"] == 120000
+
+
+def test_kokoro_runtime_keeps_british_english_voice_when_language_hint_is_english() -> None:
+    runtime = _load_kokoro_runtime_module()
+
+    assert runtime.kokoro_full.resolve_lang("Hello there.", "bf_emma", "en") == "b"
+
+
+def test_kokoro_runtime_maps_cross_language_voices_without_collapsing_everyone_to_one_fallback() -> None:
+    runtime = _load_kokoro_runtime_module()
+
+    assert runtime.kokoro_full.resolve_lang("The market opens at sunrise.", "hf_alpha", "en") == "a"
+    assert runtime.kokoro_full.resolve_voice("af_bella", "h") == "hf_beta"
+    assert runtime.kokoro_full.resolve_voice("am_echo", "h") == "hm_psi"
+    assert runtime.kokoro_full.resolve_voice("hf_beta", "a") == "af_bella"
+    assert runtime.kokoro_full.resolve_voice("hm_psi", "a") == "am_michael"
+
+
+def test_kokoro_runtime_accepts_spoof_display_names_as_voice_aliases() -> None:
+    runtime = _load_kokoro_runtime_module()
+
+    assert runtime.kokoro_full.resolve_voice("Lyra US", "a") == "af_heart"
+    assert runtime.kokoro_full.resolve_voice("Kaia US", "h") == "hf_beta"
+
+
+def test_kokoro_runtime_transliterates_devanagari_hindi_for_synthesis() -> None:
+    runtime = _load_kokoro_runtime_module()
+
+    assert runtime.kokoro_full.normalize_text("नमस्ते, यह आवाज २ है।", "h") == "namaste, yaha aavaaja do hai."
 
 
 def test_kokoro_batch_returns_ordered_results(monkeypatch) -> None:

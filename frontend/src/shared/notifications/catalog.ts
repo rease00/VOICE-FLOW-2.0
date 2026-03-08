@@ -438,6 +438,119 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     false,
     8_000
   ),
+  'support.reply.received': entry(
+    'support.reply.received',
+    'Support Replied',
+    'A support agent replied to your conversation.',
+    'info',
+    'activity',
+    'inbox',
+    false,
+    8_000
+  ),
+  'support.conversation.resolved': entry(
+    'support.conversation.resolved',
+    'Support Resolved',
+    'Your support conversation was marked as resolved.',
+    'success',
+    'activity',
+    'inbox',
+    false,
+    8_000
+  ),
+  'tts.job.completed': entry(
+    'tts.job.completed',
+    'Queued TTS Job Complete',
+    'Your queued TTS job completed.',
+    'success',
+    'activity',
+    'inbox',
+    false,
+    10_000
+  ),
+  'tts.job.failed': entry(
+    'tts.job.failed',
+    'Queued TTS Job Failed',
+    'Your queued TTS job failed.',
+    'error',
+    'activity',
+    'inbox',
+    true,
+    10_000
+  ),
+  'tts.job.cancelled': entry(
+    'tts.job.cancelled',
+    'Queued TTS Job Cancelled',
+    'Your queued TTS job was cancelled.',
+    'info',
+    'activity',
+    'inbox',
+    false,
+    8_000
+  ),
+  'dubbing.job.completed': entry(
+    'dubbing.job.completed',
+    'Dubbing Job Complete',
+    'Your dubbing job completed successfully.',
+    'success',
+    'activity',
+    'inbox',
+    false,
+    10_000
+  ),
+  'dubbing.job.failed': entry(
+    'dubbing.job.failed',
+    'Dubbing Job Failed',
+    'Your dubbing job failed.',
+    'error',
+    'activity',
+    'inbox',
+    true,
+    10_000
+  ),
+  'dubbing.job.cancelled': entry(
+    'dubbing.job.cancelled',
+    'Dubbing Job Cancelled',
+    'Your dubbing job was cancelled.',
+    'info',
+    'activity',
+    'inbox',
+    false,
+    8_000
+  ),
+  'admin.alert.opened': entry(
+    'admin.alert.opened',
+    'Admin Alert Opened',
+    'A new admin alert needs review.',
+    'warning',
+    'system',
+    'inbox',
+    true,
+    20_000,
+    { audience: 'admin' }
+  ),
+  'admin.approval.pending': entry(
+    'admin.approval.pending',
+    'Approval Pending',
+    'An admin approval is waiting for review.',
+    'warning',
+    'system',
+    'inbox',
+    true,
+    20_000,
+    { audience: 'admin' }
+  ),
+  'admin.audit.chain.mismatch': entry(
+    'admin.audit.chain.mismatch',
+    'Audit Chain Mismatch',
+    'Audit verification detected a mismatch.',
+    'critical',
+    'security',
+    'inbox',
+    true,
+    60_000,
+    { audience: 'admin' }
+  ),
   'admin.pool.reload.success': entry(
     'admin.pool.reload.success',
     'Primary AI Pool Reloaded',
@@ -480,6 +593,50 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     'toast',
     false,
     10_000,
+    { audience: 'admin' }
+  ),
+  'admin.session.unlock.issued': entry(
+    'admin.session.unlock.issued',
+    'Admin Unlock Key Issued',
+    'A new admin unlock key was issued for this session.',
+    'info',
+    'security',
+    'inbox',
+    false,
+    12_000,
+    { audience: 'admin' }
+  ),
+  'admin.session.unlock.verified': entry(
+    'admin.session.unlock.verified',
+    'Admin Unlock Verified',
+    'Your admin unlock key was verified.',
+    'success',
+    'security',
+    'inbox',
+    false,
+    12_000,
+    { audience: 'admin' }
+  ),
+  'admin.scheduler.run.accepted': entry(
+    'admin.scheduler.run.accepted',
+    'Scheduler Run Requested',
+    'The scheduler task run request was accepted.',
+    'info',
+    'system',
+    'inbox',
+    false,
+    12_000,
+    { audience: 'admin' }
+  ),
+  'admin.rbac.saved': entry(
+    'admin.rbac.saved',
+    'RBAC Updated',
+    'RBAC changes were saved.',
+    'success',
+    'security',
+    'inbox',
+    false,
+    12_000,
     { audience: 'admin' }
   ),
   'admin.access.load.failed': entry(

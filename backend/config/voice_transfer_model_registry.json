@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "voice_transfer_hq_cpu",
+      "checkpointPath": "models/rvc/f_8312_32k-325.pth",
+      "configPath": "",
+      "sampleRate": 32000,
+      "qualityTier": "realtime",
+      "enabled": true,
+      "resolvedModelId": "f_8312_32k-325",
+      "indexPath": "models/rvc/f_8312_32k-325.index",
+      "embedderPath": "models/embeddings/checkpoint_best_legacy_500.pt",
+      "f0ModelPath": "models/f0/rmvpe.pt"
+    }
+  ]
+}

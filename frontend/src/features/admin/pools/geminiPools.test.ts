@@ -5,6 +5,7 @@ import {
   deletePoolFromConfig,
   normalizePoolIdInput,
   setPlanPoolInConfig,
+  setTtsModelFallbackEnabled,
 } from './geminiPools';
 
 describe('geminiPools helpers', () => {
@@ -56,5 +57,20 @@ describe('geminiPools helpers', () => {
     expect(updated.planPools?.plus).toBe('enterprise_gold');
     expect(updated.planPools?.free).toBe('free');
     expect(updated.planPools?.pro).toBe('free');
+  });
+
+  it('toggles Gemini TTS model fallback in source policy', () => {
+    const base = {
+      sourcePolicy: {
+        provider: 'gemini_api' as const,
+      },
+    };
+
+    const enabled = setTtsModelFallbackEnabled(base, true);
+    expect(enabled.sourcePolicy?.ttsModelFallbackEnabled).toBe(true);
+
+    const disabled = setTtsModelFallbackEnabled(enabled, false);
+    expect(disabled.sourcePolicy?.ttsModelFallbackEnabled).toBe(false);
+    expect(disabled.sourcePolicy?.provider).toBe('gemini_api');
   });
 });

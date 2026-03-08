@@ -17,6 +17,7 @@ interface EngineRuntimeStripProps {
   accessState?: { blocked: boolean; detail: string };
   activeEngine: GenerationSettings['engine'];
   switchingEngine: GenerationSettings['engine'] | null;
+  compact?: boolean;
   resolvedTheme: 'light' | 'dark';
   onActivate: (engine: GenerationSettings['engine']) => void;
 }
@@ -82,11 +83,12 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
   accessState,
   activeEngine,
   switchingEngine,
+  compact = false,
   resolvedTheme,
   onActivate,
 }) => {
   return (
-    <div className="vf-runtime-strip flex items-center gap-2 pr-1 whitespace-nowrap">
+    <div className={`vf-runtime-strip flex items-center whitespace-nowrap ${compact ? 'gap-1.5 pr-0.5' : 'gap-2 pr-1'}`}>
       {engineOrder.map((engine) => {
         const status = statuses[engine] ?? { state: 'checking', detail: 'Checking runtime...' };
         const isActive = activeEngine === engine;
@@ -116,7 +118,9 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
             disabled={switchLocked || pending}
             title={titleParts.filter(Boolean).join(' - ')}
             aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}${showAccessBlockedNote ? '. Access blocked.' : ''}`}
-            className={`vf-runtime-chip group relative inline-flex h-9 min-w-[3rem] sm:min-w-[3.8rem] items-center justify-center gap-1.5 sm:gap-2 rounded-full border px-1.5 sm:px-2.5 transition-all ${
+            className={`vf-runtime-chip group relative inline-flex h-9 items-center justify-center rounded-full border transition-all ${
+              compact ? 'min-w-[3rem] gap-1 px-2' : 'min-w-[3rem] gap-1.5 px-1.5 sm:min-w-[3.8rem] sm:gap-2 sm:px-2.5'
+            } ${
               resolvedTheme === 'dark'
                 ? 'bg-slate-950/35 hover:bg-slate-900/60'
                 : 'bg-white/70 hover:bg-white'
@@ -129,8 +133,8 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
                 resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-700'
               }`}
             >
-              <span className="sm:hidden">{getEngineAbbrev(engine)}</span>
-              <span className="hidden sm:inline">{getEngineDisplayName(engine)}</span>
+              <span className={compact ? '' : 'sm:hidden'}>{getEngineAbbrev(engine)}</span>
+              <span className={compact ? 'hidden' : 'hidden sm:inline'}>{getEngineDisplayName(engine)}</span>
             </span>
           </button>
         );

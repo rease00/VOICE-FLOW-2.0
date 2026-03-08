@@ -2,6 +2,7 @@ import base64
 import concurrent.futures
 import hmac
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -18,10 +19,19 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from segmentation import (
-    MAX_WORDS_PER_REQUEST,
-    count_words,
+
+_SEGMENTATION_SPEC = importlib.util.spec_from_file_location(
+    "gemini_runtime_segmentation",
+    Path(__file__).with_name("segmentation.py"),
 )
+assert _SEGMENTATION_SPEC is not None and _SEGMENTATION_SPEC.loader is not None
+_SEGMENTATION_MODULE = importlib.util.module_from_spec(_SEGMENTATION_SPEC)
+_SEGMENTATION_SPEC.loader.exec_module(_SEGMENTATION_MODULE)
+MAX_WORDS_PER_REQUEST = _SEGMENTATION_MODULE.MAX_WORDS_PER_REQUEST
+SEGMENTATION_PROFILE = _SEGMENTATION_MODULE.SEGMENTATION_PROFILE
+chunk_text_for_tts = _SEGMENTATION_MODULE.chunk_text_for_tts
+count_words = _SEGMENTATION_MODULE.count_words
+resolve_chunk_profile = _SEGMENTATION_MODULE.resolve_chunk_profile
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = RUNTIME_ROOT.parent
@@ -47,6 +57,7 @@ from shared.gemini_api_pools import (
     list_pool_names as list_runtime_pool_names,
     load_pool_config as load_pool_config_shared,
     normalize_pool_config,
+    overlay_cached_authoritative_free_pool as overlay_cached_runtime_free_pool_shared,
     resolve_default_pool_hint as resolve_default_runtime_pool_hint,
     resolve_effective_keys as resolve_effective_keys_shared,
     save_pool_config as save_pool_config_shared,
@@ -122,11 +133,9 @@ def _apply_allocator_env_overrides(config: AllocatorConfig) -> AllocatorConfig:
         return config
 
     next_models: Dict[str, ModelLimit] = dict(config.models)
-    tts_route = list(config.routes.get("tts") or [])
     if tts_rpm_override is not None or tts_tpm_override is not None:
-        for model_id in tts_route:
-            current = next_models.get(model_id)
-            if current is None:
+        for model_id, current in list(next_models.items()):
+            if "tts" not in current.enabled_for:
                 continue
             next_models[model_id] = ModelLimit(
                 model_id=current.model_id,
@@ -173,30 +182,23 @@ TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
     SOURCE_POLICY_PROVIDER_GEMINI_API: {
         "GOOD": [
             "gemini-2.5-flash-lite-preview-tts",
-            "gemini-2.5-flash-preview-tts",
         ],
         "NEURAL2": [
-            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-flash-tts",
         ],
         "GEM": [
-            "gemini-2.5-flash-preview-tts",
-            "gemini-2.5-pro-preview-tts",
+            "gemini-2.5-pro-tts",
         ],
     },
     SOURCE_POLICY_PROVIDER_VERTEX: {
         "GOOD": [
             "gemini-2.5-flash-lite-preview-tts",
-            "gemini-2.5-flash-tts",
-            "gemini-2.5-flash-preview-tts",
         ],
         "NEURAL2": [
             "gemini-2.5-flash-tts",
-            "gemini-2.5-flash-preview-tts",
         ],
         "GEM": [
             "gemini-2.5-pro-tts",
-            "gemini-2.5-pro-preview-tts",
-            "gemini-2.5-flash-tts",
         ],
     },
 }
@@ -206,6 +208,7 @@ KEY_COOLDOWN_BASE_MS = max(1000, int(os.getenv("GEMINI_KEY_COOLDOWN_BASE_MS", "8
 KEY_COOLDOWN_MAX_MS = max(KEY_COOLDOWN_BASE_MS, int(os.getenv("GEMINI_KEY_COOLDOWN_MAX_MS", "120000")))
 KEY_RETRY_LIMIT = max(1, int(os.getenv("GEMINI_KEY_RETRY_LIMIT", "8")))
 KEY_WAIT_SLICE_MS = max(100, int(os.getenv("GEMINI_KEY_WAIT_SLICE_MS", "1000")))
+GEMINI_KEY_ROTATION_BURST = _read_positive_int_env("GEMINI_KEY_ROTATION_BURST")
 KEY_TOTAL_TIMEOUT_MS = max(
     5000,
     int(os.getenv("GEMINI_KEY_TOTAL_TIMEOUT_MS", str(ALLOCATOR_CONFIG.default_wait_timeout_ms))),
@@ -235,7 +238,7 @@ GEMINI_BATCH_DEFAULT_PARALLEL = max(
         (
             os.getenv("GEMINI_BATCH_DEFAULT_PARALLEL")
             or os.getenv("GEMINI_BATCH_MAX_PARALLEL")
-            or "4"
+            or "3"
         )
     ),
 )
@@ -245,11 +248,14 @@ GEMINI_BATCH_MAX_PARALLEL = max(
         (
             os.getenv("GEMINI_BATCH_PARALLEL_LIMIT")
             or os.getenv("GEMINI_BATCH_MAX_PARALLEL")
-            or "8"
+            or "6"
         )
     ),
 )
-GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY = 7
+GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY = max(
+    1,
+    int(os.getenv("GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY", "4")),
+)
 GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS = max(
     0,
     int(os.getenv("GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS", "30")),
@@ -271,6 +277,11 @@ _RUNTIME_ALLOCATOR = GeminiRateAllocator(
     ALLOCATOR_CONFIG,
     auth_disable_ms=KEY_AUTH_DISABLE_MS,
     wait_slice_ms=ALLOCATOR_WAIT_SLICE_MS,
+    key_rotation_burst=GEMINI_KEY_ROTATION_BURST,
+)
+GEMINI_SPEAKER_KEY_AFFINITY_ENABLED = (
+    (os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_ENABLED") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
 )
 SPEAKER_KEY_AFFINITY_MAX = max(64, int(os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_MAX", "4096")))
 _SPEAKER_KEY_AFFINITY: Dict[str, Dict[str, Any]] = {}
@@ -300,6 +311,7 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+LOCALHOST_CORS_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
 _DIALOGUE_LINE_PATTERN = re.compile(r"^\s*([^:\n]{1,120})\s*:\s*(.+)$")
 
 
@@ -357,6 +369,8 @@ def _prune_speaker_affinity_locked() -> None:
 
 
 def _resolve_affinity_preferred_key(speakers: list[str], key_pool: list[str]) -> Optional[str]:
+    if not GEMINI_SPEAKER_KEY_AFFINITY_ENABLED:
+        return None
     if not speakers or not key_pool:
         return None
     key_pool_set = set(key_pool)
@@ -370,6 +384,8 @@ def _resolve_affinity_preferred_key(speakers: list[str], key_pool: list[str]) ->
 
 
 def _bind_speakers_to_key(speakers: list[str], key: str) -> None:
+    if not GEMINI_SPEAKER_KEY_AFFINITY_ENABLED:
+        return
     bound_key = str(key or "").strip()
     if not speakers or not bound_key:
         return
@@ -384,6 +400,8 @@ def _bind_speakers_to_key(speakers: list[str], key: str) -> None:
 
 
 def _evict_speaker_key_affinity_for_key(speakers: list[str], key: str) -> None:
+    if not GEMINI_SPEAKER_KEY_AFFINITY_ENABLED:
+        return
     failed_key = str(key or "").strip()
     if not failed_key or not speakers:
         return
@@ -407,14 +425,139 @@ def _emit_stage_event(trace_id: str, stage: str, status: str, detail: Optional[D
         "ts": int(time.time() * 1000),
     }
     if detail:
-        payload["detail"] = detail
+        payload["detail"] = _sanitize_stage_event_detail(status, detail)
     print(json.dumps(payload, ensure_ascii=True), flush=True)
+
+
+_PUBLIC_TTS_ERROR_ALLOWED_KEYS = {
+    "errorCode",
+    "classification",
+    "summary",
+    "reason",
+    "trace_id",
+    "retryAfterMs",
+    "estimatedWaitMs",
+    "timeoutMs",
+    "elapsedMs",
+    "attemptsUsed",
+    "timedOut",
+    "poolExhausted",
+    "speechModeRequested",
+    "speakerHint",
+    "engine",
+    "windowIndex",
+    "windowTotal",
+    "availableLanes",
+}
+
+_PUBLIC_TTS_ERROR_MESSAGE_BY_CODE = {
+    ERROR_CODE_API_KEY_MISSING: "Gemini key pool is not configured.",
+    ERROR_CODE_RUNTIME_SDK_UNAVAILABLE: "Gemini runtime dependencies are unavailable.",
+    ERROR_CODE_ALL_KEYS_AUTH_FAILED: "All configured Gemini keys were rejected by upstream authentication.",
+    ERROR_CODE_ALL_KEYS_RATE_LIMITED: "Gemini capacity is temporarily rate limited.",
+    ERROR_CODE_KEY_POOL_OVERLOADED: "Gemini key pool is temporarily overloaded.",
+    ERROR_CODE_KEY_POOL_TIMEOUT: "Gemini key pool timed out while waiting for capacity.",
+    ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT: "Gemini allocator timed out while waiting for capacity.",
+    ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT: "Gemini upstream request timed out.",
+    ERROR_CODE_UPSTREAM_MODEL_FAILED: "Gemini TTS synthesis failed.",
+}
+
+_PUBLIC_TTS_ERROR_MESSAGE_BY_REASON = {
+    "capacity_pressure": "Gemini key pool is temporarily overloaded.",
+}
+
+_SENSITIVE_TTS_ERROR_TOKENS = (
+    "__vf_masked_key__",
+    "AIza",
+    "keyfingerprint",
+    "keystates",
+    "keyattempts",
+    "modelattempts",
+    "traceback",
+    "connectionpool",
+    "requests.exceptions",
+    "127.0.0.1",
+    "localhost",
+    "http://",
+    "https://",
+    "[errno",
+)
+
+
+def _default_public_tts_error_message(error_code: str = "", reason: str = "") -> str:
+    safe_error_code = str(error_code or "").strip().upper()
+    safe_reason = str(reason or "").strip().lower()
+    if safe_error_code and safe_error_code in _PUBLIC_TTS_ERROR_MESSAGE_BY_CODE:
+        return _PUBLIC_TTS_ERROR_MESSAGE_BY_CODE[safe_error_code]
+    if safe_reason and safe_reason in _PUBLIC_TTS_ERROR_MESSAGE_BY_REASON:
+        return _PUBLIC_TTS_ERROR_MESSAGE_BY_REASON[safe_reason]
+    return "Gemini TTS request failed."
+
+
+def _sanitize_public_tts_error_text(value: object, *, fallback: str, max_len: int = 220) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    lowered = text.lower()
+    if (
+        text.startswith("{")
+        or text.startswith("[")
+        or "{" in text
+        or "}" in text
+        or "\n" in text
+        or "\r" in text
+        or any(token in lowered for token in _SENSITIVE_TTS_ERROR_TOKENS)
+        or len(text) > max_len
+    ):
+        return fallback
+    return text
+
+
+def _sanitize_public_tts_error_payload(detail: Dict[str, object]) -> Dict[str, object]:
+    error_code = str(detail.get("errorCode") or "").strip().upper()
+    reason = str(detail.get("reason") or "").strip().lower()
+    fallback = _default_public_tts_error_message(error_code, reason)
+    safe: Dict[str, object] = {
+        "error": _sanitize_public_tts_error_text(detail.get("error"), fallback=fallback),
+    }
+    for key in _PUBLIC_TTS_ERROR_ALLOWED_KEYS:
+        if key not in detail:
+            continue
+        value = detail.get(key)
+        if key in {"timedOut", "poolExhausted"}:
+            safe[key] = bool(value)
+        elif key in {
+            "retryAfterMs",
+            "estimatedWaitMs",
+            "timeoutMs",
+            "elapsedMs",
+            "attemptsUsed",
+            "windowIndex",
+            "windowTotal",
+            "availableLanes",
+        }:
+            safe[key] = max(0, _safe_int(value, 0))
+        elif key == "summary":
+            safe[key] = _sanitize_public_tts_error_text(value, fallback=str(safe["error"]))
+        else:
+            token = str(value or "").strip()
+            if token:
+                safe[key] = token
+    return safe
+
+
+def _sanitize_stage_event_detail(status: str, detail: Dict[str, object]) -> Dict[str, object]:
+    if str(status or "").strip().lower() in {"error", "overloaded", "failed"}:
+        return _sanitize_public_tts_error_payload(detail)
+    return detail
 
 
 class SynthesizeRequest(BaseModel):
     engine: Optional[str] = TTS_ENGINE_DEFAULT
     authMode: Optional[str] = None
     text: str = Field(min_length=1)
+    model: Optional[str] = None
+    modelCandidates: Optional[list[str]] = None
     voiceName: Optional[str] = None
     voice_id: Optional[str] = None
     speaker_voices: Optional[list[Dict[str, str]]] = None
@@ -445,10 +588,20 @@ class BatchSynthesizeRequest(BaseModel):
 class TextGenerateRequest(BaseModel):
     userPrompt: str = Field(min_length=1)
     systemPrompt: Optional[str] = ""
+    model: Optional[str] = None
+    modelCandidates: Optional[list[str]] = None
     jsonMode: bool = False
     apiKey: Optional[str] = ""
     temperature: float = 0.7
     trace_id: Optional[str] = None
+
+
+class CountTokensRequest(BaseModel):
+    contents: str = Field(min_length=1)
+    model: Optional[str] = None
+    modelCandidates: Optional[list[str]] = None
+    apiKey: Optional[str] = ""
+    task: Optional[str] = "text"
 
 
 class ApiPoolsConfigUpdateRequest(BaseModel):
@@ -602,7 +755,8 @@ def _resolve_key_file_path(path_hint: str) -> Path:
         else:
             candidates.append(RUNTIME_ROOT / hint_path)
             candidates.append(WORKSPACE_ROOT / hint_path)
-    candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
+    else:
+        candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
 
     first_candidate: Optional[Path] = None
     seen: set[str] = set()
@@ -968,6 +1122,7 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
     with _API_POOLS_LOCK:
         if not force and isinstance(_API_POOLS_CACHE, dict):
             return dict(_API_POOLS_CACHE), dict(_API_POOLS_META)
+        cached_config = dict(_API_POOLS_CACHE) if isinstance(_API_POOLS_CACHE, dict) else {}
         file_path = _resolve_api_pools_file_path()
         bootstrap_keys = list(_SERVER_API_KEY_POOL)
         config, meta = load_pool_config_shared(
@@ -985,6 +1140,7 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
                 pools.setdefault("free", {"keys": []})
                 pools["free"]["keys"] = list(legacy_pool)
                 config["pools"] = pools
+        config = overlay_cached_runtime_free_pool_shared(config, cached_config=cached_config)
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_runtime_free_pool(config)
         single_pool_warnings: list[str] = []
@@ -1366,6 +1522,11 @@ def discover_dynamic_tts_models(client: object, api_key: str) -> list[str]:
     return discovered
 
 
+def _tts_model_fallback_enabled(source_policy: Optional[dict[str, Any]] = None) -> bool:
+    policy = dict(source_policy or _runtime_source_policy())
+    return bool(policy.get("ttsModelFallbackEnabled"))
+
+
 def resolve_tts_model_candidates(
     engine: Optional[object] = None,
     auth_mode: Optional[str] = None,
@@ -1380,16 +1541,18 @@ def resolve_tts_model_candidates(
     if safe_engine == "KOKORO":
         return []
 
-    policy = dict(source_policy or {})
+    policy = dict(source_policy or _runtime_source_policy())
     mode = _normalize_runtime_auth_mode(auth_mode, source_policy=policy)
     preferred = list((TTS_MODEL_CANDIDATES_BY_AUTH_MODE.get(mode) or {}).get(safe_engine) or [])
     configured = _normalize_model_name(str(TTS_MODEL or ""))
     route = list(TTS_MODEL_FALLBACKS)
     allocator_route = list(ALLOCATOR_CONFIG.routes.get("tts") or [])
+    allow_fallback = _tts_model_fallback_enabled(policy)
+    primary_candidates = [*preferred, configured, *route, *allocator_route]
 
     candidates: list[str] = []
     seen: set[str] = set()
-    for raw in [*preferred, configured, *route, *allocator_route]:
+    for raw in primary_candidates:
         token = _normalize_model_name(str(raw or ""))
         if not token:
             continue
@@ -1400,7 +1563,39 @@ def resolve_tts_model_candidates(
             continue
         seen.add(token)
         candidates.append(token)
+        if not allow_fallback:
+            break
     return candidates
+
+
+def _resolve_explicit_model_candidates(
+    *,
+    raw_candidates: Optional[list[str]],
+    raw_model: Optional[str],
+    task: str,
+) -> tuple[list[str], list[str]]:
+    normalized: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+
+    requested = [str(item or "").strip() for item in list(raw_candidates or []) if str(item or "").strip()]
+    single = str(raw_model or "").strip()
+    if single:
+        requested = [single, *requested]
+
+    for candidate in requested:
+        token = _normalize_model_name(candidate)
+        if not token:
+            continue
+        if token in seen:
+            continue
+        model_limit = ALLOCATOR_CONFIG.models.get(token)
+        if model_limit is None or task not in model_limit.enabled_for:
+            invalid.append(token)
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized, invalid
 
 
 def resolve_text_model_candidates() -> list[str]:
@@ -1422,6 +1617,71 @@ def extract_text_content(response: object) -> str:
             if text_value:
                 return text_value
     return ""
+
+
+def _usage_int_value(source: object, *names: str) -> int:
+    for name in names:
+        try:
+            value = getattr(source, name)
+        except Exception:
+            value = None
+        if value is None and isinstance(source, dict):
+            value = source.get(name)
+        try:
+            parsed = int(value or 0)
+        except Exception:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return 0
+
+
+def extract_usage_metadata(response: object) -> Optional[Dict[str, int]]:
+    raw = None
+    for attr in ("usage_metadata", "usageMetadata"):
+        try:
+            raw = getattr(response, attr)
+        except Exception:
+            raw = None
+        if raw is not None:
+            break
+    if raw is None:
+        return None
+    prompt_tokens = _usage_int_value(raw, "prompt_token_count", "promptTokenCount")
+    output_tokens = _usage_int_value(
+        raw,
+        "candidates_token_count",
+        "candidatesTokenCount",
+        "output_token_count",
+        "outputTokenCount",
+    )
+    total_tokens = _usage_int_value(raw, "total_token_count", "totalTokens", "totalTokenCount")
+    if total_tokens <= 0:
+        total_tokens = max(0, prompt_tokens + output_tokens)
+    if total_tokens <= 0 and prompt_tokens <= 0 and output_tokens <= 0:
+        return None
+    return {
+        "promptTokens": max(0, prompt_tokens),
+        "outputTokens": max(0, output_tokens),
+        "totalTokens": max(0, total_tokens),
+    }
+
+
+def _merge_usage_metadata(items: list[Dict[str, int]]) -> Optional[Dict[str, int]]:
+    if not items:
+        return None
+    prompt_tokens = sum(max(0, int(item.get("promptTokens") or 0)) for item in items)
+    output_tokens = sum(max(0, int(item.get("outputTokens") or 0)) for item in items)
+    total_tokens = sum(max(0, int(item.get("totalTokens") or 0)) for item in items)
+    if total_tokens <= 0 and prompt_tokens <= 0 and output_tokens <= 0:
+        return None
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + output_tokens
+    return {
+        "promptTokens": prompt_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+    }
 
 
 def _is_auth_error(message: str) -> bool:
@@ -1520,7 +1780,12 @@ def _resolve_tts_route_model(model_candidates: Optional[list[str]] = None) -> st
 
 
 def _effective_tts_route_limits(model_candidates: Optional[list[str]] = None) -> Dict[str, Any]:
-    tts_model = _resolve_tts_route_model(model_candidates)
+    effective_candidates = model_candidates
+    if effective_candidates is None:
+        effective_candidates = resolve_tts_model_candidates(
+            source_policy=_runtime_source_policy(),
+        )
+    tts_model = _resolve_tts_route_model(effective_candidates)
     model_limit = ALLOCATOR_CONFIG.models.get(tts_model)
     return {
         "model": tts_model,
@@ -1598,6 +1863,12 @@ def _estimate_tts_pool_pressure(
     snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
     key_states = list(snapshot.get("keys") or [])
     model_entries = list(snapshot.get("models") or [])
+    model_entries_by_id: Dict[str, Dict[str, Any]] = {}
+    for model_entry in model_entries:
+        row = model_entry if isinstance(model_entry, dict) else {}
+        model_id = str(row.get("model") or "").strip()
+        if model_id and model_id not in model_entries_by_id:
+            model_entries_by_id[model_id] = row
     candidate_models = [
         _normalize_model_name(str(item or ""))
         for item in list(model_candidates or [])
@@ -1610,6 +1881,7 @@ def _estimate_tts_pool_pressure(
 
     in_flight_total = 0
     available_lanes = 0
+    candidate_models_with_lane_entries: set[str] = set()
     nearest_ready_ms: Optional[int] = None
     nearest_reset_ms: Optional[int] = None
 
@@ -1623,6 +1895,7 @@ def _estimate_tts_pool_pressure(
                     break
             if lane_entry is None:
                 continue
+            candidate_models_with_lane_entries.add(model_id)
 
             ready_in_ms = max(0, _safe_int(lane_entry.get("readyInMs"), 0))
             lane_usage = lane_entry.get("usage") or {}
@@ -1648,16 +1921,28 @@ def _estimate_tts_pool_pressure(
                         else min(nearest_reset_ms, reset_in_ms)
                     )
             else:
-                nearest_ready_ms = (
-                    ready_in_ms if nearest_ready_ms is None else min(nearest_ready_ms, ready_in_ms)
-                )
+                    nearest_ready_ms = (
+                        ready_in_ms if nearest_ready_ms is None else min(nearest_ready_ms, ready_in_ms)
+                    )
+
+    # Snapshot key lanes only cover allocator-routed models. When strict engine
+    # candidates point at non-routed models, fall back to per-model pool metadata
+    # so grouped concurrency still reflects real allocator capacity.
+    if available_lanes <= 0:
+        for model_id in candidate_models:
+            if model_id in candidate_models_with_lane_entries:
+                continue
+            model_entry = model_entries_by_id.get(model_id) or {}
+            pool_meta = model_entry.get("pool") or {}
+            available_keys = max(0, _safe_int(pool_meta.get("availableKeys"), 0))
+            if available_keys > 0:
+                available_lanes = max(available_lanes, available_keys)
+            pool_reset = max(0, _safe_int(pool_meta.get("nextResetInMs"), 0))
+            if pool_reset > 0:
+                nearest_reset_ms = pool_reset if nearest_reset_ms is None else min(nearest_reset_ms, pool_reset)
 
     for model_id in candidate_models:
-        tts_model_entry = None
-        for model in model_entries:
-            if str((model or {}).get("model") or "").strip() == model_id:
-                tts_model_entry = model or {}
-                break
+        tts_model_entry = model_entries_by_id.get(model_id)
         if not tts_model_entry:
             continue
         pool_meta = tts_model_entry.get("pool") or {}
@@ -2075,6 +2360,84 @@ def _resolve_adaptive_group_concurrency(
     return max(1, int(effective_concurrency)), pressure
 
 
+def _build_key_selection_metadata(key_indexes: list[int]) -> Dict[str, Any]:
+    normalized_indexes: list[int] = []
+    for raw_index in list(key_indexes or []):
+        try:
+            safe_index = int(raw_index)
+        except Exception:
+            continue
+        if safe_index >= 0:
+            normalized_indexes.append(safe_index)
+    if not normalized_indexes:
+        return {
+            "firstKeySelectionIndex": -1,
+            "finalKeySelectionIndex": -1,
+            "keySelectionIndexes": [],
+        }
+    return {
+        "firstKeySelectionIndex": int(normalized_indexes[0]),
+        "finalKeySelectionIndex": int(normalized_indexes[-1]),
+        "keySelectionIndexes": normalized_indexes,
+    }
+
+
+def _build_request_attempt_metadata(key_attempts: list[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized_attempts: list[Dict[str, Any]] = []
+    key_indexes: list[int] = []
+    error_kinds: list[str] = []
+    statuses: list[str] = []
+    speech_modes: list[str] = []
+    for raw_attempt in list(key_attempts or []):
+        attempt_row = dict(raw_attempt or {}) if isinstance(raw_attempt, dict) else {}
+        try:
+            key_index = int(attempt_row.get("keySelectionIndex"))
+        except Exception:
+            continue
+        if key_index < 0:
+            continue
+        attempt_number = max(1, _safe_int(attempt_row.get("attempt"), len(normalized_attempts) + 1))
+        status = str(attempt_row.get("status") or "").strip().lower()
+        if status not in {"failed", "success"}:
+            status = "success"
+        error_kind = str(attempt_row.get("errorKind") or "").strip().lower()
+        speech_mode = str(attempt_row.get("speechMode") or "").strip()
+        normalized_attempts.append(
+            {
+                "attempt": attempt_number,
+                "keySelectionIndex": key_index,
+                "model": str(attempt_row.get("model") or "").strip(),
+                "speechMode": speech_mode,
+                "status": status,
+                "errorKind": error_kind,
+                "sameKeyRetry": bool(attempt_row.get("sameKeyRetry")),
+            }
+        )
+        key_indexes.append(key_index)
+        error_kinds.append(error_kind)
+        statuses.append(status)
+        speech_modes.append(speech_mode)
+    if not normalized_attempts:
+        return {
+            "initialKeySelectionIndex": -1,
+            "attemptCount": 0,
+            "attemptKeySelectionIndexes": [],
+            "attemptErrorKinds": [],
+            "attemptStatuses": [],
+            "attemptSpeechModes": [],
+            "requestAttempts": [],
+        }
+    return {
+        "initialKeySelectionIndex": int(key_indexes[0]),
+        "attemptCount": len(normalized_attempts),
+        "attemptKeySelectionIndexes": key_indexes,
+        "attemptErrorKinds": error_kinds,
+        "attemptStatuses": statuses,
+        "attemptSpeechModes": speech_modes,
+        "requestAttempts": normalized_attempts,
+    }
+
+
 def _synthesize_studio_pair_groups(
     *,
     engine: str,
@@ -2091,9 +2454,11 @@ def _synthesize_studio_pair_groups(
     effective_key_pool: list[str],
     requested_concurrency: int,
     retry_once: bool,
+    model_candidates_override: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     safe_engine = _normalize_runtime_engine(engine)
-    model_candidates = resolve_tts_model_candidates(
+    explicit_candidates = [str(item or "").strip() for item in list(model_candidates_override or []) if str(item or "").strip()]
+    model_candidates = explicit_candidates if explicit_candidates else resolve_tts_model_candidates(
         engine=safe_engine,
         auth_mode=auth_mode,
         source_policy=source_policy,
@@ -2139,23 +2504,35 @@ def _synthesize_studio_pair_groups(
         last_exc: Optional[Exception] = None
         for attempt in range(1, max_attempts + 1):
             try:
-                pcm_bytes, model_used, speech_mode_used, key_index_used = _synthesize_pcm_with_key_pool(
-                    engine=safe_engine,
-                    auth_mode=auth_mode,
-                    source_policy=source_policy,
-                    text_input=str(group.get("text") or ""),
-                    trace_id=trace_id,
-                    speaker_hint=speaker_hint or ", ".join(group.get("speakers") or []),
-                    language_code=language_code,
-                    target_voice=target_voice,
-                    speaker_voices=list(group.get("speakerVoices") or []),
-                    primary_key_pool=primary_key_pool,
-                    fallback_request_key=fallback_request_key,
-                    effective_key_pool=effective_key_pool,
-                    speech_mode_requested="studio_pair_groups",
-                    window_index=int(group.get("groupIndex", 0)) + 1,
-                    window_total=len(groups),
-                    affinity_speakers=[str(value) for value in list(group.get("speakers") or [])],
+                (
+                    pcm_bytes,
+                    model_used,
+                    speech_mode_used,
+                    key_index_used,
+                    usage_metadata,
+                    attempt_metadata,
+                ) = _synthesize_pcm_result_with_attempts(
+                    _synthesize_pcm_with_key_pool(
+                        engine=safe_engine,
+                        auth_mode=auth_mode,
+                        source_policy=source_policy,
+                        text_input=str(group.get("text") or ""),
+                        trace_id=trace_id,
+                        speaker_hint=speaker_hint or ", ".join(group.get("speakers") or []),
+                        language_code=language_code,
+                        target_voice=target_voice,
+                        speaker_voices=list(group.get("speakerVoices") or []),
+                        primary_key_pool=primary_key_pool,
+                        fallback_request_key=fallback_request_key,
+                        effective_key_pool=effective_key_pool,
+                        speech_mode_requested="studio_pair_groups",
+                        window_index=int(group.get("groupIndex", 0)) + 1,
+                        window_total=len(groups),
+                        affinity_speakers=[str(value) for value in list(group.get("speakers") or [])],
+                        model_candidates_override=model_candidates,
+                        include_usage_metadata=True,
+                        include_attempt_metadata=True,
+                    )
                 )
                 line_chunks, used_pause_boundaries = _split_int16_pcm_for_lines(pcm_bytes, group_weights)
                 return {
@@ -2165,8 +2542,10 @@ def _synthesize_studio_pair_groups(
                     "model": model_used,
                     "speechMode": speech_mode_used,
                     "keyIndex": int(key_index_used),
+                    "attemptMetadata": attempt_metadata,
                     "splitMode": "pause" if used_pause_boundaries else "duration",
                     "attempts": attempt,
+                    "usageMetadata": usage_metadata,
                 }
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -2213,6 +2592,10 @@ def _synthesize_studio_pair_groups(
     models_used: list[str] = []
     speech_modes_used: list[str] = []
     key_indexes_used: list[int] = []
+    attempt_key_indexes_used: list[int] = []
+    attempt_error_kinds: list[str] = []
+    attempt_statuses: list[str] = []
+    usage_items: list[Dict[str, int]] = []
     pause_split_groups = 0
     duration_split_groups = 0
 
@@ -2220,6 +2603,21 @@ def _synthesize_studio_pair_groups(
         models_used.append(str(result.get("model") or ""))
         speech_modes_used.append(str(result.get("speechMode") or ""))
         key_indexes_used.append(int(result.get("keyIndex", -1)))
+        attempt_metadata = result.get("attemptMetadata") if isinstance(result.get("attemptMetadata"), dict) else {}
+        for raw_index in list(attempt_metadata.get("attemptKeySelectionIndexes") or []):
+            try:
+                safe_index = int(raw_index)
+            except Exception:
+                continue
+            if safe_index >= 0:
+                attempt_key_indexes_used.append(safe_index)
+        for raw_error_kind in list(attempt_metadata.get("attemptErrorKinds") or []):
+            attempt_error_kinds.append(str(raw_error_kind or "").strip().lower())
+        for raw_status in list(attempt_metadata.get("attemptStatuses") or []):
+            attempt_statuses.append(str(raw_status or "").strip().lower())
+        usage_metadata = result.get("usageMetadata")
+        if isinstance(usage_metadata, dict):
+            usage_items.append(dict(usage_metadata))
         if str(result.get("splitMode") or "") == "pause":
             pause_split_groups += 1
         else:
@@ -2261,7 +2659,13 @@ def _synthesize_studio_pair_groups(
     wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
     unique_models = [model for model in models_used if model]
     model_header = unique_models[0] if unique_models else _normalize_model_name(TTS_MODEL)
-    key_selection_index = key_indexes_used[0] if key_indexes_used else -1
+    key_selection_meta = _build_key_selection_metadata(key_indexes_used)
+    key_selection_index = int(key_selection_meta["finalKeySelectionIndex"])
+    initial_key_selection_index = (
+        int(attempt_key_indexes_used[0])
+        if attempt_key_indexes_used
+        else int(key_selection_meta["firstKeySelectionIndex"])
+    )
     diagnostics_payload: Dict[str, Any] = {
         "engine": safe_engine,
         "traceId": trace_id,
@@ -2271,12 +2675,24 @@ def _synthesize_studio_pair_groups(
         "lineCount": len(normalized_line_map),
         "concurrencyUsed": effective_concurrency,
         "keyPoolSize": len(effective_key_pool),
+        "keySelectionIndex": key_selection_index,
+        "initialKeySelectionIndex": initial_key_selection_index,
+        "attemptCount": len(attempt_key_indexes_used),
+        "attemptKeySelectionIndexes": attempt_key_indexes_used,
+        "attemptErrorKinds": attempt_error_kinds,
+        "attemptStatuses": attempt_statuses,
         "availableLanes": int(pool_pressure.get("availableLanes") or 0),
         "estimatedWaitMs": int(pool_pressure.get("estimatedWaitMs") or 0),
         "pauseSplitGroups": pause_split_groups,
         "durationSplitGroups": duration_split_groups,
         "lineChunkCount": len(ordered_line_chunks),
+        "model": model_header,
+        "speechModeUsed": "studio_pair_groups",
     }
+    diagnostics_payload.update(key_selection_meta)
+    merged_usage_metadata = _merge_usage_metadata(usage_items)
+    if isinstance(merged_usage_metadata, dict):
+        diagnostics_payload["usageMetadata"] = merged_usage_metadata
     _emit_stage_event(
         trace_id,
         "completed",
@@ -2290,6 +2706,8 @@ def _synthesize_studio_pair_groups(
             "pauseSplitGroups": pause_split_groups,
             "durationSplitGroups": duration_split_groups,
             "keySelectionIndex": key_selection_index,
+            "initialKeySelectionIndex": initial_key_selection_index,
+            "attemptCount": len(attempt_key_indexes_used),
             "lineChunkCount": len(ordered_line_chunks),
         },
     )
@@ -2303,10 +2721,19 @@ def _synthesize_studio_pair_groups(
         "speechModes": speech_modes_used,
         "speechModeRequested": "studio_pair_groups",
         "keySelectionIndex": key_selection_index,
+        "initialKeySelectionIndex": initial_key_selection_index,
+        "attemptCount": len(attempt_key_indexes_used),
+        "attemptKeySelectionIndexes": attempt_key_indexes_used,
+        "attemptErrorKinds": attempt_error_kinds,
+        "attemptStatuses": attempt_statuses,
+        "firstKeySelectionIndex": int(key_selection_meta["firstKeySelectionIndex"]),
+        "finalKeySelectionIndex": int(key_selection_meta["finalKeySelectionIndex"]),
+        "keySelectionIndexes": list(key_selection_meta.get("keySelectionIndexes") or []),
         "keyPoolSize": len(effective_key_pool),
         "speakerHint": speaker_hint or None,
         "windowCount": len(groups),
         "diagnostics": diagnostics_payload,
+        "usageMetadata": merged_usage_metadata,
     }
 
 
@@ -2404,6 +2831,49 @@ def _build_realtime_metrics(wav_bytes: bytes, processing_ms: int) -> Dict[str, A
     }
 
 
+def _build_single_speaker_segment_windows(
+    *,
+    text: str,
+    language_code: str,
+    speaker_voices: list[Dict[str, str]],
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+    normalized_text = _normalize_synthesis_text(text)
+    if not normalized_text:
+        return [], {
+            "enabled": False,
+            "profile": None,
+            "chunkCount": 0,
+            "maxWordsPerChunk": MAX_WORDS_PER_REQUEST,
+            "joinCrossfadeMs": 0,
+        }
+
+    chunk_profile = resolve_chunk_profile(language_code, normalized_text)
+    planned_chunks = [
+        _normalize_synthesis_text(chunk)
+        for chunk in chunk_text_for_tts(text=normalized_text, language_code=language_code)
+    ]
+    chunks = [chunk for chunk in planned_chunks if chunk]
+    if not chunks:
+        chunks = [normalized_text]
+
+    return (
+        [
+            {
+                "text": chunk,
+                "speakerVoices": list(speaker_voices),
+            }
+            for chunk in chunks
+        ],
+        {
+            "enabled": len(chunks) > 1,
+            "profile": SEGMENTATION_PROFILE if len(chunks) > 1 else None,
+            "chunkCount": len(chunks),
+            "maxWordsPerChunk": int(chunk_profile.get("max_words_per_chunk") or MAX_WORDS_PER_REQUEST),
+            "joinCrossfadeMs": int(chunk_profile.get("join_crossfade_ms") or 0),
+        },
+    )
+
+
 def _synthesize_studio_pair_group_windows(
     *,
     engine: str,
@@ -2422,6 +2892,7 @@ def _synthesize_studio_pair_group_windows(
     retry_once: bool,
     started_at_ms: int,
     include_line_chunks: bool,
+    model_candidates_override: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     safe_engine = _normalize_runtime_engine(engine)
     line_windows = _build_line_map_word_windows(normalized_line_map, MAX_WORDS_PER_REQUEST)
@@ -2432,6 +2903,10 @@ def _synthesize_studio_pair_group_windows(
     models_used: list[str] = []
     speech_modes_used: list[str] = []
     key_indexes_used: list[int] = []
+    attempt_key_indexes_used: list[int] = []
+    attempt_error_kinds: list[str] = []
+    attempt_statuses: list[str] = []
+    usage_items: list[Dict[str, int]] = []
     total_group_count = 0
     total_pause_split_groups = 0
     total_duration_split_groups = 0
@@ -2453,6 +2928,7 @@ def _synthesize_studio_pair_group_windows(
             effective_key_pool=effective_key_pool,
             requested_concurrency=requested_concurrency,
             retry_once=retry_once,
+            model_candidates_override=model_candidates_override,
         )
         for item in list(window_result.get("lineChunks") or []):
             line_index = int(item.get("lineIndex", -1))
@@ -2467,7 +2943,21 @@ def _synthesize_studio_pair_group_windows(
         models_used.append(str(window_result.get("model") or ""))
         speech_modes_used.extend([str(mode) for mode in list(window_result.get("speechModes") or []) if str(mode or "").strip()])
         key_indexes_used.append(int(window_result.get("keySelectionIndex", -1)))
+        usage_metadata = window_result.get("usageMetadata")
+        if isinstance(usage_metadata, dict):
+            usage_items.append(dict(usage_metadata))
         diagnostics = window_result.get("diagnostics") if isinstance(window_result.get("diagnostics"), dict) else {}
+        for raw_index in list(diagnostics.get("attemptKeySelectionIndexes") or []):
+            try:
+                safe_index = int(raw_index)
+            except Exception:
+                continue
+            if safe_index >= 0:
+                attempt_key_indexes_used.append(safe_index)
+        for raw_error_kind in list(diagnostics.get("attemptErrorKinds") or []):
+            attempt_error_kinds.append(str(raw_error_kind or "").strip().lower())
+        for raw_status in list(diagnostics.get("attemptStatuses") or []):
+            attempt_statuses.append(str(raw_status or "").strip().lower())
         total_group_count += int(diagnostics.get("groupCount", 0) or 0)
         total_pause_split_groups += int(diagnostics.get("pauseSplitGroups", 0) or 0)
         total_duration_split_groups += int(diagnostics.get("durationSplitGroups", 0) or 0)
@@ -2500,7 +2990,13 @@ def _synthesize_studio_pair_group_windows(
 
     wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
     model_header = next((item for item in models_used if item), _normalize_model_name(TTS_MODEL))
-    key_selection_index = key_indexes_used[0] if key_indexes_used else -1
+    key_selection_meta = _build_key_selection_metadata(key_indexes_used)
+    key_selection_index = int(key_selection_meta["finalKeySelectionIndex"])
+    initial_key_selection_index = (
+        int(attempt_key_indexes_used[0])
+        if attempt_key_indexes_used
+        else int(key_selection_meta["firstKeySelectionIndex"])
+    )
     diagnostics_payload: Dict[str, Any] = {
         "engine": safe_engine,
         "traceId": trace_id,
@@ -2511,16 +3007,28 @@ def _synthesize_studio_pair_group_windows(
         "windowCount": len(line_windows),
         "concurrencyUsed": max_concurrency_used,
         "keyPoolSize": len(effective_key_pool),
+        "keySelectionIndex": key_selection_index,
+        "initialKeySelectionIndex": initial_key_selection_index,
+        "attemptCount": len(attempt_key_indexes_used),
+        "attemptKeySelectionIndexes": attempt_key_indexes_used,
+        "attemptErrorKinds": attempt_error_kinds,
+        "attemptStatuses": attempt_statuses,
         "pauseSplitGroups": total_pause_split_groups,
         "durationSplitGroups": total_duration_split_groups,
         "lineChunkCount": len(ordered_line_chunks),
+        "model": model_header,
+        "speechModeUsed": "studio_pair_groups",
     }
+    diagnostics_payload.update(key_selection_meta)
     diagnostics_payload.update(
         _build_realtime_metrics(
             wav_bytes=wav_bytes,
             processing_ms=max(0, int(time.time() * 1000) - started_at_ms),
         )
     )
+    merged_usage_metadata = _merge_usage_metadata(usage_items)
+    if isinstance(merged_usage_metadata, dict):
+        diagnostics_payload["usageMetadata"] = merged_usage_metadata
     _emit_stage_event(
         trace_id,
         "completed",
@@ -2532,6 +3040,8 @@ def _synthesize_studio_pair_group_windows(
             "groupCount": total_group_count,
             "lineCount": len(normalized_line_map),
             "keySelectionIndex": key_selection_index,
+            "initialKeySelectionIndex": initial_key_selection_index,
+            "attemptCount": len(attempt_key_indexes_used),
             "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
         },
     )
@@ -2545,10 +3055,19 @@ def _synthesize_studio_pair_group_windows(
         "speechModes": speech_modes_used or ["studio_pair_groups"],
         "speechModeRequested": "studio_pair_groups",
         "keySelectionIndex": key_selection_index,
+        "initialKeySelectionIndex": initial_key_selection_index,
+        "attemptCount": len(attempt_key_indexes_used),
+        "attemptKeySelectionIndexes": attempt_key_indexes_used,
+        "attemptErrorKinds": attempt_error_kinds,
+        "attemptStatuses": attempt_statuses,
+        "firstKeySelectionIndex": int(key_selection_meta["firstKeySelectionIndex"]),
+        "finalKeySelectionIndex": int(key_selection_meta["finalKeySelectionIndex"]),
+        "keySelectionIndexes": list(key_selection_meta.get("keySelectionIndexes") or []),
         "keyPoolSize": len(effective_key_pool),
         "speakerHint": speaker_hint or None,
         "windowCount": len(line_windows),
         "diagnostics": diagnostics_payload,
+        "usageMetadata": merged_usage_metadata,
     }
 
 
@@ -2621,6 +3140,58 @@ def _resolve_speech_attempts(
     return speech_attempts
 
 
+def _synthesize_pcm_result(
+    result: object,
+) -> tuple[bytes, str, str, int, Optional[Dict[str, int]]]:
+    if isinstance(result, (tuple, list)):
+        if len(result) == 5:
+            pcm_bytes, model_used, speech_mode_used, key_index_used, usage_metadata = result
+            normalized_usage = dict(usage_metadata) if isinstance(usage_metadata, dict) else None
+            return (
+                bytes(pcm_bytes or b""),
+                str(model_used or ""),
+                str(speech_mode_used or ""),
+                int(key_index_used),
+                normalized_usage,
+            )
+        if len(result) == 4:
+            pcm_bytes, model_used, speech_mode_used, key_index_used = result
+            return (
+                bytes(pcm_bytes or b""),
+                str(model_used or ""),
+                str(speech_mode_used or ""),
+                int(key_index_used),
+                None,
+            )
+    raise RuntimeError("invalid_synthesis_result")
+
+
+def _synthesize_pcm_result_with_attempts(
+    result: object,
+) -> tuple[bytes, str, str, int, Optional[Dict[str, int]], Dict[str, Any]]:
+    if isinstance(result, (tuple, list)) and len(result) == 6:
+        pcm_bytes, model_used, speech_mode_used, key_index_used, usage_metadata, attempt_metadata = result
+        normalized_usage = dict(usage_metadata) if isinstance(usage_metadata, dict) else None
+        normalized_attempts = dict(attempt_metadata) if isinstance(attempt_metadata, dict) else {}
+        return (
+            bytes(pcm_bytes or b""),
+            str(model_used or ""),
+            str(speech_mode_used or ""),
+            int(key_index_used),
+            normalized_usage,
+            normalized_attempts,
+        )
+    pcm_bytes, model_used, speech_mode_used, key_index_used, usage_metadata = _synthesize_pcm_result(result)
+    return (
+        pcm_bytes,
+        model_used,
+        speech_mode_used,
+        key_index_used,
+        usage_metadata,
+        _build_request_attempt_metadata([]),
+    )
+
+
 def _synthesize_pcm_with_key_pool(
     *,
     engine: str,
@@ -2639,9 +3210,17 @@ def _synthesize_pcm_with_key_pool(
     window_index: int,
     window_total: int,
     affinity_speakers: list[str],
-) -> tuple[bytes, str, str, int]:
+    model_candidates_override: Optional[list[str]] = None,
+    include_usage_metadata: bool = False,
+    include_attempt_metadata: bool = False,
+) -> (
+    tuple[bytes, str, str, int]
+    | tuple[bytes, str, str, int, Optional[Dict[str, int]]]
+    | tuple[bytes, str, str, int, Optional[Dict[str, int]], Dict[str, Any]]
+):
     safe_engine = _normalize_runtime_engine(engine)
-    model_candidates = resolve_tts_model_candidates(
+    explicit_candidates = [str(item or "").strip() for item in list(model_candidates_override or []) if str(item or "").strip()]
+    model_candidates = explicit_candidates if explicit_candidates else resolve_tts_model_candidates(
         engine=safe_engine,
         auth_mode=auth_mode,
         source_policy=source_policy,
@@ -2667,39 +3246,16 @@ def _synthesize_pcm_with_key_pool(
     pool_exhausted = False
     start_key_selection_index: Optional[int] = None
     preferred_key = _resolve_affinity_preferred_key(affinity_speakers, effective_key_pool)
+    retry_preferred_key = str(preferred_key or "").strip() or None
     token_estimate = estimate_text_tokens(text_input)
     retry_limit = max(1, len(effective_key_pool) * max(1, len(model_candidates)))
+    transient_same_key_retry_limit = 1
+    transient_same_key_retries: Dict[tuple[str, str, str], int] = {}
 
     while True:
         remaining_budget_ms = _remaining_timeout_ms(started_at_ms, KEY_TOTAL_TIMEOUT_MS)
         if remaining_budget_ms <= 0:
             timed_out = True
-            # #region agent log
-            try:
-                import json as _agent_json  # type: ignore[import-not-found]
-                with open("debug-d5d65f.log", "a", encoding="utf-8") as _agent_f:
-                    _agent_f.write(
-                        _agent_json.dumps(
-                            {
-                                "sessionId": "d5d65f",
-                                "runId": "pre-fix",
-                                "hypothesisId": "H_timeout_budget",
-                                "location": "backend/engines/gemini-runtime/app.py:_synthesize_pcm_with_key_pool_loop_timeout",
-                                "message": "Key pool synthesis loop exhausted total timeout budget",
-                                "data": {
-                                    "timed_out": True,
-                                    "pool_exhausted": pool_exhausted,
-                                    "attempt": attempt,
-                                    "keyPoolSize": len(effective_key_pool),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            }
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
             break
 
         effective_model_candidates = [
@@ -2736,40 +3292,12 @@ def _synthesize_pcm_with_key_pool(
             requested_tokens=token_estimate,
             blocked_keys=blocked_keys,
             wait_timeout_ms=remaining_budget_ms,
-            preferred_key=preferred_key if attempt == 0 else None,
+            preferred_key=retry_preferred_key,
         )
         lease = acquire.lease
         if lease is None:
             timed_out = bool(acquire.timed_out)
             pool_exhausted = True
-            # #region agent log
-            try:
-                import json as _agent_json  # type: ignore[import-not-found]
-                with open("debug-d5d65f.log", "a", encoding="utf-8") as _agent_f:
-                    _agent_f.write(
-                        _agent_json.dumps(
-                            {
-                                "sessionId": "d5d65f",
-                                "runId": "pre-fix",
-                                "hypothesisId": "H_acquire_behavior",
-                                "location": "backend/engines/gemini-runtime/app.py:_synthesize_pcm_with_key_pool_acquire_none",
-                                "message": "Allocator acquire_for_task returned no lease",
-                                "data": {
-                                    "timed_out": bool(acquire.timed_out),
-                                    "waited_ms": int(acquire.waited_ms),
-                                    "retry_after_ms": int(acquire.retry_after_ms),
-                                    "pool_exhausted": True,
-                                    "remaining_budget_ms": remaining_budget_ms,
-                                    "keyPoolSize": len(effective_key_pool),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            }
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
             if acquire.retry_after_ms > 0:
                 _emit_stage_event(
                     trace_id,
@@ -2787,20 +3315,21 @@ def _synthesize_pcm_with_key_pool(
             break
 
         attempt += 1
+        retry_preferred_key = str(lease.key or "").strip() or retry_preferred_key
         if start_key_selection_index is None:
             start_key_selection_index = int(lease.key_index)
         key_fingerprint = _api_key_cache_key(lease.key)
-        key_attempts.append(
-            {
-                "attempt": attempt,
-                "keySelectionIndex": int(lease.key_index),
-                "keyFingerprint": key_fingerprint,
-                "model": lease.model_id,
-                "windowIndex": window_index,
-            }
-        )
-
         speech_mode, speech_config = speech_attempts[min(speech_index, max(0, len(speech_attempts) - 1))]
+        attempt_entry: Dict[str, Any] = {
+            "attempt": attempt,
+            "keySelectionIndex": int(lease.key_index),
+            "keyFingerprint": key_fingerprint,
+            "model": lease.model_id,
+            "speechMode": speech_mode,
+            "windowIndex": window_index,
+            "status": "pending",
+        }
+        key_attempts.append(attempt_entry)
         mode_timeout_ms = (
             GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS
             if speech_mode == "multi-speaker"
@@ -2840,34 +3369,70 @@ def _synthesize_pcm_with_key_pool(
                 ),
             )
             pcm_bytes = extract_pcm_bytes(response)
-            _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=token_estimate)
+            usage_metadata = extract_usage_metadata(response)
+            used_tokens = int(usage_metadata.get("totalTokens") or 0) if isinstance(usage_metadata, dict) else token_estimate
+            _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=used_tokens)
             _bind_speakers_to_key(affinity_speakers, lease.key)
+            attempt_entry["status"] = "success"
+            attempt_entry["errorKind"] = ""
+            attempt_entry["requestTimeoutMs"] = request_timeout_ms
+            normalized_usage = dict(usage_metadata) if isinstance(usage_metadata, dict) else None
+            if include_attempt_metadata:
+                return (
+                    pcm_bytes,
+                    lease.model_id,
+                    speech_mode,
+                    int(lease.key_index),
+                    normalized_usage if include_usage_metadata else None,
+                    _build_request_attempt_metadata(key_attempts),
+                )
+            if include_usage_metadata:
+                return pcm_bytes, lease.model_id, speech_mode, int(lease.key_index), normalized_usage
             return pcm_bytes, lease.model_id, speech_mode, int(lease.key_index)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             detail = str(exc).strip().replace("\n", " ")
             error_kind = "other"
+            allocator_error_kind = "other"
+            retry_same_key = False
             if _is_timeout_error(detail):
                 error_kind = "timeout"
+                allocator_error_kind = "timeout"
                 timed_out = True
             elif _is_model_access_error(detail):
+                error_kind = "model_access"
                 blocked_models.add(lease.model_id)
             elif _is_auth_error(detail):
                 error_kind = "auth"
+                allocator_error_kind = "auth"
                 blocked_keys.add(lease.key)
+                if retry_preferred_key == lease.key:
+                    retry_preferred_key = None
                 _evict_speaker_key_affinity_for_key(affinity_speakers, lease.key)
             elif _is_rate_limit_error(detail):
                 error_kind = "rate_limit"
+                allocator_error_kind = "rate_limit"
             else:
                 if speech_index + 1 < len(speech_attempts):
                     speech_index += 1
+                    retry_same_key = True
                 else:
-                    blocked_models.add(lease.model_id)
+                    retry_signature = (lease.key, lease.model_id, speech_mode)
+                    retry_count = int(transient_same_key_retries.get(retry_signature, 0))
+                    if retry_count < transient_same_key_retry_limit:
+                        transient_same_key_retries[retry_signature] = retry_count + 1
+                        retry_same_key = True
+                    else:
+                        blocked_models.add(lease.model_id)
+            attempt_entry["status"] = "failed"
+            attempt_entry["errorKind"] = error_kind
+            attempt_entry["sameKeyRetry"] = bool(retry_same_key)
+            attempt_entry["requestTimeoutMs"] = request_timeout_ms
             _RUNTIME_ALLOCATOR.release(
                 lease,
                 success=False,
                 used_tokens=token_estimate,
-                error_kind=error_kind,
+                error_kind=allocator_error_kind,
             )
             model_attempts.append(
                 {
@@ -2877,6 +3442,7 @@ def _synthesize_pcm_with_key_pool(
                     "keySelectionIndex": int(lease.key_index),
                     "keyFingerprint": key_fingerprint,
                     "requestTimeoutMs": request_timeout_ms,
+                    "errorKind": error_kind,
                     "error": detail[:200],
                 }
             )
@@ -2944,6 +3510,21 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty.")
     trace_id = _normalize_trace_id(payload.trace_id)
+    explicit_model_candidates, invalid_model_candidates = _resolve_explicit_model_candidates(
+        raw_candidates=payload.modelCandidates,
+        raw_model=payload.model,
+        task="tts",
+    )
+    if invalid_model_candidates:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_model_candidates",
+                "task": "tts",
+                "invalid": invalid_model_candidates,
+            },
+        )
+    model_candidates_override = explicit_model_candidates if explicit_model_candidates else None
     target_voice = str(payload.voiceName or payload.voice_id or "Fenrir").strip() or "Fenrir"
     normalized_speaker_voices = _normalize_speaker_voices(payload.speaker_voices or [], target_voice=target_voice)
     multi_speaker_mode = _normalize_multi_speaker_mode(payload.multi_speaker_mode)
@@ -3020,6 +3601,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                     retry_once=retry_group_once,
                     started_at_ms=started_at_ms,
                     include_line_chunks=return_line_chunks_requested,
+                    model_candidates_override=model_candidates_override,
                 )
             except Exception as pair_exc:  # noqa: BLE001
                 fallback_windows = _build_line_map_single_speaker_windows(
@@ -3050,8 +3632,16 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 retry_once=retry_group_once,
                 started_at_ms=started_at_ms,
                 include_line_chunks=return_line_chunks_requested,
+                model_candidates_override=model_candidates_override,
             )
 
+    single_speaker_segmentation: Dict[str, Any] = {
+        "enabled": False,
+        "profile": None,
+        "chunkCount": 1,
+        "maxWordsPerChunk": MAX_WORDS_PER_REQUEST,
+        "joinCrossfadeMs": 0,
+    }
     raw_windows: list[Dict[str, Any]]
     if isinstance(fallback_windows, list) and fallback_windows:
         raw_windows = fallback_windows
@@ -3060,6 +3650,12 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             text=text,
             speaker_voices=normalized_speaker_voices,
             target_voice=target_voice,
+        )
+    elif requested_speech_mode == "single-speaker":
+        raw_windows, single_speaker_segmentation = _build_single_speaker_segment_windows(
+            text=text,
+            language_code=language_code,
+            speaker_voices=normalized_speaker_voices,
         )
     else:
         raw_windows = [{"text": text, "speakerVoices": normalized_speaker_voices}]
@@ -3090,7 +3686,12 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "voice": target_voice,
             "textChars": len(text),
             "wordCount": word_count,
-            "segmentation": "disabled",
+            "segmentation": "enabled" if bool(single_speaker_segmentation.get("enabled")) else "disabled",
+            "segmentationProfile": single_speaker_segmentation.get("profile"),
+            "segmentationChunkCount": int(single_speaker_segmentation.get("chunkCount") or 1),
+            "segmentationMaxWordsPerChunk": int(
+                single_speaker_segmentation.get("maxWordsPerChunk") or MAX_WORDS_PER_REQUEST
+            ),
             "language": language_code,
             "speechModeRequested": requested_speech_mode,
             "speakerCount": len(normalized_speaker_voices),
@@ -3118,6 +3719,10 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         models_used: list[str] = []
         speech_modes_used: list[str] = []
         key_indexes_used: list[int] = []
+        attempt_key_indexes_used: list[int] = []
+        attempt_error_kinds: list[str] = []
+        attempt_statuses: list[str] = []
+        usage_items: list[Dict[str, int]] = []
         bridge_samples = int(round((24000 * GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS) / 1000.0))
         bridge_pause_pcm = (b"\x00\x00" * bridge_samples) if bridge_samples > 0 else b""
 
@@ -3126,23 +3731,35 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 speaker_hint=speaker_hint,
                 speaker_voices=list(window.get("speakerVoices") or []),
             )
-            pcm_bytes, model_used, speech_mode_used, key_index_used = _synthesize_pcm_with_key_pool(
-                engine=safe_engine,
-                auth_mode=auth_mode,
-                source_policy=source_policy,
-                text_input=str(window["text"]),
-                trace_id=trace_id,
-                speaker_hint=speaker_hint,
-                language_code=language_code,
-                target_voice=target_voice,
-                speaker_voices=list(window.get("speakerVoices") or []),
-                primary_key_pool=primary_key_pool,
-                fallback_request_key=fallback_request_key,
-                effective_key_pool=effective_key_pool,
-                speech_mode_requested=requested_speech_mode,
-                window_index=index,
-                window_total=len(windows),
-                affinity_speakers=window_affinity_speakers,
+            (
+                pcm_bytes,
+                model_used,
+                speech_mode_used,
+                key_index_used,
+                usage_metadata,
+                attempt_metadata,
+            ) = _synthesize_pcm_result_with_attempts(
+                _synthesize_pcm_with_key_pool(
+                    engine=safe_engine,
+                    auth_mode=auth_mode,
+                    source_policy=source_policy,
+                    text_input=str(window["text"]),
+                    trace_id=trace_id,
+                    speaker_hint=speaker_hint,
+                    language_code=language_code,
+                    target_voice=target_voice,
+                    speaker_voices=list(window.get("speakerVoices") or []),
+                    primary_key_pool=primary_key_pool,
+                    fallback_request_key=fallback_request_key,
+                    effective_key_pool=effective_key_pool,
+                    speech_mode_requested=requested_speech_mode,
+                    window_index=index,
+                    window_total=len(windows),
+                    affinity_speakers=window_affinity_speakers,
+                    model_candidates_override=model_candidates_override,
+                    include_usage_metadata=True,
+                    include_attempt_metadata=True,
+                )
             )
             if not pcm_bytes:
                 raise RuntimeError("Gemini returned empty audio.")
@@ -3152,6 +3769,19 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             models_used.append(model_used)
             speech_modes_used.append(speech_mode_used)
             key_indexes_used.append(key_index_used)
+            for raw_index in list(attempt_metadata.get("attemptKeySelectionIndexes") or []):
+                try:
+                    safe_index = int(raw_index)
+                except Exception:
+                    continue
+                if safe_index >= 0:
+                    attempt_key_indexes_used.append(safe_index)
+            for raw_error_kind in list(attempt_metadata.get("attemptErrorKinds") or []):
+                attempt_error_kinds.append(str(raw_error_kind or "").strip().lower())
+            for raw_status in list(attempt_metadata.get("attemptStatuses") or []):
+                attempt_statuses.append(str(raw_status or "").strip().lower())
+            if isinstance(usage_metadata, dict):
+                usage_items.append(usage_metadata)
 
         final_pcm_bytes = b"".join(pcm_fragments)
         if not final_pcm_bytes:
@@ -3159,11 +3789,21 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
         unique_models = [item for item in models_used if item]
         model_header = unique_models[0] if unique_models else _normalize_model_name(TTS_MODEL)
-        if len(windows) > 1:
+        if good_pair_fallback_used:
+            speech_mode_used = "good_pair_split_fallback"
+        elif use_windowed_multi:
             speech_mode_used = "text-order-two-speaker-windows"
+        elif bool(single_speaker_segmentation.get("enabled")):
+            speech_mode_used = "single-speaker-segmented"
         else:
             speech_mode_used = speech_modes_used[0] if speech_modes_used else "single-speaker"
-        key_selection_index = key_indexes_used[0] if key_indexes_used else -1
+        key_selection_meta = _build_key_selection_metadata(key_indexes_used)
+        key_selection_index = int(key_selection_meta["finalKeySelectionIndex"])
+        initial_key_selection_index = (
+            int(attempt_key_indexes_used[0])
+            if attempt_key_indexes_used
+            else int(key_selection_meta["firstKeySelectionIndex"])
+        )
         diagnostics_payload: Dict[str, Any] = {
             "engine": safe_engine,
             "traceId": trace_id,
@@ -3171,11 +3811,33 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "strategies": (
                 ["good_pair_split_fallback", "single_speaker_line_windows"]
                 if good_pair_fallback_used
-                else ["legacy_windows" if not use_windowed_multi else "text_order_two_speaker_windows"]
+                else (
+                    ["single_speaker_segmentation"]
+                    if bool(single_speaker_segmentation.get("enabled"))
+                    else ["legacy_windows" if not use_windowed_multi else "text_order_two_speaker_windows"]
+                )
             ),
             "recoveryUsed": bool(good_pair_fallback_used),
             "keyPoolSize": len(effective_key_pool),
+            "keySelectionIndex": key_selection_index,
+            "initialKeySelectionIndex": initial_key_selection_index,
+            "attemptCount": len(attempt_key_indexes_used),
+            "attemptKeySelectionIndexes": attempt_key_indexes_used,
+            "attemptErrorKinds": attempt_error_kinds,
+            "attemptStatuses": attempt_statuses,
+            "segmentation": {
+                "enabled": bool(single_speaker_segmentation.get("enabled")),
+                "profile": single_speaker_segmentation.get("profile"),
+                "chunkCount": int(single_speaker_segmentation.get("chunkCount") or len(windows)),
+                "maxWordsPerChunk": int(
+                    single_speaker_segmentation.get("maxWordsPerChunk") or MAX_WORDS_PER_REQUEST
+                ),
+                "joinCrossfadeMs": int(single_speaker_segmentation.get("joinCrossfadeMs") or 0),
+            },
+            "model": model_header,
+            "speechModeUsed": speech_mode_used,
         }
+        diagnostics_payload.update(key_selection_meta)
         if good_pair_fallback_detail:
             diagnostics_payload["recoveryReason"] = good_pair_fallback_detail
         diagnostics_payload.update(
@@ -3184,6 +3846,9 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 processing_ms=max(0, int(time.time() * 1000) - started_at_ms),
             )
         )
+        merged_usage_metadata = _merge_usage_metadata(usage_items)
+        if isinstance(merged_usage_metadata, dict):
+            diagnostics_payload["usageMetadata"] = merged_usage_metadata
 
         _emit_stage_event(
             trace_id,
@@ -3196,6 +3861,8 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "speechModes": speech_modes_used,
                 "windowCount": len(windows),
                 "keySelectionIndex": key_selection_index,
+                "initialKeySelectionIndex": initial_key_selection_index,
+                "attemptCount": len(attempt_key_indexes_used),
                 "keyPoolSize": len(effective_key_pool),
                 "speakerHint": speaker_hint or None,
                 "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
@@ -3212,10 +3879,19 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "speechModes": speech_modes_used,
             "speechModeRequested": requested_speech_mode,
             "keySelectionIndex": key_selection_index,
+            "initialKeySelectionIndex": initial_key_selection_index,
+            "attemptCount": len(attempt_key_indexes_used),
+            "attemptKeySelectionIndexes": attempt_key_indexes_used,
+            "attemptErrorKinds": attempt_error_kinds,
+            "attemptStatuses": attempt_statuses,
+            "firstKeySelectionIndex": int(key_selection_meta["firstKeySelectionIndex"]),
+            "finalKeySelectionIndex": int(key_selection_meta["finalKeySelectionIndex"]),
+            "keySelectionIndexes": list(key_selection_meta.get("keySelectionIndexes") or []),
             "keyPoolSize": len(effective_key_pool),
             "speakerHint": speaker_hint or None,
             "windowCount": len(windows),
             "diagnostics": diagnostics_payload,
+            "usageMetadata": merged_usage_metadata,
         }
     except HTTPException:
         raise
@@ -3249,7 +3925,8 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         if "retryAfterMs" not in error_payload:
             key_states = error_payload.get("keyStates") if isinstance(error_payload.get("keyStates"), list) else []
             error_payload["retryAfterMs"] = _retry_after_from_key_states(key_states)
-        _emit_stage_event(trace_id, "failed", "error", error_payload)
+        public_error_payload = _sanitize_public_tts_error_payload(error_payload)
+        _emit_stage_event(trace_id, "failed", "error", public_error_payload)
         error_code = str(error_payload.get("errorCode") or "").strip().upper()
         _record_error_classification(error_code)
         status_code = 502
@@ -3262,13 +3939,14 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             status_code = 503
         elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
             status_code = 504
-        raise HTTPException(status_code=status_code, detail=error_payload) from exc
+        raise HTTPException(status_code=status_code, detail=public_error_payload) from exc
 
 
 app = FastAPI(title=APP_NAME)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_parse_cors_origins("VF_CORS_ORIGINS"),
+    allow_origin_regex=LOCALHOST_CORS_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3289,6 +3967,7 @@ def health(engine: Optional[str] = None) -> JSONResponse:
     )
     model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
     configured_pool = resolve_request_api_key_pool("")
+    provider = "gemini-api" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex-ai"
     return JSONResponse(
         {
             "ok": genai is not None and types is not None,
@@ -3302,7 +3981,18 @@ def health(engine: Optional[str] = None) -> JSONResponse:
             "geminiAvailable": genai is not None,
             "apiKeyConfigured": bool(configured_pool),
             "keyPoolSize": len(configured_pool),
+            "ttsModelFallbackEnabled": _tts_model_fallback_enabled(source_policy),
             "mode": "gemini-only",
+            "device": "hosted",
+            "device_mode": "remote",
+            "provider": provider,
+            "provider_preference": ["hosted"],
+            "gpu_enabled": False,
+            "openvino_enabled": False,
+            "local_inference": False,
+            "batchDefaultParallelism": GEMINI_BATCH_DEFAULT_PARALLEL,
+            "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
+            "segmentationProfile": SEGMENTATION_PROFILE,
         }
     )
 
@@ -3321,6 +4011,9 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
     )
     model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
     configured_pool = resolve_request_api_key_pool("")
+    provider = "gemini-api" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex-ai"
+    default_segmentation_profile = resolve_chunk_profile("en", "segment capabilities")
+    hindi_segmentation_profile = resolve_chunk_profile("hi", "यह सेगमेंट प्रोफाइल है")
     return JSONResponse(
         {
             "engine": safe_engine,
@@ -3346,8 +4039,21 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
                 "keyPoolSize": len(configured_pool),
                 "mode": "gemini-only" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex",
                 "authMode": auth_mode,
+                "device": "hosted",
+                "deviceMode": "remote",
+                "provider": provider,
+                "providerPreference": ["hosted"],
+                "gpuEnabled": False,
+                "openvinoEnabled": False,
+                "localInference": False,
+                "ttsModelFallbackEnabled": _tts_model_fallback_enabled(source_policy),
                 "maxWordsPerRequest": MAX_WORDS_PER_REQUEST,
-                "segmentation": "disabled",
+                "segmentation": "enabled",
+                "segmentationProfile": SEGMENTATION_PROFILE,
+                "segmentationProfiles": {
+                    "default": default_segmentation_profile,
+                    "hi": hindi_segmentation_profile,
+                },
                 "multiSpeakerMaxSpeakers": 2,
                 "supportsBatchSynthesis": True,
                 "batchEndpoint": "/synthesize/batch",
@@ -3585,8 +4291,25 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
         api_key=str(payload.apiKey or "").strip(),
         pool_hint=None,
     )
+    _ = primary_key_pool
+    _ = fallback_request_key
 
-    model_candidates = resolve_text_model_candidates()
+    explicit_model_candidates, invalid_model_candidates = _resolve_explicit_model_candidates(
+        raw_candidates=payload.modelCandidates,
+        raw_model=payload.model,
+        task="text",
+    )
+    if invalid_model_candidates:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_model_candidates",
+                "task": "text",
+                "invalid": invalid_model_candidates,
+            },
+        )
+
+    model_candidates = explicit_model_candidates if explicit_model_candidates else resolve_text_model_candidates()
     if not model_candidates:
         raise HTTPException(status_code=500, detail="No text model candidates available.")
 
@@ -3617,12 +4340,18 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
             timed_out = True
             break
 
-        acquire = _RUNTIME_ALLOCATOR.acquire_for_task(
-            task="text",
+        effective_model_candidates = [
+            model_id for model_id in model_candidates if model_id not in blocked_models
+        ]
+        if not effective_model_candidates:
+            pool_exhausted = True
+            break
+
+        acquire = _RUNTIME_ALLOCATOR.acquire_for_models(
+            model_candidates=effective_model_candidates,
             key_pool=effective_key_pool,
             requested_tokens=token_estimate,
             blocked_keys=blocked_keys,
-            blocked_models=blocked_models,
             wait_timeout_ms=remaining_budget_ms,
         )
         lease = acquire.lease
@@ -3658,7 +4387,9 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
             text = extract_text_content(response)
             if not text:
                 raise RuntimeError(f'{lease.model_id} returned empty text.')
-            _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=token_estimate)
+            usage_metadata = extract_usage_metadata(response)
+            used_tokens = int(usage_metadata.get("totalTokens") or 0) if isinstance(usage_metadata, dict) else token_estimate
+            _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=used_tokens)
             return JSONResponse(
                 {
                     "ok": True,
@@ -3666,6 +4397,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
                     "model": lease.model_id,
                     "keySelectionIndex": int(lease.key_index),
                     "trace_id": trace_id,
+                    "usageMetadata": usage_metadata,
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -3732,6 +4464,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
         "keyAttempts": key_attempts,
         "modelAttempts": model_attempts[-50:],
         "keyStates": key_states,
+        "textModelCandidates": model_candidates,
     }
     _record_error_classification(error_code)
     status_code = 502
@@ -3747,6 +4480,81 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
     raise HTTPException(status_code=status_code, detail=detail_payload)
 
 
+@app.post("/v1/count-tokens")
+def count_tokens(payload: CountTokensRequest) -> JSONResponse:
+    contents = str(payload.contents or "").strip()
+    if not contents:
+        raise HTTPException(status_code=400, detail="contents is required.")
+    task = str(payload.task or "text").strip().lower()
+    if task not in {"text", "tts"}:
+        task = "text"
+
+    source_policy = _runtime_source_policy()
+    auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
+    _, _, effective_key_pool = _ensure_runtime_pool_or_raise(
+        trace_id="count_tokens",
+        api_key=str(payload.apiKey or "").strip(),
+        pool_hint=None,
+    )
+    if not effective_key_pool:
+        raise HTTPException(status_code=503, detail="No Gemini API keys available.")
+
+    explicit_model_candidates, invalid_model_candidates = _resolve_explicit_model_candidates(
+        raw_candidates=payload.modelCandidates,
+        raw_model=payload.model,
+        task=task,
+    )
+    if invalid_model_candidates:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_model_candidates",
+                "task": "count_tokens",
+                "invalid": invalid_model_candidates,
+            },
+        )
+
+    if explicit_model_candidates:
+        model_candidates = explicit_model_candidates
+    elif task == "tts":
+        model_candidates = resolve_tts_model_candidates(
+            engine=TTS_ENGINE_DEFAULT,
+            auth_mode=auth_mode,
+            source_policy=source_policy,
+        )
+    else:
+        model_candidates = resolve_text_model_candidates()
+    if not model_candidates:
+        raise HTTPException(status_code=500, detail="No model candidates available.")
+
+    key = str(effective_key_pool[0] or "").strip()
+    if not key:
+        raise HTTPException(status_code=503, detail="No Gemini API keys available.")
+    model_id = str(model_candidates[0] or "").strip()
+
+    try:
+        client = _build_genai_client(
+            api_key=key,
+            timeout_ms=20_000,
+            auth_mode=auth_mode,
+            source_policy=source_policy,
+        )
+        response = client.models.count_tokens(model=model_id, contents=contents)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Gemini countTokens failed: {exc}") from exc
+
+    total_tokens = _usage_int_value(response, "total_tokens", "totalTokens", "totalTokenCount")
+    if total_tokens <= 0:
+        raise HTTPException(status_code=502, detail="Gemini countTokens returned no total tokens.")
+    return JSONResponse(
+        {
+            "ok": True,
+            "model": model_id,
+            "totalTokens": total_tokens,
+        }
+    )
+
+
 @app.post("/synthesize")
 def synthesize(payload: SynthesizeRequest) -> Response:
     synthesis_result = _synthesize_text_to_wav(payload)
@@ -3759,6 +4567,12 @@ def synthesize(payload: SynthesizeRequest) -> Response:
     if isinstance(diagnostics, dict) and diagnostics:
         headers["X-VoiceFlow-Diagnostics"] = quote(
             json.dumps(diagnostics, ensure_ascii=True, separators=(",", ":")),
+            safe="",
+        )
+    usage_metadata = synthesis_result.get("usageMetadata")
+    if isinstance(usage_metadata, dict) and usage_metadata:
+        headers["X-VoiceFlow-Usage"] = quote(
+            json.dumps(usage_metadata, ensure_ascii=True, separators=(",", ":")),
             safe="",
         )
     return Response(
@@ -3800,9 +4614,13 @@ def synthesize_structured(payload: SynthesizeRequest) -> JSONResponse:
             "speechModes": synthesis_result.get("speechModes"),
             "speechModeRequested": synthesis_result.get("speechModeRequested"),
             "keySelectionIndex": synthesis_result.get("keySelectionIndex"),
+            "firstKeySelectionIndex": synthesis_result.get("firstKeySelectionIndex"),
+            "finalKeySelectionIndex": synthesis_result.get("finalKeySelectionIndex"),
+            "keySelectionIndexes": synthesis_result.get("keySelectionIndexes"),
             "keyPoolSize": synthesis_result.get("keyPoolSize"),
             "windowCount": synthesis_result.get("windowCount"),
             "diagnostics": synthesis_result.get("diagnostics"),
+            "usageMetadata": synthesis_result.get("usageMetadata"),
             "wavBase64": base64.b64encode(bytes(synthesis_result.get("wavBytes") or b"")).decode("ascii"),
             "contentType": "audio/wav",
             "lineChunks": line_chunks_out,
@@ -3877,6 +4695,9 @@ def synthesize_batch(payload: BatchSynthesizeRequest) -> JSONResponse:
                     "speechModes": synthesis_result.get("speechModes"),
                     "windowCount": synthesis_result.get("windowCount"),
                     "keySelectionIndex": synthesis_result.get("keySelectionIndex"),
+                    "firstKeySelectionIndex": synthesis_result.get("firstKeySelectionIndex"),
+                    "finalKeySelectionIndex": synthesis_result.get("finalKeySelectionIndex"),
+                    "keySelectionIndexes": synthesis_result.get("keySelectionIndexes"),
                     "keyPoolSize": synthesis_result.get("keyPoolSize"),
                     "speakerHint": synthesis_result.get("speakerHint"),
                 },

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable
 
+import requests
+
 from video_dubbing.config import DubbingConfig
+from video_dubbing.utils.json_mode_parser import (
+    JsonModeParseError,
+    JsonModePipelineError,
+    parse_json_mode_payload,
+)
 
 
 def _infer_affective_tags(text: str) -> list[str]:
@@ -292,13 +300,133 @@ def _scene_complexity(segments: list[dict[str, Any]], speaker_count: int) -> str
     return "low"
 
 
+def _append_json_diagnostic(
+    ctx: dict[str, Any],
+    *,
+    stage: str,
+    diagnostics: dict[str, Any],
+) -> None:
+    payload = {
+        "stage": str(stage or "").strip() or "unknown",
+        "attempt": int(diagnostics.get("attempt") or 0),
+        "repaired": bool(diagnostics.get("repaired")),
+        "errorKind": str(diagnostics.get("errorKind") or "").strip(),
+        "snippet": str(diagnostics.get("snippet") or "").strip(),
+    }
+    if "json_diagnostics" not in ctx or not isinstance(ctx.get("json_diagnostics"), list):
+        ctx["json_diagnostics"] = []
+    casted = ctx.get("json_diagnostics")
+    if isinstance(casted, list):
+        casted.append(payload)
+
+
+def _refine_director_with_gemini(
+    *,
+    ctx: dict[str, Any],
+    cfg: DubbingConfig,
+    director_segments: list[dict[str, Any]],
+    language: str,
+    strict_gemini_only: bool,
+    log: Callable[[str], None],
+) -> dict[str, Any] | None:
+    if not director_segments:
+        return None
+
+    prompt_segments = [
+        {
+            "index": int(item.get("index") or 0),
+            "speaker": str(item.get("speaker") or "SPEAKER_00"),
+            "text": str(item.get("text") or ""),
+            "start_ms": int(item.get("start_ms") or 0),
+            "end_ms": int(item.get("end_ms") or 0),
+        }
+        for item in director_segments
+    ]
+    system_prompt = (
+        "You are a dubbing director. Return strict JSON only with keys: "
+        "sceneComplexity and segments. sceneComplexity must be low|medium|high. "
+        "segments must be an array of {index, affective_tags}. "
+        "affective_tags should be short lowercase style tags (max 3 per segment)."
+    )
+    user_prompt = (
+        "Refine affective direction for this transcript timeline.\n"
+        f"Language hint: {str(language or 'auto')}.\n"
+        f"Segments JSON: {json.dumps(prompt_segments, ensure_ascii=True)}"
+    )
+    parse_fail_diagnostics: list[dict[str, Any]] = []
+    for attempt in (1, 2):
+        if attempt == 1:
+            effective_system_prompt = system_prompt
+            effective_user_prompt = user_prompt
+        else:
+            effective_system_prompt = (
+                f"{system_prompt} "
+                "Output must be syntactically valid JSON. Do not add markdown fences, comments, or prose."
+            )
+            effective_user_prompt = (
+                f"{user_prompt}\n"
+                "If your previous output had formatting issues, return a corrected JSON object now."
+            )
+        payload: dict[str, Any] = {
+            "systemPrompt": effective_system_prompt,
+            "userPrompt": effective_user_prompt,
+            "jsonMode": True,
+            "trace_id": "v2_phase2_director_refine",
+            "modelCandidates": [str(cfg.director_model or "").strip() or "gemini-2.5-flash"],
+        }
+        try:
+            response = requests.post(
+                f"{cfg.gemini_runtime_url}/v1/generate-text",
+                json=payload,
+                timeout=45,
+            )
+            response.raise_for_status()
+            body = response.json() if response.content else {}
+            text = str((body or {}).get("text") or "").strip()
+            parsed, diagnostics = parse_json_mode_payload(text, expect="object", attempt=attempt)
+            _append_json_diagnostic(ctx, stage="phase2_director_refine", diagnostics=diagnostics)
+            return parsed
+        except JsonModeParseError as exc:
+            diagnostics = dict(exc.diagnostics)
+            _append_json_diagnostic(ctx, stage="phase2_director_refine", diagnostics=diagnostics)
+            parse_fail_diagnostics.append(
+                {
+                    "stage": "phase2_director_refine",
+                    "attempt": int(diagnostics.get("attempt") or attempt),
+                    "repaired": bool(diagnostics.get("repaired")),
+                    "errorKind": str(diagnostics.get("errorKind") or exc.error_kind).strip(),
+                    "snippet": str(diagnostics.get("snippet") or "").strip(),
+                }
+            )
+            if attempt == 1:
+                log(
+                    "phase2 gemini refine parse failure "
+                    f"attempt={attempt} kind={exc.error_kind}; retrying once"
+                )
+                continue
+            if strict_gemini_only:
+                raise JsonModePipelineError(
+                    f"phase_failed:speaker_segmentation:gemini_refine_failed:json_parse_failed:{exc.error_kind}",
+                    diagnostics=parse_fail_diagnostics,
+                ) from exc
+            log(f"phase2 gemini refine skipped after parse failures kind={exc.error_kind}")
+            return None
+        except Exception as exc:
+            if strict_gemini_only:
+                raise RuntimeError(f"phase_failed:speaker_segmentation:gemini_refine_failed:{exc}") from exc
+            log(f"phase2 gemini refine skipped: {exc}")
+            return None
+    return None
+
+
 def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> dict[str, Any]:
     vocals_path = Path(str(ctx.get("vocals_dry") or ctx.get("vocals") or "")).resolve()
     if not vocals_path.exists():
-        raise RuntimeError("phase_failed:director:missing_vocals")
+        raise RuntimeError("phase_failed:speaker_segmentation:missing_vocals")
 
     multispeaker_policy = _normalize_multispeaker_policy(str(ctx.get("multispeaker_policy") or "hybrid_auto"))
     max_speaker_count = max(1, int(ctx.get("max_speaker_count") or 8))
+    strict_gemini_only = bool(ctx.get("strict_gemini_only"))
 
     override_script = str(ctx.get("transcript_override") or "").strip()
     override_segments = _parse_transcript_override_segments(override_script)
@@ -352,12 +480,47 @@ def run(ctx: dict[str, Any], cfg: DubbingConfig, log: Callable[[str], None]) -> 
             }
         )
 
+    refinement = _refine_director_with_gemini(
+        ctx=ctx,
+        cfg=cfg,
+        director_segments=director_segments,
+        language=language,
+        strict_gemini_only=strict_gemini_only,
+        log=log,
+    )
+    if isinstance(refinement, dict):
+        refined_complexity = str(refinement.get("sceneComplexity") or "").strip().lower()
+        if refined_complexity in {"low", "medium", "high"}:
+            complexity = refined_complexity
+        refined_segments = refinement.get("segments") if isinstance(refinement.get("segments"), list) else []
+        by_index = {
+            int(item.get("index")): item
+            for item in refined_segments
+            if isinstance(item, dict) and item.get("index") is not None
+        }
+        for item in director_segments:
+            index = int(item.get("index") or -1)
+            refined = by_index.get(index)
+            if not isinstance(refined, dict):
+                continue
+            tags = [str(tag).strip().lower() for tag in list(refined.get("affective_tags") or []) if str(tag).strip()]
+            if tags:
+                item["affective_tags"] = tags[:3]
+        for index, segment in enumerate(segments):
+            match = by_index.get(index)
+            if not isinstance(match, dict):
+                continue
+            tags = [str(tag).strip().lower() for tag in list(match.get("affective_tags") or []) if str(tag).strip()]
+            if tags:
+                segment["affective_tags"] = tags[:3]
+                segment["emotion"] = tags[0]
+
     thinking_level = "high" if (complexity == "high" or len(speakers) > cfg.thinking_low_scene_max_speakers) else "low"
 
     director_json = {
         "modelPreferred": cfg.director_model,
         "modelResolved": cfg.director_model,
-        "fallbackEnabled": bool(cfg.allow_model_fallback),
+        "fallbackEnabled": bool(cfg.allow_model_fallback and not strict_gemini_only),
         "language": language,
         "sceneComplexity": complexity,
         "speakerCount": len(speakers),

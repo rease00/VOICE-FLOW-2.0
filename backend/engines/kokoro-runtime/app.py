@@ -1,6 +1,7 @@
 import io
 import base64
 import concurrent.futures
+import importlib.util
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import unicodedata
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -16,14 +18,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from segmentation import (
-    CHUNKING_PROFILES as SEGMENTATION_CHUNKING_PROFILES,
-    MAX_WORDS_PER_REQUEST,
-    SEGMENTATION_PROFILE,
-    chunk_text_for_tts,
-    count_words,
-    resolve_chunk_profile,
+
+_SEGMENTATION_SPEC = importlib.util.spec_from_file_location(
+    "kokoro_runtime_segmentation",
+    Path(__file__).with_name("segmentation.py"),
 )
+assert _SEGMENTATION_SPEC is not None and _SEGMENTATION_SPEC.loader is not None
+_SEGMENTATION_MODULE = importlib.util.module_from_spec(_SEGMENTATION_SPEC)
+_SEGMENTATION_SPEC.loader.exec_module(_SEGMENTATION_MODULE)
+SEGMENTATION_CHUNKING_PROFILES = _SEGMENTATION_MODULE.CHUNKING_PROFILES
+MAX_WORDS_PER_REQUEST = _SEGMENTATION_MODULE.MAX_WORDS_PER_REQUEST
+SEGMENTATION_PROFILE = _SEGMENTATION_MODULE.SEGMENTATION_PROFILE
+chunk_text_for_tts = _SEGMENTATION_MODULE.chunk_text_for_tts
+count_words = _SEGMENTATION_MODULE.count_words
+resolve_chunk_profile = _SEGMENTATION_MODULE.resolve_chunk_profile
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
 if str(RUNTIME_ROOT) not in sys.path:
@@ -35,7 +43,32 @@ load_backend_env_files(Path(__file__).resolve())
 
 APP_NAME = "kokoro-runtime"
 KOKORO_SAMPLE_RATE = int(os.getenv("KOKORO_SAMPLE_RATE", "24000"))
-KOKORO_DEVICE = os.getenv("KOKORO_DEVICE", "cpu").strip().lower()
+# Kokoro is hard-pinned to CPU in this workspace. Keep the env read only so
+# misconfigured shells remain observable during debugging, but never honor it.
+_IGNORED_KOKORO_DEVICE = str(os.getenv("KOKORO_DEVICE", "cpu")).strip().lower() or "cpu"
+KOKORO_DEVICE = "cpu"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["KOKORO_DEVICE"] = KOKORO_DEVICE
+KOKORO_IMPL = "kokoro-onnx-python"
+MODEL_ID = str(os.getenv("VF_KOKORO_MODEL_REPO_ID", "onnx-community/Kokoro-82M-v1.0-ONNX")).strip() or "onnx-community/Kokoro-82M-v1.0-ONNX"
+MODEL_REVISION = str(os.getenv("VF_KOKORO_MODEL_REVISION", "main")).strip() or "main"
+KOKORO_DTYPE = str(os.getenv("KOKORO_MODEL_DTYPE", "q8")).strip().lower() or "q8"
+KOKORO_MODEL_FILES = {
+    "fp32": "onnx/model.onnx",
+    "fp16": "onnx/model_fp16.onnx",
+    "q8": "onnx/model_quantized.onnx",
+    "q8f16": "onnx/model_q8f16.onnx",
+    "q4": "onnx/model_q4.onnx",
+    "q4f16": "onnx/model_q4f16.onnx",
+    "uint8": "onnx/model_uint8.onnx",
+    "uint8f16": "onnx/model_uint8f16.onnx",
+}
+KOKORO_MODEL_FILE = KOKORO_MODEL_FILES.get(KOKORO_DTYPE, KOKORO_MODEL_FILES["q8"])
+LOCAL_MODEL_MIRROR_ROOT = Path(
+    str(os.getenv("VF_LOCAL_MODEL_MIRROR_DIR", str(RUNTIME_ROOT / "models"))).strip() or str(RUNTIME_ROOT / "models")
+)
+KOKORO_MODEL_DIR = (LOCAL_MODEL_MIRROR_ROOT / MODEL_ID).resolve()
+KOKORO_MODEL_PATH = (KOKORO_MODEL_DIR / KOKORO_MODEL_FILE).resolve()
 KOKORO_BATCH_MAX_ITEMS = max(1, int(os.getenv("KOKORO_BATCH_MAX_ITEMS", "64")))
 KOKORO_BATCH_DEFAULT_PARALLEL = max(
     1,
@@ -58,6 +91,13 @@ KOKORO_BATCH_MAX_PARALLEL = max(
     ),
 )
 KOKORO_SYNTH_MAX_MS = max(10_000, int(os.getenv("KOKORO_SYNTH_MAX_MS", "180000")))
+KOKORO_MAX_ACTIVE_SYNTH = max(
+    1,
+    int(os.getenv("KOKORO_MAX_ACTIVE_SYNTH", str(KOKORO_BATCH_DEFAULT_PARALLEL))),
+)
+KOKORO_IDLE_UNLOAD_MS = max(0, int(os.getenv("KOKORO_IDLE_UNLOAD_MS", "120000")))
+KOKORO_ORT_INTRA_OP_THREADS = max(0, int(os.getenv("KOKORO_ORT_INTRA_OP_THREADS", "0")))
+KOKORO_ORT_INTER_OP_THREADS = max(0, int(os.getenv("KOKORO_ORT_INTER_OP_THREADS", "0")))
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -66,6 +106,7 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+LOCALHOST_CORS_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
 
 
 def _parse_cors_origins(env_var: str) -> List[str]:
@@ -100,10 +141,6 @@ def _emit_stage_event(trace_id: str, stage: str, status: str, detail: Optional[D
         payload["detail"] = detail
     print(json.dumps(payload, ensure_ascii=True), flush=True)
 
-# CPU-first by default. Set KOKORO_DEVICE=auto or KOKORO_DEVICE=cuda to allow GPU.
-if KOKORO_DEVICE == "cpu":
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
-
 VOICE_IDS: List[str] = [
     "af_heart",
     "af_bella",
@@ -124,23 +161,50 @@ VOICE_IDS: List[str] = [
 ]
 
 VOICE_META: Dict[str, Dict[str, str]] = {
-    "af_heart": {"name": "Heart", "accent": "American English", "gender": "Female", "lang": "a"},
-    "af_bella": {"name": "Bella", "accent": "American English", "gender": "Female", "lang": "a"},
-    "af_nova": {"name": "Nova", "accent": "American English", "gender": "Female", "lang": "a"},
-    "af_sarah": {"name": "Sarah", "accent": "American English", "gender": "Female", "lang": "a"},
-    "am_fenrir": {"name": "Fenrir", "accent": "American English", "gender": "Male", "lang": "a"},
-    "am_michael": {"name": "Michael", "accent": "American English", "gender": "Male", "lang": "a"},
-    "am_onyx": {"name": "Onyx", "accent": "American English", "gender": "Male", "lang": "a"},
-    "am_echo": {"name": "Echo", "accent": "American English", "gender": "Male", "lang": "a"},
-    "bf_emma": {"name": "Emma", "accent": "British English", "gender": "Female", "lang": "b"},
-    "bf_isabella": {"name": "Isabella", "accent": "British English", "gender": "Female", "lang": "b"},
-    "bm_george": {"name": "George", "accent": "British English", "gender": "Male", "lang": "b"},
-    "bm_fable": {"name": "Fable", "accent": "British English", "gender": "Male", "lang": "b"},
-    "hf_alpha": {"name": "Hindi Alpha", "accent": "Hindi", "gender": "Female", "lang": "h"},
-    "hf_beta": {"name": "Hindi Beta", "accent": "Hindi", "gender": "Female", "lang": "h"},
-    "hm_omega": {"name": "Hindi Omega", "accent": "Hindi", "gender": "Male", "lang": "h"},
-    "hm_psi": {"name": "Hindi Psi", "accent": "Hindi", "gender": "Male", "lang": "h"},
+    "af_heart": {"name": "Lyra US", "accent": "American English", "gender": "Female", "lang": "a"},
+    "af_bella": {"name": "Kaia US", "accent": "American English", "gender": "Female", "lang": "a"},
+    "af_nova": {"name": "Mira US", "accent": "American English", "gender": "Female", "lang": "a"},
+    "af_sarah": {"name": "Zoya US", "accent": "American English", "gender": "Female", "lang": "a"},
+    "am_fenrir": {"name": "Rian US", "accent": "American English", "gender": "Male", "lang": "a"},
+    "am_michael": {"name": "Lucan US", "accent": "American English", "gender": "Male", "lang": "a"},
+    "am_onyx": {"name": "Soren US", "accent": "American English", "gender": "Male", "lang": "a"},
+    "am_echo": {"name": "Darian US", "accent": "American English", "gender": "Male", "lang": "a"},
+    "bf_emma": {"name": "Elara UK", "accent": "British English", "gender": "Female", "lang": "b"},
+    "bf_isabella": {"name": "Cora UK", "accent": "British English", "gender": "Female", "lang": "b"},
+    "bm_george": {"name": "Alden UK", "accent": "British English", "gender": "Male", "lang": "b"},
+    "bm_fable": {"name": "Osric UK", "accent": "British English", "gender": "Male", "lang": "b"},
+    "hf_alpha": {"name": "Kavya IN", "accent": "Hindi", "gender": "Female", "lang": "h"},
+    "hf_beta": {"name": "Isha IN", "accent": "Hindi", "gender": "Female", "lang": "h"},
+    "hm_omega": {"name": "Aarav IN", "accent": "Hindi", "gender": "Male", "lang": "h"},
+    "hm_psi": {"name": "Veer IN", "accent": "Hindi", "gender": "Male", "lang": "h"},
 }
+
+HINDI_LANGUAGE_HINTS = {
+    "hi",
+    "hin",
+    "hindi",
+    "hinglish",
+    "hi-latn",
+    "bn",
+    "ta",
+    "te",
+    "mr",
+    "gu",
+    "kn",
+    "ml",
+    "pa",
+    "or",
+    "ur",
+    "ne",
+    "si",
+}
+
+VOICE_ALIAS_TO_ID: Dict[str, str] = {}
+for _voice_id, _meta in VOICE_META.items():
+    for _raw_alias in {_voice_id, str(_meta.get("name") or "")}:
+        _normalized_alias = re.sub(r"[^a-z0-9]+", "", str(_raw_alias or "").strip().lower())
+        if _normalized_alias:
+            VOICE_ALIAS_TO_ID.setdefault(_normalized_alias, _voice_id)
 
 HINDI_DIGIT_WORDS = {
     "0": "\u0936\u0942\u0928\u094d\u092f",
@@ -154,6 +218,170 @@ HINDI_DIGIT_WORDS = {
     "8": "\u0906\u0920",
     "9": "\u0928\u094c",
 }
+
+VIRAMA = "\u094d"
+ANUSVARA = "\u0902"
+CHANDRABINDU = "\u0901"
+VISARGA = "\u0903"
+
+DEVANAGARI_TO_ROMAN: Dict[str, str] = {
+    "\u0905": "a",
+    "\u0906": "aa",
+    "\u0907": "i",
+    "\u0908": "ii",
+    "\u0909": "u",
+    "\u090a": "uu",
+    "\u090f": "e",
+    "\u0910": "ai",
+    "\u0913": "o",
+    "\u0914": "au",
+    "\u090b": "ri",
+    "\u0915": "k",
+    "\u0916": "kh",
+    "\u0917": "g",
+    "\u0918": "gh",
+    "\u0919": "ng",
+    "\u091a": "ch",
+    "\u091b": "chh",
+    "\u091c": "j",
+    "\u091d": "jh",
+    "\u091e": "ny",
+    "\u091f": "t",
+    "\u0920": "th",
+    "\u0921": "d",
+    "\u0922": "dh",
+    "\u0923": "n",
+    "\u0924": "t",
+    "\u0925": "th",
+    "\u0926": "d",
+    "\u0927": "dh",
+    "\u0928": "n",
+    "\u092a": "p",
+    "\u092b": "ph",
+    "\u092c": "b",
+    "\u092d": "bh",
+    "\u092e": "m",
+    "\u092f": "y",
+    "\u0930": "r",
+    "\u0932": "l",
+    "\u0935": "v",
+    "\u0936": "sh",
+    "\u0937": "sh",
+    "\u0938": "s",
+    "\u0939": "h",
+    "\u0958": "q",
+    "\u0959": "kh",
+    "\u095a": "gh",
+    "\u095b": "z",
+    "\u095c": "r",
+    "\u095d": "rh",
+    "\u095e": "f",
+    "\u095f": "y",
+}
+
+DEVANAGARI_MATRAS: Dict[str, str] = {
+    "\u093e": "aa",
+    "\u093f": "i",
+    "\u0940": "ii",
+    "\u0941": "u",
+    "\u0942": "uu",
+    "\u0943": "ri",
+    "\u0947": "e",
+    "\u0948": "ai",
+    "\u094b": "o",
+    "\u094c": "au",
+    "\u0946": "e",
+    "\u094a": "o",
+}
+
+DEVANAGARI_INDEPENDENT_VOWELS = {
+    "\u0905",
+    "\u0906",
+    "\u0907",
+    "\u0908",
+    "\u0909",
+    "\u090a",
+    "\u090f",
+    "\u0910",
+    "\u0913",
+    "\u0914",
+    "\u090b",
+}
+
+
+def _contains_devanagari(text: str) -> bool:
+    return bool(re.search(r"[\u0900-\u097F]", str(text or "")))
+
+
+def _expand_digits_for_hindi_romanization(text: str) -> str:
+    def replace_digit(match: re.Match[str]) -> str:
+        ch = match.group(0)
+        if "0" <= ch <= "9":
+            return HINDI_DIGIT_WORDS.get(ch, ch)
+        code = ord(ch)
+        if 0x0966 <= code <= 0x096F:
+            return HINDI_DIGIT_WORDS.get(str(code - 0x0966), ch)
+        return ch
+
+    return re.sub(r"[0-9\u0966-\u096f]", replace_digit, str(text or ""))
+
+
+def _transliterate_hindi_to_roman(text: str) -> str:
+    source = _expand_digits_for_hindi_romanization(text)
+    output: List[str] = []
+    index = 0
+
+    while index < len(source):
+        ch = source[index]
+        if ch in {ANUSVARA, CHANDRABINDU}:
+            output.append("n")
+            index += 1
+            continue
+        if ch == VISARGA:
+            output.append("h")
+            index += 1
+            continue
+
+        base = DEVANAGARI_TO_ROMAN.get(ch)
+        if not base:
+            output.append(ch)
+            index += 1
+            continue
+
+        if ch in DEVANAGARI_INDEPENDENT_VOWELS:
+            output.append(base)
+            index += 1
+            continue
+
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        if next_char == VIRAMA:
+            output.append(base)
+            index += 2
+            continue
+
+        matra = DEVANAGARI_MATRAS.get(next_char) if next_char else None
+        if matra:
+            output.append(base)
+            output.append(matra)
+            index += 2
+            continue
+
+        output.append(base)
+        output.append("a")
+        index += 1
+
+    romanized = "".join(output)
+    romanized = re.sub(r"\s+", " ", romanized)
+    romanized = re.sub(r"\s+([,.!?;:])", r"\1", romanized)
+    return romanized.strip()
+
+REQUIRED_MODEL_FILES = [
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    KOKORO_MODEL_FILE,
+    *[f"voices/{voice_id}.bin" for voice_id in VOICE_IDS],
+]
 
 
 class SynthesizeRequest(BaseModel):
@@ -192,49 +420,250 @@ class KokoroFullRuntime:
     def __init__(self) -> None:
         self.ready = False
         self.error: Optional[str] = None
+        self.loading = False
+        self._standby = False
         self._pipelines: Dict[str, object] = {}
         self._pipeline_lock = threading.Lock()
+        self._dependency_lock = threading.Lock()
+        self._pause_cache: Dict[int, object] = {}
+        self._pause_cache_lock = threading.Lock()
+        self._synth_semaphore = threading.BoundedSemaphore(KOKORO_MAX_ACTIVE_SYNTH)
         self._pipeline_cls = None
         self._np = None
         self._sf = None
+        self._pipeline_device = "cpu"
+        self._activity_lock = threading.Lock()
+        self._active_synth = 0
+        self._last_used_at_ms = 0
+        self._idle_unload_deadline_ms = 0
+        self._idle_unload_timer: Optional[threading.Timer] = None
 
+    def _cancel_idle_unload(self) -> None:
+        timer: Optional[threading.Timer] = None
+        with self._activity_lock:
+            timer = self._idle_unload_timer
+            self._idle_unload_timer = None
+            self._idle_unload_deadline_ms = 0
+        if timer is not None:
+            timer.cancel()
+
+    def _touch(self) -> int:
+        now_ms = int(time.time() * 1000)
+        with self._activity_lock:
+            self._last_used_at_ms = now_ms
+        return now_ms
+
+    def _begin_active_use(self) -> None:
+        self._cancel_idle_unload()
+        with self._activity_lock:
+            self._active_synth += 1
+
+    def _end_active_use(self) -> None:
+        with self._activity_lock:
+            self._active_synth = max(0, self._active_synth - 1)
+
+    def _release_runtime(self, reason: str = "idle") -> bool:
+        self._cancel_idle_unload()
+        with self._dependency_lock:
+            with self._activity_lock:
+                if self.loading or self._active_synth > 0:
+                    return False
+            self._pipelines.clear()
+            with self._pause_cache_lock:
+                self._pause_cache.clear()
+            self._pipeline_cls = None
+            self._np = None
+            self._sf = None
+            self.ready = False
+            self.error = None
+            self._standby = reason == "idle"
+        return True
+
+    def _idle_unload_callback(self) -> None:
         try:
-            from kokoro import KPipeline  # type: ignore
-            import numpy as np  # type: ignore
-            import soundfile as sf  # type: ignore
+            released = self._release_runtime("idle")
+            if released:
+                _emit_stage_event(
+                    "kokoro_idle_unload",
+                    "idle_unload",
+                    "done",
+                    {"idleUnloadMs": KOKORO_IDLE_UNLOAD_MS},
+                )
+        except Exception:
+            return
 
-            self._pipeline_cls = KPipeline
-            self._np = np
-            self._sf = sf
-            self.ready = True
-        except Exception as exc:  # noqa: BLE001
-            self.error = f"kokoro import failed: {exc}"
+    def _schedule_idle_unload(self) -> None:
+        if KOKORO_IDLE_UNLOAD_MS <= 0:
+            return
+        self._cancel_idle_unload()
+        with self._activity_lock:
+            if not self.ready or self.loading or self._active_synth > 0:
+                return
+            deadline_ms = int(time.time() * 1000) + KOKORO_IDLE_UNLOAD_MS
+            timer = threading.Timer(float(KOKORO_IDLE_UNLOAD_MS) / 1000.0, self._idle_unload_callback)
+            timer.daemon = True
+            self._idle_unload_timer = timer
+            self._idle_unload_deadline_ms = deadline_ms
+        timer.start()
+
+    def runtime_state(self) -> Dict[str, object]:
+        with self._activity_lock:
+            idle_deadline_ms = int(self._idle_unload_deadline_ms or 0)
+            last_used_at_ms = int(self._last_used_at_ms or 0)
+            active_synth = int(self._active_synth)
+            idle_unload_scheduled = self._idle_unload_timer is not None and idle_deadline_ms > 0
+        return {
+            "device": "cpu",
+            "deviceMode": KOKORO_DEVICE,
+            "provider": "cpu",
+            "providerPreference": ["cpu"],
+            "gpuEnabled": False,
+            "openvinoEnabled": False,
+            "idleUnloadMs": KOKORO_IDLE_UNLOAD_MS,
+            "idleUnloadScheduled": idle_unload_scheduled,
+            "idleUnloadDeadlineMs": idle_deadline_ms or None,
+            "lastUsedAtMs": last_used_at_ms or None,
+            "activeSynth": active_synth,
+            "standby": bool(self._standby),
+        }
+
+    def _load_dependencies(self) -> None:
+        if self.ready and self._pipeline_cls is not None and self._np is not None and self._sf is not None:
+            self._touch()
+            self._schedule_idle_unload()
+            return
+        self._cancel_idle_unload()
+        with self._dependency_lock:
+            if self.ready and self._pipeline_cls is not None and self._np is not None and self._sf is not None:
+                self._touch()
+                self._schedule_idle_unload()
+                return
+            self.loading = True
+            self.error = None
+            self._standby = False
+            try:
+                from kokoro import KPipeline  # type: ignore
+                import numpy as np  # type: ignore
+                import soundfile as sf  # type: ignore
+
+                self._pipeline_cls = KPipeline
+                self._np = np
+                self._sf = sf
+                self.ready = True
+                self._touch()
+            except Exception as exc:  # noqa: BLE001
+                self.ready = False
+                self.error = f"kokoro import failed: {exc}"
+                raise
+            finally:
+                self.loading = False
+        self._schedule_idle_unload()
+
+    def warm_in_background(self) -> None:
+        if self.ready or self.loading:
+            return
+        self.loading = True
+
+        def preload() -> None:
+            try:
+                self._load_dependencies()
+            except Exception:
+                return
+
+        threading.Thread(target=preload, name="kokoro-runtime-preload", daemon=True).start()
 
     def _lang_for_voice(self, voice_id: str) -> str:
-        meta = VOICE_META.get(voice_id)
+        canonical_voice_id = self._canonical_voice_id(voice_id)
+        meta = VOICE_META.get(canonical_voice_id)
         if meta:
             return meta["lang"]
-        if voice_id.startswith("bf_") or voice_id.startswith("bm_"):
+        if canonical_voice_id.startswith("bf_") or canonical_voice_id.startswith("bm_"):
             return "b"
-        if voice_id.startswith("hf_") or voice_id.startswith("hm_"):
+        if canonical_voice_id.startswith("hf_") or canonical_voice_id.startswith("hm_"):
             return "h"
         return "a"
 
-    def resolve_lang(self, text: str, voice_id: str, language_hint: Optional[str]) -> str:
-        hint = (language_hint or "").strip().lower()
-        if hint.startswith("hi"):
+    def _canonical_voice_id(self, voice_id: str) -> str:
+        raw = str(voice_id or "").strip()
+        if not raw:
+            return ""
+        if raw in VOICE_META:
+            return raw
+        normalized = re.sub(r"[^a-z0-9]+", "", raw.lower())
+        return VOICE_ALIAS_TO_ID.get(normalized, raw)
+
+    def _gender_for_voice(self, voice_id: str) -> str:
+        canonical_voice_id = self._canonical_voice_id(voice_id)
+        meta = VOICE_META.get(canonical_voice_id)
+        gender = str(meta.get("gender") or "").strip().lower() if meta else ""
+        if gender in {"female", "male"}:
+            return gender
+        if canonical_voice_id.startswith(("af_", "bf_", "hf_")):
+            return "female"
+        if canonical_voice_id.startswith(("am_", "bm_", "hm_")):
+            return "male"
+        return "unknown"
+
+    def _lang_from_hint(self, voice_id: str, language_hint: Optional[str]) -> str:
+        hint = str(language_hint or "").strip().lower()
+        if not hint:
+            return ""
+        base = hint.split("-", 1)[0].split("_", 1)[0]
+        if hint in HINDI_LANGUAGE_HINTS or base in HINDI_LANGUAGE_HINTS:
             return "h"
+        if hint.startswith("en") or base == "en" or hint == "english":
+            voice_lang = self._lang_for_voice(voice_id)
+            return voice_lang if voice_lang in {"a", "b"} else "a"
+        return ""
+
+    def _resolve_compatible_voice(self, voice_id: str, lang_code: str) -> str:
+        canonical_voice_id = self._canonical_voice_id(voice_id)
+        safe_lang_code = str(lang_code or "").strip().lower() or "a"
+        gender = self._gender_for_voice(canonical_voice_id)
+
+        if safe_lang_code == "h":
+            if canonical_voice_id.startswith(("hf_", "hm_")):
+                return canonical_voice_id or ("hm_omega" if gender == "male" else "hf_alpha")
+            if canonical_voice_id in {"af_bella", "af_sarah", "bf_isabella"}:
+                return "hf_beta"
+            if canonical_voice_id in {"am_michael", "am_echo", "bm_fable"}:
+                return "hm_psi"
+            if gender == "male":
+                return "hm_omega"
+            return "hf_alpha"
+
+        if safe_lang_code == "b":
+            if canonical_voice_id.startswith(("bf_", "bm_")):
+                return canonical_voice_id or ("bm_george" if gender == "male" else "bf_emma")
+            if canonical_voice_id in {"hf_beta"}:
+                return "bf_isabella"
+            if canonical_voice_id in {"hm_psi"}:
+                return "bm_fable"
+            if gender == "male":
+                return "bm_george"
+            return "bf_emma"
+
+        if canonical_voice_id.startswith(("af_", "am_")):
+            return canonical_voice_id
+        if canonical_voice_id in {"hf_beta", "bf_isabella"}:
+            return "af_bella"
+        if canonical_voice_id in {"hm_psi", "bm_fable"}:
+            return "am_michael"
+        if gender == "male":
+            return "am_fenrir"
+        return "af_heart"
+
+    def resolve_lang(self, text: str, voice_id: str, language_hint: Optional[str]) -> str:
+        canonical_voice_id = self._canonical_voice_id(voice_id)
+        hinted_lang = self._lang_from_hint(canonical_voice_id, language_hint)
+        if hinted_lang:
+            return hinted_lang
         if re.search(r"[\u0900-\u097F]", text):
             return "h"
-        return self._lang_for_voice(voice_id)
+        return self._lang_for_voice(canonical_voice_id)
 
     def resolve_voice(self, voice_id: str, lang_code: str) -> str:
-        voice = voice_id if voice_id in VOICE_META else ("hf_alpha" if lang_code == "h" else "af_heart")
-        if lang_code == "h" and not (voice.startswith("hf_") or voice.startswith("hm_")):
-            return "hf_alpha"
-        if lang_code in {"a", "b"} and (voice.startswith("hf_") or voice.startswith("hm_")):
-            return "af_heart" if lang_code == "a" else "bf_emma"
-        return voice
+        return self._resolve_compatible_voice(voice_id, lang_code)
 
     def normalize_text(self, text: str, lang_code: str) -> str:
         cleaned = (
@@ -243,20 +672,15 @@ class KokoroFullRuntime:
             .replace("\u200d", "")
             .replace("\u0964", ". ")
             .replace("\u0965", ". ")
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
         )
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
         if lang_code == "h":
-            def replace_digit(match: re.Match[str]) -> str:
-                ch = match.group(0)
-                if "0" <= ch <= "9":
-                    return HINDI_DIGIT_WORDS.get(ch, ch)
-                code = ord(ch)
-                if 0x0966 <= code <= 0x096F:
-                    return HINDI_DIGIT_WORDS.get(str(code - 0x0966), ch)
-                return ch
-
-            cleaned = re.sub(r"[0-9\u0966-\u096f]", replace_digit, cleaned)
+            cleaned = _transliterate_hindi_to_roman(cleaned) if _contains_devanagari(cleaned) else _expand_digits_for_hindi_romanization(cleaned)
         return cleaned
 
     def chunk_text(self, text: str, lang_code: str) -> List[str]:
@@ -285,8 +709,17 @@ class KokoroFullRuntime:
         safe_ms = max(0, int(pause_ms))
         if safe_ms <= 0:
             return None
+        cached = self._pause_cache.get(safe_ms)
+        if cached is not None:
+            return cached
         sample_count = max(1, int((float(KOKORO_SAMPLE_RATE) * float(safe_ms)) / 1000.0))
-        return self._np.zeros(sample_count, dtype=self._np.float32)
+        pause = self._np.zeros(sample_count, dtype=self._np.float32)
+        with self._pause_cache_lock:
+            existing = self._pause_cache.get(safe_ms)
+            if existing is not None:
+                return existing
+            self._pause_cache[safe_ms] = pause
+        return pause
 
     def _merge_with_crossfade(self, chunks: List[Tuple[object, bool]], crossfade_ms: int):
         if self._np is None:
@@ -295,7 +728,20 @@ class KokoroFullRuntime:
             return self._np.zeros(1, dtype=self._np.float32)
         safe_crossfade_ms = max(0, int(crossfade_ms))
         crossfade_samples = max(0, int((float(KOKORO_SAMPLE_RATE) * float(safe_crossfade_ms)) / 1000.0))
+        if len(chunks) == 1:
+            return self._np.asarray(chunks[0][0], dtype=self._np.float32).reshape(-1), "concatenate"
+        if crossfade_samples <= 0:
+            arrays = []
+            for raw_chunk, _ in chunks:
+                arr = self._np.asarray(raw_chunk, dtype=self._np.float32).reshape(-1)
+                if arr.size > 0:
+                    arrays.append(arr)
+            if not arrays:
+                return self._np.zeros(1, dtype=self._np.float32), "concatenate"
+            return self._np.concatenate(arrays), "concatenate"
         merged = self._np.asarray(chunks[0][0], dtype=self._np.float32).reshape(-1)
+        merged_is_pause = bool(chunks[0][1])
+        finalized_chunks: List[object] = []
         merge_strategy = "concatenate"
 
         for raw_chunk, is_pause in chunks[1:]:
@@ -304,24 +750,35 @@ class KokoroFullRuntime:
                 continue
             if merged.size <= 0:
                 merged = next_chunk
+                merged_is_pause = bool(is_pause)
                 continue
-            if crossfade_samples <= 0 or is_pause:
-                merged = self._np.concatenate([merged, next_chunk])
+            if merged_is_pause or is_pause:
+                finalized_chunks.append(merged)
+                merged = next_chunk
+                merged_is_pause = bool(is_pause)
                 continue
 
             overlap = min(crossfade_samples, int(merged.size), int(next_chunk.size))
             if overlap <= 0:
-                merged = self._np.concatenate([merged, next_chunk])
+                finalized_chunks.append(merged)
+                merged = next_chunk
+                merged_is_pause = bool(is_pause)
                 continue
 
             fade_out = self._np.linspace(1.0, 0.0, overlap, endpoint=False, dtype=self._np.float32)
             fade_in = 1.0 - fade_out
             mixed = (merged[-overlap:] * fade_out) + (next_chunk[:overlap] * fade_in)
             merged = self._np.concatenate([merged[:-overlap], mixed, next_chunk[overlap:]])
+            merged_is_pause = False
             merge_strategy = "overlap_add_crossfade"
-        return merged, merge_strategy
+        finalized_chunks.append(merged)
+        if len(finalized_chunks) == 1:
+            return finalized_chunks[0], merge_strategy
+        return self._np.concatenate(finalized_chunks), merge_strategy
 
     def _pipeline_for(self, lang_code: str):
+        if not self.ready or self._pipeline_cls is None:
+            self._load_dependencies()
         if not self.ready or self._pipeline_cls is None:
             raise RuntimeError(self.error or "kokoro runtime unavailable")
         pipeline = self._pipelines.get(lang_code)
@@ -330,7 +787,7 @@ class KokoroFullRuntime:
         with self._pipeline_lock:
             pipeline = self._pipelines.get(lang_code)
             if pipeline is None:
-                pipeline = self._pipeline_cls(lang_code=lang_code)
+                pipeline = self._pipeline_cls(lang_code=lang_code, device=self._pipeline_device)
                 self._pipelines[lang_code] = pipeline
             return pipeline
 
@@ -342,102 +799,98 @@ class KokoroFullRuntime:
         language_hint: Optional[str],
         trace_id: Optional[str] = None,
     ) -> Tuple[bytes, Dict[str, object]]:
-        if not self.ready or self._np is None or self._sf is None:
-            raise RuntimeError(self.error or "kokoro runtime unavailable")
+        self._begin_active_use()
+        acquired_slot = False
+        try:
+            if not self.ready or self._np is None or self._sf is None:
+                self._load_dependencies()
+            if not self.ready or self._np is None or self._sf is None:
+                raise RuntimeError(self.error or "kokoro runtime unavailable")
 
-        safe_trace_id = _normalize_trace_id(trace_id)
-        synth_started_ms = int(time.monotonic() * 1000)
+            safe_trace_id = _normalize_trace_id(trace_id)
+            synth_started_ms = int(time.monotonic() * 1000)
+            slot_wait_started = time.monotonic()
+            acquired_slot = self._synth_semaphore.acquire(timeout=max(1.0, float(KOKORO_SYNTH_MAX_MS) / 1000.0))
+            if not acquired_slot:
+                raise RuntimeError("Kokoro synthesis concurrency slot timed out.")
+            semaphore_wait_ms = max(0, int((time.monotonic() - slot_wait_started) * 1000))
 
-        def ensure_runtime_budget(
-            *,
-            stage: str,
-            chunk_index: Optional[int] = None,
-            chunk_total: Optional[int] = None,
-            part_index: Optional[int] = None,
-            part_total: Optional[int] = None,
-        ) -> None:
-            elapsed_ms = max(0, int(time.monotonic() * 1000) - synth_started_ms)
-            if elapsed_ms <= KOKORO_SYNTH_MAX_MS:
-                return
-            detail: Dict[str, object] = {
-                "error": "Kokoro synthesis timed out.",
-                "errorCode": "KOKORO_SYNTH_TIMEOUT",
-                "classification": "timeout",
-                "trace_id": safe_trace_id,
-                "maxMs": int(KOKORO_SYNTH_MAX_MS),
-                "elapsedMs": int(elapsed_ms),
-                "stage": str(stage or "synthesis"),
-            }
-            if chunk_index is not None:
-                detail["chunkIndex"] = int(chunk_index)
-            if chunk_total is not None:
-                detail["chunkTotal"] = int(chunk_total)
-            if part_index is not None:
-                detail["partIndex"] = int(part_index)
-            if part_total is not None:
-                detail["partTotal"] = int(part_total)
-            raise SynthesisTimeoutError(detail)
-
-        lang_code = self.resolve_lang(text, voice_id, language_hint)
-        selected_voice = self.resolve_voice(voice_id, lang_code)
-        normalized_text = self.normalize_text(text, lang_code)
-        word_count = count_words(normalized_text)
-        if word_count > MAX_WORDS_PER_REQUEST:
-            raise InputValidationError(
-                {
-                    "error": "word_limit_exceeded",
-                    "maxWords": MAX_WORDS_PER_REQUEST,
-                    "actualWords": word_count,
+            def ensure_runtime_budget(
+                *,
+                stage: str,
+                chunk_index: Optional[int] = None,
+                chunk_total: Optional[int] = None,
+                part_index: Optional[int] = None,
+                part_total: Optional[int] = None,
+            ) -> None:
+                elapsed_ms = max(0, int(time.monotonic() * 1000) - synth_started_ms)
+                if elapsed_ms <= KOKORO_SYNTH_MAX_MS:
+                    return
+                detail: Dict[str, object] = {
+                    "error": "Kokoro synthesis timed out.",
+                    "errorCode": "KOKORO_SYNTH_TIMEOUT",
+                    "classification": "timeout",
+                    "trace_id": safe_trace_id,
+                    "maxMs": int(KOKORO_SYNTH_MAX_MS),
+                    "elapsedMs": int(elapsed_ms),
+                    "stage": str(stage or "synthesis"),
                 }
-            )
-        segments = self.chunk_text(normalized_text, lang_code)
-        chunk_profile = resolve_chunk_profile(lang_code=lang_code, text=normalized_text)
-        chunk_max_chars = max((len(segment) for segment in segments), default=0)
-        _emit_stage_event(
-            safe_trace_id,
-            "preprocess",
-            "done",
-            {
-                "lang": lang_code,
-                "wordCount": word_count,
-                "chunkCount": len(segments),
-                "chunkMaxChars": chunk_max_chars,
-                "voiceId": selected_voice,
-            },
-        )
-        pipeline = self._pipeline_for(lang_code)
+                if chunk_index is not None:
+                    detail["chunkIndex"] = int(chunk_index)
+                if chunk_total is not None:
+                    detail["chunkTotal"] = int(chunk_total)
+                if part_index is not None:
+                    detail["partIndex"] = int(part_index)
+                if part_total is not None:
+                    detail["partTotal"] = int(part_total)
+                raise SynthesisTimeoutError(detail)
 
-        audio_chunks: List[Tuple[object, bool]] = []
-        phoneme_chars = 0
-        pause_insertions = 0
-        join_crossfade_ms = int(chunk_profile.get("join_crossfade_ms", 0))
+            lang_code = self.resolve_lang(text, voice_id, language_hint)
+            selected_voice = self.resolve_voice(voice_id, lang_code)
+            normalized_text = self.normalize_text(text, lang_code)
+            word_count = count_words(normalized_text)
+            if word_count > MAX_WORDS_PER_REQUEST:
+                raise InputValidationError(
+                    {
+                        "error": "word_limit_exceeded",
+                        "maxWords": MAX_WORDS_PER_REQUEST,
+                        "actualWords": word_count,
+                    }
+                )
+            segments = self.chunk_text(normalized_text, lang_code)
+            chunk_profile = resolve_chunk_profile(lang_code=lang_code, text=normalized_text)
+            chunk_max_chars = max((len(segment) for segment in segments), default=0)
+            _emit_stage_event(
+                safe_trace_id,
+                "preprocess",
+                "done",
+                {
+                    "lang": lang_code,
+                    "wordCount": word_count,
+                    "chunkCount": len(segments),
+                    "chunkMaxChars": chunk_max_chars,
+                    "voiceId": selected_voice,
+                    "semaphoreWaitMs": semaphore_wait_ms,
+                },
+            )
+            pipeline = self._pipeline_for(lang_code)
 
-        def synthesize_piece(
-            piece_text: str,
-            *,
-            stage_label: str,
-            split_pattern: str = r"\n+",
-            chunk_index: Optional[int] = None,
-            chunk_total: Optional[int] = None,
-            part_index: Optional[int] = None,
-            part_total: Optional[int] = None,
-        ) -> Tuple[List[object], int]:
-            ensure_runtime_budget(
-                stage=stage_label,
-                chunk_index=chunk_index,
-                chunk_total=chunk_total,
-                part_index=part_index,
-                part_total=part_total,
-            )
-            local_audio_chunks: List[object] = []
-            local_phoneme_chars = 0
-            generator = pipeline(
-                piece_text,
-                voice=selected_voice,
-                speed=self.clamp_speed(speed),
-                split_pattern=split_pattern,
-            )
-            for _, phonemes, audio in generator:
+            audio_chunks: List[Tuple[object, bool]] = []
+            phoneme_chars = 0
+            pause_insertions = 0
+            join_crossfade_ms = int(chunk_profile.get("join_crossfade_ms", 0))
+            clamped_speed = self.clamp_speed(speed)
+
+            def synthesize_piece(
+                piece_text: str,
+                *,
+                stage_label: str,
+                split_pattern: str = r"\n+",
+                chunk_index: Optional[int] = None,
+                chunk_total: Optional[int] = None,
+                part_index: Optional[int] = None,
+                part_total: Optional[int] = None,
+            ) -> Tuple[List[object], int]:
                 ensure_runtime_budget(
                     stage=stage_label,
                     chunk_index=chunk_index,
@@ -445,141 +898,175 @@ class KokoroFullRuntime:
                     part_index=part_index,
                     part_total=part_total,
                 )
-                if phonemes is not None:
-                    local_phoneme_chars += len(str(phonemes))
-                arr = self._np.asarray(audio, dtype=self._np.float32).reshape(-1)
-                if arr.size > 0:
-                    local_audio_chunks.append(arr)
-            if not local_audio_chunks:
-                raise RuntimeError("Kokoro returned empty audio for segment piece.")
-            return local_audio_chunks, local_phoneme_chars
+                local_audio_chunks: List[object] = []
+                local_phoneme_chars = 0
+                generator = pipeline(
+                    piece_text,
+                    voice=selected_voice,
+                    speed=clamped_speed,
+                    split_pattern=split_pattern,
+                )
+                for _, phonemes, audio in generator:
+                    ensure_runtime_budget(
+                        stage=stage_label,
+                        chunk_index=chunk_index,
+                        chunk_total=chunk_total,
+                        part_index=part_index,
+                        part_total=part_total,
+                    )
+                    if phonemes is not None:
+                        local_phoneme_chars += len(str(phonemes))
+                    arr = self._np.asarray(audio, dtype=self._np.float32).reshape(-1)
+                    if arr.size > 0:
+                        local_audio_chunks.append(arr)
+                if not local_audio_chunks:
+                    raise RuntimeError("Kokoro returned empty audio for segment piece.")
+                return local_audio_chunks, local_phoneme_chars
 
-        for chunk_index, segment in enumerate(segments, start=1):
-            ensure_runtime_budget(
-                stage="chunk_synthesis",
-                chunk_index=chunk_index,
-                chunk_total=len(segments),
-            )
-            _emit_stage_event(
-                safe_trace_id,
-                "chunk_synthesis",
-                "start",
-                {
-                    "chunkIndex": chunk_index,
-                    "chunkTotal": len(segments),
-                    "chunkChars": len(segment),
-                    "attempt": 1,
-                },
-            )
-            used_fallback = False
-            try:
-                chunk_audio, chunk_phoneme_chars = synthesize_piece(
-                    segment,
-                    stage_label="chunk_synthesis",
-                    split_pattern=r"\n+",
+            for chunk_index, segment in enumerate(segments, start=1):
+                ensure_runtime_budget(
+                    stage="chunk_synthesis",
                     chunk_index=chunk_index,
                     chunk_total=len(segments),
                 )
-                audio_chunks.extend((item, False) for item in chunk_audio)
-                phoneme_chars += chunk_phoneme_chars
-            except Exception as exc:  # noqa: BLE001
-                message = str(exc or "").strip()
-                if "number of lines in input and output must be equal" not in message.lower():
-                    raise
-                used_fallback = True
-                fallback_parts = self._split_segment_for_line_safety(segment)
                 _emit_stage_event(
                     safe_trace_id,
                     "chunk_synthesis",
-                    "retry",
+                    "start",
                     {
                         "chunkIndex": chunk_index,
                         "chunkTotal": len(segments),
                         "chunkChars": len(segment),
-                        "attempt": 2,
-                        "reason": "line_mismatch",
-                        "parts": len(fallback_parts),
+                        "attempt": 1,
                     },
                 )
-                for part_index, part in enumerate(fallback_parts, start=1):
-                    ensure_runtime_budget(
-                        stage="chunk_fallback",
-                        chunk_index=chunk_index,
-                        chunk_total=len(segments),
-                        part_index=part_index,
-                        part_total=len(fallback_parts),
-                    )
-                    if not part:
-                        continue
+                used_fallback = False
+                try:
                     chunk_audio, chunk_phoneme_chars = synthesize_piece(
-                        part,
-                        stage_label="chunk_fallback",
-                        split_pattern=r"[.!?,;:]+",
+                        segment,
+                        stage_label="chunk_synthesis",
+                        split_pattern=r"\n+",
                         chunk_index=chunk_index,
                         chunk_total=len(segments),
-                        part_index=part_index,
-                        part_total=len(fallback_parts),
                     )
                     audio_chunks.extend((item, False) for item in chunk_audio)
                     phoneme_chars += chunk_phoneme_chars
-                    pause_ms = self._pause_ms_for_text(part, lang_code)
-                    if part_index < len(fallback_parts) and pause_ms > 0:
-                        pause = self._pause_array(pause_ms)
-                        if pause is not None:
-                            audio_chunks.append((pause, True))
-                            pause_insertions += 1
-            pause_ms = self._pause_ms_for_text(segment, lang_code)
-            if chunk_index < len(segments) and pause_ms > 0:
-                pause = self._pause_array(pause_ms)
-                if pause is not None:
-                    audio_chunks.append((pause, True))
-                    pause_insertions += 1
-            _emit_stage_event(
-                safe_trace_id,
-                "chunk_synthesis",
-                "done",
-                {
-                    "chunkIndex": chunk_index,
-                    "chunkTotal": len(segments),
-                    "chunkChars": len(segment),
-                    "attempt": 1,
-                    "fallback": used_fallback,
-                },
-            )
+                except Exception as exc:  # noqa: BLE001
+                    message = str(exc or "").strip()
+                    if "number of lines in input and output must be equal" not in message.lower():
+                        raise
+                    used_fallback = True
+                    fallback_parts = self._split_segment_for_line_safety(segment)
+                    _emit_stage_event(
+                        safe_trace_id,
+                        "chunk_synthesis",
+                        "retry",
+                        {
+                            "chunkIndex": chunk_index,
+                            "chunkTotal": len(segments),
+                            "chunkChars": len(segment),
+                            "attempt": 2,
+                            "reason": "line_mismatch",
+                            "parts": len(fallback_parts),
+                        },
+                    )
+                    for part_index, part in enumerate(fallback_parts, start=1):
+                        ensure_runtime_budget(
+                            stage="chunk_fallback",
+                            chunk_index=chunk_index,
+                            chunk_total=len(segments),
+                            part_index=part_index,
+                            part_total=len(fallback_parts),
+                        )
+                        if not part:
+                            continue
+                        chunk_audio, chunk_phoneme_chars = synthesize_piece(
+                            part,
+                            stage_label="chunk_fallback",
+                            split_pattern=r"[.!?,;:]+",
+                            chunk_index=chunk_index,
+                            chunk_total=len(segments),
+                            part_index=part_index,
+                            part_total=len(fallback_parts),
+                        )
+                        audio_chunks.extend((item, False) for item in chunk_audio)
+                        phoneme_chars += chunk_phoneme_chars
+                        pause_ms = self._pause_ms_for_text(part, lang_code)
+                        if part_index < len(fallback_parts) and pause_ms > 0:
+                            pause = self._pause_array(pause_ms)
+                            if pause is not None:
+                                audio_chunks.append((pause, True))
+                                pause_insertions += 1
+                pause_ms = self._pause_ms_for_text(segment, lang_code)
+                if chunk_index < len(segments) and pause_ms > 0:
+                    pause = self._pause_array(pause_ms)
+                    if pause is not None:
+                        audio_chunks.append((pause, True))
+                        pause_insertions += 1
+                _emit_stage_event(
+                    safe_trace_id,
+                    "chunk_synthesis",
+                    "done",
+                    {
+                        "chunkIndex": chunk_index,
+                        "chunkTotal": len(segments),
+                        "chunkChars": len(segment),
+                        "attempt": 1,
+                        "fallback": used_fallback,
+                    },
+                )
 
-        if not audio_chunks:
-            raise RuntimeError("Kokoro full runtime returned empty audio.")
+            if not audio_chunks:
+                raise RuntimeError("Kokoro full runtime returned empty audio.")
 
-        ensure_runtime_budget(stage="merge")
-        merged, merge_strategy = self._merge_with_crossfade(audio_chunks, join_crossfade_ms)
-        ensure_runtime_budget(stage="serialize")
-        buffer = io.BytesIO()
-        self._sf.write(buffer, merged, KOKORO_SAMPLE_RATE, format="WAV", subtype="PCM_16")
+            ensure_runtime_budget(stage="merge")
+            merged, merge_strategy = self._merge_with_crossfade(audio_chunks, join_crossfade_ms)
+            ensure_runtime_budget(stage="serialize")
+            buffer = io.BytesIO()
+            self._sf.write(buffer, merged, KOKORO_SAMPLE_RATE, format="WAV", subtype="PCM_16")
 
-        meta = {
-            "impl": "kokoro-full",
-            "lang_code": lang_code,
-            "voice": selected_voice,
-            "segments": len(segments),
-            "chunk_profile": chunk_profile,
-            "chunk_max_chars": chunk_max_chars,
-            "phoneme_chars": phoneme_chars,
-            "word_count": word_count,
-            "sample_rate": KOKORO_SAMPLE_RATE,
-            "chunkCount": len(segments),
-            "chunkMaxChars": chunk_max_chars,
-            "joinCrossfadeMs": join_crossfade_ms,
-            "pauseInsertions": pause_insertions,
-            "mergeStrategy": merge_strategy,
-        }
-        return buffer.getvalue(), meta
+            meta = {
+                "impl": "kokoro-full",
+                "lang_code": lang_code,
+                "voice": selected_voice,
+                "segments": len(segments),
+                "chunk_profile": chunk_profile,
+                "chunk_max_chars": chunk_max_chars,
+                "phoneme_chars": phoneme_chars,
+                "word_count": word_count,
+                "sample_rate": KOKORO_SAMPLE_RATE,
+                "chunkCount": len(segments),
+                "chunkMaxChars": chunk_max_chars,
+                "joinCrossfadeMs": join_crossfade_ms,
+                "pauseInsertions": pause_insertions,
+                "mergeStrategy": merge_strategy,
+                "semaphoreWaitMs": semaphore_wait_ms,
+                "provider": "cpu",
+                "providerPreference": ["cpu"],
+            }
+            self._touch()
+            return buffer.getvalue(), meta
+        finally:
+            if acquired_slot:
+                self._synth_semaphore.release()
+            self._end_active_use()
+            self._schedule_idle_unload()
 
 
 kokoro_full = KokoroFullRuntime()
-app = FastAPI(title=APP_NAME)
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    kokoro_full.warm_in_background()
+    yield
+
+
+app = FastAPI(title=APP_NAME, lifespan=app_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_parse_cors_origins("VF_CORS_ORIGINS"),
+    allow_origin_regex=LOCALHOST_CORS_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -588,26 +1075,99 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> JSONResponse:
+    runtime_state = kokoro_full.runtime_state()
     if kokoro_full.ready:
         return JSONResponse(
             {
                 "ok": True,
+                "ready": True,
+                "status": "ready",
                 "engine": APP_NAME,
-                "device": "cpu",
-                "device_mode": KOKORO_DEVICE,
+                "device": runtime_state["device"],
+                "device_mode": runtime_state["deviceMode"],
+                "provider": runtime_state["provider"],
+                "provider_preference": runtime_state["providerPreference"],
+                "gpu_enabled": runtime_state["gpuEnabled"],
+                "openvino_enabled": runtime_state["openvinoEnabled"],
+                "idle_unload_ms": runtime_state["idleUnloadMs"],
+                "idle_unload_scheduled": runtime_state["idleUnloadScheduled"],
+                "idle_unload_deadline_ms": runtime_state["idleUnloadDeadlineMs"],
+                "last_used_at_ms": runtime_state["lastUsedAtMs"],
+                "active_synth": runtime_state["activeSynth"],
                 "impl": "kokoro-full",
                 "hindi": True,
                 "voices": len(VOICE_IDS),
+                "max_active_synth": KOKORO_MAX_ACTIVE_SYNTH,
+            }
+        )
+
+    if runtime_state["standby"] and not kokoro_full.error:
+        return JSONResponse(
+            {
+                "ok": True,
+                "ready": False,
+                "status": "standby",
+                "engine": APP_NAME,
+                "device": runtime_state["device"],
+                "device_mode": runtime_state["deviceMode"],
+                "provider": runtime_state["provider"],
+                "provider_preference": runtime_state["providerPreference"],
+                "gpu_enabled": runtime_state["gpuEnabled"],
+                "openvino_enabled": runtime_state["openvinoEnabled"],
+                "idle_unload_ms": runtime_state["idleUnloadMs"],
+                "idle_unload_scheduled": runtime_state["idleUnloadScheduled"],
+                "idle_unload_deadline_ms": runtime_state["idleUnloadDeadlineMs"],
+                "last_used_at_ms": runtime_state["lastUsedAtMs"],
+                "active_synth": runtime_state["activeSynth"],
+                "impl": "kokoro-full",
+                "hindi": True,
+                "voices": len(VOICE_IDS),
+                "max_active_synth": KOKORO_MAX_ACTIVE_SYNTH,
+            }
+        )
+
+    if kokoro_full.loading and not kokoro_full.error:
+        return JSONResponse(
+            {
+                "ok": True,
+                "ready": False,
+                "status": "warming",
+                "engine": APP_NAME,
+                "device": runtime_state["device"],
+                "device_mode": runtime_state["deviceMode"],
+                "provider": runtime_state["provider"],
+                "provider_preference": runtime_state["providerPreference"],
+                "gpu_enabled": runtime_state["gpuEnabled"],
+                "openvino_enabled": runtime_state["openvinoEnabled"],
+                "idle_unload_ms": runtime_state["idleUnloadMs"],
+                "idle_unload_scheduled": runtime_state["idleUnloadScheduled"],
+                "idle_unload_deadline_ms": runtime_state["idleUnloadDeadlineMs"],
+                "last_used_at_ms": runtime_state["lastUsedAtMs"],
+                "active_synth": runtime_state["activeSynth"],
+                "impl": "kokoro-full",
+                "hindi": True,
+                "voices": len(VOICE_IDS),
+                "max_active_synth": KOKORO_MAX_ACTIVE_SYNTH,
             }
         )
 
     return JSONResponse(
         {
             "ok": False,
+            "ready": False,
             "status": "unhealthy",
             "engine": APP_NAME,
-            "device": "cpu",
-            "device_mode": KOKORO_DEVICE,
+            "device": runtime_state["device"],
+            "device_mode": runtime_state["deviceMode"],
+            "provider": runtime_state["provider"],
+            "provider_preference": runtime_state["providerPreference"],
+            "gpu_enabled": runtime_state["gpuEnabled"],
+            "openvino_enabled": runtime_state["openvinoEnabled"],
+            "idle_unload_ms": runtime_state["idleUnloadMs"],
+            "idle_unload_scheduled": runtime_state["idleUnloadScheduled"],
+            "idle_unload_deadline_ms": runtime_state["idleUnloadDeadlineMs"],
+            "last_used_at_ms": runtime_state["lastUsedAtMs"],
+            "active_synth": runtime_state["activeSynth"],
             "impl": "kokoro-full",
             "hindi": True,
             "voices": len(VOICE_IDS),
@@ -636,6 +1196,7 @@ def voices() -> JSONResponse:
 
 @app.get("/v1/capabilities")
 def capabilities() -> JSONResponse:
+    runtime_state = kokoro_full.runtime_state()
     return JSONResponse(
         {
             "engine": "KOKORO",
@@ -651,12 +1212,25 @@ def capabilities() -> JSONResponse:
             "batchMaxItems": KOKORO_BATCH_MAX_ITEMS,
             "batchDefaultParallelism": KOKORO_BATCH_DEFAULT_PARALLEL,
             "batchMaxParallelism": KOKORO_BATCH_MAX_PARALLEL,
+            "maxActiveSynth": KOKORO_MAX_ACTIVE_SYNTH,
             "model": "kokoro-full",
             "voiceCount": len(VOICE_IDS),
             "emotionCount": 0,
             "metadata": {
-                "deviceMode": KOKORO_DEVICE,
+                "deviceMode": runtime_state["deviceMode"],
+                "device": runtime_state["device"],
+                "provider": runtime_state["provider"],
+                "providerPreference": runtime_state["providerPreference"],
+                "gpuEnabled": runtime_state["gpuEnabled"],
+                "openvinoEnabled": runtime_state["openvinoEnabled"],
+                "idleUnloadMs": runtime_state["idleUnloadMs"],
+                "idleUnloadScheduled": runtime_state["idleUnloadScheduled"],
+                "idleUnloadDeadlineMs": runtime_state["idleUnloadDeadlineMs"],
+                "lastUsedAtMs": runtime_state["lastUsedAtMs"],
+                "activeSynth": runtime_state["activeSynth"],
+                "standby": runtime_state["standby"],
                 "sampleRate": KOKORO_SAMPLE_RATE,
+                "maxActiveSynth": KOKORO_MAX_ACTIVE_SYNTH,
                 "maxWordsPerRequest": MAX_WORDS_PER_REQUEST,
                 "segmentationProfile": SEGMENTATION_PROFILE,
                 "supportsBatchSynthesis": True,
@@ -680,7 +1254,7 @@ def _synthesize_item(payload: SynthesizeRequest) -> Tuple[bytes, Dict[str, objec
     trace_id = _normalize_trace_id(payload.trace_id)
     target_voice_id = str(payload.voiceId or payload.voice_id or "hf_alpha").strip() or "hf_alpha"
 
-    if not kokoro_full.ready:
+    if not kokoro_full.ready and kokoro_full.error and not kokoro_full.loading:
         raise HTTPException(
             status_code=503,
             detail=f"Kokoro runtime unavailable: {kokoro_full.error or 'initialization failed'}",
@@ -708,6 +1282,12 @@ def _synthesize_item(payload: SynthesizeRequest) -> Tuple[bytes, Dict[str, objec
             },
         )
         return wav_bytes, meta, trace_id
+    except RuntimeError as exc:
+        detail = str(exc).strip() or "Kokoro runtime unavailable"
+        if "unavailable" in detail.lower() or "import failed" in detail.lower():
+            _emit_stage_event(trace_id, "failed", "error", {"error": detail})
+            raise HTTPException(status_code=503, detail=f"Kokoro runtime unavailable: {detail}") from exc
+        raise
     except InputValidationError as exc:
         detail_payload = exc.detail
         _emit_stage_event(trace_id, "failed", "error", {"error": detail_payload})
@@ -731,6 +1311,7 @@ def synthesize(payload: SynthesizeRequest) -> Response:
         "joinCrossfadeMs": int(meta.get("joinCrossfadeMs") or 0),
         "pauseInsertions": int(meta.get("pauseInsertions") or 0),
         "mergeStrategy": str(meta.get("mergeStrategy") or "concatenate"),
+        "semaphoreWaitMs": int(meta.get("semaphoreWaitMs") or 0),
     }
     return Response(
         content=wav_bytes,

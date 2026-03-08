@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
   ConfirmationResult,
   GoogleAuthProvider,
@@ -61,6 +61,8 @@ import {
   fetchGenerationHistory,
   upsertAccountProfile,
 } from '../services/accountService';
+import { fetchAdminActor } from '../services/adminService';
+import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
@@ -95,6 +97,25 @@ const DEFAULT_CHARACTERS: CharacterProfile[] = [
   },
 ];
 
+const readStoredCharacterLibrary = (): CharacterProfile[] => {
+  const stored = readStorageJson<CharacterProfile[]>(STORAGE_KEYS.characterLibrary);
+  if (!Array.isArray(stored) || stored.length === 0) return DEFAULT_CHARACTERS;
+  const normalized = stored
+    .filter((item): item is CharacterProfile => Boolean(item && item.name && item.voiceId))
+    .map((item) => ({
+      ...item,
+      id: String(item.id || '').trim() || crypto.randomUUID(),
+      name: String(item.name || '').trim(),
+      voiceId: String(item.voiceId || '').trim(),
+    }))
+    .filter((item) => item.name && item.voiceId);
+  return normalized.length > 0 ? normalized : DEFAULT_CHARACTERS;
+};
+
+const writeStoredCharacterLibrary = (characters: CharacterProfile[]): void => {
+  writeStorageJson(STORAGE_KEYS.characterLibrary, characters);
+};
+
 const BLANK_USER: UserProfile = {
   name: '',
   email: '',
@@ -102,6 +123,7 @@ const BLANK_USER: UserProfile = {
   role: 'user',
   isAdmin: false,
   providers: [],
+  adminActor: null,
 };
 
 const readSettingsBackendUrl = (): string => {
@@ -350,9 +372,10 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
     userId: userId || undefined,
     avatarUrl: current.photoURL || undefined,
     phoneNumber: current.phoneNumber || undefined,
-    role: 'user',
+    role: isAdmin ? 'admin' : 'user',
     isAdmin,
     providers: providerIds,
+    adminActor: null,
   };
 };
 
@@ -363,9 +386,10 @@ const mapLocalAdminSessionToProfile = (session: LocalAdminSessionPayload): UserP
     googleId: session.uid,
     name: fallbackName,
     email: session.email,
-    role: 'user',
+    role: 'admin',
     isAdmin: true,
     providers: ['local_admin'],
+    adminActor: null,
   };
 };
 
@@ -461,6 +485,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const isAdmin = Boolean(user.isAdmin);
   const isAuthenticated = Boolean(user.uid);
   const hasUnlimitedAccess = isAdmin;
+  const isLocalAdminSessionActive = useMemo(
+    () => !firebaseAuth.currentUser && Array.isArray(user.providers) && user.providers.includes('local_admin'),
+    [user.providers]
+  );
 
   useEffect(() => {
     writeStorageJson(STORAGE_KEYS.stats, stats);
@@ -478,6 +506,44 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setStats((prev) => mapEntitlementsToStats(entitlements, prev));
     } catch {
       // Keep the current stats if backend is not reachable.
+    }
+  };
+
+  const refreshAdminActor = async () => {
+    const firebaseUser = firebaseAuth.currentUser;
+    const localAdminSession = firebaseUser ? null : await readLocalAdminSession();
+    const currentUid = String(firebaseUser?.uid || localAdminSession?.uid || '').trim();
+    if (!currentUid) {
+      setUser((prev) => (prev.adminActor ? { ...prev, adminActor: null } : prev));
+      return;
+    }
+    try {
+      const actor = await fetchAdminActor(readSettingsBackendUrl());
+      const actorPayload = {
+        uid: String(actor.uid || '').trim() || currentUid,
+        role: String(actor.role || 'super_admin'),
+        status: String(actor.status || 'active'),
+        permissions: Array.isArray(actor.permissions) ? actor.permissions.map((item) => String(item || '')) : [],
+        ...(actor.userId ? { userId: actor.userId } : {}),
+        ...(actor.source ? { source: actor.source } : {}),
+      };
+      const hasOperatorAccess = hasActiveAdminActor(actorPayload);
+      setUser((prev) => {
+        if (String(prev.uid || '').trim() !== currentUid) return prev;
+        return {
+          ...prev,
+          role: prev.isAdmin || hasOperatorAccess ? 'admin' : 'user',
+          adminActor: hasOperatorAccess ? actorPayload : null,
+        };
+      });
+    } catch {
+      setUser((prev) => {
+        if (String(prev.uid || '').trim() !== currentUid) return prev;
+        return {
+          ...prev,
+          adminActor: prev.adminActor || null,
+        };
+      });
     }
   };
 
@@ -554,7 +620,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const localAdminSession = await readLocalAdminSession();
         if (localAdminSession) {
           setUser(mapLocalAdminSessionToProfile(localAdminSession));
-          setCharacterLibrary(DEFAULT_CHARACTERS);
+          setCharacterLibrary(readStoredCharacterLibrary());
+          await refreshAdminActor();
           await refreshEntitlements();
           await loadHistory();
           return;
@@ -569,6 +636,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const profile = await mapFirebaseUserToProfile();
       setUser(profile);
       bootstrapCharacterSync(firebaseUser.uid);
+      await refreshAdminActor();
       await refreshEntitlements();
       await loadHistory();
     });
@@ -577,6 +645,19 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (charactersUnsubscribeRef.current) charactersUnsubscribeRef.current();
     };
   }, []);
+
+  useEffect(() => {
+    const safeUid = String(user.uid || '').trim();
+    if (!safeUid) {
+      if (user.adminActor) {
+        setUser((prev) => ({ ...prev, adminActor: null }));
+      }
+      return;
+    }
+    void refreshAdminActor();
+  // user.adminActor intentionally excluded to avoid a fetch loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.uid]);
 
   const resolvePostSignInUserIdRequirement = async (): Promise<boolean> => {
     try {
@@ -612,7 +693,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           await signOut(firebaseAuth).catch(() => undefined);
         }
         setUser(mapLocalAdminSessionToProfile(session));
-        setCharacterLibrary(DEFAULT_CHARACTERS);
+        setCharacterLibrary(readStoredCharacterLibrary());
         try {
           await fetchAccountProfile(readSettingsBackendUrl());
         } catch (error) {
@@ -671,7 +752,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (!normalizedEmail.includes('@')) {
         return {
           ok: false,
-          error: 'Use a full email address to sign in. If needed, map "admin" using VITE_ADMIN_LOGIN_EMAIL in .env.',
+          error: 'Use a full email address to sign in. If needed, map an admin username or admin UID using VITE_ADMIN_LOGIN_EMAIL in .env.',
         };
       }
       await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
@@ -852,49 +933,61 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     removeStorageKey(STORAGE_KEYS.uidSetupRequired);
   };
 
-  const updateCharacter = (character: CharacterProfile) => {
+  const updateCharacter = useCallback((character: CharacterProfile) => {
     const uid = firebaseAuth.currentUser?.uid;
-    if (!uid) return;
     const id = character.id || crypto.randomUUID();
     const payload: CharacterProfile = { ...character, id };
-    void setDoc(doc(firestoreDb, 'users', uid, 'characters', id), payload, { merge: true });
-  };
+    if (uid) {
+      void setDoc(doc(firestoreDb, 'users', uid, 'characters', id), payload, { merge: true });
+      return;
+    }
+    if (!isLocalAdminSessionActive) return;
+    setCharacterLibrary((current) => {
+      const next = current.some((item) => item.id === id)
+        ? current.map((item) => (item.id === id ? payload : item))
+        : [payload, ...current];
+      writeStoredCharacterLibrary(next);
+      return next;
+    });
+  }, [isLocalAdminSessionActive]);
 
-  const deleteCharacter = (id: string) => {
-    const uid = firebaseAuth.currentUser?.uid;
-    if (!uid) return;
+  const deleteCharacter = useCallback((id: string) => {
     if (DEFAULT_CHARACTERS.some((item) => item.id === id)) return;
-    void deleteDoc(doc(firestoreDb, 'users', uid, 'characters', id));
-  };
+    const uid = firebaseAuth.currentUser?.uid;
+    if (uid) {
+      void deleteDoc(doc(firestoreDb, 'users', uid, 'characters', id));
+      return;
+    }
+    if (!isLocalAdminSessionActive) return;
+    setCharacterLibrary((current) => {
+      const next = current.filter((item) => item.id !== id);
+      const resolved = next.length > 0 ? next : DEFAULT_CHARACTERS;
+      writeStoredCharacterLibrary(resolved);
+      return resolved;
+    });
+  }, [isLocalAdminSessionActive]);
 
   const syncCast = (cast: string[] | CharacterProfile[]) => {
     if (!cast || cast.length === 0) return;
     const existingByName = new Map(characterLibrary.map((item) => [item.name.toLowerCase(), item]));
+    const builtInVoiceIds = new Set(VOICES.map((voice) => voice.id));
 
-    cast.forEach((item, idx) => {
+    cast.forEach((item) => {
       const name = typeof item === 'string' ? item : item.name;
       const meta = typeof item === 'string' ? null : item;
       if (!name) return;
       if (existingByName.has(name.toLowerCase())) return;
       if (['scene', 'unknown', 'sfx', 'speaker', 'end', 'start'].includes(name.toLowerCase())) return;
-
-      const heuristicGender = guessGenderFromName(name);
-      const detectedGender = (meta?.gender as any) || heuristicGender;
-      const detectedAge = (meta?.age as any) || 'Adult';
-      let voicePool = VOICES;
-      if (detectedGender === 'Male') voicePool = VOICES.filter((voice) => voice.gender === 'Male');
-      else if (detectedGender === 'Female') voicePool = VOICES.filter((voice) => voice.gender === 'Female');
-      if (voicePool.length === 0) voicePool = VOICES;
-      const selectedVoice = voicePool[(characterLibrary.length + idx) % voicePool.length];
-      if (!selectedVoice) return;
+      const explicitVoiceId = String(meta?.voiceId || '').trim();
+      if (!explicitVoiceId || builtInVoiceIds.has(explicitVoiceId)) return;
       updateCharacter({
         id: crypto.randomUUID(),
         name,
-        voiceId: selectedVoice.id,
-        gender: detectedGender,
-        age: detectedAge,
+        voiceId: explicitVoiceId,
+        gender: (meta?.gender as any) || guessGenderFromName(name),
+        age: (meta?.age as any) || 'Adult',
         avatarColor: '#6366f1',
-        description: 'Auto-added from script',
+        description: meta?.description || 'Persisted from explicit cast profile',
       });
     });
   };
@@ -963,20 +1056,24 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isAuthenticated,
     isAdmin,
     hasUnlimitedAccess,
+    refreshAdminActor,
     syncCast,
     isSyncing,
     refreshEntitlements,
   }), [
     characterLibrary,
     clonedVoices,
+    deleteCharacter,
     drafts,
     hasUnlimitedAccess,
     history,
     isAdmin,
     isAuthenticated,
     isSyncing,
+    refreshAdminActor,
     showSubscriptionModal,
     stats,
+    updateCharacter,
     user,
   ]);
 

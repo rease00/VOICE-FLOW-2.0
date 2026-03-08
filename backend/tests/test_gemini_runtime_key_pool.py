@@ -76,8 +76,8 @@ def test_runtime_routes_follow_locked_policy() -> None:
     runtime = _load_gemini_runtime_module()
     tts_candidates = runtime.resolve_tts_model_candidates()
     assert tts_candidates
-    assert tts_candidates[0] == "gemini-2.5-flash-preview-tts"
-    assert "gemini-2.5-flash-preview-tts" in tts_candidates
+    assert tts_candidates[0] == "gemini-2.5-pro-tts"
+    assert "gemini-2.5-pro-tts" in tts_candidates
     assert runtime.resolve_text_model_candidates() == [
         "gemini-2.5-flash",
         "gemini-3-flash",
@@ -98,32 +98,85 @@ def test_runtime_routes_follow_locked_policy() -> None:
 def test_tts_model_candidates_resolve_by_engine_and_provider() -> None:
     runtime = _load_gemini_runtime_module()
 
-    good_gemini = runtime.resolve_tts_model_candidates(
+    good_gemini_strict = runtime.resolve_tts_model_candidates(
         engine="GOOD",
         auth_mode="gemini_api",
         source_policy={"provider": "gemini_api"},
+    )
+    good_gemini_fallback = runtime.resolve_tts_model_candidates(
+        engine="GOOD",
+        auth_mode="gemini_api",
+        source_policy={"provider": "gemini_api", "ttsModelFallbackEnabled": True},
     )
     neural2_gemini = runtime.resolve_tts_model_candidates(
         engine="NEURAL2",
         auth_mode="gemini_api",
         source_policy={"provider": "gemini_api"},
     )
-    gem_vertex = runtime.resolve_tts_model_candidates(
+    gem_vertex_strict = runtime.resolve_tts_model_candidates(
         engine="GEM",
         auth_mode="vertex",
         source_policy={"provider": "vertex"},
     )
+    gem_vertex_fallback = runtime.resolve_tts_model_candidates(
+        engine="GEM",
+        auth_mode="vertex",
+        source_policy={"provider": "vertex", "ttsModelFallbackEnabled": True},
+    )
 
-    assert good_gemini[:2] == [
+    assert good_gemini_strict == [
+        "gemini-2.5-flash-lite-preview-tts",
+    ]
+    assert good_gemini_fallback[:2] == [
         "gemini-2.5-flash-lite-preview-tts",
         "gemini-2.5-flash-preview-tts",
     ]
-    assert neural2_gemini[0] == "gemini-2.5-flash-preview-tts"
-    assert gem_vertex[:3] == [
+    assert neural2_gemini == ["gemini-2.5-flash-tts"]
+    assert gem_vertex_strict == ["gemini-2.5-pro-tts"]
+    assert gem_vertex_fallback[:2] == [
         "gemini-2.5-pro-tts",
-        "gemini-2.5-pro-preview-tts",
-        "gemini-2.5-flash-tts",
+        "gemini-2.5-flash-preview-tts",
     ]
+
+
+def test_health_and_capabilities_report_tts_model_fallback_state() -> None:
+    runtime = _load_gemini_runtime_module()
+    client = TestClient(runtime.app)
+
+    health_default = client.get("/health?engine=GOOD")
+    assert health_default.status_code == 200
+    assert health_default.json()["ttsModelFallbackEnabled"] is False
+    assert health_default.json()["provider"] == "gemini-api"
+    assert health_default.json()["gpu_enabled"] is False
+    assert health_default.json()["openvino_enabled"] is False
+
+    capabilities_default = client.get("/v1/capabilities?engine=GOOD")
+    assert capabilities_default.status_code == 200
+    assert capabilities_default.json()["metadata"]["ttsModelFallbackEnabled"] is False
+    assert capabilities_default.json()["metadata"]["provider"] == "gemini-api"
+    assert capabilities_default.json()["metadata"]["gpuEnabled"] is False
+    assert capabilities_default.json()["metadata"]["openvinoEnabled"] is False
+
+    pools_path = Path(runtime.GEMINI_API_POOLS_FILE)
+    config = json.loads(pools_path.read_text(encoding="utf-8"))
+    config["sourcePolicy"] = {
+        "provider": "gemini_api",
+        "ttsModelFallbackEnabled": True,
+    }
+    pools_path.write_text(json.dumps(config, ensure_ascii=True) + "\n", encoding="utf-8")
+    runtime._API_POOLS_CACHE = None
+    runtime._API_POOLS_META = {}
+    runtime._load_api_pool_config(force=True)
+
+    health_enabled = client.get("/health?engine=GOOD")
+    assert health_enabled.status_code == 200
+    assert health_enabled.json()["ttsModelFallbackEnabled"] is True
+    assert health_enabled.json()["provider"] == "gemini-api"
+
+    capabilities_enabled = client.get("/v1/capabilities?engine=GOOD")
+    assert capabilities_enabled.status_code == 200
+    assert capabilities_enabled.json()["metadata"]["ttsModelFallbackEnabled"] is True
+    assert capabilities_enabled.json()["metadata"]["provider"] == "gemini-api"
 
 
 def test_allocator_respects_per_model_rpm() -> None:
@@ -223,6 +276,223 @@ def test_allocator_waits_and_succeeds_when_window_resets() -> None:
     assert second.timed_out is False
     assert second.waited_ms >= 700 or elapsed_ms >= 700
     allocator.release(second.lease, success=True, used_tokens=10)
+
+
+def test_allocator_rotates_keys_in_three_request_bursts() -> None:
+    model_id = "test-tts"
+    config = AllocatorConfig(
+        version="test",
+        window_seconds=60,
+        default_wait_timeout_ms=3000,
+        models={
+            model_id: ModelLimit(
+                model_id=model_id,
+                rpm=12,
+                tpm=50000,
+                enabled_for=frozenset({"tts", "text", "ocr"}),
+            )
+        },
+        routes={"tts": [model_id], "text": [model_id], "ocr": [model_id]},
+    )
+    allocator = GeminiRateAllocator(config, wait_slice_ms=100, key_rotation_burst=3)
+    key_pool = [_make_key(41), _make_key(42)]
+
+    key_indexes: list[int] = []
+    for _ in range(7):
+        acquired = allocator.acquire_for_task(
+            task="tts",
+            key_pool=key_pool,
+            requested_tokens=50,
+            wait_timeout_ms=1000,
+        )
+        assert acquired.lease is not None
+        key_indexes.append(int(acquired.lease.key_index))
+        allocator.release(acquired.lease, success=True, used_tokens=50)
+
+    assert key_indexes == [0, 0, 0, 1, 1, 1, 0]
+
+    snapshot = allocator.snapshot(key_pool)
+    pool_meta = snapshot.get("pool") or {}
+    assert pool_meta.get("rotationMode") == "round_robin_burst_fixed"
+    assert int(pool_meta.get("rotationBurst") or 0) == 3
+
+
+def test_allocator_defaults_to_round_robin_forward() -> None:
+    model_id = "test-tts-forward"
+    config = AllocatorConfig(
+        version="test",
+        window_seconds=60,
+        default_wait_timeout_ms=3000,
+        models={
+            model_id: ModelLimit(
+                model_id=model_id,
+                rpm=5,
+                tpm=50000,
+                enabled_for=frozenset({"tts", "text", "ocr"}),
+            )
+        },
+        routes={"tts": [model_id], "text": [model_id], "ocr": [model_id]},
+    )
+    allocator = GeminiRateAllocator(config, wait_slice_ms=100)
+    key_pool = [_make_key(51), _make_key(52)]
+
+    key_indexes: list[int] = []
+    for _ in range(7):
+        acquired = allocator.acquire_for_task(
+            task="tts",
+            key_pool=key_pool,
+            requested_tokens=50,
+            wait_timeout_ms=1000,
+        )
+        assert acquired.lease is not None
+        key_indexes.append(int(acquired.lease.key_index))
+        allocator.release(acquired.lease, success=True, used_tokens=50)
+
+    assert key_indexes == [0, 1, 0, 1, 0, 1, 0]
+
+    snapshot = allocator.snapshot(key_pool)
+    pool_meta = snapshot.get("pool") or {}
+    assert pool_meta.get("rotationMode") == "round_robin_forward"
+    assert pool_meta.get("rotationBurst") is None
+    assert int(pool_meta.get("activeBurstTarget") or 0) == 0
+
+
+def test_speaker_key_affinity_is_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_SPEAKER_KEY_AFFINITY_ENABLED", raising=False)
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(53), _make_key(54)]
+
+    runtime._SPEAKER_KEY_AFFINITY.clear()
+    assert runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED is False
+
+    runtime._bind_speakers_to_key(["Narrator"], key_pool[0])
+
+    assert runtime._resolve_affinity_preferred_key(["Narrator"], key_pool) is None
+
+
+def test_allocator_only_advances_burst_on_successful_release() -> None:
+    model_id = "test-tts-burst-release"
+    config = AllocatorConfig(
+        version="test",
+        window_seconds=60,
+        default_wait_timeout_ms=3000,
+        models={
+            model_id: ModelLimit(
+                model_id=model_id,
+                rpm=12,
+                tpm=50000,
+                enabled_for=frozenset({"tts", "text", "ocr"}),
+            )
+        },
+        routes={"tts": [model_id], "text": [model_id], "ocr": [model_id]},
+    )
+    allocator = GeminiRateAllocator(config, wait_slice_ms=100, key_rotation_burst=3)
+    key_pool = [_make_key(61), _make_key(62)]
+
+    first = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert first.lease is not None
+    allocator.release(first.lease, success=True, used_tokens=50)
+
+    second = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert second.lease is not None
+    assert int(second.lease.key_index) == 0
+    allocator.release(second.lease, success=False, used_tokens=50, error_kind="other")
+
+    third = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert third.lease is not None
+    assert int(third.lease.key_index) == 0
+    allocator.release(third.lease, success=True, used_tokens=50)
+
+    fourth = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert fourth.lease is not None
+    assert int(fourth.lease.key_index) == 0
+    allocator.release(fourth.lease, success=True, used_tokens=50)
+
+    fifth = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert fifth.lease is not None
+    assert int(fifth.lease.key_index) == 1
+    allocator.release(fifth.lease, success=True, used_tokens=50)
+
+
+def test_allocator_other_failure_does_not_consume_lane_budget() -> None:
+    model_id = "test-tts-local-failure"
+    config = AllocatorConfig(
+        version="test",
+        window_seconds=60,
+        default_wait_timeout_ms=3000,
+        models={
+            model_id: ModelLimit(
+                model_id=model_id,
+                rpm=2,
+                tpm=50000,
+                enabled_for=frozenset({"tts", "text", "ocr"}),
+            )
+        },
+        routes={"tts": [model_id], "text": [model_id], "ocr": [model_id]},
+    )
+    allocator = GeminiRateAllocator(config, wait_slice_ms=100)
+    key_pool = [_make_key(71)]
+
+    first = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert first.lease is not None
+    allocator.release(first.lease, success=True, used_tokens=50)
+
+    second = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert second.lease is not None
+    allocator.release(second.lease, success=False, used_tokens=50, error_kind="other")
+
+    third = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert third.lease is not None
+    allocator.release(third.lease, success=True, used_tokens=50)
+
+    fourth = allocator.acquire_for_task(
+        task="tts",
+        key_pool=key_pool,
+        requested_tokens=50,
+        wait_timeout_ms=1000,
+    )
+    assert fourth.lease is None
+    assert fourth.timed_out is True
 
 
 def test_generate_text_quality_first_model_fallback_order() -> None:
@@ -409,7 +679,12 @@ def test_admin_api_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path: Pa
     assert any("Single-pool mode" in str(item) for item in list(payload.get("warnings") or []))
 
     persisted = json.loads(pools_file.read_text(encoding="utf-8"))
-    assert persisted["pools"]["free"]["keys"] == [free_a, free_b]
+    persisted_keys = list((persisted.get("pools") or {}).get("free", {}).get("keys") or [])
+    assert len(persisted_keys) == 2
+    assert all(str(item).startswith("__vf_masked_key__:") for item in persisted_keys)
+    persisted_text = pools_file.read_text(encoding="utf-8")
+    assert free_a not in persisted_text
+    assert free_b not in persisted_text
 
 
 def test_admin_api_pools_update_ignores_free_edits_when_locked(monkeypatch, tmp_path: Path) -> None:
@@ -513,8 +788,6 @@ def test_admin_api_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Pat
     _assert_masked_pool_keys(first.json()["config"], "free", 1)
 
     key_file.unlink()
-    runtime._API_POOLS_CACHE = None
-    runtime._API_POOLS_META = {}
 
     reload_response = client.post("/v1/admin/api-pools/reload")
     assert reload_response.status_code == 200
@@ -821,15 +1094,18 @@ def test_tts_pool_capacity_fast_fails_with_overload_payload(monkeypatch) -> None
         runtime._SERVER_API_KEY_SET = frozenset({key})
         runtime._RUNTIME_ALLOCATOR.ensure_keys([key])
         runtime._resolve_speech_attempts = lambda *args, **kwargs: [("single-speaker", object())]
-        source_policy = runtime._runtime_source_policy()
+        source_policy = {
+            **runtime._runtime_source_policy(),
+            "ttsModelFallbackEnabled": True,
+        }
         auth_mode = runtime._normalize_runtime_auth_mode(None, source_policy=source_policy)
 
         tts_model = str(runtime._effective_tts_route_limits().get("model") or runtime.resolve_tts_model_candidates()[0])
         monkeypatch.setattr(runtime, "resolve_tts_model_candidates", lambda *args, **kwargs: [tts_model])
         rpm_limit = int(runtime.ALLOCATOR_CONFIG.models[tts_model].rpm)
         for _ in range(rpm_limit):
-            acquired = runtime._RUNTIME_ALLOCATOR.acquire_for_task(
-                task="tts",
+            acquired = runtime._RUNTIME_ALLOCATOR.acquire_for_models(
+                model_candidates=[tts_model],
                 key_pool=[key],
                 requested_tokens=1,
                 wait_timeout_ms=1000,
@@ -979,6 +1255,383 @@ def test_model_access_error_falls_back_to_next_model_without_auth_disable(monkey
         runtime._resolve_speech_attempts = original_speech_attempts
 
 
+def test_multispeaker_retries_stay_on_same_key_and_only_rotate_after_successes(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(81), _make_key(82)]
+
+    original_allocator = runtime._RUNTIME_ALLOCATOR
+    original_pool = runtime._SERVER_API_KEY_POOL
+    original_pool_set = runtime._SERVER_API_KEY_SET
+    original_genai = runtime.genai
+    original_types = runtime.types
+    original_speech_attempts = runtime._resolve_speech_attempts
+
+    multi_config = object()
+    single_config = object()
+    call_pairs: list[tuple[str, object]] = []
+
+    class _DummyInline:
+        data = b"\x00\x00" * 4800
+
+    class _DummyPart:
+        inline_data = _DummyInline()
+
+    class _DummyContent:
+        parts = [_DummyPart()]
+
+    class _DummyCandidate:
+        content = _DummyContent()
+
+    class _DummyResponse:
+        candidates = [_DummyCandidate()]
+
+    class _DummyModels:
+        def __init__(self, api_key: str) -> None:
+            self._api_key = api_key
+
+        def generate_content(self, **kwargs: object) -> object:
+            config = kwargs.get("config")
+            speech_config = getattr(config, "kwargs", {}).get("speech_config") if config is not None else None
+            call_pairs.append((self._api_key, speech_config))
+            if speech_config is multi_config:
+                raise RuntimeError("Synthetic multi-speaker failure.")
+            return _DummyResponse()
+
+    class _DummyClient:
+        def __init__(self, api_key: str, http_options: object | None = None) -> None:
+            self.api_key = api_key
+            self.http_options = http_options
+            self.models = _DummyModels(api_key)
+
+    class _DummyGenai:
+        Client = _DummyClient
+
+    class _DummyTypes:
+        class HttpOptions:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+    try:
+        flash_limit = runtime.ALLOCATOR_CONFIG.models["gemini-2.5-flash-preview-tts"]
+        tuned_models = dict(runtime.ALLOCATOR_CONFIG.models)
+        tuned_models["gemini-2.5-flash-preview-tts"] = ModelLimit(
+            model_id=flash_limit.model_id,
+            rpm=12,
+            tpm=flash_limit.tpm,
+            enabled_for=flash_limit.enabled_for,
+        )
+        tuned_config = AllocatorConfig(
+            version=f"{runtime.ALLOCATOR_CONFIG.version}-test-burst",
+            window_seconds=runtime.ALLOCATOR_CONFIG.window_seconds,
+            default_wait_timeout_ms=runtime.ALLOCATOR_CONFIG.default_wait_timeout_ms,
+            models=tuned_models,
+            routes=runtime.ALLOCATOR_CONFIG.routes,
+        )
+        runtime._RUNTIME_ALLOCATOR = GeminiRateAllocator(tuned_config, wait_slice_ms=100, key_rotation_burst=3)
+        runtime._SERVER_API_KEY_POOL = tuple(key_pool)
+        runtime._SERVER_API_KEY_SET = frozenset(key_pool)
+        runtime._RUNTIME_ALLOCATOR.ensure_keys(key_pool)
+        runtime.genai = _DummyGenai
+        runtime.types = _DummyTypes
+        runtime._resolve_speech_attempts = lambda *args, **kwargs: [
+            ("multi-speaker", multi_config),
+            ("single-speaker", single_config),
+        ]
+        monkeypatch.setattr(runtime, "resolve_tts_model_candidates", lambda *args, **kwargs: ["gemini-2.5-flash-preview-tts"])
+
+        final_key_indexes: list[int] = []
+        for idx in range(4):
+            pcm_bytes, model_used, speech_mode, key_index = runtime._synthesize_pcm_with_key_pool(
+                text_input=f"Grouped request {idx + 1}.",
+                engine="GEM",
+                auth_mode=runtime._normalize_runtime_auth_mode(None, source_policy=runtime._runtime_source_policy()),
+                source_policy=runtime._runtime_source_policy(),
+                trace_id=f"trace_multispeaker_retry_{idx}",
+                speaker_hint="A, B",
+                language_code="en",
+                target_voice="Fenrir",
+                speaker_voices=[
+                    {"speaker": "A", "voiceName": "Fenrir"},
+                    {"speaker": "B", "voiceName": "Kore"},
+                ],
+                primary_key_pool=key_pool,
+                fallback_request_key=None,
+                effective_key_pool=key_pool,
+                speech_mode_requested="studio_pair_groups",
+                window_index=1,
+                window_total=1,
+                affinity_speakers=["A", "B"],
+            )
+            assert pcm_bytes
+            assert model_used == "gemini-2.5-flash-preview-tts"
+            assert speech_mode == "single-speaker"
+            final_key_indexes.append(int(key_index))
+
+        assert final_key_indexes == [0, 0, 0, 1]
+
+        grouped_calls = [call_pairs[index:index + 2] for index in range(0, len(call_pairs), 2)]
+        assert len(grouped_calls) == 4
+        for key_calls in grouped_calls:
+            assert len(key_calls) == 2
+            assert key_calls[0][0] == key_calls[1][0]
+            assert key_calls[0][1] is multi_config
+            assert key_calls[1][1] is single_config
+    finally:
+        runtime._RUNTIME_ALLOCATOR = original_allocator
+        runtime._SERVER_API_KEY_POOL = original_pool
+        runtime._SERVER_API_KEY_SET = original_pool_set
+        runtime.genai = original_genai
+        runtime.types = original_types
+        runtime._resolve_speech_attempts = original_speech_attempts
+
+
+def test_single_speaker_transient_retry_stays_on_same_key(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(91), _make_key(92)]
+
+    original_allocator = runtime._RUNTIME_ALLOCATOR
+    original_pool = runtime._SERVER_API_KEY_POOL
+    original_pool_set = runtime._SERVER_API_KEY_SET
+    original_genai = runtime.genai
+    original_types = runtime.types
+    original_speech_attempts = runtime._resolve_speech_attempts
+
+    key_attempt_counters = {key_pool[0]: 0, key_pool[1]: 0}
+    call_order: list[str] = []
+
+    class _DummyInline:
+        data = b"\x00\x00" * 4800
+
+    class _DummyPart:
+        inline_data = _DummyInline()
+
+    class _DummyContent:
+        parts = [_DummyPart()]
+
+    class _DummyCandidate:
+        content = _DummyContent()
+
+    class _DummyResponse:
+        candidates = [_DummyCandidate()]
+
+    class _DummyModels:
+        def __init__(self, api_key: str) -> None:
+            self._api_key = api_key
+
+        def generate_content(self, **kwargs: object) -> object:
+            call_order.append(self._api_key)
+            current_count = int(key_attempt_counters.get(self._api_key, 0))
+            key_attempt_counters[self._api_key] = current_count + 1
+            if self._api_key == key_pool[0] and current_count == 0:
+                raise RuntimeError("Synthetic transient upstream failure.")
+            return _DummyResponse()
+
+    class _DummyClient:
+        def __init__(self, api_key: str, http_options: object | None = None) -> None:
+            self.api_key = api_key
+            self.http_options = http_options
+            self.models = _DummyModels(api_key)
+
+    class _DummyGenai:
+        Client = _DummyClient
+
+    class _DummyTypes:
+        class HttpOptions:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+    try:
+        flash_limit = runtime.ALLOCATOR_CONFIG.models["gemini-2.5-flash-preview-tts"]
+        tuned_models = dict(runtime.ALLOCATOR_CONFIG.models)
+        tuned_models["gemini-2.5-flash-preview-tts"] = ModelLimit(
+            model_id=flash_limit.model_id,
+            rpm=12,
+            tpm=flash_limit.tpm,
+            enabled_for=flash_limit.enabled_for,
+        )
+        tuned_config = AllocatorConfig(
+            version=f"{runtime.ALLOCATOR_CONFIG.version}-test-transient",
+            window_seconds=runtime.ALLOCATOR_CONFIG.window_seconds,
+            default_wait_timeout_ms=runtime.ALLOCATOR_CONFIG.default_wait_timeout_ms,
+            models=tuned_models,
+            routes=runtime.ALLOCATOR_CONFIG.routes,
+        )
+        runtime._RUNTIME_ALLOCATOR = GeminiRateAllocator(tuned_config, wait_slice_ms=100, key_rotation_burst=3)
+        runtime._SERVER_API_KEY_POOL = tuple(key_pool)
+        runtime._SERVER_API_KEY_SET = frozenset(key_pool)
+        runtime._RUNTIME_ALLOCATOR.ensure_keys(key_pool)
+        runtime.genai = _DummyGenai
+        runtime.types = _DummyTypes
+        runtime._resolve_speech_attempts = lambda *args, **kwargs: [("single-speaker", object())]
+        monkeypatch.setattr(runtime, "resolve_tts_model_candidates", lambda *args, **kwargs: ["gemini-2.5-flash-preview-tts"])
+
+        (
+            pcm_bytes,
+            model_used,
+            speech_mode,
+            key_index,
+            usage_metadata,
+            attempt_metadata,
+        ) = runtime._synthesize_pcm_result_with_attempts(
+            runtime._synthesize_pcm_with_key_pool(
+                text_input="Transient same-key retry test.",
+                engine="GEM",
+                auth_mode=runtime._normalize_runtime_auth_mode(None, source_policy=runtime._runtime_source_policy()),
+                source_policy=runtime._runtime_source_policy(),
+                trace_id="trace_single_transient_retry",
+                speaker_hint="",
+                language_code="en",
+                target_voice="Fenrir",
+                speaker_voices=[],
+                primary_key_pool=key_pool,
+                fallback_request_key=None,
+                effective_key_pool=key_pool,
+                speech_mode_requested="single-speaker",
+                window_index=1,
+                window_total=1,
+                affinity_speakers=[],
+                include_usage_metadata=True,
+                include_attempt_metadata=True,
+            )
+        )
+
+        assert pcm_bytes
+        assert model_used == "gemini-2.5-flash-preview-tts"
+        assert speech_mode == "single-speaker"
+        assert key_index == 0
+        assert usage_metadata is None
+        assert call_order == [key_pool[0], key_pool[0]]
+        assert int(attempt_metadata.get("initialKeySelectionIndex", -1)) == 0
+        assert list(attempt_metadata.get("attemptKeySelectionIndexes") or []) == [0, 0]
+        assert list(attempt_metadata.get("attemptErrorKinds") or []) == ["other", ""]
+        assert list(attempt_metadata.get("attemptStatuses") or []) == ["failed", "success"]
+    finally:
+        runtime._RUNTIME_ALLOCATOR = original_allocator
+        runtime._SERVER_API_KEY_POOL = original_pool
+        runtime._SERVER_API_KEY_SET = original_pool_set
+        runtime.genai = original_genai
+        runtime.types = original_types
+        runtime._resolve_speech_attempts = original_speech_attempts
+
+
+def test_synthesize_text_to_wav_reports_initial_key_attempt_metadata(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(93), _make_key(94)]
+
+    original_allocator = runtime._RUNTIME_ALLOCATOR
+    original_pool = runtime._SERVER_API_KEY_POOL
+    original_pool_set = runtime._SERVER_API_KEY_SET
+    original_genai = runtime.genai
+    original_types = runtime.types
+    original_speech_attempts = runtime._resolve_speech_attempts
+
+    key_attempt_counters = {key_pool[0]: 0, key_pool[1]: 0}
+
+    class _DummyInline:
+        data = b"\x00\x00" * 4800
+
+    class _DummyPart:
+        inline_data = _DummyInline()
+
+    class _DummyContent:
+        parts = [_DummyPart()]
+
+    class _DummyCandidate:
+        content = _DummyContent()
+
+    class _DummyResponse:
+        candidates = [_DummyCandidate()]
+
+    class _DummyModels:
+        def __init__(self, api_key: str) -> None:
+            self._api_key = api_key
+
+        def generate_content(self, **kwargs: object) -> object:
+            current_count = int(key_attempt_counters.get(self._api_key, 0))
+            key_attempt_counters[self._api_key] = current_count + 1
+            if self._api_key == key_pool[0] and current_count == 0:
+                raise RuntimeError("Synthetic transient upstream failure.")
+            return _DummyResponse()
+
+    class _DummyClient:
+        def __init__(self, api_key: str, http_options: object | None = None) -> None:
+            self.api_key = api_key
+            self.http_options = http_options
+            self.models = _DummyModels(api_key)
+
+    class _DummyGenai:
+        Client = _DummyClient
+
+    class _DummyTypes:
+        class HttpOptions:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+    try:
+        flash_limit = runtime.ALLOCATOR_CONFIG.models["gemini-2.5-flash-preview-tts"]
+        tuned_models = dict(runtime.ALLOCATOR_CONFIG.models)
+        tuned_models["gemini-2.5-flash-preview-tts"] = ModelLimit(
+            model_id=flash_limit.model_id,
+            rpm=12,
+            tpm=flash_limit.tpm,
+            enabled_for=flash_limit.enabled_for,
+        )
+        tuned_config = AllocatorConfig(
+            version=f"{runtime.ALLOCATOR_CONFIG.version}-test-request-attempts",
+            window_seconds=runtime.ALLOCATOR_CONFIG.window_seconds,
+            default_wait_timeout_ms=runtime.ALLOCATOR_CONFIG.default_wait_timeout_ms,
+            models=tuned_models,
+            routes=runtime.ALLOCATOR_CONFIG.routes,
+        )
+        runtime._RUNTIME_ALLOCATOR = GeminiRateAllocator(tuned_config, wait_slice_ms=100, key_rotation_burst=3)
+        runtime._SERVER_API_KEY_POOL = tuple(key_pool)
+        runtime._SERVER_API_KEY_SET = frozenset(key_pool)
+        runtime._RUNTIME_ALLOCATOR.ensure_keys(key_pool)
+        runtime.genai = _DummyGenai
+        runtime.types = _DummyTypes
+        runtime._resolve_speech_attempts = lambda *args, **kwargs: [("single-speaker", object())]
+        monkeypatch.setattr(runtime, "resolve_tts_model_candidates", lambda *args, **kwargs: ["gemini-2.5-flash-preview-tts"])
+
+        result = runtime._synthesize_text_to_wav(
+            runtime.SynthesizeRequest(
+                text="Request diagnostics metadata test.",
+                engine="GEM",
+                voiceName="Fenrir",
+                trace_id="trace_request_attempt_metadata",
+                model="gemini-2.5-flash-preview-tts",
+                modelCandidates=["gemini-2.5-flash-preview-tts"],
+            )
+        )
+
+        diagnostics = result.get("diagnostics") or {}
+        assert int(result.get("initialKeySelectionIndex", -1)) == 0
+        assert int(result.get("keySelectionIndex", -1)) == 0
+        assert int(diagnostics.get("initialKeySelectionIndex", -1)) == 0
+        assert int(diagnostics.get("attemptCount") or 0) == 2
+        assert list(diagnostics.get("attemptKeySelectionIndexes") or []) == [0, 0]
+        assert list(diagnostics.get("attemptErrorKinds") or []) == ["other", ""]
+        assert list(diagnostics.get("attemptStatuses") or []) == ["failed", "success"]
+    finally:
+        runtime._RUNTIME_ALLOCATOR = original_allocator
+        runtime._SERVER_API_KEY_POOL = original_pool
+        runtime._SERVER_API_KEY_SET = original_pool_set
+        runtime.genai = original_genai
+        runtime.types = original_types
+        runtime._resolve_speech_attempts = original_speech_attempts
+
+
 def test_studio_pair_groups_adaptive_concurrency_respects_pool_pressure(monkeypatch) -> None:
     runtime = _load_gemini_runtime_module()
     source_policy = runtime._runtime_source_policy()
@@ -1046,6 +1699,21 @@ def test_studio_pair_groups_adaptive_concurrency_respects_pool_pressure(monkeypa
     diagnostics = result.get("diagnostics") or {}
     assert int(diagnostics.get("concurrencyUsed") or 0) <= 2
     assert state["peak"] <= 2
+
+
+def test_pool_pressure_handles_non_routed_tts_candidates() -> None:
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(301), _make_key(302)]
+    runtime._RUNTIME_ALLOCATOR.ensure_keys(key_pool)
+
+    pressure = runtime._estimate_tts_pool_pressure(
+        key_pool=key_pool,
+        requested_tokens=120,
+        model_candidates=["gemini-2.5-pro-tts"],
+    )
+
+    assert int(pressure.get("keyPoolSize") or 0) == len(key_pool)
+    assert int(pressure.get("availableLanes") or 0) >= len(key_pool)
 
 
 def test_timeout_classification_distinguishes_upstream_vs_acquire() -> None:

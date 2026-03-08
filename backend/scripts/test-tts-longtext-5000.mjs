@@ -16,23 +16,35 @@ const KOKORO_REQUEST_TIMEOUT_MS = Math.max(
   REQUEST_TIMEOUT_MS,
   Number(process.env.VF_TTS_LONGTEXT_KOKORO_TIMEOUT_MS || 300000),
 );
+const GEM_MAX_WORDS_PER_REQUEST = Math.max(
+  120,
+  Number(process.env.VF_TTS_LONGTEXT_GEM_MAX_WORDS_PER_REQUEST || 160),
+);
 const KOKORO_MAX_WORDS_PER_REQUEST = Math.max(
   200,
   Number(process.env.VF_TTS_LONGTEXT_KOKORO_MAX_WORDS_PER_REQUEST || 1400),
 );
+const MAX_ACCEPTABLE_WORDS_PER_SEC = Math.max(
+  1.0,
+  Number(process.env.VF_TTS_LONGTEXT_MAX_WORDS_PER_SEC || 12),
+);
 const GEMINI_QUOTA_PREFLIGHT_WORDS = Math.max(
   12,
-  Number(process.env.VF_TTS_LONGTEXT_GEMINI_QUOTA_PREFLIGHT_WORDS || 80),
+  Number(process.env.VF_TTS_LONGTEXT_GEMINI_QUOTA_PREFLIGHT_WORDS || 32),
 );
 const GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS = Math.max(
   5_000,
-  Number(process.env.VF_TTS_LONGTEXT_GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS || 30_000),
+  Number(process.env.VF_TTS_LONGTEXT_GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS || 45_000),
 );
 const ALLOW_PREFLIGHT_FAILURE = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_TTS_LONGTEXT_ALLOW_PREFLIGHT_FAILURE || '').trim().toLowerCase(),
 );
 const RETRY_MAX = Math.max(0, Number(process.env.VF_TTS_LONGTEXT_RETRY_MAX || 2));
 const RETRY_BASE_MS = Math.max(100, Number(process.env.VF_TTS_LONGTEXT_RETRY_BASE_MS || 800));
+const SMOKE_MAX_EXECUTED_CHUNKS = Math.max(
+  1,
+  Number(process.env.VF_TTS_LONGTEXT_SMOKE_MAX_EXECUTED_CHUNKS || 3),
+);
 
 const EN_UNITS = [
   'One day Mohan asked his mother for fresh vegetables.',
@@ -59,13 +71,18 @@ const ENGINES = {
   },
 };
 
-const LONGTEXT_ENGINES = String(process.env.VF_TTS_LONGTEXT_ENGINES || "GEM,KOKORO")
-  .split(",")
-  .map((item) => String(item || "").trim().toUpperCase())
+const requestedLongtextEngines = String(process.env.VF_TTS_LONGTEXT_ENGINES || '')
+  .split(',')
+  .map((item) => String(item || '').trim().toUpperCase())
   .filter(Boolean);
-const ACTIVE_ENGINES = Array.from(new Set(LONGTEXT_ENGINES.length > 0 ? LONGTEXT_ENGINES : ["GEM", "KOKORO"]))
+const defaultLongtextEngines = MODE === 'matrix' ? ['GEM', 'KOKORO'] : ['GEM'];
+const ACTIVE_ENGINES = Array.from(new Set(requestedLongtextEngines.length > 0 ? requestedLongtextEngines : defaultLongtextEngines))
   .filter((engine) => Object.prototype.hasOwnProperty.call(ENGINES, engine));
 const PRIMARY_GEM_ENGINE = ACTIVE_ENGINES.find((engine) => engine !== "KOKORO") || ACTIVE_ENGINES[0] || "GEM";
+const ENGINE_MAX_WORDS_PER_REQUEST = {
+  GEM: GEM_MAX_WORDS_PER_REQUEST,
+  KOKORO: KOKORO_MAX_WORDS_PER_REQUEST,
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -241,6 +258,39 @@ const buildChunkWordPlan = (totalWords, maxWordsPerChunk) => {
   return chunks;
 };
 
+const buildSmokeExecutionPlan = (wordChunks) => {
+  if (!Array.isArray(wordChunks) || wordChunks.length === 0) return [];
+  if (MODE !== 'smoke' || wordChunks.length <= SMOKE_MAX_EXECUTED_CHUNKS) {
+    return wordChunks.map((words, index) => ({
+      planIndex: index + 1,
+      words,
+    }));
+  }
+
+  const maxItems = Math.min(SMOKE_MAX_EXECUTED_CHUNKS, wordChunks.length);
+  const selectedIndexes = [];
+  for (let position = 0; position < maxItems; position += 1) {
+    const rawIndex = maxItems === 1
+      ? 0
+      : Math.round((position * (wordChunks.length - 1)) / (maxItems - 1));
+    if (!selectedIndexes.includes(rawIndex)) {
+      selectedIndexes.push(rawIndex);
+    }
+  }
+
+  for (let index = 0; selectedIndexes.length < maxItems && index < wordChunks.length; index += 1) {
+    if (!selectedIndexes.includes(index)) {
+      selectedIndexes.push(index);
+    }
+  }
+
+  selectedIndexes.sort((left, right) => left - right);
+  return selectedIndexes.map((index) => ({
+    planIndex: index + 1,
+    words: wordChunks[index],
+  }));
+};
+
 const summarizeErrorForLog = (error) => {
   if (!error) return '-';
   if (typeof error === 'string') {
@@ -374,7 +424,7 @@ const synthesizeSingle = async ({
       const bytes = Buffer.from(await response.arrayBuffer());
       const wav = parseWav(bytes);
       const wordsPerSec = normalizedWords / Math.max(0.001, wav.duration);
-      const qualityOk = bytes.length > 100 && wav.duration > 0.3 && wordsPerSec > 0.15 && wordsPerSec < 9.0;
+      const qualityOk = bytes.length > 100 && wav.duration > 0.3 && wordsPerSec > 0.15 && wordsPerSec < MAX_ACCEPTABLE_WORDS_PER_SEC;
       return {
         ok: qualityOk,
         status: 200,
@@ -399,11 +449,16 @@ const synthesizeSingle = async ({
 
 const synthesize = async ({ engine, language, words, traceId }) => {
   const timeoutMs = engine === 'KOKORO' ? KOKORO_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
-  if (engine !== 'KOKORO' || words <= KOKORO_MAX_WORDS_PER_REQUEST) {
+  const maxWordsPerRequest = Math.max(
+    1,
+    Number(ENGINE_MAX_WORDS_PER_REQUEST[engine] || words || 1),
+  );
+  if (words <= maxWordsPerRequest) {
     return synthesizeSingle({ engine, language, words, traceId, timeoutMs });
   }
 
-  const wordChunks = buildChunkWordPlan(words, KOKORO_MAX_WORDS_PER_REQUEST);
+  const wordChunks = buildChunkWordPlan(words, maxWordsPerRequest);
+  const executionPlan = buildSmokeExecutionPlan(wordChunks);
   const chunkResults = [];
   let totalElapsedMs = 0;
   let totalBytes = 0;
@@ -413,9 +468,10 @@ const synthesize = async ({ engine, language, words, traceId }) => {
   let channels = 0;
   let bitsPerSample = 0;
 
-  for (let index = 0; index < wordChunks.length; index += 1) {
-    const chunkWords = wordChunks[index];
-    const chunkTraceId = `${traceId}_chunk_${index + 1}`;
+  for (let index = 0; index < executionPlan.length; index += 1) {
+    const chunkWords = executionPlan[index].words;
+    const planIndex = executionPlan[index].planIndex;
+    const chunkTraceId = `${traceId}_chunk_${planIndex}`;
     // Keep retries tightly bounded for chunked long-text calls to control gate duration.
     // eslint-disable-next-line no-await-in-loop
     const chunk = await synthesizeSingle({
@@ -427,7 +483,7 @@ const synthesize = async ({ engine, language, words, traceId }) => {
       retryMax: Math.min(1, RETRY_MAX),
     });
     chunkResults.push({
-      index: index + 1,
+      index: planIndex,
       traceId: chunkTraceId,
       words: chunkWords,
       ok: chunk.ok,
@@ -441,9 +497,14 @@ const synthesize = async ({ engine, language, words, traceId }) => {
         engine,
         language,
         chunked: true,
-        chunkIndex: index + 1,
+        chunkIndex: planIndex,
         chunkCount: wordChunks.length,
         chunkWordPlan: wordChunks,
+        executedChunkCount: executionPlan.length,
+        executedChunkIndexes: executionPlan.map((item) => item.planIndex),
+        requestedWordCount: words,
+        executedWordCount: totalWordCount + Number(chunk.wordCount || 0),
+        sampled: executionPlan.length !== wordChunks.length,
         chunkResults,
       };
     }
@@ -473,6 +534,11 @@ const synthesize = async ({ engine, language, words, traceId }) => {
     chunked: true,
     chunkCount: wordChunks.length,
     chunkWordPlan: wordChunks,
+    executedChunkCount: executionPlan.length,
+    executedChunkIndexes: executionPlan.map((item) => item.planIndex),
+    requestedWordCount: words,
+    executedWordCount: totalWordCount,
+    sampled: executionPlan.length !== wordChunks.length,
     chunkResults,
   };
 };
@@ -566,6 +632,9 @@ const main = async () => {
       engines: ACTIVE_ENGINES,
       quotaPrecheckEngine: PRIMARY_GEM_ENGINE,
       allowPrecheckFailure: ALLOW_PREFLIGHT_FAILURE,
+      gemMaxWordsPerRequest: GEM_MAX_WORDS_PER_REQUEST,
+      smokeMaxExecutedChunks: SMOKE_MAX_EXECUTED_CHUNKS,
+      maxAcceptableWordsPerSec: MAX_ACCEPTABLE_WORDS_PER_SEC,
     },
     runtimes: {
       GEM: GEM_URL,

@@ -14,7 +14,7 @@ const SERVICES = [
   { id: "media-backend", name: "Media Backend", logFile: ".runtime/logs/media-backend.log" },
   { id: "gemini-runtime", name: "Gemini Runtime", logFile: ".runtime/logs/gemini-runtime.log" },
   { id: "kokoro-runtime", name: "Kokoro Runtime", logFile: ".runtime/logs/kokoro-runtime.log" },
-  { id: "llvc-runtime", name: "LLVC Runtime", logFile: ".runtime/logs/llvc-runtime.log" },
+  { id: "voice-transfer-runtime", name: "Voice Transfer Runtime", logFile: ".runtime/logs/voice-transfer-runtime.log" },
 ];
 
 const BOOTSTRAP_MODE = String(process.env.VF_DEV_BOOTSTRAP_MODE || "cpu").trim().toLowerCase() === "gpu" ? "gpu" : "cpu";

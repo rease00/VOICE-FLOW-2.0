@@ -32,7 +32,7 @@ const ts = now.toISOString().replace(/[:.]/g, '-');
 
 const voiceMap = readJson('./config/voice_id_map.v1.json');
 const profileBank = readJson('./config/voice_profile_bank.v1.json');
-const llvcRegistry = readJson('./config/llvc_model_registry.json');
+const llvcRegistry = readJson('./config/voice_transfer_model_registry.json');
 
 const runtimeVoices = Array.isArray(voiceMap?.engines?.GEM?.runtimeVoices)
   ? voiceMap.engines.GEM.runtimeVoices
@@ -145,17 +145,17 @@ const freeAllowlist = {
   GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'bf_emma', 'bf_isabella', 'am_fenrir', 'am_michael', 'am_onyx', 'bm_george'],
+  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
 };
 
 for (const [engine, ids] of Object.entries(freeAllowlist)) {
-  if (ids.length !== 10) {
+  if (ids.length < 10) {
     issues.push({
       severity: 'error',
       code: 'free_allowlist_size_invalid',
       engine,
       size: ids.length,
-      detail: 'Free tier allowlist must contain exactly 10 speakers.',
+      detail: 'Free tier allowlist must contain at least 10 speakers.',
     });
   }
 }

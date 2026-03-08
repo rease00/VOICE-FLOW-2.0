@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, Film, Fingerprint, History, Mic, Shield, Users } from 'lucide-react';
+import { BookOpen, Film, Fingerprint, History, Mic, Shield, Users, Volume2 } from 'lucide-react';
 
 export enum WorkspaceTab {
   STUDIO = 'STUDIO',
@@ -7,6 +7,7 @@ export enum WorkspaceTab {
   DUBBING = 'DUBBING',
   CHARACTERS = 'CHARACTERS',
   NOVEL = 'NOVEL',
+  READER = 'READER',
   HISTORY = 'HISTORY',
   ADMIN = 'ADMIN',
 }
@@ -21,6 +22,7 @@ export const buildWorkspaceTabs = (isAdmin: boolean): WorkspaceTabItem[] => {
   const base: WorkspaceTabItem[] = [
     { id: WorkspaceTab.STUDIO, icon: <Mic size={18} />, label: 'Studio' },
     { id: WorkspaceTab.NOVEL, icon: <BookOpen size={18} />, label: 'Novel Workspace' },
+    { id: WorkspaceTab.READER, icon: <Volume2 size={18} />, label: 'Reader' },
     { id: WorkspaceTab.DUBBING, icon: <Film size={18} />, label: 'Video Dub' },
     { id: WorkspaceTab.CHARACTERS, icon: <Users size={18} />, label: 'Characters' },
     { id: WorkspaceTab.LAB, icon: <Fingerprint size={18} />, label: 'Voice Lab' },

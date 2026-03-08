@@ -18,7 +18,7 @@ const steps = [
   { name: "audit:tts:hindi", args: ["run", "audit:tts:hindi"] },
   { name: "audit:tts:longtext:smoke", args: ["run", "audit:tts:longtext:smoke"] },
   { name: "audit:tts:longtext:matrix", args: ["run", "audit:tts:longtext:matrix"] },
-  { name: "test:tts:llvc:multispeaker", args: ["run", "test:tts:llvc:multispeaker"] },
+  { name: "test:tts:voice-transfer:multispeaker", args: ["run", "test:tts:voice-transfer:multispeaker"] },
   {
     name: "ci:reliability (gates on)",
     args: ["run", "ci:reliability"],

@@ -5,31 +5,36 @@ import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisCo
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
 import { resolveApiBaseUrl } from "../src/shared/api/config";
-import { extractAudioFromVideo as gatewayExtractAudioFromVideo, fetchTtsJobChunkAudio } from "../src/shared/api/gatewayClient";
+import { extractAudioFromVideo as gatewayExtractAudioFromVideo } from "../src/shared/api/gatewayClient";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
+import { shouldFailFastOnGeminiRuntimeError } from "./geminiRuntimeErrorUtils";
+import { loadKokoroBrowserRuntimeModule } from "./loadKokoroBrowserRuntime";
+import { shouldUseBrowserKokoroExecution } from "./kokoroBrowserRuntimeFlags";
 import {
-  kokoroBrowserRuntime,
-  shouldUseBrowserKokoroExecution,
-  type KokoroLiveChunk,
-} from "./kokoroBrowserRuntime";
+  emitGatewayAudioChunk,
+  emitGatewayProgress,
+  extractGatewayJobId,
+  pollTtsGatewayJobForAudio,
+  TTS_GATEWAY_AUDIO_CHUNK_EVENT,
+  TTS_GATEWAY_JOB_PROGRESS_EVENT,
+} from "./ttsGatewayJobService";
 import {
-  MAX_WORDS_PER_WINDOW,
   MAX_WORDS_PER_REQUEST,
   RETRY_ATTEMPTS_PER_CHUNK,
   RETRY_BACKOFF_MS,
-  buildSentenceAlignedWordWindows,
+  buildLongTextChunks,
   countWords,
   getChunkProfile,
   isPrimaryTtsEngine,
   mergeChunkBuffersWithCrossfade,
   preflightWordLimit,
+  resolveLiveChunkRequest,
   sleepMs,
 } from "./ttsLongTextService";
 
 // Gemini helper defaults to local runtime/server key pool; user key is optional override.
 export const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
-export const TTS_GATEWAY_JOB_PROGRESS_EVENT = 'voiceflow:tts-gateway-job-progress';
-export const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk';
+export { TTS_GATEWAY_AUDIO_CHUNK_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT } from "./ttsGatewayJobService";
 
 interface RuntimeDiagnosticsPayload {
   engine?: string | undefined;
@@ -44,25 +49,13 @@ interface RuntimeDiagnosticsPayload {
   runtimeLabel?: string | undefined;
 }
 
-interface GatewayJobProgressPayload {
-  jobId: string;
-  status: string;
-  engine?: string | undefined;
-  queueAgeMs?: number | undefined;
-  queueDepth?: number | undefined;
-  stage?: string | undefined;
-  progressPct?: number | undefined;
-}
-
-interface GatewayAudioChunkPayload {
-  jobId: string;
+interface KokoroLiveChunk {
   index: number;
-  engine?: string | undefined;
-  contentType?: string | undefined;
-  durationMs?: number | undefined;
-  textChars?: number | undefined;
-  traceId?: string | undefined;
-  audioBase64: string;
+  text: string;
+  phonemes: string;
+  audioData: Float32Array;
+  sampleRate: number;
+  durationMs: number;
 }
 
 export interface GenerateSpeechOptions {
@@ -156,8 +149,15 @@ const mapGeminiRuntimeErrorCode = (
   if (code === 'GEMINI_ALL_KEYS_RATE_LIMITED') {
     return quotaRuntimeMessage(retryAfterMs);
   }
+  if (code === 'GEMINI_KEY_POOL_OVERLOADED' || code === 'GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT') {
+    return `Gemini TTS capacity is saturated.${retryHint}`.trim();
+  }
   if (code === 'GEMINI_KEY_POOL_TIMEOUT') {
     return `Gemini key pool timed out while waiting for an available key.${retryHint}`.trim();
+  }
+  if (code === 'GEMINI_UPSTREAM_REQUEST_TIMEOUT') {
+    const normalizedSummary = normalizeRuntimeUserMessage(summary, retryAfterMs);
+    return normalizedSummary || `Gemini upstream request timed out.${retryHint}`.trim();
   }
   if (code === 'GEMINI_UPSTREAM_MODEL_FAILED') {
     const normalizedSummary = normalizeRuntimeUserMessage(summary, retryAfterMs);
@@ -223,17 +223,6 @@ const parseRuntimeErrorDetail = (payload: any, status: number, statusText: strin
   return truncateRuntimeErrorDetail(`${status} ${statusText}`);
 };
 
-const isKnownGeminiPoolMisconfigError = (message: string): boolean => {
-  const lower = String(message || '').toLowerCase();
-  if (!lower) return false;
-  return (
-    lower.includes('gemini_api_key_missing') ||
-    lower.includes('key pool is empty') ||
-    lower.includes('configure gemini_api_keys_file') ||
-    lower.includes('api key is missing')
-  );
-};
-
 const optionalBearerAuthHeaders = (apiKey?: string): Record<string, string> => {
   const token = String(apiKey || '').trim();
   if (!token) return {};
@@ -243,14 +232,20 @@ const optionalBearerAuthHeaders = (apiKey?: string): Record<string, string> => {
 // --- MODEL FALLBACK LISTS (Priority High -> Low) ---
 // Keep direct personal-key mode aligned with runtime allocator routing.
 const TEXT_MODELS_FALLBACK = [
-  "gemini-2.5-flash",
-  "gemini-3-flash",
   "gemini-2.5-flash-lite",
+  "gemini-3-flash",
+  "gemini-2.5-flash",
   "gemma-3-27b",
   "gemma-3-12b",
   "gemma-3-4b",
   "gemma-3-2b",
   "gemma-3-1b",
+];
+
+const STUDIO_CAST_TEXT_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-3-flash",
+  "gemini-2.5-flash",
 ];
 
 const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'GOOD' | 'NEURAL2', string[]> = {
@@ -493,6 +488,8 @@ interface GenerationOptions {
   jsonMode?: boolean;
   retries?: number;
   model?: string;
+  preferredModels?: string[];
+  temperature?: number;
 }
 
 // Core function to handle Model Fallback
@@ -505,7 +502,9 @@ async function callGeminiWithFallback(
   const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const config: any = {
-    temperature: 0.7,
+    temperature: Number.isFinite(Number(options.temperature))
+      ? Number(options.temperature)
+      : 0.7,
   };
   
   if (options.systemPrompt) {
@@ -526,7 +525,9 @@ async function callGeminiWithFallback(
     ai,
     apiKey,
     'text',
-    TEXT_MODELS_FALLBACK,
+    Array.isArray(options.preferredModels) && options.preferredModels.length > 0
+      ? options.preferredModels
+      : TEXT_MODELS_FALLBACK,
     options.model
   );
   let lastError: any = null;
@@ -553,23 +554,43 @@ async function callGeminiWithFallback(
   throw new Error(cleanErrorMessage(lastError || new Error("All Gemini models failed.")));
 }
 
+interface RuntimeTextOptions {
+  jsonMode?: boolean;
+  preferredModels?: string[];
+  temperature?: number;
+}
+
+const normalizeTextModelCandidates = (
+  preferredModels?: string[],
+  forcedModel?: string
+): string[] => {
+  const preferred = Array.isArray(preferredModels) && preferredModels.length > 0
+    ? preferredModels
+    : TEXT_MODELS_FALLBACK;
+  return mergeGeminiModelCandidates(preferred, [], forcedModel);
+};
+
 async function callGeminiRuntimeText(
   systemPrompt: string,
   userPrompt: string,
   settings: Pick<GenerationSettings, 'mediaBackendUrl' | 'geminiApiKey'>,
-  jsonMode: boolean = false
+  options: RuntimeTextOptions = {}
 ): Promise<string> {
   const baseUrl = resolveMediaBackendBaseUrl(settings);
+  const modelCandidates = normalizeTextModelCandidates(options.preferredModels);
   const response = await authFetch(`${baseUrl}/ai/generate-text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemPrompt,
       userPrompt,
-      jsonMode,
+      jsonMode: Boolean(options.jsonMode),
       // Optional user key can still be passed to runtime endpoint.
       apiKey: resolveGeminiApiKey(settings),
-      temperature: 0.7,
+      temperature: Number.isFinite(Number(options.temperature))
+        ? Number(options.temperature)
+        : 0.7,
+      modelCandidates,
     }),
   }, { requireAuth: true });
 
@@ -672,9 +693,14 @@ export const generateText = async (
   systemPrompt: string,
   userPrompt: string,
   settings: GenerationSettings,
-  jsonMode: boolean = false
+  jsonMode: boolean = false,
+  options: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {}
 ): Promise<string> => {
   const dispatchPlan = resolveAssistantTextDispatchPlan(settings);
+  const preferredModels = normalizeTextModelCandidates(
+    options.preferredModels,
+    options.model
+  );
   
   try {
     if (dispatchPlan.usePerplexity) {
@@ -694,9 +720,21 @@ export const generateText = async (
     const geminiKey = resolveGeminiApiKey(settings);
     if (forceUserKey) {
       if (!geminiKey) throw new Error("Personal Gemini key is enabled, but API key is missing.");
-      return await callGeminiWithFallback(userPrompt, geminiKey, { systemPrompt, jsonMode });
+      const directOptions: GenerationOptions = {
+        systemPrompt,
+        jsonMode,
+        preferredModels,
+      };
+      if (options.model) directOptions.model = options.model;
+      if (typeof options.temperature === 'number') directOptions.temperature = options.temperature;
+      return await callGeminiWithFallback(userPrompt, geminiKey, directOptions);
     }
-    return await callGeminiRuntimeText(systemPrompt, userPrompt, settings, jsonMode);
+    const runtimeOptions: RuntimeTextOptions = {
+      jsonMode,
+      preferredModels,
+    };
+    if (typeof options.temperature === 'number') runtimeOptions.temperature = options.temperature;
+    return await callGeminiRuntimeText(systemPrompt, userPrompt, settings, runtimeOptions);
     
   } catch (e: any) {
     throw new Error(cleanErrorMessage(e));
@@ -1954,6 +1992,174 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
   }
 };
 
+type SpeakerToneHint = 'calm' | 'energetic' | 'serious';
+
+export interface StudioSpeakerTraitHint {
+  gender: VoiceOption['gender'];
+  ageGroup: SpeakerAgeGroup;
+  tone: SpeakerToneHint;
+  reason?: string | undefined;
+}
+
+export interface StudioSpeakerTraitAnalysis {
+  speakers: string[];
+  traitHints: Record<string, StudioSpeakerTraitHint>;
+}
+
+const normalizeSpeakerToneHint = (value: unknown): SpeakerToneHint => {
+  const token = String(value || '').trim().toLowerCase();
+  if (!token) return 'calm';
+  if (token.includes('energy') || token.includes('excited') || token.includes('loud') || token.includes('playful')) {
+    return 'energetic';
+  }
+  if (token.includes('serious') || token.includes('grim') || token.includes('deep') || token.includes('formal')) {
+    return 'serious';
+  }
+  return 'calm';
+};
+
+const normalizeSpeakerGenderHint = (value: unknown, speaker: string): VoiceOption['gender'] => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'male') return 'Male';
+  if (token === 'female') return 'Female';
+  return guessGenderFromName(speaker);
+};
+
+const normalizeSpeakerAgeHint = (value: unknown, speaker: string): SpeakerAgeGroup => {
+  const fromValue = normalizeAgeGroupToken(String(value || ''));
+  if (fromValue !== 'Unknown') return fromValue;
+  return guessAgeGroupFromSpeaker(speaker);
+};
+
+const buildSpeakerDetectionExcerpt = (text: string, maxChars: number = 12000): string => {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  if (normalized.length <= maxChars) return normalized;
+
+  const headBudget = Math.max(2400, Math.floor(maxChars * 0.45));
+  const tailBudget = Math.max(1800, Math.floor(maxChars * 0.2));
+  const middleBudget = Math.max(1600, maxChars - headBudget - tailBudget);
+  const middleStart = Math.max(0, Math.floor((normalized.length - middleBudget) / 2));
+  const middleEnd = Math.min(normalized.length, middleStart + middleBudget);
+
+  return [
+    normalized.slice(0, headBudget).trim(),
+    normalized.slice(middleStart, middleEnd).trim(),
+    normalized.slice(Math.max(0, normalized.length - tailBudget)).trim(),
+  ]
+    .filter(Boolean)
+    .join('\n...\n');
+};
+
+export const inferSpeakerTraitHintsWithAi = async (
+  text: string,
+  settings: GenerationSettings,
+  knownSpeakers: string[] = []
+): Promise<StudioSpeakerTraitAnalysis> => {
+  const fallbackSpeakers = [
+    ...new Set(
+      [
+        ...knownSpeakers,
+        ...parseMultiSpeakerScript(text).speakersList,
+      ]
+        .map((speaker) => normalizeSpeakerName(String(speaker || '')))
+        .filter((speaker) => speaker && isLikelySpeakerName(speaker))
+    ),
+  ];
+  const sample = buildSpeakerDetectionExcerpt(text);
+  if (!sample) {
+    return {
+      speakers: fallbackSpeakers,
+      traitHints: {},
+    };
+  }
+
+  const hasLockedSpeakers = fallbackSpeakers.length > 0;
+  const systemPrompt = `You extract speaking characters from a script sample and infer compact voice-casting hints.
+
+Return ONLY valid JSON in this schema:
+{
+  "speakers": [
+    {
+      "name": "string",
+      "gender": "Male|Female|Unknown",
+      "ageGroup": "Child|Adult|Elderly|Unknown",
+      "tone": "calm|energetic|serious",
+      "reason": "short string"
+    }
+  ]
+}
+
+Rules:
+1. If known speakers are provided, reuse exactly those names. Do not invent or rename them.
+2. Otherwise detect only actual speaking characters or narrator-like roles that clearly speak in the text.
+3. Keep the list short: maximum 12 speakers.
+4. Keep "reason" under 12 words.
+5. Use "Unknown" if gender or age is unclear.
+6. Tone must be one of calm, energetic, serious.
+7. No markdown, no prose, no commentary.`;
+
+  const userPrompt = [
+    hasLockedSpeakers
+      ? `Known speakers (must preserve exactly): ${JSON.stringify(fallbackSpeakers)}`
+      : 'Known speakers: []',
+    'Script sample:',
+    sample,
+  ].join('\n\n');
+
+  const resultText = await generateText(systemPrompt, userPrompt, settings, true, {
+    preferredModels: STUDIO_CAST_TEXT_MODELS,
+    temperature: 0.2,
+  });
+  const json = extractJSON(resultText);
+  const rawSpeakers = Array.isArray(json?.speakers) ? json.speakers : [];
+  const normalizedSpeakers: string[] = [];
+  const traitHints: Record<string, StudioSpeakerTraitHint> = {};
+  const knownSpeakerLookup = new Map<string, string>();
+
+  fallbackSpeakers.forEach((speaker) => {
+    knownSpeakerLookup.set(speaker.toLowerCase(), speaker);
+  });
+
+  rawSpeakers.forEach((entry: any) => {
+    const parsedName = normalizeSpeakerName(String(entry?.name || ''));
+    if (!parsedName || !isLikelySpeakerName(parsedName)) return;
+    const canonicalName = hasLockedSpeakers
+      ? (knownSpeakerLookup.get(parsedName.toLowerCase()) || '')
+      : parsedName;
+    const speaker = canonicalName || parsedName;
+    if (!speaker) return;
+    const key = speaker.toLowerCase();
+    if (!normalizedSpeakers.some((item) => item.toLowerCase() === key)) {
+      normalizedSpeakers.push(speaker);
+    }
+    traitHints[speaker] = {
+      gender: normalizeSpeakerGenderHint(entry?.gender, speaker),
+      ageGroup: normalizeSpeakerAgeHint(entry?.ageGroup ?? entry?.age, speaker),
+      tone: normalizeSpeakerToneHint(entry?.tone),
+      reason: String(entry?.reason || '').trim().slice(0, 120) || undefined,
+    };
+  });
+
+  const resolvedSpeakers = normalizedSpeakers.length > 0
+    ? normalizedSpeakers
+    : fallbackSpeakers;
+
+  resolvedSpeakers.forEach((speaker) => {
+    if (traitHints[speaker]) return;
+    traitHints[speaker] = {
+      gender: guessGenderFromName(speaker),
+      ageGroup: guessAgeGroupFromSpeaker(speaker),
+      tone: 'calm',
+    };
+  });
+
+  return {
+    speakers: resolvedSpeakers,
+    traitHints,
+  };
+};
+
 // --- DETECTION SERVICES ---
 export const detectLanguage = async (text: string, _settings: GenerationSettings): Promise<string> => {
   if (!text || text.trim().length < 3) return 'en';
@@ -2282,12 +2488,6 @@ export const generateSpeech = async (
     return truncateRuntimeErrorDetail(`${response.status} ${response.statusText}`);
   };
 
-  const TTS_GATEWAY_JOB_POLL_MS = 500;
-  const TTS_GATEWAY_JOB_POLL_MAX_MS = 2500;
-  const TTS_GATEWAY_JOB_TIMEOUT_MS = 180000;
-  const TTS_GATEWAY_LIVE_CHUNK_CHARS = 180;
-  const TTS_GATEWAY_LIVE_CHUNK_WORDS = 35;
-
   const base64ToArrayBuffer = (encoded: string): ArrayBuffer => {
     const safe = String(encoded || '').trim();
     if (!safe) return new ArrayBuffer(0);
@@ -2297,221 +2497,6 @@ export const generateSpeech = async (
       bytes[i] = binary.charCodeAt(i);
     }
     return bytes.buffer;
-  };
-
-  const extractGatewayJobId = (
-    payload: any,
-    headers?: Headers
-  ): string => {
-    const fromPayload = String(
-      payload?.jobId ||
-      payload?.requestId ||
-      payload?.id ||
-      payload?.job_id ||
-      ''
-    ).trim();
-    if (fromPayload) return fromPayload;
-    const fromHeader = String(
-      headers?.get('x-vf-job-id') ||
-      headers?.get('x-vf-request-id') ||
-      ''
-    ).trim();
-    return fromHeader;
-  };
-
-  const emitGatewayProgress = (detail: GatewayJobProgressPayload) => {
-    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
-    window.dispatchEvent(new CustomEvent(TTS_GATEWAY_JOB_PROGRESS_EVENT, { detail }));
-  };
-
-  const emitGatewayAudioChunk = (detail: GatewayAudioChunkPayload) => {
-    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
-    window.dispatchEvent(new CustomEvent(TTS_GATEWAY_AUDIO_CHUNK_EVENT, { detail }));
-  };
-
-  const cancelGatewayJob = async (backendBase: string, jobId: string): Promise<void> => {
-    const encodedJobId = encodeURIComponent(jobId);
-    try {
-      await authFetch(
-        `${backendBase}/tts/jobs/${encodedJobId}`,
-        { method: 'DELETE' },
-        { requireAuth: true }
-      );
-    } catch {
-      // Best-effort cancellation.
-    }
-  };
-
-  const pollGatewayJobForAudio = async (
-    backendBase: string,
-    jobId: string,
-    runtimeLabel: string,
-    engine: 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO'
-  ): Promise<{ audioBytes: ArrayBuffer; responseHeaders: Record<string, string> }> => {
-    const startedAt = Date.now();
-    const encodedJobId = encodeURIComponent(jobId);
-    let cancelled = false;
-    let chunkCursor = 0;
-    let chunkSupportEnabled = true;
-    let chunkInlineAudioFallback = false;
-    let chunkDownloadEnabled = true;
-    let pollDelayMs = TTS_GATEWAY_JOB_POLL_MS;
-    let lastStatus = '';
-    const emittedChunkKeys = new Set<string>();
-
-    while (Date.now() - startedAt < TTS_GATEWAY_JOB_TIMEOUT_MS) {
-      if (signal?.aborted) {
-        if (!cancelled) {
-          cancelled = true;
-          await cancelGatewayJob(backendBase, jobId);
-        }
-        throw new DOMException("Aborted", "AbortError");
-      }
-      const searchParams = new URLSearchParams();
-      searchParams.set('includeResult', '1');
-      if (chunkSupportEnabled) {
-        searchParams.set('includeChunks', '1');
-        searchParams.set('chunkCursor', String(Math.max(0, chunkCursor)));
-        searchParams.set('chunkLimit', '2');
-        searchParams.set('includeChunkAudio', chunkInlineAudioFallback ? '1' : '0');
-      }
-      const response = await authFetch(
-        `${backendBase}/tts/jobs/${encodedJobId}?${searchParams.toString()}`,
-        { method: 'GET' },
-        { requireAuth: true }
-      );
-      if (!response.ok && chunkSupportEnabled && (response.status === 400 || response.status === 404 || response.status === 422)) {
-        chunkSupportEnabled = false;
-        continue;
-      }
-      if (!response.ok) {
-        const detail = await parseRuntimeError(response);
-        throw new Error(`${runtimeLabel} job polling failed (${response.status}): ${detail}`);
-      }
-
-      const payload = await response.json().catch(() => null) as any;
-      const status = String(payload?.status || '').trim().toLowerCase();
-      if (status && status !== lastStatus) {
-        pollDelayMs = TTS_GATEWAY_JOB_POLL_MS;
-        lastStatus = status;
-      }
-      const queueAgeMs = Number(payload?.queueAgeMs || 0);
-      const queueDepth = Number(payload?.queueDepthAtRead || 0);
-      const elapsedMs = Math.max(1, Date.now() - startedAt);
-      const softProgress = Math.max(
-        6,
-        Math.min(96, Math.round((elapsedMs / TTS_GATEWAY_JOB_TIMEOUT_MS) * 100))
-      );
-      emitGatewayProgress({
-        jobId,
-        status,
-        engine,
-        queueAgeMs: Number.isFinite(queueAgeMs) ? queueAgeMs : 0,
-        queueDepth: Number.isFinite(queueDepth) ? queueDepth : 0,
-        stage: status === 'running' ? 'Synthesizing audio...' : 'Queued for synthesis...',
-        progressPct: softProgress,
-      });
-
-      let emittedInThisPoll = 0;
-      if (chunkSupportEnabled) {
-        const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
-        const responseChunkCursorNext = Number(payload?.chunkCursorNext);
-        if (chunks.length === 0 && payload && typeof payload === 'object' && !Object.prototype.hasOwnProperty.call(payload, 'chunks') && !Object.prototype.hasOwnProperty.call(payload, 'live')) {
-          chunkSupportEnabled = false;
-        } else {
-          for (const rawChunk of chunks) {
-            if (!rawChunk || typeof rawChunk !== 'object') continue;
-            const index = Number((rawChunk as any).index);
-            if (!Number.isFinite(index) || index < 0) continue;
-            const safeIndex = Math.round(index);
-            const key = `${jobId}:${Math.round(index)}`;
-            if (emittedChunkKeys.has(key)) continue;
-
-            let audioBase64 = String((rawChunk as any).audioBase64 || '').trim();
-            if (!audioBase64 && chunkDownloadEnabled) {
-              try {
-                const chunkBytes = await fetchTtsJobChunkAudio(jobId, safeIndex, backendBase);
-                audioBase64 = await arrayBufferToBase64(chunkBytes);
-              } catch {
-                chunkDownloadEnabled = false;
-                chunkInlineAudioFallback = true;
-              }
-            }
-            if (!audioBase64) continue;
-
-            emittedChunkKeys.add(key);
-            emitGatewayAudioChunk({
-              jobId,
-              index: safeIndex,
-              engine,
-              contentType: String((rawChunk as any).contentType || 'audio/wav'),
-              durationMs: Number((rawChunk as any).durationMs || 0),
-              textChars: Number((rawChunk as any).textChars || 0),
-              traceId: String((rawChunk as any).traceId || payload?.traceId || ''),
-              audioBase64,
-            });
-            emittedInThisPoll += 1;
-          }
-          if (Number.isFinite(responseChunkCursorNext) && responseChunkCursorNext >= chunkCursor) {
-            chunkCursor = Math.max(chunkCursor, Math.round(responseChunkCursorNext));
-          } else if (chunks.length > 0) {
-            const maxIndex = chunks.reduce((max: number, item: any) => {
-              const idx = Number((item as any)?.index);
-              if (!Number.isFinite(idx)) return max;
-              return Math.max(max, Math.round(idx));
-            }, -1);
-            if (maxIndex >= 0) chunkCursor = Math.max(chunkCursor, maxIndex + 1);
-          }
-        }
-      }
-
-      if (status === 'completed') {
-        emitGatewayProgress({
-          jobId,
-          status,
-          engine,
-          queueAgeMs: Number.isFinite(queueAgeMs) ? queueAgeMs : 0,
-          queueDepth: Number.isFinite(queueDepth) ? queueDepth : 0,
-          stage: 'Synthesis completed. Preparing playback...',
-          progressPct: 98,
-        });
-        const result = payload?.result && typeof payload.result === 'object' ? payload.result : {};
-        const audioBase64 = String(result?.audioBase64 || '').trim();
-        if (!audioBase64) {
-          throw new Error(`${runtimeLabel} completed job is missing audio payload.`);
-        }
-        const headerRecord: Record<string, string> = {};
-        const rawHeaders = result?.headers && typeof result.headers === 'object' ? result.headers : {};
-        Object.entries(rawHeaders).forEach(([key, value]) => {
-          const safeKey = String(key || '').trim().toLowerCase();
-          if (!safeKey) return;
-          headerRecord[safeKey] = String(value ?? '');
-        });
-        return {
-          audioBytes: base64ToArrayBuffer(audioBase64),
-          responseHeaders: headerRecord,
-        };
-      }
-
-      if (status === 'failed') {
-        const errorDetail = payload?.error;
-        const message = typeof errorDetail === 'string'
-          ? errorDetail
-          : JSON.stringify(errorDetail || payload || {});
-        throw new Error(`${runtimeLabel} failed: ${truncateRuntimeErrorDetail(message)}`);
-      }
-      if (status === 'cancelled') {
-        throw new Error(`${runtimeLabel} was cancelled before completion.`);
-      }
-
-      if (emittedInThisPoll > 0) {
-        pollDelayMs = TTS_GATEWAY_JOB_POLL_MS;
-      } else {
-        pollDelayMs = Math.min(TTS_GATEWAY_JOB_POLL_MAX_MS, Math.max(TTS_GATEWAY_JOB_POLL_MS, Math.round(pollDelayMs * 1.35)));
-      }
-      await sleepMs(pollDelayMs);
-    }
-    throw new Error(`${runtimeLabel} timed out while waiting for queued synthesis.`);
   };
 
   const synthesizeViaRuntime = async (
@@ -2579,12 +2564,14 @@ export const generateSpeech = async (
     runtimeLabel: string
   ): Promise<AudioBuffer> => {
     const backendBase = resolveMediaBackendBaseUrl(settings);
+    const liveChunkRequest = resolveLiveChunkRequest(engine, lang);
     const livePayload = {
       ...payload,
       engine,
+      post_tts_disable: engine === 'KOKORO',
       stream: true,
-      live_chunk_chars: TTS_GATEWAY_LIVE_CHUNK_CHARS,
-      live_chunk_words: TTS_GATEWAY_LIVE_CHUNK_WORDS,
+      live_chunk_chars: liveChunkRequest.liveChunkChars,
+      live_chunk_words: liveChunkRequest.liveChunkWords,
     };
     const submitGatewayRequest = async (url: string): Promise<Response> => (
       authFetch(
@@ -2688,7 +2675,13 @@ export const generateSpeech = async (
           stage: 'Queued for synthesis...',
           progressPct: 8,
         });
-        const queuedResult = await pollGatewayJobForAudio(backendBase, jobId, runtimeLabel, engine);
+        const queuedResult = await pollTtsGatewayJobForAudio({
+          baseUrl: backendBase,
+          jobId,
+          runtimeLabel,
+          engine,
+          signal,
+        });
         audioBytes = queuedResult.audioBytes;
         gatewayHeaders = queuedResult.responseHeaders;
       }
@@ -2743,10 +2736,20 @@ export const generateSpeech = async (
     ) => Promise<AudioBuffer>
   ): Promise<AudioBuffer | null> => {
     const profile = getChunkProfile(engine, lang);
-
-    const windowWordLimit = MAX_WORDS_PER_WINDOW;
-    const windows = buildSentenceAlignedWordWindows(candidateText, windowWordLimit);
-    if (windows.length <= 1 && candidateText.length <= profile.targetCharCap) {
+    const candidateWordCount = countWords(candidateText);
+    const shouldForceChunking = (
+      candidateText.length > Math.max(profile.hardCharCap * 2, 540)
+      || candidateWordCount > Math.max(profile.maxWordsPerChunk * 2, 96)
+    );
+    if (!shouldForceChunking) {
+      return null;
+    }
+    const windows = buildLongTextChunks({
+      engine,
+      language: lang,
+      text: candidateText,
+    });
+    if (windows.length <= 1) {
       return null;
     }
 
@@ -2769,7 +2772,10 @@ export const generateSpeech = async (
         } catch (error) {
           lastError = error;
           const detail = error instanceof Error ? error.message : String(error);
-          if (isKnownGeminiPoolMisconfigError(detail)) {
+          const shouldFailFast =
+            engine !== 'KOKORO' &&
+            shouldFailFastOnGeminiRuntimeError(detail);
+          if (shouldFailFast) {
             break;
           }
           if (attempt < RETRY_ATTEMPTS_PER_CHUNK) {
@@ -3056,8 +3062,8 @@ export const generateSpeech = async (
 
                if (activeEngine === 'KOKORO') {
                  const isHindiTarget = lang.startsWith('hi');
-                 const hindiCandidates = candidates.filter((v) => /hindi|india|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.country || ''}`));
-                 const englishCandidates = candidates.filter((v) => !/hindi|india|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.country || ''}`));
+                 const hindiCandidates = candidates.filter((v) => /hindi|hinglish|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.name || ''}`));
+                 const englishCandidates = candidates.filter((v) => !/hindi|hinglish|^hf_|^hm_|_hi_/i.test(`${v.id} ${v.accent} ${v.name || ''}`));
                  if (isHindiTarget && hindiCandidates.length > 0) candidates = hindiCandidates;
                  if (!isHindiTarget && englishCandidates.length > 0) candidates = englishCandidates;
                }
@@ -3205,7 +3211,7 @@ export const generateSpeech = async (
           language: normalizedRequest.language,
           speaker_voices: geminiStudioPairGroupsPlan?.speakerVoices,
           multi_speaker_mode: useGeminiBuiltInMultiSpeaker ? 'studio_pair_groups' : undefined,
-          multi_speaker_max_concurrency: useGeminiBuiltInMultiSpeaker ? 7 : undefined,
+          multi_speaker_max_concurrency: useGeminiBuiltInMultiSpeaker ? 4 : undefined,
           multi_speaker_retry_once: useGeminiBuiltInMultiSpeaker ? true : undefined,
           multi_speaker_line_map: useGeminiBuiltInMultiSpeaker
             ? geminiStudioPairGroupsPlan?.lineMap.map((line) => ({
@@ -3224,7 +3230,9 @@ export const generateSpeech = async (
       );
     } catch (runtimeError: any) {
       let finalRuntimeError: any = runtimeError;
-      if (useGeminiBuiltInMultiSpeaker) {
+      const runtimeDetail = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
+      const shouldSkipSegmentedFallback = shouldFailFastOnGeminiRuntimeError(runtimeDetail);
+      if (useGeminiBuiltInMultiSpeaker && !shouldSkipSegmentedFallback) {
         try {
           console.warn(
             'Gemini grouped multi-speaker synthesis failed; falling back to segmented mode.',
@@ -3235,6 +3243,11 @@ export const generateSpeech = async (
           finalRuntimeError = fallbackError;
           console.warn('Gemini segmented fallback failed after grouped mode error.', fallbackError);
         }
+      } else if (useGeminiBuiltInMultiSpeaker && shouldSkipSegmentedFallback) {
+        console.warn(
+          'Gemini grouped multi-speaker synthesis failed with a fail-fast runtime error; skipping segmented fallback.',
+          runtimeError
+        );
       }
       if (!allowPersonalGeminiBypass) {
         throw finalRuntimeError;
@@ -3249,109 +3262,114 @@ export const generateSpeech = async (
 
   // --- KOKORO RUNTIME ---
   if (activeEngine === 'KOKORO') {
-    const useBrowserKokoro = shouldUseBrowserKokoroExecution(
-      activeEngine,
-      context,
-      settings.kokoroExecutionMode
-    );
+    const useBrowserKokoro = shouldUseBrowserKokoroExecution(activeEngine, context);
     if (useBrowserKokoro) {
-      const backendBase = resolveMediaBackendBaseUrl(settings);
-      const targetVoiceId = String(settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
-      const jobId = `kokoro-browser-${traceId}`;
-      const startedAt = Date.now();
-      let firstChunkAtMs = 0;
-      const chunkEmitTasks: Array<Promise<void>> = [];
+      try {
+        const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+        const backendBase = resolveMediaBackendBaseUrl(settings);
+        const targetVoiceId = String(settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
+        const jobId = `kokoro-browser-${traceId}`;
+        const startedAt = Date.now();
+        let firstChunkAtMs = 0;
+        const chunkEmitTasks: Array<Promise<void>> = [];
 
-      const emitChunk = (chunk: KokoroLiveChunk): void => {
-        const task = (async () => {
-          const chunkBuffer = ctx.createBuffer(1, chunk.audioData.length, Math.max(1, chunk.sampleRate));
-          chunkBuffer.copyToChannel(chunk.audioData, 0);
-          const chunkBlob = audioBufferToWav(chunkBuffer);
-          const chunkArray = await chunkBlob.arrayBuffer();
-          const audioBase64 = await arrayBufferToBase64(chunkArray);
-          emitGatewayAudioChunk({
-            jobId,
-            index: chunk.index,
-            engine: 'KOKORO',
-            contentType: 'audio/wav',
-            durationMs: chunk.durationMs,
-            textChars: Math.max(0, String(chunk.text || '').length),
-            traceId,
-            audioBase64,
+        const emitChunk = (chunk: KokoroLiveChunk): void => {
+          const task = (async () => {
+            const chunkBuffer = ctx.createBuffer(1, chunk.audioData.length, Math.max(1, chunk.sampleRate));
+            chunkBuffer.copyToChannel(chunk.audioData, 0);
+            const chunkBlob = audioBufferToWav(chunkBuffer);
+            const chunkArray = await chunkBlob.arrayBuffer();
+            const audioBase64 = await arrayBufferToBase64(chunkArray);
+            emitGatewayAudioChunk({
+              jobId,
+              index: chunk.index,
+              engine: 'KOKORO',
+              contentType: 'audio/wav',
+              durationMs: chunk.durationMs,
+              textChars: Math.max(0, String(chunk.text || '').length),
+              traceId,
+              audioBase64,
+            });
+          })();
+          chunkEmitTasks.push(task);
+          void task.catch(() => {
+            // Best-effort live chunk emission.
           });
-        })();
-        chunkEmitTasks.push(task);
-        void task.catch(() => {
-          // Best-effort live chunk emission.
+        };
+
+        emitGatewayProgress({
+          jobId,
+          status: 'queued',
+          engine: 'KOKORO',
+          queueAgeMs: 0,
+          queueDepth: 0,
+          stage: 'Preparing local ONNX CPU runtime...',
+          progressPct: 10,
         });
-      };
 
-      emitGatewayProgress({
-        jobId,
-        status: 'queued',
-        engine: 'KOKORO',
-        queueAgeMs: 0,
-        queueDepth: 0,
-        stage: 'Preparing Basic WebGPU runtime...',
-        progressPct: 10,
-      });
-
-      const synthResult = await kokoroBrowserRuntime.synthesizeLive({
-        text: processedText,
-        voiceId: targetVoiceId,
-        speed: settings.speed,
-        backendBaseUrl: backendBase,
-        ...(signal ? { signal } : {}),
-        onProgress: (progress, stage) => {
-          emitGatewayProgress({
-            jobId,
-            status: 'running',
-            engine: 'KOKORO',
-            queueAgeMs: Math.max(0, Date.now() - startedAt),
-            queueDepth: 0,
-            stage,
-            progressPct: Math.max(10, Math.min(97, Math.round(progress))),
-          });
-        },
-        onChunk: (chunk) => {
-          if (!firstChunkAtMs) {
-            firstChunkAtMs = Date.now();
+        const synthResult = await kokoroBrowserRuntime.synthesizeLive({
+          text: processedText,
+          voiceId: targetVoiceId,
+          language: lang,
+          speed: settings.speed,
+          backendBaseUrl: backendBase,
+          ...(signal ? { signal } : {}),
+          onProgress: (progress, stage) => {
             emitGatewayProgress({
               jobId,
               status: 'running',
               engine: 'KOKORO',
-              queueAgeMs: Math.max(0, firstChunkAtMs - startedAt),
+              queueAgeMs: Math.max(0, Date.now() - startedAt),
               queueDepth: 0,
-              stage: 'First live chunk ready.',
-              progressPct: 22,
+              stage,
+              progressPct: Math.max(10, Math.min(97, Math.round(progress))),
             });
-          }
-          emitChunk(chunk);
-        },
-      });
+          },
+          onChunk: (chunk) => {
+            if (!firstChunkAtMs) {
+              firstChunkAtMs = Date.now();
+              emitGatewayProgress({
+                jobId,
+                status: 'running',
+                engine: 'KOKORO',
+                queueAgeMs: Math.max(0, firstChunkAtMs - startedAt),
+                queueDepth: 0,
+                stage: 'First live chunk ready.',
+                progressPct: 22,
+              });
+            }
+            emitChunk(chunk);
+          },
+        });
 
-      if (chunkEmitTasks.length > 0) {
-        await Promise.all(chunkEmitTasks);
+        if (chunkEmitTasks.length > 0) {
+          await Promise.all(chunkEmitTasks);
+        }
+
+        emitGatewayProgress({
+          jobId,
+          status: 'completed',
+          engine: 'KOKORO',
+          queueAgeMs: Math.max(0, Date.now() - startedAt),
+          queueDepth: 0,
+          stage: 'Synthesis completed. Preparing playback...',
+          progressPct: 98,
+        });
+
+        const mergedBuffer = ctx.createBuffer(
+          1,
+          synthResult.mergedAudio.length,
+          Math.max(1, synthResult.sampleRate)
+        );
+        mergedBuffer.copyToChannel(synthResult.mergedAudio, 0);
+        kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 120000);
+        return mergedBuffer;
+      } catch (error: any) {
+        if (error?.name === 'AbortError') {
+          throw error;
+        }
+        throw new Error(error?.message || 'Kokoro local ONNX CPU runtime failed.');
       }
-
-      emitGatewayProgress({
-        jobId,
-        status: 'completed',
-        engine: 'KOKORO',
-        queueAgeMs: Math.max(0, Date.now() - startedAt),
-        queueDepth: 0,
-        stage: 'Synthesis completed. Preparing playback...',
-        progressPct: 98,
-      });
-
-      const mergedBuffer = ctx.createBuffer(
-        1,
-        synthResult.mergedAudio.length,
-        Math.max(1, synthResult.sampleRate)
-      );
-      mergedBuffer.copyToChannel(synthResult.mergedAudio, 0);
-      kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 30000);
-      return mergedBuffer;
     }
 
     const runtimeUrl = normalizeRuntimeUrl(settings.kokoroTtsServiceUrl, 'http://127.0.0.1:7820');

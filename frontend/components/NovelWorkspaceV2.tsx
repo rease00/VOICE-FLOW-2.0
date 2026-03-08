@@ -50,6 +50,7 @@ import {
 import { extractNovelTextFromFile, splitImportedTextToChapters } from '../services/novelImportService';
 import { generateTextContent } from '../services/geminiService';
 import { UploadDropzone } from './ui/UploadDropzone';
+import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
 import {
   getNovelRootFolder,
   isNovelLocalFsSupported,
@@ -331,6 +332,13 @@ const buildMemoryInstruction = (ledger: ProjectMemoryLedger): string => {
 };
 
 export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, mediaBackendUrl, onToast }) => {
+  const { isPhone, isDesktop } = useWorkspaceViewport();
+  const [mobileEditorPane, setMobileEditorPane] = useState<'source' | 'adapted'>('source');
+  const [mobilePanelOpen, setMobilePanelOpen] = useState({
+    adaptation: true,
+    summary: false,
+    ledger: false,
+  });
   const { user } = useUser();
   const [driveState, setDriveState] = useState<DriveConnectionState>(buildDriveState('checking', 'Checking Google Drive access...'));
   const [driveToken, setDriveToken] = useState('');
@@ -384,6 +392,10 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const chapterVersionsRef = useRef(chapterVersionsByProjectId);
   const importModalRef = useRef<HTMLDivElement>(null);
   const importTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const toggleMobilePanel = (panel: keyof typeof mobilePanelOpen) => {
+    setMobilePanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
+  };
 
   useEffect(() => { chaptersRef.current = chaptersByProjectId; }, [chaptersByProjectId]);
   useEffect(() => { ledgerRef.current = memoryLedgerByProjectId; }, [memoryLedgerByProjectId]);
@@ -1328,23 +1340,23 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
           <h2 className="text-2xl font-bold text-gray-800">Novel Workspace</h2>
           <p className="text-sm text-gray-500">Chapter-by-chapter adaptation with lockable memory and import flow.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             ref={importTriggerRef}
             onClick={() => setIsImportModalOpen(true)}
-            className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 flex items-center gap-2"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 sm:flex-none"
           >
             <FileUp size={14} />Import File
           </button>
           <button
             onClick={() => { void bindLocalFolder(); }}
             disabled={isBindingLocalFolder}
-            className="px-3 py-2 rounded-xl border border-indigo-200 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 inline-flex items-center gap-1.5"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 sm:flex-none"
           >
             {isBindingLocalFolder ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}
             Bind Local Folder
           </button>
-          <button onClick={() => { void refreshDriveSession(); }} className="px-3 py-2 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 bg-white hover:bg-gray-50"><RefreshCw size={14} className={driveState.status === 'checking' ? 'animate-spin inline mr-2' : 'inline mr-2'} />Refresh Drive</button>
+          <button onClick={() => { void refreshDriveSession(); }} className="inline-flex flex-1 items-center justify-center rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-50 sm:flex-none"><RefreshCw size={14} className={driveState.status === 'checking' ? 'animate-spin inline mr-2' : 'inline mr-2'} />Refresh Drive</button>
         </div>
       </div>
       <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-700">
@@ -1356,9 +1368,9 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
         <div className="xl:col-span-3 bg-white rounded-2xl border border-gray-200 p-4 space-y-4">
           <div>
             <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Create Novel</label>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <input value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="Novel name" className="flex-1 p-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 outline-none" />
-              <button onClick={handleCreateNovel} className="px-3 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700" aria-label="Create novel"><Plus size={16} /></button>
+              <button onClick={handleCreateNovel} className="rounded-xl bg-indigo-600 px-3 py-2 text-white hover:bg-indigo-700 sm:py-0" aria-label="Create novel"><Plus size={16} className="mx-auto" /></button>
             </div>
           </div>
           <div className="max-h-56 overflow-y-auto custom-scrollbar space-y-1.5">
@@ -1383,9 +1395,9 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
           </div>
           <div>
             <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Create Chapter</label>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <input value={newChapterTitle} onChange={(e) => setNewChapterTitle(e.target.value)} placeholder="Chapter title" className="flex-1 p-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 outline-none" />
-              <button onClick={handleCreateChapter} className="px-3 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" aria-label="Create chapter"><Plus size={16} /></button>
+              <button onClick={handleCreateChapter} className="rounded-xl bg-emerald-600 px-3 py-2 text-white hover:bg-emerald-700 sm:py-0" aria-label="Create chapter"><Plus size={16} className="mx-auto" /></button>
             </div>
             <div className="mt-3 max-h-44 overflow-y-auto custom-scrollbar space-y-1.5">
               {chapters.map((chapter) => {
@@ -1405,19 +1417,37 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
         </div>
 
         <div className="xl:col-span-6 bg-white rounded-2xl border border-gray-200 flex flex-col overflow-hidden">
-          <div className="p-3 border-b border-gray-100 flex items-center justify-between gap-2 bg-gray-50">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 p-3">
             <div className="min-w-0">
               <p className="text-xs font-bold text-gray-500 uppercase">Editor</p>
               <p className="text-sm font-semibold text-gray-800 truncate">{selectedProject?.name || 'No novel selected'} {selectedChapter ? ` / ${selectedChapter.title}` : ''}</p>
             </div>
             <button onClick={handleManualSave} disabled={!selectedChapterId} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"><Save size={12} />Save</button>
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 min-h-0 flex-1">
-            <div className="flex min-h-0 flex-col border-r border-gray-100">
+          {isPhone && (
+            <div className="grid grid-cols-2 gap-2 border-b border-gray-100 bg-white px-3 py-2">
+              <button
+                type="button"
+                onClick={() => setMobileEditorPane('source')}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${mobileEditorPane === 'source' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+              >
+                Source
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileEditorPane('adapted')}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${mobileEditorPane === 'adapted' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+              >
+                Adapted
+              </button>
+            </div>
+          )}
+          <div className={`grid min-h-0 flex-1 ${isDesktop ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            <div className={`flex min-h-0 flex-col border-gray-100 ${isDesktop ? 'border-r' : ''} ${isPhone && mobileEditorPane !== 'source' ? 'hidden' : ''}`}>
               <div className="border-b border-gray-100 bg-gray-50 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">Source</div>
               <textarea value={chapterText} onChange={(e) => setChapterText(e.target.value)} placeholder="Source chapter..." className="min-h-[260px] flex-1 p-4 resize-none outline-none text-[15px] leading-relaxed text-gray-800 font-serif" />
             </div>
-            <div className="flex min-h-0 flex-col">
+            <div className={`flex min-h-0 flex-col ${isPhone && mobileEditorPane !== 'adapted' ? 'hidden' : ''}`}>
               <div className="border-b border-gray-100 bg-gray-50 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">Adapted</div>
               <textarea value={adaptedOutput} onChange={(e) => setAdaptedOutput(e.target.value)} placeholder="Adapted output..." className="min-h-[260px] flex-1 p-4 resize-none outline-none text-[15px] leading-relaxed text-gray-800 font-serif" />
             </div>
@@ -1440,7 +1470,19 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
 
         <div className="xl:col-span-3 space-y-4">
           <div className="bg-white rounded-2xl border border-gray-200 p-4">
-            <div className="flex items-center gap-2 mb-2"><Wand2 size={16} className="text-indigo-600" /><h3 className="text-sm font-bold text-gray-800">Adaptation</h3></div>
+            {isPhone ? (
+              <button type="button" onClick={() => toggleMobilePanel('adaptation')} className="mb-2 flex w-full items-center justify-between gap-3 text-left">
+                <div className="flex items-center gap-2">
+                  <Wand2 size={16} className="text-indigo-600" />
+                  <h3 className="text-sm font-bold text-gray-800">Adaptation</h3>
+                </div>
+                {mobilePanelOpen.adaptation ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+              </button>
+            ) : (
+              <div className="mb-2 flex items-center gap-2"><Wand2 size={16} className="text-indigo-600" /><h3 className="text-sm font-bold text-gray-800">Adaptation</h3></div>
+            )}
+            {(!isPhone || mobilePanelOpen.adaptation) && (
+            <>
             <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="w-full p-2.5 border border-gray-200 rounded-xl text-xs bg-gray-50 mb-2">
               <option value="Hinglish">Hinglish</option>
               <option value="English">English</option>
@@ -1452,9 +1494,20 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
             <button onClick={() => { void handleRunBatch(); }} disabled={isAdapting || !selectedChapterId} className="w-full px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-bold disabled:opacity-50 mb-2">{isBatchRunning ? 'Stop Batch' : 'Run Batch'}</button>
             <button onClick={() => { void handleResumeFailedBatch(); }} disabled={isBatchRunning} className="w-full px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 text-xs font-bold disabled:opacity-50">Resume Failed</button>
             {batchMessage && <p className="text-[11px] text-gray-600 mt-2">{batchMessage}</p>}
+            </>
+            )}
           </div>
           <div className="bg-white rounded-2xl border border-gray-200 p-4">
-            <h3 className="text-sm font-bold text-gray-800 mb-2">Chapter Memory</h3>
+            {isPhone ? (
+              <button type="button" onClick={() => toggleMobilePanel('summary')} className="mb-2 flex w-full items-center justify-between gap-3 text-left">
+                <h3 className="text-sm font-bold text-gray-800">Chapter Memory</h3>
+                {mobilePanelOpen.summary ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+              </button>
+            ) : (
+              <h3 className="text-sm font-bold text-gray-800 mb-2">Chapter Memory</h3>
+            )}
+            {(!isPhone || mobilePanelOpen.summary) && (
+            <>
             {selectedChapterSummary ? (
               <div className="space-y-2 text-xs text-gray-700">
                 <p className="rounded-lg border border-gray-200 bg-gray-50 p-2">{selectedChapterSummary.summary || 'No summary generated yet.'}</p>
@@ -1492,12 +1545,28 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
                 ))}
               </div>
             </div>
+            </>
+            )}
           </div>
           <div className="bg-white rounded-2xl border border-gray-200 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-gray-800">Memory Ledger</h3>
-              <button onClick={addMemoryTagRow} className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">+ Add Tag</button>
-            </div>
+            {isPhone ? (
+              <button type="button" onClick={() => toggleMobilePanel('ledger')} className="mb-2 flex w-full items-center justify-between gap-3 text-left">
+                <h3 className="text-sm font-bold text-gray-800">Memory Ledger</h3>
+                {mobilePanelOpen.ledger ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+              </button>
+            ) : (
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-gray-800">Memory Ledger</h3>
+                <button onClick={addMemoryTagRow} className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">+ Add Tag</button>
+              </div>
+            )}
+            {(!isPhone || mobilePanelOpen.ledger) && (
+            <>
+            {isPhone && (
+              <div className="mb-2 flex justify-end">
+                <button onClick={addMemoryTagRow} className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">+ Add Tag</button>
+              </div>
+            )}
             <div className="flex gap-2 mb-2">
               <button onClick={() => setMemoryTab('character')} className={`flex-1 px-2 py-1.5 rounded text-xs ${memoryTab === 'character' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'}`}>Characters</button>
               <button onClick={() => setMemoryTab('place')} className={`flex-1 px-2 py-1.5 rounded text-xs ${memoryTab === 'place' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'}`}>Places</button>
@@ -1564,6 +1633,8 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
                 </div>
               ))}
             </div>
+            </>
+            )}
           </div>
           <div className="bg-white rounded-2xl border border-gray-200 p-4">
             <button onClick={() => setShowAdvancedDrive((prev) => !prev)} className="w-full flex justify-between items-center text-sm font-bold text-gray-800"><span>Advanced: Google Drive</span>{showAdvancedDrive ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
@@ -1580,16 +1651,21 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       </div>
       {isImportModalOpen && (
         <div
-          className="fixed inset-0 md:left-64 z-[90] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 md:p-6"
+          className={`fixed inset-0 z-[90] flex bg-black/40 backdrop-blur-sm ${isPhone ? 'items-stretch justify-stretch p-0' : 'items-center justify-center p-4'} xl:left-64 xl:p-6`}
           role="dialog"
           aria-modal="true"
           aria-label="Import novel files"
         >
-          <div ref={importModalRef} tabIndex={-1} className="w-full max-w-3xl bg-white rounded-2xl border border-gray-200 shadow-xl p-4">
-            <div className="flex items-center justify-between mb-3">
+          <div
+            ref={importModalRef}
+            tabIndex={-1}
+            className={`w-full border border-gray-200 bg-white shadow-xl ${isPhone ? 'flex h-full max-w-none flex-col rounded-none border-x-0 border-y-0 p-4' : 'max-w-3xl rounded-2xl p-4'}`}
+          >
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-lg font-bold text-gray-800">Import Novel File(s)</h3>
                   <button onClick={() => { setIsImportModalOpen(false); resetImportState(); }} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50" aria-label="Close import dialog">Close</button>
                 </div>
+            <div className={isPhone ? 'min-h-0 flex-1 overflow-y-auto pr-1' : ''}>
             <div className="mb-2">
               <UploadDropzone
                 accept=".txt,.pdf,.png,.jpg,.jpeg,.webp"
@@ -1619,7 +1695,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
                 </div>
               )}
             </div>
-            <div className="flex gap-2 mb-2">
+            <div className="mb-2 flex flex-col gap-2 sm:flex-row">
               <button onClick={() => { void handleExtractImport(); }} disabled={importFiles.length === 0 || isImportExtracting || isImportSplitting} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 disabled:opacity-50">{isImportExtracting ? 'Extracting...' : 'Extract + Auto Split'}</button>
               <button onClick={handleApplyImportChapters} disabled={importPreviewChapters.length === 0 || !selectedProjectId} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50">Create Chapters</button>
             </div>
@@ -1634,6 +1710,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
                   <textarea value={chapter.text} onChange={(e) => setImportPreviewChapters((prev) => prev.map((row) => row.id === chapter.id ? { ...row, text: e.target.value } : row))} className="w-full h-20 p-1.5 border border-gray-200 rounded text-xs" />
                 </div>
               ))}
+            </div>
             </div>
           </div>
         </div>

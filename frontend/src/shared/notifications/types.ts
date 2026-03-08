@@ -8,6 +8,8 @@ export type NotificationAudience = 'all' | 'admin' | 'user';
 
 export type NotificationStatus = 'active' | 'resolved';
 
+export type NotificationScope = 'ephemeral' | 'persisted';
+
 export const NOTIFICATION_EVENT_CODES = [
   'custom.message',
   'connectivity.offline',
@@ -47,10 +49,25 @@ export const NOTIFICATION_EVENT_CODES = [
   'support.message.sent',
   'support.message.failed',
   'support.conversation.unresolved',
+  'support.reply.received',
+  'support.conversation.resolved',
+  'tts.job.completed',
+  'tts.job.failed',
+  'tts.job.cancelled',
+  'dubbing.job.completed',
+  'dubbing.job.failed',
+  'dubbing.job.cancelled',
+  'admin.alert.opened',
+  'admin.approval.pending',
+  'admin.audit.chain.mismatch',
   'admin.pool.reload.success',
   'admin.pool.reload.failed',
   'admin.guard.action.submitted',
   'admin.guard.action.failed',
+  'admin.session.unlock.issued',
+  'admin.session.unlock.verified',
+  'admin.scheduler.run.accepted',
+  'admin.rbac.saved',
   'admin.access.load.failed',
   'app.crash.captured',
 ] as const;
@@ -60,8 +77,18 @@ export type NotificationEventCode = (typeof NOTIFICATION_EVENT_CODES)[number];
 export const isNotificationEventCode = (value: string): value is NotificationEventCode =>
   (NOTIFICATION_EVENT_CODES as readonly string[]).includes(value);
 
+export interface NotificationActionTarget {
+  screen?: string;
+  tab?: string;
+  adminTab?: string;
+  conversationId?: string;
+  jobId?: string;
+  href?: string;
+}
+
 export interface NotificationAction {
   label: string;
+  target?: NotificationActionTarget | undefined;
   onClick?: (() => void) | undefined;
 }
 
@@ -75,6 +102,7 @@ export interface AppNotification {
   severity: NotificationSeverity;
   category: NotificationCategory;
   audience: NotificationAudience;
+  scope: NotificationScope;
   channel: NotificationChannel;
   status: NotificationStatus;
   resolvedAt: number | null;
@@ -82,9 +110,12 @@ export interface AppNotification {
   createdAt: number;
   expiresAt: number;
   readAt: number | null;
+  dismissedAt?: number | null;
   sticky: boolean;
   dedupeKey?: string | undefined;
   toastVisible: boolean;
+  requiredPermission?: string | undefined;
+  emailEligible?: boolean | undefined;
   action?: NotificationAction | undefined;
 }
 
@@ -92,6 +123,10 @@ export interface NotificationPrefs {
   allowTips: boolean;
   allowSystemInfo: boolean;
   playSound: boolean;
+  emailAsyncJobs: boolean;
+  emailBilling: boolean;
+  emailSupport: boolean;
+  emailAdminAlerts: boolean;
 }
 
 export interface NotificationInput {
@@ -109,6 +144,8 @@ export interface NotificationInput {
   resolvedBy?: string | null;
   sticky?: boolean;
   dedupeKey?: string;
+  requiredPermission?: string;
+  emailEligible?: boolean;
   toastVisible?: boolean;
   action?: NotificationAction;
   expiresAt?: number;
@@ -130,6 +167,8 @@ export interface NotificationEmitPayload {
   channel?: NotificationChannel;
   sticky?: boolean;
   dedupeKey?: string;
+  requiredPermission?: string;
+  emailEligible?: boolean;
   toastVisible?: boolean;
   action?: NotificationAction;
 }

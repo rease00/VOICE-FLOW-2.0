@@ -6,6 +6,12 @@ export interface AuthFetchOptions {
   requireAuth?: boolean;
 }
 
+interface TokenResolution {
+  token: string;
+  hadCurrentUser: boolean;
+  error: Error | null;
+}
+
 const NETWORK_FAILURE_HINTS = [
   'failed to fetch',
   'fetch failed',
@@ -60,22 +66,38 @@ const resolveRequestTarget = (input: RequestInfo | URL): string => {
 };
 
 export const getCurrentIdToken = async (): Promise<string> => {
-  const user = firebaseAuth.currentUser;
-  if (!user) return '';
-  try {
-    return await user.getIdToken();
-  } catch {
-    return '';
-  }
+  const result = await getCurrentIdTokenWithRefresh(false);
+  return result.token;
 };
 
-const getCurrentIdTokenWithRefresh = async (forceRefresh: boolean): Promise<string> => {
+const mapTokenReadFailure = (error: Error): string => {
+  const detail = String(error.message || error || '').trim();
+  if (isTokenTimingAuthDetail(detail)) {
+    return 'System clock is out of sync. Sync your device clock and sign in again.';
+  }
+  if (isLikelyNetworkFetchFailure(detail)) {
+    return 'Cannot reach authentication service right now. Check internet connection, then retry.';
+  }
+  return 'Authentication session could not be refreshed. Sign in again.';
+};
+
+const getCurrentIdTokenWithRefresh = async (forceRefresh: boolean): Promise<TokenResolution> => {
   const user = firebaseAuth.currentUser;
-  if (!user) return '';
+  if (!user) {
+    return { token: '', hadCurrentUser: false, error: null };
+  }
   try {
-    return await user.getIdToken(forceRefresh);
-  } catch {
-    return '';
+    return {
+      token: await user.getIdToken(forceRefresh),
+      hadCurrentUser: true,
+      error: null,
+    };
+  } catch (error: unknown) {
+    return {
+      token: '',
+      hadCurrentUser: true,
+      error: error instanceof Error ? error : new Error(String(error || 'Authentication token refresh failed.')),
+    };
   }
 };
 
@@ -110,7 +132,8 @@ export const authFetch = async (
   const resolveRequestHeaders = async (forceTokenRefresh: boolean) => {
     const currentUser = firebaseAuth.currentUser;
     const firebaseUid = String(currentUser?.uid || '').trim();
-    const token = await getCurrentIdTokenWithRefresh(forceTokenRefresh);
+    const tokenResult = await getCurrentIdTokenWithRefresh(forceTokenRefresh);
+    const token = tokenResult.token;
     const localAdminSession = token ? null : await readLocalAdminSession();
     const localAdminUid = localAdminSession ? String(localAdminSession.uid || getLocalAdminUid()).trim() : '';
     const { headers, hasAuth } = resolveAuthHeaders(init.headers, {
@@ -125,6 +148,9 @@ export const authFetch = async (
     }
 
     if (!hasAuth && options.requireAuth) {
+      if (tokenResult.hadCurrentUser && tokenResult.error) {
+        throw new Error(mapTokenReadFailure(tokenResult.error));
+      }
       throw new Error('Authentication required.');
     }
 

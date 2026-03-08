@@ -18,16 +18,9 @@ spec:
           image: ghcr.io/voiceflow/kokoro-runtime:latest
           imagePullPolicy: IfNotPresent
           command:
-            - python
-            - -m
-            - uvicorn
-            - app:app
-            - --app-dir
-            - engines/kokoro-runtime
-            - --host
-            - 0.0.0.0
-            - --port
-            - "7820"
+            - /bin/sh
+            - -lc
+            - python -m uvicorn app:app --app-dir engines/kokoro-runtime --host 0.0.0.0 --port 7820
           envFrom:
             - configMapRef:
                 name: voiceflow-backend-config

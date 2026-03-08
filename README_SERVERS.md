@@ -35,6 +35,8 @@ npm run start:backend
 npm run start:backend:gpu
 ```
 
+`start:backend:gpu` enables GPU mode only for eligible runtimes; Kokoro still runs on CPU.
+
 `npm run start:backend` is idempotent: it reconciles PID files with active listener PIDs and avoids unnecessary restarts unless runtime code/dependencies changed.
 
 Unified command entrypoints:
@@ -56,7 +58,7 @@ Start all servers and run health checks:
 npm run services:bootstrap
 ```
 
-Start all servers in GPU mode:
+Start all servers in GPU mode for eligible runtimes:
 
 ```powershell
 npm run services:bootstrap:gpu
@@ -83,7 +85,7 @@ npm run services:down
 Dev orchestration env knobs:
 
 ```powershell
-$env:VF_DEV_BOOTSTRAP_MODE="cpu"   # or "gpu"
+$env:VF_DEV_BOOTSTRAP_MODE="cpu"   # or "gpu"; Kokoro stays CPU-only
 $env:VF_DEV_BOOTSTRAP_RETRIES="3"
 $env:VF_DEV_RETRY_BASE_MS="1500"
 $env:VF_DEV_RETRY_MAX_MS="10000"
@@ -168,6 +170,10 @@ $env:GEMINI_KEY_COOLDOWN_BASE_MS="8000"
 $env:GEMINI_KEY_COOLDOWN_MAX_MS="120000"
 $env:GEMINI_KEY_RETRY_LIMIT="8"
 $env:GEMINI_KEY_WAIT_SLICE_MS="1000"
+# Optional override. When unset, allocator rotates to the next key after each success.
+$env:GEMINI_KEY_ROTATION_BURST="3"
+# Optional. Re-enable sticky speaker-to-key affinity for repeated voices if you prefer consistency over spread.
+$env:GEMINI_SPEAKER_KEY_AFFINITY_ENABLED="1"
 $env:GEMINI_ALLOCATOR_DEFAULT_WAIT_TIMEOUT_MS="90000"
 $env:GEMINI_TTS_ALLOCATOR_RPM="3"
 $env:GEMINI_TTS_ALLOCATOR_TPM="10000"
@@ -179,6 +185,8 @@ $env:GEMINI_BATCH_PARALLEL_LIMIT="100"
 
 `GEMINI_API_KEYS_FILE` can be used by both backend and Gemini runtime to load key pools from a local file.
 Baseline allocator defaults should match cloud limits for Gemini 2.5 Flash TTS (`3 RPM / 10K TPM` per key) unless you explicitly override env vars.
+By default, allocator rotates one successful request at a time so large key pools get used more evenly. Set `GEMINI_KEY_ROTATION_BURST` to a value greater than `1` only if you intentionally want consecutive requests to stay on the same key.
+Cross-request speaker-to-key affinity is disabled by default for the same reason. Set `GEMINI_SPEAKER_KEY_AFFINITY_ENABLED=1` only if you explicitly want repeated speaker groups to prefer the same key.
 After changing allocator limits or key pool files, restart both media backend and gemini runtime so active processes pick up the new effective limits.
 
 Kokoro runtime (port `7820`):
@@ -186,6 +194,8 @@ Kokoro runtime (port `7820`):
 ```powershell
 python -m uvicorn app:app --app-dir backend/engines/kokoro-runtime --host 127.0.0.1 --port 7820
 ```
+
+`KOKORO_DEVICE` is kept for compatibility only. The Kokoro runtime ignores GPU requests and always uses CPU.
 
 Kokoro runtime throughput env vars:
 

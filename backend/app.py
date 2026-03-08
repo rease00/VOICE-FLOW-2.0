@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+from contextlib import asynccontextmanager
 import gzip
 import json
 import hashlib
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import wave
@@ -27,7 +29,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Optional, Dict, List
 from urllib import error as urllib_error
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
 
@@ -41,24 +43,16 @@ try:
     from PIL import Image  # type: ignore
 except Exception:
     Image = None  # type: ignore
-try:
-    from rapidocr_onnxruntime import RapidOCR  # type: ignore
-except Exception:
-    RapidOCR = None  # type: ignore
-try:
-    import firebase_admin  # type: ignore
-    from firebase_admin import auth as firebase_auth  # type: ignore
-    from firebase_admin import credentials as firebase_credentials  # type: ignore
-    from firebase_admin import firestore as firebase_firestore  # type: ignore
-except Exception:
-    firebase_admin = None  # type: ignore
-    firebase_auth = None  # type: ignore
-    firebase_credentials = None  # type: ignore
-    firebase_firestore = None  # type: ignore
-try:
-    import stripe  # type: ignore
-except Exception:
-    stripe = None  # type: ignore
+RapidOCR = None  # type: ignore
+_RAPIDOCR_IMPORT_ERROR: Optional[str] = None
+firebase_admin = None  # type: ignore
+firebase_auth = None  # type: ignore
+firebase_credentials = None  # type: ignore
+firebase_firestore = None  # type: ignore
+_FIREBASE_SDK_IMPORT_ERROR: Optional[str] = None
+stripe = None  # type: ignore
+_STRIPE_IMPORT_ATTEMPTED = False
+_STRIPE_IMPORT_ERROR: Optional[str] = None
 
 APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT
@@ -79,6 +73,7 @@ from shared.gemini_api_pools import (
     list_pool_names as list_gemini_pool_names,
     load_pool_config as load_pool_config_shared,
     normalize_pool_config as normalize_gemini_pool_config,
+    overlay_cached_authoritative_free_pool as overlay_cached_gemini_free_pool_shared,
     SOURCE_POLICY_PROVIDER_GEMINI_API,
     SOURCE_POLICY_PROVIDER_VERTEX,
     resolve_default_pool_hint as resolve_default_gemini_pool_hint,
@@ -88,6 +83,35 @@ from shared.gemini_api_pools import (
     sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
 )
 from shared.gemini_multi_speaker import normalize_multi_speaker_line_map as normalize_multi_speaker_line_map_shared
+from services.reader_domain import (
+    READER_BILLING_VF_PER_CHAR,
+    READER_PANEL_BATCH_SIZE,
+    READER_PANEL_PREFETCH_TRIGGER_INDEX,
+    READER_SESSION_CACHE_CHAR_LIMIT,
+    READER_SESSION_DELETE_WARNING_MS,
+    READER_TEXT_PREFETCH_THRESHOLD_CHARS,
+    READER_TEXT_WINDOW_CHARS,
+    build_panel_manifest,
+    build_text_windows,
+    collapse_whitespace,
+    fallback_catalog_items,
+    guess_panel_emotion,
+    guess_panel_sfx,
+    is_open_license_string,
+    language_matches_region,
+    normalize_catalog_language,
+    normalize_internet_archive_item,
+    normalize_mediawiki_item,
+    normalize_openlibrary_item,
+    normalize_reader_catalog_item,
+    normalize_reader_content_kind,
+    normalize_reader_direction,
+    normalize_reader_surface,
+    reader_region,
+    reader_regions,
+    should_schedule_next_panel_batch,
+    should_schedule_next_text_window,
+)
 from services.admission.redis_limits import SuccessQuotaDecision, SuccessQuotaLimiter
 from services.errors.codes import ENGINE_OVERLOADED, QUEUE_TIMEOUT, RATE_LIMIT_USER, extract_error_code
 from services.queue.redis_queue import TtsJobQueue, normalize_lane
@@ -99,7 +123,7 @@ OUTPUT_ROOT_DIR = Path(
     or str(WORKSPACE_ROOT / "output")
 ).resolve()
 RUNTIME_LOG_DIR = PROJECT_ROOT / ".runtime" / "logs"
-MODELS_DIR = Path(os.getenv("VF_LLVC_MODELS_DIR", str(APP_ROOT / "models" / "llvc"))).resolve()
+MODELS_DIR = Path(os.getenv("VF_VOICE_TRANSFER_MODELS_DIR", str(APP_ROOT / "models" / "voice-transfer"))).resolve()
 LOCAL_MODEL_MIRROR_ROOT = Path(
     (os.getenv("VF_LOCAL_MODEL_MIRROR_DIR") or str(APP_ROOT / "models")).strip()
     or str(APP_ROOT / "models")
@@ -111,20 +135,22 @@ KOKORO_MODEL_REQUIRED_FILES: tuple[str, ...] = (
     "config.json",
     "tokenizer.json",
     "tokenizer_config.json",
-    "onnx/model.onnx",
+    "onnx/model_quantized.onnx",
+    "voices/af_heart.bin",
+    "voices/hf_alpha.bin",
 )
 BOOTSTRAP_SCRIPT = PROJECT_ROOT / "scripts" / "bootstrap-services.mjs"
 WHISPER_MODEL_SIZE = os.getenv("VF_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("VF_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE = os.getenv("VF_WHISPER_COMPUTE", "int8")
 WHISPER_BEAM_SIZE = max(1, int((os.getenv("VF_WHISPER_BEAM_SIZE") or "5").strip() or "5"))
-LLVC_DEVICE = os.getenv("VF_LLVC_DEVICE", "cpu:0")
+LLVC_DEVICE = os.getenv("VF_VOICE_TRANSFER_DEVICE", "cpu:0")
 ENABLE_LLVC_FALLBACK = (
     (os.getenv("VF_ENABLE_LLVC_FALLBACK") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 LLVC_FALLBACK_MODEL_ID = "vf_low_cpu_timbre"
-VOICE_CONVERSION_POLICIES = {"AUTO_RELIABLE", "LLVC_ONLY"}
+VOICE_CONVERSION_POLICIES = {"AUTO_RELIABLE", "VOICE_TRANSFER_ONLY"}
 SEPARATION_MODEL = (os.getenv("VF_SOURCE_SEPARATION_MODEL") or "htdemucs_ft").strip() or "htdemucs_ft"
 SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() or "cpu"
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
@@ -133,10 +159,10 @@ SEPARATION_CACHE_DIR = ARTIFACTS_DIR / "source-separation-cache"
 VF_DUB_PIPELINE_VERSION = str(os.getenv("VF_DUB_PIPELINE_VERSION") or "2026.1").strip() or "2026.1"
 VF_DUB_PHASE1_MODEL = str(os.getenv("VF_DUB_PHASE1_MODEL") or "BS-Roformer-Viperx-1297").strip() or "BS-Roformer-Viperx-1297"
 VF_DUB_DEREVERB_MODEL = str(os.getenv("VF_DUB_DEREVERB_MODEL") or "uvr_deecho_dereverb").strip() or "uvr_deecho_dereverb"
-VF_DUB_DIRECTOR_MODEL = str(os.getenv("VF_DUB_DIRECTOR_MODEL") or "gemini-3-flash").strip() or "gemini-3-flash"
+VF_DUB_DIRECTOR_MODEL = str(os.getenv("VF_DUB_DIRECTOR_MODEL") or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 VF_DUB_TTS_MODEL = str(os.getenv("VF_DUB_TTS_MODEL") or "gemini-2.5-flash-preview-tts").strip() or "gemini-2.5-flash-preview-tts"
 VF_DUB_ALLOW_MODEL_FALLBACK = (
-    (os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK") or "1").strip().lower()
+    (os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_DUB_ISOCHRONY_TOLERANCE_PCT = max(
@@ -147,7 +173,7 @@ VF_DUB_THINKING_LOW_SCENE_MAX_SPEAKERS = max(
     1,
     int((os.getenv("VF_DUB_THINKING_LOW_SCENE_MAX_SPEAKERS") or "1").strip() or "1"),
 )
-VF_DUB_LLVC_PRESET = str(os.getenv("VF_DUB_LLVC_PRESET") or "llvc_hq_cpu").strip() or "llvc_hq_cpu"
+VF_DUB_LLVC_PRESET = str(os.getenv("VF_DUB_VOICE_TRANSFER_PRESET") or "tts_realtime").strip() or "tts_realtime"
 VF_DUB_WAV2LIP_ONNX_PATH = Path(
     str(
         os.getenv(
@@ -192,6 +218,38 @@ TTS_LIVE_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "tts-live"
 TTS_RESULT_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "tts-results"
 DUBBING_OUTPUT_DIR = OUTPUT_ROOT_DIR / "dubbing"
 DUBBING_LIVE_ARTIFACTS_DIR = OUTPUT_ROOT_DIR / "dubbing-live"
+READER_UPLOADS_DIR = OUTPUT_ROOT_DIR / "reader-uploads"
+READER_EXPORTS_DIR = OUTPUT_ROOT_DIR / "reader-exports"
+READER_REMOTE_ASSETS_DIR = OUTPUT_ROOT_DIR / "reader-remote-assets"
+READER_SESSIONS_DIR = OUTPUT_ROOT_DIR / "reader-sessions"
+VF_READER_CATALOG_CACHE_TTL_MS = max(
+    60_000,
+    int((os.getenv("VF_READER_CATALOG_CACHE_TTL_MS") or "900000").strip() or "900000"),
+)
+VF_READER_TRANSLATION_MODEL = (
+    str(os.getenv("VF_READER_TRANSLATION_MODEL") or "gemini-2.5-flash").strip()
+    or "gemini-2.5-flash"
+)
+VF_READER_TRANSLATION_BATCH_SIZE_BOOK = max(
+    1,
+    int((os.getenv("VF_READER_TRANSLATION_BATCH_SIZE_BOOK") or "3").strip() or "3"),
+)
+VF_READER_TRANSLATION_BATCH_SIZE_COMIC = max(
+    1,
+    int((os.getenv("VF_READER_TRANSLATION_BATCH_SIZE_COMIC") or "5").strip() or "5"),
+)
+VF_READER_TRANSLATION_LEAD_RATIO = max(
+    1.0,
+    float((os.getenv("VF_READER_TRANSLATION_LEAD_RATIO") or "10").strip() or "10"),
+)
+VF_READER_TRANSLATION_MIN_BOOK_WINDOWS = max(
+    1,
+    int((os.getenv("VF_READER_TRANSLATION_MIN_BOOK_WINDOWS") or "3").strip() or "3"),
+)
+VF_READER_TRANSLATION_MIN_COMIC_PANELS = max(
+    1,
+    int((os.getenv("VF_READER_TRANSLATION_MIN_COMIC_PANELS") or "5").strip() or "5"),
+)
 ENABLE_SOURCE_SEPARATION = (
     (os.getenv("VF_ENABLE_SOURCE_SEPARATION") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -219,10 +277,10 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
 )
 GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
 KOKORO_RUNTIME_URL = (os.getenv("VF_KOKORO_RUNTIME_URL") or "http://127.0.0.1:7820").strip().rstrip("/")
-LLVC_RUNTIME_URL = (os.getenv("VF_LLVC_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
+LLVC_RUNTIME_URL = (os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
 _raw_llvc_runtime_urls = [
     str(item or "").strip().rstrip("/")
-    for item in str(os.getenv("VF_LLVC_RUNTIME_URLS") or "").split(",")
+    for item in str(os.getenv("VF_VOICE_TRANSFER_RUNTIME_URLS") or "").split(",")
 ]
 _raw_llvc_runtime_urls = [item for item in _raw_llvc_runtime_urls if item]
 if not _raw_llvc_runtime_urls:
@@ -230,24 +288,35 @@ if not _raw_llvc_runtime_urls:
 VF_LLVC_RUNTIME_URLS: tuple[str, ...] = tuple(dict.fromkeys(_raw_llvc_runtime_urls))
 GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
 VF_TTS_POST_LLVC_ENABLED = (
-    (os.getenv("VF_TTS_POST_LLVC_ENABLED") or "1").strip().lower()
+    (os.getenv("VF_TTS_POST_VOICE_TRANSFER_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_TTS_POST_LLVC_REQUIRED = (
-    (os.getenv("VF_TTS_POST_LLVC_REQUIRED") or "1").strip().lower()
+    (os.getenv("VF_TTS_POST_VOICE_TRANSFER_REQUIRED") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_TTS_POST_LLVC_TIMEOUT_SEC = max(
     15,
-    int((os.getenv("VF_TTS_POST_LLVC_TIMEOUT_SEC") or "180").strip() or "180"),
+    int((os.getenv("VF_TTS_POST_VOICE_TRANSFER_TIMEOUT_SEC") or "180").strip() or "180"),
 )
-VF_TTS_POST_LLVC_PRESET = str(os.getenv("VF_TTS_POST_LLVC_PRESET") or "tts_realtime").strip() or "tts_realtime"
-VF_LLVC_PRESET_DEFAULT = str(os.getenv("VF_LLVC_PRESET_DEFAULT") or "llvc_hq_cpu").strip() or "llvc_hq_cpu"
+VF_TTS_POST_LLVC_PRESET = (
+    str(os.getenv("VF_TTS_POST_VOICE_TRANSFER_PRESET") or "auto_cpu").strip()
+    or "auto_cpu"
+)
+VF_TTS_POST_LLVC_BACKEND_MODE = str(os.getenv("VF_TTS_POST_VOICE_TRANSFER_BACKEND_MODE") or "onnx").strip() or "onnx"
+VF_TTS_POST_LLVC_AUTO_HQ_MAX_MS = max(
+    1000,
+    int((os.getenv("VF_TTS_POST_VOICE_TRANSFER_AUTO_HQ_MAX_MS") or "8000").strip() or "8000"),
+)
+VF_LLVC_PRESET_DEFAULT = (
+    str(os.getenv("VF_VOICE_TRANSFER_PRESET_DEFAULT") or "voice_transfer_hq_cpu").strip()
+    or "voice_transfer_hq_cpu"
+)
 VF_LLVC_STREAM_DEFAULT = (
-    (os.getenv("VF_LLVC_STREAM_DEFAULT") or "0").strip().lower()
+    (os.getenv("VF_VOICE_TRANSFER_STREAM_DEFAULT") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-VF_LLVC_CHUNK_FACTOR = max(1, int((os.getenv("VF_LLVC_CHUNK_FACTOR") or "2").strip() or "2"))
+VF_LLVC_CHUNK_FACTOR = max(1, int((os.getenv("VF_VOICE_TRANSFER_CHUNK_FACTOR") or "2").strip() or "2"))
 VF_TTS_LIVE_STREAM_ENABLED = (
     (os.getenv("VF_TTS_LIVE_STREAM_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -419,12 +488,18 @@ FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
         "af_bella",
         "af_nova",
         "af_sarah",
-        "bf_emma",
-        "bf_isabella",
         "am_fenrir",
         "am_michael",
         "am_onyx",
+        "am_echo",
+        "bf_emma",
+        "bf_isabella",
         "bm_george",
+        "bm_fable",
+        "hf_alpha",
+        "hf_beta",
+        "hm_omega",
+        "hm_psi",
     ),
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
@@ -529,6 +604,14 @@ VF_GENERATION_HISTORY_PREVIEW_CHARS = max(
     int((os.getenv("VF_GENERATION_HISTORY_PREVIEW_CHARS") or "220").strip() or "220"),
 )
 VF_GENERATION_HISTORY_CODEC = "gzip+base64+json"
+VF_AUDIO_GENERATION_AUDIT_RETENTION_YEARS = max(
+    1,
+    int((os.getenv("VF_AUDIO_GENERATION_AUDIT_RETENTION_YEARS") or "5").strip() or "5"),
+)
+VF_AUDIO_GENERATION_AUDIT_PREVIEW_CHARS = max(
+    40,
+    int((os.getenv("VF_AUDIO_GENERATION_AUDIT_PREVIEW_CHARS") or "220").strip() or "220"),
+)
 GEMINI_API_KEYS_FILE = str(os.getenv("GEMINI_API_KEYS_FILE") or "").strip()
 DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
 GEMINI_API_POOLS_FILE = str(
@@ -554,10 +637,24 @@ BACKEND_GEMINI_ALLOCATOR_WAIT_TIMEOUT_MS = max(
         or str(GEMINI_ALLOCATOR_CONFIG.default_wait_timeout_ms)
     ),
 )
+_backend_gemini_key_rotation_burst_raw = str(
+    os.getenv("VF_BACKEND_GEMINI_KEY_ROTATION_BURST")
+    or os.getenv("GEMINI_KEY_ROTATION_BURST")
+    or ""
+).strip()
+try:
+    BACKEND_GEMINI_KEY_ROTATION_BURST = (
+        max(1, int(_backend_gemini_key_rotation_burst_raw))
+        if _backend_gemini_key_rotation_burst_raw
+        else None
+    )
+except Exception:
+    BACKEND_GEMINI_KEY_ROTATION_BURST = None
 BACKEND_GEMINI_ALLOCATOR = GeminiRateAllocator(
     GEMINI_ALLOCATOR_CONFIG,
     auth_disable_ms=max(60_000, int((os.getenv("VF_BACKEND_GEMINI_AUTH_DISABLE_MS") or "600000").strip() or "600000")),
     wait_slice_ms=max(100, int((os.getenv("VF_BACKEND_GEMINI_WAIT_SLICE_MS") or "500").strip() or "500")),
+    key_rotation_burst=BACKEND_GEMINI_KEY_ROTATION_BURST,
 )
 ENABLE_LOCAL_OCR = (
     (os.getenv("VF_ENABLE_LOCAL_OCR") or "1").strip().lower()
@@ -654,6 +751,7 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+LOCALHOST_CORS_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
 
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_ROOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -663,6 +761,10 @@ TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 TTS_RESULT_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 DUBBING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DUBBING_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+READER_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+READER_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+READER_REMOTE_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+READER_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 TTS_ENGINE_HEALTH_URLS = {
@@ -703,19 +805,20 @@ ENGINE_DISPLAY_NAMES = {
 }
 CONVERSION_POLICY_DISPLAY_NAMES = {
     "AUTO_RELIABLE": "AUTO_RELIABLE",
-    "LLVC_ONLY": "LLVC_ONLY",
+    "VOICE_TRANSFER_ONLY": "VOICE_TRANSFER_ONLY",
 }
 EXECUTED_ENGINE_DISPLAY_NAMES = {
     **ENGINE_DISPLAY_NAMES,
-    "LLVC_FALLBACK": "LLVC Fallback",
-    "LLVC": "LLVC",
+    "LLVC_FALLBACK": "Voice Transfer Fallback",
+    "VOICE_TRANSFER": "Voice Transfer",
+    "VOICE_TRANSFER": "VOICE_TRANSFER",
 }
 
 RUNTIME_LOG_FILES = {
     "media-backend": RUNTIME_LOG_DIR / "media-backend.log",
     "gemini-runtime": RUNTIME_LOG_DIR / "gemini-runtime.log",
     "kokoro-runtime": RUNTIME_LOG_DIR / "kokoro-runtime.log",
-    "llvc-runtime": RUNTIME_LOG_DIR / "llvc-runtime.log",
+    "voice-transfer-runtime": RUNTIME_LOG_DIR / "voice-transfer-runtime.log",
 }
 RUNTIME_LOG_ALIASES = {
     "backend": "media-backend",
@@ -726,8 +829,8 @@ RUNTIME_LOG_ALIASES = {
     "gemini-runtime": "gemini-runtime",
     "kokoro": "kokoro-runtime",
     "kokoro-runtime": "kokoro-runtime",
-    "llvc": "llvc-runtime",
-    "llvc-runtime": "llvc-runtime",
+    "voice-transfer": "voice-transfer-runtime",
+    "voice-transfer-runtime": "voice-transfer-runtime",
 }
 RUNTIME_LOG_MAX_BYTES = 262_144
 RUNTIME_LOG_MAX_LINES = 400
@@ -938,6 +1041,19 @@ VF_SUPPORT_AI_ENABLED = (
     (os.getenv("VF_SUPPORT_AI_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+RESEND_API_KEY = str(os.getenv("RESEND_API_KEY") or "").strip()
+VF_NOTIFICATIONS_EMAIL_ENABLED = (
+    (os.getenv("VF_NOTIFICATIONS_EMAIL_ENABLED") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_NOTIFICATIONS_EMAIL_FROM = str(
+    os.getenv("VF_NOTIFICATIONS_EMAIL_FROM") or "Voice Flow <notifications@voiceflow.local>"
+).strip() or "Voice Flow <notifications@voiceflow.local>"
+VF_NOTIFICATIONS_EMAIL_REPLY_TO = str(os.getenv("VF_NOTIFICATIONS_EMAIL_REPLY_TO") or "").strip()
+VF_NOTIFICATIONS_JOB_EMAIL_MIN_DURATION_MS = max(
+    0,
+    int((os.getenv("VF_NOTIFICATIONS_JOB_EMAIL_MIN_DURATION_MS") or "90000").strip() or "90000"),
+)
 VF_SUPPORT_AI_AUTOREPLY_ENABLED = (
     (os.getenv("VF_SUPPORT_AI_AUTOREPLY_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -1031,13 +1147,11 @@ RBAC_ROLE_PERMISSION_MAP: dict[str, set[str]] = {
         PERM_AUDIT_READ,
         PERM_ALERTS_READ,
         PERM_TEAMS_READ,
-        PERM_SUPPORT_READ,
     },
     RBAC_ROLE_SUPPORT_OPS: {
         PERM_USERS_READ,
         PERM_USERS_WRITE,
         PERM_COUPONS_READ,
-        PERM_BILLING_READ,
         PERM_OPS_READ,
         PERM_GUARDIAN_READ,
         PERM_ANALYTICS_READ,
@@ -1054,6 +1168,7 @@ RBAC_ROLE_PERMISSION_MAP: dict[str, set[str]] = {
 ADMIN_ROLES_COLLECTION = "admin_roles"
 AUDIT_LEDGER_COLLECTION = "admin_audit_ledger"
 AUDIT_LEDGER_STATE_COLLECTION = "admin_audit_state"
+AUDIO_GENERATION_AUDIT_COLLECTION = "audio_generation_audit"
 ALERT_POLICIES_COLLECTION = "ops_alert_policies"
 ALERT_DESTINATIONS_COLLECTION = "ops_alert_destinations"
 ALERT_EVENTS_COLLECTION = "ops_alert_events"
@@ -1072,6 +1187,15 @@ SUPPORT_MESSAGES_COLLECTION = "support_messages"
 SUPPORT_AI_RUNS_COLLECTION = "support_ai_runs"
 SUPPORT_AI_POLICY_COLLECTION = "support_ai_policy"
 ADMIN_SESSION_UNLOCK_COLLECTION = "admin_session_unlock"
+NOTIFICATION_INBOX_COLLECTION = "notification_inbox"
+NOTIFICATION_PREFERENCES_COLLECTION = "notification_preferences"
+NOTIFICATION_EMAIL_OUTBOX_COLLECTION = "notification_email_outbox"
+NOTIFICATION_INBOX_ITEMS_SUBCOLLECTION = "items"
+READER_LEGAL_ACK_COLLECTION = "reader_legal_ack"
+READER_UPLOADS_COLLECTION = "reader_uploads"
+READER_PROGRESS_COLLECTION = "reader_progress"
+READER_CAST_MEMORY_COLLECTION = "reader_cast_memory"
+READER_TRANSLATION_COLLECTION = "reader_translation_cache"
 AUDIT_HASH_ALGO = "sha256"
 AUDIT_GENESIS_HASH = "GENESIS"
 ALERT_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
@@ -1081,6 +1205,7 @@ SCHEDULER_TASK_TYPES = {
     "guardian_scan",
     "usage_export_daily",
     "coupon_abuse_scan",
+    "audio_generation_audit_retention_cleanup",
 }
 SCHEDULER_CONCURRENCY_POLICIES = {"forbid", "replace", "allow"}
 TEAM_MEMBER_ROLES = {"owner", "admin", "member", "viewer"}
@@ -1774,7 +1899,7 @@ def _llvc_runtime_model_snapshot(*, force_refresh: bool = False) -> tuple[set[st
     models: list[str] = []
     try:
         payload = llvc_runtime.health_payload()
-        nested = payload.get("llvc") if isinstance(payload.get("llvc"), dict) else {}
+        nested = payload.get("voiceTransfer") if isinstance(payload.get("voiceTransfer"), dict) else {}
         if isinstance(nested, dict):
             fallback_available = bool(nested.get("fallbackAvailable")) or fallback_available
     except Exception:
@@ -1801,10 +1926,6 @@ def _resolve_llvc_model_name_for_runtime(mapped_model_name: str) -> str:
     available_models, fallback_available = _llvc_runtime_model_snapshot()
     if desired and desired in available_models:
         return desired
-    if desired:
-        # Do not silently remap profile-specific post-TTS conversion to another profile model.
-        # If the exact mapped model is missing, caller should bypass LLVC rather than change timbre.
-        return ""
     if available_models:
         preferred = str(VF_LLVC_PRESET_DEFAULT or "").strip()
         if preferred and preferred in available_models:
@@ -1815,21 +1936,28 @@ def _resolve_llvc_model_name_for_runtime(mapped_model_name: str) -> str:
     return desired
 
 
-def _apply_mapped_voice_fields(engine: str, voice_id: str, base: dict[str, Any]) -> dict[str, Any]:
+def _apply_mapped_voice_fields(
+    engine: str,
+    voice_id: str,
+    base: dict[str, Any],
+    *,
+    preserve_runtime_identity: bool = False,
+) -> dict[str, Any]:
     out = dict(base)
     profile = _resolve_mapped_profile(engine, voice_id, voice_name=str(base.get("voice") or ""))
     if not isinstance(profile, dict):
         return out
     mapped_name = str(profile.get("displayName") or "").strip()
-    if mapped_name:
+    if mapped_name and not preserve_runtime_identity:
         out["name"] = mapped_name
         out["mapped_name"] = mapped_name
     out["profile_id"] = str(profile.get("profileId") or "").strip()
-    out["country"] = str(profile.get("country") or "Unknown").strip() or "Unknown"
-    out["age_group"] = str(profile.get("ageGroup") or "Unknown").strip() or "Unknown"
-    style_tag = str(profile.get("styleTag") or "").strip()
-    if style_tag:
-        out["style_tag"] = style_tag
+    if not preserve_runtime_identity:
+        out["country"] = str(profile.get("country") or "Unknown").strip() or "Unknown"
+        out["age_group"] = str(profile.get("ageGroup") or "Unknown").strip() or "Unknown"
+        style_tag = str(profile.get("styleTag") or "").strip()
+        if style_tag:
+            out["style_tag"] = style_tag
     _, rel_path, exists = _resolve_profile_reference_path(profile)
     declared_downloaded = bool(profile.get("isDownloaded"))
     out["is_downloaded"] = bool(exists or declared_downloaded)
@@ -2305,6 +2433,124 @@ def _transcribe_with_whisper(
     return {"language": detected_language, "segments": segments_out}
 
 
+def _normalize_speaker_map_key(raw_speaker: str) -> str:
+    token = str(raw_speaker or "")
+    token = re.sub(r"^\*+|\*+$", "", token)
+    token = token.replace("[", " ").replace("]", " ")
+    token = re.sub(r"\s+", " ", token).strip().lower()
+    if not token:
+        return ""
+    token = re.sub(r"[^\w\s._'-]", "", token)
+    token = re.sub(r"\s+", " ", token).strip()
+    return token
+
+
+def _speaker_display_label(raw_speaker: str) -> str:
+    token = str(raw_speaker or "").strip()
+    if not token:
+        return "Speaker 1"
+
+    human_match = re.match(r"^speaker\s+([1-9]\d*)$", token, flags=re.IGNORECASE)
+    if human_match:
+        return f"Speaker {int(human_match.group(1))}"
+
+    diarization_match = re.match(r"^speaker([_\-\s]?)(\d+)$", token, flags=re.IGNORECASE)
+    if diarization_match:
+        separator = diarization_match.group(1)
+        raw_index = diarization_match.group(2)
+        if separator in {"_", "-"} or raw_index == "0" or raw_index.startswith("0"):
+            return f"Speaker {int(raw_index) + 1}"
+    return token
+
+
+def _resolve_speaker_mapping_key(speaker_mapping: dict[str, str], *speaker_candidates: str) -> str:
+    if not isinstance(speaker_mapping, dict) or not speaker_candidates:
+        return ""
+
+    normalized_candidates: set[str] = set()
+    for candidate in speaker_candidates:
+        raw_candidate = str(candidate or "")
+        trimmed = raw_candidate.strip()
+        if raw_candidate and raw_candidate in speaker_mapping:
+            return raw_candidate
+        if trimmed and trimmed in speaker_mapping:
+            return trimmed
+        normalized = _normalize_speaker_map_key(trimmed)
+        if normalized:
+            normalized_candidates.add(normalized)
+
+    if not normalized_candidates:
+        return ""
+
+    for key in speaker_mapping.keys():
+        key_token = str(key or "")
+        if key_token and _normalize_speaker_map_key(key_token) in normalized_candidates:
+            return key_token
+    return ""
+
+
+def _resolve_speaker_mapped_voice_id(
+    speaker_mapping: dict[str, str],
+    *speaker_candidates: str,
+) -> str:
+    mapping_key = _resolve_speaker_mapping_key(speaker_mapping, *speaker_candidates)
+    if not mapping_key:
+        return ""
+    return str(speaker_mapping.get(mapping_key) or "").strip()
+
+
+def _build_preferred_voice_map_for_segments(
+    preferred_map: dict[str, str],
+    segments: list[dict[str, Any]],
+) -> dict[str, str]:
+    if not isinstance(preferred_map, dict) or not preferred_map:
+        return {}
+
+    speakers: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        speaker = str(segment.get("speaker") or "SPEAKER_00").strip() or "SPEAKER_00"
+        speakers.setdefault(speaker, []).append(segment)
+
+    resolved: dict[str, str] = {}
+    for speaker, speaker_segments in speakers.items():
+        candidates = [speaker, _speaker_display_label(speaker)]
+        for segment in speaker_segments:
+            raw_speaker = str(segment.get("speaker_raw") or "").strip()
+            if not raw_speaker:
+                continue
+            candidates.append(raw_speaker)
+            candidates.append(_speaker_display_label(raw_speaker))
+        voice_id = _resolve_speaker_mapped_voice_id(preferred_map, *candidates)
+        if voice_id:
+            resolved[speaker] = voice_id
+
+    default_voice = _resolve_speaker_mapped_voice_id(preferred_map, "default")
+    if default_voice:
+        resolved["default"] = default_voice
+    return resolved
+
+
+def _summarize_transcription_speakers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for segment in segments:
+        label = str(segment.get("speaker") or "").strip() or "Speaker 1"
+        if label not in counts:
+            counts[label] = 0
+            order.append(label)
+        counts[label] += 1
+    return [
+        {
+            "id": label.lower().replace(" ", "_"),
+            "label": label,
+            "segmentCount": counts[label],
+        }
+        for label in order
+    ]
+
+
 def _load_audio_mono(path: Path, target_sr: int) -> tuple[Any, int]:
     try:
         import librosa  # type: ignore
@@ -2477,37 +2723,59 @@ class LlvcRuntime:
         self._current_model: Optional[str] = None
         self._health_payload: dict[str, Any] = {}
 
-    def _request_json(self, method: str, path: str, *, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: Optional[dict[str, Any]] = None,
+        timeout_sec: Optional[float] = None,
+    ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
+        request_timeout = float(timeout_sec) if timeout_sec is not None else (25.0 if method.upper() == "GET" else 30.0)
         try:
             if method.upper() == "GET":
-                response = requests.get(url, timeout=25)
+                response = requests.get(url, timeout=request_timeout)
             else:
-                response = requests.post(url, json=payload or {}, timeout=30)
+                response = requests.post(url, json=payload or {}, timeout=request_timeout)
         except Exception as exc:  # noqa: BLE001
-            self.import_error = f"llvc-runtime unreachable: {exc}"
+            self.import_error = f"voice-transfer-runtime unreachable: {exc}"
             raise RuntimeError(self.import_error) from exc
         if not response.ok:
             detail = response.text[:220] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"llvc-runtime {path} failed: {detail}")
+            raise RuntimeError(f"voice-transfer-runtime {path} failed: {detail}")
         try:
             parsed = response.json()
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"llvc-runtime {path} returned invalid JSON: {exc}") from exc
+            raise RuntimeError(f"voice-transfer-runtime {path} returned invalid JSON: {exc}") from exc
         return parsed if isinstance(parsed, dict) else {}
 
-    def ensure_engine(self) -> Any:
-        payload = self._request_json("GET", "/v1/health")
+    def _apply_health_payload(self, payload: dict[str, Any], *, raise_on_unavailable: bool) -> dict[str, Any]:
         self._health_payload = payload
-        llvc_payload = payload.get("llvc") if isinstance(payload.get("llvc"), dict) else {}
+        llvc_payload = (
+            payload.get("voiceTransfer")
+            if isinstance(payload.get("voiceTransfer"), dict)
+            else payload.get("voiceTransfer")
+            if isinstance(payload.get("voiceTransfer"), dict)
+            else {}
+        )
         available = bool(llvc_payload.get("available"))
         self._current_model = str(llvc_payload.get("currentModel") or "").strip() or self._current_model
         if not available and not bool(llvc_payload.get("fallbackAvailable")):
             detail = str(llvc_payload.get("error") or payload.get("detail") or "llvc_runtime_unavailable")
             self.import_error = detail
-            raise RuntimeError(detail)
+            if raise_on_unavailable:
+                raise RuntimeError(detail)
+            return payload
         self.import_error = None
         return payload
+
+    def probe_engine(self, *, timeout_sec: float = 2.5, raise_on_unavailable: bool = False) -> dict[str, Any]:
+        payload = self._request_json("GET", "/v1/health", timeout_sec=timeout_sec)
+        return self._apply_health_payload(payload, raise_on_unavailable=raise_on_unavailable)
+
+    def ensure_engine(self) -> Any:
+        return self.probe_engine(timeout_sec=25.0, raise_on_unavailable=True)
 
     def list_models(self) -> list[str]:
         payload = self._request_json("GET", "/v1/models")
@@ -2530,11 +2798,12 @@ class LlvcRuntime:
     def current_model(self) -> Optional[str]:
         return self._current_model
 
-    def health_payload(self) -> dict[str, Any]:
-        try:
-            self.ensure_engine()
-        except Exception:
-            pass
+    def health_payload(self, *, refresh: bool = True, timeout_sec: float = 2.5) -> dict[str, Any]:
+        if refresh:
+            try:
+                self.probe_engine(timeout_sec=timeout_sec, raise_on_unavailable=False)
+            except Exception:
+                pass
         return dict(self._health_payload)
 
     def convert_file(self, input_wav: str, output_wav: str, **kwargs: Any) -> dict[str, str]:
@@ -2542,20 +2811,21 @@ class LlvcRuntime:
         if not model_name:
             raise RuntimeError("llvc_model_required")
         preset = _normalize_llvc_preset(str(kwargs.get("preset") or VF_TTS_POST_LLVC_PRESET))
+        request_form = {
+            "model_name": model_name,
+            "preset": preset,
+            "pitch_shift": str(int(kwargs.get("pitch_shift") or 0)),
+            "index_rate": str(float(kwargs.get("index_rate") or 0.5)),
+            "filter_radius": str(int(kwargs.get("filter_radius") or 3)),
+            "rms_mix_rate": str(float(kwargs.get("rms_mix_rate") or 1.0)),
+            "protect": str(float(kwargs.get("protect") or 0.33)),
+            "f0_method": str(kwargs.get("f0_method") or "rmvpe"),
+        }
         with Path(input_wav).open("rb") as handle:
             response = requests.post(
                 f"{self.base_url}/v1/convert",
                 files={"file": ("source.wav", handle, "audio/wav")},
-                data={
-                    "model_name": model_name,
-                    "preset": preset,
-                    "pitch_shift": str(int(kwargs.get("pitch_shift") or 0)),
-                    "index_rate": str(float(kwargs.get("index_rate") or 0.5)),
-                    "filter_radius": str(int(kwargs.get("filter_radius") or 3)),
-                    "rms_mix_rate": str(float(kwargs.get("rms_mix_rate") or 1.0)),
-                    "protect": str(float(kwargs.get("protect") or 0.33)),
-                    "f0_method": str(kwargs.get("f0_method") or "rmvpe"),
-                },
+                data=request_form,
                 timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
             )
         if not response.ok:
@@ -2564,16 +2834,26 @@ class LlvcRuntime:
                 detail = detail[:4000]
             else:
                 detail = f"HTTP {response.status_code}"
-            raise RuntimeError(f"llvc-runtime /v1/convert failed: {detail}")
+            raise RuntimeError(f"voice-transfer-runtime /v1/convert failed: {detail}")
         Path(output_wav).write_bytes(bytes(response.content or b""))
         headers: dict[str, str] = {}
         for key in (
-            "x-vf-llvc-model-resolved",
-            "x-vf-llvc-backend-mode",
-            "x-vf-llvc-index-used",
-            "x-vf-llvc-f0-method",
-            "x-vf-llvc-preset",
-            "x-vf-llvc-model",
+            "x-vf-voice-transfer-model-resolved",
+            "x-vf-voice-transfer-backend-mode",
+            "x-vf-voice-transfer-index-used",
+            "x-vf-voice-transfer-f0-method",
+            "x-vf-voice-transfer-preset",
+            "x-vf-voice-transfer-preset-requested",
+            "x-vf-voice-transfer-input-duration-ms",
+            "x-vf-voice-transfer-model",
+            "x-vf-voice-transfer-model-resolved",
+            "x-vf-voice-transfer-backend-mode",
+            "x-vf-voice-transfer-index-used",
+            "x-vf-voice-transfer-f0-method",
+            "x-vf-voice-transfer-preset",
+            "x-vf-voice-transfer-preset-requested",
+            "x-vf-voice-transfer-input-duration-ms",
+            "x-vf-voice-transfer-model",
         ):
             raw_value = str(response.headers.get(key) or "").strip()
             if raw_value:
@@ -2608,15 +2888,18 @@ class KokoroCloneAdapter(VoiceConversionAdapter):
 
 
 class LlvcAdapter(VoiceConversionAdapter):
-    name = "LLVC"
+    name = "VOICE_TRANSFER"
     supports_one_shot_clone = False
     supports_realtime = True
     recommended_use_cases = ["covers", "voice_conversion"]
 
     def health(self) -> tuple[bool, str]:
         try:
-            llvc_runtime.ensure_engine()
-            return True, "llvc_ready"
+            payload = llvc_runtime.probe_engine(timeout_sec=2.5, raise_on_unavailable=False)
+            nested = payload.get("voiceTransfer") if isinstance(payload.get("voiceTransfer"), dict) else {}
+            available = bool(nested.get("available")) or bool(nested.get("fallbackAvailable"))
+            detail = str(nested.get("error") or llvc_runtime.import_error or "voice_transfer_ready").strip()
+            return available, detail or ("voice_transfer_ready" if available else "voice_transfer_unavailable")
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -2764,6 +3047,11 @@ def _kokoro_model_status_payload() -> dict[str, Any]:
         "required": required,
         "missing": missing,
         "ready": ready,
+        "runtime": {
+            "device": "cpu",
+            "dtype": "q8",
+            "modelFile": "onnx/model_quantized.onnx",
+        },
         "hash": hash_feed.hexdigest(),
         "files": file_entries,
         "detail": detail,
@@ -2797,16 +3085,290 @@ source_separation_runtime = SourceSeparationRuntime()
 source_separation_lock = threading.Lock()
 kokoro_clone_adapter = KokoroCloneAdapter()
 llvc_adapter = LlvcAdapter()
+MEDIA_HEALTH_CACHE_TTL_MS = max(
+    1000,
+    int((os.getenv("VF_MEDIA_HEALTH_CACHE_TTL_MS") or "15000").strip() or "15000"),
+)
+_MEDIA_HEALTH_LOCK = threading.Lock()
+_MEDIA_HEALTH_REFRESH_THREAD: Optional[threading.Thread] = None
+_MEDIA_HEALTH_CACHE_UPDATED_AT_MS = 0
+_MEDIA_HEALTH_CACHE: dict[str, Any] = {}
+
+
+def _default_media_health_payload(*, status: str = "warming") -> dict[str, Any]:
+    fallback_available = bool(ENABLE_LLVC_FALLBACK)
+    current_model = llvc_runtime.current_model()
+    source_status = "disabled" if not ENABLE_SOURCE_SEPARATION else status
+    lipsync_asset_ready = bool(VF_DUB_WAV2LIP_ONNX_PATH.exists())
+    return {
+        "ok": True,
+        "ready": False,
+        "status": status,
+        "generatedAtMs": _now_ms(),
+        "ffmpeg": {
+            "available": False,
+            "path": None,
+            "error": None,
+            "status": status,
+        },
+        "voiceTransfer": {
+            "available": fallback_available,
+            "ready": fallback_available,
+            "currentModel": current_model or (LLVC_FALLBACK_MODEL_ID if fallback_available else None),
+            "resolvedModelId": None,
+            "backendMode": "w_okada_rvc_onnx",
+            "modelsDir": str(MODELS_DIR),
+            "error": llvc_runtime.import_error,
+            "fallbackAvailable": fallback_available,
+            "fallbackModel": LLVC_FALLBACK_MODEL_ID if fallback_available else None,
+            "conversionPolicies": sorted(VOICE_CONVERSION_POLICIES),
+            "runtimeUrl": LLVC_RUNTIME_URL,
+            "status": "fallback" if fallback_available else status,
+        },
+        "whisper": {
+            "loaded": whisper_runtime.model is not None,
+            "model": WHISPER_MODEL_SIZE,
+            "device": WHISPER_DEVICE,
+            "compute": WHISPER_COMPUTE,
+            "error": whisper_runtime.import_error,
+            "supportedLanguages": sorted(SUPPORTED_TRANSCRIBE_LANGUAGE_CODES),
+        },
+        "sourceSeparation": {
+            "enabled": ENABLE_SOURCE_SEPARATION,
+            "available": False,
+            "model": VF_DUB_PHASE1_MODEL,
+            "device": SEPARATION_DEVICE,
+            "cacheDir": str(SEPARATION_CACHE_DIR),
+            "dereverbModel": VF_DUB_DEREVERB_MODEL,
+            "dereverbReady": False,
+            "error": None,
+            "status": source_status,
+        },
+        "lipsync": {
+            "runtime": "wav2lip-onnx",
+            "assetPath": str(VF_DUB_WAV2LIP_ONNX_PATH),
+            "assetReady": lipsync_asset_ready,
+            "lpipsAssetPath": str(VF_DUB_LPIPS_ASSET_PATH),
+            "lpipsReady": bool(VF_DUB_LPIPS_ASSET_PATH.exists()),
+            "ready": lipsync_asset_ready,
+        },
+        "videoPipelineAssets": {
+            "manifestPath": str(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST),
+            "downloadManifestPath": str(VIDEO_PIPELINE_ASSET_DOWNLOAD_MANIFEST),
+            "requiredMissing": [],
+            "optionalMissing": [],
+            "ready": False,
+            "assets": [],
+            "status": status,
+        },
+    }
+
+
+def _run_media_health_refresh() -> None:
+    global _MEDIA_HEALTH_REFRESH_THREAD, _MEDIA_HEALTH_CACHE, _MEDIA_HEALTH_CACHE_UPDATED_AT_MS
+    try:
+        ffmpeg_ok = False
+        ffmpeg_path = None
+        ffmpeg_error = None
+
+        try:
+            ffmpeg_path = _get_ffmpeg_path()
+            ffmpeg_ok = True
+        except Exception as exc:
+            ffmpeg_error = str(exc)
+
+        llvc_available = False
+        llvc_ready = False
+        llvc_error = llvc_runtime.import_error
+        current_model = llvc_runtime.current_model()
+        llvc_models_dir = str(MODELS_DIR)
+        llvc_backend_mode: Optional[str] = None
+        llvc_resolved_model_id: Optional[str] = None
+        llvc_status = "warming"
+        try:
+            llvc_payload = llvc_runtime.health_payload(refresh=True, timeout_sec=0.75)
+            nested = llvc_payload.get("voiceTransfer") if isinstance(llvc_payload.get("voiceTransfer"), dict) else {}
+            llvc_available = bool(nested.get("available"))
+            llvc_ready = bool(nested.get("ready")) or bool(nested.get("available") and nested.get("fallbackAvailable"))
+            current_model = str(nested.get("currentModel") or current_model or "").strip() or current_model
+            llvc_models_dir = str(nested.get("modelsDir") or llvc_models_dir)
+            llvc_error = str(nested.get("error") or "").strip() or None
+            llvc_backend_mode = str(nested.get("backendMode") or "").strip() or None
+            llvc_resolved_model_id = str(nested.get("resolvedModelId") or "").strip() or None
+            llvc_status = str(llvc_payload.get("status") or nested.get("detail") or "").strip() or ("ready" if llvc_ready else "degraded")
+        except Exception as exc:
+            llvc_available = False
+            llvc_ready = False
+            llvc_error = str(exc)
+            llvc_status = "degraded"
+
+        source_separation_available = source_separation_runtime.ensure_available()
+        source_separation_error = source_separation_runtime.import_error
+        video_assets = _video_pipeline_assets_status()
+        dereverb_ready = bool(VF_DUB_DEREVERB_MODEL) and any(
+            str(item.get("id") or "").strip().lower().startswith("dereverb")
+            and bool(item.get("exists"))
+            for item in list(video_assets.get("assets") or [])
+        )
+        lipsync_ready = bool(VF_DUB_WAV2LIP_ONNX_PATH.exists())
+
+        fallback_available = bool(ENABLE_LLVC_FALLBACK and ffmpeg_ok)
+        overall_ready = ffmpeg_ok and (source_separation_available or not ENABLE_SOURCE_SEPARATION) and bool(video_assets.get("ready"))
+        response = {
+            "ok": True,
+            "ready": overall_ready,
+            "status": "ready" if overall_ready else "degraded",
+            "generatedAtMs": _now_ms(),
+            "ffmpeg": {
+                "available": ffmpeg_ok,
+                "path": ffmpeg_path,
+                "error": ffmpeg_error,
+                "status": "ready" if ffmpeg_ok else "degraded",
+            },
+            "voiceTransfer": {
+                "available": llvc_available or fallback_available,
+                "ready": llvc_ready or fallback_available,
+                "currentModel": current_model or (LLVC_FALLBACK_MODEL_ID if fallback_available else None),
+                "resolvedModelId": llvc_resolved_model_id,
+                "backendMode": llvc_backend_mode or "w_okada_rvc_onnx",
+                "modelsDir": llvc_models_dir,
+                "error": llvc_error,
+                "fallbackAvailable": fallback_available,
+                "fallbackModel": LLVC_FALLBACK_MODEL_ID if fallback_available else None,
+                "conversionPolicies": sorted(VOICE_CONVERSION_POLICIES),
+                "runtimeUrl": LLVC_RUNTIME_URL,
+                "status": "ready" if (llvc_ready or fallback_available) else llvc_status,
+            },
+            "whisper": {
+                "loaded": whisper_runtime.model is not None,
+                "model": WHISPER_MODEL_SIZE,
+                "device": WHISPER_DEVICE,
+                "compute": WHISPER_COMPUTE,
+                "error": whisper_runtime.import_error,
+                "supportedLanguages": sorted(SUPPORTED_TRANSCRIBE_LANGUAGE_CODES),
+            },
+            "sourceSeparation": {
+                "enabled": ENABLE_SOURCE_SEPARATION,
+                "available": source_separation_available,
+                "model": VF_DUB_PHASE1_MODEL,
+                "device": SEPARATION_DEVICE,
+                "cacheDir": str(SEPARATION_CACHE_DIR),
+                "dereverbModel": VF_DUB_DEREVERB_MODEL,
+                "dereverbReady": dereverb_ready,
+                "error": source_separation_error,
+                "status": (
+                    "disabled"
+                    if not ENABLE_SOURCE_SEPARATION
+                    else "ready" if source_separation_available else "degraded"
+                ),
+            },
+            "lipsync": {
+                "runtime": "wav2lip-onnx",
+                "assetPath": str(VF_DUB_WAV2LIP_ONNX_PATH),
+                "assetReady": bool(VF_DUB_WAV2LIP_ONNX_PATH.exists()),
+                "lpipsAssetPath": str(VF_DUB_LPIPS_ASSET_PATH),
+                "lpipsReady": bool(VF_DUB_LPIPS_ASSET_PATH.exists()),
+                "ready": lipsync_ready,
+            },
+            "videoPipelineAssets": {
+                **video_assets,
+                "status": "ready" if bool(video_assets.get("ready")) else "degraded",
+            },
+        }
+    except Exception as exc:
+        response = _default_media_health_payload(status="degraded")
+        response["generatedAtMs"] = _now_ms()
+        response["healthRefreshError"] = str(exc)
+
+    with _MEDIA_HEALTH_LOCK:
+        _MEDIA_HEALTH_CACHE = response
+        _MEDIA_HEALTH_CACHE_UPDATED_AT_MS = int(response.get("generatedAtMs") or _now_ms())
+        _MEDIA_HEALTH_REFRESH_THREAD = None
+
+
+def _schedule_media_health_refresh(*, force: bool = False) -> bool:
+    global _MEDIA_HEALTH_REFRESH_THREAD
+    now_ms = _now_ms()
+    with _MEDIA_HEALTH_LOCK:
+        if _MEDIA_HEALTH_REFRESH_THREAD is not None and _MEDIA_HEALTH_REFRESH_THREAD.is_alive():
+            return False
+        cache_fresh = (
+            _MEDIA_HEALTH_CACHE_UPDATED_AT_MS > 0
+            and (now_ms - _MEDIA_HEALTH_CACHE_UPDATED_AT_MS) < MEDIA_HEALTH_CACHE_TTL_MS
+        )
+        if not force and cache_fresh:
+            return False
+        thread = threading.Thread(
+            target=_run_media_health_refresh,
+            name="media-health-refresh",
+            daemon=True,
+        )
+        _MEDIA_HEALTH_REFRESH_THREAD = thread
+        thread.start()
+        return True
+
+
+def _media_health_snapshot() -> dict[str, Any]:
+    with _MEDIA_HEALTH_LOCK:
+        payload = dict(_MEDIA_HEALTH_CACHE) if _MEDIA_HEALTH_CACHE else _default_media_health_payload()
+        payload["refreshInFlight"] = bool(
+            _MEDIA_HEALTH_REFRESH_THREAD is not None and _MEDIA_HEALTH_REFRESH_THREAD.is_alive()
+        )
+        if not payload.get("generatedAtMs"):
+            payload["generatedAtMs"] = _now_ms()
+        return payload
+
+
+def _should_force_sync_media_health_refresh() -> bool:
+    explicit_sync = str(os.getenv("VF_MEDIA_HEALTH_SYNC") or "").strip().lower()
+    if explicit_sync in {"1", "true", "yes", "on"}:
+        return True
+    return bool(str(os.getenv("PYTEST_CURRENT_TEST") or "").strip())
+
+
+def _phase2_background_warmups() -> None:
+    if VF_SERVICE_IS_API:
+        try:
+            _ensure_audio_generation_audit_cleanup_task()
+        except Exception:
+            pass
+    try:
+        _init_firebase_clients()
+    except Exception:
+        pass
+    try:
+        _log_kokoro_model_mirror_status()
+    except Exception:
+        pass
+    if VF_SERVICE_IS_API and VF_SUPPORT_INBOX_ENABLED:
+        try:
+            _support_ai_policy_get()
+        except Exception:
+            pass
+    _schedule_media_health_refresh(force=True)
+
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    _phase2_startup()
+    try:
+        yield
+    finally:
+        _phase2_shutdown()
+
+
 app = FastAPI(
     title="VoiceFlow Media Backend",
     version="1.0.0",
     openapi_url="/openapi.json" if VF_DOCS_ENABLE else None,
     docs_url="/docs" if VF_DOCS_ENABLE else None,
     redoc_url="/redoc" if VF_DOCS_ENABLE else None,
+    lifespan=_app_lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_parse_cors_origins("VF_CORS_ORIGINS", DEFAULT_CORS_ORIGINS),
+    allow_origin_regex=LOCALHOST_CORS_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2821,6 +3383,8 @@ _FIREBASE_APP = None
 _FIRESTORE_DB = None
 _FIREBASE_INIT_ERROR: Optional[str] = None
 _FIRESTORE_INIT_ERROR: Optional[str] = None
+_FIREBASE_INIT_LOCK = threading.Lock()
+_FIREBASE_INIT_ATTEMPTED = False
 _INMEMORY_ENTITLEMENTS: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_MONTHLY: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_DAILY: dict[str, dict[str, Any]] = {}
@@ -2832,6 +3396,7 @@ _INMEMORY_COUPONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPON_CODE_INDEX: dict[str, str] = {}
 _INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_GENERATION_HISTORY: dict[str, dict[str, Any]] = {}
+_INMEMORY_AUDIO_GENERATION_AUDIT: dict[str, dict[str, Any]] = {}
 _INMEMORY_DAILY_USAGE_RESET_STATUS: dict[str, Any] = {}
 _INMEMORY_ADMIN_ROLES: dict[str, dict[str, Any]] = {}
 _INMEMORY_AUDIT_LEDGER_EVENTS: dict[str, dict[str, Any]] = {}
@@ -2855,7 +3420,19 @@ _INMEMORY_SUPPORT_MESSAGES: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_POLICY: dict[str, Any] = {}
 _INMEMORY_ADMIN_SESSION_UNLOCK: dict[str, dict[str, Any]] = {}
+_INMEMORY_NOTIFICATION_INBOX: dict[str, dict[str, dict[str, Any]]] = {}
+_INMEMORY_NOTIFICATION_PREFERENCES: dict[str, dict[str, Any]] = {}
+_INMEMORY_NOTIFICATION_EMAIL_OUTBOX: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_LEGAL_ACK: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_UPLOADS: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_PROGRESS: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_CAST_MEMORY: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_TRANSLATIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_CATALOG_CACHE: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_SESSIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_LOCK = threading.RLock()
+_READER_HYDRATION_LOCK = threading.Lock()
+_READER_HYDRATION_ACTIVE: set[str] = set()
 _TTS_SUCCESS_LIMITER = SuccessQuotaLimiter(
     redis_url=VF_REDIS_URL,
     plan_limits=TTS_SUCCESS_PLAN_LIMITS,
@@ -2969,46 +3546,92 @@ _SCHEDULER_THREAD: Optional[threading.Thread] = None
 _SCHEDULER_STOP_EVENT = threading.Event()
 
 
-def _init_firebase_clients() -> None:
-    global _FIREBASE_APP, _FIRESTORE_DB, _FIREBASE_INIT_ERROR, _FIRESTORE_INIT_ERROR
-    if firebase_admin is None or firebase_auth is None:
-        _FIREBASE_INIT_ERROR = "firebase-admin dependency is unavailable."
+def _ensure_firebase_sdk_imported() -> bool:
+    global firebase_admin, firebase_auth, firebase_credentials, firebase_firestore, _FIREBASE_SDK_IMPORT_ERROR
+    if firebase_admin is not None and firebase_auth is not None:
+        return True
+    try:
+        import firebase_admin as firebase_admin_runtime  # type: ignore
+        from firebase_admin import auth as firebase_auth_runtime  # type: ignore
+        from firebase_admin import credentials as firebase_credentials_runtime  # type: ignore
+        from firebase_admin import firestore as firebase_firestore_runtime  # type: ignore
+    except Exception as exc:
+        _FIREBASE_SDK_IMPORT_ERROR = str(exc)
+        firebase_admin = None  # type: ignore
+        firebase_auth = None  # type: ignore
+        firebase_credentials = None  # type: ignore
+        firebase_firestore = None  # type: ignore
+        return False
+    firebase_admin = firebase_admin_runtime  # type: ignore
+    firebase_auth = firebase_auth_runtime  # type: ignore
+    firebase_credentials = firebase_credentials_runtime  # type: ignore
+    firebase_firestore = firebase_firestore_runtime  # type: ignore
+    _FIREBASE_SDK_IMPORT_ERROR = None
+    return True
+
+
+def _ensure_stripe_sdk_imported() -> bool:
+    global stripe, _STRIPE_IMPORT_ATTEMPTED, _STRIPE_IMPORT_ERROR
+    if stripe is not None:
+        return True
+    if _STRIPE_IMPORT_ATTEMPTED:
+        return False
+    _STRIPE_IMPORT_ATTEMPTED = True
+    try:
+        import stripe as stripe_runtime  # type: ignore
+    except Exception as exc:
+        _STRIPE_IMPORT_ERROR = str(exc)
+        stripe = None  # type: ignore
+        return False
+    stripe = stripe_runtime  # type: ignore
+    stripe.api_key = STRIPE_SECRET_KEY  # type: ignore[attr-defined]
+    _STRIPE_IMPORT_ERROR = None
+    return True
+
+
+def _init_firebase_clients(*, force: bool = False) -> None:
+    global _FIREBASE_APP, _FIRESTORE_DB, _FIREBASE_INIT_ERROR, _FIRESTORE_INIT_ERROR, _FIREBASE_INIT_ATTEMPTED
+    if not _ensure_firebase_sdk_imported():
+        _FIREBASE_INIT_ATTEMPTED = True
+        _FIREBASE_INIT_ERROR = _FIREBASE_SDK_IMPORT_ERROR or "firebase-admin dependency is unavailable."
         return
     if _FIREBASE_APP is not None:
         return
-    try:
-        if FIREBASE_SERVICE_ACCOUNT_JSON:
-            cred_payload = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
-            cred = firebase_credentials.Certificate(cred_payload)
-            _FIREBASE_APP = firebase_admin.initialize_app(cred)
-        else:
-            _FIREBASE_APP = firebase_admin.initialize_app()
-        _FIRESTORE_DB = None
-        _FIRESTORE_INIT_ERROR = None
-        if VF_FIRESTORE_ENABLE and firebase_firestore is not None:
-            candidate = firebase_firestore.client()
-            try:
-                # Probe Firestore once at startup; disabled APIs must gracefully fall back to in-memory mode.
-                next(candidate.collections(), None)
-                _FIRESTORE_DB = candidate
-            except Exception as firestore_exc:  # noqa: BLE001
-                _FIRESTORE_DB = None
-                _FIRESTORE_INIT_ERROR = str(firestore_exc)
-        _FIREBASE_INIT_ERROR = None
-    except Exception as exc:  # noqa: BLE001
-        _FIREBASE_APP = None
-        _FIRESTORE_DB = None
-        _FIREBASE_INIT_ERROR = str(exc)
+    if _FIREBASE_INIT_ATTEMPTED and not force:
+        return
+    with _FIREBASE_INIT_LOCK:
+        if _FIREBASE_APP is not None:
+            return
+        if _FIREBASE_INIT_ATTEMPTED and not force:
+            return
+        _FIREBASE_INIT_ATTEMPTED = True
+        try:
+            if FIREBASE_SERVICE_ACCOUNT_JSON:
+                cred_payload = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+                cred = firebase_credentials.Certificate(cred_payload)
+                _FIREBASE_APP = firebase_admin.initialize_app(cred)
+            else:
+                _FIREBASE_APP = firebase_admin.initialize_app()
+            _FIRESTORE_DB = None
+            _FIRESTORE_INIT_ERROR = None
+            if VF_FIRESTORE_ENABLE and firebase_firestore is not None:
+                candidate = firebase_firestore.client()
+                try:
+                    # Probe Firestore once at startup; disabled APIs must gracefully fall back to in-memory mode.
+                    next(candidate.collections(), None)
+                    _FIRESTORE_DB = candidate
+                except Exception as firestore_exc:  # noqa: BLE001
+                    _FIRESTORE_DB = None
+                    _FIRESTORE_INIT_ERROR = str(firestore_exc)
+            _FIREBASE_INIT_ERROR = None
+        except Exception as exc:  # noqa: BLE001
+            _FIREBASE_APP = None
+            _FIRESTORE_DB = None
+            _FIREBASE_INIT_ERROR = str(exc)
 
 
 def _stripe_available() -> bool:
-    return stripe is not None and bool(STRIPE_SECRET_KEY)
-
-
-if _stripe_available():
-    stripe.api_key = STRIPE_SECRET_KEY  # type: ignore[attr-defined]
-
-_init_firebase_clients()
+    return bool(STRIPE_SECRET_KEY) and _ensure_stripe_sdk_imported()
 
 
 def _utc_now() -> datetime:
@@ -3311,6 +3934,7 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "dailyGenerationLimit": defaults["dailyGenerationLimit"],
         "stripeCustomerId": None,
         "subscriptionId": None,
+        "latestInvoiceId": None,
         "currencyMode": "INR_BASE_AUTO_FX",
         "billingCountry": None,
         "paidVfBalance": 0.0,
@@ -3545,6 +4169,8 @@ def _billing_status_from_subscription(subscription_status: str) -> str:
 
 
 def _firebase_ready() -> bool:
+    if _FIREBASE_APP is None:
+        _init_firebase_clients()
     return _FIREBASE_APP is not None and firebase_auth is not None
 
 
@@ -3615,6 +4241,7 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 def _auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip()
+    public_model_repo_prefix = "/models/" + str(KOKORO_MODEL_REPO_ID or "").strip("/").replace("\\", "/") + "/"
     public_paths = {
         "/health",
         "/system/version",
@@ -3623,6 +4250,7 @@ def _auth_exempt_path(path: str) -> bool:
         "/tts/engines/capabilities",
         "/tts/engines/voices",
         "/tts/voice-mapping/catalog",
+        "/models/kokoro/status",
     }
     if VF_DOCS_ENABLE:
         public_paths.update(
@@ -3634,6 +4262,8 @@ def _auth_exempt_path(path: str) -> bool:
             }
         )
     if normalized in public_paths:
+        return True
+    if public_model_repo_prefix != "/models//" and normalized.startswith(public_model_repo_prefix):
         return True
     return bool(VF_DOCS_ENABLE and normalized.startswith("/docs"))
 
@@ -3688,7 +4318,10 @@ async def _firebase_auth_middleware(request: Request, call_next: Any) -> Respons
     try:
         claims = _verify_firebase_id_token(id_token)
     except Exception as exc:  # noqa: BLE001
-        return _cors_json_response(request, status_code=401, content={"detail": f"Invalid auth token: {exc}"})
+        detail = "Invalid auth token."
+        if "too early" in str(exc or "").lower() or "not yet valid" in str(exc or "").lower():
+            detail = "Invalid auth token: token is not yet valid."
+        return _cors_json_response(request, status_code=401, content={"detail": detail})
 
     uid = str(claims.get("uid") or "")
     if not uid:
@@ -3762,6 +4395,13 @@ def _require_request_uid(request: Request) -> str:
     raise HTTPException(status_code=401, detail="Authentication required.")
 
 
+def _request_source_ip(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    forwarded = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return forwarded or str(request.client.host if request.client else "").strip()
+
+
 def _request_claim_email(request: Optional[Request]) -> str:
     if request is None:
         return ""
@@ -3769,6 +4409,15 @@ def _request_claim_email(request: Optional[Request]) -> str:
     if not isinstance(claims, dict):
         return ""
     return str(claims.get("email") or "").strip().lower()
+
+
+def _request_claim_phone(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    claims = getattr(request.state, "auth_claims", None)
+    if not isinstance(claims, dict):
+        return ""
+    return str(claims.get("phone_number") or claims.get("phoneNumber") or "").strip()
 
 
 def _normalize_user_id_handle(raw_user_id: str) -> str:
@@ -4872,9 +5521,922 @@ def _rbac_list_assignments(limit: int = 100, cursor: str = "", q: str = "") -> t
 
 
 def _firestore_collection(name: str) -> Any:
+    if _FIRESTORE_DB is None and _FIREBASE_APP is None:
+        _init_firebase_clients()
     if _FIRESTORE_DB is None:
         return None
     return _FIRESTORE_DB.collection(name)
+
+
+def _notification_email_feature_enabled() -> bool:
+    return bool(
+        VF_NOTIFICATIONS_EMAIL_ENABLED
+        and RESEND_API_KEY
+        and VF_NOTIFICATIONS_EMAIL_FROM
+    )
+
+
+def _notification_items_collection(uid: str) -> Any:
+    if _FIRESTORE_DB is None:
+        return None
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    return (
+        _FIRESTORE_DB
+        .collection(NOTIFICATION_INBOX_COLLECTION)
+        .document(safe_uid)
+        .collection(NOTIFICATION_INBOX_ITEMS_SUBCOLLECTION)
+    )
+
+
+def _notification_preferences_default(uid: str, *, is_admin: bool = False) -> dict[str, Any]:
+    return {
+        "uid": str(uid or "").strip(),
+        "emailAsyncJobs": True,
+        "emailBilling": True,
+        "emailSupport": True,
+        "emailAdminAlerts": bool(is_admin),
+        "updatedAt": _utc_now().isoformat(),
+    }
+
+
+def _notification_preferences_get(uid: str, *, is_admin: bool = False) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    defaults = _notification_preferences_default(safe_uid, is_admin=is_admin)
+    if not safe_uid:
+        return defaults
+    collection = _firestore_collection(NOTIFICATION_PREFERENCES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = dict(_INMEMORY_NOTIFICATION_PREFERENCES.get(safe_uid) or {})
+        merged = dict(defaults)
+        merged.update(row)
+        return merged
+    try:
+        doc = collection.document(safe_uid).get()
+    except Exception:
+        doc = None
+    if doc is None or not getattr(doc, "exists", False):
+        return defaults
+    merged = dict(defaults)
+    merged.update(doc.to_dict() or {})
+    return merged
+
+
+def _notification_preferences_patch(uid: str, patch: dict[str, Any], *, is_admin: bool = False) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing uid.")
+    current = _notification_preferences_get(safe_uid, is_admin=is_admin)
+    next_payload = dict(current)
+    for field in ("emailAsyncJobs", "emailBilling", "emailSupport", "emailAdminAlerts"):
+        if field in patch and patch.get(field) is not None:
+            next_payload[field] = bool(patch.get(field))
+    next_payload["uid"] = safe_uid
+    next_payload["updatedAt"] = _utc_now().isoformat()
+    collection = _firestore_collection(NOTIFICATION_PREFERENCES_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_NOTIFICATION_PREFERENCES[safe_uid] = dict(next_payload)
+        return next_payload
+    collection.document(safe_uid).set(next_payload, merge=True)
+    return next_payload
+
+
+def _notification_action_target(target: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(target, dict):
+        return None
+    payload: dict[str, Any] = {}
+    for key in ("screen", "tab", "adminTab", "conversationId", "jobId", "href"):
+        value = str(target.get(key) or "").strip()
+        if value:
+            payload[key] = value[:240]
+    return payload or None
+
+
+def _notification_email_for_uid(uid: str) -> str:
+    profile = _user_profile_read(uid) or {}
+    email = str(profile.get("email") or "").strip().lower()
+    if email:
+        return email
+    if firebase_auth is None or not _firebase_ready():
+        return ""
+    try:
+        record = firebase_auth.get_user(str(uid or "").strip())  # type: ignore[attr-defined]
+    except Exception:
+        return ""
+    return str(getattr(record, "email", "") or "").strip().lower()
+
+
+def _notification_normalize_item(uid: str, row: dict[str, Any]) -> dict[str, Any]:
+    now_iso = _utc_now().isoformat()
+    created_at = row.get("createdAt") if isinstance(row.get("createdAt"), str) else now_iso
+    updated_at = row.get("updatedAt") if isinstance(row.get("updatedAt"), str) else created_at
+    severity = str(row.get("severity") or "info").strip().lower()
+    if severity not in {"success", "info", "warning", "error", "critical"}:
+        severity = "info"
+    category = str(row.get("category") or "activity").strip().lower()
+    if category not in {"system", "activity", "security", "tips"}:
+        category = "activity"
+    audience = str(row.get("audience") or "user").strip().lower()
+    if audience not in {"user", "admin", "all"}:
+        audience = "user"
+    status = str(row.get("status") or "active").strip().lower()
+    if status not in {"active", "resolved"}:
+        status = "active"
+    normalized = {
+        "id": str(row.get("id") or "").strip() or f"notif_{uuid.uuid4().hex[:12]}",
+        "uid": str(uid or "").strip(),
+        "eventCode": str(row.get("eventCode") or "custom.message").strip() or "custom.message",
+        "entityKey": str(row.get("entityKey") or "").strip(),
+        "title": str(row.get("title") or "Notification").strip()[:160] or "Notification",
+        "message": str(row.get("message") or "Notification").strip()[:1200] or "Notification",
+        "details": str(row.get("details") or "").strip()[:6000],
+        "severity": severity,
+        "category": category,
+        "audience": audience,
+        "channel": "inbox",
+        "scope": "persisted",
+        "status": status,
+        "resolvedAt": str(row.get("resolvedAt") or "").strip() or None,
+        "resolvedBy": str(row.get("resolvedBy") or "").strip() or None,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "readAt": str(row.get("readAt") or "").strip() or None,
+        "dismissedAt": str(row.get("dismissedAt") or "").strip() or None,
+        "sticky": bool(row.get("sticky")),
+        "dedupeKey": str(row.get("dedupeKey") or "").strip() or None,
+        "requiredPermission": str(row.get("requiredPermission") or "").strip() or None,
+        "emailEligible": bool(row.get("emailEligible")),
+        "action": None,
+        "metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+    }
+    action_payload: dict[str, Any] = {}
+    action = row.get("action") if isinstance(row.get("action"), dict) else {}
+    label = str(action.get("label") or row.get("actionLabel") or "").strip()
+    if label:
+        action_payload["label"] = label[:80]
+    target = _notification_action_target(action.get("target") if isinstance(action, dict) else row.get("actionTarget"))
+    if target is not None:
+        action_payload["target"] = target
+    if action_payload:
+        normalized["action"] = action_payload
+    if not normalized["entityKey"]:
+        normalized["entityKey"] = None
+    if not normalized["details"]:
+        normalized["details"] = None
+    return normalized
+
+
+def _notification_get_item(uid: str, notification_id: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_id = str(notification_id or "").strip()
+    if not safe_uid or not safe_id:
+        return None
+    collection = _notification_items_collection(safe_uid)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = ((_INMEMORY_NOTIFICATION_INBOX.get(safe_uid) or {}).get(safe_id))
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    payload = doc.to_dict() or {}
+    payload["id"] = safe_id
+    payload["uid"] = safe_uid
+    return _notification_normalize_item(safe_uid, payload)
+
+
+def _notification_find_by_dedupe_key(uid: str, dedupe_key: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_key = str(dedupe_key or "").strip()
+    if not safe_uid or not safe_key:
+        return None
+    collection = _notification_items_collection(safe_uid)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = list((_INMEMORY_NOTIFICATION_INBOX.get(safe_uid) or {}).values())
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("dedupeKey") or "").strip() != safe_key:
+                continue
+            return _notification_normalize_item(safe_uid, row)
+        return None
+    try:
+        docs = list(collection.where("dedupeKey", "==", safe_key).limit(1).stream())
+    except Exception:
+        return None
+    if not docs:
+        return None
+    row = docs[0].to_dict() or {}
+    row["id"] = str(docs[0].id or "")
+    row["uid"] = safe_uid
+    return _notification_normalize_item(safe_uid, row)
+
+
+def _notification_upsert_item(
+    uid: str,
+    row: dict[str, Any],
+    *,
+    resurface_unread: bool = True,
+) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing notification recipient.")
+    now_iso = _utc_now().isoformat()
+    safe_row = _notification_normalize_item(safe_uid, row)
+    existing = None
+    dedupe_key = str(safe_row.get("dedupeKey") or "").strip()
+    if dedupe_key:
+        existing = _notification_find_by_dedupe_key(safe_uid, dedupe_key)
+    elif str(safe_row.get("id") or "").strip():
+        existing = _notification_get_item(safe_uid, str(safe_row.get("id") or ""))
+    payload = dict(existing or {})
+    payload.update(safe_row)
+    payload["uid"] = safe_uid
+    payload["id"] = str((existing or {}).get("id") or safe_row.get("id") or f"notif_{uuid.uuid4().hex[:12]}").strip()
+    payload["createdAt"] = str((existing or {}).get("createdAt") or safe_row.get("createdAt") or now_iso)
+    payload["updatedAt"] = now_iso
+    if resurface_unread:
+        payload["readAt"] = None
+        payload["dismissedAt"] = None
+    else:
+        payload["readAt"] = str(payload.get("readAt") or "").strip() or None
+        payload["dismissedAt"] = str(payload.get("dismissedAt") or "").strip() or None
+    collection = _notification_items_collection(safe_uid)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            bucket = _INMEMORY_NOTIFICATION_INBOX.setdefault(safe_uid, {})
+            bucket[payload["id"]] = dict(payload)
+        return _notification_normalize_item(safe_uid, payload)
+    collection.document(payload["id"]).set(payload, merge=True)
+    return _notification_normalize_item(safe_uid, payload)
+
+
+def _notification_patch_item(uid: str, notification_id: str, patch: dict[str, Any]) -> Optional[dict[str, Any]]:
+    current = _notification_get_item(uid, notification_id)
+    if not isinstance(current, dict):
+        return None
+    next_payload = dict(current)
+    next_payload.update({key: value for key, value in dict(patch or {}).items() if value is not None})
+    next_payload["updatedAt"] = _utc_now().isoformat()
+    return _notification_upsert_item(uid, next_payload, resurface_unread=False)
+
+
+def _notification_list_items(
+    uid: str,
+    *,
+    limit: int = 200,
+    actor: Optional[dict[str, Any]] = None,
+    include_dismissed: bool = False,
+) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_limit = max(1, min(500, int(limit)))
+    collection = _notification_items_collection(safe_uid)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [
+                _notification_normalize_item(safe_uid, dict(item))
+                for item in (_INMEMORY_NOTIFICATION_INBOX.get(safe_uid) or {}).values()
+                if isinstance(item, dict)
+            ]
+    else:
+        try:
+            docs = list(collection.limit(max(50, safe_limit * 2)).stream())
+        except Exception:
+            docs = []
+        for doc in docs:
+            row = doc.to_dict() or {}
+            row["id"] = str(doc.id or "")
+            rows.append(_notification_normalize_item(safe_uid, row))
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not include_dismissed and row.get("dismissedAt"):
+            continue
+        audience = str(row.get("audience") or "user").strip().lower()
+        required_permission = str(row.get("requiredPermission") or "").strip()
+        if audience == "admin":
+            if not isinstance(actor, dict):
+                continue
+            if str(actor.get("status") or "active").strip().lower() == "disabled":
+                continue
+            if required_permission and not _has_permission(actor, required_permission):
+                continue
+        filtered.append(row)
+    filtered.sort(
+        key=lambda item: (
+            str(item.get("createdAt") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return filtered[:safe_limit]
+
+
+def _notification_mark_all(
+    uid: str,
+    *,
+    patch: dict[str, Any],
+    actor: Optional[dict[str, Any]] = None,
+) -> int:
+    count = 0
+    for item in _notification_list_items(uid, limit=500, actor=actor, include_dismissed=True):
+        if item.get("dismissedAt"):
+            continue
+        updated = _notification_patch_item(uid, str(item.get("id") or ""), patch)
+        if updated is not None:
+            count += 1
+    return count
+
+
+def _notification_email_outbox_upsert(delivery_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(delivery_id or "").strip() or f"ndlv_{uuid.uuid4().hex[:12]}"
+    payload = dict(row or {})
+    payload["id"] = safe_id
+    collection = _firestore_collection(NOTIFICATION_EMAIL_OUTBOX_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_NOTIFICATION_EMAIL_OUTBOX[safe_id] = dict(payload)
+        return dict(payload)
+    collection.document(safe_id).set(payload, merge=True)
+    return dict(payload)
+
+
+def _notification_email_subject(item: dict[str, Any]) -> str:
+    title = str(item.get("title") or "Notification").strip()
+    message = str(item.get("message") or "").strip()
+    if not title:
+        title = "Notification"
+    if not message:
+        return f"Voice Flow: {title}"
+    compact_message = message if len(message) <= 90 else f"{message[:87].rstrip()}..."
+    return f"Voice Flow: {title} - {compact_message}"
+
+
+def _notification_email_text(item: dict[str, Any], *, recipient_role: str = "") -> str:
+    lines = [
+        str(item.get("title") or "Notification").strip() or "Notification",
+        "",
+        str(item.get("message") or "").strip() or "You have a new notification.",
+    ]
+    details = str(item.get("details") or "").strip()
+    if details:
+        lines.extend(["", details])
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    label = str(action.get("label") or "").strip()
+    target = action.get("target") if isinstance(action.get("target"), dict) else {}
+    if label and isinstance(target, dict):
+        summary_parts = [
+            str(target.get("screen") or "").strip(),
+            str(target.get("tab") or "").strip(),
+            str(target.get("adminTab") or "").strip(),
+        ]
+        summary = " / ".join([part for part in summary_parts if part])
+        if summary:
+            lines.extend(["", f"Action: {label} ({summary})"])
+        elif str(target.get("href") or "").strip():
+            lines.extend(["", f"Action: {label} ({str(target.get('href') or '').strip()})"])
+    if str(recipient_role or "").strip().lower() == RBAC_ROLE_READ_ONLY_OPS:
+        lines.extend(["", "This alert is informational for your read-only operator role."])
+    return "\n".join(lines).strip()
+
+
+def _notification_send_email_via_resend(
+    *,
+    to_email: str,
+    subject: str,
+    text_body: str,
+) -> tuple[bool, str]:
+    if not _notification_email_feature_enabled():
+        return False, "email_disabled"
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload: dict[str, Any] = {
+        "from": VF_NOTIFICATIONS_EMAIL_FROM,
+        "to": [str(to_email or "").strip()],
+        "subject": str(subject or "Voice Flow notification").strip() or "Voice Flow notification",
+        "text": str(text_body or "").strip() or "Voice Flow notification",
+    }
+    if VF_NOTIFICATIONS_EMAIL_REPLY_TO:
+        payload["reply_to"] = VF_NOTIFICATIONS_EMAIL_REPLY_TO
+    try:
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if response.ok:
+        try:
+            body = response.json()
+        except Exception:
+            body = {}
+        return True, str(body.get("id") or "")
+    return False, response.text[:400] or f"http_{response.status_code}"
+
+
+def _notification_attempt_email_delivery(delivery_id: str) -> dict[str, Any]:
+    collection = _firestore_collection(NOTIFICATION_EMAIL_OUTBOX_COLLECTION)
+    delivery = None
+    if collection is None:
+        with _INMEMORY_LOCK:
+            raw = _INMEMORY_NOTIFICATION_EMAIL_OUTBOX.get(str(delivery_id or "").strip())
+            delivery = dict(raw) if isinstance(raw, dict) else None
+    else:
+        try:
+            doc = collection.document(str(delivery_id or "").strip()).get()
+        except Exception:
+            doc = None
+        if doc is not None and getattr(doc, "exists", False):
+            delivery = doc.to_dict() or {}
+            delivery["id"] = str(doc.id or "")
+    if not isinstance(delivery, dict):
+        return {"ok": False, "status": "missing"}
+
+    to_email = str(delivery.get("to") or "").strip().lower()
+    subject = str(delivery.get("subject") or "").strip()
+    text_body = str(delivery.get("text") or "").strip()
+    attempts = max(0, int(delivery.get("attempts") or 0)) + 1
+    delivered, detail = _notification_send_email_via_resend(
+        to_email=to_email,
+        subject=subject,
+        text_body=text_body,
+    )
+    now_iso = _utc_now().isoformat()
+    patch: dict[str, Any] = {
+        "attempts": attempts,
+        "lastAttemptAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    if delivered:
+        patch.update(
+            {
+                "status": "delivered",
+                "providerMessageId": detail or None,
+                "deliveredAt": now_iso,
+                "lastError": None,
+                "nextAttemptAtMs": None,
+            }
+        )
+    else:
+        patch.update(
+            {
+                "status": "retry_pending" if attempts < 3 else "failed",
+                "lastError": detail or "delivery_failed",
+                "nextAttemptAtMs": int(time.time() * 1000) + (30_000 * attempts) if attempts < 3 else None,
+            }
+        )
+    merged = dict(delivery)
+    merged.update(patch)
+    return _notification_email_outbox_upsert(str(delivery.get("id") or delivery_id or ""), merged)
+
+
+def _notification_queue_email_delivery(
+    *,
+    uid: str,
+    item: dict[str, Any],
+    recipient_role: str = "",
+) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return None
+    to_email = _notification_email_for_uid(safe_uid)
+    if not to_email:
+        return None
+    now_iso = _utc_now().isoformat()
+    delivery = _notification_email_outbox_upsert(
+        "",
+        {
+            "uid": safe_uid,
+            "notificationId": str(item.get("id") or "").strip(),
+            "eventCode": str(item.get("eventCode") or "").strip(),
+            "to": to_email,
+            "subject": _notification_email_subject(item),
+            "text": _notification_email_text(item, recipient_role=recipient_role),
+            "status": "pending",
+            "attempts": 0,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+        },
+    )
+    delivery_id = str(delivery.get("id") or "").strip()
+    if not delivery_id:
+        return delivery
+    worker = threading.Thread(
+        target=_notification_attempt_email_delivery,
+        args=(delivery_id,),
+        daemon=True,
+        name=f"notif-email-{delivery_id[:8]}",
+    )
+    worker.start()
+    return delivery
+
+
+def _notification_pref_enabled(preferences: dict[str, Any], pref_key: str) -> bool:
+    safe_key = str(pref_key or "").strip()
+    if not safe_key:
+        return False
+    return bool(preferences.get(safe_key))
+
+
+def _notification_actor_has_admin_access(actor: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(actor, dict):
+        return False
+    if str(actor.get("status") or "active").strip().lower() == "disabled":
+        return False
+    permissions = actor.get("permissions")
+    if isinstance(permissions, list):
+        for permission in permissions:
+            if str(permission or "").strip().lower() in RBAC_PERMISSIONS:
+                return True
+    return False
+
+
+def _notification_emit_persisted(
+    uid: str,
+    *,
+    event_code: str,
+    title: str,
+    message: str,
+    details: str = "",
+    severity: str = "info",
+    category: str = "activity",
+    audience: str = "user",
+    entity_key: str = "",
+    dedupe_key: str = "",
+    sticky: bool = False,
+    status: str = "active",
+    required_permission: str = "",
+    action_label: str = "",
+    action_target: Optional[dict[str, Any]] = None,
+    email_eligible: bool = False,
+    email_pref_key: str = "",
+    metadata: Optional[dict[str, Any]] = None,
+    recipient_role: str = "",
+) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing notification recipient.")
+    item = _notification_upsert_item(
+        safe_uid,
+        {
+            "eventCode": event_code,
+            "entityKey": entity_key,
+            "title": title,
+            "message": message,
+            "details": details,
+            "severity": severity,
+            "category": category,
+            "audience": audience,
+            "status": status,
+            "sticky": bool(sticky),
+            "dedupeKey": dedupe_key or f"{event_code}::{entity_key or 'global'}",
+            "requiredPermission": required_permission or None,
+            "emailEligible": bool(email_eligible),
+            "action": (
+                {
+                    "label": str(action_label or "").strip()[:80],
+                    "target": _notification_action_target(action_target) or {},
+                }
+                if str(action_label or "").strip()
+                else None
+            ),
+            "metadata": metadata or {},
+        },
+        resurface_unread=True,
+    )
+    if email_eligible and email_pref_key and _notification_email_feature_enabled():
+        is_admin = str(audience or "").strip().lower() == "admin"
+        prefs = _notification_preferences_get(safe_uid, is_admin=is_admin)
+        if _notification_pref_enabled(prefs, email_pref_key):
+            _notification_queue_email_delivery(uid=safe_uid, item=item, recipient_role=recipient_role)
+    return item
+
+
+def _notification_actor_from_assignment(uid: str, assignment: dict[str, Any]) -> dict[str, Any]:
+    role = _rbac_normalize_role(str(assignment.get("role") or ""))
+    allow = _rbac_normalize_overrides(assignment.get("allowOverrides"))
+    deny = _rbac_normalize_overrides(assignment.get("denyOverrides"))
+    permissions = _rbac_default_permissions_for_role(role)
+    permissions.update(allow)
+    permissions.difference_update(set(deny))
+    return {
+        "uid": str(uid or "").strip(),
+        "role": role,
+        "permissions": sorted(permissions),
+        "status": _rbac_normalize_status(str(assignment.get("status") or "active")),
+        "allowOverrides": allow,
+        "denyOverrides": deny,
+    }
+
+
+def _notification_admin_recipients(required_permission: str) -> list[dict[str, Any]]:
+    safe_permission = str(required_permission or "").strip().lower()
+    recipients: dict[str, dict[str, Any]] = {}
+    for uid in VF_ADMIN_APPROVER_UIDS:
+        safe_uid = str(uid or "").strip()
+        if not safe_uid:
+            continue
+        actor = {
+            "uid": safe_uid,
+            "role": RBAC_ROLE_SUPER_ADMIN,
+            "permissions": sorted(RBAC_PERMISSIONS),
+            "status": "active",
+        }
+        recipients[safe_uid] = actor
+    cursor = ""
+    while True:
+        rows, next_cursor = _rbac_list_assignments(limit=200, cursor=cursor)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            safe_uid = str(row.get("uid") or "").strip()
+            if not safe_uid:
+                continue
+            actor = _notification_actor_from_assignment(safe_uid, row)
+            if safe_permission and not _has_permission(actor, safe_permission):
+                continue
+            recipients[safe_uid] = actor
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = str(next_cursor or "").strip()
+    return list(recipients.values())
+
+
+def _notification_required_permission_for_alert(event: dict[str, Any]) -> str:
+    policy_id = str(event.get("policyId") or "").strip().lower()
+    resource_type = str(event.get("resourceType") or "").strip().lower()
+    if resource_type == "support_conversation" or policy_id.startswith("support"):
+        return PERM_SUPPORT_READ
+    if policy_id.startswith("guardian") or resource_type in {"guardian_issue", "guardian_approval"}:
+        return PERM_GUARDIAN_READ
+    if policy_id.startswith("audit") or resource_type.startswith("audit"):
+        return PERM_AUDIT_READ
+    if policy_id.startswith("rbac") or resource_type.startswith("rbac"):
+        return PERM_RBAC_READ
+    if (
+        policy_id.startswith("billing")
+        or policy_id.startswith("coupon")
+        or resource_type in {"billing", "coupon", "coupon_campaign"}
+    ):
+        return PERM_BILLING_READ
+    if policy_id.startswith("analytics"):
+        return PERM_ANALYTICS_READ
+    if resource_type in {"runtime", "queue", "backend", "ops"}:
+        return PERM_OPS_READ
+    return PERM_ALERTS_READ
+
+
+def _notification_admin_tab_for_permission(permission: str) -> str:
+    safe_permission = str(permission or "").strip().lower()
+    if safe_permission in {PERM_SUPPORT_READ, PERM_SUPPORT_REPLY}:
+        return "alerts"
+    if safe_permission in {PERM_AUDIT_READ, PERM_RBAC_READ}:
+        return "audit"
+    if safe_permission in {PERM_ANALYTICS_READ, PERM_BILLING_READ}:
+        return "analytics"
+    if safe_permission in {PERM_GUARDIAN_READ, PERM_OPS_READ}:
+        return "guardian"
+    if safe_permission == PERM_SCHEDULER_READ:
+        return "scheduler"
+    return "alerts"
+
+
+def _notification_alert_copy(event: dict[str, Any]) -> tuple[str, str, str]:
+    policy_id = str(event.get("policyId") or "alert").strip()
+    resource_type = str(event.get("resourceType") or "resource").strip().replace("_", " ")
+    resource_id = str(event.get("resourceId") or "").strip()
+    severity = str(event.get("severity") or "warning").strip().lower()
+    samples = event.get("samples") if isinstance(event.get("samples"), list) else []
+    latest_sample = samples[-1] if samples and isinstance(samples[-1], dict) else {}
+    reason = str((latest_sample or {}).get("reason") or "").strip()
+    title = f"{resource_type.title()} Alert"
+    if severity == "critical":
+        title = f"Critical {resource_type.title()} Alert"
+    detail_tokens = [f"Policy: {policy_id}"]
+    if resource_id:
+        detail_tokens.append(f"Resource: {resource_id}")
+    if reason:
+        detail_tokens.append(f"Reason: {reason}")
+    message = f"{resource_type.title()} alert opened."
+    if resource_id:
+        message = f"{resource_type.title()} alert opened for {resource_id}."
+    if reason:
+        message = f"{message} {reason}"
+    return title, message[:600], "\n".join(detail_tokens)
+
+
+def _notification_emit_admin_broadcast(
+    *,
+    event_code: str,
+    title: str,
+    message: str,
+    details: str = "",
+    severity: str = "warning",
+    category: str = "system",
+    entity_key: str = "",
+    dedupe_key: str = "",
+    required_permission: str,
+    action_label: str = "",
+    action_target: Optional[dict[str, Any]] = None,
+    email_eligible: bool = False,
+    metadata: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for actor in _notification_admin_recipients(required_permission):
+        uid = str(actor.get("uid") or "").strip()
+        if not uid:
+            continue
+        rows.append(
+            _notification_emit_persisted(
+                uid,
+                event_code=event_code,
+                title=title,
+                message=message,
+                details=details,
+                severity=severity,
+                category=category,
+                audience="admin",
+                entity_key=entity_key,
+                dedupe_key=f"{dedupe_key or event_code}::{uid}",
+                sticky=severity in {"error", "critical"},
+                required_permission=required_permission,
+                action_label=action_label,
+                action_target=action_target,
+                email_eligible=email_eligible,
+                email_pref_key="emailAdminAlerts",
+                metadata=metadata,
+                recipient_role=str(actor.get("role") or ""),
+            )
+        )
+    return rows
+
+
+def _notification_sync_account_usage(uid: str, entitlements: dict[str, Any]) -> None:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid or not isinstance(entitlements, dict):
+        return
+    daily = entitlements.get("daily") if isinstance(entitlements.get("daily"), dict) else {}
+    wallet = entitlements.get("wallet") if isinstance(entitlements.get("wallet"), dict) else {}
+    generation_used = max(0, int(daily.get("generationUsed") or 0))
+    generation_limit = max(1, int(daily.get("generationLimit") or 1))
+    usage_ratio = float(generation_used) / float(generation_limit or 1)
+    period_key = str(daily.get("periodKey") or "").strip() or _usage_day_period_label(_utc_now())
+    if generation_used >= generation_limit:
+        _notification_emit_persisted(
+            safe_uid,
+            event_code="quota.daily.reached",
+            title="Daily Limit Reached",
+            message="You have reached your daily generation limit.",
+            severity="error",
+            category="activity",
+            entity_key=period_key,
+            sticky=True,
+            action_label="Open Studio",
+            action_target={"screen": "main", "tab": "STUDIO"},
+            email_eligible=True,
+            email_pref_key="emailBilling",
+        )
+    elif usage_ratio >= 0.95:
+        _notification_emit_persisted(
+            safe_uid,
+            event_code="quota.daily.95",
+            title="Daily Usage Warning",
+            message="You have used at least 95% of your daily generation limit.",
+            severity="warning",
+            category="activity",
+            entity_key=period_key,
+            action_label="Open Studio",
+            action_target={"screen": "main", "tab": "STUDIO"},
+            email_eligible=False,
+            email_pref_key="emailBilling",
+        )
+    spendable = wallet.get("spendableNowByEngine") if isinstance(wallet.get("spendableNowByEngine"), dict) else {}
+    spendable_values = [max(0.0, float(value or 0.0)) for value in spendable.values()]
+    max_spendable = max(spendable_values) if spendable_values else 0.0
+    if max_spendable <= 1000.0:
+        _notification_emit_persisted(
+            safe_uid,
+            event_code="wallet.low_balance",
+            title="Low Balance",
+            message="Your remaining Voice Flow balance is running low.",
+            severity="warning",
+            category="activity",
+            entity_key=period_key,
+            action_label="Open Billing",
+            action_target={"screen": "main", "tab": "STUDIO"},
+            email_eligible=True,
+            email_pref_key="emailBilling",
+        )
+
+
+def _notification_emit_tts_job_terminal(job: dict[str, Any], *, status: str, detail: str = "") -> None:
+    safe_job = dict(job or {})
+    uid = str(safe_job.get("uid") or "").strip()
+    if not uid:
+        return
+    job_id = str(safe_job.get("jobId") or safe_job.get("requestId") or "").strip()
+    engine = str(safe_job.get("engine") or "GEM").strip().upper() or "GEM"
+    created_at_ms = max(0, int(safe_job.get("createdAtMs") or 0))
+    finished_at_ms = max(created_at_ms, int(safe_job.get("finishedAtMs") or int(time.time() * 1000)))
+    duration_ms = max(0, finished_at_ms - created_at_ms)
+    safe_status = str(status or "").strip().lower()
+    if safe_status == "completed":
+        event_code = "tts.job.completed"
+        title = "Queued TTS Job Complete"
+        message = f"Your queued {engine} TTS job completed."
+        severity = "success"
+        email_eligible = duration_ms >= int(VF_NOTIFICATIONS_JOB_EMAIL_MIN_DURATION_MS)
+    elif safe_status == "cancelled":
+        event_code = "tts.job.cancelled"
+        title = "Queued TTS Job Cancelled"
+        message = f"Your queued {engine} TTS job was cancelled."
+        severity = "info"
+        email_eligible = False
+    else:
+        event_code = "tts.job.failed"
+        title = "Queued TTS Job Failed"
+        message = f"Your queued {engine} TTS job failed."
+        severity = "error"
+        email_eligible = True
+    extra_detail = detail or ""
+    if not extra_detail and isinstance(safe_job.get("error"), dict):
+        extra_detail = str((safe_job.get("error") or {}).get("detail") or "").strip()
+    _notification_emit_persisted(
+        uid,
+        event_code=event_code,
+        title=title,
+        message=message,
+        details=f"jobId={job_id}\nengine={engine}\ndurationMs={duration_ms}\n{extra_detail}".strip(),
+        severity=severity,
+        category="activity",
+        entity_key=job_id,
+        dedupe_key=f"{event_code}::{job_id or 'unknown'}",
+        sticky=safe_status == "failed",
+        action_label="Open History",
+        action_target={"screen": "main", "tab": "HISTORY", "jobId": job_id},
+        email_eligible=email_eligible,
+        email_pref_key="emailAsyncJobs",
+        metadata={"jobId": job_id, "engine": engine, "durationMs": duration_ms, "status": safe_status},
+    )
+
+
+def _notification_emit_dubbing_job_terminal(job: dict[str, Any]) -> None:
+    safe_job = dict(job or {})
+    uid = str(safe_job.get("uid") or "").strip()
+    if not uid:
+        return
+    job_id = str(safe_job.get("id") or safe_job.get("jobId") or "").strip()
+    safe_status = str(safe_job.get("status") or "").strip().lower()
+    created_at_ms = max(0, int(safe_job.get("createdAt") or 0))
+    finished_at_ms = max(created_at_ms, int(safe_job.get("updatedAt") or int(time.time() * 1000)))
+    duration_ms = max(0, finished_at_ms - created_at_ms)
+    error_detail = str(safe_job.get("error") or "").strip()
+    if safe_status == "completed":
+        event_code = "dubbing.job.completed"
+        title = "Dubbing Job Complete"
+        message = "Your dubbing job completed successfully."
+        severity = "success"
+        email_eligible = True
+    elif safe_status == "cancelled":
+        event_code = "dubbing.job.cancelled"
+        title = "Dubbing Job Cancelled"
+        message = "Your dubbing job was cancelled."
+        severity = "info"
+        email_eligible = False
+    else:
+        event_code = "dubbing.job.failed"
+        title = "Dubbing Job Failed"
+        message = "Your dubbing job failed."
+        severity = "error"
+        email_eligible = True
+    _notification_emit_persisted(
+        uid,
+        event_code=event_code,
+        title=title,
+        message=message,
+        details=f"jobId={job_id}\ndurationMs={duration_ms}\n{error_detail}".strip(),
+        severity=severity,
+        category="activity",
+        entity_key=job_id,
+        dedupe_key=f"{event_code}::{job_id or 'unknown'}",
+        sticky=safe_status == "failed",
+        action_label="Open Dubbing",
+        action_target={"screen": "main", "tab": "DUBBING", "jobId": job_id},
+        email_eligible=email_eligible,
+        email_pref_key="emailAsyncJobs",
+        metadata={"jobId": job_id, "durationMs": duration_ms, "status": safe_status},
+    )
 
 
 def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
@@ -5585,7 +7147,7 @@ class FrontendErrorReportRequest(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
-class LoadLlvcModelRequest(BaseModel):
+class LoadVoiceTransferModelRequest(BaseModel):
     modelName: str
     version: str = "v2"
 
@@ -5742,6 +7304,13 @@ class SupportAiPolicyPatchRequest(BaseModel):
     requireHumanForTags: Optional[list[str]] = None
 
 
+class NotificationPreferencesPatchRequest(BaseModel):
+    emailAsyncJobs: Optional[bool] = None
+    emailBilling: Optional[bool] = None
+    emailSupport: Optional[bool] = None
+    emailAdminAlerts: Optional[bool] = None
+
+
 class AdminSessionUnlockVerifyRequest(BaseModel):
     unlockKey: str
 
@@ -5825,6 +7394,8 @@ class GeminiApiPoolsUpdateRequest(BaseModel):
 class TtsSynthesizeRequest(BaseModel):
     engine: str = "GEM"
     text: str
+    model: Optional[str] = None
+    modelCandidates: Optional[list[str]] = None
     voiceName: Optional[str] = None
     voice_id: Optional[str] = None
     voiceId: Optional[str] = None
@@ -5870,6 +7441,7 @@ class TtsEngineVoiceItem(BaseModel):
     name: str
     voice: Optional[str] = None
     language: Optional[str] = None
+    accent: Optional[str] = None
     gender: Optional[str] = None
     source: Optional[str] = None
     profile_id: Optional[str] = None
@@ -5925,6 +7497,9 @@ class VideoTranscriptionResponse(BaseModel):
     segments: list[dict[str, Any]]
     script: str
     durationSec: float
+    speakerCount: Optional[int] = None
+    speakers: Optional[list[dict[str, Any]]] = None
+    director: Optional[dict[str, Any]] = None
 
 
 class AiGenerateTextRequest(BaseModel):
@@ -5933,6 +7508,7 @@ class AiGenerateTextRequest(BaseModel):
     jsonMode: bool = False
     temperature: float = 0.7
     apiKey: Optional[str] = None
+    modelCandidates: Optional[list[str]] = None
 
 
 def _ai_ops_now_ms() -> int:
@@ -6429,10 +8005,7 @@ def _hash_sha256_hex(value: str) -> str:
 
 
 def _request_ip_hash(request: Optional[Request]) -> str:
-    if request is None:
-        return ""
-    forwarded = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    raw_ip = forwarded or str(request.client.host if request.client else "")
+    raw_ip = _request_source_ip(request)
     if not raw_ip:
         return ""
     return _hash_sha256_hex(raw_ip)
@@ -6898,7 +8471,23 @@ def _ai_ops_create_approval(
         _ai_ops_trim_list_locked(order, VF_AI_OPS_MAX_PENDING_APPROVALS)
         if approval_id not in order:
             approvals.pop(approval_id, None)
-        return dict(approval), True
+        created = dict(approval)
+    _notification_emit_admin_broadcast(
+        event_code="admin.approval.pending",
+        title="Approval Pending",
+        message=f"Admin approval required for {str(created.get('action') or 'operation').replace('_', ' ')}.",
+        details=str(created.get("reason") or "admin_approval_required"),
+        severity="warning",
+        category="system",
+        entity_key=str(created.get("id") or ""),
+        dedupe_key=f"admin.approval.pending::{str(created.get('id') or '')}",
+        required_permission=PERM_GUARDIAN_READ,
+        action_label="Open Admin Guardian",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "guardian"},
+        email_eligible=True,
+        metadata={"approvalId": str(created.get("id") or ""), "action": str(created.get("action") or "")},
+    )
+    return created, True
 
 
 def _ai_ops_record_backend_error_locked(path: str, status_code: int, detail: str) -> None:
@@ -7315,7 +8904,8 @@ def _ai_ops_execute_action(
     try:
         if normalized_action == "restart_runtime":
             engine = _normalize_engine_name(str(safe_payload.get("engine") or ""))
-            command_output = _run_tts_switch_with_retry(engine, bool(gpu), retries=2, keep_others=True)
+            effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
+            command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
             health_url = TTS_ENGINE_HEALTH_URLS[engine]
             healthy, detail = _probe_runtime_health(health_url, timeout_sec=2.5)
             execution.update(
@@ -7361,7 +8951,8 @@ def _ai_ops_execute_action(
             overall_ok = True
             for engine in ["GEM", "KOKORO"]:
                 try:
-                    command_output = _run_tts_switch_with_retry(engine, bool(gpu), retries=2, keep_others=True)
+                    effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
+                    command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
                     healthy, detail = _probe_runtime_health(TTS_ENGINE_HEALTH_URLS[engine], timeout_sec=2.5)
                     item_ok = bool(healthy)
                     overall_ok = overall_ok and item_ok
@@ -7704,9 +9295,54 @@ def _alert_upsert_event(event_id: str, row: dict[str, Any]) -> dict[str, Any]:
     if collection is None:
         with _INMEMORY_LOCK:
             _INMEMORY_ALERT_EVENTS[safe_id] = dict(payload)
-        return payload
-    collection.document(safe_id).set(payload, merge=True)
-    return payload
+        saved = dict(payload)
+    else:
+        collection.document(safe_id).set(payload, merge=True)
+        saved = dict(payload)
+    status = str(saved.get("status") or "").strip().lower()
+    if status == "open":
+        required_permission = _notification_required_permission_for_alert(saved)
+        title, message, details = _notification_alert_copy(saved)
+        _notification_emit_admin_broadcast(
+            event_code="admin.alert.opened",
+            title=title,
+            message=message,
+            details=details,
+            severity="critical" if str(saved.get("severity") or "").strip().lower() == "critical" else "warning",
+            category="system",
+            entity_key=safe_id,
+            dedupe_key=f"admin.alert.opened::{safe_id}",
+            required_permission=required_permission,
+            action_label="Open Admin Alerts",
+            action_target={"screen": "main", "tab": "ADMIN", "adminTab": _notification_admin_tab_for_permission(required_permission)},
+            email_eligible=True,
+            metadata={
+                "alertEventId": safe_id,
+                "policyId": str(saved.get("policyId") or "").strip(),
+                "resourceType": str(saved.get("resourceType") or "").strip(),
+                "resourceId": str(saved.get("resourceId") or "").strip(),
+            },
+        )
+    elif status == "resolved":
+        required_permission = _notification_required_permission_for_alert(saved)
+        for actor in _notification_admin_recipients(required_permission):
+            actor_uid = str(actor.get("uid") or "").strip()
+            if not actor_uid:
+                continue
+            dedupe_key = f"admin.alert.opened::{safe_id}::{actor_uid}"
+            existing = _notification_find_by_dedupe_key(actor_uid, dedupe_key)
+            if not isinstance(existing, dict):
+                continue
+            _notification_patch_item(
+                actor_uid,
+                str(existing.get("id") or ""),
+                {
+                    "status": "resolved",
+                    "resolvedAt": str(saved.get("resolvedAt") or _utc_now().isoformat()),
+                    "readAt": str(existing.get("readAt") or _utc_now().isoformat()),
+                },
+            )
+    return saved
 
 
 def _alert_get_policy(policy_id: str) -> Optional[dict[str, Any]]:
@@ -8243,6 +9879,8 @@ def _scheduler_execute_task(task: dict[str, Any], *, requested_by: str, dry_run:
     if task_type == "coupon_abuse_scan":
         snapshot = _coupon_abuse_scan_snapshot()
         return {"ok": True, "dryRun": bool(dry_run), **snapshot}
+    if task_type == "audio_generation_audit_retention_cleanup":
+        return _audio_generation_audit_retention_cleanup(dry_run=bool(dry_run))
     raise RuntimeError("Unsupported task type.")
 
 
@@ -8957,7 +10595,7 @@ def _stripe_sync_subscription_coupon_artifacts(
     active: bool,
     plan_discounts: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    if stripe is None:
+    if not _ensure_stripe_sdk_imported() or stripe is None:
         raise HTTPException(status_code=503, detail="Stripe SDK is not available.")
     normalized = _normalize_coupon_plan_discounts(plan_discounts)
     if not normalized:
@@ -9164,6 +10802,577 @@ def _parse_optional_datetime(raw: Optional[str]) -> Optional[datetime]:
         return parsed.astimezone(timezone.utc)
     except Exception:
         return None
+
+
+def _datetime_plus_years(value: datetime, years: int) -> datetime:
+    safe_years = max(0, int(years))
+    if safe_years <= 0:
+        return value
+    try:
+        return value.replace(year=value.year + safe_years)
+    except ValueError:
+        if value.month == 2 and value.day == 29:
+            return value.replace(year=value.year + safe_years, month=2, day=28)
+        raise
+
+
+def _audio_generation_audit_text_preview(text: Any) -> str:
+    collapsed = re.sub(r"\s+", " ", str(text or "")).strip()
+    preview = collapsed[:VF_AUDIO_GENERATION_AUDIT_PREVIEW_CHARS]
+    if len(collapsed) > VF_AUDIO_GENERATION_AUDIT_PREVIEW_CHARS:
+        preview = f"{preview}..."
+    return preview
+
+
+def _audio_generation_audit_stringify_detail(value: Any) -> str:
+    if isinstance(value, str):
+        return _truncate_text(value, 2000)
+    if value is None:
+        return ""
+    try:
+        return _truncate_text(json.dumps(value, ensure_ascii=True, sort_keys=True, default=str), 2000)
+    except Exception:
+        return _truncate_text(str(value), 2000)
+
+
+def _firebase_user_contact_snapshot(uid: str) -> dict[str, str]:
+    safe_uid = str(uid or "").strip()
+    payload = {"email": "", "phoneNumber": ""}
+    if not safe_uid or not _firebase_ready() or firebase_auth is None:
+        return payload
+    try:
+        record = firebase_auth.get_user(safe_uid)  # type: ignore[attr-defined]
+    except Exception:
+        return payload
+    payload["email"] = str(getattr(record, "email", "") or "").strip().lower()
+    payload["phoneNumber"] = str(getattr(record, "phone_number", "") or "").strip()
+    return payload
+
+
+def _audio_generation_identity_snapshot(uid: str, request: Optional[Request]) -> dict[str, str]:
+    safe_uid = str(uid or "").strip()
+    profile = _user_profile_read(safe_uid) if safe_uid else None
+    firebase_snapshot = _firebase_user_contact_snapshot(safe_uid)
+    email = (
+        _request_claim_email(request)
+        or str(firebase_snapshot.get("email") or "").strip().lower()
+        or str((profile or {}).get("email") or "").strip().lower()
+    )
+    phone_number = (
+        _request_claim_phone(request)
+        or str(firebase_snapshot.get("phoneNumber") or "").strip()
+    )
+    identity_type = ""
+    identity_value = ""
+    if phone_number:
+        identity_type = "phone"
+        identity_value = phone_number
+    elif email:
+        identity_type = "email"
+        identity_value = email
+    return {
+        "email": email,
+        "phoneNumber": phone_number,
+        "identityType": identity_type,
+        "identityValue": identity_value,
+    }
+
+
+def _audio_generation_wallet_payment_ref(transaction_row: dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(transaction_row, dict):
+        return "", ""
+    metadata = transaction_row.get("metadata") if isinstance(transaction_row.get("metadata"), dict) else {}
+    reason = str(transaction_row.get("reason") or "").strip().lower()
+    payment_intent_id = (
+        str(metadata.get("paymentIntentId") or metadata.get("payment_intent") or metadata.get("paymentIntent") or "").strip()
+    )
+    invoice_id = str(metadata.get("invoiceId") or metadata.get("invoice") or "").strip()
+    transaction_id = str(transaction_row.get("id") or "").strip()
+    provider = str(metadata.get("provider") or "").strip().lower()
+    paid_like = bool(
+        payment_intent_id
+        or invoice_id
+        or reason.startswith("stripe_")
+        or provider == "stripe"
+    )
+    if not paid_like:
+        return "", ""
+    if payment_intent_id:
+        return "payment_intent", payment_intent_id
+    if invoice_id:
+        return "invoice", invoice_id
+    if transaction_id:
+        return "wallet_transaction", transaction_id
+    return "", ""
+
+
+def _latest_wallet_payment_ref(uid: str) -> tuple[str, str]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return "", ""
+    collection = _firestore_collection("wallet_transactions")
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_WALLET_TRANSACTIONS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.stream()]
+        except Exception:
+            rows = []
+    filtered = [
+        row for row in rows
+        if isinstance(row, dict) and str(row.get("uid") or "").strip() == safe_uid
+    ]
+    filtered.sort(
+        key=lambda item: str(item.get("createdAt") or item.get("updatedAt") or ""),
+        reverse=True,
+    )
+    for row in filtered:
+        ref_type, ref_value = _audio_generation_wallet_payment_ref(row)
+        if ref_value:
+            return ref_type, ref_value
+    return "", ""
+
+
+def _resolve_audio_generation_payment_ref(uid: str) -> tuple[str, str]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return "", ""
+    entitlement = _load_entitlement(safe_uid)
+    latest_invoice_id = str(entitlement.get("latestInvoiceId") or "").strip()
+    if latest_invoice_id:
+        return "invoice", latest_invoice_id
+    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    if subscription_id:
+        return "subscription", subscription_id
+    return _latest_wallet_payment_ref(safe_uid)
+
+
+def _audio_generation_audit_retention_delete_after(
+    submitted_at: str,
+    audio_created_at: str = "",
+) -> str:
+    base_dt = _parse_optional_datetime(audio_created_at) or _parse_optional_datetime(submitted_at) or _utc_now()
+    return _datetime_plus_years(base_dt, VF_AUDIO_GENERATION_AUDIT_RETENTION_YEARS).isoformat()
+
+
+def _audio_generation_audit_sanitize_row(row: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(row or {})
+    submitted_at = (
+        (_parse_optional_datetime(str(safe.get("submittedAt") or "")) or _utc_now()).isoformat()
+    )
+    audio_created_dt = _parse_optional_datetime(str(safe.get("audioCreatedAt") or ""))
+    terminal_dt = _parse_optional_datetime(str(safe.get("terminalAt") or ""))
+    source_ip = str(safe.get("sourceIp") or "").strip()
+    engine_value = str(safe.get("engine") or "").strip()
+    if engine_value:
+        engine_value = _normalize_engine_name(engine_value)
+    request_id = str(safe.get("requestId") or "").strip()
+    job_id = str(safe.get("jobId") or "").strip()
+    input_text = str(safe.get("inputText") or "")
+    email = str(safe.get("email") or "").strip().lower()
+    phone_number = str(safe.get("phoneNumber") or "").strip()
+    identity_type = str(safe.get("identityType") or "").strip().lower()
+    identity_value = str(safe.get("identityValue") or "").strip()
+    if not identity_type:
+        if phone_number:
+            identity_type = "phone"
+            identity_value = phone_number
+        elif email:
+            identity_type = "email"
+            identity_value = email
+    return {
+        "auditId": str(safe.get("auditId") or uuid.uuid4().hex).strip() or uuid.uuid4().hex,
+        "uid": str(safe.get("uid") or "").strip(),
+        "userId": str(safe.get("userId") or "").strip().lower(),
+        "identityType": identity_type,
+        "identityValue": identity_value,
+        "email": email,
+        "phoneNumber": phone_number,
+        "submittedAt": submitted_at,
+        "audioCreatedAt": audio_created_dt.isoformat() if audio_created_dt else "",
+        "terminalAt": terminal_dt.isoformat() if terminal_dt else "",
+        "status": str(safe.get("status") or "received").strip().lower() or "received",
+        "failureCode": _truncate_text(str(safe.get("failureCode") or "").strip(), 160),
+        "failureDetail": _audio_generation_audit_stringify_detail(safe.get("failureDetail")),
+        "engine": engine_value,
+        "voiceId": _truncate_text(str(safe.get("voiceId") or "").strip(), 160),
+        "voiceName": _truncate_text(str(safe.get("voiceName") or "").strip(), 160),
+        "language": _truncate_text(str(safe.get("language") or "").strip(), 64),
+        "requestId": _truncate_text(request_id, 160),
+        "jobId": _truncate_text(job_id, 160),
+        "traceId": _truncate_text(str(safe.get("traceId") or "").strip(), 160),
+        "inputText": input_text,
+        "textPreview": _audio_generation_audit_text_preview(input_text),
+        "sourceIp": source_ip,
+        "ipHash": str(safe.get("ipHash") or (_hash_sha256_hex(source_ip) if source_ip else "")).strip(),
+        "paymentRefType": _truncate_text(str(safe.get("paymentRefType") or "").strip().lower(), 64),
+        "paymentRef": _truncate_text(str(safe.get("paymentRef") or "").strip(), 160),
+        "retentionDeleteAfter": str(
+            safe.get("retentionDeleteAfter")
+            or _audio_generation_audit_retention_delete_after(
+                submitted_at,
+                audio_created_dt.isoformat() if audio_created_dt else "",
+            )
+        ).strip(),
+    }
+
+
+def _audio_generation_audit_list_item(row: dict[str, Any]) -> dict[str, Any]:
+    safe = _audio_generation_audit_sanitize_row(row)
+    return {
+        key: value
+        for key, value in safe.items()
+        if key != "inputText"
+    }
+
+
+def _audio_generation_audit_write_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = _audio_generation_audit_sanitize_row(row)
+    audit_id = str(payload.get("auditId") or "").strip()
+    if not audit_id:
+        raise RuntimeError("Missing audit id.")
+    collection = _firestore_collection(AUDIO_GENERATION_AUDIT_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_AUDIO_GENERATION_AUDIT[audit_id] = dict(payload)
+        return dict(payload)
+    try:
+        collection.document(audit_id).set(payload, merge=True)
+    except Exception:
+        with _INMEMORY_LOCK:
+            _INMEMORY_AUDIO_GENERATION_AUDIT[audit_id] = dict(payload)
+    return dict(payload)
+
+
+def _audio_generation_audit_get(audit_id: str) -> Optional[dict[str, Any]]:
+    safe_audit_id = str(audit_id or "").strip()
+    if not safe_audit_id:
+        return None
+    collection = _firestore_collection(AUDIO_GENERATION_AUDIT_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_AUDIO_GENERATION_AUDIT.get(safe_audit_id)
+            return dict(row) if isinstance(row, dict) else None
+    try:
+        doc = collection.document(safe_audit_id).get()
+    except Exception:
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_AUDIO_GENERATION_AUDIT.get(safe_audit_id)
+            return dict(row) if isinstance(row, dict) else None
+    if not doc.exists:
+        return None
+    return _audio_generation_audit_sanitize_row({**(doc.to_dict() or {}), "auditId": safe_audit_id})
+
+
+def _audio_generation_audit_create(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row or {})
+    payload.setdefault("auditId", uuid.uuid4().hex)
+    payload.setdefault("submittedAt", _safe_now_iso())
+    payload.setdefault("status", "received")
+    return _audio_generation_audit_write_row(payload)
+
+
+def _audio_generation_audit_update(audit_id: str, patch: dict[str, Any]) -> Optional[dict[str, Any]]:
+    existing = _audio_generation_audit_get(audit_id)
+    if not isinstance(existing, dict):
+        return None
+    merged = {**existing, **(patch or {}), "auditId": str(existing.get("auditId") or audit_id)}
+    return _audio_generation_audit_write_row(merged)
+
+
+def _audio_generation_failure_code(detail: Any, error_tag: str = "") -> str:
+    extracted = str(extract_error_code(detail) or "").strip()
+    if extracted:
+        return extracted
+    if isinstance(detail, dict):
+        reason = str(detail.get("reason") or detail.get("errorCode") or "").strip()
+        if reason:
+            return _truncate_text(reason, 160)
+    return _truncate_text(str(error_tag or "failed").strip(), 160)
+
+
+def _audio_generation_audit_mark_terminal(
+    audit_id: str,
+    *,
+    status: str,
+    failure_code: str = "",
+    failure_detail: Any = "",
+    job_id: str = "",
+    request_id: str = "",
+    trace_id: str = "",
+    audio_created_at: str = "",
+) -> Optional[dict[str, Any]]:
+    patch: dict[str, Any] = {
+        "status": str(status or "failed").strip().lower() or "failed",
+        "terminalAt": _safe_now_iso(),
+        "failureCode": _truncate_text(str(failure_code or "").strip(), 160),
+        "failureDetail": _audio_generation_audit_stringify_detail(failure_detail),
+    }
+    if job_id:
+        patch["jobId"] = str(job_id or "").strip()
+    if request_id:
+        patch["requestId"] = str(request_id or "").strip()
+    if trace_id:
+        patch["traceId"] = str(trace_id or "").strip()
+    if audio_created_at:
+        patch["audioCreatedAt"] = str(audio_created_at or "").strip()
+        patch["retentionDeleteAfter"] = _audio_generation_audit_retention_delete_after(
+            str((_audio_generation_audit_get(audit_id) or {}).get("submittedAt") or _safe_now_iso()),
+            str(audio_created_at or "").strip(),
+        )
+    return _audio_generation_audit_update(audit_id, patch)
+
+
+def _audio_generation_audit_ids_from_job(job: Any) -> list[str]:
+    if not isinstance(job, dict):
+        return []
+    seen: set[str] = set()
+    items = list(job.get("audioAuditIds") or [])
+    if not items and job.get("audioAuditId"):
+        items = [job.get("audioAuditId")]
+    out: list[str] = []
+    for item in items:
+        safe_item = str(item or "").strip()
+        if not safe_item or safe_item in seen:
+            continue
+        seen.add(safe_item)
+        out.append(safe_item)
+    return out
+
+
+def _audio_generation_audit_rows() -> list[dict[str, Any]]:
+    collection = _firestore_collection(AUDIO_GENERATION_AUDIT_COLLECTION)
+    rows: list[dict[str, Any]] = []
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_AUDIO_GENERATION_AUDIT.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "auditId": str(doc.id or "")} for doc in collection.stream()]
+        except Exception:
+            with _INMEMORY_LOCK:
+                rows = [dict(item) for item in _INMEMORY_AUDIO_GENERATION_AUDIT.values()]
+    return [_audio_generation_audit_sanitize_row(row) for row in rows if isinstance(row, dict)]
+
+
+def _audio_generation_audit_matches_filters(
+    row: dict[str, Any],
+    *,
+    uid: str = "",
+    user_id: str = "",
+    identity_value: str = "",
+    payment_ref: str = "",
+    status: str = "",
+    engine: str = "",
+    from_iso: str = "",
+    to_iso: str = "",
+) -> bool:
+    safe_uid = str(uid or "").strip()
+    safe_user_id = str(user_id or "").strip().lower()
+    safe_identity_value = str(identity_value or "").strip().lower()
+    safe_payment_ref = str(payment_ref or "").strip().lower()
+    safe_status = str(status or "").strip().lower()
+    safe_engine = str(engine or "").strip().upper()
+    if safe_uid and str(row.get("uid") or "").strip() != safe_uid:
+        return False
+    if safe_user_id and str(row.get("userId") or "").strip().lower() != safe_user_id:
+        return False
+    if safe_identity_value and safe_identity_value not in str(row.get("identityValue") or "").strip().lower():
+        return False
+    if safe_payment_ref and safe_payment_ref not in str(row.get("paymentRef") or "").strip().lower():
+        return False
+    if safe_status and str(row.get("status") or "").strip().lower() != safe_status:
+        return False
+    if safe_engine and str(row.get("engine") or "").strip().upper() != safe_engine:
+        return False
+    submitted_at = _parse_optional_datetime(str(row.get("submittedAt") or ""))
+    from_dt = _parse_optional_datetime(from_iso) if from_iso else None
+    to_dt = _parse_optional_datetime(to_iso) if to_iso else None
+    if from_dt and submitted_at and submitted_at < from_dt:
+        return False
+    if to_dt and submitted_at and submitted_at > to_dt:
+        return False
+    return True
+
+
+def _audio_generation_audit_list(
+    *,
+    uid: str = "",
+    user_id: str = "",
+    identity_value: str = "",
+    payment_ref: str = "",
+    status: str = "",
+    engine: str = "",
+    from_iso: str = "",
+    to_iso: str = "",
+    cursor: str = "",
+    limit: int = 100,
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    safe_limit = max(1, min(500, int(limit)))
+    safe_cursor = str(cursor or "").strip()
+    rows = [
+        row for row in _audio_generation_audit_rows()
+        if _audio_generation_audit_matches_filters(
+            row,
+            uid=uid,
+            user_id=user_id,
+            identity_value=identity_value,
+            payment_ref=payment_ref,
+            status=status,
+            engine=engine,
+            from_iso=from_iso,
+            to_iso=to_iso,
+        )
+    ]
+    rows.sort(
+        key=lambda item: (
+            str(item.get("submittedAt") or ""),
+            str(item.get("auditId") or ""),
+        ),
+        reverse=True,
+    )
+    if safe_cursor:
+        cursor_index = next(
+            (index for index, item in enumerate(rows) if str(item.get("auditId") or "") == safe_cursor),
+            -1,
+        )
+        if cursor_index >= 0:
+            rows = rows[cursor_index + 1:]
+    items = rows[:safe_limit]
+    next_cursor = None
+    if len(rows) > safe_limit and items:
+        next_cursor = str(items[-1].get("auditId") or "")
+    return items, next_cursor
+
+
+def _audio_generation_audit_csv(rows: list[dict[str, Any]]) -> str:
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "auditId",
+            "uid",
+            "userId",
+            "identityType",
+            "identityValue",
+            "email",
+            "phoneNumber",
+            "submittedAt",
+            "audioCreatedAt",
+            "terminalAt",
+            "status",
+            "failureCode",
+            "failureDetail",
+            "engine",
+            "voiceId",
+            "voiceName",
+            "language",
+            "requestId",
+            "jobId",
+            "traceId",
+            "inputText",
+            "textPreview",
+            "sourceIp",
+            "ipHash",
+            "paymentRefType",
+            "paymentRef",
+            "retentionDeleteAfter",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                str(row.get("auditId") or ""),
+                str(row.get("uid") or ""),
+                str(row.get("userId") or ""),
+                str(row.get("identityType") or ""),
+                str(row.get("identityValue") or ""),
+                str(row.get("email") or ""),
+                str(row.get("phoneNumber") or ""),
+                str(row.get("submittedAt") or ""),
+                str(row.get("audioCreatedAt") or ""),
+                str(row.get("terminalAt") or ""),
+                str(row.get("status") or ""),
+                str(row.get("failureCode") or ""),
+                str(row.get("failureDetail") or ""),
+                str(row.get("engine") or ""),
+                str(row.get("voiceId") or ""),
+                str(row.get("voiceName") or ""),
+                str(row.get("language") or ""),
+                str(row.get("requestId") or ""),
+                str(row.get("jobId") or ""),
+                str(row.get("traceId") or ""),
+                str(row.get("inputText") or ""),
+                str(row.get("textPreview") or ""),
+                str(row.get("sourceIp") or ""),
+                str(row.get("ipHash") or ""),
+                str(row.get("paymentRefType") or ""),
+                str(row.get("paymentRef") or ""),
+                str(row.get("retentionDeleteAfter") or ""),
+            ]
+        )
+    return buffer.getvalue()
+
+
+def _audio_generation_audit_delete(audit_id: str) -> None:
+    safe_audit_id = str(audit_id or "").strip()
+    if not safe_audit_id:
+        return
+    collection = _firestore_collection(AUDIO_GENERATION_AUDIT_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_AUDIO_GENERATION_AUDIT.pop(safe_audit_id, None)
+        return
+    try:
+        collection.document(safe_audit_id).delete()
+    except Exception:
+        with _INMEMORY_LOCK:
+            _INMEMORY_AUDIO_GENERATION_AUDIT.pop(safe_audit_id, None)
+
+
+def _audio_generation_audit_retention_cleanup(*, dry_run: bool = False) -> dict[str, Any]:
+    now = _utc_now()
+    rows = _audio_generation_audit_rows()
+    expired = [
+        row for row in rows
+        if (_parse_optional_datetime(str(row.get("retentionDeleteAfter") or "")) or now) <= now
+    ]
+    if not dry_run:
+        for row in expired:
+            _audio_generation_audit_delete(str(row.get("auditId") or ""))
+    return {
+        "ok": True,
+        "dryRun": bool(dry_run),
+        "scannedCount": len(rows),
+        "deletedCount": len(expired),
+    }
+
+
+def _ensure_audio_generation_audit_cleanup_task() -> None:
+    task_id = "audio_generation_audit_retention_cleanup_default"
+    if isinstance(_scheduler_get_task(task_id), dict):
+        return
+    now = _utc_now()
+    _scheduler_upsert_task(
+        task_id,
+        {
+            "taskType": "audio_generation_audit_retention_cleanup",
+            "cronExpr": "15 2 * * *",
+            "timezone": "UTC",
+            "enabled": True,
+            "dryRun": False,
+            "payload": {},
+            "concurrencyPolicy": "forbid",
+            "nextRunAt": _scheduler_next_run_at("15 2 * * *", "UTC", after=now).isoformat(),
+            "lastRunAt": None,
+            "lastResult": {},
+            "createdAt": now.isoformat(),
+            "updatedAt": now.isoformat(),
+            "updatedBy": "system_bootstrap",
+        },
+    )
 
 
 def _normalize_coupon_code(raw_code: str) -> str:
@@ -9385,6 +11594,8 @@ def _normalize_conversion_policy(raw_policy: str, default: str = "AUTO_RELIABLE"
     token = str(raw_policy or "").strip().upper().replace("-", "_")
     if token == "AUTO_ROUTE":
         token = "AUTO_RELIABLE"
+    if token == "LLVC_ONLY":
+        token = "VOICE_TRANSFER_ONLY"
     if token not in VOICE_CONVERSION_POLICIES:
         return default
     return token
@@ -9443,6 +11654,20 @@ def _normalize_live_play_mode(raw_mode: str, default: str = "progressive_audio")
     return token
 
 
+def _normalize_source_language_mode(raw_mode: str, default: str = "auto_per_segment") -> str:
+    token = str(raw_mode or "").strip().lower().replace("-", "_")
+    if token not in {"auto_per_segment", "detected_global"}:
+        return default
+    return token
+
+
+def _normalize_language_coverage_profile(raw_value: str, default: str = "core12") -> str:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token not in {"core12"}:
+        return default
+    return token
+
+
 def _detect_cuda_available() -> bool:
     try:
         import torch as th  # type: ignore
@@ -9484,7 +11709,7 @@ def _dubbing_processing_profile_overrides(profile: str) -> dict[str, Any]:
             "isochrony_tolerance_pct": 14.0,
             "mix_stretch_min_rate": 0.80,
             "mix_stretch_max_rate": 1.40,
-            "llvc_preset": "tts_realtime",
+            "voice_transfer_preset": "tts_realtime",
         }
     if normalized == "cpu_balanced":
         return {
@@ -9492,14 +11717,14 @@ def _dubbing_processing_profile_overrides(profile: str) -> dict[str, Any]:
             "isochrony_tolerance_pct": 10.0,
             "mix_stretch_min_rate": 0.85,
             "mix_stretch_max_rate": 1.30,
-            "llvc_preset": "llvc_hq_cpu",
+            "voice_transfer_preset": "tts_realtime",
         }
     return {
         "gemini_pair_group_max_concurrency": 3,
         "isochrony_tolerance_pct": 8.0,
         "mix_stretch_min_rate": 0.90,
         "mix_stretch_max_rate": 1.20,
-        "llvc_preset": "llvc_hq_cpu",
+        "voice_transfer_preset": "tts_realtime",
     }
 
 
@@ -9518,12 +11743,15 @@ def _select_dubbing_qos_state(
     reason = ""
 
     if normalized_qos_policy == "adaptive_hq_first":
-        selected_profile = "cpu_quality"
         transcript_chars = len(str(transcript_override or ""))
-        if transcript_chars > 6000:
+        if selected_profile == "cpu_quality" and transcript_chars > 6000:
             selected_profile = "cpu_balanced"
             downgraded = True
             reason = "long_script_timeout_risk"
+        elif selected_profile == "cpu_balanced" and transcript_chars > 12000:
+            selected_profile = "cpu_fast"
+            downgraded = True
+            reason = "very_long_script_timeout_risk"
         elif normalized_hardware_policy == "gpu_preferred" and not gpu_used:
             reason = "gpu_unavailable"
 
@@ -9540,6 +11768,10 @@ def _select_dubbing_qos_state(
         "gpuUsed": bool(gpu_used),
     }
     return selected_profile, qos_state, overrides
+
+
+def _effective_tts_gpu_mode(engine: str, requested_gpu_mode: bool) -> bool:
+    return bool(requested_gpu_mode) and str(engine or "").strip().upper() != "KOKORO"
 
 
 def _trim_media_to_clip_window(
@@ -9623,8 +11855,9 @@ def _run_tts_switch(engine: str, gpu_mode: bool, keep_others: bool = False) -> s
     if not BOOTSTRAP_SCRIPT.exists():
         raise RuntimeError(f"Missing bootstrap script at {BOOTSTRAP_SCRIPT}")
 
+    effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu_mode)
     cmd = [NODE_BIN, str(BOOTSTRAP_SCRIPT), "switch", engine]
-    if gpu_mode:
+    if effective_gpu_mode:
         cmd.append("--gpu")
     if keep_others:
         cmd.append("--keep-others")
@@ -9673,16 +11906,41 @@ def _probe_runtime_health(url: str, timeout_sec: float = 2.5) -> tuple[bool, str
                 except Exception:
                     payload = payload_bytes.decode("utf-8", errors="replace")
             if isinstance(payload, dict):
-                if payload.get("status") == "healthy":
+                status_token = str(payload.get("status") or "").strip().lower()
+                detail = str(payload.get("detail") or payload.get("error") or "").strip()
+                if status_token == "healthy":
                     return True, "Runtime online"
+                if status_token in {"unhealthy", "error", "failed"}:
+                    return False, detail or "Runtime reported unhealthy status."
                 if payload.get("ok") is True:
                     return True, "Runtime online"
+                if payload.get("ok") is False:
+                    return False, detail or "Runtime reported unhealthy status."
             return True, "Runtime responding"
     except urllib_error.URLError as exc:
         reason = getattr(exc, "reason", None)
         return False, str(reason or exc)
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def _runtime_not_configured_detail(engine: str, capability_payload: Any) -> Optional[str]:
+    if not _is_gem_runtime_engine(engine):
+        return None
+    if not isinstance(capability_payload, dict):
+        return None
+    metadata = capability_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    auth_mode = str(metadata.get("authMode") or "").strip().lower()
+    if not auth_mode:
+        auth_mode = SOURCE_POLICY_PROVIDER_GEMINI_API
+    if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX:
+        return None
+    api_key_configured = bool(metadata.get("apiKeyConfigured"))
+    if api_key_configured:
+        return None
+    return "Gemini key pool is not configured."
 
 
 def _wait_for_runtime_online(
@@ -9964,13 +12222,19 @@ def _resolve_novel_import_hint(format_hint: str, content_type: str, filename: st
 
 
 def _get_local_ocr_engine() -> Any:
-    global _LOCAL_OCR_ENGINE
+    global _LOCAL_OCR_ENGINE, RapidOCR, _RAPIDOCR_IMPORT_ERROR
     if _LOCAL_OCR_ENGINE is not None:
         return _LOCAL_OCR_ENGINE
     if not ENABLE_LOCAL_OCR:
         raise RuntimeError("Local OCR is disabled.")
     if RapidOCR is None:
-        raise RuntimeError("rapidocr-onnxruntime is not installed.")
+        try:
+            from rapidocr_onnxruntime import RapidOCR as RapidOCRRuntime  # type: ignore
+        except Exception as exc:
+            _RAPIDOCR_IMPORT_ERROR = str(exc)
+            raise RuntimeError(f"rapidocr-onnxruntime import failed: {exc}") from exc
+        RapidOCR = RapidOCRRuntime
+        _RAPIDOCR_IMPORT_ERROR = None
     _LOCAL_OCR_ENGINE = RapidOCR()
     return _LOCAL_OCR_ENGINE
 
@@ -10013,7 +12277,8 @@ def _resolve_gemini_keys_file_path(path_hint: str) -> Path:
         else:
             candidates.append(APP_ROOT / hint_path)
             candidates.append(WORKSPACE_ROOT / hint_path)
-    candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
+    else:
+        candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
 
     first_candidate: Optional[Path] = None
     seen: set[str] = set()
@@ -10430,6 +12695,7 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
         if not force and isinstance(_GEMINI_POOLS_CACHE, dict):
             return dict(_GEMINI_POOLS_CACHE), dict(_GEMINI_POOLS_META)
 
+        cached_config = dict(_GEMINI_POOLS_CACHE) if isinstance(_GEMINI_POOLS_CACHE, dict) else {}
         file_path = _resolve_gemini_api_pools_file_path()
         bootstrap_keys = _legacy_gemini_key_pool()
         firestore_db = _FIRESTORE_DB if GEMINI_API_POOLS_PREFER_FIRESTORE else None
@@ -10446,6 +12712,7 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
             pools.setdefault("free", {"keys": []})
             pools["free"]["keys"] = list(bootstrap_keys)
             config["pools"] = pools
+        config = overlay_cached_gemini_free_pool_shared(config, cached_config=cached_config)
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_gemini_free_pool(config)
         single_pool_warnings: list[str] = []
@@ -11099,6 +13366,3828 @@ def split_imported_novel_text(payload: NovelImportSplitRequest) -> JSONResponse:
     )
 
 
+class ReaderLegalAckRequest(BaseModel):
+    accepted: bool = False
+
+
+class ReaderSessionCreateRequest(BaseModel):
+    itemId: Optional[str] = None
+    uploadId: Optional[str] = None
+    directionOverride: Optional[str] = None
+    readingModeOverride: Optional[str] = None
+    autoAdvanceProfile: Optional[str] = None
+    sourceLanguageOverride: Optional[str] = None
+    targetLanguage: Optional[str] = None
+    pageViewMode: Optional[str] = None
+    ttsLanguageMode: Optional[str] = None
+    multiSpeakerEnabled: Optional[bool] = None
+    forceNew: bool = False
+
+
+class ReaderSessionProgressRequest(BaseModel):
+    consumedChars: Optional[int] = None
+    currentPanelIndex: Optional[int] = None
+    targetLanguage: Optional[str] = None
+    pageViewMode: Optional[str] = None
+
+
+class ReaderSessionSavepointRequest(BaseModel):
+    castOverrides: Optional[dict[str, str]] = None
+    directionOverride: Optional[str] = None
+    readingModeOverride: Optional[str] = None
+    autoAdvanceProfile: Optional[str] = None
+    targetLanguage: Optional[str] = None
+    pageViewMode: Optional[str] = None
+    ttsLanguageMode: Optional[str] = None
+    multiSpeakerEnabled: Optional[bool] = None
+    musicTrackId: Optional[str] = None
+
+
+def _reader_safe_id(value: str, fallback: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(value or "").strip())
+    return token or fallback
+
+
+def _reader_normalize_reading_mode(raw_value: object, *, content_kind: str = "book") -> str:
+    safe_content_kind = normalize_reader_content_kind(content_kind)
+    if safe_content_kind != "comic":
+        return "document"
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"vertical", "vertical_scroll", "vertical_strip", "scroll"}:
+        return "vertical_strip"
+    if token in {"rtl", "rtl_horizontal", "rtl_paged", "manga", "right_to_left"}:
+        return "rtl_paged"
+    if token in {"ltr", "ltr_horizontal", "ltr_paged", "left_to_right"}:
+        return "ltr_paged"
+    return "vertical_strip"
+
+
+def _reader_reading_mode_to_direction(reading_mode: object, *, content_kind: str = "book") -> str:
+    if normalize_reader_content_kind(content_kind) != "comic":
+        return normalize_reader_direction("vertical-scroll", content_kind="book")
+    safe_mode = _reader_normalize_reading_mode(reading_mode, content_kind=content_kind)
+    if safe_mode == "rtl_paged":
+        return normalize_reader_direction("rtl-horizontal", content_kind="comic")
+    if safe_mode == "ltr_paged":
+        return normalize_reader_direction("ltr-horizontal", content_kind="comic")
+    return normalize_reader_direction("vertical-scroll", content_kind="comic")
+
+
+def _reader_direction_to_reading_mode(direction: object, *, content_kind: str = "book") -> str:
+    if normalize_reader_content_kind(content_kind) != "comic":
+        return "document"
+    token = normalize_reader_direction(direction, content_kind=content_kind)
+    if token == "rtl-horizontal":
+        return "rtl_paged"
+    if token == "ltr-horizontal":
+        return "ltr_paged"
+    return "vertical_strip"
+
+
+def _reader_normalize_auto_advance_profile(raw_value: object) -> str:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"audio_sync", "audio", "sync"}:
+        return "audio_sync"
+    if token in {"slow", "medium", "fast"}:
+        return token
+    return "off"
+
+
+def _reader_normalize_language(raw_value: object, *, default: str = "") -> str:
+    token = str(raw_value or "").strip().lower()
+    if not token:
+        return default
+    token = token.replace("_", "-")
+    if token in LANGUAGE_CODE_ALIASES:
+        return LANGUAGE_CODE_ALIASES[token]
+    prefix = token.split("-", 1)[0]
+    if prefix in LANGUAGE_CODE_ALIASES:
+        return LANGUAGE_CODE_ALIASES[prefix]
+    return prefix or default
+
+
+def _reader_language_label(language_code: object) -> str:
+    safe_code = _reader_normalize_language(language_code)
+    labels = {
+        "en": "English",
+        "hi": "Hindi",
+        "bn": "Bengali",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "pt": "Portuguese",
+        "ar": "Arabic",
+        "ko": "Korean",
+        "ja": "Japanese",
+        "zh": "Chinese",
+        "ru": "Russian",
+        "it": "Italian",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "mr": "Marathi",
+        "ur": "Urdu",
+    }
+    return labels.get(safe_code, safe_code.upper() if safe_code else "")
+
+
+def _reader_normalize_page_view_mode(
+    raw_value: object,
+    *,
+    source_language: str = "",
+    target_language: str = "",
+) -> str:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"translated", "target"}:
+        return "translated"
+    if token in {"original", "source"}:
+        return "original"
+    return "translated" if target_language and target_language != source_language else "original"
+
+
+def _reader_normalize_tts_language_mode(raw_value: object) -> str:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"source", "original"}:
+        return "source"
+    if token in {"target", "translated"}:
+        return "target"
+    return "auto"
+
+
+def _reader_normalize_multi_speaker_enabled(raw_value: object, *, default: bool = True) -> bool:
+    if raw_value is None:
+        return bool(default)
+    if isinstance(raw_value, bool):
+        return raw_value
+    token = str(raw_value or "").strip().lower()
+    if token in {"0", "false", "off", "no", "disabled"}:
+        return False
+    if token in {"1", "true", "on", "yes", "enabled"}:
+        return True
+    return bool(default)
+
+
+def _reader_normalize_effective_multi_speaker_mode(raw_value: object) -> str:
+    token = str(raw_value or "").strip().lower()
+    if token in {"studio_pair_groups", "line_map", "single"}:
+        return token
+    return "single"
+
+
+def _reader_guess_source_language(text: object, *, region_id: str = "english", fallback: str = "en") -> str:
+    sample = str(text or "")
+    if re.search(r"[\u0980-\u09FF]", sample):
+        return "bn"
+    if re.search(r"[\u0900-\u097F]", sample):
+        return "hi"
+    if re.search(r"[\u0600-\u06FF]", sample):
+        return "ar"
+    if re.search(r"[\uAC00-\uD7AF]", sample):
+        return "ko"
+    if re.search(r"[\u3040-\u30FF]", sample):
+        return "ja"
+    if re.search(r"[\u4E00-\u9FFF]", sample):
+        return "zh"
+    if re.search(r"[\u0400-\u04FF]", sample):
+        return "ru"
+    region_locale = _reader_normalize_language(reader_region(region_id).get("locale"), default=fallback)
+    return region_locale or fallback
+
+
+def _reader_normalize_source_language(source: dict[str, Any], *, region_id: str = "english") -> str:
+    source_meta = dict(source.get("sourceMeta") or {})
+    candidates = (
+        source.get("sourceLanguage"),
+        source_meta.get("sourceLanguage"),
+        source_meta.get("language"),
+        source.get("language"),
+        source.get("regionId"),
+    )
+    for candidate in candidates:
+        normalized = _reader_normalize_language(candidate)
+        if normalized:
+            return normalized
+    return _reader_normalize_language(reader_region(region_id).get("locale"), default="en") or "en"
+
+
+def _reader_normalize_catalog_target_language(progress: dict[str, Any], source_language: str) -> str:
+    requested = _reader_normalize_language(progress.get("targetLanguage"), default=source_language)
+    return requested or source_language
+
+
+def _reader_translation_doc_id(
+    uid: str,
+    work_key: str,
+    source_language: str,
+    target_language: str,
+    unit_id: str,
+) -> str:
+    payload = ":".join(
+        [
+            str(uid or "").strip(),
+            str(work_key or "").strip(),
+            _reader_normalize_language(source_language, default="en"),
+            _reader_normalize_language(target_language, default="en"),
+            str(unit_id or "").strip(),
+            str(VF_READER_TRANSLATION_MODEL),
+        ]
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _reader_translation_get(
+    uid: str,
+    work_key: str,
+    source_language: str,
+    target_language: str,
+    unit_id: str,
+) -> dict[str, Any]:
+    doc_id = _reader_translation_doc_id(uid, work_key, source_language, target_language, unit_id)
+    collection = _firestore_collection(READER_TRANSLATION_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            return dict(_INMEMORY_READER_TRANSLATIONS.get(doc_id) or {})
+    try:
+        doc = collection.document(doc_id).get()
+    except Exception:
+        return {}
+    if not doc.exists:
+        return {}
+    return dict(doc.to_dict() or {})
+
+
+def _reader_translation_set(
+    uid: str,
+    work_key: str,
+    source_language: str,
+    target_language: str,
+    unit_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    doc_id = _reader_translation_doc_id(uid, work_key, source_language, target_language, unit_id)
+    safe_payload = {
+        **dict(payload or {}),
+        "uid": str(uid or "").strip(),
+        "workKey": str(work_key or "").strip(),
+        "sourceLanguage": _reader_normalize_language(source_language, default="en"),
+        "targetLanguage": _reader_normalize_language(target_language, default="en"),
+        "unitId": str(unit_id or "").strip(),
+        "model": VF_READER_TRANSLATION_MODEL,
+        "updatedAt": _safe_now_iso(),
+    }
+    collection = _firestore_collection(READER_TRANSLATION_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_TRANSLATIONS[doc_id] = dict(safe_payload)
+        return safe_payload
+    collection.document(doc_id).set(safe_payload, merge=True)
+    return safe_payload
+
+
+def _reader_unit_source_text(unit: dict[str, Any]) -> str:
+    return str(unit.get("sourceText") or unit.get("text") or "").strip()
+
+
+def _reader_unit_id(unit: dict[str, Any], *, content_kind: str) -> str:
+    if normalize_reader_content_kind(content_kind) == "comic":
+        return str(unit.get("panelId") or f"panel_{int(unit.get('index') or 0)}").strip()
+    return f"window_{int(unit.get('index') or 0)}"
+
+
+def _reader_estimated_read_ms(text: object, *, content_kind: str = "book") -> int:
+    sample = str(text or "").strip()
+    if not sample:
+        return 1800
+    words = len([token for token in re.split(r"\s+", sample) if token])
+    if words <= 0:
+        words = max(1, math.ceil(len(sample) / 6))
+    words_per_minute = 180 if normalize_reader_content_kind(content_kind) == "book" else 135
+    estimated = int((words / max(1, words_per_minute)) * 60_000)
+    return max(1800, min(45_000, estimated))
+
+
+def _reader_effective_tts_language_mode(session: dict[str, Any]) -> str:
+    mode = _reader_normalize_tts_language_mode(session.get("ttsLanguageMode"))
+    source_language = _reader_normalize_language(session.get("sourceLanguage"), default="en")
+    target_language = _reader_normalize_language(session.get("targetLanguage"), default=source_language)
+    if mode == "auto":
+        return "target" if target_language != source_language else "source"
+    return mode
+
+
+def _reader_session_needs_translation(session: dict[str, Any]) -> bool:
+    source_language = _reader_normalize_language(session.get("sourceLanguage"), default="en")
+    target_language = _reader_normalize_language(session.get("targetLanguage"), default=source_language)
+    if not target_language or target_language == source_language:
+        return False
+    if _reader_effective_tts_language_mode(session) == "target":
+        return True
+    return _reader_normalize_page_view_mode(
+        session.get("pageViewMode"),
+        source_language=source_language,
+        target_language=target_language,
+    ) == "translated"
+
+
+def _reader_known_reader_voice_ids() -> set[str]:
+    return {f"v{index}" for index in range(1, 31)}
+
+
+def _reader_resolve_voice_choice(requested_voice_id: str, target_language: str) -> tuple[str, Optional[dict[str, str]]]:
+    safe_requested = str(requested_voice_id or "v22").strip() or "v22"
+    safe_target = _reader_normalize_language(target_language, default="en") or "en"
+    if safe_requested in _reader_known_reader_voice_ids():
+        return safe_requested, None
+    resolved = "v22"
+    return resolved, {
+        "requestedVoiceId": safe_requested,
+        "resolvedVoiceId": resolved,
+        "reason": f"unsupported_voice_for_{safe_target}",
+    }
+
+
+def _reader_translation_prompt_rows(items: list[dict[str, str]]) -> str:
+    return json.dumps(items, ensure_ascii=False)
+
+
+def _reader_translate_units(
+    *,
+    source_language: str,
+    target_language: str,
+    items: list[dict[str, str]],
+) -> dict[str, str]:
+    if not items:
+        return {}
+    safe_source = _reader_normalize_language(source_language, default="en") or "en"
+    safe_target = _reader_normalize_language(target_language, default=safe_source) or safe_source
+    if safe_target == safe_source:
+        return {str(item.get("unitId") or ""): str(item.get("text") or "") for item in items}
+    payload = {
+        "systemPrompt": (
+            "You translate reader pages for text-to-speech playback. Return strict JSON only with key "
+            "'translations', where each item contains 'unitId' and 'text'. Preserve timestamps and any "
+            "leading 'Speaker:' labels exactly. Do not add commentary."
+        ),
+        "userPrompt": (
+            f"Translate each item from '{safe_source}' into '{safe_target}'. Keep paragraph breaks natural.\n"
+            f"Items: {_reader_translation_prompt_rows(items)}"
+        ),
+        "jsonMode": True,
+        "temperature": 0.1,
+        "modelCandidates": [VF_READER_TRANSLATION_MODEL],
+    }
+    response = requests.post(
+        f"{GEMINI_RUNTIME_URL}/v1/generate-text",
+        json=payload,
+        timeout=(8, 120),
+    )
+    response.raise_for_status()
+    body = response.json() if response.content else {}
+    raw_text = str((body or {}).get("text") or "").strip()
+    parsed = json.loads(raw_text) if raw_text else {}
+    rows = parsed.get("translations") if isinstance(parsed, dict) else parsed
+    out: dict[str, str] = {}
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            unit_id = str(row.get("unitId") or "").strip()
+            translated = str(row.get("text") or "").strip()
+            if unit_id and translated:
+                out[unit_id] = translated
+    return out
+
+
+def _reader_reset_audio_schedule(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    safe_session["cachedChars"] = 0
+    safe_session["deleteAtMs"] = 0
+    safe_session["exportedWindowIndexes"] = []
+    safe_session["exportedPanelIndexes"] = []
+    safe_session["voiceFallbacks"] = {}
+    safe_session.pop("effectiveMultiSpeakerMode", None)
+    consumed_chars = max(0, int(safe_session.get("consumedChars") or 0))
+    current_panel_index = max(0, int(safe_session.get("currentPanelIndex") or 0))
+    next_windows: list[dict[str, Any]] = []
+    for item in list(safe_session.get("windows") or []):
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        safe_item.pop("job", None)
+        safe_item["jobId"] = ""
+        if int(safe_item.get("endChar") or 0) <= consumed_chars:
+            safe_item["status"] = "played"
+            safe_item["purged"] = True
+        else:
+            safe_item["status"] = "idle"
+            safe_item["purged"] = False
+        next_windows.append(safe_item)
+    next_panels: list[dict[str, Any]] = []
+    for item in list(safe_session.get("panels") or []):
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        safe_item.pop("audioJob", None)
+        safe_item["audioJobId"] = ""
+        if int(safe_item.get("index") or 0) < current_panel_index:
+            safe_item["audioStatus"] = "played"
+            safe_item["purged"] = True
+        else:
+            safe_item["audioStatus"] = "idle"
+            safe_item["purged"] = False
+        next_panels.append(safe_item)
+    safe_session["windows"] = next_windows
+    safe_session["panels"] = next_panels
+    return safe_session
+
+
+def _reader_warm_translation_units(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    source_language = _reader_normalize_language(safe_session.get("sourceLanguage"), default="en") or "en"
+    target_language = _reader_normalize_language(safe_session.get("targetLanguage"), default=source_language) or source_language
+    page_view_mode = _reader_normalize_page_view_mode(
+        safe_session.get("pageViewMode"),
+        source_language=source_language,
+        target_language=target_language,
+    )
+    safe_session["sourceLanguage"] = source_language
+    safe_session["targetLanguage"] = target_language
+    safe_session["pageViewMode"] = page_view_mode
+    safe_session["ttsLanguageMode"] = _reader_normalize_tts_language_mode(safe_session.get("ttsLanguageMode"))
+    units_key = "panels" if normalize_reader_content_kind(safe_session.get("contentKind")) == "comic" else "windows"
+    units = [dict(item) for item in list(safe_session.get(units_key) or []) if isinstance(item, dict)]
+    if not units:
+        safe_session["translationState"] = "idle"
+        safe_session["translationLeadRatio"] = 0.0
+        safe_session[units_key] = units
+        return safe_session
+
+    active_index = _reader_session_active_item_index(safe_session)
+    content_kind = normalize_reader_content_kind(safe_session.get("contentKind"))
+    active_text = _reader_unit_source_text(units[min(max(0, active_index), len(units) - 1)])
+    active_ms = _reader_estimated_read_ms(active_text, content_kind=content_kind)
+    lead_required_ms = int(active_ms * float(VF_READER_TRANSLATION_LEAD_RATIO))
+    floor_count = VF_READER_TRANSLATION_MIN_COMIC_PANELS if content_kind == "comic" else VF_READER_TRANSLATION_MIN_BOOK_WINDOWS
+    batch_size = VF_READER_TRANSLATION_BATCH_SIZE_COMIC if content_kind == "comic" else VF_READER_TRANSLATION_BATCH_SIZE_BOOK
+
+    requested_indexes: list[int] = []
+    accumulated_ms = 0
+    for index in range(active_index, len(units)):
+        requested_indexes.append(index)
+        source_text = _reader_unit_source_text(units[index])
+        estimate_ms = _reader_estimated_read_ms(source_text, content_kind=content_kind)
+        accumulated_ms += estimate_ms
+        if len(requested_indexes) >= floor_count and accumulated_ms >= lead_required_ms:
+            break
+
+    missing_items: list[dict[str, str]] = []
+    for index, unit in enumerate(units):
+        source_text = _reader_unit_source_text(unit)
+        unit["sourceText"] = source_text
+        unit["estimatedReadMs"] = int(unit.get("estimatedReadMs") or _reader_estimated_read_ms(source_text, content_kind=content_kind))
+        if target_language == source_language:
+            unit["translatedText"] = source_text
+            unit["translatedLanguage"] = target_language
+            unit["translationStatus"] = "ready"
+            units[index] = unit
+            continue
+        if index not in requested_indexes or not _reader_session_needs_translation(safe_session):
+            unit["translationStatus"] = str(unit.get("translationStatus") or "pending")
+            units[index] = unit
+            continue
+        unit_id = _reader_unit_id(unit, content_kind=content_kind)
+        cached = _reader_translation_get(
+            str(safe_session.get("uid") or ""),
+            str(safe_session.get("workKey") or ""),
+            source_language,
+            target_language,
+            unit_id,
+        )
+        translated_text = str(cached.get("translatedText") or "").strip()
+        if translated_text:
+            unit["translatedText"] = translated_text
+            unit["translatedLanguage"] = target_language
+            unit["translationStatus"] = "ready"
+        else:
+            unit["translationStatus"] = "pending"
+            if source_text:
+                missing_items.append({"unitId": unit_id, "text": source_text})
+        units[index] = unit
+
+    if missing_items:
+        for cursor in range(0, len(missing_items), batch_size):
+            batch = missing_items[cursor:cursor + batch_size]
+            try:
+                translated_by_id = _reader_translate_units(
+                    source_language=source_language,
+                    target_language=target_language,
+                    items=batch,
+                )
+            except Exception:
+                translated_by_id = {}
+            for unit_row in batch:
+                unit_id = str(unit_row.get("unitId") or "").strip()
+                translated = str(translated_by_id.get(unit_id) or "").strip()
+                for index, unit in enumerate(units):
+                    if _reader_unit_id(unit, content_kind=content_kind) != unit_id:
+                        continue
+                    if translated:
+                        unit["translatedText"] = translated
+                        unit["translatedLanguage"] = target_language
+                        unit["translationStatus"] = "ready"
+                        _reader_translation_set(
+                            str(safe_session.get("uid") or ""),
+                            str(safe_session.get("workKey") or ""),
+                            source_language,
+                            target_language,
+                            unit_id,
+                            {
+                                "translatedText": translated,
+                                "estimatedReadMs": int(unit.get("estimatedReadMs") or 0),
+                            },
+                        )
+                    else:
+                        unit["translationStatus"] = "error"
+                    units[index] = unit
+                    break
+
+    ready_ms = 0
+    for index in requested_indexes:
+        unit = units[index]
+        if str(unit.get("translationStatus") or "") != "ready":
+            break
+        ready_ms += int(unit.get("estimatedReadMs") or 0)
+    active_unit = units[min(max(0, active_index), len(units) - 1)]
+    active_ready = str(active_unit.get("translationStatus") or "") == "ready" or target_language == source_language
+    safe_session["translationLeadRatio"] = round(ready_ms / max(1, active_ms), 2)
+    if target_language == source_language and page_view_mode == "original" and _reader_effective_tts_language_mode(safe_session) == "source":
+        safe_session["translationState"] = "idle"
+    elif active_ready:
+        safe_session["translationState"] = "ready"
+    elif any(str(units[index].get("translationStatus") or "") == "error" for index in requested_indexes):
+        safe_session["translationState"] = "error"
+    else:
+        safe_session["translationState"] = "warming"
+    safe_session[units_key] = units
+    return safe_session
+
+
+def _reader_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _reader_public_user_agent() -> str:
+    return "VoiceFlow Reader/1.0 (+https://voiceflow.local)"
+
+
+def _reader_progress_doc_id(uid: str, work_key: str) -> str:
+    safe_uid = str(uid or "").strip()
+    safe_work_key = str(work_key or "").strip()
+    return hashlib.sha1(f"{safe_uid}:{safe_work_key}".encode("utf-8")).hexdigest()
+
+
+def _reader_upload_dir(upload_id: str) -> Path:
+    return READER_UPLOADS_DIR / _reader_safe_id(upload_id, "upload")
+
+
+def _reader_export_path(session_id: str) -> Path:
+    return READER_EXPORTS_DIR / f"{_reader_safe_id(session_id, 'session')}.wav"
+
+
+def _reader_remote_asset_extension(source_url: str, mime_type: str) -> str:
+    guessed = mimetypes.guess_extension(str(mime_type or "").split(";", 1)[0].strip())
+    if guessed:
+        return guessed
+    suffix = Path(urlparse(str(source_url or "").strip()).path).suffix.lower()
+    if suffix:
+        return suffix
+    return ".bin"
+
+
+def _reader_cache_remote_asset(source_url: str, payload: bytes, mime_type: str) -> str:
+    safe_url = str(source_url or "").strip()
+    if not safe_url:
+        return ""
+    extension = _reader_remote_asset_extension(safe_url, mime_type)
+    digest = hashlib.sha256(safe_url.encode("utf-8")).hexdigest()
+    target = (READER_REMOTE_ASSETS_DIR / f"{digest}{extension}").resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_bytes(bytes(payload or b""))
+    return str(target)
+
+
+def _reader_remote_asset_url(absolute_path: str) -> str:
+    safe_path = str(absolute_path or "").strip()
+    if not safe_path:
+        return ""
+    try:
+        relative = Path(safe_path).resolve().relative_to(READER_REMOTE_ASSETS_DIR.resolve()).as_posix()
+    except Exception:
+        return ""
+    return f"/reader/assets/{quote(relative)}"
+
+
+def _reader_default_prep(
+    *,
+    state: str = "ready",
+    stage: str = "audio",
+    completed_items: int = 0,
+    total_items: int = 0,
+    failed_items: int = 0,
+    message: str = "",
+) -> dict[str, Any]:
+    payload = {
+        "state": str(state or "ready").strip().lower() or "ready",
+        "stage": str(stage or "audio").strip().lower() or "audio",
+        "completedItems": max(0, int(completed_items or 0)),
+        "totalItems": max(0, int(total_items or 0)),
+        "failedItems": max(0, int(failed_items or 0)),
+    }
+    safe_message = str(message or "").strip()
+    if safe_message:
+        payload["message"] = safe_message
+    return payload
+
+
+def _reader_normalize_prep(
+    raw_value: object,
+    *,
+    total_items: int = 0,
+    default_state: str = "ready",
+    default_stage: str = "audio",
+) -> dict[str, Any]:
+    safe_total_items = max(0, int(total_items or 0))
+    if not isinstance(raw_value, dict):
+        completed_default = safe_total_items if str(default_state or "").strip().lower() == "ready" else 0
+        return _reader_default_prep(
+            state=default_state,
+            stage=default_stage,
+            completed_items=completed_default,
+            total_items=safe_total_items,
+        )
+    safe_state = str(raw_value.get("state") or default_state).strip().lower()
+    if safe_state not in {"queued", "running", "ready", "error", "degraded"}:
+        safe_state = str(default_state or "ready").strip().lower() or "ready"
+    safe_stage = str(raw_value.get("stage") or default_stage).strip().lower()
+    if safe_stage not in {"manifest", "assets", "ocr", "audio"}:
+        safe_stage = str(default_stage or "audio").strip().lower() or "audio"
+    completed_items = max(0, int(raw_value.get("completedItems") or 0))
+    failed_items = max(0, int(raw_value.get("failedItems") or 0))
+    resolved_total_items = max(safe_total_items, completed_items + failed_items, int(raw_value.get("totalItems") or 0))
+    return _reader_default_prep(
+        state=safe_state,
+        stage=safe_stage,
+        completed_items=completed_items,
+        total_items=resolved_total_items,
+        failed_items=failed_items,
+        message=str(raw_value.get("message") or "").strip(),
+    )
+
+
+def _reader_prep_is_terminal(raw_value: object) -> bool:
+    return str(_reader_normalize_prep(raw_value).get("state") or "") in {"ready", "error", "degraded"}
+
+
+def _reader_session_unit_count(session: dict[str, Any]) -> int:
+    safe_session = dict(session or {})
+    if normalize_reader_content_kind(safe_session.get("contentKind")) == "comic":
+        return len([item for item in list(safe_session.get("panels") or []) if isinstance(item, dict)])
+    return len([item for item in list(safe_session.get("windows") or []) if isinstance(item, dict)])
+
+
+def _reader_session_path(uid: str, session_id: str) -> Path:
+    safe_uid = _reader_safe_id(str(uid or "").strip(), "anonymous")
+    safe_session_id = _reader_safe_id(str(session_id or "").strip(), "session")
+    return READER_SESSIONS_DIR / safe_uid / f"{safe_session_id}.json"
+
+
+def _reader_session_persist(payload: dict[str, Any]) -> None:
+    safe_payload = dict(payload or {})
+    session_id = str(safe_payload.get("id") or "").strip()
+    uid = str(safe_payload.get("uid") or "").strip()
+    if not session_id or not uid:
+        return
+    target = _reader_session_path(uid, session_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target.with_suffix(".json.tmp")
+    temp_target.write_text(json.dumps(safe_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_target.replace(target)
+
+
+def _reader_session_delete_persisted(uid: str, session_id: str) -> None:
+    target = _reader_session_path(uid, session_id)
+    target.unlink(missing_ok=True)
+    try:
+        if target.parent.exists() and not any(target.parent.iterdir()):
+            target.parent.rmdir()
+    except Exception:
+        pass
+
+
+def _reader_session_load_from_disk() -> None:
+    loaded: dict[str, dict[str, Any]] = {}
+    for session_path in READER_SESSIONS_DIR.glob("*/*.json"):
+        try:
+            payload = json.loads(session_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        session_id = str(payload.get("id") or "").strip()
+        uid = str(payload.get("uid") or "").strip()
+        if not session_id or not uid:
+            continue
+        loaded[session_id] = dict(payload)
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_SESSIONS.clear()
+        _INMEMORY_READER_SESSIONS.update(loaded)
+
+
+def _reader_session_get_any(session_id: str) -> Optional[dict[str, Any]]:
+    safe_session_id = str(session_id or "").strip()
+    if not safe_session_id:
+        return None
+    with _INMEMORY_LOCK:
+        payload = dict(_INMEMORY_READER_SESSIONS.get(safe_session_id) or {})
+    return payload or None
+
+
+def _reader_internal_request(uid: str) -> Request:
+    request = Request({"type": "http", "headers": []})
+    request.state.uid = str(uid or "").strip()
+    return request
+
+
+def _reader_write_text_artifact(upload_id: str, text: str) -> str:
+    target = _reader_upload_dir(upload_id) / "content.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(str(text or ""), encoding="utf-8")
+    return str(target.resolve())
+
+
+def _reader_read_text_artifact(path: str) -> str:
+    target = Path(str(path or "")).resolve()
+    if not target.exists() or not target.is_file():
+        return ""
+    try:
+        return target.read_text(encoding="utf-8")
+    except Exception:
+        try:
+            return target.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+
+
+def _reader_write_json_artifact(upload_id: str, file_name: str, payload: Any) -> str:
+    target = _reader_upload_dir(upload_id) / file_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(target.resolve())
+
+
+def _reader_read_json_artifact(path: str) -> Any:
+    target = Path(str(path or "")).resolve()
+    if not target.exists() or not target.is_file():
+        return None
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _reader_save_binary_artifact(upload_id: str, relative_name: str, payload: bytes) -> str:
+    safe_name = relative_name.replace("\\", "/").strip().lstrip("/")
+    target = (_reader_upload_dir(upload_id) / safe_name).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(bytes(payload or b""))
+    return str(target)
+
+
+def _reader_legal_ack_get(uid: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return {"accepted": False}
+    collection = _firestore_collection(READER_LEGAL_ACK_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            return dict(_INMEMORY_READER_LEGAL_ACK.get(safe_uid) or {"accepted": False})
+    try:
+        doc = collection.document(safe_uid).get()
+    except Exception:
+        return {"accepted": False}
+    if not doc.exists:
+        return {"accepted": False}
+    payload = doc.to_dict() or {}
+    payload["accepted"] = bool(payload.get("accepted"))
+    return payload
+
+
+def _reader_legal_ack_set(uid: str, accepted: bool) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    now_iso = _safe_now_iso()
+    payload = {
+        "uid": safe_uid,
+        "accepted": bool(accepted),
+        "updatedAt": now_iso,
+        "acceptedAt": now_iso if accepted else "",
+    }
+    collection = _firestore_collection(READER_LEGAL_ACK_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_LEGAL_ACK[safe_uid] = dict(payload)
+        return payload
+    collection.document(safe_uid).set(payload, merge=True)
+    return payload
+
+
+def _reader_upload_write(uid: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    upload_id = str(payload.get("id") or "").strip()
+    if not safe_uid or not upload_id:
+        raise HTTPException(status_code=400, detail="Missing reader upload owner or id.")
+    safe_payload = dict(payload)
+    safe_payload["uid"] = safe_uid
+    collection = _firestore_collection(READER_UPLOADS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_UPLOADS[upload_id] = dict(safe_payload)
+        return safe_payload
+    collection.document(upload_id).set(safe_payload, merge=True)
+    return safe_payload
+
+
+def _reader_upload_get(uid: str, upload_id: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_upload_id = str(upload_id or "").strip()
+    if not safe_uid or not safe_upload_id:
+        return None
+    collection = _firestore_collection(READER_UPLOADS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            payload = dict(_INMEMORY_READER_UPLOADS.get(safe_upload_id) or {})
+    else:
+        try:
+            doc = collection.document(safe_upload_id).get()
+        except Exception:
+            return None
+        if not doc.exists:
+            return None
+        payload = dict(doc.to_dict() or {})
+    if str(payload.get("uid") or "").strip() != safe_uid:
+        return None
+    return payload
+
+
+def _reader_upload_list(uid: str) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return []
+    collection = _firestore_collection(READER_UPLOADS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            items = [
+                dict(item)
+                for item in _INMEMORY_READER_UPLOADS.values()
+                if str((item or {}).get("uid") or "").strip() == safe_uid
+            ]
+        items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return items
+    try:
+        docs = collection.where("uid", "==", safe_uid).stream()
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        payload = doc.to_dict() or {}
+        out.append(dict(payload))
+    out.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+    return out
+
+
+def _reader_progress_get(uid: str, work_key: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_work_key = str(work_key or "").strip()
+    if not safe_uid or not safe_work_key:
+        return {}
+    doc_id = _reader_progress_doc_id(safe_uid, safe_work_key)
+    collection = _firestore_collection(READER_PROGRESS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            return dict(_INMEMORY_READER_PROGRESS.get(doc_id) or {})
+    try:
+        doc = collection.document(doc_id).get()
+    except Exception:
+        return {}
+    if not doc.exists:
+        return {}
+    return dict(doc.to_dict() or {})
+
+
+def _reader_progress_set(uid: str, work_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_work_key = str(work_key or "").strip()
+    doc_id = _reader_progress_doc_id(safe_uid, safe_work_key)
+    safe_payload = {
+        **dict(payload or {}),
+        "uid": safe_uid,
+        "workKey": safe_work_key,
+        "updatedAt": _safe_now_iso(),
+    }
+    collection = _firestore_collection(READER_PROGRESS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_PROGRESS[doc_id] = dict(safe_payload)
+        return safe_payload
+    collection.document(doc_id).set(safe_payload, merge=True)
+    return safe_payload
+
+
+def _reader_progress_list(uid: str) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return []
+    collection = _firestore_collection(READER_PROGRESS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            items = [
+                dict(item)
+                for item in _INMEMORY_READER_PROGRESS.values()
+                if str((item or {}).get("uid") or "").strip() == safe_uid
+            ]
+    else:
+        try:
+            docs = collection.where("uid", "==", safe_uid).stream()
+            items = [dict(doc.to_dict() or {}) for doc in docs]
+        except Exception:
+            return []
+    items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+    return items
+
+
+def _reader_cast_memory_get(uid: str, work_key: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_work_key = str(work_key or "").strip()
+    if not safe_uid or not safe_work_key:
+        return {}
+    doc_id = _reader_progress_doc_id(safe_uid, safe_work_key)
+    collection = _firestore_collection(READER_CAST_MEMORY_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            return dict(_INMEMORY_READER_CAST_MEMORY.get(doc_id) or {})
+    try:
+        doc = collection.document(doc_id).get()
+    except Exception:
+        return {}
+    if not doc.exists:
+        return {}
+    return dict(doc.to_dict() or {})
+
+
+def _reader_cast_memory_set(uid: str, work_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    safe_work_key = str(work_key or "").strip()
+    doc_id = _reader_progress_doc_id(safe_uid, safe_work_key)
+    safe_payload = {
+        **dict(payload or {}),
+        "uid": safe_uid,
+        "workKey": safe_work_key,
+        "updatedAt": _safe_now_iso(),
+    }
+    collection = _firestore_collection(READER_CAST_MEMORY_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_CAST_MEMORY[doc_id] = dict(safe_payload)
+        return safe_payload
+    collection.document(doc_id).set(safe_payload, merge=True)
+    return safe_payload
+
+
+def _reader_session_get(uid: str, session_id: str) -> Optional[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    safe_session_id = str(session_id or "").strip()
+    if not safe_uid or not safe_session_id:
+        return None
+    with _INMEMORY_LOCK:
+        payload = dict(_INMEMORY_READER_SESSIONS.get(safe_session_id) or {})
+    if not payload or str(payload.get("uid") or "").strip() != safe_uid:
+        return None
+    return payload
+
+
+def _reader_session_list(uid: str) -> list[dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    with _INMEMORY_LOCK:
+        items = [
+            dict(item)
+            for item in _INMEMORY_READER_SESSIONS.values()
+            if not safe_uid or str((item or {}).get("uid") or "").strip() == safe_uid
+        ]
+    items.sort(key=lambda item: int(item.get("updatedAtMs") or 0), reverse=True)
+    return items
+
+
+def _reader_session_set(payload: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(payload.get("id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing reader session id.")
+    safe_payload = dict(payload)
+    if _reader_is_async_remote_comic_session(safe_payload):
+        safe_payload = _reader_sync_remote_prep(safe_payload)
+    else:
+        unit_count = _reader_session_unit_count(safe_payload)
+        safe_payload["prep"] = _reader_normalize_prep(
+            safe_payload.get("prep"),
+            total_items=unit_count,
+            default_state="ready",
+            default_stage="audio",
+        )
+    safe_payload["updatedAtMs"] = _reader_now_ms()
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_SESSIONS[session_id] = dict(safe_payload)
+    _reader_session_persist(safe_payload)
+    return safe_payload
+
+
+def _reader_session_delete(session_id: str) -> None:
+    safe_session_id = str(session_id or "").strip()
+    if not safe_session_id:
+        return
+    removed: dict[str, Any] = {}
+    with _INMEMORY_LOCK:
+        removed = dict(_INMEMORY_READER_SESSIONS.pop(safe_session_id, None) or {})
+    _reader_session_delete_persisted(str(removed.get("uid") or "").strip(), safe_session_id)
+
+
+def _reader_catalog_cache_get(cache_key: str) -> Optional[list[dict[str, Any]]]:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return None
+    now_ms = _reader_now_ms()
+    with _INMEMORY_LOCK:
+        cached = dict(_INMEMORY_READER_CATALOG_CACHE.get(safe_cache_key) or {})
+    if not cached:
+        return None
+    if int(cached.get("expiresAtMs") or 0) <= now_ms:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_CATALOG_CACHE.pop(safe_cache_key, None)
+        return None
+    payload = cached.get("items")
+    if not isinstance(payload, list):
+        return None
+    return [dict(item) for item in payload if isinstance(item, dict)]
+
+
+def _reader_catalog_cache_set(cache_key: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_cache_key = str(cache_key or "").strip()
+    safe_items = [dict(item) for item in list(items or []) if isinstance(item, dict)]
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_CATALOG_CACHE[safe_cache_key] = {
+            "items": safe_items,
+            "expiresAtMs": _reader_now_ms() + int(VF_READER_CATALOG_CACHE_TTL_MS),
+        }
+    return safe_items
+
+
+def _reader_search_term(raw_value: object) -> str:
+    safe = re.sub(r"\s+", " ", str(raw_value or "").strip())
+    return safe[:120]
+
+
+def _reader_search_cache_key(surface: str, region_id: str, search_query: str = "") -> str:
+    safe_search = _reader_search_term(search_query).lower()
+    return f"{str(surface or '').strip().lower()}:{str(region_id or '').strip().lower()}:{safe_search}"
+
+
+def _reader_fetch_openlibrary_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    region = reader_region(region_id)
+    language_code = str(region.get("locale") or "en").strip() or "en"
+    safe_search = _reader_search_term(search_query)
+    params: dict[str, Any] = {
+        "language": language_code,
+        "has_fulltext": "true",
+        "public_scan": "true",
+        "limit": "8",
+    }
+    if safe_search:
+        params["q"] = safe_search
+    try:
+        response = requests.get(
+            "https://openlibrary.org/search.json",
+            params=params,
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        docs = list((response.json() or {}).get("docs") or [])
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in docs:
+        if not isinstance(item, dict):
+            continue
+        normalized = normalize_openlibrary_item(item, region_id=region_id)
+        if normalized:
+            out.append(normalized)
+    return out
+
+
+def _reader_fetch_internet_archive_catalog(region_id: str, *, content_kind: str, search_query: str = "") -> list[dict[str, Any]]:
+    region = reader_region(region_id)
+    language_code = str(region.get("locale") or "en").strip() or "en"
+    mediatype_clause = "image" if normalize_reader_content_kind(content_kind) == "comic" else "texts"
+    safe_search = _reader_search_term(search_query).replace('"', "")
+    ia_query = f"mediatype:({mediatype_clause}) AND language:({language_code})"
+    if safe_search:
+        ia_query = f'{ia_query} AND (title:("{safe_search}") OR description:("{safe_search}"))'
+    try:
+        response = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": ia_query,
+                "fl[]": ["identifier", "title", "creator", "language", "licenseurl", "rights", "mediatype", "description"],
+                "rows": "8",
+                "page": "1",
+                "output": "json",
+            },
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        docs = list(((response.json() or {}).get("response") or {}).get("docs") or [])
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in docs:
+        if not isinstance(item, dict):
+            continue
+        normalized = normalize_internet_archive_item(
+            {
+                **item,
+                "archiveTxtUrl": "",
+            },
+            region_id=region_id,
+        )
+        if not normalized:
+            continue
+        if normalize_reader_content_kind(normalized.get("contentKind")) != normalize_reader_content_kind(content_kind):
+            continue
+        out.append(normalized)
+    return out
+
+
+def _reader_mediawiki_source_url(region_id: str) -> str:
+    region = reader_region(region_id)
+    locale = str(region.get("locale") or "en").strip().lower() or "en"
+    return f"https://{locale}.wikisource.org"
+
+
+def _reader_fetch_mediawiki_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    base_url = _reader_mediawiki_source_url(region_id).rstrip("/")
+    safe_search = _reader_search_term(search_query)
+    params = {
+        "action": "query",
+        "prop": "info|extracts",
+        "inprop": "url",
+        "exintro": "1",
+        "explaintext": "1",
+        "format": "json",
+    }
+    if safe_search:
+        params.update(
+            {
+                "generator": "search",
+                "gsrnamespace": "0",
+                "gsrlimit": "6",
+                "gsrsearch": safe_search,
+            }
+        )
+    else:
+        params.update(
+            {
+                "generator": "random",
+                "grnnamespace": "0",
+                "grnlimit": "6",
+            }
+        )
+    try:
+        response = requests.get(
+            f"{base_url}/w/api.php",
+            params=params,
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        pages = dict((response.json() or {}).get("query") or {}).get("pages") or {}
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in pages.values():
+        if not isinstance(item, dict):
+            continue
+        normalized = normalize_mediawiki_item(item, region_id=region_id, source_url=base_url)
+        if normalized:
+            out.append(normalized)
+    return out
+
+
+def _reader_mangadex_languages(region_id: str) -> list[str]:
+    primary = str(reader_region(region_id).get("locale") or "en").strip().lower() or "en"
+    languages = [primary]
+    if primary != "en":
+        languages.append("en")
+    return languages
+
+
+def _reader_mangadex_text(value: object, *preferred_keys: str) -> str:
+    if isinstance(value, dict):
+        safe_dict = {str(key): str(text).strip() for key, text in value.items() if str(text or "").strip()}
+        for key in preferred_keys:
+            text = safe_dict.get(key)
+            if text:
+                return text
+        for text in safe_dict.values():
+            if text:
+                return text
+    return str(value or "").strip()
+
+
+def _reader_fetch_mangadex_first_internal_chapter(manga_id: str, translated_languages: list[str]) -> Optional[dict[str, Any]]:
+    safe_manga_id = str(manga_id or "").strip()
+    if not safe_manga_id:
+        return None
+    params: list[tuple[str, str]] = [
+        ("limit", "12"),
+        ("offset", "0"),
+        ("order[volume]", "asc"),
+        ("order[chapter]", "asc"),
+        ("order[createdAt]", "asc"),
+    ]
+    for language in translated_languages:
+        if str(language or "").strip():
+            params.append(("translatedLanguage[]", str(language).strip()))
+    try:
+        response = requests.get(
+            f"https://api.mangadex.org/manga/{quote(safe_manga_id)}/feed",
+            params=params,
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        chapters = list((response.json() or {}).get("data") or [])
+    except Exception:
+        return None
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        attributes = dict(chapter.get("attributes") or {})
+        if str(attributes.get("externalUrl") or "").strip():
+            continue
+        if int(attributes.get("pages") or 0) <= 0:
+            continue
+        return chapter
+    return None
+
+
+def _reader_fetch_mangadex_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    translated_languages = _reader_mangadex_languages(region_id)
+    safe_search = _reader_search_term(search_query)
+
+    def fetch_for_languages(language_codes: list[str]) -> list[dict[str, Any]]:
+        params: list[tuple[str, str]] = [
+            ("limit", "8"),
+            ("offset", "0"),
+            ("includes[]", "cover_art"),
+            ("includes[]", "author"),
+            ("includes[]", "artist"),
+            ("contentRating[]", "safe"),
+            ("contentRating[]", "suggestive"),
+            ("hasAvailableChapters", "true"),
+        ]
+        if safe_search:
+            params.append(("title", safe_search))
+        else:
+            params.append(("order[followedCount]", "desc"))
+            params.append(("order[rating]", "desc"))
+        for language_code in language_codes:
+            if str(language_code or "").strip():
+                params.append(("availableTranslatedLanguage[]", str(language_code).strip()))
+        try:
+            response = requests.get(
+                "https://api.mangadex.org/manga",
+                params=params,
+                headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+                timeout=(4, 12),
+            )
+            response.raise_for_status()
+            mangas = list((response.json() or {}).get("data") or [])
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for manga in mangas:
+            if not isinstance(manga, dict):
+                continue
+            manga_id = str(manga.get("id") or "").strip()
+            attributes = dict(manga.get("attributes") or {})
+            if not manga_id:
+                continue
+            first_chapter = _reader_fetch_mangadex_first_internal_chapter(manga_id, language_codes)
+            if not first_chapter:
+                continue
+            chapter_attributes = dict(first_chapter.get("attributes") or {})
+            relationships = [dict(item) for item in list(manga.get("relationships") or []) if isinstance(item, dict)]
+            cover_file_name = ""
+            creators: list[str] = []
+            for relation in relationships:
+                relation_type = str(relation.get("type") or "").strip()
+                relation_attributes = dict(relation.get("attributes") or {})
+                if relation_type == "cover_art" and not cover_file_name:
+                    cover_file_name = str(relation_attributes.get("fileName") or "").strip()
+                elif relation_type in {"author", "artist"}:
+                    creator_name = str(relation_attributes.get("name") or "").strip()
+                    if creator_name and creator_name not in creators:
+                        creators.append(creator_name)
+            title = _reader_mangadex_text(attributes.get("title"), *language_codes, "en") or "Untitled Manga"
+            summary = collapse_whitespace(_reader_mangadex_text(attributes.get("description"), *language_codes, "en"))
+            original_language = normalize_catalog_language(attributes.get("originalLanguage"))
+            chapter_language = normalize_catalog_language(chapter_attributes.get("translatedLanguage"))
+            if original_language == "ko" or chapter_language == "ko":
+                reading_mode_default = "vertical_strip"
+            elif original_language == "ja" or chapter_language == "ja":
+                reading_mode_default = "rtl_paged"
+            else:
+                reading_mode_default = _reader_infer_reading_mode(
+                    content_kind="comic",
+                    title=title,
+                    region_id=region_id,
+                    provider="mangadex",
+                    source_url=f"https://mangadex.org/title/{manga_id}",
+                )
+            chapter_number = str(chapter_attributes.get("chapter") or "").strip()
+            chapter_title = str(chapter_attributes.get("title") or "").strip()
+            chapter_label = " ".join([token for token in [f"Ch. {chapter_number}" if chapter_number else "", chapter_title] if token]).strip()
+            updated_at = str(chapter_attributes.get("updatedAt") or attributes.get("updatedAt") or "").strip()
+            created_at = str(chapter_attributes.get("publishAt") or attributes.get("createdAt") or updated_at).strip()
+            out.append(
+                normalize_reader_catalog_item(
+                    {
+                        "id": f"mangadex_{manga_id}",
+                        "title": title,
+                        "author": ", ".join(creators[:2]) or "MangaDex",
+                        "regionId": region_id,
+                        "contentKind": "comic",
+                        "provider": "mangadex",
+                        "license": "Read via MangaDex source terms",
+                        "sourceUrl": f"https://mangadex.org/title/{manga_id}",
+                        "contentUrl": f"https://mangadex.org/chapter/{str(first_chapter.get('id') or '').strip()}",
+                        "summary": summary or f"Playable Reader chapter from MangaDex{f' ({chapter_label})' if chapter_label else ''}.",
+                        "coverUrl": f"https://uploads.mangadex.org/covers/{manga_id}/{cover_file_name}" if cover_file_name else "",
+                        "supportsReadHere": True,
+                        "direction": _reader_reading_mode_to_direction(reading_mode_default, content_kind="comic"),
+                        "readingModeDefault": reading_mode_default,
+                        "collectionLabel": "MangaDex Live",
+                        "createdAt": created_at,
+                        "updatedAt": updated_at,
+                        "stats": {
+                            "pageCount": int(chapter_attributes.get("pages") or 0),
+                            "totalPanels": int(chapter_attributes.get("pages") or 0),
+                        },
+                        "sourceMeta": {
+                            "mangaId": manga_id,
+                            "chapterId": str(first_chapter.get("id") or "").strip(),
+                            "chapterLabel": chapter_label,
+                            "chapterNumber": chapter_number,
+                            "chapterTitle": chapter_title,
+                            "pageCount": int(chapter_attributes.get("pages") or 0),
+                            "translatedLanguage": chapter_language,
+                            "originalLanguage": original_language,
+                            "searchTerm": safe_search,
+                        },
+                    }
+                )
+            )
+        return out
+
+    items = fetch_for_languages(translated_languages)
+    if items or translated_languages == ["en"]:
+        return items
+    return fetch_for_languages(["en"])
+
+
+def _reader_merge_catalog_items(*sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in sources:
+        for item in list(source or []):
+            if not isinstance(item, dict):
+                continue
+            safe_item = normalize_reader_catalog_item(item)
+            safe_id = str(safe_item.get("id") or "").strip().lower()
+            if not safe_id or safe_id in seen:
+                continue
+            seen.add(safe_id)
+            merged.append(safe_item)
+    return merged
+
+
+def _reader_catalog_items(region_id: str, *, surface: str, search_query: str = "") -> list[dict[str, Any]]:
+    safe_surface = normalize_reader_surface(surface)
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    safe_search = _reader_search_term(search_query)
+    cache_key = _reader_search_cache_key(safe_surface, safe_region_id, safe_search)
+    cached = _reader_catalog_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    if safe_surface == "comics":
+        items = _reader_merge_catalog_items(
+            _reader_fetch_mangadex_catalog(safe_region_id, search_query=safe_search),
+            _reader_fetch_internet_archive_catalog(safe_region_id, content_kind="comic", search_query=safe_search),
+        )
+        return _reader_catalog_cache_set(cache_key, items)
+    items = _reader_merge_catalog_items(
+        _reader_fetch_openlibrary_catalog(safe_region_id, search_query=safe_search),
+        _reader_fetch_mediawiki_catalog(safe_region_id, search_query=safe_search),
+        _reader_fetch_internet_archive_catalog(safe_region_id, content_kind="book", search_query=safe_search),
+        fallback_catalog_items(safe_region_id, content_kind="book") if not safe_search else [],
+    )
+    return _reader_catalog_cache_set(cache_key, items)
+
+
+def _reader_catalog_lookup(item_id: str) -> Optional[dict[str, Any]]:
+    safe_item_id = str(item_id or "").strip()
+    if not safe_item_id:
+        return None
+    with _INMEMORY_LOCK:
+        for cached in list(_INMEMORY_READER_CATALOG_CACHE.values()):
+            items = list((cached or {}).get("items") or [])
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id") or "").strip() == safe_item_id:
+                    return dict(item)
+    for region in reader_regions():
+        safe_region_id = str(region.get("id") or "english")
+        for surface in ("books", "comics"):
+            for item in _reader_catalog_items(safe_region_id, surface=surface):
+                if str(item.get("id") or "").strip() == safe_item_id:
+                    return item
+    return None
+
+
+def _reader_extract_epub_text(payload: bytes) -> str:
+    content = bytes(payload or b"")
+    if not content:
+        return ""
+    try:
+        with zipfile.ZipFile(BytesIO(content), "r") as archive:
+            names = [
+                name
+                for name in archive.namelist()
+                if str(name or "").lower().endswith((".xhtml", ".html", ".htm", ".xml"))
+            ]
+            names.sort()
+            text_parts: list[str] = []
+            for name in names:
+                try:
+                    markup = archive.read(name).decode("utf-8", errors="replace")
+                except Exception:
+                    continue
+                soup = BeautifulSoup(markup, "html.parser")
+                chunk = re.sub(r"\s+\n", "\n", soup.get_text("\n", strip=True))
+                if chunk.strip():
+                    text_parts.append(chunk.strip())
+            return "\n\n".join(text_parts).strip()
+    except Exception:
+        return ""
+
+
+def _reader_upload_page_rows_from_pdf(pdf_bytes: bytes) -> list[dict[str, Any]]:
+    page_rows: list[dict[str, Any]] = []
+    extracted, page_stats, likely_scanned = _extract_pdf_text_layer(pdf_bytes)
+    normalized_text = _normalize_import_text(extracted)
+    if normalized_text:
+        cursor = 0
+        for page_index, stat in enumerate(list(page_stats or []), start=1):
+            chars = max(0, int((stat or {}).get("chars") or 0))
+            chunk = normalized_text[cursor:cursor + chars].strip() if chars > 0 else ""
+            cursor += chars
+            if not chunk:
+                continue
+            page_rows.append({"page": page_index, "text": chunk})
+    if page_rows:
+        return page_rows
+    fallback_text = ""
+    if likely_scanned:
+        try:
+            fallback_text = _extract_text_with_gemini_fallback(pdf_bytes, "application/pdf", "auto", "reader_pdf")
+        except Exception:
+            fallback_text = ""
+    if not fallback_text:
+        fallback_text = _normalize_import_text(extracted)
+    if fallback_text:
+        return [{"page": 1, "text": fallback_text}]
+    return []
+
+
+def _reader_build_image_page_row(upload_id: str, file_name: str, payload: bytes) -> dict[str, Any]:
+    safe_name = _safe_upload_name(file_name, "page.png")
+    relative_name = f"images/{safe_name}"
+    saved_path = _reader_save_binary_artifact(upload_id, relative_name, payload)
+    extracted_text = ""
+    mime_type = mimetypes.guess_type(safe_name)[0] or "image/png"
+    image_width = 0
+    image_height = 0
+    if Image is not None:
+        try:
+            with Image.open(BytesIO(payload)) as image:
+                image_width, image_height = image.size
+        except Exception:
+            image_width = 0
+            image_height = 0
+    try:
+        extracted_text = _extract_text_with_local_ocr(payload)
+    except Exception:
+        extracted_text = ""
+    if not extracted_text:
+        try:
+            extracted_text = _extract_text_with_gemini_fallback(payload, mime_type, "auto", "reader_image")
+        except Exception:
+            extracted_text = ""
+    return {
+        "text": _normalize_import_text(extracted_text) or Path(safe_name).stem.replace("_", " "),
+        "imagePath": saved_path,
+        "imageWidth": image_width,
+        "imageHeight": image_height,
+        "aspectRatio": round((image_height / max(1, image_width)), 3) if image_width > 0 and image_height > 0 else 0,
+    }
+
+
+def _reader_detect_upload_content_kind(
+    explicit_content_type: object,
+    prepared_files: list[dict[str, Any]],
+    *,
+    title: str = "",
+) -> str:
+    if str(explicit_content_type or "").strip():
+        return normalize_reader_content_kind(explicit_content_type)
+    book_score = 0
+    comic_score = 0
+    for item in list(prepared_files or []):
+        suffix = str((item or {}).get("suffix") or "").strip().lower()
+        pdf_text_chars = int((item or {}).get("pdfTextChars") or 0)
+        pdf_likely_scanned = bool((item or {}).get("pdfLikelyScanned"))
+        if suffix in {".txt", ".md", ".epub"}:
+            book_score += 6
+        elif suffix in {".cbz", ".zip", ".png", ".jpg", ".jpeg", ".webp"}:
+            comic_score += 6
+        elif suffix == ".pdf":
+            if pdf_text_chars >= 1200 and not pdf_likely_scanned:
+                book_score += 5
+            elif pdf_text_chars >= 300:
+                book_score += 2
+            if pdf_likely_scanned or pdf_text_chars < 450:
+                comic_score += 4
+    title_haystack = str(title or "").strip().lower()
+    if re.search(r"\b(webtoon|manhwa|manga|comic|panel|chapter)\b", title_haystack):
+        comic_score += 2
+    return "comic" if comic_score > book_score else "book"
+
+
+def _reader_infer_reading_mode(
+    *,
+    content_kind: str,
+    title: str = "",
+    region_id: str = "english",
+    direction_hint: str = "",
+    provider: str = "",
+    source_url: str = "",
+    file_names: Optional[list[str]] = None,
+    page_rows: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    safe_content_kind = normalize_reader_content_kind(content_kind)
+    if safe_content_kind != "comic":
+        return "document"
+    if str(direction_hint or "").strip():
+        return _reader_direction_to_reading_mode(direction_hint, content_kind=safe_content_kind)
+    haystack = " ".join(
+        [
+            str(title or ""),
+            str(provider or ""),
+            str(source_url or ""),
+            " ".join([str(item) for item in list(file_names or []) if str(item).strip()]),
+        ]
+    ).lower()
+    if re.search(r"\b(webtoon|vertical|scroll|strip|manhwa|toon)\b", haystack):
+        return "vertical_strip"
+    aspect_ratios = [
+        float(item.get("aspectRatio") or 0)
+        for item in list(page_rows or [])
+        if isinstance(item, dict) and float(item.get("aspectRatio") or 0) > 0
+    ]
+    tall_pages = len([ratio for ratio in aspect_ratios if ratio >= 2.1])
+    if aspect_ratios and tall_pages >= max(1, math.ceil(len(aspect_ratios) * 0.4)):
+        return "vertical_strip"
+    if re.search(r"\b(manga|shonen|shoujo|seinen|josei|tankobon|right to left|rtl)\b", haystack):
+        return "rtl_paged"
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    if safe_region_id == "japanese":
+        return "rtl_paged"
+    if safe_region_id == "korean":
+        return "vertical_strip"
+    return "ltr_paged"
+
+
+def _reader_require_legal_ack(uid: str) -> dict[str, Any]:
+    payload = _reader_legal_ack_get(uid)
+    if not bool(payload.get("accepted")):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Reader rights acknowledgement required.",
+                "code": "reader_legal_ack_required",
+            },
+        )
+    return payload
+
+
+def _reader_normalize_upload_item(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = dict(payload or {})
+    region = reader_region(safe_payload.get("regionId") or "english")
+    content_kind = normalize_reader_content_kind(safe_payload.get("contentKind"))
+    title = str(safe_payload.get("title") or "Untitled Upload").strip() or "Untitled Upload"
+    upload_id = str(safe_payload.get("id") or "").strip()
+    source_meta = dict(safe_payload.get("sourceMeta") or {})
+    reading_mode_default = str(
+        safe_payload.get("readingModeDefault")
+        or source_meta.get("readingModeDefault")
+        or _reader_infer_reading_mode(
+            content_kind=content_kind,
+            title=title,
+            region_id=str(region.get("id") or "english"),
+            direction_hint=str(safe_payload.get("direction") or ""),
+            file_names=[str(item) for item in list(safe_payload.get("fileNames") or []) if str(item).strip()],
+        )
+    )
+    stats = dict(source_meta.get("stats") or {})
+    source_language = _reader_normalize_language(
+        safe_payload.get("sourceLanguage") or source_meta.get("sourceLanguage"),
+        default=_reader_normalize_language(region.get("locale"), default="en"),
+    ) or "en"
+    return {
+        "id": upload_id,
+        "uid": str(safe_payload.get("uid") or "").strip(),
+        "title": title,
+        "author": str(safe_payload.get("author") or "You").strip() or "You",
+        "surface": "uploads",
+        "contentKind": content_kind,
+        "regionId": str(region.get("id") or "english"),
+        "regionLabel": str(region.get("label") or "English"),
+        "provider": "voiceflow_upload",
+        "license": "User supplied",
+        "ownershipBasis": str(safe_payload.get("ownershipBasis") or "user_responsible").strip() or "user_responsible",
+        "createdAt": str(safe_payload.get("createdAt") or _safe_now_iso()),
+        "updatedAt": str(safe_payload.get("updatedAt") or _safe_now_iso()),
+        "sourceMeta": source_meta,
+        "textPath": str(safe_payload.get("textPath") or "").strip(),
+        "manifestPath": str(safe_payload.get("manifestPath") or "").strip(),
+        "fileNames": [str(item) for item in list(safe_payload.get("fileNames") or []) if str(item).strip()],
+        "direction": normalize_reader_direction(safe_payload.get("direction"), content_kind=content_kind),
+        "summary": str(safe_payload.get("summary") or "").strip(),
+        "collectionLabel": "Recently imported",
+        "readingModeDefault": reading_mode_default,
+        "sourceLanguage": source_language,
+        "stats": {
+            "fileCount": int(stats.get("fileCount") or len(list(safe_payload.get("fileNames") or []))),
+            "totalChars": int(stats.get("totalChars") or 0),
+            "totalPanels": int(stats.get("totalPanels") or 0),
+            "pageCount": int(stats.get("pageCount") or 0),
+        },
+    }
+
+
+def _reader_upload_asset_url(upload_id: str, absolute_path: str) -> str:
+    safe_upload_id = str(upload_id or "").strip()
+    safe_path = str(absolute_path or "").strip()
+    if not safe_upload_id or not safe_path:
+        return ""
+    base_dir = _reader_upload_dir(safe_upload_id).resolve()
+    try:
+        relative = Path(safe_path).resolve().relative_to(base_dir).as_posix()
+    except Exception:
+        return ""
+    return f"/reader/uploads/{quote(safe_upload_id)}/assets/{quote(relative)}"
+
+
+def _reader_item_stats(item: dict[str, Any]) -> dict[str, Any]:
+    safe_item = dict(item or {})
+    safe_content_kind = normalize_reader_content_kind(safe_item.get("contentKind"))
+    stats = dict(safe_item.get("stats") or {})
+    if safe_content_kind == "book":
+        if not int(stats.get("totalChars") or 0):
+            stats["totalChars"] = len(str(safe_item.get("sampleText") or ""))
+    else:
+        if not int(stats.get("totalPanels") or 0):
+            stats["totalPanels"] = int(stats.get("pageCount") or 0)
+    if not int(stats.get("fileCount") or 0):
+        stats["fileCount"] = len(list(safe_item.get("fileNames") or []))
+    return {
+        "totalChars": int(stats.get("totalChars") or 0),
+        "totalPanels": int(stats.get("totalPanels") or 0),
+        "pageCount": int(stats.get("pageCount") or stats.get("totalPanels") or 0),
+        "fileCount": int(stats.get("fileCount") or 0),
+    }
+
+
+def _reader_resume_payload(progress: dict[str, Any], *, session_id: str = "") -> dict[str, Any]:
+    safe_progress = dict(progress or {})
+    consumed_chars = max(0, int(safe_progress.get("consumedChars") or 0))
+    current_panel_index = max(0, int(safe_progress.get("currentPanelIndex") or 0))
+    updated_at = str(safe_progress.get("updatedAt") or "").strip()
+    has_progress = consumed_chars > 0 or current_panel_index > 0
+    progress_pct = float(safe_progress.get("progressPct") or 0)
+    return {
+        "hasProgress": has_progress,
+        "consumedChars": consumed_chars,
+        "currentPanelIndex": current_panel_index,
+        "progressPct": progress_pct,
+        "updatedAt": updated_at,
+        "sessionId": str(session_id or "").strip(),
+    }
+
+
+def _reader_session_active_item_index(session: dict[str, Any]) -> int:
+    safe_session = dict(session or {})
+    safe_content_kind = normalize_reader_content_kind(safe_session.get("contentKind"))
+    if safe_content_kind == "comic":
+        total_panels = max(0, int(safe_session.get("totalPanels") or 0))
+        return min(max(0, int(safe_session.get("currentPanelIndex") or 0)), max(0, total_panels - 1))
+    consumed_chars = max(0, int(safe_session.get("consumedChars") or 0))
+    windows = [dict(item) for item in list(safe_session.get("windows") or []) if isinstance(item, dict)]
+    for index, item in enumerate(windows):
+        if int(item.get("endChar") or 0) > consumed_chars:
+            return index
+    return max(0, len(windows) - 1)
+
+
+def _reader_session_readiness(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    safe_content_kind = normalize_reader_content_kind(safe_session.get("contentKind"))
+    items = safe_session.get("windows") if safe_content_kind == "book" else safe_session.get("panels")
+    prep = _reader_normalize_prep(
+        safe_session.get("prep"),
+        total_items=_reader_session_unit_count(safe_session),
+        default_state="ready" if not _reader_is_async_remote_comic_session(safe_session) else "queued",
+        default_stage="audio",
+    )
+    completed = 0
+    pending = 0
+    total = 0
+    for item in list(items or []):
+        if not isinstance(item, dict):
+            continue
+        total += 1
+        status = str(
+            (item.get("job") or {}).get("status")
+            or (item.get("audioJob") or {}).get("status")
+            or item.get("status")
+            or item.get("audioStatus")
+            or ""
+        ).strip().lower()
+        if status == "completed":
+            completed += 1
+        elif status in {"queued", "running", "processing", "started"}:
+            pending += 1
+    if completed > 0:
+        return {"state": "ready", "label": f"{completed} playable item{'s' if completed != 1 else ''}", "playableItems": completed}
+    if str(prep.get("state") or "") == "error":
+        return {
+            "state": "blocked",
+            "label": "Playback unavailable",
+            "playableItems": 0,
+            "reason": str(prep.get("message") or "Reader could not prepare a playable item.").strip(),
+        }
+    if pending > 0 or total > 0 or str(prep.get("state") or "") in {"queued", "running", "degraded", "ready"}:
+        return {
+            "state": "preparing",
+            "label": str(prep.get("message") or "Preparing first playable item").strip() or "Preparing first playable item",
+            "playableItems": 0,
+        }
+    return {"state": "blocked", "label": "Playback unavailable", "playableItems": 0}
+
+
+def _reader_session_is_reusable(session: dict[str, Any]) -> bool:
+    readiness = _reader_session_readiness(session)
+    if str(readiness.get("state") or "") in {"ready", "preparing"}:
+        return True
+    return False
+
+
+def _reader_find_live_session(uid: str, work_key: str) -> Optional[dict[str, Any]]:
+    safe_work_key = str(work_key or "").strip()
+    for item in _reader_session_list(uid):
+        if str(item.get("workKey") or "").strip() != safe_work_key:
+            continue
+        refreshed = _reader_refresh_session(item)
+        if _reader_session_is_reusable(refreshed):
+            saved = _reader_session_set(refreshed)
+            return saved
+    return None
+
+
+def _reader_decorate_catalog_item(
+    uid: str,
+    item: dict[str, Any],
+    *,
+    progress_lookup: Optional[dict[str, dict[str, Any]]] = None,
+    session_lookup: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    safe_item = dict(item or {})
+    safe_content_kind = normalize_reader_content_kind(safe_item.get("contentKind"))
+    safe_surface = normalize_reader_surface(safe_item.get("surface") or ("comics" if safe_content_kind == "comic" else "books"))
+    work_key = f"{'upload' if safe_surface == 'uploads' else 'catalog'}:{str(safe_item.get('id') or '').strip()}"
+    progress = dict((progress_lookup or {}).get(work_key) or _reader_progress_get(uid, work_key))
+    live_session = dict((session_lookup or {}).get(work_key) or {})
+    stats = _reader_item_stats(safe_item)
+    resume = _reader_resume_payload(progress, session_id=str(live_session.get("id") or ""))
+    if safe_content_kind == "book" and int(stats.get("totalChars") or 0) > 0:
+        resume["progressPct"] = round((resume["consumedChars"] / max(1, int(stats["totalChars"]))) * 100, 2)
+    elif safe_content_kind == "comic" and int(stats.get("totalPanels") or 0) > 0:
+        resume["progressPct"] = round((resume["currentPanelIndex"] / max(1, int(stats["totalPanels"]))) * 100, 2)
+    if live_session:
+        readiness = _reader_session_readiness(live_session)
+        prep = _reader_normalize_prep(
+            live_session.get("prep"),
+            total_items=_reader_session_unit_count(live_session),
+            default_state="ready" if not _reader_is_async_remote_comic_session(live_session) else "queued",
+            default_stage="audio",
+        )
+    else:
+        supports_read_here = bool(safe_item.get("supportsReadHere") or safe_surface == "uploads")
+        readiness = {
+            "state": "ready" if supports_read_here else "blocked",
+            "label": "Ready to prepare" if supports_read_here else "Read-here unavailable",
+            "playableItems": 0,
+        }
+        prep = None
+    provider = str(safe_item.get("provider") or "catalog").strip().lower()
+    collection_label = str(safe_item.get("collectionLabel") or "").strip()
+    if not collection_label:
+        if safe_surface == "uploads":
+            collection_label = "Recently imported"
+        elif provider == "internet_archive":
+            collection_label = "Archive Collection"
+        elif provider == "open_library":
+            collection_label = "Open Shelf"
+        elif provider == "mangadex":
+            collection_label = "MangaDex Live"
+        elif provider == "mediawiki":
+            collection_label = "Wikisource"
+        else:
+            collection_label = "Reader Catalog"
+    source_language = _reader_normalize_language(
+        progress.get("sourceLanguageOverride") or progress.get("sourceLanguage") or safe_item.get("sourceLanguage"),
+        default=_reader_normalize_source_language(safe_item, region_id=str(safe_item.get("regionId") or "english")),
+    ) or "en"
+    reading_mode_default = str(
+        safe_item.get("readingModeDefault")
+        or _reader_infer_reading_mode(
+            content_kind=safe_content_kind,
+            title=str(safe_item.get("title") or ""),
+            region_id=str(safe_item.get("regionId") or "english"),
+            direction_hint=str(safe_item.get("direction") or ""),
+            provider=str(safe_item.get("provider") or ""),
+            source_url=str(safe_item.get("sourceUrl") or ""),
+            file_names=[str(item_name) for item_name in list(safe_item.get("fileNames") or []) if str(item_name).strip()],
+        )
+    )
+    safe_item.update(
+        {
+            "collectionLabel": collection_label,
+            "readingModeDefault": reading_mode_default,
+            "resume": resume,
+            "sessionId": str(live_session.get("id") or ""),
+            "readiness": readiness,
+            **({"prep": prep} if isinstance(prep, dict) else {}),
+            "stats": stats,
+            "sourceLanguage": source_language,
+            "languageLabel": _reader_language_label(source_language),
+            "translationSupport": {
+                "page": bool(safe_item.get("supportsReadHere") or safe_surface == "uploads"),
+                "tts": bool(safe_item.get("supportsReadHere") or safe_surface == "uploads"),
+            },
+        }
+    )
+    return safe_item
+
+
+def _reader_build_library_payload(uid: str, *, surface: str = "all", region_id: str = "english", search_query: str = "") -> dict[str, Any]:
+    safe_surface = str(surface or "all").strip().lower()
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    if safe_surface not in {"all", "books", "comics", "uploads"}:
+        safe_surface = "all"
+    safe_search = _reader_search_term(search_query)
+    requested_surfaces = {"books", "comics", "uploads"} if safe_surface == "all" else {safe_surface}
+    uploads = [_reader_normalize_upload_item(item) for item in _reader_upload_list(uid)] if "uploads" in requested_surfaces else []
+    books = (
+        [normalize_reader_catalog_item(item) for item in _reader_catalog_items(safe_region_id, surface="books", search_query=safe_search)]
+        if "books" in requested_surfaces
+        else []
+    )
+    comics = (
+        [normalize_reader_catalog_item(item) for item in _reader_catalog_items(safe_region_id, surface="comics", search_query=safe_search)]
+        if "comics" in requested_surfaces
+        else []
+    )
+    progress_docs = _reader_progress_list(uid)
+    progress_lookup = {
+        str(item.get("workKey") or "").strip(): dict(item)
+        for item in progress_docs
+        if str(item.get("workKey") or "").strip()
+    }
+    session_lookup: dict[str, dict[str, Any]] = {}
+    active_sessions: list[dict[str, Any]] = []
+    for item in _reader_session_list(uid):
+        refreshed = _reader_refresh_session(item)
+        if not _reader_session_is_reusable(refreshed):
+            continue
+        saved = _reader_session_set(refreshed)
+        if _reader_is_async_remote_comic_session(saved) and not _reader_prep_is_terminal(saved.get("prep")):
+            _reader_enqueue_remote_comic_hydration(uid, str(saved.get("id") or "").strip())
+        work_key = str(saved.get("workKey") or "").strip()
+        if work_key and work_key not in session_lookup:
+            session_lookup[work_key] = saved
+        active_sessions.append(_reader_session_public_view(saved))
+    all_items = [
+        _reader_decorate_catalog_item(uid, item, progress_lookup=progress_lookup, session_lookup=session_lookup)
+        for item in [*uploads, *books, *comics]
+    ]
+    visible_items = list(all_items)
+    continue_reading = [
+        item for item in all_items
+        if bool(((item.get("resume") or {}).get("hasProgress"))) or str(item.get("sessionId") or "").strip()
+    ]
+    continue_reading.sort(
+        key=lambda item: (
+            float(((item.get("resume") or {}).get("progressPct") or 0)),
+            str(((item.get("resume") or {}).get("updatedAt") or "")),
+            str(item.get("updatedAt") or ""),
+        ),
+        reverse=True,
+    )
+    new_arrivals = sorted(all_items, key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    recently_imported = sorted(
+        [item for item in all_items if str(item.get("surface") or "") == "uploads"],
+        key=lambda item: str(item.get("createdAt") or ""),
+        reverse=True,
+    )
+    trending = [item for item in all_items if str(item.get("surface") or "") != "uploads"]
+    trending.sort(
+        key=lambda item: (
+            str(item.get("provider") or "") == "mangadex",
+            str(item.get("provider") or "") == "internet_archive",
+            str(item.get("provider") or "") == "open_library",
+            float(((item.get("resume") or {}).get("progressPct") or 0)),
+        ),
+        reverse=True,
+    )
+    providers = sorted({str(item.get("provider") or "").strip() for item in visible_items if str(item.get("provider") or "").strip()})
+    collections = sorted({str(item.get("collectionLabel") or "").strip() for item in visible_items if str(item.get("collectionLabel") or "").strip()})
+    return {
+        "surface": safe_surface,
+        "regionId": safe_region_id,
+        "regions": [dict(region) for region in reader_regions()],
+        "items": visible_items,
+        "activeSession": active_sessions[0] if active_sessions else None,
+        "activeSessions": active_sessions,
+        "counts": {
+            "all": len(all_items),
+            "visible": len(visible_items),
+            "books": len([item for item in all_items if str(item.get("surface") or "") == "books"]),
+            "comics": len([item for item in all_items if str(item.get("surface") or "") == "comics"]),
+            "uploads": len([item for item in all_items if str(item.get("surface") or "") == "uploads"]),
+            "resumable": len(continue_reading),
+        },
+        "facets": {
+            "providers": providers,
+            "collections": collections,
+            "progressStates": ["all", "in_progress", "ready", "new"],
+        },
+        "shelves": {
+            "continueReading": continue_reading[:8],
+            "trending": trending[:8],
+            "newArrivals": new_arrivals[:8],
+            "recentlyImported": recently_imported[:8],
+        },
+    }
+
+
+def _reader_resolve_archive_txt_url(item: dict[str, Any]) -> str:
+    safe_item = dict(item or {})
+    explicit = str(safe_item.get("archiveTxtUrl") or "").strip()
+    if explicit:
+        return explicit
+    source_url = str(safe_item.get("sourceUrl") or "").strip()
+    if "archive.org/details/" not in source_url:
+        return ""
+    identifier = source_url.rstrip("/").split("/")[-1].strip()
+    if not identifier:
+        return ""
+    try:
+        response = requests.get(
+            f"https://archive.org/metadata/{identifier}",
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 10),
+        )
+        response.raise_for_status()
+        files = list((response.json() or {}).get("files") or [])
+    except Exception:
+        return ""
+    for file_item in files:
+        if not isinstance(file_item, dict):
+            continue
+        name = str(file_item.get("name") or "").strip()
+        lower_name = name.lower()
+        if lower_name.endswith(".txt") or lower_name.endswith("_djvu.txt"):
+            return f"https://archive.org/download/{identifier}/{name}"
+    return ""
+
+
+def _reader_fetch_text_from_url(url: str) -> str:
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return ""
+    try:
+        response = requests.get(
+            safe_url,
+            headers={
+                "User-Agent": _reader_public_user_agent(),
+                "Accept": "text/plain,text/html,application/xhtml+xml",
+            },
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+    except Exception:
+        return ""
+    content_type = str(response.headers.get("content-type") or "").lower()
+    if "html" in content_type:
+        soup = BeautifulSoup(response.text[:2_000_000], "html.parser")
+        return collapse_whitespace(soup.get_text("\n", strip=True))
+    return response.text.strip()
+
+
+def _reader_catalog_book_text(item: dict[str, Any]) -> str:
+    safe_item = dict(item or {})
+    sample_text = str(safe_item.get("sampleText") or "").strip()
+    if sample_text:
+        return sample_text
+    archive_txt_url = _reader_resolve_archive_txt_url(safe_item)
+    if archive_txt_url:
+        text = _reader_fetch_text_from_url(archive_txt_url)
+        if text:
+            return text
+    source_url = str(safe_item.get("sourceUrl") or "").strip()
+    if source_url:
+        text = _reader_fetch_text_from_url(source_url)
+        if text:
+            return text
+    return ""
+
+
+def _reader_default_cast_for_speaker(speaker: str, index: int) -> str:
+    safe_speaker = str(speaker or "").strip().lower()
+    if safe_speaker in {"narrator", "default"}:
+        return "v22"
+    rotation = ["v21", "v22", "v3", "v4", "v5", "v6", "v15", "v16"]
+    return rotation[max(0, int(index)) % len(rotation)]
+
+
+def _reader_simple_line_map(text: str, cast_memory: Optional[dict[str, str]] = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    safe_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    cast = dict(cast_memory or {})
+    line_map: list[dict[str, Any]] = []
+    speaker_order: list[str] = []
+    for raw_line in safe_text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^([A-Za-z][A-Za-z0-9 _.'-]{0,40}):\s+(.+)$", line)
+        if not match:
+            continue
+        speaker = str(match.group(1) or "").strip()
+        spoken = str(match.group(2) or "").strip()
+        if not speaker or not spoken:
+            continue
+        if speaker not in speaker_order:
+            speaker_order.append(speaker)
+        line_map.append({"lineIndex": len(line_map), "speaker": speaker, "text": spoken})
+    if not line_map:
+        return [], []
+    speaker_voices: list[dict[str, Any]] = []
+    for index, speaker in enumerate(speaker_order):
+        voice_id = str(cast.get(speaker) or _reader_default_cast_for_speaker(speaker, index)).strip()
+        cast[speaker] = voice_id
+        speaker_voices.append({"speaker": speaker, "voice_id": voice_id})
+    return line_map, speaker_voices
+
+
+def _reader_resolve_multi_speaker_payload(
+    session: dict[str, Any],
+    *,
+    text: str,
+    cast_memory: Optional[dict[str, str]],
+    default_voice_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], Optional[str], str]:
+    safe_session = dict(session or {})
+    next_cast_memory = dict(cast_memory or {})
+    if not _reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=True):
+        safe_session["castMemory"] = next_cast_memory
+        safe_session["effectiveMultiSpeakerMode"] = "single"
+        return safe_session, [], [], None, "single"
+
+    line_map, _ = _reader_simple_line_map(text, next_cast_memory)
+    normalized_line_map = normalize_multi_speaker_line_map_shared(line_map)
+    if not normalized_line_map:
+        safe_session["castMemory"] = next_cast_memory
+        safe_session["effectiveMultiSpeakerMode"] = "single"
+        return safe_session, [], [], None, "single"
+
+    speaker_order: list[str] = []
+    seen_speakers: set[str] = set()
+    for item in normalized_line_map:
+        speaker_name = str(item.get("speaker") or "").strip()
+        speaker_key = speaker_name.lower()
+        if not speaker_name or speaker_key in seen_speakers:
+            continue
+        seen_speakers.add(speaker_key)
+        speaker_order.append(speaker_name)
+
+    default_runtime_voice_name = _resolve_gem_runtime_voice_name(default_voice_id or "Fenrir", fallback="Fenrir")
+    resolved_speaker_voices: list[dict[str, Any]] = []
+    for index, speaker_name in enumerate(speaker_order):
+        requested_voice_id = str(
+            next_cast_memory.get(speaker_name)
+            or _reader_default_cast_for_speaker(speaker_name, index)
+            or default_voice_id
+        ).strip() or default_voice_id
+        safe_session, resolved_voice_id = _reader_resolve_voice_for_session(
+            safe_session,
+            speaker=speaker_name,
+            requested_voice_id=requested_voice_id,
+        )
+        next_cast_memory[speaker_name] = resolved_voice_id
+        resolved_speaker_voices.append(
+            {
+                "speaker": speaker_name,
+                "voice_id": resolved_voice_id,
+                "voiceName": _resolve_gem_runtime_voice_name(resolved_voice_id, fallback=default_runtime_voice_name),
+            }
+        )
+
+    safe_session["castMemory"] = next_cast_memory
+    if len(speaker_order) >= 2 and len(normalized_line_map) >= 2:
+        safe_session["effectiveMultiSpeakerMode"] = "studio_pair_groups"
+        return safe_session, normalized_line_map, resolved_speaker_voices, "studio_pair_groups", "studio_pair_groups"
+
+    safe_session["effectiveMultiSpeakerMode"] = "line_map"
+    return safe_session, normalized_line_map, resolved_speaker_voices, "legacy_windows", "line_map"
+
+
+def _reader_job_status_summary(uid: str, job_id: str) -> dict[str, Any]:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return {"status": "idle"}
+    job = _TTS_JOB_QUEUE.get(safe_job_id)
+    if not isinstance(job, dict):
+        return {"status": "missing", "jobId": safe_job_id}
+    if str(job.get("uid") or "").strip() != str(uid or "").strip():
+        return {"status": "forbidden", "jobId": safe_job_id}
+    payload = _tts_job_status_payload(job, include_result=False, include_chunks=True, include_chunk_audio=False)
+    live = payload.get("live") if isinstance(payload.get("live"), dict) else {}
+    return {
+        "jobId": safe_job_id,
+        "status": str(payload.get("status") or "queued"),
+        "engine": str(payload.get("engine") or "GEM"),
+        "chunkCursorNext": int(payload.get("chunkCursorNext") or 0),
+        "playableChunks": int((live or {}).get("playableChunks") or 0),
+        "playableDurationMs": int((live or {}).get("playableDurationMs") or 0),
+        "downloadUrl": f"/tts/jobs/{safe_job_id}",
+    }
+
+
+def _reader_extract_job_id_from_response(response: Response) -> str:
+    if isinstance(response, JSONResponse):
+        try:
+            payload = json.loads(bytes(response.body or b"{}").decode("utf-8"))
+        except Exception:
+            payload = {}
+        return str(payload.get("jobId") or payload.get("job_id") or payload.get("requestId") or "").strip()
+    return ""
+
+
+def _reader_set_warning_deadline(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    if int(safe_session.get("deleteAtMs") or 0) <= _reader_now_ms():
+        safe_session["deleteAtMs"] = _reader_now_ms() + int(READER_SESSION_DELETE_WARNING_MS)
+    return safe_session
+
+
+def _reader_can_cache_more(session: dict[str, Any], additional_chars: int) -> bool:
+    safe_cached = max(0, int(dict(session or {}).get("cachedChars") or 0))
+    safe_additional = max(0, int(additional_chars or 0))
+    return (safe_cached + safe_additional) <= int(READER_SESSION_CACHE_CHAR_LIMIT)
+
+
+def _reader_purge_cached_audio(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    exported_window_indexes = {int(item) for item in list(safe_session.get("exportedWindowIndexes") or [])}
+    purged_chars = 0
+    next_windows: list[dict[str, Any]] = []
+    for item in list(safe_session.get("windows") or []):
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        if safe_item.get("jobId") and int(safe_item.get("index") or 0) not in exported_window_indexes:
+            purged_chars += int(safe_item.get("charCount") or 0)
+            safe_item["purged"] = True
+            safe_item["jobId"] = ""
+            safe_item["status"] = "purged"
+        next_windows.append(safe_item)
+    exported_panel_indexes = {int(item) for item in list(safe_session.get("exportedPanelIndexes") or [])}
+    next_panels: list[dict[str, Any]] = []
+    for item in list(safe_session.get("panels") or []):
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        if safe_item.get("audioJobId") and int(safe_item.get("index") or 0) not in exported_panel_indexes:
+            purged_chars += len(str(safe_item.get("text") or ""))
+            safe_item["purged"] = True
+            safe_item["audioJobId"] = ""
+            safe_item["audioStatus"] = "purged"
+        next_panels.append(safe_item)
+    safe_session["windows"] = next_windows
+    safe_session["panels"] = next_panels
+    safe_session["cachedChars"] = max(0, int(safe_session.get("cachedChars") or 0) - purged_chars)
+    safe_session["deleteAtMs"] = 0
+    return safe_session
+
+
+def _reader_refresh_session(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    delete_at_ms = int(safe_session.get("deleteAtMs") or 0)
+    if delete_at_ms > 0 and delete_at_ms <= _reader_now_ms():
+        safe_session = _reader_purge_cached_audio(safe_session)
+    uid = str(safe_session.get("uid") or "").strip()
+    refreshed_windows: list[dict[str, Any]] = []
+    scheduled_window_end_char = 0
+    for item in list(safe_session.get("windows") or []):
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        job_id = str(safe_item.get("jobId") or "").strip()
+        if job_id:
+            job_summary = _reader_job_status_summary(uid, job_id)
+            safe_item["job"] = job_summary
+            safe_item["status"] = str(job_summary.get("status") or safe_item.get("status") or "queued")
+            scheduled_window_end_char = max(scheduled_window_end_char, int(safe_item.get("endChar") or 0))
+        refreshed_windows.append(safe_item)
+    refreshed_panels: list[dict[str, Any]] = []
+    scheduled_panel_count = 0
+    for item in list(safe_session.get("panels") or []):
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        job_id = str(safe_item.get("audioJobId") or "").strip()
+        if job_id:
+            job_summary = _reader_job_status_summary(uid, job_id)
+            safe_item["audioJob"] = job_summary
+            safe_item["audioStatus"] = str(job_summary.get("status") or safe_item.get("audioStatus") or "queued")
+            scheduled_panel_count = max(scheduled_panel_count, int(safe_item.get("index") or 0) + 1)
+        refreshed_panels.append(safe_item)
+    safe_session["windows"] = refreshed_windows
+    safe_session["panels"] = refreshed_panels
+    safe_session["scheduledWindowEndChar"] = scheduled_window_end_char
+    safe_session["scheduledPanelCount"] = scheduled_panel_count
+    return safe_session
+
+
+def _reader_public_unit_view(
+    unit: dict[str, Any],
+    *,
+    page_view_mode: str,
+    target_language: str,
+) -> dict[str, Any]:
+    safe_unit = dict(unit or {})
+    source_text = _reader_unit_source_text(safe_unit)
+    translated_text = str(safe_unit.get("translatedText") or "").strip()
+    translated_language = _reader_normalize_language(safe_unit.get("translatedLanguage"))
+    if not translated_text and translated_language == target_language:
+        translated_text = source_text
+    safe_unit["sourceText"] = source_text
+    safe_unit["text"] = source_text
+    if translated_text:
+        safe_unit["translatedText"] = translated_text
+    safe_unit["displayText"] = translated_text if page_view_mode == "translated" and translated_text else source_text
+    safe_unit["translationStatus"] = str(safe_unit.get("translationStatus") or ("ready" if translated_text and translated_language == target_language else "pending"))
+    safe_unit["estimatedReadMs"] = int(safe_unit.get("estimatedReadMs") or _reader_estimated_read_ms(source_text))
+    return safe_unit
+
+
+def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
+    safe_session = _reader_warm_translation_units(_reader_refresh_session(session))
+    total_chars = int(safe_session.get("totalChars") or 0)
+    consumed_chars = max(0, int(safe_session.get("consumedChars") or 0))
+    total_panels = int(safe_session.get("totalPanels") or 0)
+    current_panel_index = max(0, int(safe_session.get("currentPanelIndex") or 0))
+    active_item_index = _reader_session_active_item_index(safe_session)
+    readiness = _reader_session_readiness(safe_session)
+    prep = _reader_normalize_prep(
+        safe_session.get("prep"),
+        total_items=_reader_session_unit_count(safe_session),
+        default_state="ready" if not _reader_is_async_remote_comic_session(safe_session) else "queued",
+        default_stage="audio",
+    )
+    source_language = _reader_normalize_language(safe_session.get("sourceLanguage"), default="en") or "en"
+    target_language = _reader_normalize_language(safe_session.get("targetLanguage"), default=source_language) or source_language
+    page_view_mode = _reader_normalize_page_view_mode(
+        safe_session.get("pageViewMode"),
+        source_language=source_language,
+        target_language=target_language,
+    )
+    multi_speaker_enabled = _reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=True)
+    return {
+        "id": str(safe_session.get("id") or ""),
+        "title": str(safe_session.get("title") or "Untitled"),
+        "contentKind": str(safe_session.get("contentKind") or "book"),
+        "surface": str(safe_session.get("surface") or "books"),
+        "regionId": str(safe_session.get("regionId") or "english"),
+        "direction": str(safe_session.get("direction") or "vertical-scroll"),
+        "readingMode": str(safe_session.get("readingMode") or "document"),
+        "workKey": str(safe_session.get("workKey") or ""),
+        "sourceKind": str(safe_session.get("sourceKind") or "catalog"),
+        "provider": str(safe_session.get("provider") or "catalog"),
+        "license": str(safe_session.get("license") or ""),
+        "coverUrl": str(safe_session.get("coverUrl") or ""),
+        "summary": str(safe_session.get("summary") or ""),
+        "sourceUrl": str(safe_session.get("sourceUrl") or ""),
+        "collectionLabel": str(safe_session.get("collectionLabel") or ""),
+        "sourceLanguage": source_language,
+        "targetLanguage": target_language,
+        "pageViewMode": page_view_mode,
+        "ttsLanguageMode": _reader_normalize_tts_language_mode(safe_session.get("ttsLanguageMode")),
+        "multiSpeakerEnabled": multi_speaker_enabled,
+        "effectiveMultiSpeakerMode": str(
+            safe_session.get("effectiveMultiSpeakerMode")
+            or ("single" if not multi_speaker_enabled else "")
+        ),
+        "translationState": str(safe_session.get("translationState") or "idle"),
+        "translationLeadRatio": float(safe_session.get("translationLeadRatio") or 0.0),
+        "voiceFallbacks": dict(safe_session.get("voiceFallbacks") or {}),
+        "musicTrackId": str(safe_session.get("musicTrackId") or "m_none"),
+        "autoAdvanceProfile": str(safe_session.get("autoAdvanceProfile") or "off"),
+        "castMemory": dict(safe_session.get("castMemory") or {}),
+        "consumedChars": consumed_chars,
+        "totalChars": total_chars,
+        "currentPanelIndex": current_panel_index,
+        "totalPanels": total_panels,
+        "progressPct": round((consumed_chars / total_chars) * 100, 2) if total_chars > 0 else round((current_panel_index / max(1, total_panels)) * 100, 2),
+        "cachedChars": int(safe_session.get("cachedChars") or 0),
+        "cacheLimitChars": int(READER_SESSION_CACHE_CHAR_LIMIT),
+        "deleteAtMs": int(safe_session.get("deleteAtMs") or 0),
+        "warningActive": int(safe_session.get("deleteAtMs") or 0) > 0,
+        "readiness": readiness,
+        "prep": prep,
+        "resumeToken": str(safe_session.get("workKey") or ""),
+        "activeItemIndex": active_item_index,
+        "savepointDownloadUrl": f"/reader/sessions/{str(safe_session.get('id') or '')}/export",
+        "stats": {
+            "totalChars": total_chars,
+            "totalPanels": total_panels,
+            "pageCount": total_panels,
+            "fileCount": int(((safe_session.get("stats") or {}).get("fileCount") or 0)),
+        },
+        "billing": {
+            "vfPerChar": float(READER_BILLING_VF_PER_CHAR),
+            "rule": "1 char = 1.5 VF",
+            "label": "Reader pricing: 1 char = 1.5 VF",
+        },
+        "limits": {
+            "textWindowChars": int(READER_TEXT_WINDOW_CHARS),
+            "prefetchThresholdChars": int(READER_TEXT_PREFETCH_THRESHOLD_CHARS),
+            "panelBatchSize": int(READER_PANEL_BATCH_SIZE),
+            "panelTriggerIndex": int(READER_PANEL_PREFETCH_TRIGGER_INDEX),
+            "deleteWarningMs": int(READER_SESSION_DELETE_WARNING_MS),
+        },
+        "windows": [
+            _reader_public_unit_view(dict(item), page_view_mode=page_view_mode, target_language=target_language)
+            for item in list(safe_session.get("windows") or [])
+            if isinstance(item, dict)
+        ],
+        "panels": [
+            _reader_public_unit_view(dict(item), page_view_mode=page_view_mode, target_language=target_language)
+            for item in list(safe_session.get("panels") or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _reader_extract_upload_book_text(upload_item: dict[str, Any]) -> str:
+    safe_item = _reader_normalize_upload_item(upload_item)
+    return _reader_read_text_artifact(str(safe_item.get("textPath") or ""))
+
+
+def _reader_extract_upload_comic_manifest(upload_item: dict[str, Any]) -> list[dict[str, Any]]:
+    safe_item = _reader_normalize_upload_item(upload_item)
+    manifest = _reader_read_json_artifact(str(safe_item.get("manifestPath") or ""))
+    if not isinstance(manifest, list):
+        return []
+    upload_id = str(safe_item.get("id") or "").strip()
+    out: list[dict[str, Any]] = []
+    for item in manifest:
+        if not isinstance(item, dict):
+            continue
+        safe_panel = dict(item)
+        image_url = _reader_upload_asset_url(upload_id, str(safe_panel.get("imagePath") or ""))
+        if image_url:
+            safe_panel["imageUrl"] = image_url
+        out.append(safe_panel)
+    return out
+
+
+def _reader_build_remote_image_page_row(
+    image_url: str,
+    *,
+    fallback_text: str,
+    page_index: int,
+    use_fallback_text: bool = True,
+) -> dict[str, Any]:
+    safe_url = str(image_url or "").strip()
+    if not safe_url:
+        return {
+            "text": fallback_text if use_fallback_text else "",
+            "imageUrl": "",
+            "imagePath": "",
+            "imageWidth": 0,
+            "imageHeight": 0,
+            "aspectRatio": 0,
+            "hydrationState": "error",
+            "message": "Remote image URL is missing.",
+        }
+    image_payload = b""
+    mime_type = mimetypes.guess_type(safe_url)[0] or "image/jpeg"
+    try:
+        response = requests.get(
+            safe_url,
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "image/*"},
+            timeout=(4, 20),
+        )
+        response.raise_for_status()
+        image_payload = bytes(response.content or b"")
+        mime_type = str(response.headers.get("content-type") or mime_type).split(";", 1)[0].strip() or mime_type
+    except Exception:
+        return {
+            "text": fallback_text if use_fallback_text else "",
+            "imageUrl": safe_url,
+            "imagePath": "",
+            "imageWidth": 0,
+            "imageHeight": 0,
+            "aspectRatio": 0,
+            "hydrationState": "error",
+            "message": "Reader could not fetch the remote page image.",
+        }
+
+    image_width = 0
+    image_height = 0
+    if Image is not None:
+        try:
+            with Image.open(BytesIO(image_payload)) as image:
+                image_width, image_height = image.size
+        except Exception:
+            image_width = 0
+            image_height = 0
+
+    extracted_text = ""
+    try:
+        extracted_text = _extract_text_with_local_ocr(image_payload)
+    except Exception:
+        extracted_text = ""
+    if not extracted_text and page_index < 3:
+        try:
+            extracted_text = _extract_text_with_gemini_fallback(image_payload, mime_type, "auto", f"reader_remote_image_{page_index + 1}")
+        except Exception:
+            extracted_text = ""
+
+    cached_path = _reader_cache_remote_asset(safe_url, image_payload, mime_type)
+    cached_url = _reader_remote_asset_url(cached_path)
+    normalized_text = _normalize_import_text(extracted_text)
+    hydration_state = "ready" if normalized_text else "error"
+    message = "" if normalized_text else "Reader OCR could not extract text from this page."
+
+    return {
+        "text": normalized_text or (fallback_text if use_fallback_text else ""),
+        "imageUrl": cached_url or safe_url,
+        "imagePath": cached_path,
+        "imageWidth": image_width,
+        "imageHeight": image_height,
+        "aspectRatio": round((image_height / max(1, image_width)), 3) if image_width > 0 and image_height > 0 else 0,
+        "hydrationState": hydration_state,
+        "message": message,
+    }
+
+
+def _reader_remote_comic_fallback_title(item: dict[str, Any]) -> str:
+    safe_item = normalize_reader_catalog_item(item)
+    source_meta = dict(safe_item.get("sourceMeta") or {})
+    chapter_label = str(source_meta.get("chapterLabel") or "").strip()
+    return " ".join(
+        token
+        for token in [str(safe_item.get("title") or "").strip(), chapter_label]
+        if token
+    ).strip() or str(safe_item.get("title") or "Reader comic").strip()
+
+
+def _reader_catalog_comic_page_sources(item: dict[str, Any]) -> list[str]:
+    safe_item = normalize_reader_catalog_item(item)
+    provider = str(safe_item.get("provider") or "").strip().lower()
+    if provider != "mangadex":
+        return []
+    source_meta = dict(safe_item.get("sourceMeta") or {})
+    chapter_id = str(source_meta.get("chapterId") or "").strip()
+    if not chapter_id:
+        return []
+    try:
+        response = requests.get(
+            f"https://api.mangadex.org/at-home/server/{quote(chapter_id)}",
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception:
+        return []
+    chapter_payload = dict(payload.get("chapter") or {})
+    base_url = str(payload.get("baseUrl") or "").strip()
+    chapter_hash = str(chapter_payload.get("hash") or "").strip()
+    data_saver = [str(name).strip() for name in list(chapter_payload.get("dataSaver") or []) if str(name).strip()]
+    data_full = [str(name).strip() for name in list(chapter_payload.get("data") or []) if str(name).strip()]
+    image_names = data_saver or data_full
+    if not base_url or not chapter_hash or not image_names:
+        return []
+    path_prefix = "data-saver" if data_saver else "data"
+    return [f"{base_url}/{path_prefix}/{chapter_hash}/{quote(image_name)}" for image_name in image_names]
+
+
+def _reader_catalog_comic_manifest(item: dict[str, Any]) -> list[dict[str, Any]]:
+    safe_item = normalize_reader_catalog_item(item)
+    page_sources = _reader_catalog_comic_page_sources(safe_item)
+    if not page_sources:
+        return []
+    direction = _reader_reading_mode_to_direction(
+        safe_item.get("readingModeDefault") or safe_item.get("direction"),
+        content_kind="comic",
+    )
+    safe_direction = normalize_reader_direction(direction, content_kind="comic")
+    panels: list[dict[str, Any]] = []
+    for index, page_url in enumerate(page_sources):
+        panels.append(
+            {
+                "panelId": f"panel_{index + 1:04d}",
+                "pageId": f"page_{index + 1:04d}",
+                "index": index,
+                "direction": safe_direction,
+                "text": "",
+                "sourceText": "",
+                "displayText": "",
+                "translatedText": "",
+                "translatedLanguage": "",
+                "translationStatus": "pending",
+                "speaker": "Narrator",
+                "emotion": "",
+                "sfx": [],
+                "estimatedReadMs": 0,
+                "imageUrl": page_url,
+                "remoteImageUrl": page_url,
+                "audioJobId": "",
+                "audioStatus": "idle",
+                "purged": False,
+                "prepStatus": "pending",
+            }
+        )
+    return panels
+
+
+def _reader_is_async_remote_comic_session(session: dict[str, Any]) -> bool:
+    safe_session = dict(session or {})
+    if normalize_reader_content_kind(safe_session.get("contentKind")) != "comic":
+        return False
+    if str(safe_session.get("sourceKind") or "").strip().lower() != "catalog":
+        return False
+    if str(safe_session.get("provider") or "").strip().lower() != "mangadex":
+        return False
+    return bool([str(item).strip() for item in list(safe_session.get("remotePageSources") or []) if str(item).strip()])
+
+
+def _reader_remote_panel_order(total_items: int) -> list[int]:
+    safe_total_items = max(0, int(total_items or 0))
+    head = list(range(0, min(3, safe_total_items)))
+    tail = list(range(min(3, safe_total_items), safe_total_items))
+    return [*head, *tail]
+
+
+def _reader_sync_remote_prep(
+    session: dict[str, Any],
+    *,
+    stage: Optional[str] = None,
+    state_override: Optional[str] = None,
+    message: Optional[str] = None,
+) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    if not _reader_is_async_remote_comic_session(safe_session):
+        return safe_session
+    panels = [dict(item) for item in list(safe_session.get("panels") or []) if isinstance(item, dict)]
+    total_items = max(len(panels), len([str(item).strip() for item in list(safe_session.get("remotePageSources") or []) if str(item).strip()]))
+    completed_items = len([item for item in panels if str(item.get("prepStatus") or "").strip().lower() == "ready"])
+    failed_items = len([item for item in panels if str(item.get("prepStatus") or "").strip().lower() == "error"])
+    prep = _reader_normalize_prep(
+        safe_session.get("prep"),
+        total_items=total_items,
+        default_state="queued",
+        default_stage="manifest",
+    )
+    if stage:
+        prep["stage"] = str(stage or "manifest").strip().lower() or "manifest"
+    if state_override:
+        prep["state"] = str(state_override or prep.get("state") or "queued").strip().lower() or "queued"
+    else:
+        remaining_items = max(0, total_items - completed_items - failed_items)
+        if remaining_items > 0:
+            prep["state"] = "queued" if str(prep.get("state") or "") == "queued" and completed_items <= 0 and failed_items <= 0 else "running"
+        elif total_items <= 0:
+            prep["state"] = "error"
+        elif completed_items <= 0 and failed_items >= total_items:
+            prep["state"] = "error"
+        elif failed_items > 0:
+            prep["state"] = "degraded"
+        else:
+            prep["state"] = "ready"
+    prep["completedItems"] = completed_items
+    prep["failedItems"] = failed_items
+    prep["totalItems"] = total_items
+    if message is not None:
+        safe_message = str(message or "").strip()
+        if safe_message:
+            prep["message"] = safe_message
+        else:
+            prep.pop("message", None)
+    elif failed_items > 0 and prep["state"] in {"running", "degraded"}:
+        prep["message"] = (
+            f"{failed_items} page{'s' if failed_items != 1 else ''} failed during remote preparation."
+            if prep["state"] == "degraded"
+            else f"{failed_items} page{'s' if failed_items != 1 else ''} failed so far; continuing."
+        )
+    elif prep["state"] == "queued":
+        prep["message"] = "Queued remote comic preparation."
+    elif prep["state"] == "running":
+        prep["message"] = "Hydrating remote comic pages."
+    elif prep["state"] == "ready":
+        prep["message"] = "Remote comic pages are hydrated."
+    elif prep["state"] == "error":
+        prep["message"] = "Remote comic preparation failed."
+    safe_session["prep"] = prep
+    return safe_session
+
+
+def _reader_schedule_hydrated_remote_panels(session: dict[str, Any], uid: str) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    if not _reader_is_async_remote_comic_session(safe_session):
+        return safe_session
+    try:
+        next_session = _reader_schedule_panel_batch(safe_session, _reader_internal_request(uid))
+    except Exception:
+        return safe_session
+    panels = [dict(item) for item in list(next_session.get("panels") or []) if isinstance(item, dict)]
+    for index, item in enumerate(panels):
+        if str(item.get("prepStatus") or "").strip().lower() == "pending" and str(item.get("text") or item.get("sourceText") or "").strip():
+            if str(item.get("audioJobId") or "").strip():
+                item["prepStatus"] = "ready"
+                panels[index] = item
+    next_session["panels"] = panels
+    return next_session
+
+
+def _reader_hydrate_remote_comic_session(uid: str, session_id: str) -> None:
+    try:
+        session = _reader_session_get(uid, session_id)
+        if not session or not _reader_is_async_remote_comic_session(session):
+            return
+        session = _reader_sync_remote_prep(session, stage="assets", state_override="running")
+        session = _reader_session_set(session)
+        page_sources = [str(item).strip() for item in list(session.get("remotePageSources") or []) if str(item).strip()]
+        fallback_title = str(session.get("remoteFallbackTitle") or session.get("title") or "Reader comic").strip() or "Reader comic"
+        for page_index in _reader_remote_panel_order(len(page_sources)):
+            current = _reader_session_get(uid, session_id)
+            if not current or not _reader_is_async_remote_comic_session(current):
+                return
+            panels = [dict(item) for item in list(current.get("panels") or []) if isinstance(item, dict)]
+            if page_index >= len(panels):
+                continue
+            panel = dict(panels[page_index] or {})
+            if str(panel.get("prepStatus") or "").strip().lower() in {"ready", "error"}:
+                continue
+            page_url = page_sources[page_index]
+            panel_text = collapse_whitespace(panel.get("sourceText") or panel.get("text") or "")
+            has_local_asset = bool(str(panel.get("imagePath") or "").strip()) or str(panel.get("imageUrl") or "").strip().startswith("/reader/assets/")
+            if panel_text and has_local_asset:
+                panel["prepStatus"] = "ready"
+                panels[page_index] = panel
+                current["panels"] = panels
+                current = _reader_sync_remote_prep(current, stage="audio")
+                current = _reader_schedule_hydrated_remote_panels(current, uid)
+                _reader_session_set(_reader_sync_remote_prep(current))
+                continue
+
+            hydrated = _reader_build_remote_image_page_row(
+                page_url,
+                fallback_text=f"{fallback_title} page {page_index + 1}",
+                page_index=page_index,
+                use_fallback_text=False,
+            )
+            current = _reader_session_get(uid, session_id)
+            if not current or not _reader_is_async_remote_comic_session(current):
+                return
+            panels = [dict(item) for item in list(current.get("panels") or []) if isinstance(item, dict)]
+            if page_index >= len(panels):
+                continue
+            panel = dict(panels[page_index] or {})
+            if str(hydrated.get("imageUrl") or "").strip():
+                panel["imageUrl"] = str(hydrated.get("imageUrl") or "").strip()
+            if str(hydrated.get("imagePath") or "").strip():
+                panel["imagePath"] = str(hydrated.get("imagePath") or "").strip()
+            panel["remoteImageUrl"] = page_url
+            panel["imageWidth"] = int(hydrated.get("imageWidth") or 0)
+            panel["imageHeight"] = int(hydrated.get("imageHeight") or 0)
+            panel["aspectRatio"] = float(hydrated.get("aspectRatio") or 0)
+            hydrated_text = collapse_whitespace(hydrated.get("text") or "")
+            if str(hydrated.get("hydrationState") or "").strip().lower() != "ready" or not hydrated_text:
+                panel["text"] = ""
+                panel["sourceText"] = ""
+                panel["displayText"] = ""
+                panel["translationStatus"] = "error"
+                panel["audioStatus"] = "error"
+                panel["prepStatus"] = "error"
+                panel["prepMessage"] = str(hydrated.get("message") or "Reader could not hydrate this remote page.").strip()
+                panels[page_index] = panel
+                current["panels"] = panels
+                _reader_session_set(_reader_sync_remote_prep(current, stage="ocr"))
+                continue
+            panel["text"] = hydrated_text
+            panel["sourceText"] = hydrated_text
+            panel["displayText"] = hydrated_text
+            panel["translationStatus"] = "pending"
+            panel["speaker"] = str(panel.get("speaker") or "Narrator").strip() or "Narrator"
+            panel["emotion"] = guess_panel_emotion(hydrated_text)
+            panel["sfx"] = guess_panel_sfx(hydrated_text)
+            panel["estimatedReadMs"] = int(panel.get("estimatedReadMs") or _reader_estimated_read_ms(hydrated_text, content_kind="comic"))
+            panel["prepStatus"] = "ready"
+            panel.pop("prepMessage", None)
+            panels[page_index] = panel
+            current["panels"] = panels
+            current = _reader_sync_remote_prep(current, stage="audio")
+            current = _reader_schedule_hydrated_remote_panels(current, uid)
+            _reader_session_set(_reader_sync_remote_prep(current))
+        current = _reader_session_get(uid, session_id)
+        if current and _reader_is_async_remote_comic_session(current):
+            _reader_session_set(_reader_sync_remote_prep(current, stage="audio"))
+    finally:
+        with _READER_HYDRATION_LOCK:
+            _READER_HYDRATION_ACTIVE.discard(str(session_id or "").strip())
+
+
+def _reader_enqueue_remote_comic_hydration(uid: str, session_id: str) -> None:
+    safe_session_id = str(session_id or "").strip()
+    if not safe_session_id:
+        return
+    with _READER_HYDRATION_LOCK:
+        if safe_session_id in _READER_HYDRATION_ACTIVE:
+            return
+        _READER_HYDRATION_ACTIVE.add(safe_session_id)
+    thread = threading.Thread(
+        target=_reader_hydrate_remote_comic_session,
+        args=(str(uid or "").strip(), safe_session_id),
+        name=f"reader-hydration-{safe_session_id[:12]}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _reader_resume_remote_comic_hydration_jobs() -> None:
+    with _INMEMORY_LOCK:
+        sessions = [dict(item) for item in _INMEMORY_READER_SESSIONS.values()]
+    for session in sessions:
+        safe_session = dict(session or {})
+        if not _reader_is_async_remote_comic_session(safe_session):
+            continue
+        prep = _reader_normalize_prep(
+            safe_session.get("prep"),
+            total_items=_reader_session_unit_count(safe_session),
+            default_state="queued",
+            default_stage="manifest",
+        )
+        if _reader_prep_is_terminal(prep):
+            continue
+        _reader_enqueue_remote_comic_hydration(str(safe_session.get("uid") or "").strip(), str(safe_session.get("id") or "").strip())
+
+
+def _reader_register_voice_fallback(
+    session: dict[str, Any],
+    *,
+    speaker: str,
+    fallback: Optional[dict[str, str]],
+) -> dict[str, Any]:
+    safe_session = dict(session or {})
+    voice_fallbacks = dict(safe_session.get("voiceFallbacks") or {})
+    safe_speaker = str(speaker or "Narrator").strip() or "Narrator"
+    if fallback:
+        voice_fallbacks[safe_speaker] = dict(fallback)
+    else:
+        voice_fallbacks.pop(safe_speaker, None)
+    safe_session["voiceFallbacks"] = voice_fallbacks
+    return safe_session
+
+
+def _reader_resolve_voice_for_session(
+    session: dict[str, Any],
+    *,
+    speaker: str,
+    requested_voice_id: str,
+) -> tuple[dict[str, Any], str]:
+    safe_session = dict(session or {})
+    resolved_voice_id, fallback = _reader_resolve_voice_choice(
+        requested_voice_id,
+        _reader_normalize_language(safe_session.get("targetLanguage"), default="en"),
+    )
+    safe_session = _reader_register_voice_fallback(safe_session, speaker=speaker, fallback=fallback)
+    return safe_session, resolved_voice_id
+
+
+def _reader_tts_text_for_unit(session: dict[str, Any], unit: dict[str, Any]) -> str:
+    source_text = _reader_unit_source_text(unit)
+    if _reader_effective_tts_language_mode(session) != "target":
+        return source_text
+    target_language = _reader_normalize_language(session.get("targetLanguage"), default="")
+    translated_language = _reader_normalize_language(unit.get("translatedLanguage"), default="")
+    translated_text = str(unit.get("translatedText") or "").strip()
+    if translated_text and target_language and translated_language == target_language:
+        return translated_text
+    return source_text
+
+
+def _reader_create_tts_job(
+    request: Request,
+    *,
+    session: dict[str, Any],
+    text: str,
+    request_id: str,
+    voice_id: str,
+    language: str,
+    multi_speaker_mode: Optional[str] = None,
+    line_map: Optional[list[dict[str, Any]]] = None,
+    speaker_voices: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    payload = TtsSynthesizeRequest(
+        engine="GEM",
+        text=str(text or "").strip(),
+        voiceId=str(voice_id or "v21").strip() or "v21",
+        language=str(language or "en").strip() or "en",
+        request_id=request_id,
+        stream=True,
+        live_chunk_chars=240,
+        live_chunk_words=48,
+        multi_speaker_mode=multi_speaker_mode,
+        multi_speaker_line_map=line_map or None,
+        speaker_voices=speaker_voices or None,
+    )
+    response = _submit_tts_job(payload, request, sync_wait_ms=0)
+    job_id = _reader_extract_job_id_from_response(response)
+    if not job_id:
+        raise HTTPException(status_code=502, detail="Failed to queue Reader TTS job.")
+    return job_id
+
+
+def _reader_schedule_text_window(session: dict[str, Any], request: Request) -> dict[str, Any]:
+    safe_session = _reader_warm_translation_units(session)
+    windows = [dict(item) for item in list(safe_session.get("windows") or []) if isinstance(item, dict)]
+    cast_memory = dict(safe_session.get("castMemory") or {})
+    safe_session, default_voice_id = _reader_resolve_voice_for_session(
+        safe_session,
+        speaker="Narrator",
+        requested_voice_id=str(cast_memory.get("Narrator") or safe_session.get("defaultVoiceId") or "v22"),
+    )
+    tts_language = (
+        _reader_normalize_language(safe_session.get("targetLanguage"), default="en")
+        if _reader_effective_tts_language_mode(safe_session) == "target"
+        else _reader_normalize_language(safe_session.get("sourceLanguage"), default="en")
+    ) or "en"
+    for index, item in enumerate(windows):
+        if str(item.get("jobId") or "").strip() or bool(item.get("purged")):
+            continue
+        tts_text = _reader_tts_text_for_unit(safe_session, item)
+        char_count = len(tts_text)
+        if not _reader_can_cache_more(safe_session, char_count):
+            safe_session = _reader_set_warning_deadline(safe_session)
+            break
+        safe_session, line_map, resolved_speaker_voices, multi_speaker_mode, _ = _reader_resolve_multi_speaker_payload(
+            safe_session,
+            text=tts_text,
+            cast_memory=cast_memory,
+            default_voice_id=default_voice_id,
+        )
+        cast_memory = dict(safe_session.get("castMemory") or {})
+        job_id = _reader_create_tts_job(
+            request,
+            session=safe_session,
+            text=tts_text,
+            request_id=f"{str(safe_session.get('id') or 'reader')}_window_{index}",
+            voice_id=default_voice_id,
+            language=tts_language,
+            multi_speaker_mode=multi_speaker_mode,
+            line_map=line_map or None,
+            speaker_voices=resolved_speaker_voices or None,
+        )
+        item["jobId"] = job_id
+        item["status"] = "queued"
+        windows[index] = item
+        safe_session["windows"] = windows
+        safe_session["cachedChars"] = int(safe_session.get("cachedChars") or 0) + char_count
+        safe_session["castMemory"] = cast_memory
+        break
+    return safe_session
+
+
+def _reader_schedule_panel_batch(session: dict[str, Any], request: Request) -> dict[str, Any]:
+    safe_session = _reader_warm_translation_units(session)
+    panels = [dict(item) for item in list(safe_session.get("panels") or []) if isinstance(item, dict)]
+    cast_memory = dict(safe_session.get("castMemory") or {})
+    safe_session, default_voice_id = _reader_resolve_voice_for_session(
+        safe_session,
+        speaker="Narrator",
+        requested_voice_id=str(cast_memory.get("Narrator") or safe_session.get("defaultVoiceId") or "v22"),
+    )
+    tts_language = (
+        _reader_normalize_language(safe_session.get("targetLanguage"), default="en")
+        if _reader_effective_tts_language_mode(safe_session) == "target"
+        else _reader_normalize_language(safe_session.get("sourceLanguage"), default="en")
+    ) or "en"
+    scheduled = 0
+    for index, item in enumerate(panels):
+        if scheduled >= int(READER_PANEL_BATCH_SIZE):
+            break
+        if str(item.get("audioJobId") or "").strip() or bool(item.get("purged")):
+            continue
+        tts_text = _reader_tts_text_for_unit(safe_session, item)
+        if not str(tts_text or "").strip():
+            continue
+        if str(item.get("prepStatus") or "").strip().lower() == "error":
+            continue
+        char_count = len(tts_text)
+        if not _reader_can_cache_more(safe_session, char_count):
+            safe_session = _reader_set_warning_deadline(safe_session)
+            break
+        safe_session, line_map, resolved_speaker_voices, multi_speaker_mode, _ = _reader_resolve_multi_speaker_payload(
+            safe_session,
+            text=tts_text,
+            cast_memory=cast_memory,
+            default_voice_id=default_voice_id,
+        )
+        cast_memory = dict(safe_session.get("castMemory") or {})
+        job_id = _reader_create_tts_job(
+            request,
+            session=safe_session,
+            text=tts_text,
+            request_id=f"{str(safe_session.get('id') or 'reader')}_panel_{index}",
+            voice_id=default_voice_id,
+            language=tts_language,
+            multi_speaker_mode=multi_speaker_mode,
+            line_map=line_map or None,
+            speaker_voices=resolved_speaker_voices or None,
+        )
+        item["audioJobId"] = job_id
+        item["audioStatus"] = "queued"
+        panels[index] = item
+        safe_session["cachedChars"] = int(safe_session.get("cachedChars") or 0) + char_count
+        scheduled += 1
+    safe_session["panels"] = panels
+    return safe_session
+
+
+@app.get("/reader/legal/ack")
+def reader_legal_ack_status(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    payload = _reader_legal_ack_get(uid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "ack": {
+                "accepted": bool(payload.get("accepted")),
+                "acceptedAt": str(payload.get("acceptedAt") or ""),
+                "title": "VoiceFlow Reader upload rights",
+                "message": (
+                    "Upload only work you created, have permission to use, or that is openly licensed. "
+                    "VoiceFlow does not claim ownership of your files, and you remain responsible for rights and misuse."
+                ),
+            },
+            "billing": {
+                "vfPerChar": float(READER_BILLING_VF_PER_CHAR),
+                "rule": "1 char = 1.5 VF",
+                "label": "Reader pricing: 1 char = 1.5 VF",
+            },
+        }
+    )
+
+
+@app.post("/reader/legal/ack")
+def reader_legal_ack_accept(payload: ReaderLegalAckRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    saved = _reader_legal_ack_set(uid, bool(payload.accepted))
+    return JSONResponse({"ok": True, "ack": saved})
+
+
+@app.get("/reader/catalog/regions")
+def reader_catalog_regions(surface: str = Query("books")) -> JSONResponse:
+    safe_surface = normalize_reader_surface(surface)
+    regions_payload = []
+    for item in reader_regions():
+        safe_item = dict(item)
+        safe_region_id = str(safe_item.get("id") or "english")
+        safe_item["sharedCount"] = len(_reader_catalog_items(safe_region_id, surface=safe_surface))
+        safe_item["emptyState"] = (
+            "Bring your own comic or manga to start Reader playback."
+            if safe_surface == "comics" and int(safe_item.get("sharedCount") or 0) <= 0
+            else ""
+        )
+        regions_payload.append(safe_item)
+    return JSONResponse({"ok": True, "surface": safe_surface, "regions": regions_payload})
+
+
+@app.get("/reader/library")
+def reader_library(
+    request: Request,
+    surface: str = Query("all"),
+    regionId: str = Query("english"),
+    search: str = Query(""),
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    library = _reader_build_library_payload(uid, surface=surface, region_id=regionId, search_query=search)
+    return JSONResponse({"ok": True, "library": library})
+
+
+@app.get("/reader/catalog/items")
+def reader_catalog_items(
+    request: Request,
+    regionId: str = Query("english"),
+    surface: str = Query("books"),
+    search: str = Query(""),
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    safe_surface = normalize_reader_surface(surface)
+    safe_search = _reader_search_term(search)
+    progress_lookup = {
+        str(item.get("workKey") or "").strip(): dict(item)
+        for item in _reader_progress_list(uid)
+        if str(item.get("workKey") or "").strip()
+    }
+    session_lookup: dict[str, dict[str, Any]] = {}
+    for item in _reader_session_list(uid):
+        refreshed = _reader_refresh_session(item)
+        if not _reader_session_is_reusable(refreshed):
+            continue
+        work_key = str(refreshed.get("workKey") or "").strip()
+        if work_key and work_key not in session_lookup:
+            session_lookup[work_key] = refreshed
+    if safe_surface == "uploads":
+        uploads = [
+            _reader_decorate_catalog_item(uid, _reader_normalize_upload_item(item), progress_lookup=progress_lookup, session_lookup=session_lookup)
+            for item in _reader_upload_list(uid)
+        ]
+        return JSONResponse({"ok": True, "surface": safe_surface, "items": uploads})
+    safe_region = str(reader_region(regionId).get("id") or "english")
+    items = [
+        _reader_decorate_catalog_item(uid, item, progress_lookup=progress_lookup, session_lookup=session_lookup)
+        for item in _reader_catalog_items(safe_region, surface=safe_surface, search_query=safe_search)
+    ]
+    return JSONResponse({"ok": True, "surface": safe_surface, "regionId": safe_region, "items": items})
+
+
+@app.get("/reader/catalog/items/{item_id}")
+def reader_catalog_item_detail(item_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    item = _reader_catalog_lookup(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Reader catalog item not found.")
+    progress_lookup = {
+        str(progress.get("workKey") or "").strip(): dict(progress)
+        for progress in _reader_progress_list(uid)
+        if str(progress.get("workKey") or "").strip()
+    }
+    session_lookup: dict[str, dict[str, Any]] = {}
+    for current in _reader_session_list(uid):
+        refreshed = _reader_refresh_session(current)
+        if not _reader_session_is_reusable(refreshed):
+            continue
+        work_key = str(refreshed.get("workKey") or "").strip()
+        if work_key and work_key not in session_lookup:
+            session_lookup[work_key] = refreshed
+    decorated = _reader_decorate_catalog_item(uid, item, progress_lookup=progress_lookup, session_lookup=session_lookup)
+    return JSONResponse(
+        {
+            "ok": True,
+            "item": decorated,
+            "billing": {
+                "vfPerChar": float(READER_BILLING_VF_PER_CHAR),
+                "rule": "1 char = 1.5 VF",
+                "label": "Reader pricing: 1 char = 1.5 VF",
+            },
+        }
+    )
+
+
+@app.get("/reader/assets/{asset_path:path}")
+def reader_cached_asset(asset_path: str, request: Request) -> FileResponse:
+    _require_request_uid(request)
+    base_dir = READER_REMOTE_ASSETS_DIR.resolve()
+    target = (base_dir / str(asset_path or "").replace("\\", "/").lstrip("/")).resolve()
+    if not str(target).startswith(str(base_dir)):
+        raise HTTPException(status_code=403, detail="Reader asset path is not allowed.")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Reader asset not found.")
+    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    return FileResponse(
+        str(target),
+        media_type=media_type,
+        filename=target.name,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.get("/reader/uploads/{upload_id}/assets/{asset_path:path}")
+def reader_upload_asset(upload_id: str, asset_path: str, request: Request) -> FileResponse:
+    uid = _require_request_uid(request)
+    upload_item = _reader_upload_get(uid, upload_id)
+    if not upload_item:
+        raise HTTPException(status_code=404, detail="Reader upload not found.")
+    base_dir = _reader_upload_dir(upload_id).resolve()
+    target = (base_dir / str(asset_path or "").replace("\\", "/").lstrip("/")).resolve()
+    if not str(target).startswith(str(base_dir)):
+        raise HTTPException(status_code=403, detail="Reader asset path is not allowed.")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Reader asset not found.")
+    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    return FileResponse(str(target), media_type=media_type, filename=target.name)
+
+
+@app.post("/reader/uploads")
+async def reader_upload_create(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    title: str = Form(""),
+    contentType: str = Form(""),
+    ownershipBasis: str = Form("user_responsible"),
+    regionId: str = Form("english"),
+    directionOverride: str = Form(""),
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    _reader_require_legal_ack(uid)
+    safe_region_id = str(reader_region(regionId).get("id") or "english")
+    upload_id = f"reader_upload_{uuid.uuid4().hex}"
+    file_names: list[str] = []
+    prepared_files: list[dict[str, Any]] = []
+    extracted_text_parts: list[str] = []
+    page_rows: list[dict[str, Any]] = []
+
+    for upload in list(files or []):
+        payload = await upload.read()
+        safe_name = _safe_upload_name(upload.filename, "upload")
+        suffix = Path(safe_name).suffix.lower()
+        file_names.append(safe_name)
+        _reader_save_binary_artifact(upload_id, f"originals/{safe_name}", payload)
+        prepared_file: dict[str, Any] = {
+            "name": safe_name,
+            "suffix": suffix,
+            "payload": payload,
+        }
+        if suffix == ".pdf":
+            extracted, page_stats, likely_scanned = _extract_pdf_text_layer(payload)
+            prepared_file["pdfTextChars"] = len(str(extracted or ""))
+            prepared_file["pdfLikelyScanned"] = bool(likely_scanned)
+            prepared_file["pageCount"] = len(page_stats)
+        prepared_files.append(prepared_file)
+
+    safe_content_kind = _reader_detect_upload_content_kind(contentType, prepared_files, title=title)
+
+    for prepared in prepared_files:
+        payload = bytes(prepared.get("payload") or b"")
+        safe_name = str(prepared.get("name") or "upload")
+        suffix = str(prepared.get("suffix") or "").lower()
+        if safe_content_kind == "book":
+            if suffix in {".txt", ".md"}:
+                extracted_text_parts.append(payload.decode("utf-8", errors="replace"))
+            elif suffix == ".epub":
+                extracted_text_parts.append(_reader_extract_epub_text(payload))
+            elif suffix == ".pdf":
+                rows = _reader_upload_page_rows_from_pdf(payload)
+                page_rows.extend(rows)
+                extracted_text_parts.extend([str(item.get("text") or "") for item in rows if str(item.get("text") or "").strip()])
+            elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+                row = _reader_build_image_page_row(upload_id, safe_name, payload)
+                page_rows.append(row)
+                extracted_text_parts.append(str(row.get("text") or ""))
+        else:
+            if suffix == ".pdf":
+                page_rows.extend(_reader_upload_page_rows_from_pdf(payload))
+            elif suffix in {".cbz", ".zip"}:
+                try:
+                    with zipfile.ZipFile(BytesIO(payload), "r") as archive:
+                        names = [
+                            name
+                            for name in archive.namelist()
+                            if str(name or "").lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+                        ]
+                        names.sort()
+                        for name in names:
+                            try:
+                                image_payload = archive.read(name)
+                            except Exception:
+                                continue
+                            page_rows.append(_reader_build_image_page_row(upload_id, Path(name).name, image_payload))
+                except Exception as exc:
+                    raise HTTPException(status_code=400, detail=f"Could not read comic archive: {exc}") from exc
+            elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+                page_rows.append(_reader_build_image_page_row(upload_id, safe_name, payload))
+
+    normalized_text = _normalize_import_text("\n\n".join([item for item in extracted_text_parts if str(item).strip()]))
+    reading_mode_default = _reader_infer_reading_mode(
+        content_kind=safe_content_kind,
+        title=str(title or (Path(file_names[0]).stem if file_names else "Reader Upload")).strip(),
+        region_id=safe_region_id,
+        direction_hint=directionOverride,
+        provider="voiceflow_upload",
+        file_names=file_names,
+        page_rows=page_rows,
+    )
+    source_language = _reader_guess_source_language(
+        normalized_text or "\n".join([str(item.get("text") or "") for item in page_rows[:3] if isinstance(item, dict)]),
+        region_id=safe_region_id,
+        fallback=_reader_normalize_language(reader_region(safe_region_id).get("locale"), default="en") or "en",
+    )
+    manifest: list[dict[str, Any]] = []
+    if safe_content_kind == "comic":
+        resolved_title = str(title or (Path(file_names[0]).stem if file_names else "Comic Upload")).strip() or "Comic Upload"
+        manifest = build_panel_manifest(
+            page_rows,
+            title=resolved_title,
+            direction=_reader_reading_mode_to_direction(reading_mode_default, content_kind="comic"),
+        )
+        if not manifest:
+            raise HTTPException(status_code=422, detail="Could not build a comic or manga manifest from the upload.")
+    elif not normalized_text:
+        raise HTTPException(status_code=422, detail="Could not extract readable text from the upload.")
+
+    text_path = _reader_write_text_artifact(upload_id, normalized_text) if normalized_text else ""
+    manifest_path = _reader_write_json_artifact(upload_id, "manifest.json", manifest) if manifest else ""
+    saved = _reader_upload_write(
+        uid,
+        _reader_normalize_upload_item(
+            {
+                "id": upload_id,
+                "uid": uid,
+                "title": str(title or (Path(file_names[0]).stem if file_names else "Reader Upload")).strip(),
+                "contentKind": safe_content_kind,
+                "surface": "uploads",
+                "regionId": safe_region_id,
+                "ownershipBasis": ownershipBasis,
+                "sourceLanguage": source_language,
+                "textPath": text_path,
+                "manifestPath": manifest_path,
+                "fileNames": file_names,
+                "direction": _reader_reading_mode_to_direction(reading_mode_default, content_kind=safe_content_kind),
+                "readingModeDefault": reading_mode_default,
+                "summary": (normalized_text[:240] if normalized_text else f"{len(manifest)} panels prepared for Reader playback."),
+                "sourceMeta": {
+                    "fileCount": len(file_names),
+                    "pageCount": len(page_rows) if page_rows else len(manifest),
+                    "readingModeDefault": reading_mode_default,
+                    "sourceLanguage": source_language,
+                    "stats": {
+                        "fileCount": len(file_names),
+                        "pageCount": len(page_rows) if page_rows else len(manifest),
+                        "totalPanels": len(manifest),
+                        "totalChars": len(normalized_text),
+                    },
+                    "detectedContentKind": safe_content_kind,
+                    "rightsGate": "voiceflow_reader_ack",
+                },
+            }
+        ),
+    )
+    return JSONResponse({"ok": True, "upload": saved})
+
+
+@app.post("/reader/sessions")
+def reader_session_create(payload: ReaderSessionCreateRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    upload_item: Optional[dict[str, Any]] = None
+    catalog_item: Optional[dict[str, Any]] = None
+    remote_page_sources: list[str] = []
+    remote_fallback_title = ""
+    source_kind = "catalog"
+    if str(payload.uploadId or "").strip():
+        upload_item = _reader_upload_get(uid, str(payload.uploadId or "").strip())
+        if not upload_item:
+            raise HTTPException(status_code=404, detail="Reader upload not found.")
+        source_kind = "upload"
+    elif str(payload.itemId or "").strip():
+        catalog_item = _reader_catalog_lookup(str(payload.itemId or "").strip())
+        if not catalog_item:
+            raise HTTPException(status_code=404, detail="Reader catalog item not found.")
+    else:
+        raise HTTPException(status_code=400, detail="itemId or uploadId is required.")
+
+    work_key = f"{source_kind}:{str((upload_item or catalog_item or {}).get('id') or '').strip()}"
+    progress = _reader_progress_get(uid, work_key)
+    reading_mode_override = str(payload.readingModeOverride or payload.directionOverride or progress.get("readingMode") or progress.get("directionOverride") or "").strip()
+    auto_advance_profile = _reader_normalize_auto_advance_profile(payload.autoAdvanceProfile or progress.get("autoAdvanceProfile"))
+    requested_multi_speaker_enabled = _reader_normalize_multi_speaker_enabled(
+        payload.multiSpeakerEnabled if payload.multiSpeakerEnabled is not None else progress.get("multiSpeakerEnabled"),
+        default=True,
+    )
+    source_language_override = _reader_normalize_language(
+        payload.sourceLanguageOverride or progress.get("sourceLanguageOverride") or progress.get("sourceLanguage"),
+        default="",
+    )
+    if not bool(payload.forceNew):
+        existing_session = _reader_find_live_session(uid, work_key)
+        if existing_session:
+            previous_source = _reader_normalize_language(existing_session.get("sourceLanguage"), default="en") or "en"
+            previous_target = _reader_normalize_language(existing_session.get("targetLanguage"), default=previous_source) or previous_source
+            previous_tts_mode = _reader_normalize_tts_language_mode(existing_session.get("ttsLanguageMode"))
+            previous_multi_speaker_enabled = _reader_normalize_multi_speaker_enabled(existing_session.get("multiSpeakerEnabled"), default=True)
+            existing_session["autoAdvanceProfile"] = auto_advance_profile
+            existing_session["multiSpeakerEnabled"] = requested_multi_speaker_enabled
+            if reading_mode_override:
+                existing_session["readingMode"] = _reader_normalize_reading_mode(
+                    reading_mode_override,
+                    content_kind=str(existing_session.get("contentKind") or "book"),
+                )
+                existing_session["direction"] = _reader_reading_mode_to_direction(
+                    existing_session["readingMode"],
+                    content_kind=str(existing_session.get("contentKind") or "book"),
+                )
+            elif not str(existing_session.get("readingMode") or "").strip():
+                existing_session["readingMode"] = _reader_direction_to_reading_mode(
+                    existing_session.get("direction"),
+                    content_kind=str(existing_session.get("contentKind") or "book"),
+                )
+            resolved_source = source_language_override or previous_source
+            resolved_target = _reader_normalize_language(payload.targetLanguage, default=previous_target) or previous_target
+            resolved_page_view = _reader_normalize_page_view_mode(
+                payload.pageViewMode or existing_session.get("pageViewMode"),
+                source_language=resolved_source,
+                target_language=resolved_target,
+            )
+            resolved_tts_mode = _reader_normalize_tts_language_mode(payload.ttsLanguageMode or existing_session.get("ttsLanguageMode"))
+            existing_session["sourceLanguage"] = resolved_source
+            existing_session["targetLanguage"] = resolved_target
+            existing_session["pageViewMode"] = resolved_page_view
+            existing_session["ttsLanguageMode"] = resolved_tts_mode
+            if (
+                resolved_source != previous_source
+                or resolved_target != previous_target
+                or resolved_tts_mode != previous_tts_mode
+                or requested_multi_speaker_enabled != previous_multi_speaker_enabled
+            ):
+                existing_session = _reader_reset_audio_schedule(existing_session)
+                if normalize_reader_content_kind(existing_session.get("contentKind")) == "book":
+                    existing_session = _reader_schedule_text_window(existing_session, request)
+                else:
+                    existing_session = _reader_schedule_panel_batch(existing_session, request)
+            saved_existing = _reader_session_set(existing_session)
+            if _reader_is_async_remote_comic_session(saved_existing) and not _reader_prep_is_terminal(saved_existing.get("prep")):
+                _reader_enqueue_remote_comic_hydration(uid, str(saved_existing.get("id") or "").strip())
+            return JSONResponse({"ok": True, "session": _reader_session_public_view(saved_existing)})
+    cast_doc = _reader_cast_memory_get(uid, work_key)
+    cast_memory = dict(cast_doc.get("voices") or {})
+    cast_memory.setdefault("Narrator", "v22")
+
+    if upload_item:
+        source = _reader_normalize_upload_item(upload_item)
+        safe_title = str(source.get("title") or "Reader Upload")
+        safe_content_kind = normalize_reader_content_kind(source.get("contentKind"))
+        safe_surface = "uploads"
+        safe_region_id = str(source.get("regionId") or "english")
+        reading_mode = _reader_normalize_reading_mode(
+            reading_mode_override or source.get("readingModeDefault") or source.get("direction"),
+            content_kind=safe_content_kind,
+        )
+        direction = _reader_reading_mode_to_direction(reading_mode, content_kind=safe_content_kind)
+        source_text = _reader_extract_upload_book_text(source) if safe_content_kind == "book" else ""
+        panels = _reader_extract_upload_comic_manifest(source) if safe_content_kind == "comic" else []
+    else:
+        source = normalize_reader_catalog_item(catalog_item or {})
+        safe_title = str(source.get("title") or "Reader Catalog")
+        safe_content_kind = normalize_reader_content_kind(source.get("contentKind"))
+        safe_surface = normalize_reader_surface(source.get("surface") or ("comics" if safe_content_kind == "comic" else "books"))
+        safe_region_id = str(source.get("regionId") or "english")
+        reading_mode = _reader_normalize_reading_mode(
+            reading_mode_override
+            or source.get("readingModeDefault")
+            or source.get("direction"),
+            content_kind=safe_content_kind,
+        )
+        direction = _reader_reading_mode_to_direction(reading_mode, content_kind=safe_content_kind)
+        source_text = _reader_catalog_book_text(source) if safe_content_kind == "book" else ""
+        panels = _reader_catalog_comic_manifest(source) if safe_content_kind == "comic" else []
+        if safe_content_kind == "comic":
+            remote_page_sources = [
+                str(item.get("remoteImageUrl") or item.get("imageUrl") or "").strip()
+                for item in panels
+                if isinstance(item, dict) and str(item.get("remoteImageUrl") or item.get("imageUrl") or "").strip()
+            ]
+            remote_fallback_title = _reader_remote_comic_fallback_title(source)
+
+    source_language = source_language_override or _reader_normalize_source_language(source, region_id=safe_region_id)
+    if safe_content_kind == "book" and source_text:
+        source_language = _reader_guess_source_language(source_text[:4000], region_id=safe_region_id, fallback=source_language)
+    elif safe_content_kind == "comic" and panels:
+        source_language = _reader_guess_source_language(
+            "\n".join([str(item.get("text") or "") for item in panels[:3]]),
+            region_id=safe_region_id,
+            fallback=source_language,
+        )
+    target_language = _reader_normalize_language(payload.targetLanguage, default=_reader_normalize_catalog_target_language(progress, source_language)) or source_language
+    page_view_mode = _reader_normalize_page_view_mode(
+        payload.pageViewMode or progress.get("pageViewMode"),
+        source_language=source_language,
+        target_language=target_language,
+    )
+    tts_language_mode = _reader_normalize_tts_language_mode(payload.ttsLanguageMode or progress.get("ttsLanguageMode"))
+
+    consumed_chars = max(0, int(progress.get("consumedChars") or 0))
+    current_panel_index = max(0, int(progress.get("currentPanelIndex") or 0))
+    windows = build_text_windows(source_text) if safe_content_kind == "book" else []
+    if safe_content_kind == "book" and not windows:
+        raise HTTPException(status_code=422, detail="Reader session could not prepare readable text.")
+    if safe_content_kind == "comic" and not panels:
+        raise HTTPException(status_code=422, detail="Reader session could not prepare comic or manga panels.")
+    for item in windows:
+        item.setdefault("jobId", "")
+        item.setdefault("status", "idle")
+        item.setdefault("purged", False)
+    if safe_content_kind == "book" and consumed_chars > 0:
+        for item in windows:
+            if int(item.get("endChar") or 0) <= consumed_chars:
+                item["status"] = "played"
+                item["purged"] = True
+    for item in panels:
+        item.setdefault("audioJobId", "")
+        item.setdefault("audioStatus", "idle")
+        item.setdefault("purged", False)
+    if safe_content_kind == "comic" and current_panel_index > 0:
+        for item in panels:
+            if int(item.get("index") or 0) < current_panel_index:
+                item["audioStatus"] = "played"
+                item["purged"] = True
+
+    is_async_remote_comic = bool(remote_page_sources) and source_kind == "catalog" and str(source.get("provider") or "").strip().lower() == "mangadex"
+
+    session = {
+        "id": f"reader_session_{uuid.uuid4().hex}",
+        "uid": uid,
+        "workKey": work_key,
+        "sourceKind": source_kind,
+        "itemId": str((catalog_item or {}).get("id") or ""),
+        "uploadId": str((upload_item or {}).get("id") or ""),
+        "title": safe_title,
+        "contentKind": safe_content_kind,
+        "surface": safe_surface,
+        "regionId": safe_region_id,
+        "direction": direction,
+        "readingMode": reading_mode,
+        "sourceLanguage": source_language,
+        "targetLanguage": target_language,
+        "pageViewMode": page_view_mode,
+        "ttsLanguageMode": tts_language_mode,
+        "multiSpeakerEnabled": requested_multi_speaker_enabled,
+        "effectiveMultiSpeakerMode": "single",
+        "translationState": "idle",
+        "translationLeadRatio": 0.0,
+        "voiceFallbacks": {},
+        "createdAtMs": _reader_now_ms(),
+        "updatedAtMs": _reader_now_ms(),
+        "consumedChars": consumed_chars,
+        "currentPanelIndex": current_panel_index,
+        "totalChars": sum(int(item.get("charCount") or 0) for item in windows),
+        "totalPanels": len(panels),
+        "provider": str(source.get("provider") or ("voiceflow_upload" if source_kind == "upload" else "catalog")),
+        "license": str(source.get("license") or ""),
+        "coverUrl": str(source.get("coverUrl") or ""),
+        "summary": str(source.get("summary") or ""),
+        "sourceUrl": str(source.get("sourceUrl") or ""),
+        "collectionLabel": str(source.get("collectionLabel") or ("Recently imported" if source_kind == "upload" else "Reader Catalog")),
+        "stats": dict(source.get("stats") or {}),
+        "windows": windows,
+        "panels": panels,
+        "cachedChars": 0,
+        "deleteAtMs": 0,
+        "exportedWindowIndexes": [],
+        "exportedPanelIndexes": [],
+        "castMemory": cast_memory,
+        "defaultVoiceId": str(cast_memory.get("Narrator") or "v22"),
+        "musicTrackId": str(progress.get("musicTrackId") or "m_none"),
+        "autoAdvanceProfile": auto_advance_profile,
+        "prep": _reader_default_prep(
+            state="queued" if is_async_remote_comic else "ready",
+            stage="manifest" if is_async_remote_comic else "audio",
+            completed_items=0 if is_async_remote_comic else (len(panels) if safe_content_kind == "comic" else len(windows)),
+            total_items=len(panels) if safe_content_kind == "comic" else len(windows),
+            message="Queued remote comic preparation." if is_async_remote_comic else "",
+        ),
+        "remotePageSources": remote_page_sources,
+        "remoteFallbackTitle": remote_fallback_title or safe_title,
+    }
+    if safe_content_kind == "book":
+        session = _reader_schedule_text_window(session, request)
+    elif not is_async_remote_comic:
+        session = _reader_schedule_panel_batch(session, request)
+    saved = _reader_session_set(session)
+    if is_async_remote_comic:
+        _reader_enqueue_remote_comic_hydration(uid, str(saved.get("id") or "").strip())
+    return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
+
+
+@app.get("/reader/sessions/{session_id}")
+def reader_session_get(session_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    session = _reader_session_get(uid, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Reader session not found.")
+    saved = _reader_session_set(_reader_refresh_session(session))
+    if _reader_is_async_remote_comic_session(saved) and not _reader_prep_is_terminal(saved.get("prep")):
+        _reader_enqueue_remote_comic_hydration(uid, str(saved.get("id") or "").strip())
+    return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
+
+
+@app.post("/reader/sessions/{session_id}/progress")
+def reader_session_progress(session_id: str, payload: ReaderSessionProgressRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    session = _reader_session_get(uid, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Reader session not found.")
+    safe_session = _reader_refresh_session(session)
+    if payload.consumedChars is not None:
+        safe_session["consumedChars"] = max(0, int(payload.consumedChars or 0))
+    if str(payload.targetLanguage or "").strip():
+        next_target = _reader_normalize_language(payload.targetLanguage, default=str(safe_session.get("sourceLanguage") or "en"))
+        if next_target and next_target != str(safe_session.get("targetLanguage") or ""):
+            safe_session["targetLanguage"] = next_target
+            safe_session = _reader_reset_audio_schedule(safe_session)
+    if str(payload.pageViewMode or "").strip():
+        safe_session["pageViewMode"] = _reader_normalize_page_view_mode(
+            payload.pageViewMode,
+            source_language=str(safe_session.get("sourceLanguage") or "en"),
+            target_language=str(safe_session.get("targetLanguage") or safe_session.get("sourceLanguage") or "en"),
+        )
+    safe_session = _reader_warm_translation_units(safe_session)
+    if payload.consumedChars is not None:
+        while should_schedule_next_text_window(
+            consumed_chars=int(safe_session.get("consumedChars") or 0),
+            scheduled_window_end_char=int(safe_session.get("scheduledWindowEndChar") or 0),
+        ):
+            previous_cached = int(safe_session.get("cachedChars") or 0)
+            previous_scheduled = int(safe_session.get("scheduledWindowEndChar") or 0)
+            safe_session = _reader_schedule_text_window(safe_session, request)
+            safe_session = _reader_refresh_session(safe_session)
+            if int(safe_session.get("cachedChars") or 0) == previous_cached and int(safe_session.get("scheduledWindowEndChar") or 0) == previous_scheduled:
+                break
+    if payload.currentPanelIndex is not None:
+        safe_session["currentPanelIndex"] = max(0, int(payload.currentPanelIndex or 0))
+        while should_schedule_next_panel_batch(
+            current_panel_index=int(safe_session.get("currentPanelIndex") or 0),
+            scheduled_panel_count=int(safe_session.get("scheduledPanelCount") or 0),
+        ):
+            previous_cached = int(safe_session.get("cachedChars") or 0)
+            previous_scheduled = int(safe_session.get("scheduledPanelCount") or 0)
+            safe_session = _reader_schedule_panel_batch(safe_session, request)
+            safe_session = _reader_refresh_session(safe_session)
+            if int(safe_session.get("cachedChars") or 0) == previous_cached and int(safe_session.get("scheduledPanelCount") or 0) == previous_scheduled:
+                break
+    _reader_progress_set(
+        uid,
+        str(safe_session.get("workKey") or ""),
+        {
+            "consumedChars": int(safe_session.get("consumedChars") or 0),
+            "currentPanelIndex": int(safe_session.get("currentPanelIndex") or 0),
+            "directionOverride": str(safe_session.get("direction") or ""),
+            "readingMode": str(safe_session.get("readingMode") or ""),
+            "autoAdvanceProfile": str(safe_session.get("autoAdvanceProfile") or "off"),
+            "musicTrackId": str(safe_session.get("musicTrackId") or "m_none"),
+            "sourceLanguage": str(safe_session.get("sourceLanguage") or "en"),
+            "targetLanguage": str(safe_session.get("targetLanguage") or safe_session.get("sourceLanguage") or "en"),
+            "pageViewMode": str(safe_session.get("pageViewMode") or "original"),
+            "ttsLanguageMode": str(safe_session.get("ttsLanguageMode") or "auto"),
+            "multiSpeakerEnabled": bool(_reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=True)),
+        },
+    )
+    saved = _reader_session_set(safe_session)
+    return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
+
+
+@app.post("/reader/sessions/{session_id}/savepoint")
+def reader_session_savepoint(session_id: str, payload: ReaderSessionSavepointRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    session = _reader_session_get(uid, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Reader session not found.")
+    safe_session = _reader_refresh_session(session)
+    cast_memory = dict(safe_session.get("castMemory") or {})
+    if isinstance(payload.castOverrides, dict):
+        for key, value in payload.castOverrides.items():
+            safe_key = str(key or "").strip()
+            safe_value = str(value or "").strip()
+            if safe_key and safe_value:
+                cast_memory[safe_key] = safe_value
+    safe_session["castMemory"] = cast_memory
+    if str(payload.readingModeOverride or payload.directionOverride or "").strip():
+        safe_session["readingMode"] = _reader_normalize_reading_mode(
+            payload.readingModeOverride or payload.directionOverride,
+            content_kind=str(safe_session.get("contentKind") or "book"),
+        )
+        safe_session["direction"] = _reader_reading_mode_to_direction(
+            safe_session["readingMode"],
+            content_kind=str(safe_session.get("contentKind") or "book"),
+        )
+    if str(payload.autoAdvanceProfile or "").strip():
+        safe_session["autoAdvanceProfile"] = _reader_normalize_auto_advance_profile(payload.autoAdvanceProfile)
+    previous_source = _reader_normalize_language(safe_session.get("sourceLanguage"), default="en") or "en"
+    previous_target = _reader_normalize_language(safe_session.get("targetLanguage"), default=previous_source) or previous_source
+    previous_tts_mode = _reader_normalize_tts_language_mode(safe_session.get("ttsLanguageMode"))
+    previous_multi_speaker_enabled = _reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=True)
+    if str(payload.targetLanguage or "").strip():
+        safe_session["targetLanguage"] = _reader_normalize_language(payload.targetLanguage, default=previous_source) or previous_source
+    if str(payload.pageViewMode or "").strip():
+        safe_session["pageViewMode"] = _reader_normalize_page_view_mode(
+            payload.pageViewMode,
+            source_language=str(safe_session.get("sourceLanguage") or previous_source),
+            target_language=str(safe_session.get("targetLanguage") or previous_target),
+        )
+    if str(payload.ttsLanguageMode or "").strip():
+        safe_session["ttsLanguageMode"] = _reader_normalize_tts_language_mode(payload.ttsLanguageMode)
+    if str(payload.musicTrackId or "").strip():
+        safe_session["musicTrackId"] = str(payload.musicTrackId or "").strip()
+    if payload.multiSpeakerEnabled is not None:
+        safe_session["multiSpeakerEnabled"] = _reader_normalize_multi_speaker_enabled(payload.multiSpeakerEnabled, default=previous_multi_speaker_enabled)
+    if (
+        _reader_normalize_language(safe_session.get("sourceLanguage"), default="en") != previous_source
+        or _reader_normalize_language(safe_session.get("targetLanguage"), default=previous_target) != previous_target
+        or _reader_normalize_tts_language_mode(safe_session.get("ttsLanguageMode")) != previous_tts_mode
+        or _reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=previous_multi_speaker_enabled) != previous_multi_speaker_enabled
+    ):
+        safe_session = _reader_reset_audio_schedule(safe_session)
+        if normalize_reader_content_kind(safe_session.get("contentKind")) == "book":
+            safe_session = _reader_schedule_text_window(safe_session, request)
+        else:
+            safe_session = _reader_schedule_panel_batch(safe_session, request)
+    safe_session = _reader_warm_translation_units(safe_session)
+    _reader_cast_memory_set(uid, str(safe_session.get("workKey") or ""), {"voices": cast_memory})
+    _reader_progress_set(
+        uid,
+        str(safe_session.get("workKey") or ""),
+        {
+            "consumedChars": int(safe_session.get("consumedChars") or 0),
+            "currentPanelIndex": int(safe_session.get("currentPanelIndex") or 0),
+            "directionOverride": str(safe_session.get("direction") or ""),
+            "readingMode": str(safe_session.get("readingMode") or ""),
+            "autoAdvanceProfile": str(safe_session.get("autoAdvanceProfile") or "off"),
+            "musicTrackId": str(safe_session.get("musicTrackId") or "m_none"),
+            "sourceLanguage": str(safe_session.get("sourceLanguage") or "en"),
+            "targetLanguage": str(safe_session.get("targetLanguage") or safe_session.get("sourceLanguage") or "en"),
+            "pageViewMode": str(safe_session.get("pageViewMode") or "original"),
+            "ttsLanguageMode": str(safe_session.get("ttsLanguageMode") or "auto"),
+            "multiSpeakerEnabled": bool(_reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=True)),
+            "voiceFallbacks": dict(safe_session.get("voiceFallbacks") or {}),
+        },
+    )
+    saved = _reader_session_set(safe_session)
+    return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
+
+
+@app.get("/reader/sessions/{session_id}/export")
+def reader_session_export(session_id: str, request: Request) -> FileResponse:
+    uid = _require_request_uid(request)
+    session = _reader_session_get(uid, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Reader session not found.")
+    safe_session = _reader_refresh_session(session)
+    export_chunks: list[bytes] = []
+    exported_window_set = {int(value) for value in list(safe_session.get("exportedWindowIndexes") or [])}
+    newly_exported_windows: list[int] = []
+    for item in list(safe_session.get("windows") or []):
+        if not isinstance(item, dict):
+            continue
+        index = int(item.get("index") or 0)
+        if index in exported_window_set:
+            continue
+        job_id = str(item.get("jobId") or "").strip()
+        if not job_id:
+            continue
+        job = _TTS_JOB_QUEUE.get(job_id)
+        if not isinstance(job, dict) or str(job.get("status") or "") != "completed":
+            continue
+        export_chunks.append(_resolve_tts_result_audio_bytes(dict(job.get("result") or {})))
+        newly_exported_windows.append(index)
+    exported_panel_set = {int(value) for value in list(safe_session.get("exportedPanelIndexes") or [])}
+    newly_exported_panels: list[int] = []
+    for item in list(safe_session.get("panels") or []):
+        if not isinstance(item, dict):
+            continue
+        index = int(item.get("index") or 0)
+        if index in exported_panel_set:
+            continue
+        job_id = str(item.get("audioJobId") or "").strip()
+        if not job_id:
+            continue
+        job = _TTS_JOB_QUEUE.get(job_id)
+        if not isinstance(job, dict) or str(job.get("status") or "") != "completed":
+            continue
+        export_chunks.append(_resolve_tts_result_audio_bytes(dict(job.get("result") or {})))
+        newly_exported_panels.append(index)
+    export_path = _reader_export_path(session_id)
+    existing_chunks: list[bytes] = []
+    if export_path.exists():
+        try:
+            existing_chunks.append(export_path.read_bytes())
+        except Exception:
+            existing_chunks = []
+    if not export_chunks and not existing_chunks:
+        raise HTTPException(status_code=409, detail="No completed Reader audio is ready to export yet.")
+    merged_audio = _concat_wav_chunks(existing_chunks + export_chunks)
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path.write_bytes(merged_audio)
+    exported_window_set.update(newly_exported_windows)
+    exported_panel_set.update(newly_exported_panels)
+    safe_session["exportedWindowIndexes"] = sorted(exported_window_set)
+    safe_session["exportedPanelIndexes"] = sorted(exported_panel_set)
+    exported_chars = 0
+    for item in list(safe_session.get("windows") or []):
+        if int(item.get("index") or 0) in newly_exported_windows:
+            exported_chars += int(item.get("charCount") or 0)
+    for item in list(safe_session.get("panels") or []):
+        if int(item.get("index") or 0) in newly_exported_panels:
+            exported_chars += len(str(item.get("text") or ""))
+    safe_session["cachedChars"] = max(0, int(safe_session.get("cachedChars") or 0) - exported_chars)
+    safe_session["deleteAtMs"] = 0
+    _reader_session_set(safe_session)
+    return FileResponse(
+        str(export_path),
+        media_type="audio/wav",
+        filename=f"{_reader_safe_id(str(safe_session.get('title') or 'reader_audio'), 'reader_audio')}.wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.delete("/reader/sessions/{session_id}")
+def reader_session_delete(session_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    session = _reader_session_get(uid, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Reader session not found.")
+    safe_session = _reader_refresh_session(session)
+    _reader_cast_memory_set(uid, str(safe_session.get("workKey") or ""), {"voices": dict(safe_session.get("castMemory") or {})})
+    _reader_progress_set(
+        uid,
+        str(safe_session.get("workKey") or ""),
+        {
+            "consumedChars": int(safe_session.get("consumedChars") or 0),
+            "currentPanelIndex": int(safe_session.get("currentPanelIndex") or 0),
+            "directionOverride": str(safe_session.get("direction") or ""),
+            "readingMode": str(safe_session.get("readingMode") or ""),
+            "autoAdvanceProfile": str(safe_session.get("autoAdvanceProfile") or "off"),
+            "musicTrackId": str(safe_session.get("musicTrackId") or "m_none"),
+            "sourceLanguage": str(safe_session.get("sourceLanguage") or "en"),
+            "targetLanguage": str(safe_session.get("targetLanguage") or safe_session.get("sourceLanguage") or "en"),
+            "pageViewMode": str(safe_session.get("pageViewMode") or "original"),
+            "ttsLanguageMode": str(safe_session.get("ttsLanguageMode") or "auto"),
+            "voiceFallbacks": dict(safe_session.get("voiceFallbacks") or {}),
+        },
+    )
+    for item in list(safe_session.get("windows") or []):
+        job_id = str((item or {}).get("jobId") or "").strip()
+        if job_id:
+            _TTS_JOB_QUEUE.cancel(job_id)
+    for item in list(safe_session.get("panels") or []):
+        job_id = str((item or {}).get("audioJobId") or "").strip()
+        if job_id:
+            _TTS_JOB_QUEUE.cancel(job_id)
+    _reader_session_delete(session_id)
+    return JSONResponse({"ok": True})
+
 @app.post("/novel/ideas/extract")
 def extract_novel_idea(payload: NovelIdeaExtractRequest) -> JSONResponse:
     try:
@@ -11198,96 +17287,11 @@ def extract_novel_idea(payload: NovelIdeaExtractRequest) -> JSONResponse:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    ffmpeg_ok = False
-    ffmpeg_path = None
-    ffmpeg_error = None
-
-    try:
-        ffmpeg_path = _get_ffmpeg_path()
-        ffmpeg_ok = True
-    except Exception as exc:
-        ffmpeg_error = str(exc)
-
-    llvc_available = False
-    llvc_error = llvc_runtime.import_error
-    current_model = llvc_runtime.current_model()
-    llvc_models_dir = str(MODELS_DIR)
-    llvc_backend_mode: Optional[str] = None
-    llvc_resolved_model_id: Optional[str] = None
-    try:
-        llvc_runtime.ensure_engine()
-        llvc_payload = llvc_runtime.health_payload()
-        nested = llvc_payload.get("llvc") if isinstance(llvc_payload.get("llvc"), dict) else {}
-        llvc_available = bool(nested.get("available"))
-        current_model = str(nested.get("currentModel") or current_model or "").strip() or current_model
-        llvc_models_dir = str(nested.get("modelsDir") or llvc_models_dir)
-        llvc_error = str(nested.get("error") or "").strip() or None
-        llvc_backend_mode = str(nested.get("backendMode") or "").strip() or None
-        llvc_resolved_model_id = str(nested.get("resolvedModelId") or "").strip() or None
-    except Exception as exc:
-        llvc_available = False
-        llvc_error = str(exc)
-
-    source_separation_available = source_separation_runtime.ensure_available()
-    source_separation_error = source_separation_runtime.import_error
-    video_assets = _video_pipeline_assets_status()
-    dereverb_ready = bool(VF_DUB_DEREVERB_MODEL) and any(
-        str(item.get("id") or "").strip().lower().startswith("dereverb")
-        and bool(item.get("exists"))
-        for item in list(video_assets.get("assets") or [])
-    )
-    lipsync_ready = bool(VF_DUB_WAV2LIP_ONNX_PATH.exists())
-
-    fallback_available = bool(ENABLE_LLVC_FALLBACK and ffmpeg_ok)
-    response = {
-        "ok": ffmpeg_ok and (source_separation_available or not ENABLE_SOURCE_SEPARATION) and bool(video_assets.get("ready")),
-        "ffmpeg": {
-            "available": ffmpeg_ok,
-            "path": ffmpeg_path,
-            "error": ffmpeg_error,
-        },
-        "llvc": {
-            "available": llvc_available or fallback_available,
-            "currentModel": current_model or (LLVC_FALLBACK_MODEL_ID if fallback_available else None),
-            "resolvedModelId": llvc_resolved_model_id,
-            "backendMode": llvc_backend_mode,
-            "modelsDir": llvc_models_dir,
-            "error": llvc_error,
-            "fallbackAvailable": fallback_available,
-            "fallbackModel": LLVC_FALLBACK_MODEL_ID if fallback_available else None,
-            "conversionPolicies": sorted(VOICE_CONVERSION_POLICIES),
-            "runtimeUrl": LLVC_RUNTIME_URL,
-        },
-        "whisper": {
-            "loaded": whisper_runtime.model is not None,
-            "model": WHISPER_MODEL_SIZE,
-            "device": WHISPER_DEVICE,
-            "compute": WHISPER_COMPUTE,
-            "error": whisper_runtime.import_error,
-            "supportedLanguages": sorted(SUPPORTED_TRANSCRIBE_LANGUAGE_CODES),
-        },
-        "sourceSeparation": {
-            "enabled": ENABLE_SOURCE_SEPARATION,
-            "available": source_separation_available,
-            "model": VF_DUB_PHASE1_MODEL,
-            "device": SEPARATION_DEVICE,
-            "cacheDir": str(SEPARATION_CACHE_DIR),
-            "dereverbModel": VF_DUB_DEREVERB_MODEL,
-            "dereverbReady": dereverb_ready,
-            "error": source_separation_error,
-        },
-        "lipsync": {
-            "runtime": "wav2lip-onnx",
-            "assetPath": str(VF_DUB_WAV2LIP_ONNX_PATH),
-            "assetReady": bool(VF_DUB_WAV2LIP_ONNX_PATH.exists()),
-            "lpipsAssetPath": str(VF_DUB_LPIPS_ASSET_PATH),
-            "lpipsReady": bool(VF_DUB_LPIPS_ASSET_PATH.exists()),
-            "ready": lipsync_ready,
-        },
-        "videoPipelineAssets": video_assets,
-    }
-
-    return JSONResponse(response)
+    if _should_force_sync_media_health_refresh():
+        _run_media_health_refresh()
+    else:
+        _schedule_media_health_refresh()
+    return JSONResponse(_media_health_snapshot())
 
 
 @app.get("/system/version")
@@ -11424,6 +17428,22 @@ def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONR
                 actor_uid=uid,
                 actor_role=str(actor.get("role") or ""),
             )
+            _notification_emit_persisted(
+                uid,
+                event_code="admin.guard.action.submitted",
+                title="Guardian Action Submitted",
+                message="The guardian action was submitted for approval.",
+                details=f"action={action}\napprovalId={str(approval.get('id') or '')}",
+                severity="info",
+                category="system",
+                audience="admin",
+                entity_key=action,
+                dedupe_key=f"admin.guard.action.submitted::{action}::{uid}",
+                action_label="Open Guardian",
+                action_target={"screen": "main", "tab": "ADMIN", "adminTab": "guardian"},
+                email_eligible=False,
+                email_pref_key="emailAdminAlerts",
+            )
             return JSONResponse(
                 status_code=202,
                 content={
@@ -11448,6 +17468,22 @@ def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONR
             request=request,
             actor_uid=uid,
             actor_role=str(actor.get("role") or ""),
+        )
+        _notification_emit_persisted(
+            uid,
+            event_code="admin.guard.action.submitted" if bool(execution.get("ok")) else "admin.guard.action.failed",
+            title="Guardian Action Executed" if bool(execution.get("ok")) else "Guardian Action Failed",
+            message="The guardian action completed." if bool(execution.get("ok")) else "The guardian action failed.",
+            details=f"action={action}\nstatus={str(execution.get('detail') or '')}",
+            severity="success" if bool(execution.get("ok")) else "error",
+            category="system",
+            audience="admin",
+            entity_key=action,
+            dedupe_key=f"admin.guard.action::{action}::{uid}",
+            action_label="Open Guardian",
+            action_target={"screen": "main", "tab": "ADMIN", "adminTab": "guardian"},
+            email_eligible=False,
+            email_pref_key="emailAdminAlerts",
         )
         return JSONResponse(
             {
@@ -11476,6 +17512,22 @@ def ops_guardian_actions(payload: AiOpsActionRequest, request: Request) -> JSONR
         request=request,
         actor_uid=uid,
         actor_role=str(actor.get("role") or ""),
+    )
+    _notification_emit_persisted(
+        uid,
+        event_code="admin.guard.action.submitted" if bool(execution.get("ok")) else "admin.guard.action.failed",
+        title="Guardian Action Executed" if bool(execution.get("ok")) else "Guardian Action Failed",
+        message="The guardian action completed." if bool(execution.get("ok")) else "The guardian action failed.",
+        details=f"action={action}\nstatus={str(execution.get('detail') or '')}",
+        severity="success" if bool(execution.get("ok")) else "error",
+        category="system",
+        audience="admin",
+        entity_key=action,
+        dedupe_key=f"admin.guard.action::{action}::{uid}",
+        action_label="Open Guardian",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "guardian"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
     )
     return JSONResponse(
         {
@@ -11611,7 +17663,7 @@ def _ensure_subscription_schedule_for_loyalty(
         return {"ok": False, "reason": "missing_subscription_id"}
     if safe_plan_key not in set(PAID_PLAN_KEYS):
         return {"ok": False, "reason": "plan_not_paid"}
-    if stripe is None:
+    if not _ensure_stripe_sdk_imported() or stripe is None:
         return {"ok": False, "reason": "stripe_unavailable"}
     recurring_price_id = _stripe_price_id_for_plan(safe_plan_key, phase="recurring")
     if not recurring_price_id:
@@ -11696,6 +17748,267 @@ def _sync_entitlement_from_subscription(
     if customer_id:
         _link_customer_uid(customer_id, safe_uid)
     return payload
+
+
+def _stripe_obj_get(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    getter = getattr(obj, "get", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except TypeError:
+            try:
+                value = getter(key)
+            except Exception:
+                value = default
+            return default if value is None else value
+        except Exception:
+            return default
+    if hasattr(obj, key):
+        try:
+            return getattr(obj, key)
+        except Exception:
+            return default
+    try:
+        return obj[key]
+    except Exception:
+        return default
+
+
+def _stripe_data_list(container: Any) -> list[Any]:
+    rows = _stripe_obj_get(container, "data", [])
+    if isinstance(rows, list):
+        return rows
+    if rows is None:
+        return []
+    try:
+        return list(rows)
+    except Exception:
+        return []
+
+
+def _stripe_timestamp_to_iso(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        timestamp = float(value)
+    except Exception:
+        token = str(value or "").strip()
+        if not token:
+            return None
+        try:
+            parsed = datetime.fromisoformat(token.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc).isoformat()
+        except Exception:
+            return None
+    if timestamp <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _plan_pricing_summary(plan_key: str) -> dict[str, Any]:
+    row = PLAN_PRICE_POLICY.get(_plan_key_from_name(plan_key)) or {}
+    first_cycle_inr = max(0, int(row.get("firstCycleInr") or 0))
+    recurring_inr = max(0, int(row.get("recurringInr") or 0))
+    discount_percent = 0
+    if first_cycle_inr > 0 and recurring_inr > 0 and recurring_inr < first_cycle_inr:
+        discount_percent = max(0, int(round(((first_cycle_inr - recurring_inr) / first_cycle_inr) * 100)))
+    return {
+        "firstCycleInr": first_cycle_inr,
+        "recurringInr": recurring_inr,
+        "discountPercent": discount_percent,
+    }
+
+
+def _subscription_plan_key_from_stripe(subscription: Any, fallback_plan_key: str) -> str:
+    rows = _stripe_data_list(_stripe_obj_get(subscription, "items", {}))
+    for item in rows:
+        price = _stripe_obj_get(item, "price", {})
+        price_id = str(_stripe_obj_get(price, "id", "") or "").strip()
+        if not price_id:
+            continue
+        inferred = _plan_key_from_name(str((_entitlement_from_price_id(price_id) or {}).get("plan") or "free"))
+        if inferred in set(PAID_PLAN_KEYS):
+            return inferred
+    return _plan_key_from_name(fallback_plan_key)
+
+
+def _serialize_payment_method(payment_method: Any) -> Optional[dict[str, Any]]:
+    if not payment_method:
+        return None
+    if isinstance(payment_method, str):
+        token = str(payment_method).strip()
+        return {"id": token} if token else None
+    pm_id = str(_stripe_obj_get(payment_method, "id", "") or "").strip()
+    card = _stripe_obj_get(payment_method, "card", {})
+    exp_month = _stripe_obj_get(card, "exp_month")
+    exp_year = _stripe_obj_get(card, "exp_year")
+    return {
+        "id": pm_id or None,
+        "brand": str(_stripe_obj_get(card, "brand", "") or "").strip() or None,
+        "last4": str(_stripe_obj_get(card, "last4", "") or "").strip() or None,
+        "funding": str(_stripe_obj_get(card, "funding", "") or "").strip() or None,
+        "expMonth": int(exp_month) if exp_month not in (None, "") else None,
+        "expYear": int(exp_year) if exp_year not in (None, "") else None,
+    }
+
+
+def _build_billing_account_summary(uid: str) -> dict[str, Any]:
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    profile = _user_profile_read(uid) or {"uid": uid}
+    plan_key = _plan_key_from_name(str(entitlement.get("plan") or "free"))
+    plan_name = _normalize_plan_name(plan_key)
+    pricing = _plan_pricing_summary(plan_key)
+    feature_flags = PLAN_FEATURE_FLAGS.get(plan_key) or PLAN_FEATURE_FLAGS["free"]
+    guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
+    customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    warnings: list[str] = []
+    payment_method: Optional[dict[str, Any]] = None
+    subscription_summary = {
+        "id": subscription_id or None,
+        "status": str(entitlement.get("status") or "inactive"),
+        "active": plan_key in set(PAID_PLAN_KEYS) and str(entitlement.get("status") or "").strip().lower() == "active",
+        "cancelAtPeriodEnd": False,
+        "cancelAt": None,
+        "currentPeriodStart": None,
+        "currentPeriodEnd": None,
+        "nextBillingAt": None,
+        "startedAt": None,
+        "trialEnd": None,
+        "latestInvoiceId": None,
+    }
+    invoices: list[dict[str, Any]] = []
+
+    if _stripe_available() and customer_id:
+        try:
+            if not _ensure_stripe_sdk_imported() or stripe is None:
+                raise RuntimeError("stripe_not_available")
+
+            customer_obj = None
+            customer_retrieve = getattr(getattr(stripe, "Customer", None), "retrieve", None)
+            if callable(customer_retrieve):
+                try:
+                    customer_obj = customer_retrieve(customer_id, expand=["invoice_settings.default_payment_method"])  # type: ignore[misc]
+                except TypeError:
+                    customer_obj = customer_retrieve(customer_id)
+
+            subscription_obj = None
+            if subscription_id:
+                subscription_retrieve = getattr(getattr(stripe, "Subscription", None), "retrieve", None)
+                if callable(subscription_retrieve):
+                    try:
+                        subscription_obj = subscription_retrieve(
+                            subscription_id,
+                            expand=["default_payment_method", "latest_invoice"],
+                        )  # type: ignore[misc]
+                    except TypeError:
+                        subscription_obj = subscription_retrieve(subscription_id)
+
+            if subscription_obj:
+                resolved_plan_key = _subscription_plan_key_from_stripe(subscription_obj, plan_key)
+                if resolved_plan_key in set(PAID_PLAN_KEYS):
+                    plan_key = resolved_plan_key
+                    plan_name = _normalize_plan_name(plan_key)
+                    pricing = _plan_pricing_summary(plan_key)
+                    feature_flags = PLAN_FEATURE_FLAGS.get(plan_key) or PLAN_FEATURE_FLAGS["free"]
+                    guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
+                subscription_status = _billing_status_from_subscription(str(_stripe_obj_get(subscription_obj, "status", "") or ""))
+                current_period_end = _stripe_timestamp_to_iso(_stripe_obj_get(subscription_obj, "current_period_end"))
+                subscription_summary = {
+                    "id": str(_stripe_obj_get(subscription_obj, "id", "") or subscription_id) or None,
+                    "status": subscription_status,
+                    "active": subscription_status == "active",
+                    "cancelAtPeriodEnd": bool(_stripe_obj_get(subscription_obj, "cancel_at_period_end", False)),
+                    "cancelAt": _stripe_timestamp_to_iso(_stripe_obj_get(subscription_obj, "cancel_at")),
+                    "currentPeriodStart": _stripe_timestamp_to_iso(_stripe_obj_get(subscription_obj, "current_period_start")),
+                    "currentPeriodEnd": current_period_end,
+                    "nextBillingAt": current_period_end,
+                    "startedAt": _stripe_timestamp_to_iso(_stripe_obj_get(subscription_obj, "start_date")),
+                    "trialEnd": _stripe_timestamp_to_iso(_stripe_obj_get(subscription_obj, "trial_end")),
+                    "latestInvoiceId": str(_stripe_obj_get(_stripe_obj_get(subscription_obj, "latest_invoice", {}), "id", "") or "").strip() or None,
+                }
+                payment_method = _serialize_payment_method(_stripe_obj_get(subscription_obj, "default_payment_method"))
+
+            if payment_method is None:
+                invoice_settings = _stripe_obj_get(customer_obj, "invoice_settings", {})
+                payment_method = _serialize_payment_method(_stripe_obj_get(invoice_settings, "default_payment_method"))
+
+            invoice_list = None
+            invoice_lister = getattr(getattr(stripe, "Invoice", None), "list", None)
+            if callable(invoice_lister):
+                invoice_list = invoice_lister(customer=customer_id, limit=12)
+            for row in _stripe_data_list(invoice_list):
+                status_transitions = _stripe_obj_get(row, "status_transitions", {})
+                amount_due = int(_stripe_obj_get(row, "amount_due", 0) or 0)
+                amount_paid = int(_stripe_obj_get(row, "amount_paid", 0) or 0)
+                amount_remaining = int(_stripe_obj_get(row, "amount_remaining", 0) or 0)
+                invoices.append(
+                    {
+                        "id": str(_stripe_obj_get(row, "id", "") or "").strip(),
+                        "number": str(_stripe_obj_get(row, "number", "") or "").strip() or None,
+                        "status": str(_stripe_obj_get(row, "status", "") or "open").strip().lower() or "open",
+                        "description": str(_stripe_obj_get(row, "description", "") or "").strip() or None,
+                        "currency": str(_stripe_obj_get(row, "currency", "inr") or "inr").strip().upper(),
+                        "amountDueMinor": amount_due,
+                        "amountPaidMinor": amount_paid,
+                        "amountRemainingMinor": amount_remaining,
+                        "createdAt": _stripe_timestamp_to_iso(_stripe_obj_get(row, "created")),
+                        "dueAt": _stripe_timestamp_to_iso(_stripe_obj_get(row, "due_date")),
+                        "paidAt": _stripe_timestamp_to_iso(_stripe_obj_get(status_transitions, "paid_at")),
+                        "periodStart": _stripe_timestamp_to_iso(_stripe_obj_get(row, "period_start")),
+                        "periodEnd": _stripe_timestamp_to_iso(_stripe_obj_get(row, "period_end")),
+                        "hostedInvoiceUrl": str(_stripe_obj_get(row, "hosted_invoice_url", "") or "").strip() or None,
+                        "invoicePdf": str(_stripe_obj_get(row, "invoice_pdf", "") or "").strip() or None,
+                        "billingReason": str(_stripe_obj_get(row, "billing_reason", "") or "").strip() or None,
+                    }
+                )
+        except Exception:
+            warnings.append("Recent billing activity could not be synced right now.")
+    elif plan_key in set(PAID_PLAN_KEYS) and not customer_id:
+        warnings.append("Billing is active, but no Stripe customer is linked to this account yet.")
+
+    billing_country = str(entitlement.get("billingCountry") or "").strip().upper() or None
+    return {
+        "generatedAt": _safe_now_iso(),
+        "profile": {
+            "uid": str(profile.get("uid") or uid).strip(),
+            "userId": str(profile.get("userId") or "").strip() or None,
+            "displayName": str(profile.get("displayName") or "").strip() or None,
+            "email": str(profile.get("email") or "").strip() or None,
+            "status": str(profile.get("status") or "").strip() or None,
+            "createdAt": str(profile.get("createdAt") or "").strip() or None,
+            "updatedAt": str(profile.get("updatedAt") or "").strip() or None,
+        },
+        "plan": {
+            "key": plan_key,
+            "name": plan_name,
+            "status": str(entitlement.get("status") or "").strip() or "inactive",
+            "monthlyVfLimit": _as_positive_int(entitlement.get("monthlyVfLimit")),
+            "dailyGenerationLimit": _as_positive_int(entitlement.get("dailyGenerationLimit")),
+            "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 8000)),
+            "allowedEngines": list(feature_flags.get("allowedEngines") or ()),
+            "earlyAccess": bool(feature_flags.get("earlyAccess")),
+            "pricing": pricing,
+        },
+        "billing": {
+            "stripeReady": _stripe_available(),
+            "hasPortalAccess": bool(customer_id) and _stripe_available(),
+            "stripeCustomerId": customer_id or None,
+            "billingCountry": billing_country,
+            "currencyMode": str(entitlement.get("currencyMode") or "").strip() or None,
+        },
+        "subscription": subscription_summary,
+        "paymentMethod": payment_method,
+        "invoices": invoices,
+        "warnings": warnings,
+    }
 
 
 def _team_slug_normalize(value: str) -> str:
@@ -12490,6 +18803,7 @@ def account_entitlements(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
     _require_user_id_ready(request, uid)
     payload = _entitlement_usage_payload(uid)
+    _notification_sync_account_usage(uid, payload)
     return JSONResponse({"ok": True, "entitlements": payload})
 
 
@@ -12514,6 +18828,93 @@ def account_generation_history_clear(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
     _history_clear(uid)
     return JSONResponse({"ok": True})
+
+
+@app.get("/account/notifications")
+def account_notifications(request: Request, limit: int = 100) -> JSONResponse:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    items = _notification_list_items(uid, limit=limit, actor=actor)
+    return JSONResponse({"ok": True, "items": items, "count": len(items)})
+
+
+@app.post("/account/notifications/read-all")
+def account_notifications_read_all(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    count = _notification_mark_all(
+        uid,
+        patch={"readAt": _utc_now().isoformat()},
+        actor=actor,
+    )
+    return JSONResponse({"ok": True, "count": count})
+
+
+@app.post("/account/notifications/dismiss-all")
+def account_notifications_dismiss_all(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    count = _notification_mark_all(
+        uid,
+        patch={"dismissedAt": _utc_now().isoformat()},
+        actor=actor,
+    )
+    return JSONResponse({"ok": True, "count": count})
+
+
+@app.post("/account/notifications/{notification_id}/read")
+def account_notification_mark_read(notification_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    updated = _notification_patch_item(
+        uid,
+        notification_id,
+        {"readAt": _utc_now().isoformat()},
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return JSONResponse({"ok": True, "item": updated})
+
+
+@app.post("/account/notifications/{notification_id}/dismiss")
+def account_notification_dismiss(notification_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    updated = _notification_patch_item(
+        uid,
+        notification_id,
+        {"dismissedAt": _utc_now().isoformat()},
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return JSONResponse({"ok": True, "item": updated})
+
+
+@app.get("/account/notification-preferences")
+def account_notification_preferences(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    is_admin = _notification_actor_has_admin_access(actor)
+    return JSONResponse(
+        {
+            "ok": True,
+            "preferences": _notification_preferences_get(uid, is_admin=is_admin),
+        }
+    )
+
+
+@app.patch("/account/notification-preferences")
+def account_notification_preferences_patch(
+    payload: NotificationPreferencesPatchRequest,
+    request: Request,
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    is_admin = _notification_actor_has_admin_access(actor)
+    next_payload = _notification_preferences_patch(
+        uid,
+        payload.model_dump(exclude_none=True),
+        is_admin=is_admin,
+    )
+    return JSONResponse({"ok": True, "preferences": next_payload})
 
 
 @app.post("/wallet/ad-reward/claim")
@@ -12901,6 +19302,22 @@ def admin_session_unlock_issue(request: Request) -> JSONResponse:
     uid = _require_admin_uid(request)
     issued = _admin_unlock_issue_for_request(request, uid)
     status_payload = _admin_unlock_status_for_request(request, uid)
+    _notification_emit_persisted(
+        uid,
+        event_code="admin.session.unlock.issued",
+        title="Admin Unlock Key Issued",
+        message="A new admin unlock key was issued for this session.",
+        details=f"keyExpiresAt={str(issued.get('keyExpiresAt') or '')}",
+        severity="info",
+        category="security",
+        audience="admin",
+        entity_key=uid,
+        dedupe_key=f"admin.session.unlock.issued::{uid}",
+        action_label="Open Admin",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -12925,6 +19342,22 @@ def admin_session_unlock_verify(
         unlock_key=payload.unlockKey,
     )
     status_payload = _admin_unlock_status_for_request(request, uid)
+    _notification_emit_persisted(
+        uid,
+        event_code="admin.session.unlock.verified",
+        title="Admin Unlock Verified",
+        message="Your admin session unlock key was verified.",
+        details=f"expiresAt={str(verified.get('expiresAt') or '')}",
+        severity="success",
+        category="security",
+        audience="admin",
+        entity_key=uid,
+        dedupe_key=f"admin.session.unlock.verified::{uid}",
+        action_label="Open Admin",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -13745,6 +20178,24 @@ def admin_support_reply(
         subject_uid=str(conversation.get("uid") or ""),
         subject_user_id=str(conversation.get("userId") or ""),
     )
+    conversation_uid = str(conversation.get("uid") or "").strip()
+    if conversation_uid:
+        _notification_emit_persisted(
+            conversation_uid,
+            event_code="support.reply.received",
+            title="Support Replied",
+            message="A support agent replied to your conversation.",
+            details=text[:1200],
+            severity="info",
+            category="activity",
+            entity_key=safe_id,
+            dedupe_key=f"support.reply.received::{safe_id}",
+            action_label="Open Profile",
+            action_target={"screen": "profile", "conversationId": safe_id},
+            email_eligible=True,
+            email_pref_key="emailSupport",
+            metadata={"conversationId": safe_id, "messageId": str(message.get("messageId") or "")},
+        )
     return JSONResponse({"ok": True, "conversation": saved, "message": message})
 
 
@@ -13775,7 +20226,32 @@ def admin_support_resolve(conversation_id: str, request: Request) -> JSONRespons
         subject_uid=str(conversation.get("uid") or ""),
         subject_user_id=str(conversation.get("userId") or ""),
     )
+    conversation_uid = str(conversation.get("uid") or "").strip()
+    if conversation_uid:
+        _notification_emit_persisted(
+            conversation_uid,
+            event_code="support.conversation.resolved",
+            title="Support Conversation Resolved",
+            message="Your support conversation was marked as resolved.",
+            details=f"Conversation ID: {safe_id}",
+            severity="success",
+            category="activity",
+            entity_key=safe_id,
+            dedupe_key=f"support.conversation.resolved::{safe_id}",
+            action_label="Open Profile",
+            action_target={"screen": "profile", "conversationId": safe_id},
+            email_eligible=True,
+            email_pref_key="emailSupport",
+            metadata={"conversationId": safe_id},
+        )
     return JSONResponse({"ok": True, "conversation": saved})
+
+
+@app.get("/admin/actor")
+def admin_actor(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    actor = _resolve_actor(uid, request)
+    return JSONResponse({"ok": True, "actor": actor})
 
 
 @app.get("/admin/support/ai-policy")
@@ -13871,6 +20347,22 @@ def admin_rbac_assign_user(target_uid: str, payload: AdminRoleAssignmentRequest,
         actor_role=str(actor.get("role") or ""),
         subject_uid=safe_target_uid,
     )
+    _notification_emit_persisted(
+        actor_uid,
+        event_code="admin.rbac.saved",
+        title="RBAC Assignment Saved",
+        message="The RBAC assignment was updated.",
+        details=f"targetUid={safe_target_uid}\nrole={safe_role}\nstatus={str(row.get('status') or 'active')}",
+        severity="success",
+        category="security",
+        audience="admin",
+        entity_key=safe_target_uid,
+        dedupe_key=f"admin.rbac.saved::{safe_target_uid}::{actor_uid}",
+        action_label="Open Access Control",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
+    )
     return JSONResponse({"ok": True, "assignment": row})
 
 
@@ -13911,6 +20403,22 @@ def admin_rbac_disable_user(target_uid: str, payload: AdminRoleStatusRequest, re
         actor_role=str(actor.get("role") or ""),
         subject_uid=safe_target_uid,
     )
+    _notification_emit_persisted(
+        actor_uid,
+        event_code="admin.rbac.saved",
+        title="RBAC Assignment Updated",
+        message="The RBAC assignment was disabled.",
+        details=f"targetUid={safe_target_uid}\nnote={str(payload.note or '').strip()[:280]}",
+        severity="warning",
+        category="security",
+        audience="admin",
+        entity_key=safe_target_uid,
+        dedupe_key=f"admin.rbac.saved::{safe_target_uid}::{actor_uid}",
+        action_label="Open Access Control",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
+    )
     return JSONResponse({"ok": True, "assignment": row})
 
 
@@ -13950,6 +20458,22 @@ def admin_rbac_enable_user(target_uid: str, payload: AdminRoleStatusRequest, req
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
         subject_uid=safe_target_uid,
+    )
+    _notification_emit_persisted(
+        actor_uid,
+        event_code="admin.rbac.saved",
+        title="RBAC Assignment Updated",
+        message="The RBAC assignment was enabled.",
+        details=f"targetUid={safe_target_uid}\nnote={str(payload.note or '').strip()[:280]}",
+        severity="success",
+        category="security",
+        audience="admin",
+        entity_key=safe_target_uid,
+        dedupe_key=f"admin.rbac.saved::{safe_target_uid}::{actor_uid}",
+        action_label="Open Access Control",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
     )
     return JSONResponse({"ok": True, "assignment": row})
 
@@ -14018,7 +20542,154 @@ def admin_audit_verify_chain(
 ) -> JSONResponse:
     _require_permission(request, PERM_AUDIT_READ)
     payload = _audit_verify_chain(from_seq=fromSeq, to_seq=toSeq, limit=limit)
+    if not bool(payload.get("ok")):
+        mismatch_sequence = int(payload.get("mismatchAtSequence") or 0)
+        mismatch_event_id = str(payload.get("mismatchEventId") or "").strip()
+        _notification_emit_admin_broadcast(
+            event_code="admin.audit.chain.mismatch",
+            title="Audit Chain Mismatch",
+            message="The admin audit chain verification detected a mismatch.",
+            details=(
+                f"checked={int(payload.get('checked') or 0)} "
+                f"mismatchAtSequence={mismatch_sequence or 'unknown'} "
+                f"mismatchEventId={mismatch_event_id or 'unknown'}"
+            ),
+            severity="critical",
+            category="security",
+            entity_key=mismatch_event_id or f"seq-{mismatch_sequence or 'unknown'}",
+            dedupe_key=f"admin.audit.chain.mismatch::{mismatch_event_id or mismatch_sequence or 'unknown'}",
+            required_permission=PERM_AUDIT_READ,
+            action_label="Open Audit",
+            action_target={"screen": "main", "tab": "ADMIN", "adminTab": "audit"},
+            email_eligible=True,
+            metadata=payload,
+        )
     return JSONResponse({"ok": bool(payload.get("ok")), **payload})
+
+
+@app.get("/admin/audio-metadata/records")
+def admin_audio_metadata_records(
+    request: Request,
+    uid: str = "",
+    userId: str = "",
+    identityValue: str = "",
+    paymentRef: str = "",
+    status: str = "",
+    engine: str = "",
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    cursor: str = "",
+    limit: int = 100,
+) -> JSONResponse:
+    _require_permission(request, PERM_AUDIT_READ)
+    items, next_cursor = _audio_generation_audit_list(
+        uid=uid,
+        user_id=userId,
+        identity_value=identityValue,
+        payment_ref=paymentRef,
+        status=status,
+        engine=engine,
+        from_iso=fromIso,
+        to_iso=toIso,
+        cursor=cursor,
+        limit=limit,
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "items": [_audio_generation_audit_list_item(item) for item in items],
+            "count": len(items),
+            "nextCursor": next_cursor,
+        }
+    )
+
+
+@app.get("/admin/audio-metadata/records/{audit_id}")
+def admin_audio_metadata_record_by_id(audit_id: str, request: Request) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_AUDIT_READ)
+    safe_audit_id = str(audit_id or "").strip()
+    if not safe_audit_id:
+        raise HTTPException(status_code=400, detail="Missing audit id.")
+    row = _audio_generation_audit_get(safe_audit_id)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=404, detail="Audio metadata record not found.")
+    _audit_append_event(
+        action="audio_metadata_view",
+        resource_type="audio_metadata",
+        resource_id=safe_audit_id,
+        meta={"view": "detail"},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+        actor_user_id=str(actor.get("userId") or ""),
+        subject_uid=str(row.get("uid") or ""),
+        subject_user_id=str(row.get("userId") or ""),
+    )
+    return JSONResponse({"ok": True, "record": row})
+
+
+@app.get("/admin/audio-metadata/export.csv")
+def admin_audio_metadata_export_csv(
+    request: Request,
+    uid: str = "",
+    userId: str = "",
+    identityValue: str = "",
+    paymentRef: str = "",
+    status: str = "",
+    engine: str = "",
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+) -> Response:
+    admin_uid, actor = _require_permission(request, PERM_AUDIT_READ)
+    rows = [
+        row for row in _audio_generation_audit_rows()
+        if _audio_generation_audit_matches_filters(
+            row,
+            uid=uid,
+            user_id=userId,
+            identity_value=identityValue,
+            payment_ref=paymentRef,
+            status=status,
+            engine=engine,
+            from_iso=fromIso,
+            to_iso=toIso,
+        )
+    ]
+    rows.sort(
+        key=lambda item: (
+            str(item.get("submittedAt") or ""),
+            str(item.get("auditId") or ""),
+        ),
+        reverse=True,
+    )
+    _audit_append_event(
+        action="audio_metadata_export",
+        resource_type="audio_metadata",
+        resource_id="export.csv",
+        meta={
+            "count": len(rows),
+            "filters": {
+                "uid": str(uid or "").strip(),
+                "userId": str(userId or "").strip().lower(),
+                "identityValue": str(identityValue or "").strip(),
+                "paymentRef": str(paymentRef or "").strip(),
+                "status": str(status or "").strip().lower(),
+                "engine": str(engine or "").strip().upper(),
+                "from": str(fromIso or "").strip(),
+                "to": str(toIso or "").strip(),
+            },
+        },
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+        actor_user_id=str(actor.get("userId") or ""),
+    )
+    csv_payload = _audio_generation_audit_csv(rows)
+    return Response(
+        content=csv_payload,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="audio-metadata-{int(time.time())}.csv"'},
+    )
 
 
 @app.post("/admin/coupons")
@@ -14632,6 +21303,22 @@ def admin_gemini_pools_reload(request: Request) -> JSONResponse:
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
     )
+    _notification_emit_persisted(
+        actor_uid,
+        event_code="admin.pool.reload.success" if bool(payload.get("ok")) else "admin.pool.reload.failed",
+        title="Primary AI Pool Reloaded" if bool(payload.get("ok")) else "Primary AI Pool Reload Failed",
+        message=str(payload.get("detail") or "Gemini API pools reloaded.").strip() or "Gemini API pools reloaded.",
+        details="\n".join(list(payload.get("warnings") or []))[:1200],
+        severity="success" if bool(payload.get("ok")) else "error",
+        category="system",
+        audience="admin",
+        entity_key="gemini_pool_global",
+        dedupe_key=f"admin.pool.reload::{actor_uid}",
+        action_label="Open Admin",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
+    )
     return JSONResponse(
         {
             **payload,
@@ -15011,6 +21698,22 @@ def admin_scheduler_run_task(task_id: str, payload: ScheduledTaskRunRequest, req
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
+    )
+    _notification_emit_persisted(
+        actor_uid,
+        event_code="admin.scheduler.run.accepted",
+        title="Scheduler Run Requested",
+        message="The scheduler task run request was accepted.",
+        details=f"taskId={str(task_id or '').strip()}\nrunId={str(run.get('id') or '').strip()}",
+        severity="info",
+        category="system",
+        audience="admin",
+        entity_key=str(task_id or "").strip(),
+        dedupe_key=f"admin.scheduler.run.accepted::{str(task_id or '').strip()}::{actor_uid}",
+        action_label="Open Scheduler",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "scheduler"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
     )
     return JSONResponse({"ok": True, "run": run})
 
@@ -15616,6 +22319,12 @@ def _finalize_subscription_coupon_redemption(
         return {"ok": False, "reason": str(exc)}
 
 
+@app.get("/billing/account-summary")
+def billing_account_summary(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    return JSONResponse({"ok": True, "summary": _build_billing_account_summary(uid)})
+
+
 @app.post("/billing/checkout-session")
 def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Request) -> JSONResponse:
     _require_stripe_ready()
@@ -15865,7 +22574,10 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         transaction_id=tx_id or None,
                         metadata={
                             "eventType": event_type,
+                            "provider": "stripe",
                             "sessionId": session_id,
+                            "paymentIntentId": str(data_obj.get("payment_intent") or "").strip(),
+                            "invoiceId": str(data_obj.get("invoice") or "").strip(),
                             "packKey": pack_key,
                             "packVf": pack_vf,
                             "standardAmountInr": standard_amount_inr,
@@ -15997,7 +22709,11 @@ async def billing_webhook(request: Request) -> JSONResponse:
                 elif event_type == "invoice.paid":
                     entitlement = _load_entitlement(uid)
                     if str(entitlement.get("plan") or "Free") != "Free":
-                        _write_entitlement(uid, {"status": "active"})
+                        patch: dict[str, Any] = {"status": "active"}
+                        invoice_id = str(data_obj.get("id") or "").strip()
+                        if invoice_id:
+                            patch["latestInvoiceId"] = invoice_id
+                        _write_entitlement(uid, patch)
         elif event_type in {"checkout.session.expired", "checkout.session.async_payment_failed"}:
             metadata = data_obj.get("metadata") if isinstance(data_obj.get("metadata"), dict) else {}
             reservation_id = str(metadata.get("couponReservationId") or "").strip()
@@ -16024,6 +22740,12 @@ def ai_generate_text(payload: AiGenerateTextRequest, request: Request) -> JSONRe
     }
     if payload.apiKey:
         req_payload["apiKey"] = payload.apiKey
+    if payload.modelCandidates:
+        req_payload["modelCandidates"] = [
+            str(candidate).strip()
+            for candidate in payload.modelCandidates
+            if str(candidate).strip()
+        ]
     try:
         response = requests.post(upstream, json=req_payload, timeout=120)
     except Exception as exc:  # noqa: BLE001
@@ -16051,11 +22773,11 @@ def _decode_runtime_error_detail(response: requests.Response) -> Any:
                     text = detail.strip()
                     if text.startswith("{") or text.startswith("["):
                         try:
-                            return json.loads(text)
+                            return _sanitize_public_tts_error_detail(json.loads(text))
                         except Exception:
-                            return detail
-                return detail
-            return payload
+                            return _sanitize_public_tts_error_detail(detail)
+                return _sanitize_public_tts_error_detail(detail)
+            return _sanitize_public_tts_error_detail(payload)
         except Exception:
             pass
 
@@ -16063,11 +22785,165 @@ def _decode_runtime_error_detail(response: requests.Response) -> Any:
     if text_detail:
         if text_detail.startswith("{") or text_detail.startswith("["):
             try:
-                return json.loads(text_detail)
+                return _sanitize_public_tts_error_detail(json.loads(text_detail))
             except Exception:
-                return text_detail[:1200]
-        return text_detail[:1200]
-    return "TTS runtime failed."
+                return _sanitize_public_tts_error_detail(text_detail[:1200])
+        return _sanitize_public_tts_error_detail(text_detail[:1200])
+    return _sanitize_public_tts_error_detail("TTS runtime failed.")
+
+
+_TTS_PUBLIC_ERROR_ALLOWED_KEYS = {
+    "errorCode",
+    "classification",
+    "summary",
+    "reason",
+    "trace_id",
+    "jobId",
+    "chunkIndex",
+    "retryAfterMs",
+    "estimatedWaitMs",
+    "timeoutMs",
+    "elapsedMs",
+    "attemptsUsed",
+    "timedOut",
+    "poolExhausted",
+    "speechModeRequested",
+    "speakerHint",
+    "engine",
+    "queueDepth",
+    "queueMax",
+    "engineQueueDepth",
+    "engineQueued",
+    "engineRunning",
+    "engineConcurrency",
+    "estimatedCompletionMs",
+    "deadlineBudgetMs",
+    "windowIndex",
+    "windowTotal",
+    "availableLanes",
+}
+
+_TTS_PUBLIC_ERROR_MESSAGE_BY_REASON = {
+    "runtime_unreachable": "TTS runtime is temporarily unavailable.",
+    "runtime_empty_audio": "TTS runtime returned empty audio.",
+    "job_deadline_exceeded": "Queued TTS job expired before completion.",
+    "engine_concurrency_wait_timeout": "Queued TTS job expired while waiting for engine capacity.",
+    "estimated_queue_timeout": "TTS engine is overloaded and queue completion would exceed the allowed wait budget.",
+    "post_tts_conversion_failed": "Post-TTS conversion failed.",
+    "live_chunk_persist_failed": "Generated live chunk could not be persisted.",
+    "live_chunk_concat_failed": "Generated live chunks could not be merged.",
+    "live_chunk_concat_empty": "Generated live audio was empty after merging chunks.",
+    "live_chunk_failed": "Live chunk processing failed.",
+    "live_chunk_synth_internal_error": "Live chunk synthesis failed.",
+    "live_chunk_conversion_internal_error": "Live chunk conversion failed.",
+}
+
+_TTS_PUBLIC_ERROR_MESSAGE_BY_CODE = {
+    "GEMINI_API_KEY_MISSING": "Gemini key pool is not configured.",
+    "GEMINI_RUNTIME_SDK_UNAVAILABLE": "Gemini runtime dependencies are unavailable.",
+    "GEMINI_ALL_KEYS_AUTH_FAILED": "All configured Gemini keys were rejected by upstream authentication.",
+    "GEMINI_ALL_KEYS_RATE_LIMITED": "Gemini capacity is temporarily rate limited.",
+    "GEMINI_KEY_POOL_OVERLOADED": "Gemini key pool is temporarily overloaded.",
+    "GEMINI_KEY_POOL_TIMEOUT": "Gemini key pool timed out while waiting for capacity.",
+    "GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT": "Gemini allocator timed out while waiting for capacity.",
+    "GEMINI_UPSTREAM_REQUEST_TIMEOUT": "Gemini upstream request timed out.",
+    "GEMINI_UPSTREAM_MODEL_FAILED": "Gemini TTS synthesis failed.",
+}
+
+_TTS_SENSITIVE_DETAIL_TOKENS = (
+    "__vf_masked_key__",
+    "AIza",
+    "keyfingerprint",
+    "keystates",
+    "keyattempts",
+    "modelattempts",
+    "traceback",
+    "connectionpool",
+    "requests.exceptions",
+    "127.0.0.1",
+    "localhost",
+    "http://",
+    "https://",
+    "[errno",
+)
+
+
+def _default_public_tts_error_message(reason: str = "", error_code: str = "") -> str:
+    safe_reason = str(reason or "").strip().lower()
+    safe_error_code = str(error_code or "").strip().upper()
+    if safe_reason and safe_reason in _TTS_PUBLIC_ERROR_MESSAGE_BY_REASON:
+        return _TTS_PUBLIC_ERROR_MESSAGE_BY_REASON[safe_reason]
+    if safe_error_code and safe_error_code in _TTS_PUBLIC_ERROR_MESSAGE_BY_CODE:
+        return _TTS_PUBLIC_ERROR_MESSAGE_BY_CODE[safe_error_code]
+    return "TTS request failed."
+
+
+def _sanitize_public_tts_error_text(value: Any, *, fallback: str, max_len: int = 220) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    lowered = text.lower()
+    if (
+        text.startswith("{")
+        or text.startswith("[")
+        or "{" in text
+        or "}" in text
+        or "\n" in text
+        or "\r" in text
+        or any(token in lowered for token in _TTS_SENSITIVE_DETAIL_TOKENS)
+    ):
+        return fallback
+    if len(text) > max_len:
+        return fallback
+    return text
+
+
+def _sanitize_public_tts_error_detail(detail: Any) -> Any:
+    if isinstance(detail, dict):
+        safe_reason = str(detail.get("reason") or "").strip().lower()
+        safe_error_code = extract_error_code(detail)
+        safe_fallback = _default_public_tts_error_message(safe_reason, safe_error_code)
+        safe: dict[str, Any] = {
+            "error": _sanitize_public_tts_error_text(detail.get("error"), fallback=safe_fallback),
+        }
+        for key in _TTS_PUBLIC_ERROR_ALLOWED_KEYS:
+            if key not in detail:
+                continue
+            value = detail.get(key)
+            if key in {"timedOut", "poolExhausted"}:
+                safe[key] = bool(value)
+            elif key in {
+                "retryAfterMs",
+                "estimatedWaitMs",
+                "timeoutMs",
+                "elapsedMs",
+                "attemptsUsed",
+                "chunkIndex",
+                "queueDepth",
+                "queueMax",
+                "engineQueueDepth",
+                "engineQueued",
+                "engineRunning",
+                "engineConcurrency",
+                "estimatedCompletionMs",
+                "deadlineBudgetMs",
+                "windowIndex",
+                "windowTotal",
+                "availableLanes",
+            }:
+                safe[key] = max(0, _as_positive_int(value))
+            elif key in {"summary"}:
+                safe[key] = _sanitize_public_tts_error_text(value, fallback=safe["error"])
+            else:
+                token = str(value or "").strip()
+                if token:
+                    safe[key] = token
+        return safe
+    if isinstance(detail, str):
+        return _sanitize_public_tts_error_text(detail, fallback="TTS request failed.", max_len=260)
+    if detail is None:
+        return "TTS request failed."
+    return _sanitize_public_tts_error_text(str(detail), fallback="TTS request failed.", max_len=260)
 
 
 _GEMINI_CAPACITY_PRESSURE_ERROR_CODES = {
@@ -16107,13 +22983,13 @@ def _map_runtime_failure_status(engine: str, status_code: int, detail: Any) -> i
 
 def _is_retryable_runtime_failure(engine: str, status_code: int, detail: Any) -> bool:
     safe_status = int(status_code)
-    if safe_status in {429, 500, 502, 503, 504}:
-        return True
     if _is_gem_runtime_engine(engine):
         if _is_gemini_capacity_pressure_error(detail):
-            return True
+            return False
         if _is_gemini_upstream_timeout_error(detail):
             return True
+    if safe_status in {429, 500, 502, 503, 504}:
+        return True
     return False
 
 
@@ -16245,6 +23121,17 @@ def _tts_job_retry_backoff_ms(attempt: int) -> int:
 def _safe_tts_engine_name(engine: str) -> str:
     normalized = _normalize_engine_name(str(engine or "GEM"))
     return "KOKORO" if normalized == "KOKORO" else "GEM"
+
+
+def _resolve_post_tts_disable_state(*, engine: str, requested_disable: Any) -> tuple[bool, str]:
+    safe_engine = _safe_tts_engine_name(engine)
+    if safe_engine == "KOKORO":
+        return True, "disabled_for_kokoro"
+    if bool(requested_disable):
+        return True, "disabled_by_request"
+    if not VF_TTS_POST_LLVC_ENABLED:
+        return True, "disabled"
+    return False, ""
 
 
 def _sample_stats(values: list[int]) -> dict[str, int]:
@@ -16561,11 +23448,12 @@ def _mark_job_failed_and_revert_usage(
     error_tag: str,
 ) -> None:
     _finalize_usage(uid, request_id, success=False, error_detail=error_tag)
-    failed_job = _TTS_JOB_QUEUE.mark_failed(job_id, status_code=status_code, error=detail)
+    safe_detail = _sanitize_public_tts_error_detail(detail)
+    failed_job = _TTS_JOB_QUEUE.mark_failed(job_id, status_code=status_code, error=safe_detail)
     failed_engine = _safe_tts_engine_name(str((failed_job or {}).get("engine") or "GEM"))
     reason = error_tag
-    if isinstance(detail, dict):
-        reason = str(detail.get("reason") or reason or "failed")
+    if isinstance(safe_detail, dict):
+        reason = str(safe_detail.get("reason") or reason or "failed")
     _record_tts_terminal_event(
         job_id=job_id,
         engine=failed_engine,
@@ -16573,6 +23461,19 @@ def _mark_job_failed_and_revert_usage(
         reason=str(reason or "failed"),
         status_code=int(status_code),
     )
+    failure_code = _audio_generation_failure_code(safe_detail, error_tag)
+    for audit_id in _audio_generation_audit_ids_from_job(failed_job):
+        _audio_generation_audit_mark_terminal(
+            audit_id,
+            status="failed",
+            failure_code=failure_code,
+            failure_detail=safe_detail,
+            job_id=str((failed_job or {}).get("jobId") or job_id),
+            request_id=str((failed_job or {}).get("requestId") or request_id),
+            trace_id=str((failed_job or {}).get("traceId") or request_id),
+        )
+    if isinstance(failed_job, dict):
+        _notification_emit_tts_job_terminal(failed_job, status="failed", detail=str(reason or "failed"))
 
 
 def _post_tts_conversion_failure_detail(
@@ -16585,7 +23486,7 @@ def _post_tts_conversion_failure_detail(
     safe_job_id = str(job_id or "").strip()
     safe_trace_id = str(trace_id or "").strip() or safe_job_id
     payload: dict[str, Any] = {
-        "error": f"Post-TTS conversion failed: {exc}",
+        "error": "Post-TTS conversion failed.",
         "errorCode": ENGINE_OVERLOADED,
         "reason": "post_tts_conversion_failed",
         "trace_id": safe_trace_id,
@@ -16593,16 +23494,69 @@ def _post_tts_conversion_failure_detail(
     }
     if chunk_index is not None:
         payload["chunkIndex"] = int(chunk_index)
-    return payload
+    return _sanitize_public_tts_error_detail(payload)
+
+
+def _post_tts_conversion_bypass_status(exc: Exception) -> str:
+    message = str(exc or "").strip().lower()
+    if "silent audio" in message:
+        return "bypassed_silent_output"
+    if "invalid wav" in message or "empty wav" in message:
+        return "bypassed_invalid_output"
+    return "bypassed_error"
 
 
 def _normalize_llvc_preset(value: str) -> str:
-    token = str(value or "").strip().lower()
-    if token in {"llvc_hq_cpu", "cover_hq", "cover", "hq"}:
-        return "llvc_hq_cpu"
-    if token in {"tts_realtime", "live"}:
+    token = str(value or "").strip().lower().replace("-", "_")
+    if token in {"voice_transfer_hq_cpu", "llvc_hq_cpu", "cover_hq", "cover", "hq"}:
+        return "voice_transfer_hq_cpu"
+    if token in {"tts_realtime", "live", "realtime"}:
         return "tts_realtime"
-    return VF_LLVC_PRESET_DEFAULT
+    if token in {"auto", "auto_cpu", "cpu_auto", "adaptive", "adaptive_cpu"}:
+        return "auto_cpu"
+    fallback = str(VF_LLVC_PRESET_DEFAULT or "").strip().lower().replace("-", "_")
+    if fallback in {"voice_transfer_hq_cpu", "llvc_hq_cpu", "cover_hq", "cover", "hq"}:
+        return "voice_transfer_hq_cpu"
+    if fallback in {"auto", "auto_cpu", "cpu_auto", "adaptive", "adaptive_cpu"}:
+        return "auto_cpu"
+    return "tts_realtime"
+
+
+def _normalize_llvc_backend_mode(value: str) -> str:
+    _ = value
+    return "onnx"
+
+
+def _payload_uses_multi_speaker(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    line_map = payload.get("multi_speaker_line_map")
+    if isinstance(line_map, list) and bool(line_map):
+        return True
+    speaker_voices = payload.get("speaker_voices")
+    return isinstance(speaker_voices, list) and len(speaker_voices) > 1
+
+
+def _resolve_post_tts_llvc_preset(
+    requested_preset: str,
+    *,
+    audio_bytes: bytes,
+    live_stream: bool = False,
+    multi_speaker: bool = False,
+) -> tuple[str, str, int]:
+    normalized_preset = _normalize_llvc_preset(requested_preset)
+    duration_ms = 0
+    if normalized_preset != "auto_cpu":
+        return normalized_preset, normalized_preset, duration_ms
+    try:
+        duration_ms = int((_read_wav_info(audio_bytes) or {}).get("durationMs") or 0)
+    except Exception:
+        duration_ms = 0
+    if live_stream or multi_speaker:
+        return normalized_preset, "tts_realtime", duration_ms
+    if duration_ms >= int(VF_TTS_POST_LLVC_AUTO_HQ_MAX_MS):
+        return normalized_preset, "tts_realtime", duration_ms
+    return normalized_preset, "voice_transfer_hq_cpu", duration_ms
 
 
 def _safe_bounded_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -16615,6 +23569,14 @@ def _safe_bounded_int(value: Any, *, default: int, min_value: int, max_value: in
 
 def _live_chunk_word_count(text: str) -> int:
     return len(re.findall(r"\S+", str(text or "")))
+
+
+def _live_chunk_overflow_char_cap(limit: int) -> int:
+    return max(limit, int(round(limit * 1.35)), limit + 96)
+
+
+def _live_chunk_overflow_word_cap(limit: int) -> int:
+    return max(limit, int(round(limit * 1.35)), limit + 18)
 
 
 def _split_segment_by_words(segment: str, *, max_chars: int, max_words: int) -> list[str]:
@@ -16644,14 +23606,16 @@ def _split_plain_text_live_chunks(text: str, *, max_chars: int, max_words: int) 
     normalized_text = str(text or "").replace("\r\n", "\n").strip()
     if not normalized_text:
         return []
+    overflow_char_cap = _live_chunk_overflow_char_cap(max_chars)
+    overflow_word_cap = _live_chunk_overflow_word_cap(max_words)
     raw_segments = [
         re.sub(r"\s+", " ", part).strip()
-        for part in re.split(r"(?:\n+|(?<=[.!??])\s+)", normalized_text)
+        for part in re.split(r"(?:\n+|(?<=[.!?\u0964\u0965])\s+)", normalized_text)
         if str(part or "").strip()
     ]
     segments: list[str] = []
     for segment in raw_segments:
-        if len(segment) > max_chars or _live_chunk_word_count(segment) > max_words:
+        if len(segment) > overflow_char_cap or _live_chunk_word_count(segment) > overflow_word_cap:
             segments.extend(_split_segment_by_words(segment, max_chars=max_chars, max_words=max_words))
         else:
             segments.append(segment)
@@ -16670,6 +23634,11 @@ def _split_plain_text_live_chunks(text: str, *, max_chars: int, max_words: int) 
         projected_chars = seg_chars if not current else current_chars + 1 + seg_chars
         projected_words = current_words + seg_words
         if current and (projected_chars > max_chars or projected_words > max_words):
+            if projected_chars <= overflow_char_cap and projected_words <= overflow_word_cap:
+                current.append(segment)
+                current_chars = projected_chars
+                current_words = projected_words
+                continue
             text_chunk = " ".join(current).strip()
             if text_chunk:
                 out.append(
@@ -16864,6 +23833,36 @@ def _read_wav_info(wav_bytes: bytes) -> dict[str, int]:
         "sampleWidth": sample_width,
         "durationMs": duration_ms,
     }
+
+
+def _wav_has_nonzero_signal(wav_bytes: bytes) -> bool:
+    with wave.open(BytesIO(bytes(wav_bytes or b"")), "rb") as handle:
+        if int(handle.getnframes() or 0) <= 0:
+            return False
+        sample_width = int(handle.getsampwidth() or 0)
+        if sample_width <= 0:
+            return False
+        while True:
+            chunk = handle.readframes(8192)
+            if not chunk:
+                return False
+            if sample_width == 1:
+                if any(byte != 128 for byte in chunk):
+                    return True
+                continue
+            if any(chunk):
+                return True
+
+
+def _ensure_valid_audible_wav_bytes(wav_bytes: bytes, *, source_label: str) -> None:
+    try:
+        info = _read_wav_info(wav_bytes)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"{source_label} returned invalid WAV audio.") from exc
+    if int(info.get("frames") or 0) <= 0:
+        raise RuntimeError(f"{source_label} returned empty WAV audio.")
+    if not _wav_has_nonzero_signal(wav_bytes):
+        raise RuntimeError(f"{source_label} returned silent audio.")
 
 
 def _concat_wav_chunks(chunks: list[bytes]) -> bytes:
@@ -17219,6 +24218,8 @@ def _convert_tts_audio_with_llvc_runtime(
     engine: str,
     voice_id: str,
     voice_name: str,
+    live_stream: bool = False,
+    multi_speaker: bool = False,
 ) -> tuple[bytes, dict[str, str]]:
     safe_engine = _normalize_engine_name(engine)
     requested_token = str(voice_name or voice_id or "").strip()
@@ -17237,7 +24238,7 @@ def _convert_tts_audio_with_llvc_runtime(
             voice_name=voice_name,
         )
     if not model_name:
-        raise RuntimeError(f"No mapped LLVC model for {safe_engine}:{resolved_voice_token or voice_id or voice_name}.")
+        raise RuntimeError(f"No mapped voice-transfer model for {safe_engine}:{resolved_voice_token or voice_id or voice_name}.")
     profile = _resolve_mapped_profile(
         safe_engine,
         resolved_voice_token or voice_id,
@@ -17247,43 +24248,89 @@ def _convert_tts_audio_with_llvc_runtime(
         profile = _resolve_mapped_profile(safe_engine, voice_id, voice_name=voice_name)
     profile_pitch_shift = _post_tts_llvc_pitch_shift_for_profile(profile)
     llvc_runtime_url = _next_llvc_runtime_url()
+    requested_preset, selected_preset, audio_duration_ms = _resolve_post_tts_llvc_preset(
+        VF_TTS_POST_LLVC_PRESET,
+        audio_bytes=audio_bytes,
+        live_stream=live_stream,
+        multi_speaker=multi_speaker,
+    )
+    selected_backend_mode = _normalize_llvc_backend_mode(VF_TTS_POST_LLVC_BACKEND_MODE)
 
     temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_llvc_")
     input_path = Path(temp_dir) / "tts_input.wav"
     output_headers: dict[str, str] = {
         "x-vf-post-tts-profile": str(profile_id or ""),
         "x-vf-post-tts-model": str(model_name),
+        "x-vf-post-tts-preset": str(selected_preset),
+        "x-vf-post-tts-preset-initial": str(selected_preset),
+        "x-vf-post-tts-preset-requested": str(requested_preset),
         "x-vf-post-tts-pitch-shift": str(int(profile_pitch_shift)),
         "x-vf-post-tts-age-group": str(profile.get("ageGroup") or "") if isinstance(profile, dict) else "",
         "x-vf-post-tts-gender": str(profile.get("gender") or "") if isinstance(profile, dict) else "",
         "x-vf-post-tts-voice-token": str(resolved_voice_token or voice_id or voice_name),
         "x-vf-post-tts-engine": str(safe_engine),
-        "x-vf-post-tts-llvc-endpoint": str(llvc_runtime_url),
+        "x-vf-post-tts-requested-backend-mode": str(selected_backend_mode),
+        "x-vf-post-tts-voice-transfer-endpoint": str(llvc_runtime_url),
     }
+    if audio_duration_ms > 0:
+        output_headers["x-vf-post-tts-input-duration-ms"] = str(int(audio_duration_ms))
     try:
         input_path.write_bytes(audio_bytes)
-        with input_path.open("rb") as handle:
+        input_payload = input_path.read_bytes()
+        preset_attempts = [str(selected_preset)]
+        if selected_preset != "tts_realtime":
+            preset_attempts.append("tts_realtime")
+        last_error: Optional[Exception] = None
+        for attempt_preset in list(dict.fromkeys(preset_attempts)):
             acquired = _TTS_LIVE_LLVC_SEMAPHORE.acquire(timeout=max(1.0, float(VF_TTS_POST_LLVC_TIMEOUT_SEC)))
             if not acquired:
-                raise RuntimeError("LLVC conversion queue timeout.")
+                raise RuntimeError("Voice-transfer conversion queue timeout.")
             try:
+                request_form = {
+                    "model_name": str(model_name),
+                    "preset": str(attempt_preset),
+                    "backend_mode": str(selected_backend_mode),
+                    "pitch_shift": str(int(profile_pitch_shift)),
+                }
                 response = requests.post(
                     f"{llvc_runtime_url}/v1/convert",
-                    files={"file": ("tts_input.wav", handle, "audio/wav")},
-                    data={
-                        "model_name": str(model_name),
-                        "preset": _normalize_llvc_preset(VF_TTS_POST_LLVC_PRESET),
-                        "pitch_shift": str(int(profile_pitch_shift)),
-                    },
+                    files={"file": ("tts_input.wav", input_payload, "audio/wav")},
+                    data=request_form,
                     timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
                 )
             finally:
                 _TTS_LIVE_LLVC_SEMAPHORE.release()
-        if not response.ok:
-            detail = response.text[:260] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"LLVC runtime conversion failed: {detail}")
-        output_headers["x-vf-post-tts-conversion"] = "llvc"
-        return bytes(response.content or b""), output_headers
+            try:
+                if not response.ok:
+                    detail = response.text[:260] if response.text else f"HTTP {response.status_code}"
+                    raise RuntimeError(f"Voice-transfer runtime conversion failed: {detail}")
+                converted_audio = bytes(response.content or b"")
+                _ensure_valid_audible_wav_bytes(
+                    converted_audio,
+                    source_label="Voice-transfer runtime",
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc if isinstance(exc, Exception) else RuntimeError(str(exc))
+                if attempt_preset != preset_attempts[-1]:
+                    continue
+                raise last_error
+
+            output_headers["x-vf-post-tts-conversion"] = "voice-transfer"
+            response_headers = getattr(response, "headers", {}) or {}
+            runtime_backend_mode = ""
+            runtime_preset = ""
+            if hasattr(response_headers, "get"):
+                runtime_backend_mode = str(response_headers.get("x-vf-voice-transfer-backend-mode") or "").strip()
+                runtime_preset = str(response_headers.get("x-vf-voice-transfer-preset") or "").strip()
+            final_preset = runtime_preset or str(attempt_preset)
+            output_headers["x-vf-post-tts-preset"] = final_preset
+            output_headers["x-vf-post-tts-backend-mode"] = runtime_backend_mode or "w_okada_rvc_onnx"
+            if final_preset != str(selected_preset):
+                output_headers["x-vf-post-tts-preset-fallback-from"] = str(selected_preset)
+            return converted_audio, output_headers
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Voice-transfer runtime conversion failed.")
     finally:
         _cleanup_paths(temp_dir)
 
@@ -17293,6 +24340,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     if not job_id:
         return
     current = _TTS_JOB_QUEUE.mark_running(job_id, worker_id=worker_id) or dict(job)
+    audio_audit_ids = _audio_generation_audit_ids_from_job(current)
     status = str(current.get("status") or "").strip().lower()
     if status in {"completed", "failed", "cancelled"}:
         if status == "cancelled":
@@ -17303,8 +24351,28 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 reason="cancelled",
                 status_code=409,
             )
+            for audit_id in audio_audit_ids:
+                _audio_generation_audit_mark_terminal(
+                    audit_id,
+                    status="cancelled",
+                    failure_code="cancelled_by_user",
+                    failure_detail="TTS job was cancelled before worker execution.",
+                    job_id=job_id,
+                    request_id=str(current.get("requestId") or job_id),
+                    trace_id=str(current.get("traceId") or job_id),
+                )
         return
     _record_tts_job_started(job=current)
+    for audit_id in audio_audit_ids:
+        _audio_generation_audit_update(
+            audit_id,
+            {
+                "status": "running",
+                "jobId": job_id,
+                "requestId": str(current.get("requestId") or job_id),
+                "traceId": str(current.get("traceId") or job_id),
+            },
+        )
 
     uid = str(current.get("uid") or "").strip()
     request_id = str(current.get("requestId") or job_id).strip() or job_id
@@ -17471,17 +24539,20 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             )
 
             chunk_audio_bytes: list[bytes] = []
-            post_tts_disable = bool(current.get("postTtsDisable"))
+            post_tts_disable, post_tts_conversion_status = _resolve_post_tts_disable_state(
+                engine=engine,
+                requested_disable=current.get("postTtsDisable"),
+            )
             post_conversion_headers: dict[str, str] = {}
-            if post_tts_disable:
-                post_conversion_headers["x-vf-post-tts-conversion"] = "disabled_by_request"
-            elif not VF_TTS_POST_LLVC_ENABLED:
-                post_conversion_headers["x-vf-post-tts-conversion"] = "disabled"
+            if post_tts_conversion_status:
+                post_conversion_headers["x-vf-post-tts-conversion"] = post_tts_conversion_status
 
             live_started_ms = int(time.time() * 1000)
             first_chunk_recorded = False
             response_trace_id = ""
             diagnostics_header = ""
+            runtime_model_header = ""
+            runtime_speech_mode_header = ""
             media_type = "audio/wav"
 
             pipeline_enabled = (
@@ -17508,6 +24579,16 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     reason="cancelled_by_user",
                     status_code=409,
                 )
+                for audit_id in audio_audit_ids:
+                    _audio_generation_audit_mark_terminal(
+                        audit_id,
+                        status="cancelled",
+                        failure_code="cancelled_by_user",
+                        failure_detail="TTS job was cancelled by the user.",
+                        job_id=job_id,
+                        request_id=request_id,
+                        trace_id=trace_id,
+                    )
 
             def _mark_live_failed(*, status_code: int, detail: Any, error_tag: str) -> None:
                 _mark_job_failed_and_revert_usage(
@@ -17609,6 +24690,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     "mediaType": str(runtime_chunk_response.headers.get("content-type") or "audio/wav"),
                     "responseTraceId": str(runtime_chunk_response.headers.get("x-voiceflow-trace-id") or "").strip(),
                     "diagnosticsHeader": str(runtime_chunk_response.headers.get("x-voiceflow-diagnostics") or "").strip(),
+                    "runtimeModelHeader": str(runtime_chunk_response.headers.get("x-voiceflow-model") or "").strip(),
+                    "runtimeSpeechModeHeader": str(runtime_chunk_response.headers.get("x-voiceflow-speech-mode") or "").strip(),
                 }
 
             def _convert_live_chunk(result: dict[str, Any]) -> dict[str, Any]:
@@ -17624,6 +24707,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                             engine=engine,
                             voice_id=voice_id,
                             voice_name=voice_name or str((result.get("chunkPayload") or {}).get("voiceName") or ""),
+                            live_stream=True,
+                            multi_speaker=_payload_uses_multi_speaker(result.get("chunkPayload")),
                         )
                         conversion_elapsed_ms = max(0, int(time.time() * 1000) - conversion_started_ms)
                         _record_tts_live_chunk_llvc_latency(elapsed_ms=conversion_elapsed_ms)
@@ -17647,8 +24732,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                                     chunk_index=int(result.get("index") or 0),
                                 ),
                             }
-                        conversion_headers["x-vf-post-tts-conversion"] = "bypassed_error"
-                        conversion_headers["x-vf-post-tts-error"] = str(exc).replace("\n", " ").replace("\r", " ")[:180]
+                        conversion_headers["x-vf-post-tts-conversion"] = _post_tts_conversion_bypass_status(exc)
                 return {
                     **result,
                     "ok": True,
@@ -17661,6 +24745,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 nonlocal live_state
                 nonlocal response_trace_id
                 nonlocal diagnostics_header
+                nonlocal runtime_model_header
+                nonlocal runtime_speech_mode_header
                 nonlocal media_type
                 nonlocal first_chunk_recorded
                 if _live_job_cancelled():
@@ -17674,6 +24760,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 media_type = str(result.get("mediaType") or media_type or "audio/wav")
                 response_trace_id = str(result.get("responseTraceId") or response_trace_id or "").strip()
                 diagnostics_header = str(result.get("diagnosticsHeader") or diagnostics_header or "").strip()
+                runtime_model_header = str(result.get("runtimeModelHeader") or runtime_model_header or "").strip()
+                runtime_speech_mode_header = str(result.get("runtimeSpeechModeHeader") or runtime_speech_mode_header or "").strip()
 
                 try:
                     chunk_meta = _persist_live_chunk(
@@ -17901,6 +24989,10 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 completed_headers["x-voiceflow-trace-id"] = response_trace_id
             if diagnostics_header:
                 completed_headers["x-voiceflow-diagnostics"] = diagnostics_header
+            if runtime_model_header:
+                completed_headers["x-voiceflow-model"] = runtime_model_header
+            if runtime_speech_mode_header:
+                completed_headers["x-voiceflow-speech-mode"] = runtime_speech_mode_header
             completed_headers.update(post_conversion_headers)
             completed_headers["x-vf-live-stream"] = "1"
             completed_headers["x-vf-live-chunks"] = str(len(chunk_audio_bytes))
@@ -17910,13 +25002,23 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 str(media_type or "audio/wav"),
             )
 
-            _TTS_JOB_QUEUE.mark_completed(
+            completed_job = _TTS_JOB_QUEUE.mark_completed(
                 job_id,
                 audio_bytes=synthesized_audio_bytes,
                 media_type=str(media_type or "audio/wav"),
                 headers=completed_headers,
                 result_ref=result_ref,
             )
+            audio_created_at = _safe_now_iso()
+            for audit_id in _audio_generation_audit_ids_from_job(completed_job or current):
+                _audio_generation_audit_mark_terminal(
+                    audit_id,
+                    status="completed",
+                    job_id=str((completed_job or {}).get("jobId") or job_id),
+                    request_id=str((completed_job or {}).get("requestId") or request_id),
+                    trace_id=response_trace_id or trace_id,
+                    audio_created_at=audio_created_at,
+                )
             _record_tts_terminal_event(
                 job_id=job_id,
                 engine=safe_engine,
@@ -17924,6 +25026,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 reason="completed",
                 status_code=200,
             )
+            if isinstance(completed_job, dict):
+                _notification_emit_tts_job_terminal(completed_job, status="completed")
             return
 
         runtime_started = int(time.time() * 1000)
@@ -18025,7 +25129,10 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             )
             return
 
-        post_tts_disable = bool(current.get("postTtsDisable"))
+        post_tts_disable, post_tts_conversion_status = _resolve_post_tts_disable_state(
+            engine=engine,
+            requested_disable=current.get("postTtsDisable"),
+        )
         synthesized_audio_bytes = bytes(runtime_response.content or b"")
         post_conversion_headers: dict[str, str] = {}
         if VF_TTS_POST_LLVC_ENABLED and not post_tts_disable:
@@ -18035,6 +25142,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     engine=engine,
                     voice_id=voice_id,
                     voice_name=voice_name or str(upstream_payload.get("voiceName") or ""),
+                    multi_speaker=_payload_uses_multi_speaker(upstream_payload),
                 )
                 if len(converted_audio_bytes) < 100:
                     raise RuntimeError("Converted audio payload is empty.")
@@ -18053,15 +25161,12 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         request_id=request_id,
                         status_code=503,
                         detail=detail,
-                        error_tag="post_tts_conversion_failed",
-                    )
+                            error_tag="post_tts_conversion_failed",
+                )
                     return
-                post_conversion_headers["x-vf-post-tts-conversion"] = "bypassed_error"
-                post_conversion_headers["x-vf-post-tts-error"] = str(exc).replace("\n", " ").replace("\r", " ")[:180]
-        elif post_tts_disable:
-            post_conversion_headers["x-vf-post-tts-conversion"] = "disabled_by_request"
-        else:
-            post_conversion_headers["x-vf-post-tts-conversion"] = "disabled"
+                post_conversion_headers["x-vf-post-tts-conversion"] = _post_tts_conversion_bypass_status(exc)
+        elif post_tts_conversion_status:
+            post_conversion_headers["x-vf-post-tts-conversion"] = post_tts_conversion_status
 
         quota_headers: dict[str, str] = {}
         if not admin_limit_bypass:
@@ -18106,6 +25211,12 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
         diagnostics = runtime_response.headers.get("x-voiceflow-diagnostics")
         if diagnostics:
             completed_headers["x-voiceflow-diagnostics"] = diagnostics
+        runtime_model = runtime_response.headers.get("x-voiceflow-model")
+        if runtime_model:
+            completed_headers["x-voiceflow-model"] = str(runtime_model)
+        runtime_speech_mode = runtime_response.headers.get("x-voiceflow-speech-mode")
+        if runtime_speech_mode:
+            completed_headers["x-voiceflow-speech-mode"] = str(runtime_speech_mode)
         completed_headers.update(post_conversion_headers)
         media_type = str(runtime_response.headers.get("content-type") or "audio/wav")
         result_ref = _persist_tts_result_audio(
@@ -18114,13 +25225,23 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             media_type,
         )
 
-        _TTS_JOB_QUEUE.mark_completed(
+        completed_job = _TTS_JOB_QUEUE.mark_completed(
             job_id,
             audio_bytes=synthesized_audio_bytes,
             media_type=media_type,
             headers=completed_headers,
             result_ref=result_ref,
         )
+        audio_created_at = _safe_now_iso()
+        for audit_id in _audio_generation_audit_ids_from_job(completed_job or current):
+            _audio_generation_audit_mark_terminal(
+                audit_id,
+                status="completed",
+                job_id=str((completed_job or {}).get("jobId") or job_id),
+                request_id=str((completed_job or {}).get("requestId") or request_id),
+                trace_id=response_trace_id or trace_id,
+                audio_created_at=audio_created_at,
+            )
         _record_tts_terminal_event(
             job_id=job_id,
             engine=safe_engine,
@@ -18128,6 +25249,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             reason="completed",
             status_code=200,
         )
+        if isinstance(completed_job, dict):
+            _notification_emit_tts_job_terminal(completed_job, status="completed")
     finally:
         if acquired_slot and semaphore is not None:
             _record_tts_engine_active(engine=safe_engine, delta=-1)
@@ -18348,198 +25471,335 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
     safe_sync_wait_ms = max(0, min(60_000, int(sync_wait_ms)))
     uid = _require_request_uid(request)
     admin_limit_bypass = _request_is_admin(request, uid)
-    # Enforce one-time userId completion before protected synthesis routes for non-admin users.
-    if not admin_limit_bypass:
-        _require_user_id_ready(request, uid)
-    text = str(payload.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text is required.")
+    resolved_user_id = _resolve_request_user_id(request, uid)
+    raw_text = str(payload.text or "")
+    text = raw_text.strip()
     engine = _normalize_engine_name(payload.engine)
     idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
     request_id = str(payload.request_id or idempotency_key or uuid.uuid4().hex).strip()
     trace_id = str(payload.trace_id or request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
-
-    plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
-        uid,
-        len(text),
-        trace_id,
-        engine=engine,
-        bypass=admin_limit_bypass,
+    identity_snapshot = _audio_generation_identity_snapshot(uid, request)
+    payment_ref_type, payment_ref = _resolve_audio_generation_payment_ref(uid)
+    audit_record = _audio_generation_audit_create(
+        {
+            "uid": uid,
+            "userId": resolved_user_id,
+            "identityType": identity_snapshot.get("identityType") or "",
+            "identityValue": identity_snapshot.get("identityValue") or "",
+            "email": identity_snapshot.get("email") or "",
+            "phoneNumber": identity_snapshot.get("phoneNumber") or "",
+            "submittedAt": _safe_now_iso(),
+            "status": "received",
+            "engine": engine,
+            "voiceId": str(payload.voiceId or payload.voice_id or "").strip(),
+            "voiceName": str(payload.voiceName or "").strip(),
+            "language": str(payload.language or "").strip(),
+            "requestId": request_id,
+            "traceId": trace_id,
+            "inputText": raw_text,
+            "sourceIp": _request_source_ip(request),
+            "paymentRefType": payment_ref_type,
+            "paymentRef": payment_ref,
+        }
     )
-    quota_headers: dict[str, str] = {}
-    if not admin_limit_bypass:
-        quota_headers = _precheck_tts_success_quota(uid, plan_name, plan_key, trace_id)
-
-    gateway_lease, reject_detail = _TTS_GATEWAY_CONTROLLER.acquire()
-    if gateway_lease is None:
-        safe_detail = dict(reject_detail or {})
-        reason = str(safe_detail.get("reason") or "queue_rejected").strip().lower()
-        safe_detail.setdefault("reason", reason)
-        if reason == "queue_timeout":
-            safe_detail.setdefault("errorCode", QUEUE_TIMEOUT)
-        else:
-            safe_detail.setdefault("errorCode", ENGINE_OVERLOADED)
-        safe_detail.setdefault("queueDepth", 0)
-        safe_detail.setdefault("retryAfterMs", 1000)
-        safe_detail.setdefault("trace_id", trace_id)
-        retry_after_ms = max(250, int(safe_detail.get("retryAfterMs") or 1000))
-        error_headers = dict(quota_headers)
-        error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
-        raise HTTPException(status_code=503, detail=safe_detail, headers=error_headers)
+    audit_id = str(audit_record.get("auditId") or "").strip()
 
     try:
-        reserve = _reserve_usage(
+        # Enforce one-time userId completion before protected synthesis routes for non-admin users.
+        if not admin_limit_bypass:
+            profile = _require_user_id_ready(request, uid)
+            profile_user_id = str((profile or {}).get("userId") or "").strip().lower()
+            if profile_user_id and profile_user_id != resolved_user_id:
+                resolved_user_id = profile_user_id
+                _audio_generation_audit_update(audit_id, {"userId": resolved_user_id})
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required.")
+
+        plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
             uid,
-            request_id,
-            engine,
             len(text),
-            bypass_limits=admin_limit_bypass,
-            bypass_reason="admin_request" if admin_limit_bypass else "",
-        )
-        _ = reserve
-        _ensure_tts_workers_started()
-        _cleanup_expired_live_artifacts()
-        _cleanup_expired_tts_result_artifacts()
-
-        runtime_base = _runtime_url_for_engine(engine)
-        runtime_path = _runtime_synthesize_path_for_engine(engine)
-        live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(payload.stream)
-        live_chunk_chars = None
-        live_chunk_words = None
-        if live_stream_requested:
-            live_chunk_chars = _safe_bounded_int(
-                payload.live_chunk_chars,
-                default=VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
-                min_value=120,
-                max_value=VF_TTS_LIVE_CHUNK_CHARS_MAX,
-            )
-            live_chunk_words = _safe_bounded_int(
-                payload.live_chunk_words,
-                default=VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
-                min_value=24,
-                max_value=VF_TTS_LIVE_CHUNK_WORDS_MAX,
-            )
-        upstream_payload, voice_id = _build_tts_upstream_payload(
-            payload,
+            trace_id,
             engine=engine,
-            text=text,
-            request_id=request_id,
-            trace_id=trace_id,
-            plan_key=plan_key,
+            bypass=admin_limit_bypass,
         )
+        quota_headers: dict[str, str] = {}
+        if not admin_limit_bypass:
+            quota_headers = _precheck_tts_success_quota(uid, plan_name, plan_key, trace_id)
 
-        existing_job = _TTS_JOB_QUEUE.get(request_id)
-        if existing_job is None:
-            depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
-            if int(depth_snapshot.get("total") or 0) >= VF_TTS_QUEUE_MAX_DEPTH:
-                _finalize_usage(uid, request_id, success=False, error_detail="queue_depth_limit")
-                detail = {
-                    "error": "TTS queue depth limit reached.",
-                    "errorCode": ENGINE_OVERLOADED,
-                    "reason": "queue_full",
-                    "queueDepth": int(depth_snapshot.get("total") or 0),
-                    "queueMax": int(VF_TTS_QUEUE_MAX_DEPTH),
-                    "retryAfterMs": 1000,
-                    "trace_id": trace_id,
-                }
-                raise HTTPException(status_code=503, detail=detail, headers=quota_headers)
+        gateway_lease, reject_detail = _TTS_GATEWAY_CONTROLLER.acquire()
+        if gateway_lease is None:
+            safe_detail = dict(reject_detail or {})
+            reason = str(safe_detail.get("reason") or "queue_rejected").strip().lower()
+            safe_detail.setdefault("reason", reason)
+            if reason == "queue_timeout":
+                safe_detail.setdefault("errorCode", QUEUE_TIMEOUT)
+            else:
+                safe_detail.setdefault("errorCode", ENGINE_OVERLOADED)
+            safe_detail.setdefault("queueDepth", 0)
+            safe_detail.setdefault("retryAfterMs", 1000)
+            safe_detail.setdefault("trace_id", trace_id)
+            retry_after_ms = max(250, int(safe_detail.get("retryAfterMs") or 1000))
+            error_headers = dict(quota_headers)
+            error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+            raise HTTPException(status_code=503, detail=safe_detail, headers=error_headers)
 
-            projection = _estimate_tts_completion_delay(engine)
-            observed_queue_depth = int(depth_snapshot.get("total") or 0)
-            projection_jobs_ahead = int(projection.get("jobsAhead") or 0)
-            projection_concurrency = max(1, int(projection.get("concurrency") or 1))
-            projection_avg_runtime = max(1, int(projection.get("avgRuntimeMs") or _default_engine_runtime_ms(engine)))
-            estimated_jobs_ahead = max(projection_jobs_ahead, observed_queue_depth)
-            estimated_completion_ms = max(
-                int(projection.get("estimatedCompletionMs") or 0),
-                int(((estimated_jobs_ahead // projection_concurrency) + 1) * projection_avg_runtime),
-            )
-            if estimated_completion_ms > int(VF_TTS_QUEUE_JOB_TTL_MS):
-                _finalize_usage(uid, request_id, success=False, error_detail="estimated_queue_timeout")
-                retry_after_ms = max(
-                    500,
-                    int(estimated_completion_ms - int(VF_TTS_QUEUE_JOB_TTL_MS) + projection_avg_runtime),
-                )
-                detail = {
-                    "error": "TTS engine is overloaded and queue TTL would likely expire before completion.",
-                    "errorCode": ENGINE_OVERLOADED,
-                    "reason": "estimated_queue_timeout",
-                    "trace_id": trace_id,
-                    "engine": str(projection.get("engine") or _safe_tts_engine_name(engine)),
-                    "queueDepth": observed_queue_depth,
-                    "engineQueueDepth": int(estimated_jobs_ahead),
-                    "engineQueued": int(projection.get("queued") or 0),
-                    "engineRunning": int(projection.get("running") or 0),
-                    "engineConcurrency": int(projection.get("concurrency") or 1),
-                    "estimatedCompletionMs": estimated_completion_ms,
-                    "deadlineBudgetMs": int(VF_TTS_QUEUE_JOB_TTL_MS),
-                    "retryAfterMs": retry_after_ms,
-                }
-                error_headers = dict(quota_headers)
-                error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
-                raise HTTPException(status_code=503, detail=detail, headers=error_headers)
-
-            deadline_at_ms = int(time.time() * 1000) + VF_TTS_QUEUE_JOB_TTL_MS
-            lane = _tts_job_lane_for_plan(plan_key)
-            job_payload = {
-                "jobId": request_id,
-                "uid": uid,
-                "requestId": request_id,
-                "traceId": trace_id,
-                "engine": engine,
-                "text": text,
-                "voiceId": voice_id,
-                "voiceName": str(payload.voiceName or "").strip(),
-                "planName": plan_name,
-                "planKey": plan_key,
-                "adminLimitBypass": bool(admin_limit_bypass),
-                "idempotencyKey": idempotency_key,
-                "runtimeBase": runtime_base,
-                "runtimePath": runtime_path,
-                "upstreamPayload": upstream_payload,
-                "deadlineAtMs": deadline_at_ms,
-                "maxAttempts": VF_TTS_QUEUE_MAX_ATTEMPTS if safe_sync_wait_ms <= 0 else 1,
-                "postTtsDisable": bool(payload.post_tts_disable),
-                "liveStream": bool(live_stream_requested),
-                "liveChunkChars": int(live_chunk_chars or VF_TTS_LIVE_CHUNK_CHARS_DEFAULT),
-                "liveChunkWords": int(live_chunk_words or VF_TTS_LIVE_CHUNK_WORDS_DEFAULT),
-            }
-            current_job = _TTS_JOB_QUEUE.enqueue(lane=lane, payload=job_payload)
-            _record_tts_job_enqueued(
-                job_id=request_id,
-                engine=engine,
-                created_at_ms=int((current_job or {}).get("createdAtMs") or int(time.time() * 1000)),
-            )
-        else:
-            current_job = existing_job
-
-        if safe_sync_wait_ms > 0:
-            terminal_job = _TTS_JOB_QUEUE.wait_for_terminal(
+        try:
+            reserve = _reserve_usage(
+                uid,
                 request_id,
-                timeout_ms=safe_sync_wait_ms,
-                poll_ms=120,
+                engine,
+                len(text),
+                bypass_limits=admin_limit_bypass,
+                bypass_reason="admin_request" if admin_limit_bypass else "",
             )
-            if isinstance(terminal_job, dict):
-                terminal_status = str(terminal_job.get("status") or "").strip().lower()
-                if terminal_status == "completed":
-                    return _response_from_completed_tts_job(terminal_job, gateway_lease)
-                if terminal_status == "failed":
-                    _raise_failed_tts_job(terminal_job, default_headers=quota_headers)
-                if terminal_status == "cancelled":
-                    raise HTTPException(status_code=409, detail={"error": "TTS job was cancelled.", "jobId": request_id})
-                current_job = terminal_job
+            _ = reserve
+            _ensure_tts_workers_started()
+            _cleanup_expired_live_artifacts()
+            _cleanup_expired_tts_result_artifacts()
 
-        status_payload = _tts_job_status_payload(current_job if isinstance(current_job, dict) else {"jobId": request_id})
-        status_payload["accepted"] = True
-        status_payload["queue"] = _TTS_JOB_QUEUE.depth_snapshot()
-        headers = dict(quota_headers)
-        headers["x-vf-request-id"] = request_id
-        headers["x-vf-job-id"] = request_id
-        headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
-        headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
-        return JSONResponse(status_payload, status_code=202, headers=headers)
-    finally:
-        gateway_lease.release()
+            runtime_base = _runtime_url_for_engine(engine)
+            runtime_path = _runtime_synthesize_path_for_engine(engine)
+            live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(payload.stream)
+            live_chunk_chars = None
+            live_chunk_words = None
+            if live_stream_requested:
+                live_chunk_chars = _safe_bounded_int(
+                    payload.live_chunk_chars,
+                    default=VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
+                    min_value=120,
+                    max_value=VF_TTS_LIVE_CHUNK_CHARS_MAX,
+                )
+                live_chunk_words = _safe_bounded_int(
+                    payload.live_chunk_words,
+                    default=VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
+                    min_value=24,
+                    max_value=VF_TTS_LIVE_CHUNK_WORDS_MAX,
+                )
+            upstream_payload, voice_id = _build_tts_upstream_payload(
+                payload,
+                engine=engine,
+                text=text,
+                request_id=request_id,
+                trace_id=trace_id,
+                plan_key=plan_key,
+            )
+            _audio_generation_audit_update(
+                audit_id,
+                {
+                    "engine": engine,
+                    "voiceId": str(voice_id or "").strip(),
+                    "voiceName": str(payload.voiceName or "").strip(),
+                    "language": str(upstream_payload.get("language") or payload.language or "").strip(),
+                    "requestId": request_id,
+                    "traceId": trace_id,
+                },
+            )
+
+            existing_job = _TTS_JOB_QUEUE.get(request_id)
+            if existing_job is None:
+                depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
+                if int(depth_snapshot.get("total") or 0) >= VF_TTS_QUEUE_MAX_DEPTH:
+                    _finalize_usage(uid, request_id, success=False, error_detail="queue_depth_limit")
+                    detail = {
+                        "error": "TTS queue depth limit reached.",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "queue_full",
+                        "queueDepth": int(depth_snapshot.get("total") or 0),
+                        "queueMax": int(VF_TTS_QUEUE_MAX_DEPTH),
+                        "retryAfterMs": 1000,
+                        "trace_id": trace_id,
+                    }
+                    raise HTTPException(status_code=503, detail=detail, headers=quota_headers)
+
+                projection = _estimate_tts_completion_delay(engine)
+                observed_queue_depth = int(depth_snapshot.get("total") or 0)
+                projection_jobs_ahead = int(projection.get("jobsAhead") or 0)
+                projection_concurrency = max(1, int(projection.get("concurrency") or 1))
+                projection_avg_runtime = max(1, int(projection.get("avgRuntimeMs") or _default_engine_runtime_ms(engine)))
+                estimated_jobs_ahead = max(projection_jobs_ahead, observed_queue_depth)
+                estimated_completion_ms = max(
+                    int(projection.get("estimatedCompletionMs") or 0),
+                    int(((estimated_jobs_ahead // projection_concurrency) + 1) * projection_avg_runtime),
+                )
+                if estimated_completion_ms > int(VF_TTS_QUEUE_JOB_TTL_MS):
+                    _finalize_usage(uid, request_id, success=False, error_detail="estimated_queue_timeout")
+                    retry_after_ms = max(
+                        500,
+                        int(estimated_completion_ms - int(VF_TTS_QUEUE_JOB_TTL_MS) + projection_avg_runtime),
+                    )
+                    detail = {
+                        "error": "TTS engine is overloaded and queue TTL would likely expire before completion.",
+                        "errorCode": ENGINE_OVERLOADED,
+                        "reason": "estimated_queue_timeout",
+                        "trace_id": trace_id,
+                        "engine": str(projection.get("engine") or _safe_tts_engine_name(engine)),
+                        "queueDepth": observed_queue_depth,
+                        "engineQueueDepth": int(estimated_jobs_ahead),
+                        "engineQueued": int(projection.get("queued") or 0),
+                        "engineRunning": int(projection.get("running") or 0),
+                        "engineConcurrency": int(projection.get("concurrency") or 1),
+                        "estimatedCompletionMs": estimated_completion_ms,
+                        "deadlineBudgetMs": int(VF_TTS_QUEUE_JOB_TTL_MS),
+                        "retryAfterMs": retry_after_ms,
+                    }
+                    error_headers = dict(quota_headers)
+                    error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+                    raise HTTPException(status_code=503, detail=detail, headers=error_headers)
+
+                deadline_at_ms = int(time.time() * 1000) + VF_TTS_QUEUE_JOB_TTL_MS
+                lane = _tts_job_lane_for_plan(plan_key)
+                job_payload = {
+                    "jobId": request_id,
+                    "uid": uid,
+                    "userId": resolved_user_id,
+                    "requestId": request_id,
+                    "traceId": trace_id,
+                    "engine": engine,
+                    "text": text,
+                    "voiceId": voice_id,
+                    "voiceName": str(payload.voiceName or "").strip(),
+                    "planName": plan_name,
+                    "planKey": plan_key,
+                    "adminLimitBypass": bool(admin_limit_bypass),
+                    "idempotencyKey": idempotency_key,
+                    "runtimeBase": runtime_base,
+                    "runtimePath": runtime_path,
+                    "upstreamPayload": upstream_payload,
+                    "deadlineAtMs": deadline_at_ms,
+                    "maxAttempts": VF_TTS_QUEUE_MAX_ATTEMPTS if safe_sync_wait_ms <= 0 else 1,
+                    "postTtsDisable": bool(payload.post_tts_disable),
+                    "liveStream": bool(live_stream_requested),
+                    "liveChunkChars": int(live_chunk_chars or VF_TTS_LIVE_CHUNK_CHARS_DEFAULT),
+                    "liveChunkWords": int(live_chunk_words or VF_TTS_LIVE_CHUNK_WORDS_DEFAULT),
+                    "audioAuditId": audit_id,
+                    "audioAuditIds": [audit_id],
+                }
+                current_job = _TTS_JOB_QUEUE.enqueue(lane=lane, payload=job_payload)
+                _record_tts_job_enqueued(
+                    job_id=request_id,
+                    engine=engine,
+                    created_at_ms=int((current_job or {}).get("createdAtMs") or int(time.time() * 1000)),
+                )
+                _audio_generation_audit_update(
+                    audit_id,
+                    {
+                        "status": "queued",
+                        "jobId": request_id,
+                        "requestId": request_id,
+                        "traceId": trace_id,
+                    },
+                )
+            else:
+                current_job = existing_job
+                existing_status = str(existing_job.get("status") or "queued").strip().lower() or "queued"
+                if existing_status in {"queued", "running"}:
+                    linked_audit_ids = _audio_generation_audit_ids_from_job(existing_job)
+                    if audit_id not in linked_audit_ids:
+                        linked_audit_ids.append(audit_id)
+                        _TTS_JOB_QUEUE.update(
+                            request_id,
+                            {
+                                "audioAuditId": linked_audit_ids[0],
+                                "audioAuditIds": linked_audit_ids,
+                            },
+                        )
+                    _audio_generation_audit_update(
+                        audit_id,
+                        {
+                            "status": existing_status,
+                            "jobId": str(existing_job.get("jobId") or request_id),
+                            "requestId": str(existing_job.get("requestId") or request_id),
+                            "traceId": str(existing_job.get("traceId") or trace_id),
+                        },
+                    )
+                elif existing_status == "completed":
+                    _audio_generation_audit_mark_terminal(
+                        audit_id,
+                        status="completed",
+                        job_id=str(existing_job.get("jobId") or request_id),
+                        request_id=str(existing_job.get("requestId") or request_id),
+                        trace_id=str(existing_job.get("traceId") or trace_id),
+                        audio_created_at=_safe_now_iso(),
+                    )
+                elif existing_status == "failed":
+                    _audio_generation_audit_mark_terminal(
+                        audit_id,
+                        status="failed",
+                        failure_code=_audio_generation_failure_code(
+                            existing_job.get("error"),
+                            f"runtime_error:{existing_job.get('statusCode')}",
+                        ),
+                        failure_detail=existing_job.get("error"),
+                        job_id=str(existing_job.get("jobId") or request_id),
+                        request_id=str(existing_job.get("requestId") or request_id),
+                        trace_id=str(existing_job.get("traceId") or trace_id),
+                    )
+                elif existing_status == "cancelled":
+                    _audio_generation_audit_mark_terminal(
+                        audit_id,
+                        status="cancelled",
+                        failure_code="cancelled_by_user",
+                        failure_detail="TTS job was cancelled.",
+                        job_id=str(existing_job.get("jobId") or request_id),
+                        request_id=str(existing_job.get("requestId") or request_id),
+                        trace_id=str(existing_job.get("traceId") or trace_id),
+                    )
+
+            if safe_sync_wait_ms > 0:
+                terminal_job = _TTS_JOB_QUEUE.wait_for_terminal(
+                    request_id,
+                    timeout_ms=safe_sync_wait_ms,
+                    poll_ms=120,
+                )
+                if isinstance(terminal_job, dict):
+                    terminal_status = str(terminal_job.get("status") or "").strip().lower()
+                    if terminal_status == "completed":
+                        return _response_from_completed_tts_job(terminal_job, gateway_lease)
+                    if terminal_status == "failed":
+                        _raise_failed_tts_job(terminal_job, default_headers=quota_headers)
+                    if terminal_status == "cancelled":
+                        raise HTTPException(status_code=409, detail={"error": "TTS job was cancelled.", "jobId": request_id})
+                    current_job = terminal_job
+
+            status_payload = _tts_job_status_payload(current_job if isinstance(current_job, dict) else {"jobId": request_id})
+            status_payload["accepted"] = True
+            status_payload["queue"] = _TTS_JOB_QUEUE.depth_snapshot()
+            headers = dict(quota_headers)
+            headers["x-vf-request-id"] = request_id
+            headers["x-vf-job-id"] = request_id
+            headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
+            headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
+            return JSONResponse(status_payload, status_code=202, headers=headers)
+        finally:
+            gateway_lease.release()
+    except HTTPException as exc:
+        if audit_id:
+            terminal_status = "failed"
+            detail = exc.detail
+            if int(exc.status_code) == 409:
+                detail_str = _audio_generation_audit_stringify_detail(detail).lower()
+                if "cancel" in detail_str:
+                    terminal_status = "cancelled"
+            _audio_generation_audit_mark_terminal(
+                audit_id,
+                status=terminal_status,
+                failure_code=_audio_generation_failure_code(detail, f"http_{exc.status_code}"),
+                failure_detail=detail,
+                request_id=request_id,
+                trace_id=trace_id,
+            )
+        raise
+    except Exception as exc:
+        if audit_id:
+            _audio_generation_audit_mark_terminal(
+                audit_id,
+                status="failed",
+                failure_code=_audio_generation_failure_code(str(exc), "unexpected_error"),
+                failure_detail=str(exc),
+                request_id=request_id,
+                trace_id=trace_id,
+            )
+        raise
 
 
 @app.post("/tts/synthesize")
@@ -18661,6 +25921,17 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
         reason="cancelled_by_user",
         status_code=409,
     )
+    for audit_id in _audio_generation_audit_ids_from_job(cancelled):
+        _audio_generation_audit_mark_terminal(
+            audit_id,
+            status="cancelled",
+            failure_code="cancelled_by_user",
+            failure_detail="TTS job was cancelled by the user.",
+            job_id=safe_job_id,
+            request_id=str(cancelled.get("requestId") or safe_job_id),
+            trace_id=str(cancelled.get("traceId") or safe_job_id),
+        )
+    _notification_emit_tts_job_terminal(cancelled, status="cancelled", detail="cancelled_by_user")
     return JSONResponse({"ok": True, "job": _tts_job_status_payload(cancelled, include_result=False)})
 
 
@@ -18774,6 +26045,7 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
     _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     try:
         engine = _normalize_engine_name(payload.engine)
+        effective_gpu_mode = _effective_tts_gpu_mode(engine, payload.gpu)
         health_url = TTS_ENGINE_HEALTH_URLS[engine]
         already_online, online_detail = _probe_runtime_health(health_url)
         if already_online:
@@ -18784,13 +26056,13 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
                     "state": "online",
                     "detail": "Runtime already online",
                     "healthUrl": health_url,
-                    "gpuMode": payload.gpu,
+                    "gpuMode": effective_gpu_mode,
                     "commandOutput": "",
                     "probeDetail": online_detail,
                 }
             )
 
-        command_output = _run_tts_switch_with_retry(engine, payload.gpu, retries=2, keep_others=True)
+        command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
         is_online, detail = _probe_runtime_health(health_url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -18803,14 +26075,18 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
         "state": "online" if is_online else "starting",
         "detail": detail if is_online else "Runtime starting in background",
         "healthUrl": health_url,
-        "gpuMode": payload.gpu,
+        "gpuMode": effective_gpu_mode,
         "commandOutput": command_output[-500:],
     }
     _audit_append_event(
         action="tts_engine_switch",
         resource_type="runtime",
         resource_id=engine,
-        after={"state": response_payload["state"], "gpuMode": bool(payload.gpu)},
+        after={
+            "state": response_payload["state"],
+            "gpuMode": bool(effective_gpu_mode),
+            "requestedGpuMode": bool(payload.gpu),
+        },
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
@@ -18896,13 +26172,14 @@ def prepare_dubbing_services(payload: PrepareDubbingServicesRequest, request: Re
     overall_ok = True
     any_starting = False
     trace_id = uuid.uuid4().hex[:10]
-    print(f"[dubbing.prepare:{trace_id}] start gpu={payload.gpu}")
+    print(f"[dubbing.prepare:{trace_id}] start requested_gpu={payload.gpu}")
 
     for engine in engines:
         health_url = TTS_ENGINE_HEALTH_URLS[engine]
         attempted_switch = False
         command_output = ""
         waited_ms = 0
+        effective_gpu_mode = _effective_tts_gpu_mode(engine, payload.gpu)
         try:
             online, detail = _probe_runtime_health(health_url, timeout_sec=2.5)
             state = "online" if online else "starting"
@@ -18910,7 +26187,7 @@ def prepare_dubbing_services(payload: PrepareDubbingServicesRequest, request: Re
                 attempted_switch = True
                 command_output = _run_tts_switch_with_retry(
                     engine,
-                    payload.gpu,
+                    effective_gpu_mode,
                     retries=2,
                     keep_others=True,
                 )
@@ -18994,7 +26271,7 @@ def tts_engines_capabilities() -> JSONResponse:
         payload[engine] = engine_payload
 
     conversion_adapters = {
-        "LLVC": llvc_adapter,
+        "VOICE_TRANSFER": llvc_adapter,
     }
     conversion_payload: dict[str, Any] = {}
     for key, adapter in conversion_adapters.items():
@@ -19031,8 +26308,13 @@ def tts_engines_status(engine: Optional[str] = Query(None)) -> JSONResponse:
         online, detail = _probe_runtime_health(health_url)
         capability_payload = _probe_runtime_capabilities(normalized_engine, timeout_sec=2.2)
         ready = bool(capability_payload.get("ready")) if isinstance(capability_payload, dict) else bool(online)
+        not_configured_detail = _runtime_not_configured_detail(normalized_engine, capability_payload)
+        if not_configured_detail:
+            ready = False
 
-        if online and ready:
+        if not_configured_detail:
+            state = "not_configured"
+        elif online and ready:
             state = "online"
         elif online:
             state = "starting"
@@ -19040,6 +26322,8 @@ def tts_engines_status(engine: Optional[str] = Query(None)) -> JSONResponse:
             state = "offline"
 
         runtime_detail = str(detail or "").strip() or ("Runtime online" if state == "online" else "Runtime offline")
+        if not_configured_detail:
+            runtime_detail = not_configured_detail
         if _is_gem_runtime_engine(normalized_engine) and isinstance(capability_payload, dict):
             metadata = capability_payload.get("metadata")
             if isinstance(metadata, dict):
@@ -19142,7 +26426,7 @@ def _resolve_voice_id(engine: str, voice_map: dict[str, str], speaker: str) -> s
         return voice_map["default"]
     if engine == "KOKORO":
         return "hf_alpha"
-    return "alloy"
+    return "achernar"
 
 
 def _fetch_runtime_voice_ids(engine: str) -> list[str]:
@@ -19234,11 +26518,14 @@ def _fetch_runtime_voices(engine: str) -> list[dict[str, Any]]:
                         voice_id,
                         {
                             "voice_id": voice_id,
+                            "voice": str(voice.get("voice") or voice_id).strip() or voice_id,
                             "name": name,
                             "language": str(voice.get("language") or "unknown"),
+                            "accent": str(voice.get("accent") or "Unknown").strip() or "Unknown",
                             "gender": str(voice.get("gender") or "unknown"),
                             "source": str(voice.get("source") or "runtime"),
                         },
+                        preserve_runtime_identity=True,
                     ),
                 )
             )
@@ -19403,6 +26690,37 @@ def _extract_phase_error_code(exc: Exception) -> str:
     return f"PHASE_FAILED_{token}"
 
 
+def _normalize_json_diagnostics(raw: Any, *, limit: int = 24) -> list[dict[str, Any]]:
+    rows = raw if isinstance(raw, list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if len(out) >= max(1, int(limit)):
+            break
+        snippet = str(row.get("snippet") or "").strip().replace("\r", " ").replace("\n", " ")
+        if len(snippet) > 240:
+            snippet = snippet[:240].rstrip()
+        out.append(
+            {
+                "stage": str(row.get("stage") or "unknown").strip() or "unknown",
+                "attempt": max(0, int(row.get("attempt") or 0)),
+                "repaired": bool(row.get("repaired")),
+                "errorKind": str(row.get("errorKind") or "").strip(),
+                "snippet": snippet,
+            }
+        )
+    return out
+
+
+def _extract_json_diagnostics_from_exception(exc: Exception) -> list[dict[str, Any]]:
+    try:
+        raw = getattr(exc, "json_diagnostics", None)
+    except Exception:
+        raw = None
+    return _normalize_json_diagnostics(raw)
+
+
 def _runtime_online(url: str) -> bool:
     try:
         response = requests.get(f"{url.rstrip('/')}/health", timeout=4)
@@ -19420,7 +26738,10 @@ def _select_voice_for_engine(engine: str, requested: str = "") -> Optional[str]:
             return voices[0]
         return "hf_alpha"
     if _is_gem_runtime_engine(engine):
-        return requested or "alloy"
+        token = str(requested or "").strip()
+        if token.lower() == "alloy":
+            return "achernar"
+        return token or "achernar"
     return None
 
 
@@ -19493,11 +26814,11 @@ def _auto_route_dubbing_voices(
         if selected_voice:
             chosen_map[speaker] = selected_voice
         if selected_engine is None:
-            default_voice = "alloy" if route == "gem_only" else "hf_alpha"
+            default_voice = "achernar" if route == "gem_only" else "hf_alpha"
             chosen_map[speaker] = preferred or default_voice
 
     if "default" not in chosen_map:
-        fallback_default = "alloy" if route == "gem_only" else "hf_alpha"
+        fallback_default = "achernar" if route == "gem_only" else "hf_alpha"
         chosen_map["default"] = preferred_map.get("default") or next(iter(chosen_map.values()), fallback_default)
     return chosen_map, routes
 
@@ -19584,6 +26905,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
     selected_routes: list[dict[str, Any]] = []
     quality_gate: dict[str, Any] = {"passed": False, "reasons": []}
     preflight: dict[str, Any] = {"ok": False, "checks": [], "failureCount": 0}
+    json_diagnostics: list[dict[str, Any]] = []
     speaker_stats: dict[str, Any] = {
         "detectedSpeakers": 0,
         "mappedSpeakers": 0,
@@ -19595,6 +26917,20 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         "downgraded": False,
         "reason": "",
         "gpuUsed": False,
+    }
+    language_stats: dict[str, Any] = {
+        "mixedSourceDetected": False,
+        "dominantSourceLanguage": "unknown",
+        "segmentLanguageCounts": {},
+        "targetLanguageApplied": "auto",
+        "unsupportedSegments": [],
+    }
+    policy_enforcement: dict[str, Any] = {
+        "requestedTtsRoute": "auto",
+        "appliedTtsRoute": "gem_only",
+        "pinnedDirectorModel": VF_DUB_DIRECTOR_MODEL,
+        "pinnedTtsModel": VF_DUB_TTS_MODEL,
+        "strictNoFallback": True,
     }
     clone_scope = "job_only"
     engine_selected = "AUTO_RELIABLE"
@@ -19616,6 +26952,15 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
     fallback_used = False
     fallback_reason: Optional[str] = None
     supports_one_shot_clone_at_decision = True
+    voice_model = ""
+    token_usage: dict[str, Any] = {
+        "billingMode": "gemini_tokens",
+        "reserved": 0,
+        "exact": 0,
+        "debitedVf": 0,
+        "byStage": {},
+        "bySegment": [],
+    }
 
     def set_stage(stage_name: str, progress: int) -> None:
         nonlocal active_stage
@@ -19695,15 +27040,19 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                         "engineSelectedDisplay": _conversion_policy_display_name(engine_selected),
                         "engineExecutedDisplay": _executed_engine_display_name(engine_executed),
                         "qosState": qos_state,
+                        "languageStats": language_stats,
+                        "policyEnforcement": policy_enforcement,
                         "fallbackUsed": fallback_used,
                         "fallbackReason": fallback_reason,
                         "supportsOneShotCloneAtDecision": supports_one_shot_clone_at_decision,
                         "directorJson": {},
                         "isochronyStats": {},
-                        "llvcMetrics": {},
-                        "lipsyncMetrics": {},
+                        "voiceTransferMetrics": {},
+                        "videoSyncMetrics": {},
+                        "tokenUsage": token_usage,
                         "assets": _video_pipeline_assets_status(),
                         "thinkingPolicy": {},
+                        "jsonDiagnostics": json_diagnostics,
                     },
                     indent=2,
                 ),
@@ -19721,19 +27070,24 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 engineSelectedDisplay=_conversion_policy_display_name(engine_selected),
                 engineExecutedDisplay=_executed_engine_display_name(engine_executed),
                 qosState=qos_state,
+                languageStats=language_stats,
+                policyEnforcement=policy_enforcement,
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
+                jsonDiagnostics=json_diagnostics,
             )
             return
 
         target_language = _normalize_target_language(str(job_payload.get("target_language") or "auto"))
         advanced = job_payload.get("advanced") if isinstance(job_payload.get("advanced"), dict) else {}
         input_voice_map = advanced.get("voice_map") if isinstance(advanced.get("voice_map"), dict) else {}
+        voice_model = str(advanced.get("voice_model") or "").strip()
         engine_selected = _normalize_conversion_policy(str(advanced.get("engine_policy") or "AUTO_RELIABLE"))
-        tts_route = str(advanced.get("tts_route") or "auto").strip().lower()
-        if tts_route not in {"auto", "gem_only", "kokoro_only"}:
-            tts_route = "auto"
+        requested_tts_route = str(advanced.get("tts_route") or "auto").strip().lower()
+        if requested_tts_route not in {"auto", "gem_only", "kokoro_only"}:
+            requested_tts_route = "auto"
+        tts_route = requested_tts_route
         engine_executed = _default_engine_for_tts_route(tts_route)
         multispeaker_policy = _normalize_multispeaker_policy(
             str(advanced.get("multispeaker_policy") or "hybrid_auto"),
@@ -19772,6 +27126,24 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             min_value=1,
             max_value=16,
         )
+        source_language_mode = _normalize_source_language_mode(
+            str(advanced.get("source_language_mode") or "auto_per_segment"),
+            default="auto_per_segment",
+        )
+        language_coverage_profile = _normalize_language_coverage_profile(
+            str(advanced.get("language_coverage_profile") or "core12"),
+            default="core12",
+        )
+        policy_enforcement = {
+            "requestedTtsRoute": requested_tts_route,
+            "appliedTtsRoute": tts_route,
+            "pinnedDirectorModel": VF_DUB_DIRECTOR_MODEL,
+            "pinnedTtsModel": VF_DUB_TTS_MODEL,
+            "strictNoFallback": True,
+        }
+        if language_coverage_profile == "core12" and target_language != "auto" and target_language not in SUPPORTED_TRANSCRIBE_LANGUAGE_CODES:
+            raise RuntimeError("phase_failed:translation:unsupported_target_language")
+        language_stats["targetLanguageApplied"] = target_language
         live_enabled = bool(VF_DUB_LIVE_PLAY_ENABLED and live_play_mode == "progressive_audio")
         segment_failure_policy = str(advanced.get("segment_failure_policy") or "hard_fail").strip().lower()
         clone_scope = str(advanced.get("clone_scope") or "job_only").strip().lower()
@@ -19797,6 +27169,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
         _update_dubbing_job(
             job_id,
             qosState=qos_state,
+            languageStats=language_stats,
+            policyEnforcement=policy_enforcement,
             live={
                 "enabled": live_enabled,
                 "mode": live_play_mode if live_enabled else "off",
@@ -19824,11 +27198,11 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
 
         stage_map = {
             "acoustic_isolation": ("acoustic_isolation", 12),
-            "director": ("director", 28),
-            "isochrony_translation": ("isochrony_translation", 44),
-            "base_tts": ("base_tts", 62),
-            "llvc_timbre_transfer": ("llvc_timbre_transfer", 80),
-            "visual_lipsync": ("visual_lipsync", 96),
+            "speaker_segmentation": ("speaker_segmentation", 28),
+            "translation": ("translation", 44),
+            "tts": ("tts", 62),
+            "voice_transfer": ("voice_transfer", 80),
+            "video_lipsync": ("video_lipsync", 96),
         }
 
         def _pipeline_logger(message: str) -> None:
@@ -19848,8 +27222,9 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             if len(speakers) == 0 and len(segments) > 0:
                 raise RuntimeError("speaker_detection_empty")
             preferred_seed = input_voice_map if input_voice_map else initial
+            preferred_map = preferred_seed if isinstance(preferred_seed, dict) else {}
             resolved_map, routed = _auto_route_dubbing_voices(
-                preferred_map=preferred_seed if isinstance(preferred_seed, dict) else {},
+                preferred_map=_build_preferred_voice_map_for_segments(preferred_map, segments),
                 speakers=speakers,
                 tts_route=tts_route,
             )
@@ -19885,6 +27260,9 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             safe_engine = str(chunk.get("engine") or "")
             safe_voice = str(chunk.get("voice_id") or "")
             text_chars = int(chunk.get("text_chars") or 0)
+            timeline_start_ms = int(chunk.get("timeline_start_ms") or 0)
+            timeline_end_ms = int(chunk.get("timeline_end_ms") or timeline_start_ms)
+            preview_kind = str(chunk.get("preview_kind") or "speech_only").strip() or "speech_only"
             persisted = _persist_dubbing_live_chunk(
                 job_id,
                 chunk_index,
@@ -19895,6 +27273,9 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                     "voiceId": safe_voice,
                     "textChars": text_chars,
                     "contentType": str(chunk.get("content_type") or "audio/wav"),
+                    "timelineStartMs": timeline_start_ms,
+                    "timelineEndMs": timeline_end_ms,
+                    "previewKind": preview_kind,
                 },
             )
             existing_indexes = {
@@ -19945,6 +27326,14 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 "live_play_mode": live_play_mode if live_enabled else "off",
                 "live_chunk_target_ms": live_chunk_target_ms,
                 "max_speaker_count": max_speaker_count,
+                "source_language_mode": source_language_mode,
+                "language_coverage_profile": language_coverage_profile,
+                "strict_gemini_only": tts_route == "gem_only",
+                "strict_no_fallback": True,
+                "director_model": VF_DUB_DIRECTOR_MODEL,
+                "tts_model": VF_DUB_TTS_MODEL,
+                "voice_model": voice_model,
+                "policy_enforcement": policy_enforcement,
                 "live_chunk_callback": _pipeline_live_chunk if live_enabled else None,
             },
             logger=_pipeline_logger,
@@ -19964,7 +27353,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             raise RuntimeError("speaker_detection_empty")
         if not selected_routes:
             _, selected_routes = _auto_route_dubbing_voices(
-                preferred_map=input_voice_map,
+                preferred_map=_build_preferred_voice_map_for_segments(input_voice_map, segments),
                 speakers=speakers,
                 tts_route=tts_route,
             )
@@ -19983,11 +27372,44 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                     }
                 )
 
+        result_language_stats = result.get("language_stats") if isinstance(result.get("language_stats"), dict) else {}
+        json_diagnostics = _normalize_json_diagnostics(result.get("json_diagnostics"))
+        language_stats = {
+            "mixedSourceDetected": bool(result_language_stats.get("mixedSourceDetected", language_stats.get("mixedSourceDetected", False))),
+            "dominantSourceLanguage": str(
+                result_language_stats.get("dominantSourceLanguage")
+                or language_stats.get("dominantSourceLanguage")
+                or "unknown"
+            ),
+            "segmentLanguageCounts": dict(
+                result_language_stats.get("segmentLanguageCounts")
+                if isinstance(result_language_stats.get("segmentLanguageCounts"), dict)
+                else language_stats.get("segmentLanguageCounts")
+                if isinstance(language_stats.get("segmentLanguageCounts"), dict)
+                else {}
+            ),
+            "targetLanguageApplied": str(
+                result_language_stats.get("targetLanguageApplied")
+                or result.get("target_language_applied")
+                or language_stats.get("targetLanguageApplied")
+                or target_language
+            ),
+            "unsupportedSegments": list(
+                result_language_stats.get("unsupportedSegments")
+                if isinstance(result_language_stats.get("unsupportedSegments"), list)
+                else language_stats.get("unsupportedSegments")
+                if isinstance(language_stats.get("unsupportedSegments"), list)
+                else []
+            ),
+        }
+
         speaker_profiles = list(result.get("speaker_profiles") or [])
         tts_requests = list(result.get("tts_requests") or [])
         engine_executed = _resolve_engine_executed_from_requests(tts_requests)
         synthesis_failures = list(result.get("synthesis_failures") or [])
         fallback_bindings = list(result.get("speaker_fallback_bindings") or [])
+        if bool(policy_enforcement.get("strictNoFallback")) and fallback_bindings:
+            raise RuntimeError("phase_failed:tts:strict_no_fallback_violation")
         for speaker in speakers:
             speaker_synthesis_stats[speaker] = {"segments": 0, "ok": 0, "failed": 0}
         for req in tts_requests:
@@ -20045,12 +27467,13 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             fallback_reason = "speaker_binding_fallback"
 
         if synthesis_failures and segment_failure_policy == "hard_fail":
-            raise RuntimeError(f"tts_segment_failures:{len(synthesis_failures)}")
+            raise RuntimeError(f"phase_failed:tts:segment_failures={len(synthesis_failures)}")
 
         director_json = dict(result.get("director_json") or {})
         isochrony_stats = dict(result.get("isochrony_stats") or {})
-        llvc_metrics = dict(result.get("llvc_metrics") or {})
-        lipsync_metrics = dict(result.get("lipsync_metrics") or {})
+        voice_transfer_metrics = dict(result.get("voice_transfer_metrics") or {})
+        video_sync_metrics = dict(result.get("video_sync_metrics") or {})
+        token_usage = dict(result.get("token_usage") or token_usage)
         assets_payload = dict(result.get("assets") or _video_pipeline_assets_status())
         thinking_policy = dict(result.get("thinking_policy") or {})
         output_files = _build_dubbing_output_files(result)
@@ -20085,6 +27508,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             "processingProfile": processing_profile,
             "clipWindow": clip_window,
             "qosState": qos_state,
+            "languageStats": language_stats,
+            "policyEnforcement": policy_enforcement,
             "live": {
                 "enabled": bool(live_enabled),
                 "mode": live_play_mode if live_enabled else "off",
@@ -20097,10 +27522,12 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             "supportsOneShotCloneAtDecision": supports_one_shot_clone_at_decision,
             "directorJson": director_json,
             "isochronyStats": isochrony_stats,
-            "llvcMetrics": llvc_metrics,
-            "lipsyncMetrics": lipsync_metrics,
+            "voiceTransferMetrics": voice_transfer_metrics,
+            "videoSyncMetrics": video_sync_metrics,
+            "tokenUsage": token_usage,
             "assets": assets_payload,
             "thinkingPolicy": thinking_policy,
+            "jsonDiagnostics": json_diagnostics,
         }
         report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 
@@ -20129,6 +27556,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             processingProfile=processing_profile,
             clipWindow=clip_window,
             qosState=qos_state,
+            languageStats=language_stats,
+            policyEnforcement=policy_enforcement,
             live={
                 "enabled": bool(live_enabled),
                 "mode": live_play_mode if live_enabled else "off",
@@ -20143,14 +27572,23 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
             supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
             directorJson=director_json,
             isochronyStats=isochrony_stats,
-            llvcMetrics=llvc_metrics,
-            lipsyncMetrics=lipsync_metrics,
+            voiceTransferMetrics=voice_transfer_metrics,
+            videoSyncMetrics=video_sync_metrics,
+            tokenUsage=token_usage,
             assets=assets_payload,
             thinkingPolicy=thinking_policy,
+            jsonDiagnostics=json_diagnostics,
         )
         _append_dubbing_log(job_id, "Dubbing completed.")
+        with DUBBING_JOB_LOCK:
+            terminal_job = dict(DUBBING_JOBS.get(job_id) or {})
+        if terminal_job:
+            _notification_emit_dubbing_job_terminal(terminal_job)
     except Exception as exc:  # noqa: BLE001
         close_stage("failed")
+        exc_json_diagnostics = _extract_json_diagnostics_from_exception(exc)
+        if exc_json_diagnostics:
+            json_diagnostics = exc_json_diagnostics
         if str(exc) == "cancelled":
             _update_dubbing_job(
                 job_id,
@@ -20170,6 +27608,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 processingProfile=processing_profile,
                 clipWindow=clip_window,
                 qosState=qos_state,
+                languageStats=language_stats,
+                policyEnforcement=policy_enforcement,
                 live={
                     "enabled": bool(live_enabled),
                     "mode": live_play_mode if live_enabled else "off",
@@ -20182,8 +27622,13 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
+                jsonDiagnostics=json_diagnostics,
             )
             _append_dubbing_log(job_id, "Dubbing cancelled.")
+            with DUBBING_JOB_LOCK:
+                terminal_job = dict(DUBBING_JOBS.get(job_id) or {})
+            if terminal_job:
+                _notification_emit_dubbing_job_terminal(terminal_job)
         else:
             error_code = "PRECHECK_FAILED" if "strict_preflight_failed" in str(exc) else _extract_phase_error_code(exc)
             quality_gate["passed"] = False
@@ -20207,6 +27652,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 processingProfile=processing_profile,
                 clipWindow=clip_window,
                 qosState=qos_state,
+                languageStats=language_stats,
+                policyEnforcement=policy_enforcement,
                 live={
                     "enabled": bool(live_enabled),
                     "mode": live_play_mode if live_enabled else "off",
@@ -20219,8 +27666,13 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
+                jsonDiagnostics=json_diagnostics,
             )
             _append_dubbing_log(job_id, f"Error: {exc}")
+            with DUBBING_JOB_LOCK:
+                terminal_job = dict(DUBBING_JOBS.get(job_id) or {})
+            if terminal_job:
+                _notification_emit_dubbing_job_terminal(terminal_job)
         try:
             if not report_path.exists():
                 report_path.write_text(
@@ -20248,6 +27700,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                             "processingProfile": processing_profile,
                             "clipWindow": clip_window,
                             "qosState": qos_state,
+                            "languageStats": language_stats,
+                            "policyEnforcement": policy_enforcement,
                             "live": {
                                 "enabled": bool(live_enabled),
                                 "mode": live_play_mode if live_enabled else "off",
@@ -20260,10 +27714,12 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                             "supportsOneShotCloneAtDecision": supports_one_shot_clone_at_decision,
                             "directorJson": {},
                             "isochronyStats": {},
-                            "llvcMetrics": {},
-                            "lipsyncMetrics": {},
+                            "voiceTransferMetrics": {},
+                            "videoSyncMetrics": {},
+                            "tokenUsage": token_usage,
                             "assets": _video_pipeline_assets_status(),
                             "thinkingPolicy": {},
+                            "jsonDiagnostics": json_diagnostics,
                             "error": str(exc),
                         },
                         indent=2,
@@ -20284,6 +27740,8 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 processingProfile=processing_profile,
                 clipWindow=clip_window,
                 qosState=qos_state,
+                languageStats=language_stats,
+                policyEnforcement=policy_enforcement,
                 live={
                     "enabled": bool(live_enabled),
                     "mode": live_play_mode if live_enabled else "off",
@@ -20296,6 +27754,7 @@ def _run_dubbing_job_v2(job_id: str, job_payload: dict[str, Any]) -> None:
                 fallbackUsed=fallback_used,
                 fallbackReason=fallback_reason,
                 supportsOneShotCloneAtDecision=supports_one_shot_clone_at_decision,
+                jsonDiagnostics=json_diagnostics,
             )
         except Exception:
             pass
@@ -20437,29 +27896,143 @@ async def video_transcribe(
                 if confidence is not None:
                     seg["emotionConfidence"] = confidence
 
-        script = _build_script_from_segments(segments)
         director_segments: list[dict[str, Any]] = []
-        for index, seg in enumerate(segments):
-            start_ms = int(round(float(seg.get("start") or 0.0) * 1000.0))
-            end_ms = int(round(float(seg.get("end") or seg.get("start") or 0.0) * 1000.0))
-            if end_ms <= start_ms:
-                end_ms = start_ms + 240
-            director_segments.append(
-                {
-                    "index": index,
-                    "speaker": str(seg.get("speaker") or "Speaker 1"),
-                    "text": str(seg.get("text") or ""),
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "affective_tags": [str(seg.get("emotion") or "neutral").strip().lower() or "neutral"],
-                }
+        speaker_summary: list[dict[str, Any]] = []
+        director: dict[str, Any]
+        try:
+            from video_dubbing.config import build_config
+            from video_dubbing.pipeline import phase2_director_multimodal
+
+            cfg = build_config(Path(temp_dir) / "analysis")
+            for seg in segments:
+                if "speaker_confidence" not in seg:
+                    seg["speaker_confidence"] = 0.42
+            diarization_turns = phase2_director_multimodal._run_diarization(  # type: ignore[attr-defined]
+                asr_path,
+                cfg,
+                lambda _message: None,
             )
-        director = {
-            "modelPreferred": VF_DUB_DIRECTOR_MODEL,
-            "modelResolved": VF_DUB_DIRECTOR_MODEL,
-            "segments": director_segments,
-            "sceneComplexity": "low" if len(director_segments) <= 12 else "medium",
-        }
+            if diarization_turns:
+                phase2_director_multimodal._apply_diarization_labels(segments, diarization_turns)  # type: ignore[attr-defined]
+            phase2_director_multimodal._merge_speaker_labels(segments, "hybrid_auto", 8)  # type: ignore[attr-defined]
+
+            for seg in segments:
+                seg["speaker"] = _speaker_display_label(str(seg.get("speaker") or ""))
+                tags = [
+                    str(tag).strip().lower()
+                    for tag in list(seg.get("affective_tags") or [])
+                    if str(tag).strip()
+                ]
+                if not tags:
+                    audio_emotion = str(seg.get("emotion") or "").strip().lower()
+                    if audio_emotion:
+                        tags = [audio_emotion]
+                    else:
+                        tags = phase2_director_multimodal._infer_affective_tags(str(seg.get("text") or ""))  # type: ignore[attr-defined]
+                seg["affective_tags"] = tags[:3] if tags else ["neutral"]
+                if not str(seg.get("emotion") or "").strip():
+                    seg["emotion"] = str((seg.get("affective_tags") or ["neutral"])[0] or "neutral")
+
+            for index, seg in enumerate(segments):
+                start_ms = int(round(float(seg.get("start") or 0.0) * 1000.0))
+                end_ms = int(round(float(seg.get("end") or seg.get("start") or 0.0) * 1000.0))
+                if end_ms <= start_ms:
+                    end_ms = start_ms + 240
+                director_segments.append(
+                    {
+                        "index": index,
+                        "speaker": str(seg.get("speaker") or "Speaker 1"),
+                        "speaker_raw": str(seg.get("speaker_raw") or seg.get("speaker") or "Speaker 1"),
+                        "speaker_confidence": float(seg.get("speaker_confidence") or 0.0),
+                        "speaker_source": str(seg.get("speaker_source") or "transcript"),
+                        "text": str(seg.get("text") or ""),
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "affective_tags": list(seg.get("affective_tags") or ["neutral"]),
+                    }
+                )
+
+            refinement_ctx: dict[str, Any] = {}
+            refinement = phase2_director_multimodal._refine_director_with_gemini(  # type: ignore[attr-defined]
+                ctx=refinement_ctx,
+                cfg=cfg,
+                director_segments=director_segments,
+                language=str(detected_language or "auto"),
+                strict_gemini_only=False,
+                log=lambda _message: None,
+            )
+            scene_complexity = phase2_director_multimodal._scene_complexity(  # type: ignore[attr-defined]
+                segments,
+                len({str(seg.get("speaker") or "Speaker 1") for seg in segments}),
+            )
+            if isinstance(refinement, dict):
+                refined_complexity = str(refinement.get("sceneComplexity") or "").strip().lower()
+                if refined_complexity in {"low", "medium", "high"}:
+                    scene_complexity = refined_complexity
+                refined_segments = refinement.get("segments") if isinstance(refinement.get("segments"), list) else []
+                refined_by_index = {
+                    int(item.get("index")): item
+                    for item in refined_segments
+                    if isinstance(item, dict) and item.get("index") is not None
+                }
+                for index, item in enumerate(director_segments):
+                    refined_item = refined_by_index.get(index)
+                    if not isinstance(refined_item, dict):
+                        continue
+                    tags = [
+                        str(tag).strip().lower()
+                        for tag in list(refined_item.get("affective_tags") or [])
+                        if str(tag).strip()
+                    ]
+                    if not tags:
+                        continue
+                    item["affective_tags"] = tags[:3]
+                    if index < len(segments):
+                        segments[index]["affective_tags"] = tags[:3]
+                        existing_emotion = str(segments[index].get("emotion") or "").strip()
+                        emotion_source = str(segments[index].get("emotionSource") or "").strip().lower()
+                        if not existing_emotion or emotion_source in {"", "transcript", "heuristic"}:
+                            segments[index]["emotion"] = tags[0]
+
+            script = _build_script_from_segments(segments)
+            speaker_summary = _summarize_transcription_speakers(segments)
+            director = {
+                "modelPreferred": cfg.director_model,
+                "modelResolved": cfg.director_model,
+                "segments": director_segments,
+                "sceneComplexity": scene_complexity,
+                "speakerCount": len(speaker_summary),
+                "speakerPolicy": "hybrid_auto",
+                "diarizationApplied": bool(diarization_turns),
+            }
+        except Exception:
+            script = _build_script_from_segments(segments)
+            for index, seg in enumerate(segments):
+                start_ms = int(round(float(seg.get("start") or 0.0) * 1000.0))
+                end_ms = int(round(float(seg.get("end") or seg.get("start") or 0.0) * 1000.0))
+                if end_ms <= start_ms:
+                    end_ms = start_ms + 240
+                seg["speaker"] = _speaker_display_label(str(seg.get("speaker") or ""))
+                director_segments.append(
+                    {
+                        "index": index,
+                        "speaker": str(seg.get("speaker") or "Speaker 1"),
+                        "text": str(seg.get("text") or ""),
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "affective_tags": [str(seg.get("emotion") or "neutral").strip().lower() or "neutral"],
+                    }
+                )
+            speaker_summary = _summarize_transcription_speakers(segments)
+            director = {
+                "modelPreferred": VF_DUB_DIRECTOR_MODEL,
+                "modelResolved": VF_DUB_DIRECTOR_MODEL,
+                "segments": director_segments,
+                "sceneComplexity": "low" if len(director_segments) <= 12 else "medium",
+                "speakerCount": len(speaker_summary),
+                "speakerPolicy": "transcript_only",
+                "diarizationApplied": False,
+            }
         return JSONResponse(
             {
                 "ok": True,
@@ -20467,6 +28040,8 @@ async def video_transcribe(
                 "segments": segments,
                 "script": script,
                 "durationSec": _wav_duration_seconds(str(asr_path)),
+                "speakerCount": len(speaker_summary),
+                "speakers": speaker_summary,
                 "director": director,
             }
         )
@@ -20610,7 +28185,7 @@ async def video_mux_dub(
         _cleanup_paths(temp_dir)
 
 
-@app.post("/dubbing/jobs")
+@app.post("/_legacy/dubbing/jobs")
 async def create_dubbing_job(
     source_file: UploadFile = File(...),
     target_language: str = Form("auto"),
@@ -20622,58 +28197,19 @@ async def create_dubbing_job(
     lip_sync: bool = Form(True),
     output: str = Form("audio+video"),
 ) -> JSONResponse:
-    job_id = uuid.uuid4().hex
-    job_dir = DUBBING_OUTPUT_DIR / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    source_path = job_dir / _safe_upload_name(source_file.filename, "source")
-    if await _write_upload_file_chunked(source_file, source_path) <= 0:
-        raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
-    try:
-        voice_map_payload = json.loads(voice_map or "{}")
-    except Exception:
-        voice_map_payload = {}
-    normalized_target_language = _normalize_target_language(target_language)
-    job_payload = {
-        "jobId": job_id,
-        "jobDir": str(job_dir),
-        "sourcePath": str(source_path),
-        "target_language": normalized_target_language,
-        "engine": engine,
-        "voice_map": voice_map_payload if isinstance(voice_map_payload, dict) else {},
-        "transcript": transcript,
-        "emotion_matching": bool(emotion_matching),
-        "prosody_transfer": bool(prosody_transfer),
-        "lip_sync": bool(lip_sync),
-        "output": output,
-        "language": normalized_target_language,
-    }
-
-    with DUBBING_JOB_LOCK:
-        DUBBING_JOBS[job_id] = {
-            "id": job_id,
-            "status": "queued",
-            "stage": "queued",
-            "progress": 0,
-            "createdAt": int(time.time() * 1000),
-            "updatedAt": int(time.time() * 1000),
-            "cancelRequested": False,
-            "logs": [],
-            "resultPath": None,
-        }
-
-    thread = threading.Thread(target=_run_dubbing_job, args=(job_id, job_payload), daemon=True)
-    thread.start()
-    return JSONResponse({"ok": True, "job_id": job_id})
+    raise HTTPException(status_code=410, detail="Legacy dubbing job route removed. Use POST /dubbing/jobs/v2.")
 
 
 @app.post("/dubbing/jobs/v2")
 async def create_dubbing_job_v2(
+    request: Request,
     source_file: UploadFile = File(...),
     target_language: str = Form("auto"),
     mode: str = Form("strict_full"),
     output: str = Form("audio+video"),
     advanced: str = Form("{}"),
 ) -> JSONResponse:
+    uid = _require_request_uid(request)
     if mode != "strict_full":
         raise HTTPException(status_code=400, detail="Unsupported mode. Use strict_full.")
 
@@ -20707,12 +28243,23 @@ async def create_dubbing_job_v2(
             status_code=400,
             detail="advanced.tts_runtime is no longer supported. Use advanced.tts_route (auto|gem_only|kokoro_only).",
         )
+    if "llvc_model" in advanced_payload:
+        raise HTTPException(
+            status_code=400,
+            detail="advanced.llvc_model is no longer supported. Use advanced.voice_model.",
+        )
+    resolved_voice_model = str(advanced_payload.get("voice_model") or "").strip()
+    if not resolved_voice_model:
+        resolved_voice_model = _resolve_llvc_model_name_for_runtime("")
+    advanced_payload["voice_model"] = resolved_voice_model
     if "tts_route" not in advanced_payload:
         advanced_payload["tts_route"] = "auto"
-    tts_route = str(advanced_payload.get("tts_route") or "auto").strip().lower()
-    if tts_route not in {"auto", "gem_only", "kokoro_only"}:
-        raise HTTPException(status_code=400, detail="advanced.tts_route must be auto, gem_only, or kokoro_only")
-    advanced_payload["tts_route"] = tts_route
+    requested_tts_route = str(advanced_payload.get("tts_route") or "auto").strip().lower()
+    if requested_tts_route not in {"auto", "gem_only", "kokoro_only"}:
+        requested_tts_route = "auto"
+    tts_route = requested_tts_route
+    advanced_payload["tts_route"] = requested_tts_route
+    advanced_payload["applied_tts_route"] = tts_route
     advanced_payload["multispeaker_policy"] = _normalize_multispeaker_policy(
         str(advanced_payload.get("multispeaker_policy") or "hybrid_auto"),
         default="hybrid_auto",
@@ -20750,6 +28297,14 @@ async def create_dubbing_job_v2(
         min_value=1,
         max_value=16,
     )
+    advanced_payload["source_language_mode"] = _normalize_source_language_mode(
+        str(advanced_payload.get("source_language_mode") or "auto_per_segment"),
+        default="auto_per_segment",
+    )
+    advanced_payload["language_coverage_profile"] = _normalize_language_coverage_profile(
+        str(advanced_payload.get("language_coverage_profile") or "core12"),
+        default="core12",
+    )
     if "segment_failure_policy" not in advanced_payload:
         advanced_payload["segment_failure_policy"] = "hard_fail"
     if str(advanced_payload.get("segment_failure_policy")).strip().lower() not in {"hard_fail"}:
@@ -20760,6 +28315,8 @@ async def create_dubbing_job_v2(
         raise HTTPException(status_code=400, detail="advanced.clone_scope only supports job_only")
     if "voice_map" in advanced_payload and not isinstance(advanced_payload["voice_map"], dict):
         advanced_payload["voice_map"] = {}
+    if not str(advanced_payload.get("voice_model") or "").strip():
+        raise HTTPException(status_code=400, detail="advanced.voice_model is required.")
     profile = _normalize_dubbing_processing_profile(str(advanced_payload.get("processing_profile") or "cpu_quality"))
     advanced_payload["processing_profile"] = profile
     try:
@@ -20772,6 +28329,18 @@ async def create_dubbing_job_v2(
         advanced_payload["clip_window"] = normalized_clip_window
 
     normalized_target_language = _normalize_target_language(target_language)
+    if (
+        str(advanced_payload.get("language_coverage_profile") or "core12").strip().lower() == "core12"
+        and normalized_target_language != "auto"
+        and normalized_target_language not in SUPPORTED_TRANSCRIBE_LANGUAGE_CODES
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported target language for core12 profile. "
+                "Use one of: zh, ja, ru, en, hi, bn, es, fr, de, pt, ar, ko, or auto."
+            ),
+        )
     job_payload = {
         "jobId": job_id,
         "jobDir": str(job_dir),
@@ -20786,8 +28355,16 @@ async def create_dubbing_job_v2(
         default_engine_executed = _default_engine_for_tts_route(tts_route)
         initial_live_mode = str(advanced_payload.get("live_play_mode") or "off")
         initial_live_enabled = bool(VF_DUB_LIVE_PLAY_ENABLED and initial_live_mode == "progressive_audio")
+        policy_enforcement = {
+            "requestedTtsRoute": requested_tts_route,
+            "appliedTtsRoute": tts_route,
+            "pinnedDirectorModel": VF_DUB_DIRECTOR_MODEL,
+            "pinnedTtsModel": VF_DUB_TTS_MODEL,
+            "strictNoFallback": True,
+        }
         DUBBING_JOBS[job_id] = {
             "id": job_id,
+            "uid": uid,
             "status": "queued",
             "stage": "queued",
             "progress": 0,
@@ -20814,10 +28391,20 @@ async def create_dubbing_job_v2(
             "supportsOneShotCloneAtDecision": False,
             "directorJson": None,
             "isochronyStats": None,
-            "llvcMetrics": None,
-            "lipsyncMetrics": None,
+            "voiceTransferMetrics": None,
+            "videoSyncMetrics": None,
+            "tokenUsage": {
+                "billingMode": "gemini_tokens",
+                "reserved": 0,
+                "exact": 0,
+                "debitedVf": 0,
+                "byStage": {},
+                "bySegment": [],
+            },
             "assets": None,
             "thinkingPolicy": None,
+            "jsonDiagnostics": [],
+            "advanced": dict(advanced_payload),
             "processingProfile": profile,
             "clipWindow": normalized_clip_window,
             "speakerStats": {
@@ -20832,6 +28419,14 @@ async def create_dubbing_job_v2(
                 "reason": "",
                 "gpuUsed": False,
             },
+            "languageStats": {
+                "mixedSourceDetected": False,
+                "dominantSourceLanguage": "unknown",
+                "segmentLanguageCounts": {},
+                "targetLanguageApplied": normalized_target_language,
+                "unsupportedSegments": [],
+            },
+            "policyEnforcement": policy_enforcement,
             "live": {
                 "enabled": initial_live_enabled,
                 "mode": initial_live_mode if initial_live_enabled else "off",
@@ -20922,6 +28517,9 @@ def get_dubbing_job(
                 "engine": str(item.get("engine") or ""),
                 "voiceId": str(item.get("voiceId") or ""),
                 "textChars": int(item.get("textChars") or 0),
+                "timelineStartMs": int(item.get("timelineStartMs") or 0),
+                "timelineEndMs": int(item.get("timelineEndMs") or 0),
+                "previewKind": str(item.get("previewKind") or "speech_only"),
                 "downloadUrl": f"/dubbing/jobs/{job_id}/chunks/{safe_index}",
             }
             if includeChunkAudio:
@@ -20998,7 +28596,7 @@ def download_dubbing_report(job_id: str) -> FileResponse:
     return FileResponse(str(path), media_type="application/json", filename=f"{job_id}_report.json")
 
 
-@app.get("/llvc/models")
+@app.get("/voice-transfer/models")
 def list_llvc_models() -> JSONResponse:
     try:
         models = llvc_runtime.list_models()
@@ -21012,11 +28610,11 @@ def list_llvc_models() -> JSONResponse:
             }
         )
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"LLVC unavailable: {exc}") from exc
+        raise HTTPException(status_code=503, detail=f"Voice transfer unavailable: {exc}") from exc
 
 
-@app.post("/llvc/load-model")
-def load_llvc_model(payload: LoadLlvcModelRequest, request: Request) -> JSONResponse:
+@app.post("/voice-transfer/load-model")
+def load_llvc_model(payload: LoadVoiceTransferModelRequest, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
     _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     try:
@@ -21024,7 +28622,7 @@ def load_llvc_model(payload: LoadLlvcModelRequest, request: Request) -> JSONResp
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to load model: {exc}") from exc
     _audit_append_event(
-        action="llvc_load_model",
+        action="voice_transfer_load_model",
         resource_type="runtime",
         resource_id=str(payload.modelName or ""),
         after={"version": str(payload.version or "v2")},
@@ -21035,12 +28633,13 @@ def load_llvc_model(payload: LoadLlvcModelRequest, request: Request) -> JSONResp
     return JSONResponse({"ok": True, "currentModel": llvc_runtime.current_model()})
 
 
-@app.post("/llvc/convert")
+@app.post("/voice-transfer/convert")
 async def convert_llvc(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     model_name: str = Form(...),
-    preset: str = Form("tts_realtime"),
+    preset: str = Form("auto_cpu"),
+    backend_mode: str = Form(""),
     pitch_shift: int = Form(0),
     index_rate: float = Form(0.5),
     filter_radius: int = Form(3),
@@ -21050,17 +28649,18 @@ async def convert_llvc(
     separate_stem: str = Form("true"),
 ) -> FileResponse:
     safe_preset = _normalize_llvc_preset(preset)
-    selected_engine = "LLVC"
-    executed_engine = "LLVC"
+    _ = backend_mode
+    selected_engine = "VOICE_TRANSFER"
+    executed_engine = "VOICE_TRANSFER"
     fallback_used = False
     source_separated = False
     separation_model_used = ""
     runtime_headers: dict[str, str] = {}
 
-    temp_dir = tempfile.mkdtemp(prefix="vf_llvc_")
+    temp_dir = tempfile.mkdtemp(prefix="vf_voice_transfer_")
     source_path = Path(temp_dir) / _safe_upload_name(file.filename, "source_audio")
-    normalized_wav = Path(temp_dir) / "input.wav"
     output_path = Path(temp_dir) / "output.wav"
+    runtime_input_path = source_path
 
     try:
         if await _write_upload_file_chunked(file, source_path) <= 0:
@@ -21071,17 +28671,15 @@ async def convert_llvc(
             if not source_separation_runtime.ensure_available():
                 raise RuntimeError(source_separation_runtime.import_error or "Demucs runtime unavailable.")
             speech_path, _background_path, _cache_key = _ensure_source_separation(source_path, SEPARATION_MODEL)
-            _convert_media_to_wav(str(speech_path), str(normalized_wav), sample_rate=40000, channels=1)
+            runtime_input_path = speech_path
             source_separated = True
             separation_model_used = str(SEPARATION_MODEL)
-        else:
-            _convert_media_to_wav(str(source_path), str(normalized_wav), sample_rate=40000)
 
         llvc_ok, llvc_detail = llvc_adapter.health()
         if not llvc_ok:
-            raise RuntimeError(f"LLVC unavailable: {llvc_detail}")
+            raise RuntimeError(f"Voice transfer unavailable: {llvc_detail}")
         runtime_headers = llvc_adapter.convert(
-            str(normalized_wav),
+            str(runtime_input_path),
             str(output_path),
             model_name=model_name,
             preset=safe_preset,
@@ -21095,48 +28693,62 @@ async def convert_llvc(
 
     except Exception as exc:
         _cleanup_paths(temp_dir)
-        raise HTTPException(status_code=500, detail=f"LLVC conversion failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Voice transfer failed: {exc}") from exc
 
     background_tasks.add_task(_cleanup_paths, temp_dir)
     safe_model = _safe_upload_name(model_name, "model")
+    response_headers = {
+        "x-vf-engine-selected": selected_engine,
+        "x-vf-engine-executed": executed_engine,
+        "x-vf-voice-transfer-preset": str(
+            runtime_headers.get("x-vf-voice-transfer-preset")
+            or safe_preset
+        ),
+        "x-vf-voice-transfer-preset-requested": str(
+            runtime_headers.get("x-vf-voice-transfer-preset-requested")
+            or safe_preset
+        ),
+        "x-vf-voice-transfer-fallback": "1" if fallback_used else "0",
+        "x-vf-voice-transfer-fallback-reason": "",
+        "x-vf-supports-one-shot-clone-at-decision": "0",
+        "x-vf-source-separated": "1" if source_separated else "0",
+        "x-vf-separation-model": separation_model_used,
+        "x-vf-voice-transfer-model-resolved": str(
+            runtime_headers.get("x-vf-voice-transfer-model-resolved")
+            or runtime_headers.get("x-vf-voice-transfer-model")
+            or model_name
+        ),
+        "x-vf-voice-transfer-backend-mode": str(
+            runtime_headers.get("x-vf-voice-transfer-backend-mode")
+            or "w_okada_rvc_onnx"
+        ),
+    }
+    runtime_input_duration_ms = str(runtime_headers.get("x-vf-voice-transfer-input-duration-ms") or "").strip()
+    if runtime_input_duration_ms:
+        response_headers["x-vf-voice-transfer-input-duration-ms"] = runtime_input_duration_ms
     return FileResponse(
         str(output_path),
         media_type="audio/wav",
-        filename=f"llvc_{safe_model}.wav",
-        headers={
-            "x-vf-engine-selected": selected_engine,
-            "x-vf-engine-executed": executed_engine,
-            "x-vf-llvc-preset": safe_preset,
-            "x-vf-llvc-fallback": "1" if fallback_used else "0",
-            "x-vf-llvc-fallback-reason": "",
-            "x-vf-supports-one-shot-clone-at-decision": "0",
-            "x-vf-source-separated": "1" if source_separated else "0",
-            "x-vf-separation-model": separation_model_used,
-            "x-vf-llvc-model-resolved": str(
-                runtime_headers.get("x-vf-llvc-model-resolved")
-                or runtime_headers.get("x-vf-llvc-model")
-                or model_name
-            ),
-            "x-vf-llvc-backend-mode": str(runtime_headers.get("x-vf-llvc-backend-mode") or ""),
-        },
+        filename=f"voice_transfer_{safe_model}.wav",
+        headers=response_headers,
     )
 
 
-@app.on_event("startup")
 def _phase2_startup() -> None:
+    _reader_session_load_from_disk()
+    _reader_resume_remote_comic_hydration_jobs()
     if VF_SERVICE_IS_API:
         _ensure_scheduler_started()
     if VF_SERVICE_IS_WORKER:
         _ensure_tts_workers_started()
-    _log_kokoro_model_mirror_status()
-    if VF_SERVICE_IS_API and VF_SUPPORT_INBOX_ENABLED:
-        try:
-            _support_ai_policy_get()
-        except Exception:
-            pass
+    thread = threading.Thread(
+        target=_phase2_background_warmups,
+        name="phase2-background-warmups",
+        daemon=True,
+    )
+    thread.start()
 
 
-@app.on_event("shutdown")
 def _phase2_shutdown() -> None:
     _scheduler_stop()
 

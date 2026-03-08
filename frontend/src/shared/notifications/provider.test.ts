@@ -18,6 +18,7 @@ const createNotification = (overrides: Partial<AppNotification> = {}): AppNotifi
   severity: overrides.severity || 'info',
   category: overrides.category || 'activity',
   audience: overrides.audience || 'all',
+  scope: overrides.scope || 'ephemeral',
   channel: overrides.channel || 'inbox',
   status: overrides.status || 'active',
   resolvedAt: overrides.resolvedAt ?? null,
@@ -40,11 +41,19 @@ describe('notification provider helpers', () => {
         allowTips: false,
         allowSystemInfo: false,
         playSound: true,
+        emailAsyncJobs: false,
+        emailBilling: true,
+        emailSupport: false,
+        emailAdminAlerts: true,
       })
     ).toEqual({
       allowTips: false,
       allowSystemInfo: false,
       playSound: true,
+      emailAsyncJobs: false,
+      emailBilling: true,
+      emailSupport: false,
+      emailAdminAlerts: true,
     });
   });
 

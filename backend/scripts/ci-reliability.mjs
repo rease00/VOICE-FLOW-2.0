@@ -74,9 +74,9 @@ if (liveAuditGateEnabled) {
 
 if (llvcMappingAuditGateEnabled) {
   steps.push({
-    name: 'LLVC voice mapping audit gate',
+    name: 'Voice-transfer mapping audit gate',
     command: npmBin,
-    args: ['run', 'audit:llvc:mapping'],
+    args: ['run', 'audit:voice-transfer:mapping'],
   });
 }
 

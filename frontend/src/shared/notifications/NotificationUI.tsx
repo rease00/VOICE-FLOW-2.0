@@ -3,16 +3,7 @@ import { AlertCircle, Bell, CheckCircle2, ChevronDown, ChevronUp, Info, Triangle
 import { toCompactToastCopy } from './format';
 import type { AppNotification } from './types';
 import { useNotifications } from './NotificationProvider';
-
-const TOAST_AUTO_HIDE_MS = 3000;
-
-const TOAST_DURATION_MS: Record<AppNotification['severity'], number> = {
-  success: TOAST_AUTO_HIDE_MS,
-  info: TOAST_AUTO_HIDE_MS,
-  warning: TOAST_AUTO_HIDE_MS,
-  error: TOAST_AUTO_HIDE_MS,
-  critical: 0,
-};
+import { getToastAutoHideMs } from './toastTiming';
 
 const severityTone = (severity: AppNotification['severity'], isDarkUi: boolean): string => {
   if (isDarkUi) {
@@ -69,19 +60,19 @@ const SeverityIcon: React.FC<{ severity: AppNotification['severity']; className?
 };
 
 const ToastItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ item, isDarkUi }) => {
-  const { hideToast, markRead, remove, setCenterOpen } = useNotifications();
-  const durationMs = TOAST_DURATION_MS[item.severity];
+  const { hideToast, markRead, remove, runAction, setCenterOpen } = useNotifications();
+  const durationMs = getToastAutoHideMs(item);
   const compactCopy = useMemo(() => toCompactToastCopy(item.title, item.message), [item.message, item.title]);
   const isTruncated = compactCopy.message !== item.message || compactCopy.title !== item.title;
 
   useEffect(() => {
-    if (item.sticky || durationMs <= 0) return;
+    if (durationMs <= 0) return;
     const timer = window.setTimeout(() => {
       hideToast(item.id);
       markRead(item.id);
     }, durationMs);
     return () => window.clearTimeout(timer);
-  }, [durationMs, hideToast, item.id, item.sticky, markRead]);
+  }, [durationMs, hideToast, item.id, markRead]);
 
   return (
     <div
@@ -108,7 +99,7 @@ const ToastItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ ite
             <button
               type="button"
               onClick={() => {
-                item.action?.onClick?.();
+                runAction(item.action);
                 markRead(item.id);
               }}
               className={`mt-2 ml-2 rounded-md border border-current/30 px-2.5 py-1 text-xs font-semibold transition-colors ${isDarkUi ? 'bg-black/20 hover:bg-black/35' : 'bg-white/70 hover:bg-white'}`}
@@ -135,7 +126,7 @@ const ToastItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ ite
 };
 
 const CenterItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ item, isDarkUi }) => {
-  const { markRead, remove } = useNotifications();
+  const { markRead, remove, runAction } = useNotifications();
   const [expanded, setExpanded] = useState(false);
   const compactCopy = useMemo(() => toCompactToastCopy(item.title, item.message), [item.message, item.title]);
   const timeLabel = useMemo(
@@ -209,11 +200,11 @@ const CenterItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ it
                 Mark read
               </button>
             )}
-            {item.action && item.action.onClick && (
+            {item.action && (
               <button
                 type="button"
                 onClick={() => {
-                  item.action?.onClick?.();
+                  runAction(item.action);
                   markRead(item.id);
                 }}
                 className={`rounded-md border border-current/30 px-2 py-1 text-[11px] font-semibold transition-colors ${isDarkUi ? 'bg-black/20 hover:bg-black/35' : 'bg-white/70 hover:bg-white'}`}
@@ -236,6 +227,7 @@ export const NotificationUI: React.FC = () => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const {
     notifications,
+    toastNotifications,
     unreadCount,
     isCenterOpen,
     setCenterOpen,
@@ -252,10 +244,10 @@ export const NotificationUI: React.FC = () => {
 
   const toastItems = useMemo(
     () =>
-      notifications
+      toastNotifications
         .filter((item) => item.status === 'active' && item.channel === 'toast' && item.toastVisible)
         .slice(0, 2),
-    [notifications]
+    [toastNotifications]
   );
 
   useEffect(() => {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import threading
 import time
 import wave
@@ -11,21 +12,28 @@ import app as backend_app
 
 
 class _DummyRuntimeResponse:
-    def __init__(self, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        status_code: int = 200,
+        *,
+        body: dict | None = None,
+        content_type: str = "audio/wav",
+    ) -> None:
         self.status_code = status_code
         self.content = b"RIFF" + b"\x00" * 512
         self.headers = {
-            "content-type": "audio/wav",
+            "content-type": content_type,
             "x-voiceflow-trace-id": "trace_test_tts_queue",
         }
-        self.text = ""
+        self._body = body or {}
+        self.text = str(self._body) if self._body else ""
 
     @property
     def ok(self) -> bool:
         return 200 <= self.status_code < 300
 
     def json(self) -> dict:
-        return {}
+        return self._body
 
 
 def _reset_tts_metrics_state(monkeypatch, *, gem_limit: int = 12, kokoro_limit: int = 8) -> None:
@@ -121,6 +129,7 @@ def test_process_tts_job_respects_engine_semaphore_limit(monkeypatch) -> None:
             "runtimeBase": "http://127.0.0.1:7810",
             "runtimePath": "/synthesize",
             "upstreamPayload": {"text": "hello"},
+            "postTtsDisable": True,
             "deadlineAtMs": int(time.time() * 1000) + 60_000,
             "maxAttempts": 1,
             "attempts": 0,
@@ -230,6 +239,80 @@ def test_tts_job_status_includes_queue_debug_fields(monkeypatch) -> None:
     assert int(payload["queueDepthAtRead"]) >= 0
 
 
+def test_tts_job_gemini_capacity_pressure_fails_without_requeue(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(
+            redis_url="",
+            key_prefix=f"test:tts:gemini-capacity-fast-fail:{time.time_ns()}",
+            lane_weights=backend_app.VF_TTS_LANE_WEIGHTS,
+        ),
+    )
+
+    requeues = {"count": 0}
+
+    def _fake_runtime_request(*_args, **_kwargs):
+        return _DummyRuntimeResponse(
+            status_code=503,
+            body={
+                "detail": {
+                    "error": "Gemini key pool is temporarily overloaded.",
+                    "summary": "Gemini TTS capacity is saturated (availableLanes=0, keyPoolSize=64).",
+                    "errorCode": "GEMINI_KEY_POOL_OVERLOADED",
+                    "reason": "capacity_pressure",
+                    "retryAfterMs": 45000,
+                    "availableLanes": 0,
+                }
+            },
+            content_type="application/json",
+        )
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
+    monkeypatch.setattr(
+        backend_app,
+        "_record_tts_job_requeued",
+        lambda **_kwargs: requeues.__setitem__("count", requeues["count"] + 1),
+    )
+
+    job_payload = {
+        "jobId": "gemini_capacity_pressure_job_1",
+        "uid": "gemini_capacity_pressure_user",
+        "requestId": "gemini_capacity_pressure_req_1",
+        "traceId": "gemini_capacity_pressure_trace_1",
+        "engine": "GEM",
+        "text": "capacity pressure should fail fast",
+        "voiceId": "Fenrir",
+        "voiceName": "Fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "capacity pressure should fail fast", "voiceName": "Fenrir"},
+        "postTtsDisable": True,
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 3,
+        "attempts": 0,
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="GEM", created_at_ms=int(time.time() * 1000))
+
+    backend_app._process_tts_job(job_payload, "worker-gemini-capacity-fast-fail")
+
+    failed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(failed.get("status") or "") == "failed"
+    assert int(failed.get("statusCode") or 0) == 503
+    error = failed.get("error") if isinstance(failed.get("error"), dict) else {}
+    assert str(error.get("errorCode") or "") == "GEMINI_KEY_POOL_OVERLOADED"
+    assert str(error.get("reason") or "") == "capacity_pressure"
+    assert int(error.get("retryAfterMs") or 0) == 45000
+    assert requeues["count"] == 0
+
+
 def test_admin_tts_queue_metrics_auth_and_payload(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -299,6 +382,198 @@ def test_tts_job_strict_post_tts_failure_populates_reason_error_code_and_trace_i
     assert str(error.get("trace_id") or "").strip() != ""
 
 
+def test_tts_job_silent_post_tts_output_bypasses_to_original_audio_when_not_required(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_REQUIRED", False)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(
+            redis_url="",
+            key_prefix=f"test:tts:post-tts-silent-bypass:{time.time_ns()}",
+            lane_weights=backend_app.VF_TTS_LANE_WEIGHTS,
+        ),
+    )
+
+    class _AudibleRuntimeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.content = _tiny_wav_bytes(720, sample_value=1600)
+            self.headers = {
+                "content-type": "audio/wav",
+                "x-voiceflow-trace-id": "trace_post_tts_silent_bypass",
+            }
+            self.text = ""
+
+        @property
+        def ok(self) -> bool:
+            return True
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *_args, **_kwargs: _AudibleRuntimeResponse())
+    monkeypatch.setattr(
+        backend_app,
+        "_convert_tts_audio_with_llvc_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Voice-transfer runtime returned silent audio.")),
+    )
+
+    job_payload = {
+        "jobId": "post_tts_silent_bypass_job_1",
+        "uid": "post_tts_silent_bypass_user",
+        "requestId": "post_tts_silent_bypass_req_1",
+        "traceId": "post_tts_silent_bypass_trace_1",
+        "engine": "GEM",
+        "text": "post tts silent bypass test",
+        "voiceId": "Fenrir",
+        "voiceName": "Fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "post tts silent bypass test"},
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="GEM", created_at_ms=int(time.time() * 1000))
+
+    backend_app._process_tts_job(job_payload, "worker-post-tts-silent-bypass")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(completed.get("status") or "") == "completed"
+    result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
+    headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "bypassed_silent_output"
+    audio_base64 = str(result.get("audioBase64") or "")
+    assert audio_base64
+    audio_bytes = base64.b64decode(audio_base64)
+    assert backend_app._wav_has_nonzero_signal(audio_bytes) is True
+
+
+def test_tts_job_post_tts_disable_bypasses_llvc_and_sets_response_header(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(
+            redis_url="",
+            key_prefix=f"test:tts:post-tts-disabled:{time.time_ns()}",
+            lane_weights=backend_app.VF_TTS_LANE_WEIGHTS,
+        ),
+    )
+
+    llvc_calls = {"count": 0}
+
+    def _fake_runtime_request(*_args, **_kwargs):
+        return _DummyRuntimeResponse()
+
+    def _fake_convert(*_args, **_kwargs):
+        llvc_calls["count"] += 1
+        return _tiny_wav_bytes(), {"x-vf-post-tts-conversion": "voice-transfer"}
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
+    monkeypatch.setattr(backend_app, "_convert_tts_audio_with_llvc_runtime", _fake_convert)
+
+    job_payload = {
+        "jobId": "post_tts_disabled_job_1",
+        "uid": "post_tts_disabled_user",
+        "requestId": "post_tts_disabled_req_1",
+        "traceId": "post_tts_disabled_trace_1",
+        "engine": "GEM",
+        "text": "post tts disabled test",
+        "voiceId": "Fenrir",
+        "voiceName": "Fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "post tts disabled test"},
+        "postTtsDisable": True,
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="GEM", created_at_ms=int(time.time() * 1000))
+
+    backend_app._process_tts_job(job_payload, "worker-post-tts-disabled")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(completed.get("status") or "") == "completed"
+    result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
+    headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled_by_request"
+    assert llvc_calls["count"] == 0
+
+
+def test_tts_job_kokoro_bypasses_post_tts_without_request_flag(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(
+            redis_url="",
+            key_prefix=f"test:tts:kokoro-post-tts-disabled:{time.time_ns()}",
+            lane_weights=backend_app.VF_TTS_LANE_WEIGHTS,
+        ),
+    )
+
+    llvc_calls = {"count": 0}
+
+    def _fake_runtime_request(*_args, **_kwargs):
+        return _DummyRuntimeResponse()
+
+    def _fake_convert(*_args, **_kwargs):
+        llvc_calls["count"] += 1
+        return _tiny_wav_bytes(), {"x-vf-post-tts-conversion": "voice-transfer"}
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
+    monkeypatch.setattr(backend_app, "_convert_tts_audio_with_llvc_runtime", _fake_convert)
+
+    job_payload = {
+        "jobId": "kokoro_post_tts_disabled_job_1",
+        "uid": "kokoro_post_tts_disabled_user",
+        "requestId": "kokoro_post_tts_disabled_req_1",
+        "traceId": "kokoro_post_tts_disabled_trace_1",
+        "engine": "KOKORO",
+        "text": "kokoro bypass post tts test",
+        "voiceId": "am_fenrir",
+        "voiceName": "am_fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7820",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "kokoro bypass post tts test", "voiceName": "am_fenrir"},
+        "postTtsDisable": False,
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="KOKORO", created_at_ms=int(time.time() * 1000))
+
+    backend_app._process_tts_job(job_payload, "worker-kokoro-post-tts-disabled")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(completed.get("status") or "") == "completed"
+    result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
+    headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled_for_kokoro"
+    assert llvc_calls["count"] == 0
+
+
 def test_tts_job_live_pipeline_llvc_concurrency_respects_limit(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -344,7 +619,7 @@ def test_tts_job_live_pipeline_llvc_concurrency_respects_limit(monkeypatch) -> N
         time.sleep(0.04)
         with tracker_lock:
             tracker["active"] -= 1
-        return _tiny_wav_bytes(720), {"x-vf-post-tts-conversion": "llvc"}
+        return _tiny_wav_bytes(720), {"x-vf-post-tts-conversion": "voice-transfer"}
 
     monkeypatch.setattr(backend_app, "_convert_tts_audio_with_llvc_runtime", _fake_convert)
 
@@ -380,6 +655,82 @@ def test_tts_job_live_pipeline_llvc_concurrency_respects_limit(monkeypatch) -> N
     assert int(chunk_samples[-1]) == 4
 
 
+def test_tts_job_live_stream_kokoro_skips_post_tts_conversion(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_STREAM_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(
+            redis_url="",
+            key_prefix=f"test:tts:kokoro-live-post-tts-disabled:{time.time_ns()}",
+            lane_weights=backend_app.VF_TTS_LANE_WEIGHTS,
+        ),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_split_text_live_chunks",
+        lambda **_kwargs: [
+            {"text": "chunk one", "textChars": 9, "wordCount": 2},
+            {"text": "chunk two", "textChars": 9, "wordCount": 2},
+        ],
+    )
+
+    class _OkResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.ok = True
+            self.content = _tiny_wav_bytes(720)
+            self.headers = {"content-type": "audio/wav", "x-voiceflow-trace-id": "trace_live_kokoro"}
+
+    llvc_calls = {"count": 0}
+
+    def _fake_convert(*_args, **_kwargs):
+        llvc_calls["count"] += 1
+        return _tiny_wav_bytes(720), {"x-vf-post-tts-conversion": "voice-transfer"}
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *_args, **_kwargs: _OkResponse())
+    monkeypatch.setattr(backend_app, "_convert_tts_audio_with_llvc_runtime", _fake_convert)
+
+    job_payload = {
+        "jobId": "kokoro_live_post_tts_disabled_job_1",
+        "uid": "kokoro_live_post_tts_disabled_user",
+        "requestId": "kokoro_live_post_tts_disabled_req_1",
+        "traceId": "kokoro_live_post_tts_disabled_trace_1",
+        "engine": "KOKORO",
+        "text": "kokoro live stream bypass post tts",
+        "voiceId": "am_fenrir",
+        "voiceName": "am_fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7820",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "kokoro live stream bypass post tts", "voiceName": "am_fenrir"},
+        "postTtsDisable": False,
+        "liveStream": True,
+        "liveChunkChars": 220,
+        "liveChunkWords": 45,
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+    }
+
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="KOKORO", created_at_ms=int(time.time() * 1000))
+    backend_app._process_tts_job(job_payload, "worker-kokoro-live-post-tts-disabled")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(completed.get("status") or "") == "completed"
+    result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
+    headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled_for_kokoro"
+    assert llvc_calls["count"] == 0
+
+
 def test_tts_synthesize_wait_ms_query_override(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -404,13 +755,14 @@ def test_tts_synthesize_wait_ms_query_override(monkeypatch) -> None:
     assert captured["sync_wait_ms"] == 1250
 
 
-def _tiny_wav_bytes(duration_frames: int = 240) -> bytes:
+def _tiny_wav_bytes(duration_frames: int = 240, sample_value: int = 0) -> bytes:
     payload = BytesIO()
     with wave.open(payload, "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(24000)
-        handle.writeframes(b"\x00\x00" * max(1, int(duration_frames)))
+        frame = int(sample_value).to_bytes(2, "little", signed=True)
+        handle.writeframes(frame * max(1, int(duration_frames)))
     return payload.getvalue()
 
 

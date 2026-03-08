@@ -29,6 +29,7 @@ SOURCE_POLICY_PROVIDER_VERTEX = "vertex"
 
 _POOL_ID_INVALID_RE = re.compile(r"[^a-z0-9_-]+")
 _MAX_POOL_ID_LENGTH = 48
+_MASKED_KEY_TOKEN_RE = re.compile(r"^__vf_masked_key__:(?P<fp>[0-9a-f]{12})(?::(?P<hint>[a-z0-9]{0,8}))?$")
 
 
 def _normalize_pool_id(value: Any, *, default: str = "") -> str:
@@ -135,6 +136,7 @@ def default_pool_config() -> dict[str, Any]:
             "freePoolMode": SOURCE_POLICY_MODE_CONFIG,
             "freePoolFilePath": "",
             "freePoolLocked": False,
+            "ttsModelFallbackEnabled": False,
             "failureMode": SOURCE_POLICY_FAILURE_KEEP_LAST,
             "lastSyncAt": "",
             "lastSyncStatus": "uninitialized",
@@ -158,11 +160,24 @@ def _normalize_key_list(raw: Any) -> list[str]:
     seen: set[str] = set()
     for item in values:
         key = str(item or "").strip()
-        if not key or key in seen:
+        if not key or _MASKED_KEY_TOKEN_RE.match(key) or key in seen:
             continue
         seen.add(key)
         out.append(key)
     return out
+
+
+def _mask_key_for_storage(value: str) -> tuple[str, dict[str, str]]:
+    token = str(value or "").strip()
+    if not token:
+        return "", {"fingerprint": "", "masked": ""}
+    fingerprint = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    suffix = re.sub(r"[^a-z0-9]", "", token[-4:].lower())[:8]
+    placeholder = f"__vf_masked_key__:{fingerprint}"
+    if suffix:
+        placeholder = f"{placeholder}:{suffix}"
+    masked = f"{token[:4]}...{token[-4:]}" if len(token) >= 8 else ("*" * len(token))
+    return placeholder, {"fingerprint": fingerprint, "masked": masked}
 
 
 def _default_fallback_chain_for(pool_name: str, default_fallback_chain: list[str]) -> list[str]:
@@ -201,6 +216,7 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
         "freePoolMode": mode,
         "freePoolFilePath": str(values.get("freePoolFilePath") or "").strip(),
         "freePoolLocked": bool(values.get("freePoolLocked", False)),
+        "ttsModelFallbackEnabled": bool(values.get("ttsModelFallbackEnabled", False)),
         "failureMode": failure_mode,
         "lastSyncAt": str(values.get("lastSyncAt") or "").strip(),
         "lastSyncStatus": str(values.get("lastSyncStatus") or "uninitialized").strip() or "uninitialized",
@@ -462,6 +478,86 @@ def sync_authoritative_free_pool(
     return normalized, changed, warnings
 
 
+def overlay_cached_authoritative_free_pool(
+    config: dict[str, Any],
+    *,
+    cached_config: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    normalized = normalize_pool_config(config)
+    if not isinstance(cached_config, dict):
+        return normalized
+
+    source_policy = _normalize_source_policy(normalized.get("sourcePolicy"))
+    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    authoritative_mode = (
+        str(source_policy.get("freePoolMode") or SOURCE_POLICY_MODE_CONFIG).strip().lower()
+        == SOURCE_POLICY_MODE_API_FILE
+    )
+    if provider == SOURCE_POLICY_PROVIDER_VERTEX or not authoritative_mode or not bool(source_policy.get("freePoolLocked")):
+        return normalized
+
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    current_free = _normalize_key_list((pools.get("free") or {}).get("keys"))
+    if current_free:
+        return normalized
+
+    cached_pools = cached_config.get("pools") if isinstance(cached_config.get("pools"), dict) else {}
+    cached_free = _normalize_key_list((cached_pools.get("free") or {}).get("keys"))
+    if not cached_free:
+        return normalized
+
+    next_pools = dict(pools)
+    free_row = dict(next_pools.get("free") or {})
+    free_row["keys"] = list(cached_free)
+    next_pools["free"] = free_row
+    normalized["pools"] = next_pools
+    return normalized
+
+
+def scrub_pool_config_for_file(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_pool_config(config)
+    source_policy = _normalize_source_policy(normalized.get("sourcePolicy"))
+    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
+    authoritative_mode = (
+        str(source_policy.get("freePoolMode") or SOURCE_POLICY_MODE_CONFIG).strip().lower()
+        == SOURCE_POLICY_MODE_API_FILE
+    )
+    if provider == SOURCE_POLICY_PROVIDER_VERTEX or not authoritative_mode:
+        return normalized
+
+    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
+    free_keys = _normalize_key_list((pools.get("free") or {}).get("keys"))
+    if not free_keys:
+        return normalized
+
+    masked_keys: list[str] = []
+    metadata_rows: list[dict[str, Any]] = []
+    for index, key in enumerate(free_keys):
+        placeholder, metadata = _mask_key_for_storage(key)
+        if not placeholder:
+            continue
+        masked_keys.append(placeholder)
+        metadata_rows.append(
+            {
+                "index": index,
+                "fingerprint": str(metadata.get("fingerprint") or ""),
+                "masked": str(metadata.get("masked") or ""),
+            }
+        )
+
+    scrubbed = dict(normalized)
+    scrubbed_pools = dict(pools)
+    free_row = dict(scrubbed_pools.get("free") or {})
+    free_row["keys"] = masked_keys
+    if metadata_rows:
+        free_row["keyMetadata"] = metadata_rows
+    scrubbed_pools["free"] = free_row
+    scrubbed["pools"] = scrubbed_pools
+    if metadata_rows:
+        scrubbed["keyMetadata"] = {"free": metadata_rows}
+    return scrubbed
+
+
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     try:
         if not path.exists() or not path.is_file():
@@ -546,5 +642,5 @@ def save_pool_config(
             merge=True,
         )
 
-    _write_json_file(file_path, normalized)
+    _write_json_file(file_path, scrub_pool_config_for_file(normalized))
     return normalized

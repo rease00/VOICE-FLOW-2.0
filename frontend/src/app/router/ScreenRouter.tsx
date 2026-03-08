@@ -2,6 +2,8 @@ import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { SubscriptionModal } from '../../../components/SubscriptionModal';
 import { useUser } from '../../features/auth/context/UserContext';
 import { AppScreen } from '../../entities/contracts';
+import { hasAdminConsoleAccess } from '../../shared/auth/adminAccess';
+import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../shared/notifications/deepLink';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { readStorageString, removeStorageKey } from '../../shared/storage/localStore';
 
@@ -25,6 +27,22 @@ const resolveInitialScreen = (): AppScreen => {
 export const ScreenRouter: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<AppScreen>(resolveInitialScreen);
   const { user } = useUser();
+  const canOpenAdminConsole = hasAdminConsoleAccess(user);
+
+  useEffect(() => {
+    const syncFromDeepLink = (): void => {
+      const target = readNotificationDeepLink();
+      const screenToken = String(target.screen || '').trim().toLowerCase();
+      if (screenToken === 'main') setCurrentScreen(AppScreen.MAIN);
+      else if (screenToken === 'profile') setCurrentScreen(AppScreen.PROFILE);
+      else if (screenToken === 'login') setCurrentScreen(AppScreen.LOGIN);
+      else if (screenToken === 'uid' || screenToken === 'userid' || screenToken === 'user-id') {
+        setCurrentScreen(AppScreen.USER_ID_SETUP);
+      }
+    };
+    window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncFromDeepLink as EventListener);
+    return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncFromDeepLink as EventListener);
+  }, []);
 
   useEffect(() => {
     const hasSession = Boolean(user.email);
@@ -36,7 +54,7 @@ export const ScreenRouter: React.FC = () => {
     }
 
     const needsUserIdSetup = readStorageString(STORAGE_KEYS.uidSetupRequired) === '1';
-    if (user.isAdmin) {
+    if (canOpenAdminConsole) {
       removeStorageKey(STORAGE_KEYS.uidSetupRequired);
       if (
         currentScreen === AppScreen.LOGIN ||
@@ -61,7 +79,7 @@ export const ScreenRouter: React.FC = () => {
     if (currentScreen === AppScreen.LOGIN || currentScreen === AppScreen.ONBOARDING) {
       setCurrentScreen(AppScreen.MAIN);
     }
-  }, [user, currentScreen]);
+  }, [canOpenAdminConsole, currentScreen, user, user.userId]);
 
   const renderScreen = () => {
     switch (currentScreen) {

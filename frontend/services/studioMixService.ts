@@ -1,6 +1,27 @@
 import { MUSIC_TRACKS } from "../constants";
 import { GenerationSettings } from "../types";
 
+export const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
+export const STUDIO_SPEECH_GAIN_MIN = 0.05;
+export const STUDIO_SPEECH_GAIN_MAX = 1.5;
+export const STUDIO_MUSIC_GAIN_DEFAULT = 0.3;
+export const STUDIO_MUSIC_GAIN_MIN = 0;
+export const STUDIO_MUSIC_GAIN_MAX = 1;
+
+const clampFiniteNumber = (value: unknown, min: number, max: number, fallback: number): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+};
+
+export const resolveStudioSpeechGain = (value: unknown): number => (
+  clampFiniteNumber(value, STUDIO_SPEECH_GAIN_MIN, STUDIO_SPEECH_GAIN_MAX, STUDIO_SPEECH_GAIN_DEFAULT)
+);
+
+export const resolveStudioMusicGain = (value: unknown): number => (
+  clampFiniteNumber(value, STUDIO_MUSIC_GAIN_MIN, STUDIO_MUSIC_GAIN_MAX, STUDIO_MUSIC_GAIN_DEFAULT)
+);
+
 function getAudioContext(): AudioContext {
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   if (!AudioContextClass) {
@@ -29,8 +50,8 @@ export async function applyStudioAudioMix(
   settings: GenerationSettings
 ): Promise<AudioBuffer> {
   const hasMusic = !!settings.musicTrackId && settings.musicTrackId !== "m_none";
-  const speechGainValue = settings.speechVolume ?? 1.0;
-  const musicGainValue = settings.musicVolume ?? 0.3;
+  const speechGainValue = resolveStudioSpeechGain(settings.speechVolume);
+  const musicGainValue = resolveStudioMusicGain(settings.musicVolume);
 
   // Preserve source fidelity when no effective mix operation is requested.
   if (!hasMusic && Math.abs(speechGainValue - 1.0) < 0.001) {

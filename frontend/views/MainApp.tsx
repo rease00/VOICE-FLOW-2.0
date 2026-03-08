@@ -1,8 +1,8 @@
 
 
-import React, { Suspense, lazy, useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { 
-    Mic, Play, Pause, Settings, X, Server, Wand2, Trash2, Sparkles, 
+    Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
     Music, Video, 
     Save, FileText, Fingerprint, UploadCloud, FileAudio, Loader2, 
     Download, Menu, Box,
@@ -20,16 +20,25 @@ import {
   CharacterProfile,
   VoiceOption,
   StudioEditorMode,
+  StudioQueueItem,
+  StudioQueueState,
   DubbingClip,
   DubbingClipboard,
   CpuDubbingProfile,
 } from '../types';
-import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, proofreadScript, DirectorOptions, parseScriptToSegments, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT, TTS_GATEWAY_AUDIO_CHUNK_EVENT, guessGenderFromName, guessAgeGroupFromSpeaker, normalizeSpeakerMapKey, resolveSpeakerMappedVoiceId } from '../services/geminiService';
+import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, proofreadScript, DirectorOptions, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT, TTS_GATEWAY_AUDIO_CHUNK_EVENT, inferSpeakerTraitHintsWithAi, normalizeSpeakerMapKey, resolveSpeakerMappedVoiceId } from '../services/geminiService';
 import { extractAndSeparateDubbingStems } from '../services/dubbingService';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { useUser } from '../contexts/UserContext';
 import { AdModal } from '../components/AdModal';
-import { applyStudioAudioMix } from '../services/studioMixService';
+import { autoAssignSpeakerVoices } from '../src/shared/voices/castAssignment';
+import {
+  applyStudioAudioMix,
+  resolveStudioMusicGain,
+  resolveStudioSpeechGain,
+  STUDIO_SPEECH_GAIN_MAX,
+  STUDIO_SPEECH_GAIN_MIN,
+} from '../services/studioMixService';
 import {
   clearAllClips,
   copyClip,
@@ -47,14 +56,14 @@ import {
 import {
   cancelDubbingJob,
   checkMediaBackendHealth,
-  convertLlvcCover,
+  convertVoiceTransferCover,
   createDubbingJobV2,
   downloadDubbingChunk,
   downloadDubbingReport,
   downloadDubbingResult,
   getDubbingJob,
-  listLlvcModels,
-  loadLlvcModel,
+  listVoiceTransferModels,
+  loadVoiceTransferModel,
   resolveMediaBackendUrl,
   switchTtsEngineRuntime,
   transcribeVideoWithBackend,
@@ -62,7 +71,11 @@ import {
 import { fetchEngineRuntimeVoices, getStaticVoiceFallback } from '../services/ttsVoiceRegistryService';
 import { normalizeEmotionTag } from '../services/emotionTagRules';
 import { getEngineDisplayName } from '../services/engineDisplay';
-import { kokoroBrowserRuntime } from '../services/kokoroBrowserRuntime';
+import { loadKokoroBrowserRuntimeModule } from '../services/loadKokoroBrowserRuntime';
+import {
+  isBrowserKokoroExecutionEnabled,
+  shouldUseBrowserKokoroExecution,
+} from '../services/kokoroBrowserRuntimeFlags';
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
@@ -71,29 +84,52 @@ import { SectionCard } from '../components/SectionCard';
 import { BrandLogo } from '../components/BrandLogo';
 import { BlockScriptEditor } from '../components/studio/BlockScriptEditor';
 import { MorphingGenerateButton } from '../components/studio/MorphingGenerateButton';
+import { StudioQueuePanel } from '../components/studio/StudioQueuePanel';
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageJson, readStorageString, writeStorageJson, writeStorageString } from '../src/shared/storage/localStore';
+import { readStorageJson, readStorageString, removeStorageKey, writeStorageJson, writeStorageString } from '../src/shared/storage/localStore';
 import { buildWorkspaceTabs, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
 import { fetchTtsEnginesStatus } from '../src/shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
-import { requestJson } from '../src/shared/api/httpClient';
+import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
 import {
   normalizeAssistantProviderControlsEnabled,
   normalizePreferUserGeminiKey,
   resolveAssistantProviderRouting,
 } from '../src/shared/settings/assistantProvider';
+import { hasAdminConsoleAccess as canUseAdminConsole } from '../src/shared/auth/adminAccess';
 import { ASSISTANT_PROVIDER_UI_LABELS, sanitizeUiText } from '../src/shared/ui/terminology';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
-import type { NotificationEventCode } from '../src/shared/notifications/types';
-import type { TokenPackKey } from '../services/accountService';
+import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../src/shared/notifications/deepLink';
+import { fetchAccountProfile, type TokenPackKey } from '../services/accountService';
+import { firebaseAuth } from '../services/firebaseClient';
+import { SimplifiedDubbingTab } from '../src/features/dubbing/components/SimplifiedDubbingTab';
+import {
+  canUseStudioQueue,
+  computeStudioQueueMasterOrder,
+  createStudioQueueState,
+  hashStudioQueueSource,
+  normalizeStoredStudioQueueState,
+} from '../src/features/studio/model/queue';
+import {
+  clearStudioQueueAudioCache,
+  deleteStudioQueueAudioBlob,
+  readStudioQueueAudioBlob,
+  storeStudioQueueAudioBlob,
+} from '../services/studioQueueCacheService';
+import { buildStudioQueueBlobUrl, mergeStudioQueueAudioBlobs } from '../services/studioQueueAudioService';
+import { buildSentenceAlignedCharWindows } from '../services/ttsLongTextService';
+import { pollTtsGatewayJobForAudio } from '../services/ttsGatewayJobService';
 
 const AdminTabContent = lazy(async () =>
   import('../src/features/admin/components/AdminTabContent').then((module) => ({ default: module.AdminTabContent }))
 );
 const NovelTabContent = lazy(async () =>
   import('../src/features/novel/components/NovelTabContent').then((module) => ({ default: module.NovelTabContent }))
+);
+const ReaderTabContent = lazy(async () =>
+  import('../src/features/reader/components/ReaderTabContent').then((module) => ({ default: module.ReaderTabContent }))
 );
 
 interface MainAppProps {
@@ -209,17 +245,63 @@ const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]>
 };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
 const DEFAULT_KOKORO_VOICE_ID = KOKORO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
+const BUILT_IN_VOICE_IDS = new Set([...VOICES.map((voice) => voice.id), ...KOKORO_VOICES.map((voice) => voice.id)]);
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
   GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'bf_emma', 'bf_isabella', 'am_fenrir', 'am_michael', 'am_onyx', 'bm_george'],
+  KOKORO: [
+      'af_heart',
+      'af_bella',
+      'af_nova',
+      'af_sarah',
+      'am_fenrir',
+      'am_michael',
+      'am_onyx',
+      'am_echo',
+      'bf_emma',
+      'bf_isabella',
+      'bm_george',
+      'bm_fable',
+      'hf_alpha',
+      'hf_beta',
+      'hm_omega',
+      'hm_psi',
+  ],
+};
+const COUNTRY_TAG_BY_NAME: Record<string, string> = {
+  'united states': 'US',
+  'united kingdom': 'UK',
+  india: 'IN',
+  canada: 'CA',
+  australia: 'AU',
+  ireland: 'IE',
+  france: 'FR',
+  germany: 'DE',
+  russia: 'RU',
+  'united arab emirates': 'UAE',
 };
 const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; standardInr: number; scaleInr: number }> = {
   micro: { label: 'Micro', vf: 50000, standardInr: 550, scaleInr: 440 },
   standard: { label: 'Standard', vf: 150000, standardInr: 1450, scaleInr: 1160 },
   mega: { label: 'Mega', vf: 300000, standardInr: 2900, scaleInr: 2320 },
   ultra: { label: 'Ultra', vf: 600000, standardInr: 5200, scaleInr: 4160 },
+};
+type AdminOpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
+const LEGACY_DUBBING_UI_ENABLED = false;
+
+const resolveWorkspaceTabFromUrl = (): Tab => {
+  if (typeof window === 'undefined') return Tab.STUDIO;
+  const token = String(new URLSearchParams(window.location.search).get('vf-tab') || '').trim().toUpperCase();
+  return Object.values(Tab).includes(token as Tab) ? (token as Tab) : Tab.STUDIO;
+};
+
+const resolveAdminOpsTabFromUrl = (): AdminOpsTab => {
+  if (typeof window === 'undefined') return 'usage';
+  const token = String(new URLSearchParams(window.location.search).get('vf-admin-tab') || '').trim().toLowerCase();
+  return ['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics'].includes(token)
+    ? (token as AdminOpsTab)
+    : 'usage';
 };
 
 const normalizePlanToken = (planName: unknown): 'free' | 'starter' | 'creator' | 'pro' | 'scale' => {
@@ -261,11 +343,10 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   geminiApiKey: '',
   mediaBackendUrl: DEFAULT_MEDIA_BACKEND_URL,
   backendApiKey: '',
-  llvcModel: '',
+  voiceModel: '',
   geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.GEM,
   kokoroTtsServiceUrl: FALLBACK_RUNTIME_URLS.KOKORO,
-  kokoroExecutionMode: 'browser_webgpu',
-  kokoroStandbyIdleMs: 30000,
+  kokoroStandbyIdleMs: 900000,
 
   musicTrackId: 'm_none',
   musicVolume: 0.3,
@@ -276,7 +357,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   dubbingSourceLanguage: 'auto',
   multiSpeakerEnabled: true,
   speakerMapping: {},
-  uiMotionLevel: 'balanced',
+  uiMotionLevel: 'off',
   autoPlayGeneratedAudio: true,
 };
 
@@ -320,8 +401,8 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     emotionRefId: typeof value.emotionRefId === 'string' ? value.emotionRefId : DEFAULT_SETTINGS.emotionRefId,
     emotionStrength: typeof value.emotionStrength === 'number' ? value.emotionStrength : DEFAULT_SETTINGS.emotionStrength,
     musicTrackId: typeof value.musicTrackId === 'string' ? value.musicTrackId : DEFAULT_SETTINGS.musicTrackId,
-    musicVolume: typeof value.musicVolume === 'number' ? value.musicVolume : DEFAULT_SETTINGS.musicVolume,
-    speechVolume: typeof value.speechVolume === 'number' ? value.speechVolume : DEFAULT_SETTINGS.speechVolume,
+    musicVolume: resolveStudioMusicGain(value.musicVolume),
+    speechVolume: resolveStudioSpeechGain(value.speechVolume),
     useModelSourceSeparation: typeof value.useModelSourceSeparation === 'boolean'
       ? value.useModelSourceSeparation
       : DEFAULT_SETTINGS.useModelSourceSeparation,
@@ -334,19 +415,23 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     uiMotionLevel:
       value.uiMotionLevel === 'off' || value.uiMotionLevel === 'balanced' || value.uiMotionLevel === 'rich'
         ? value.uiMotionLevel
-        : (DEFAULT_SETTINGS.uiMotionLevel || 'balanced'),
+    : (DEFAULT_SETTINGS.uiMotionLevel || 'off'),
     multiSpeakerEnabled: typeof value.multiSpeakerEnabled === 'boolean'
       ? value.multiSpeakerEnabled
       : DEFAULT_SETTINGS.multiSpeakerEnabled,
     mediaBackendUrl: mediaBackendSanitized.value,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
-    llvcModel: typeof value.llvcModel === 'string' ? value.llvcModel : DEFAULT_SETTINGS.llvcModel,
+    voiceModel:
+      typeof value.voiceModel === 'string'
+        ? value.voiceModel
+        : typeof value.llvcModel === 'string'
+          ? value.llvcModel
+          : DEFAULT_SETTINGS.voiceModel,
     geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.GEM),
     kokoroTtsServiceUrl: normalizeServiceSetting(value.kokoroTtsServiceUrl, DEFAULT_SETTINGS.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO),
-    kokoroExecutionMode: value.kokoroExecutionMode === 'backend_runtime' ? 'backend_runtime' : 'browser_webgpu',
     kokoroStandbyIdleMs: typeof value.kokoroStandbyIdleMs === 'number' && Number.isFinite(value.kokoroStandbyIdleMs)
       ? Math.max(1000, Math.round(value.kokoroStandbyIdleMs))
-      : (DEFAULT_SETTINGS.kokoroStandbyIdleMs || 30000),
+      : (DEFAULT_SETTINGS.kokoroStandbyIdleMs || 900000),
     autoPlayGeneratedAudio: typeof value.autoPlayGeneratedAudio === 'boolean'
       ? value.autoPlayGeneratedAudio
       : (DEFAULT_SETTINGS.autoPlayGeneratedAudio !== false),
@@ -394,8 +479,8 @@ const VIDEO_PIPELINE_2026_PHASES: Array<{ title: string; body: string }> = [
     body: 'Gemini 2.5 Flash TTS generates the acting base with director tags injected and segment-level dynamic speaking_rate fitted to duration windows.',
   },
   {
-    title: 'Phase 5: CPU-Optimized Timbre Transfer (LLVC)',
-    body: 'LLVC applies original speaker timbre onto translated performance while preserving rhythm and expressive cues, with per-segment RTF tracking.',
+    title: 'Phase 5: CPU-Optimized Voice Transfer',
+    body: 'W-Okada voice transfer applies the target timbre onto translated performance while preserving rhythm and expressive cues, with per-segment RTF tracking.',
   },
   {
     title: 'Phase 6: Visual Lip-Sync (Final Assembly)',
@@ -430,7 +515,7 @@ const VIDEO_PIPELINE_2026_SUMMARY_ROWS: Array<{ step: string; tool: string; moda
   },
   {
     step: 'Cloning',
-    tool: 'LLVC',
+    tool: 'Voice Transfer',
     modality: 'Audio',
     benefit: 'CPU-friendly timbre transfer with acting preserved.',
   },
@@ -586,7 +671,7 @@ const ResourceMonitor = ({ isWorking }: { isWorking: boolean }) => {
   }, [isWorking]);
 
   return (
-    <div className="fixed bottom-4 left-[calc(16rem+1rem)] z-40 hidden lg:flex items-center gap-4 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full border border-gray-200 shadow-sm text-[10px] font-mono text-gray-500">
+    <div className="fixed bottom-4 left-[calc(16rem+1rem)] z-40 hidden xl:flex items-center gap-4 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full border border-gray-200 shadow-sm text-[10px] font-mono text-gray-500">
         <div className="flex items-center gap-2" title="Estimated CPU load from UI activity">
             <Activity size={12} className={isWorking ? "text-amber-500 animate-pulse" : "text-gray-400"} />
             <span>CPU est: {stats.cpu}%</span>
@@ -646,12 +731,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     unreadCount,
     isCenterOpen,
     setCenterOpen,
-    prefs,
-    setPrefs,
   } = useNotifications();
+  const { mode: viewportMode, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
+  const hasSessionIdentity = Boolean(String(user.uid || user.email || '').trim());
+  const hasAdminConsoleAccess = useMemo(() => canUseAdminConsole(user), [user]);
   
   // --- State ---
-  const [activeTab, setActiveTab] = useState<Tab>(Tab.STUDIO);
+  const [activeTab, setActiveTab] = useState<Tab>(resolveWorkspaceTabFromUrl);
+  const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [labMode, setLabMode] = useState<LabMode>('CLONING');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
@@ -663,8 +750,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = readStorageJson(STORAGE_KEYS.settings);
     return normalizeSettings(saved || DEFAULT_SETTINGS);
   });
+  const mediaBackendUrl = resolveMediaBackendUrl(settings);
+  const deferredSettings = useDeferredValue(settings);
 
-  useEffect(() => { writeStorageJson(STORAGE_KEYS.settings, settings); }, [settings]);
+  useEffect(() => { writeStorageJson(STORAGE_KEYS.settings, deferredSettings); }, [deferredSettings]);
 
   // Generation Status State
   const [isGenerating, setIsGenerating] = useState(false);
@@ -673,12 +762,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [processingStage, setProcessingStage] = useState('');
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
   const [liveAudioChunks, setLiveAudioChunks] = useState<LiveAudioChunkItem[]>([]);
+  const [studioQueueState, setStudioQueueState] = useState<StudioQueueState | null>(() => (
+    normalizeStoredStudioQueueState(readStorageJson(STORAGE_KEYS.studioQueue))
+  ));
+  const [studioQueueAudioUrls, setStudioQueueAudioUrls] = useState<Record<string, string>>({});
   
   // Abort Controller for Cancellation
   const generationAbortController = useRef<AbortController | null>(null);
   const seenRuntimeDiagnosticsTracesRef = useRef<Set<string>>(new Set());
   const activeGatewayJobIdRef = useRef<string>('');
   const seenLiveChunkKeysRef = useRef<Set<string>>(new Set());
+  const studioQueueStateRef = useRef<StudioQueueState | null>(studioQueueState);
+  const isStudioQueueRunActiveRef = useRef(false);
+  const activeStudioQueueItemIdRef = useRef<string>('');
+  const studioQueueAudioUrlsRef = useRef<Record<string, string>>({});
+  const masterQueueAudioUrlRef = useRef<string | null>(null);
+  const queueMasterRebuildTimerRef = useRef<number | null>(null);
+  const queueRunnerLockRef = useRef(false);
+  const studioQueueAutoResumeAttemptedRef = useRef(false);
   const generationFailureBurstRef = useRef(0);
   const lastRuntimeStatesRef = useRef<Record<GenerationSettings['engine'], EngineRuntimeState>>({
     GEM: 'checking',
@@ -725,7 +826,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     if (normalized.uiMotionLevel === 'off' || normalized.uiMotionLevel === 'rich' || normalized.uiMotionLevel === 'balanced') {
       return normalized.uiMotionLevel;
     }
-    return 'balanced';
+    return DEFAULT_SETTINGS.uiMotionLevel || 'off';
   });
 
   // Editor Tools
@@ -733,12 +834,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [isAutoAssigningCast, setIsAutoAssigningCast] = useState(false);
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
   const [detectedSpeakers, setDetectedSpeakers] = useState<string[]>([]);
+  const [studioMobilePanels, setStudioMobilePanels] = useState({
+    speaker: true,
+    mix: false,
+    multiSpeaker: false,
+    cast: false,
+    queue: false,
+  });
   const [studioEditorMode, setStudioEditorMode] = useState<StudioEditorMode>(() => {
       const saved = readStorageString(STORAGE_KEYS.studioEditorMode);
       return saved === 'blocks' ? 'blocks' : 'raw';
   });
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const toggleStudioMobilePanel = useCallback((panel: keyof typeof studioMobilePanels) => {
+    setStudioMobilePanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
+  }, []);
 
   // Translation & Chat State
   const [targetLang, setTargetLang] = useState('Hinglish');
@@ -782,16 +894,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [dubVolume, setDubVolume] = useState(1.0);
   const [renderedDubVideoUrl, setRenderedDubVideoUrl] = useState<string | null>(null);
 
-  // --- Real Media Backend State (LLVC + Video Tools) ---
+  // --- Real Media Backend State (Voice Transfer + Video Tools) ---
   const [backendHealth, setBackendHealth] = useState<BackendHealthState | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
-  const [llvcModels, setLlvcModels] = useState<string[]>([]);
+  const [voiceTransferModels, setVoiceTransferModels] = useState<string[]>([]);
   const [isLoadingLlvcModels, setIsLoadingLlvcModels] = useState(false);
   const [llvcSourceFile, setLlvcSourceFile] = useState<File | null>(null);
   const [llvcSourcePreviewUrl, setLlvcSourcePreviewUrl] = useState<string | null>(null);
   const [isLlvcSourcePlaying, setIsLlvcSourcePlaying] = useState(false);
   const [llvcPitchShift, setLlvcPitchShift] = useState(0);
-  const [llvcPreset, setLlvcPreset] = useState<'tts_realtime' | 'cover_hq' | 'llvc_hq_cpu'>('cover_hq');
+  const [llvcPreset, setLlvcPreset] = useState<'tts_realtime'>('tts_realtime');
   const [llvcF0Method, setLlvcF0Method] = useState<'rmvpe' | 'harvest' | 'crepe' | 'pm'>('rmvpe');
   const [llvcIndexRate, setLlvcIndexRate] = useState(0.5);
   const [llvcFilterRadius, setLlvcFilterRadius] = useState(3);
@@ -812,6 +924,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [voiceSearch, setVoiceSearch] = useState('');
   const [voiceFilterGender, setVoiceFilterGender] = useState<'All' | 'Male' | 'Female'>('All');
   const [voiceFilterAccent, setVoiceFilterAccent] = useState<string>('All');
+  const deferredVoiceSearch = useDeferredValue(voiceSearch);
 
   const [characterModalOpen, setCharacterModalOpen] = useState(false);
   const [editingChar, setEditingChar] = useState<CharacterProfile | null>(null);
@@ -971,6 +1084,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       (normalizedPlanToken === 'scale' ? 15000 : isPaidBillingPlan ? 10000 : 8000)
     )
   );
+  const studioQueueSourceHash = useMemo(() => hashStudioQueueSource(text), [text]);
+  const studioQueueEligible = useMemo(
+    () => canUseStudioQueue(text, maxCharsPerGeneration),
+    [maxCharsPerGeneration, text]
+  );
+  const studioQueueDraftPartCount = useMemo(() => {
+    if (!studioQueueEligible) return 0;
+    return buildSentenceAlignedCharWindows(text, maxCharsPerGeneration).length;
+  }, [maxCharsPerGeneration, studioQueueEligible, text]);
+  const isStudioQueueModeEnabled = studioQueueState?.queueModeEnabled === true;
+  const hasStudioQueueItems = Boolean(studioQueueState?.items.length);
   const selectedTokenPackMeta = TOKEN_PACK_MATRIX[selectedTokenPack];
   const selectedTokenPackPriceInr = normalizedPlanToken === 'scale'
     ? selectedTokenPackMeta.scaleInr
@@ -1082,17 +1206,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const now = Date.now();
       const force = Boolean(options?.force);
       const cached = ttsAccessProbeRef.current;
-      const backendUrl = resolveMediaBackendUrl(settings);
+      if (!hasSessionIdentity) {
+        const detail = 'Sign in to enable AI/TTS requests.';
+        ttsAccessProbeRef.current = { ok: false, detail, checkedAt: now };
+        return { ok: false, detail };
+      }
+      const backendUrl = mediaBackendUrl;
       if (!force && cached && now - cached.checkedAt < 15_000) {
         return { ok: cached.ok, detail: cached.detail };
       }
 
       try {
-        const accountProfile = await requestJson<{ requiredUserId?: boolean }>(
-          '/account/profile',
-          undefined,
-          { baseUrl: backendUrl }
-        );
+        const accountProfile = await fetchAccountProfile(backendUrl);
         if (Boolean(accountProfile?.requiredUserId)) {
           const detail = 'Complete your user ID setup to enable AI/TTS requests.';
           ttsAccessProbeRef.current = { ok: false, detail, checkedAt: now };
@@ -1106,11 +1231,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           mapTtsAccessBlockReason(error instanceof Error ? error.message : error, 'Authentication required.')
         );
         const safeDetail = detail || 'Sign in again to enable AI/TTS requests.';
-        ttsAccessProbeRef.current = { ok: false, detail: safeDetail, checkedAt: now };
-        return { ok: false, detail: safeDetail };
+        const shouldBlockForAuth = isAuthOrProfileBlockingMessage(safeDetail);
+        if (shouldBlockForAuth) {
+          const hasSessionIdentity = Boolean(String(user.uid || user.email || '').trim());
+          const previous = ttsAccessProbeRef.current;
+          const recentAuthenticatedProbe =
+            Boolean(previous?.ok) && now - Number(previous?.checkedAt || 0) < 90_000;
+          if (hasSessionIdentity && recentAuthenticatedProbe) {
+            const authenticatedDetail = 'Authenticated';
+            ttsAccessProbeRef.current = { ok: true, detail: authenticatedDetail, checkedAt: now };
+            return { ok: true, detail: authenticatedDetail };
+          }
+          ttsAccessProbeRef.current = { ok: false, detail: safeDetail, checkedAt: now };
+          return { ok: false, detail: safeDetail };
+        }
+
+        // Non-auth probe failures (network/service hiccups) should not block active sessions.
+        const optimisticDetail = 'Authenticated';
+        ttsAccessProbeRef.current = { ok: true, detail: optimisticDetail, checkedAt: now };
+        return { ok: true, detail: optimisticDetail };
       }
     },
-    [mapTtsAccessBlockReason, settings]
+    [hasSessionIdentity, isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason, mediaBackendUrl, user.email, user.uid]
   );
   const refreshTtsAccessState = useCallback(
     async (force: boolean = false): Promise<RuntimeAccessProbe> => {
@@ -1148,65 +1290,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     },
     [isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason]
   );
-  const mapLegacyToastEvent = useCallback(
-    (message: string, type: 'success' | 'error' | 'info'): NotificationEventCode => {
-      const lowered = String(message || '').toLowerCase();
-      if (lowered.includes('generation cancelled')) return 'generation.cancelled';
-      if (lowered.includes('generation started')) return 'generation.started';
-      if (
-        lowered.includes('audio generated') ||
-        lowered.includes('dubbing complete') ||
-        lowered.includes('dubbed video rendered') ||
-        lowered.includes('llvc cover generated')
-      ) {
-        return 'generation.completed';
-      }
-      if (lowered.includes('runtime is online')) return 'runtime.online';
-      if (lowered.includes('runtime is offline')) return 'runtime.offline';
-      if (lowered.includes('backend connectivity restored')) return 'backend.online';
-      if (
-        lowered.includes('backend unreachable') ||
-        lowered.includes('cannot reach backend') ||
-        lowered.includes('failed to fetch') ||
-        lowered.includes('cannot connect to backend')
-      ) {
-        return 'backend.offline';
-      }
-      if (lowered.includes('billing updated successfully')) return 'billing.checkout.success';
-      if (lowered.includes('billing checkout canceled')) return 'billing.checkout.cancel';
-      if (lowered.includes('coupon applied')) return 'billing.coupon.success';
-      if (lowered.includes('coupon') && lowered.includes('failed')) return 'billing.coupon.failed';
-      if (lowered.includes('primary ai key pool reloaded')) return 'admin.pool.reload.success';
-      if (lowered.includes('failed to reload primary ai pool')) return 'admin.pool.reload.failed';
-      if (lowered.includes('action submitted')) return 'admin.guard.action.submitted';
-      if (lowered.includes('failed to load access control')) return 'admin.access.load.failed';
-      if (lowered.includes('failed to refresh generation history')) return 'billing.history.refresh.failed';
-      if (lowered.includes('generation history cleared')) return 'billing.history.clear.success';
-      if (lowered.includes('failed to clear generation history')) return 'billing.history.clear.failed';
-      if (
-        type === 'error' &&
-        (lowered.includes('generation') ||
-          lowered.includes('dubbing') ||
-          lowered.includes('runtime is not available') ||
-          lowered.includes('video processing failed'))
-      ) {
-        return 'generation.failed';
-      }
-      return 'custom.message';
-    },
-    []
-  );
   const showToast = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     const safeMessage = type === 'error' ? toUserFriendlySystemMessage(msg, msg) : sanitizeUiText(msg);
     if (!safeMessage) return;
-    const eventCode = mapLegacyToastEvent(safeMessage, type);
-    emit(eventCode, {
+    emit('custom.message', {
       message: safeMessage,
       severity: type === 'success' ? 'success' : type === 'error' ? 'error' : 'info',
       category: type === 'error' ? 'system' : 'activity',
       channel: 'toast',
     });
-  }, [emit, mapLegacyToastEvent, toUserFriendlySystemMessage]);
+  }, [emit, toUserFriendlySystemMessage]);
 
   useEffect(() => {
       const params = new URLSearchParams(window.location.search);
@@ -1233,6 +1326,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   // Intentional one-time check on mount for checkout return query params.
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+      const syncNotificationDeepLink = () => {
+          const target = readNotificationDeepLink();
+          if (target.tab) {
+              const tabToken = String(target.tab || '').trim().toUpperCase();
+              if (Object.values(Tab).includes(tabToken as Tab)) {
+                  setActiveTab(tabToken as Tab);
+              }
+          }
+          if (target.adminTab) {
+              const adminToken = String(target.adminTab || '').trim().toLowerCase();
+              if (['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics'].includes(adminToken)) {
+                  setInitialAdminOpsTab(adminToken as AdminOpsTab);
+              }
+          }
+      };
+      syncNotificationDeepLink();
+      window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncNotificationDeepLink as EventListener);
+      return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncNotificationDeepLink as EventListener);
   }, []);
   const patchDubbingUiState = useCallback((patch: Partial<DubbingUiState>) => {
       setDubbingUiState((prev) => ({
@@ -1292,7 +1405,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       dubbingLiveQueueRef.current.push(url);
       pumpDubbingLivePlayback();
   }, [pumpDubbingLivePlayback]);
-  const mediaBackendUrl = resolveMediaBackendUrl(settings);
   const billingActions = useBillingActions({ baseUrl: mediaBackendUrl });
   const isGemRuntimeEngine = useCallback(
     (engine: GenerationSettings['engine']) => engine === 'GEM' || engine === 'GOOD' || engine === 'NEURAL2',
@@ -1478,6 +1590,44 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return 'Adult';
   }, [resolveVoiceAgeGroup]);
 
+  const resolveVoiceCountryTag = useCallback((voice: VoiceOption): string => {
+      const rawName = String(voice.name || '').trim();
+      const trailingToken = rawName.split(/\s+/).filter(Boolean).pop() || '';
+      if (/^[A-Za-z]{2,3}$/.test(trailingToken)) return trailingToken.toUpperCase();
+      const normalizedCountry = resolveVoiceCountry(voice).trim().toLowerCase();
+      if (!normalizedCountry || normalizedCountry === 'unknown') return '';
+      return COUNTRY_TAG_BY_NAME[normalizedCountry] || normalizedCountry.slice(0, 3).toUpperCase();
+  }, [resolveVoiceCountry]);
+
+  const resolveVoiceDisplayMeta = useCallback((voice: VoiceOption): { name: string; countryTag: string } => {
+      const countryTag = resolveVoiceCountryTag(voice);
+      const rawName = String(voice.name || '').trim();
+      if (!rawName) return { name: 'Voice', countryTag };
+
+      const tokens = rawName.split(/\s+/).filter(Boolean);
+      const trailingToken = tokens[tokens.length - 1] || '';
+      if (countryTag && trailingToken.toUpperCase() === countryTag) {
+          const strippedName = tokens.slice(0, -1).join(' ').trim();
+          if (strippedName) return { name: strippedName, countryTag };
+      }
+
+      const countryName = resolveVoiceCountry(voice);
+      if (countryTag && countryName && countryName !== 'Unknown') {
+          const loweredRaw = rawName.toLowerCase();
+          const loweredCountry = countryName.toLowerCase();
+          if (loweredRaw.endsWith(` ${loweredCountry}`)) {
+              const strippedName = rawName.slice(0, rawName.length - loweredCountry.length - 1).trim();
+              if (strippedName) return { name: strippedName, countryTag };
+          }
+      }
+      return { name: rawName, countryTag };
+  }, [resolveVoiceCountry, resolveVoiceCountryTag]);
+
+  const resolveVoiceDisplayLabel = useCallback((voice: VoiceOption): string => {
+      const meta = resolveVoiceDisplayMeta(voice);
+      return meta.countryTag ? `${meta.name} [${meta.countryTag}]` : meta.name;
+  }, [resolveVoiceDisplayMeta]);
+
   const withVoiceMeta = useCallback((voice: VoiceOption, engine: GenerationSettings['engine']): VoiceOption => {
       const tier = resolveVoiceAccessTier(engine, voice);
       return {
@@ -1595,20 +1745,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const fallbackEngine = planAllowedEngines[0] || 'KOKORO';
       const fallbackVoiceId = getValidVoiceIdForEngine(fallbackEngine, settings.voiceId);
       setSettings((prev) => ({ ...prev, engine: fallbackEngine, voiceId: fallbackVoiceId }));
-      if (!hasUnlimitedAccess && !isPaidBillingPlan) {
-          showToast('Prime engine is locked on Free. Upgrading unlocks all engines.', 'info');
-          setShowSubscriptionModal(true);
-      }
   }, [
       getValidVoiceIdForEngine,
-      hasUnlimitedAccess,
       isEnginePlanAllowed,
-      isPaidBillingPlan,
       planAllowedEngines,
       settings.engine,
       settings.voiceId,
-      setShowSubscriptionModal,
-      showToast,
   ]);
 
   useEffect(() => {
@@ -1660,14 +1802,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const resolveVoiceLanguageBucket = useCallback((voice: VoiceOption): VoiceLanguageBucket => {
       const id = String(voice.id || '').toLowerCase();
-      const meta = `${voice.name || ''} ${voice.accent || ''} ${voice.country || ''}`.toLowerCase();
+      const accentMeta = String(voice.accent || '').toLowerCase();
+      const nameMeta = String(voice.name || '').toLowerCase();
+      const meta = `${nameMeta} ${accentMeta} ${voice.country || ''}`.toLowerCase();
       if (meta.includes('multilingual') || id.includes('multilingual')) return 'multi';
 
       const hindiLike =
-          meta.includes('hindi') ||
-          meta.includes('hinglish') ||
-          meta.includes('devanagari') ||
-          meta.includes('india') ||
+          accentMeta.includes('hindi') ||
+          accentMeta.includes('hinglish') ||
+          nameMeta.includes('hindi') ||
+          nameMeta.includes('devanagari') ||
           id.startsWith('hf_') ||
           id.startsWith('hm_') ||
 
@@ -1760,11 +1904,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activeScriptLanguageCode =
       activeTab === Tab.DUBBING ? dubbingTextLanguageCode : studioTextLanguageCode;
 
+  const studioParsedScript = useMemo(() => parseMultiSpeakerScript(text), [text]);
+  const studioCrewTags = useMemo(
+      () => (studioParsedScript.crewTagsList || []).filter(Boolean),
+      [studioParsedScript]
+  );
+
   const castSpeakers = useMemo(() => {
       const names = new Set<string>();
       const script = activeTab === Tab.DUBBING ? dubScript : text;
       if (script.trim()) {
-          const parsed = parseMultiSpeakerScript(script);
+          const parsed = activeTab === Tab.STUDIO ? studioParsedScript : parseMultiSpeakerScript(script);
           parsed.speakersList
               .map((speaker) => speaker.trim())
               .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX')
@@ -1776,76 +1926,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           .forEach((speaker) => names.add(speaker));
       if (!names.size) names.add('Narrator');
       return [...names];
-  }, [activeTab, detectedSpeakers, dubScript, text]);
+  }, [activeTab, detectedSpeakers, dubScript, studioParsedScript, text]);
   const isStudioMultiSpeakerEnabled = settings.multiSpeakerEnabled !== false;
+  const shouldShowStudioQueuePanel = isStudioQueueModeEnabled;
 
-  const inferSpeakerGender = useCallback((speaker: string, sample: string): VoiceOption['gender'] => {
-      const existing = characterLibrary.find((item) => item.name.toLowerCase() === speaker.toLowerCase());
-      if (existing?.gender && existing.gender !== 'Unknown') return existing.gender;
-
-      const fromName = guessGenderFromName(speaker);
-      if (fromName !== 'Unknown') return fromName;
-
-      const probe = `${speaker} ${sample}`.toLowerCase();
-      if (/\b(she|her|hers|mother|mom|queen|princess|girl|woman|madam|didi|behen|aunty)\b/i.test(probe)) return 'Female';
-      if (/\b(he|him|his|father|dad|king|prince|boy|man|sir|bhai|bhaiya|uncle)\b/i.test(probe)) return 'Male';
-      return 'Unknown';
-  }, [characterLibrary]);
-
-  const normalizeSpeakerAge = useCallback((rawAge: string): 'Child' | 'Adult' | 'Elderly' | 'Unknown' => {
-      const token = String(rawAge || '').trim().toLowerCase();
-      if (!token) return 'Unknown';
-      if (/\b(child|kid|boy|girl|teen)\b/.test(token)) return 'Child';
-      if (/\b(elder|elderly|old|senior|aged|grand)\b/.test(token)) return 'Elderly';
-      if (/\badult\b/.test(token)) return 'Adult';
-      return 'Unknown';
-  }, []);
-
-  const inferSpeakerAge = useCallback((speaker: string, sample: string): 'Child' | 'Adult' | 'Elderly' | 'Unknown' => {
-      const existing = characterLibrary.find((item) => item.name.toLowerCase() === speaker.toLowerCase());
-      const existingAge = normalizeSpeakerAge(String(existing?.age || ''));
-      if (existingAge !== 'Unknown') return existingAge;
-
-      const fromName = guessAgeGroupFromSpeaker(speaker);
-      if (fromName !== 'Unknown') return fromName;
-
-      const probe = `${speaker} ${sample}`.toLowerCase();
-      if (/\b(child|kid|boy|girl|teen|son|daughter|school|student|bacha|bachi|ladka|ladki)\b/i.test(probe)) {
-          return 'Child';
-      }
-      if (/\b(elder|elderly|old|senior|aged|grandma|grandpa|grandfather|grandmother|dada|dadi|nana|nani|buzurg)\b/i.test(probe)) {
-          return 'Elderly';
-      }
-      return 'Unknown';
-  }, [characterLibrary, normalizeSpeakerAge]);
-
-  const inferSpeakerTone = useCallback((sample: string): 'calm' | 'energetic' | 'serious' => {
-      const textSample = String(sample || '').trim();
-      if (!textSample) return 'calm';
-
-      let energeticScore = 0;
-      let seriousScore = 0;
-
-      if ((textSample.match(/!/g) || []).length >= 2) energeticScore += 2;
-      if (/[A-Z]{4,}/.test(textSample)) energeticScore += 1;
-      if (/\b(wow|great|amazing|quick|hurry|run|go|excited|lets|let's|jaldi|wah|chalo)\b/i.test(textSample)) energeticScore += 2;
-
-      if (/\b(danger|warning|battle|war|crime|murder|order|command|urgent|serious|must)\b/i.test(textSample)) seriousScore += 2;
-      if ((textSample.match(/[?.]/g) || []).length > 4) seriousScore += 1;
-      if (/\b(quietly|slowly|softly|carefully|gently)\b/i.test(textSample)) seriousScore += 1;
-
-      if (energeticScore >= seriousScore + 2) return 'energetic';
-      if (seriousScore > energeticScore) return 'serious';
-      return 'calm';
-  }, []);
-
-  const autoAssignCastVoices = useCallback(() => {
+  const autoAssignCastVoices = useCallback(async () => {
       if (!isStudioMultiSpeakerEnabled) {
           showToast('Enable Multi-Speaker Mode first.', 'info');
-          return;
-      }
-      if (!castSpeakers.length) {
-          showToast('No cast speakers found to map.', 'info');
           return;
       }
 
@@ -1860,141 +1947,97 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
 
       const sourceScript = activeTab === Tab.DUBBING ? dubScript : text;
-      const parsedSegments = parseScriptToSegments(sourceScript);
-
-      const speakerLookup = new Map<string, string>();
-      castSpeakers.forEach((speaker) => {
-          const normalized = String(speaker || '').trim();
-          if (!normalized) return;
-          speakerLookup.set(normalized.toLowerCase(), normalized);
-      });
-
-      const speakerSamples = new Map<string, string[]>();
-      parsedSegments.forEach((segment) => {
-          const rawSpeaker = String(segment.speaker || '').trim();
-          if (!rawSpeaker || rawSpeaker.toUpperCase() === 'SFX') return;
-          const canonicalSpeaker = speakerLookup.get(rawSpeaker.toLowerCase()) || rawSpeaker;
-          if (!speakerSamples.has(canonicalSpeaker)) speakerSamples.set(canonicalSpeaker, []);
-          const line = String(segment.text || '').trim();
-          if (line) speakerSamples.get(canonicalSpeaker)?.push(line);
-      });
-
-      const hashText = (value: string): number => {
-          let hash = 0;
-          for (let idx = 0; idx < value.length; idx += 1) {
-              hash = ((hash << 5) - hash) + value.charCodeAt(idx);
-              hash |= 0;
-          }
-          return Math.abs(hash);
-      };
-
-      const narratorSpeakerPattern = /\b(narrator|voice\s*over|storyteller|commentator)\b/i;
-      const energeticVoicePattern = /\b(nova|shimmer|heart|bella|sarah|aoede|callirrhoe|priya|anjali|sophie|olivia)\b/i;
-      const seriousVoicePattern = /\b(onyx|fable|echo|george|david|michael|fenrir|omega|psi|alnilam|iapetus)\b/i;
-
+      if (!sourceScript.trim()) {
+          showToast('Write or paste a script first.', 'info');
+          return;
+      }
       setIsAutoAssigningCast(true);
       try {
-          const usedVoiceIds = new Set<string>();
-          const nextMapping: Record<string, string> = {};
+          let resolvedSpeakers = [...castSpeakers];
+          let traitHints: Record<string, { gender?: 'Male' | 'Female' | 'Unknown'; ageGroup?: 'Child' | 'Adult' | 'Elderly' | 'Unknown'; tone?: 'calm' | 'energetic' | 'serious' }> = {};
 
-          castSpeakers.forEach((speaker) => {
-              const normalizedSpeaker = String(speaker || '').trim();
-              if (!normalizedSpeaker) return;
+          try {
+              const aiAnalysis = await inferSpeakerTraitHintsWithAi(sourceScript, settings, castSpeakers);
+              if (aiAnalysis.speakers.length > 0) {
+                  resolvedSpeakers = aiAnalysis.speakers;
+              }
+              traitHints = aiAnalysis.traitHints;
+          } catch (error) {
+              console.warn('[studio-cast] ai speaker detection failed, using local fallback', error);
+          }
 
-              const sample = (speakerSamples.get(normalizedSpeaker) || []).slice(0, 3).join(' ');
-              const inferredGender = inferSpeakerGender(normalizedSpeaker, sample);
-              const inferredAgeGroup = inferSpeakerAge(normalizedSpeaker, sample);
-              const tone = inferSpeakerTone(sample);
-              const rememberedVoiceId = getVoiceForCharacter(normalizedSpeaker);
+          if (!resolvedSpeakers.length) {
+              showToast('No cast speakers found to map.', 'info');
+              return;
+          }
 
-              const ranked = effectiveCatalog
-                  .map((voice, index) => {
-                      const meta = `${voice.name || ''} ${voice.id || ''} ${voice.accent || ''} ${voice.country || ''} ${voice.ageGroup || ''}`.toLowerCase();
-                      const ageLabel = resolveVoiceAgeGroup(voice).toLowerCase();
-                      const isChildVoice = /\b(child|kid|boy|girl|teen)\b/.test(`${ageLabel} ${meta}`);
-                      const isElderVoice = /\b(elder|elderly|old|senior|aged|grand)\b/.test(`${ageLabel} ${meta}`);
-                      const isAdultVoice = /\badult\b/.test(ageLabel) || (!isChildVoice && !isElderVoice);
-                      let score = 0;
-
-                      if (inferredGender !== 'Unknown') {
-                          if (voice.gender === inferredGender) score += 26;
-                          else if (voice.gender !== 'Unknown') score -= 8;
-                      } else if (voice.gender === 'Unknown') {
-                          score += 3;
-                      }
-
-                      if (inferredAgeGroup === 'Child') {
-                          if (isChildVoice) score += 30;
-                          else if (isElderVoice) score -= 18;
-                          else score -= 6;
-                      } else if (inferredAgeGroup === 'Elderly') {
-                          if (isElderVoice) score += 30;
-                          else if (isChildVoice) score -= 18;
-                          else score -= 4;
-                      } else if (inferredAgeGroup === 'Adult') {
-                          if (isAdultVoice) score += 6;
-                      } else if (isAdultVoice) {
-                          score += 2;
-                      }
-
-                      if (rememberedVoiceId && voice.id === rememberedVoiceId) score += 8;
-                      if (resolveMappedVoiceForSpeaker(normalizedSpeaker) === voice.id) score += 4;
-
-                      const isNarrator = narratorSpeakerPattern.test(normalizedSpeaker);
-                      if (isNarrator && seriousVoicePattern.test(meta)) score += 10;
-                      if (tone === 'energetic' && energeticVoicePattern.test(meta)) score += 9;
-                      if (tone === 'serious' && seriousVoicePattern.test(meta)) score += 9;
-                      if (tone === 'calm' && narratorSpeakerPattern.test(meta)) score += 6;
-                      if (meta.includes(normalizedSpeaker.toLowerCase())) score += 7;
-
-                      if (!usedVoiceIds.has(voice.id)) score += 4;
-                      score += (hashText(`${normalizedSpeaker}:${voice.id}`) % 7) / 100;
-                      score -= index * 0.0001;
-
-                      return { voice, score };
-                  })
-                  .sort((a, b) => b.score - a.score);
-
-              const selectedVoice =
-                  ranked.find((entry) => !usedVoiceIds.has(entry.voice.id))?.voice ||
-                  ranked[0]?.voice ||
-                  effectiveCatalog[0];
-
-              if (!selectedVoice) return;
-              nextMapping[normalizedSpeaker] = selectedVoice.id;
-              usedVoiceIds.add(selectedVoice.id);
-
-              const existingCharacter = characterLibrary.find(
-                  (item) => item.name.toLowerCase() === normalizedSpeaker.toLowerCase()
-              );
-              updateCharacter({
-                  id: existingCharacter?.id || crypto.randomUUID(),
-                  name: normalizedSpeaker,
-                  voiceId: selectedVoice.id,
-                  gender: selectedVoice.gender !== 'Unknown' ? selectedVoice.gender : inferredGender,
-                  age:
-                    resolveVoiceAgeGroup(selectedVoice) !== 'Unknown'
-                      ? resolveVoiceAgeGroup(selectedVoice)
-                      : (inferredAgeGroup !== 'Unknown' ? inferredAgeGroup : 'Adult'),
-                  avatarColor: existingCharacter?.avatarColor || '#6366f1',
-                  description: existingCharacter?.description || 'Auto-assigned from AI cast',
-              });
-          });
+          const rememberedVoices = resolvedSpeakers.reduce<Record<string, string>>((acc, speaker) => {
+              const voiceId = String(getVoiceForCharacter(speaker) || '').trim();
+              if (voiceId) acc[speaker] = voiceId;
+              return acc;
+          }, {});
+          const autoAssignOptions = {
+              speakers: resolvedSpeakers,
+              script: sourceScript,
+              voices: effectiveCatalog,
+              characterLibrary,
+              rememberedVoices,
+              traitHints,
+          };
+          const { mapping: nextMapping, assignments } = autoAssignSpeakerVoices(
+              settings.speakerMapping
+                ? { ...autoAssignOptions, existingMapping: settings.speakerMapping }
+                : autoAssignOptions
+          );
 
           if (!Object.keys(nextMapping).length) {
               showToast('No cast speakers available to auto-assign.', 'info');
               return;
           }
 
+          startTransition(() => {
+              setDetectedSpeakers((prev) => {
+                  const merged = new Set(
+                      [...prev, ...resolvedSpeakers]
+                          .map((speaker) => String(speaker || '').trim())
+                          .filter(Boolean)
+                  );
+                  return merged.size > 0 ? [...merged] : prev;
+              });
+          });
+
+          assignments.forEach(({ speaker, voice, inferredGender, inferredAgeGroup }) => {
+              if (BUILT_IN_VOICE_IDS.has(voice.id)) return;
+              const existingCharacter = characterLibrary.find(
+                  (item) => item.name.toLowerCase() === speaker.toLowerCase()
+              );
+              updateCharacter({
+                  id: existingCharacter?.id || crypto.randomUUID(),
+                  name: speaker,
+                  voiceId: voice.id,
+                  gender: voice.gender !== 'Unknown' ? voice.gender : inferredGender,
+                  age:
+                    resolveVoiceAgeGroup(voice) !== 'Unknown'
+                      ? resolveVoiceAgeGroup(voice)
+                      : (inferredAgeGroup !== 'Unknown' ? inferredAgeGroup : 'Adult'),
+                  avatarColor: existingCharacter?.avatarColor || '#6366f1',
+                  description: existingCharacter?.description || 'Auto-assigned from AI cast',
+              });
+          });
+
           setSettings((prev) => ({
               ...prev,
               speakerMapping: {
                   ...prev.speakerMapping,
                   ...nextMapping,
-              },
+                  },
           }));
           const mappedCount = Object.keys(nextMapping).length;
-          showToast(`AI assigned ${mappedCount} cast voice${mappedCount === 1 ? '' : 's'}.`, 'success');
+          const detectedCount = resolvedSpeakers.length;
+          showToast(
+              `AI detected ${detectedCount} speaker${detectedCount === 1 ? '' : 's'} and assigned ${mappedCount} voice${mappedCount === 1 ? '' : 's'}.`,
+              'success'
+          );
       } finally {
           setIsAutoAssigningCast(false);
       }
@@ -2007,14 +2050,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       getEngineVoiceCatalog,
       getLanguageScopedVoiceCatalog,
       getVoiceForCharacter,
-      inferSpeakerAge,
-      inferSpeakerGender,
-      inferSpeakerTone,
+      inferSpeakerTraitHintsWithAi,
       isFreeTierUser,
       isStudioMultiSpeakerEnabled,
-      resolveMappedVoiceForSpeaker,
       resolveVoiceAccessTier,
       resolveVoiceAgeGroup,
+      settings,
       settings.engine,
       settings.speakerMapping,
       showToast,
@@ -2113,20 +2154,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [mediaBackendUrl]);
 
   const refreshTtsRuntimeStatus = async () => {
+      const browserKokoroEnabled = isBrowserKokoroExecutionEnabled();
       const statuses = await Promise.all(
           ENGINE_ORDER.map(async (engine) => {
-              if (engine === 'KOKORO' && settings.kokoroExecutionMode !== 'backend_runtime') {
+              if (engine === 'KOKORO' && browserKokoroEnabled) {
+                  const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
                   const browserState = kokoroBrowserRuntime.getState();
+                  if (isLimitReached) {
+                      return [engine, { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' }] as const;
+                  }
                   if (browserState === 'ready') {
-                      return [engine, { state: 'online', detail: 'Browser WebGPU runtime ready' }] as const;
+                      return [engine, { state: 'online', detail: 'Local ONNX CPU runtime ready' }] as const;
                   }
                   if (browserState === 'warming') {
-                      return [engine, { state: 'starting', detail: 'Preparing browser WebGPU runtime...' }] as const;
+                      return [engine, { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' }] as const;
                   }
                   if (browserState === 'suspended') {
-                      return [engine, { state: 'standby', detail: 'Browser runtime suspended (auto-resume on generate)' }] as const;
+                      return [engine, { state: 'standby', detail: 'Local ONNX CPU runtime suspended (auto-resume on generate)' }] as const;
                   }
-                  return [engine, { state: 'standby', detail: 'Browser runtime idle' }] as const;
+                  return [engine, { state: 'standby', detail: 'Local ONNX CPU runtime idle' }] as const;
               }
               const status = await probeRuntimeStatus(engine);
               if (
@@ -2220,7 +2266,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   : getEngineVoiceCatalog(engine);
               const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
               syncedVoiceId = validVoiceId;
-              setSettings(prev => ({ ...prev, engine, voiceId: validVoiceId }));
+              setSettings((prev) => (
+                  prev.engine === engine && prev.voiceId === validVoiceId
+                      ? prev
+                      : { ...prev, engine, voiceId: validVoiceId }
+              ));
           }
           return {
               runtimeUrl,
@@ -2252,7 +2302,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('networkerror') ||
                   detail.includes('econnrefused')
               ) {
-                  throw new Error(`Media backend is unreachable at ${mediaBackendUrl}. Run "npm run services:doctor" and retry.`);
+                  throw new Error(`Media backend is unreachable at ${mediaBackendUrl}. Check backend health and retry.`);
               }
               throw new Error(switchError?.message || `Failed to switch ${engineLabel} runtime.`);
           }
@@ -2285,7 +2335,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   : getEngineVoiceCatalog(engine);
               const validVoiceId = selectVoiceIdFromCatalog(engine, fallbackCatalog, candidateVoiceId);
               syncedVoiceId = validVoiceId;
-              setSettings(prev => ({ ...prev, engine, voiceId: validVoiceId }));
+              setSettings((prev) => (
+                  prev.engine === engine && prev.voiceId === validVoiceId
+                      ? prev
+                      : { ...prev, engine, voiceId: validVoiceId }
+              ));
           }
           if (!options?.silent) {
               showToast(`${engineLabel} runtime is online.`, 'info');
@@ -2305,12 +2359,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
+  const ensureEngineOnlineRef = useRef(ensureEngineOnline);
+  useEffect(() => {
+      ensureEngineOnlineRef.current = ensureEngineOnline;
+  }, [ensureEngineOnline]);
+
   const refreshBackendHealth = async (silent: boolean = false) => {
       setIsCheckingBackend(true);
       try {
           const health = await checkMediaBackendHealth(mediaBackendUrl);
           const ffmpegMissing = !health.ffmpeg?.available;
-          const llvcError = Boolean(health.llvc?.error);
+          const llvcError = Boolean(health.voiceTransfer?.error);
           const whisperError = Boolean(health.whisper?.error);
           const separationError = Boolean(health.sourceSeparation?.enabled && !health.sourceSeparation?.available);
           const hasSubsystemError = ffmpegMissing || llvcError || whisperError || separationError;
@@ -2327,7 +2386,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             : 'n/a';
           const summary = [
               health.ffmpeg?.available ? 'FFmpeg OK' : 'FFmpeg Missing',
-              health.llvc?.error ? 'LLVC Error' : 'LLVC Ready',
+              health.voiceTransfer?.error ? 'Voice Transfer Error' : 'Voice Transfer Ready',
               health.whisper?.error ? 'Whisper Error' : `Whisper ${health.whisper?.loaded ? 'Loaded' : 'Idle'} (${languageHint})`,
               separationState,
           ].join(' | ');
@@ -2346,22 +2405,108 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const refreshLlvcModels = async (silent: boolean = false) => {
       setIsLoadingLlvcModels(true);
       try {
-          const payload = await listLlvcModels(mediaBackendUrl);
-          setLlvcModels(payload.models);
+          const payload = await listVoiceTransferModels(mediaBackendUrl);
+          setVoiceTransferModels(payload.models);
           setSettings(prev => {
-              const preferred = prev.llvcModel && payload.models.includes(prev.llvcModel) ? prev.llvcModel : '';
+              const preferred = prev.voiceModel && payload.models.includes(prev.voiceModel) ? prev.voiceModel : '';
               const nextModel = preferred || payload.currentModel || payload.models[0] || '';
-              return { ...prev, llvcModel: nextModel };
+              return { ...prev, voiceModel: nextModel };
           });
       } catch (e: any) {
-          setLlvcModels([]);
+          setVoiceTransferModels([]);
           if (!silent) {
-              showToast(e?.message || 'Failed to load LLVC models', 'error');
+              showToast(e?.message || 'Failed to load voice transfer models', 'error');
           }
       } finally {
           setIsLoadingLlvcModels(false);
       }
   };
+
+  const prepareKokoroExecution = useCallback(async (
+      context: 'studio' | 'preview',
+      voiceId: string,
+      speed: number,
+      signal?: AbortSignal
+  ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
+      if (isLimitReached && !hasUnlimitedAccess) {
+          if (isBrowserKokoroExecutionEnabled()) {
+              const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+              await kokoroBrowserRuntime.suspend();
+          }
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' },
+          }));
+          throw new Error('Daily generation limit reached. Kokoro local runtime is disabled for today.');
+      }
+      const access = await refreshTtsAccessState(true);
+      if (!access.ok) {
+          throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
+      }
+
+      const useBrowserKokoro = shouldUseBrowserKokoroExecution('KOKORO', context);
+      if (!useBrowserKokoro) {
+          if (isBrowserKokoroExecutionEnabled()) {
+              const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+              await kokoroBrowserRuntime.suspend();
+          }
+          setTtsRuntimeStatus((prev) => (
+              prev.KOKORO?.state === 'online'
+                  ? prev
+                  : {
+                      ...prev,
+                      KOKORO: { state: 'checking', detail: 'Checking Kokoro runtime...' },
+                  }
+          ));
+          return await ensureEngineOnlineRef.current('KOKORO', { silent: true, syncVoiceId: voiceId });
+      }
+
+      setManagedActiveEngine('KOKORO');
+      setTtsRuntimeStatus((prev) => ({
+          ...prev,
+          KOKORO: { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' },
+      }));
+
+      try {
+          const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+          await kokoroBrowserRuntime.ensureReady({
+              backendBaseUrl: mediaBackendUrl,
+              voiceId,
+              speed,
+              ...(signal ? { signal } : {}),
+          });
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'online', detail: 'Local ONNX CPU runtime ready' },
+          }));
+          return {
+              runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
+              catalog: getEngineVoiceCatalog('KOKORO'),
+              syncedVoiceId: voiceId,
+          };
+      } catch (error: any) {
+          if (error?.name === 'AbortError') {
+              throw error;
+          }
+          const detail = error?.message || (
+              useBrowserKokoro
+                  ? `Kokoro local runtime unavailable in ${context}.`
+                  : `Kokoro runtime unavailable in ${context}.`
+          );
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'offline', detail },
+          }));
+          throw new Error(detail);
+      }
+  }, [
+      getEngineVoiceCatalog,
+      hasUnlimitedAccess,
+      isLimitReached,
+      mediaBackendUrl,
+      refreshTtsAccessState,
+      settings.kokoroTtsServiceUrl,
+  ]);
 
   // --- Effects ---
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiTheme, uiTheme); }, [uiTheme]);
@@ -2391,6 +2536,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       };
   }, [showSettings]);
   useEffect(() => {
+      if (!hasSessionIdentity) {
+          lastRuntimeStatesRef.current = ENGINE_ORDER.reduce((acc, engine) => {
+              acc[engine] = ttsRuntimeStatus[engine]?.state || 'standby';
+              return acc;
+          }, {} as Record<GenerationSettings['engine'], EngineRuntimeState>);
+          return;
+      }
       for (const engine of ENGINE_ORDER) {
           const previous = lastRuntimeStatesRef.current[engine];
           const next = ttsRuntimeStatus[engine]?.state || 'offline';
@@ -2431,8 +2583,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           lastRuntimeStatesRef.current[engine] = next;
       }
-  }, [emit, settings.engine, ttsRuntimeStatus]);
+  }, [emit, hasSessionIdentity, settings.engine, ttsRuntimeStatus]);
   useEffect(() => {
+      if (!hasSessionIdentity) {
+          lastTtsAccessBlockedRef.current = ttsAccessState.blocked;
+          return;
+      }
       const previous = lastTtsAccessBlockedRef.current;
       const blocked = ttsAccessState.blocked;
       if (previous === null) {
@@ -2608,14 +2764,30 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [uiTheme]);
 
   useEffect(() => {
+      let cancelled = false;
       ttsAccessProbeRef.current = null;
       setTtsAccessState({
-          blocked: false,
-          detail: 'Checking authentication...',
+          blocked: !hasSessionIdentity,
+          detail: hasSessionIdentity ? 'Checking authentication...' : 'Sign in to enable AI/TTS requests.',
           checkedAt: 0,
       });
-      void refreshTtsAccessState(true);
-  }, [mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
+      if (!hasSessionIdentity) {
+          return () => {
+              cancelled = true;
+          };
+      }
+      void (async () => {
+          const authStateReady = (firebaseAuth as { authStateReady?: () => Promise<void> }).authStateReady;
+          if (typeof authStateReady === 'function') {
+              await authStateReady.call(firebaseAuth).catch(() => undefined);
+          }
+          if (cancelled) return;
+          await refreshTtsAccessState(true);
+      })();
+      return () => {
+          cancelled = true;
+      };
+  }, [hasSessionIdentity, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
 
   useEffect(() => {
       if (activeTab === Tab.LAB && labMode === 'COVERS') {
@@ -2627,6 +2799,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       const tick = async () => {
           if (isGenerating || Boolean(engineSwitchInProgress)) return;
+          if (!hasSessionIdentity) {
+              setTtsRuntimeStatus((prev) =>
+                  ENGINE_ORDER.reduce((acc, engine) => {
+                      acc[engine] =
+                          prev[engine]?.state === 'standby' && prev[engine]?.detail === 'Sign in to check runtime status.'
+                              ? prev[engine]
+                              : { state: 'standby', detail: 'Sign in to check runtime status.' };
+                      return acc;
+                  }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>)
+              );
+              return;
+          }
           await Promise.all([refreshTtsRuntimeStatus(), refreshTtsAccessState()]);
       };
       void tick();
@@ -2635,39 +2819,32 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }, 90000);
       return () => clearInterval(interval);
   }, [
+      hasUnlimitedAccess,
+      isLimitReached,
       settings.geminiTtsServiceUrl,
       settings.kokoroTtsServiceUrl,
-      settings.kokoroExecutionMode,
       managedActiveEngine,
       isGenerating,
+      hasSessionIdentity,
       engineSwitchInProgress,
       refreshTtsAccessState,
   ]);
 
   useEffect(() => {
-      if (settings.engine !== 'KOKORO' || settings.kokoroExecutionMode === 'backend_runtime') return;
+      if (settings.engine !== 'KOKORO') return;
+      if (isLimitReached && !hasUnlimitedAccess) return;
       let cancelled = false;
       void (async () => {
           try {
-              await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
-              await kokoroBrowserRuntime.ensureReady({
-                  backendBaseUrl: mediaBackendUrl,
-                  voiceId: settings.voiceId,
-                  speed: settings.speed,
-              });
+              await prepareKokoroExecution('studio', settings.voiceId, 1.0);
               if (cancelled) return;
-              setManagedActiveEngine('KOKORO');
-              setTtsRuntimeStatus((prev) => ({
-                  ...prev,
-                  KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
-              }));
           } catch (error: any) {
               if (cancelled) return;
               setTtsRuntimeStatus((prev) => ({
                   ...prev,
                   KOKORO: {
                       state: 'offline',
-                      detail: error?.message || 'Browser WebGPU runtime unavailable.',
+                      detail: error?.message || 'Local ONNX CPU runtime unavailable.',
                   },
               }));
           }
@@ -2675,7 +2852,63 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return () => {
           cancelled = true;
       };
-  }, [mediaBackendUrl, settings.engine, settings.kokoroExecutionMode, settings.speed, settings.voiceId]);
+  }, [hasUnlimitedAccess, isLimitReached, prepareKokoroExecution, settings.engine, settings.voiceId]);
+
+  useEffect(() => {
+      if (activeTab !== Tab.STUDIO) return;
+      if (!hasSessionIdentity) return;
+      if (!isBrowserKokoroExecutionEnabled()) return;
+      if (isLimitReached && !hasUnlimitedAccess) return;
+      let cancelled = false;
+      const timer = setTimeout(() => {
+          void (async () => {
+              try {
+                  const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+                  const state = kokoroBrowserRuntime.getState();
+                  if (state === 'ready' || state === 'warming') return;
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      KOKORO: { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' },
+                  }));
+                  await kokoroBrowserRuntime.ensureReady({
+                      backendBaseUrl: mediaBackendUrl,
+                      voiceId: settings.voiceId || DEFAULT_KOKORO_VOICE_ID,
+                      speed: 1.0,
+                  });
+                  if (cancelled) return;
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      KOKORO: { state: 'online', detail: 'Local ONNX CPU runtime ready' },
+                  }));
+              } catch {
+                  // Best-effort Studio warmup. Generation flow still falls back to normal runtime prep.
+              }
+          })();
+      }, 1200);
+
+      return () => {
+          cancelled = true;
+          clearTimeout(timer);
+      };
+  }, [
+      activeTab,
+      hasSessionIdentity,
+      hasUnlimitedAccess,
+      isLimitReached,
+      mediaBackendUrl,
+      settings.voiceId,
+  ]);
+
+  useEffect(() => {
+      if (!isLimitReached || hasUnlimitedAccess) return;
+      if (isBrowserKokoroExecutionEnabled()) {
+          void loadKokoroBrowserRuntimeModule().then(({ kokoroBrowserRuntime }) => kokoroBrowserRuntime.suspend());
+      }
+      setTtsRuntimeStatus((prev) => ({
+          ...prev,
+          KOKORO: { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' },
+      }));
+  }, [hasUnlimitedAccess, isLimitReached]);
 
   useEffect(() => {
       const validVoiceId = getValidVoiceIdForEngine(settings.engine, settings.voiceId);
@@ -2798,16 +3031,55 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const handleGatewayProgress = (event: Event) => {
           const detail = ((event as CustomEvent<GatewayJobProgressEventDetail>).detail || {}) as GatewayJobProgressEventDetail;
           if (!isGenerating) return;
+          const queueState = studioQueueStateRef.current;
+          const activeQueueItemId = String(activeStudioQueueItemIdRef.current || '').trim();
+          const activeQueueItem = activeQueueItemId
+              ? queueState?.items.find((item) => item.id === activeQueueItemId) || null
+              : null;
+          const expectedEngine = String(activeQueueItem?.settingsSnapshot.engine || settings.engine || '').trim().toUpperCase();
           const detailEngine = String(detail.engine || '').trim().toUpperCase();
-          if (detailEngine && detailEngine !== String(settings.engine || '').trim().toUpperCase()) return;
+          if (detailEngine && expectedEngine && detailEngine !== expectedEngine) return;
           const detailJobId = String(detail.jobId || '').trim();
           const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
           if (detailJobId) {
               if (activeJobId && detailJobId !== activeJobId) return;
               if (!activeJobId) activeGatewayJobIdRef.current = detailJobId;
+              if (activeQueueItem && String(activeQueueItem.jobId || '').trim() !== detailJobId) {
+                  setStudioQueueState((prev) => {
+                      if (!prev) return prev;
+                      return {
+                          ...prev,
+                          items: prev.items.map((item) => (
+                              item.id === activeQueueItem.id
+                                  ? { ...item, jobId: detailJobId }
+                                  : item
+                          )),
+                      };
+                  });
+              }
           }
           const pct = Number(detail.progressPct || 0);
           const stage = String(detail.stage || '').trim();
+          if (isStudioQueueRunActiveRef.current && queueState?.items.length) {
+              const orderedItems = [...queueState.items].sort((left, right) => left.order - right.order);
+              const totalItems = Math.max(1, orderedItems.length);
+              const completedCount = orderedItems.filter((item) => item.status === 'completed').length;
+              const activeIndex = activeQueueItem
+                  ? Math.max(0, orderedItems.findIndex((item) => item.id === activeQueueItem.id))
+                  : completedCount;
+              const fractional = Number.isFinite(pct) && pct > 0 ? Math.max(0, Math.min(1, pct / 100)) : 0;
+              const overallPct = Math.max(
+                  6,
+                  Math.min(98, Math.round(((completedCount + fractional) / totalItems) * 100))
+              );
+              const queueStage = stage
+                  ? `Queue ${Math.min(totalItems, activeIndex + 1)}/${totalItems}: ${stage}`
+                  : `Queue ${Math.min(totalItems, activeIndex + 1)}/${totalItems} in progress`;
+              setProgress((prev) => Math.max(prev, overallPct));
+              setProcessingStage(sanitizeUiText(queueStage));
+              return;
+          }
+
           if (Number.isFinite(pct) && pct > 0) {
               const safe = Math.max(6, Math.min(98, Math.round(pct)));
               setProgress((prev) => Math.max(prev, safe));
@@ -2824,8 +3096,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const handleGatewayAudioChunk = (event: Event) => {
           const detail = ((event as CustomEvent<GatewayAudioChunkEventDetail>).detail || {}) as GatewayAudioChunkEventDetail;
           if (!isGenerating) return;
+          const queueState = studioQueueStateRef.current;
+          const activeQueueItemId = String(activeStudioQueueItemIdRef.current || '').trim();
+          const activeQueueItem = activeQueueItemId
+              ? queueState?.items.find((item) => item.id === activeQueueItemId) || null
+              : null;
+          const expectedEngine = String(activeQueueItem?.settingsSnapshot.engine || settings.engine || '').trim().toUpperCase();
           const detailEngine = String(detail.engine || '').trim().toUpperCase();
-          if (detailEngine && detailEngine !== String(settings.engine || '').trim().toUpperCase()) return;
+          if (detailEngine && expectedEngine && detailEngine !== expectedEngine) return;
           const index = Number(detail.index);
           const audioBase64 = String(detail.audioBase64 || '').trim();
           if (!Number.isFinite(index) || index < 0 || !audioBase64) return;
@@ -2967,16 +3245,81 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [uiFontScale]);
 
   useEffect(() => {
+      studioQueueStateRef.current = studioQueueState;
+  }, [studioQueueState]);
+
+  useEffect(() => {
+      studioQueueAudioUrlsRef.current = studioQueueAudioUrls;
+  }, [studioQueueAudioUrls]);
+
+  useEffect(() => {
+      if (studioQueueState && studioQueueState.items.length > 0) {
+          writeStorageJson(STORAGE_KEYS.studioQueue, studioQueueState);
+      } else {
+          removeStorageKey(STORAGE_KEYS.studioQueue);
+      }
+  }, [studioQueueState]);
+
+  useEffect(() => {
+      let cancelled = false;
+      const itemIds = new Set((studioQueueState?.items || []).map((item) => item.id));
+      setStudioQueueAudioUrls((prev) => {
+          const next = { ...prev };
+          Object.entries(prev).forEach(([itemId, url]) => {
+              if (itemIds.has(itemId)) return;
+              URL.revokeObjectURL(url);
+              delete next[itemId];
+          });
+          return next;
+      });
+
+      const hydrate = async () => {
+          const completedItems = (studioQueueState?.items || []).filter((item) => (
+              item.status === 'completed' && item.audioCacheKey
+          ));
+          for (const item of completedItems) {
+              if (cancelled) return;
+              if (studioQueueAudioUrlsRef.current[item.id]) continue;
+              try {
+                  const blob = await readStudioQueueAudioBlob(item.audioCacheKey || '');
+                  if (!blob || cancelled) continue;
+                  const url = buildStudioQueueBlobUrl(blob);
+                  if (!url) continue;
+                  setStudioQueueAudioUrls((prev) => {
+                      if (prev[item.id]) {
+                          URL.revokeObjectURL(url);
+                          return prev;
+                      }
+                      return { ...prev, [item.id]: url };
+                  });
+              } catch {
+                  // Ignore hydration issues and let queue continue.
+              }
+          }
+      };
+
+      void hydrate();
+      return () => {
+          cancelled = true;
+      };
+  }, [studioQueueState]);
+
+  useEffect(() => {
       if (activeTab !== Tab.STUDIO) return;
+      let frameId = 0;
       const applyDockCenter = () => {
+          if (frameId) window.cancelAnimationFrame(frameId);
+          frameId = window.requestAnimationFrame(() => {
           const studioMainRect = studioMainRef.current?.getBoundingClientRect();
           const fallback = Math.round(window.innerWidth / 2);
           const centerX = studioMainRect ? Math.round(studioMainRect.left + (studioMainRect.width / 2)) : fallback;
           document.documentElement.style.setProperty('--vf-studio-dock-center-x', `${centerX}px`);
+          });
       };
       applyDockCenter();
       window.addEventListener('resize', applyDockCenter, { passive: true });
       return () => {
+          if (frameId) window.cancelAnimationFrame(frameId);
           window.removeEventListener('resize', applyDockCenter);
       };
   }, [activeTab, uiDensity, uiFontScale]);
@@ -2993,12 +3336,22 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if(progressTimerRef.current) clearInterval(progressTimerRef.current);
           if(previewAudioRef.current) previewAudioRef.current.pause();
           if(generationAbortController.current) generationAbortController.current.abort();
+          if (queueMasterRebuildTimerRef.current) window.clearTimeout(queueMasterRebuildTimerRef.current);
+          Object.values(studioQueueAudioUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+          if (masterQueueAudioUrlRef.current) {
+              URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+              masterQueueAudioUrlRef.current = null;
+          }
       }
   }, []);
 
+  const deferredAnalysisText = useDeferredValue(
+    activeTab === Tab.STUDIO ? text : (activeTab === Tab.DUBBING ? dubScript : '')
+  );
+
   // Auto-detect language and speakers in text (Studio Mode AND Dubbing Mode)
   useEffect(() => {
-    const textToAnalyze = activeTab === Tab.STUDIO ? text : (activeTab === Tab.DUBBING ? dubScript : '');
+    const textToAnalyze = deferredAnalysisText;
     if (!textToAnalyze.trim()) {
       setDetectedLang(null);
       setDetectedSpeakers([]);
@@ -3022,7 +3375,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
     }, 1500); 
     return () => clearTimeout(timeoutId);
-  }, [text, dubScript, settings.language, activeTab, syncCast]);
+  }, [activeTab, deferredAnalysisText, settings.language, syncCast]);
 
   // Video Playback Sync
   useEffect(() => {
@@ -3125,6 +3478,466 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }, 500);
   };
 
+  const findNextStudioQueueProcessItem = (state: StudioQueueState | null | undefined): StudioQueueItem | null => {
+      if (!state) return null;
+      const sorted = [...state.items].sort((left, right) => left.order - right.order);
+      return sorted.find((item) => item.status === 'running' || item.status === 'queued') || null;
+  };
+
+  const updateStudioQueueState = useCallback((
+      updater: (prev: StudioQueueState | null) => StudioQueueState | null
+  ) => {
+      setStudioQueueState((prev) => {
+          const next = updater(prev);
+          if (!next) return null;
+          const items = [...(next.items || [])]
+              .sort((left, right) => left.order - right.order)
+              .map((item, index) => ({
+                  ...item,
+                  order: index,
+                  label: String(item.label || `Part ${index + 1}`),
+              }));
+          const activeItemId = items.some((item) => item.id === next.activeItemId)
+              ? next.activeItemId
+              : items.find((item) => item.status === 'running')?.id
+                || items.find((item) => item.status === 'queued')?.id
+                || items[0]?.id;
+          return {
+              ...next,
+              items,
+              activeItemId,
+              masterOrder: computeStudioQueueMasterOrder(items),
+          };
+      });
+  }, []);
+
+  const replaceStudioQueueItemAudioUrl = useCallback((itemId: string, nextUrl: string | null) => {
+      setStudioQueueAudioUrls((prev) => {
+          const current = prev[itemId];
+          if (current && current !== nextUrl) URL.revokeObjectURL(current);
+          const next = { ...prev };
+          if (nextUrl) next[itemId] = nextUrl;
+          else delete next[itemId];
+          return next;
+      });
+  }, []);
+
+  const resetStudioQueueOutputState = useCallback(async (clearCache = false) => {
+      if (queueMasterRebuildTimerRef.current) {
+          window.clearTimeout(queueMasterRebuildTimerRef.current);
+          queueMasterRebuildTimerRef.current = null;
+      }
+      Object.values(studioQueueAudioUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+      studioQueueAudioUrlsRef.current = {};
+      setStudioQueueAudioUrls({});
+      if (masterQueueAudioUrlRef.current) {
+          URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+          masterQueueAudioUrlRef.current = null;
+      }
+      setGeneratedAudioUrl(null);
+      if (clearCache) {
+          await clearStudioQueueAudioCache().catch(() => undefined);
+      }
+  }, []);
+
+  const rebuildStudioQueueMasterAudio = useCallback(async (
+      stateOverride?: StudioQueueState | null
+  ): Promise<string | null> => {
+      const sourceState = stateOverride || studioQueueStateRef.current;
+      const completedItems = [...(sourceState?.items || [])]
+          .sort((left, right) => left.order - right.order)
+          .filter((item) => item.status === 'completed' && item.audioCacheKey);
+      if (completedItems.length === 0) {
+          if (masterQueueAudioUrlRef.current) {
+              URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+              masterQueueAudioUrlRef.current = null;
+          }
+          setGeneratedAudioUrl(null);
+          updateStudioQueueState((prev) => prev ? { ...prev, masterStatus: 'idle' } : prev);
+          return null;
+      }
+
+      updateStudioQueueState((prev) => prev ? { ...prev, masterStatus: 'building' } : prev);
+      const blobs: Blob[] = [];
+      for (const item of completedItems) {
+          const blob = await readStudioQueueAudioBlob(item.audioCacheKey || '').catch(() => null);
+          if (blob) blobs.push(blob);
+      }
+      if (blobs.length === 0) {
+          updateStudioQueueState((prev) => prev ? { ...prev, masterStatus: 'idle' } : prev);
+          return null;
+      }
+
+      const mergedBlob = await mergeStudioQueueAudioBlobs(blobs);
+      const nextUrl = buildStudioQueueBlobUrl(mergedBlob);
+      if (masterQueueAudioUrlRef.current) {
+          URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+      }
+      masterQueueAudioUrlRef.current = nextUrl;
+      setGeneratedAudioUrl(nextUrl);
+      updateStudioQueueState((prev) => prev ? { ...prev, masterStatus: nextUrl ? 'ready' : 'idle' } : prev);
+      return nextUrl;
+  }, [updateStudioQueueState]);
+
+  const scheduleStudioQueueMasterRebuild = useCallback((stateOverride?: StudioQueueState | null) => {
+      if (queueMasterRebuildTimerRef.current) window.clearTimeout(queueMasterRebuildTimerRef.current);
+      queueMasterRebuildTimerRef.current = window.setTimeout(() => {
+          void rebuildStudioQueueMasterAudio(stateOverride);
+      }, 180);
+  }, [rebuildStudioQueueMasterAudio]);
+
+  const setStudioQueueModeEnabled = useCallback((enabled: boolean) => {
+      updateStudioQueueState((prev) => {
+          if (!prev) {
+              return {
+                  items: [],
+                  activeItemId: undefined,
+                  masterOrder: '',
+                  masterStatus: 'idle',
+                  queueModeEnabled: enabled,
+                  sourceHash: studioQueueSourceHash,
+              };
+          }
+          return { ...prev, queueModeEnabled: enabled };
+      });
+  }, [studioQueueSourceHash, updateStudioQueueState]);
+
+  const clearStudioQueueState = useCallback(async () => {
+      await resetStudioQueueOutputState(true);
+      updateStudioQueueState((prev) => prev ? {
+          ...prev,
+          items: [],
+          activeItemId: undefined,
+          masterOrder: '',
+          masterStatus: 'idle',
+      } : null);
+  }, [resetStudioQueueOutputState, updateStudioQueueState]);
+
+  const deleteStudioQueueItem = useCallback(async (itemId: string) => {
+      const currentItem = studioQueueStateRef.current?.items.find((item) => item.id === itemId);
+      if (currentItem?.audioCacheKey) {
+          await deleteStudioQueueAudioBlob(currentItem.audioCacheKey).catch(() => undefined);
+      }
+      replaceStudioQueueItemAudioUrl(itemId, null);
+      updateStudioQueueState((prev) => {
+          if (!prev) return prev;
+          const items = prev.items.filter((item) => item.id !== itemId);
+          return { ...prev, items };
+      });
+      scheduleStudioQueueMasterRebuild();
+  }, [replaceStudioQueueItemAudioUrl, scheduleStudioQueueMasterRebuild, updateStudioQueueState]);
+
+  const reorderStudioQueueItems = useCallback((sourceIndex: number, targetIndex: number) => {
+      startTransition(() => {
+          updateStudioQueueState((prev) => {
+              if (!prev) return prev;
+              const items = [...prev.items].sort((left, right) => left.order - right.order);
+              const [moved] = items.splice(sourceIndex, 1);
+              if (!moved) return prev;
+              items.splice(targetIndex, 0, moved);
+              return {
+                  ...prev,
+                  items: items.map((item, index) => ({ ...item, order: index })),
+              };
+          });
+      });
+      scheduleStudioQueueMasterRebuild();
+  }, [scheduleStudioQueueMasterRebuild, updateStudioQueueState]);
+
+  const runStudioQueueItem = useCallback(async (
+      item: StudioQueueItem,
+      controller: AbortController
+  ): Promise<void> => {
+      const audioCacheKey = item.audioCacheKey || `studio-queue:${item.id}`;
+      activeStudioQueueItemIdRef.current = item.id;
+      activeGatewayJobIdRef.current = String(item.jobId || '').trim();
+      seenLiveChunkKeysRef.current.clear();
+      setLiveAudioChunks([]);
+
+      updateStudioQueueState((prev) => {
+          if (!prev) return prev;
+          return {
+              ...prev,
+              activeItemId: item.id,
+              items: prev.items.map((entry) => (
+                  entry.id === item.id
+                      ? {
+                          ...entry,
+                          status: 'running',
+                          error: undefined,
+                          audioCacheKey,
+                      }
+                      : entry
+              )),
+          };
+      });
+
+      try {
+          let wavBlob: Blob;
+          if (String(item.jobId || '').trim()) {
+              const queuedResult = await pollTtsGatewayJobForAudio({
+                  baseUrl: resolveMediaBackendUrl(item.settingsSnapshot),
+                  jobId: item.jobId || '',
+                  runtimeLabel: getEngineDisplayName(item.settingsSnapshot.engine),
+                  engine: item.settingsSnapshot.engine,
+                  signal: controller.signal,
+              });
+              const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
+              const mixedBuffer = await applyStudioAudioMix(decoded, item.settingsSnapshot);
+              wavBlob = audioBufferToWav(mixedBuffer);
+          } else {
+              const result = await performGeneration(
+                  item.sourceText,
+                  controller.signal,
+                  item.settingsSnapshot,
+                  { createObjectUrl: false }
+              );
+              wavBlob = result.wavBlob;
+          }
+
+          await storeStudioQueueAudioBlob(audioCacheKey, wavBlob);
+          replaceStudioQueueItemAudioUrl(item.id, buildStudioQueueBlobUrl(wavBlob));
+          updateStudioQueueState((prev) => {
+              if (!prev) return prev;
+              return {
+                  ...prev,
+                  activeItemId: item.id,
+                  items: prev.items.map((entry) => (
+                      entry.id === item.id
+                          ? {
+                              ...entry,
+                              status: 'completed',
+                              error: undefined,
+                              audioCacheKey,
+                              jobId: String(activeGatewayJobIdRef.current || entry.jobId || '').trim(),
+                              completedAt: Date.now(),
+                          }
+                          : entry
+                  )),
+              };
+          });
+      } catch (error: any) {
+          updateStudioQueueState((prev) => {
+              if (!prev) return prev;
+              return {
+                  ...prev,
+                  activeItemId: item.id,
+                  items: prev.items.map((entry) => (
+                      entry.id === item.id
+                          ? {
+                              ...entry,
+                              status: error?.name === 'AbortError' ? 'cancelled' : 'failed',
+                              error: error?.name === 'AbortError' ? undefined : (error?.message || 'Queue generation failed.'),
+                              audioCacheKey,
+                              jobId: String(activeGatewayJobIdRef.current || entry.jobId || '').trim(),
+                          }
+                          : entry
+                  )),
+              };
+          });
+          throw error;
+      } finally {
+          activeGatewayJobIdRef.current = '';
+      }
+  }, [performGeneration, replaceStudioQueueItemAudioUrl, updateStudioQueueState]);
+
+  const executeStudioQueue = useCallback(async (
+      initialState?: StudioQueueState | null
+  ): Promise<void> => {
+      if (queueRunnerLockRef.current) return;
+      queueRunnerLockRef.current = true;
+      isStudioQueueRunActiveRef.current = true;
+
+      try {
+          let nextItem = findNextStudioQueueProcessItem(initialState || studioQueueStateRef.current);
+          while (nextItem) {
+              const controller = new AbortController();
+              generationAbortController.current = controller;
+              await runStudioQueueItem(nextItem, controller);
+              scheduleStudioQueueMasterRebuild();
+              generationAbortController.current = null;
+              nextItem = findNextStudioQueueProcessItem(studioQueueStateRef.current);
+          }
+
+          const masterUrl = await rebuildStudioQueueMasterAudio(studioQueueStateRef.current);
+          const completedItems = [...(studioQueueStateRef.current?.items || [])].filter((item) => item.status === 'completed');
+          if (masterUrl && completedItems.length > 0) {
+              addToHistory({
+                  id: Date.now().toString(),
+                  text: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
+                  audioUrl: masterUrl,
+                  voiceName: isStudioMultiSpeakerEnabled && detectedSpeakers.length > 0
+                      ? `Cast (${detectedSpeakers.length})`
+                      : `Queue ${computeStudioQueueMasterOrder(completedItems)}`,
+                  timestamp: Date.now(),
+              });
+              void loadHistory(30);
+          }
+          generationFailureBurstRef.current = 0;
+          showToast(`Queued audio ready (${completedItems.length} part${completedItems.length === 1 ? '' : 's'}).`, 'success');
+      } finally {
+          queueRunnerLockRef.current = false;
+          isStudioQueueRunActiveRef.current = false;
+          generationAbortController.current = null;
+          activeGatewayJobIdRef.current = '';
+          activeStudioQueueItemIdRef.current = '';
+          stopSimulation();
+      }
+  }, [
+      addToHistory,
+      detectedSpeakers.length,
+      isStudioMultiSpeakerEnabled,
+      loadHistory,
+      rebuildStudioQueueMasterAudio,
+      runStudioQueueItem,
+      scheduleStudioQueueMasterRebuild,
+      showToast,
+      text,
+  ]);
+
+  const startStudioQueuedGeneration = useCallback(async (): Promise<void> => {
+      const currentHash = hashStudioQueueSource(text);
+      const existingState = studioQueueStateRef.current;
+      const hasResumableCurrentQueue = Boolean(
+          existingState
+          && existingState.sourceHash === currentHash
+          && existingState.items.some((item) => item.status === 'queued' || item.status === 'running' || item.status === 'failed')
+      );
+      let nextState = hasResumableCurrentQueue
+          ? {
+              ...existingState!,
+              queueModeEnabled: true,
+          }
+          : createStudioQueueState(text, maxCharsPerGeneration, settings, true);
+      if (!nextState.items.some((item) => item.status === 'queued' || item.status === 'running')) {
+          const firstFailed = [...nextState.items].sort((left, right) => left.order - right.order).find((item) => item.status === 'failed');
+          if (firstFailed) {
+              nextState = {
+                  ...nextState,
+                  activeItemId: firstFailed.id,
+                  items: nextState.items.map((item) => (
+                      item.id === firstFailed.id
+                          ? { ...item, status: 'queued', error: undefined, jobId: undefined }
+                          : item
+                  )),
+              };
+          }
+      }
+
+      if (!hasResumableCurrentQueue) {
+          await resetStudioQueueOutputState(true);
+      }
+      setStudioQueueState(nextState);
+      setLiveAudioChunks([]);
+      seenLiveChunkKeysRef.current.clear();
+      activeGatewayJobIdRef.current = '';
+
+      const estTime = Math.max(4, Math.ceil(text.length / 18));
+      startSimulation(estTime, 'Preparing queued generation...', 'live');
+      emit('generation.started', {
+          title: 'Generation Started',
+          message: 'Queued Studio generation started.',
+          dedupeKey: 'generation-started',
+          channel: 'inbox',
+      });
+
+      try {
+          await executeStudioQueue(nextState);
+      } catch (error: any) {
+          if (error?.name === 'AbortError') {
+              showToast('Queue cancelled.', 'info');
+              return;
+          }
+          syncRuntimeBlockedStateFromError(settings.engine, error);
+          generationFailureBurstRef.current += 1;
+          emit('generation.failed', {
+              title: 'Generation Failure',
+              message: error?.message || 'Queue generation failed. Check runtime health and retry.',
+              dedupeKey: 'generation-failed-main',
+              action: {
+                  label: 'Open Settings',
+                  onClick: () => setShowSettings(true),
+              },
+          });
+          showToast(error?.message || 'Queue generation failed.', 'error');
+      }
+  }, [
+      emit,
+      executeStudioQueue,
+      maxCharsPerGeneration,
+      resetStudioQueueOutputState,
+      settings,
+      showToast,
+      text,
+  ]);
+
+  const retryStudioQueueItem = useCallback((itemId: string) => {
+      updateStudioQueueState((prev) => {
+          if (!prev) return prev;
+          return {
+              ...prev,
+              activeItemId: itemId,
+              items: prev.items.map((item) => (
+                  item.id === itemId
+                      ? { ...item, status: 'queued', error: undefined, jobId: undefined }
+                      : item
+              )),
+          };
+      });
+  }, [updateStudioQueueState]);
+
+  const resumeStudioQueue = useCallback(async () => {
+      let currentState = studioQueueStateRef.current;
+      if (!currentState || !currentState.items.length) return;
+      if (isGenerating) return;
+      if (!currentState.items.some((item) => item.status === 'queued' || item.status === 'running')) {
+          const firstFailed = [...currentState.items].sort((left, right) => left.order - right.order).find((item) => item.status === 'failed');
+          if (firstFailed) {
+              currentState = {
+                  ...currentState,
+                  activeItemId: firstFailed.id,
+                  items: currentState.items.map((item) => (
+                      item.id === firstFailed.id
+                          ? { ...item, status: 'queued', error: undefined, jobId: undefined }
+                          : item
+                  )),
+              };
+              setStudioQueueState(currentState);
+          }
+      }
+      startSimulation(Math.max(4, Math.ceil(text.length / 18)), 'Resuming queued generation...', 'live');
+      try {
+          await executeStudioQueue(currentState);
+      } catch (error: any) {
+          if (error?.name !== 'AbortError') {
+              showToast(error?.message || 'Queue resume failed.', 'error');
+          }
+      }
+  }, [executeStudioQueue, isGenerating, showToast, text.length]);
+
+  useEffect(() => {
+      if (!studioQueueState?.items.length) {
+          studioQueueAutoResumeAttemptedRef.current = false;
+          return;
+      }
+
+      const hasCompletedItems = studioQueueState.items.some((item) => item.status === 'completed' && item.audioCacheKey);
+      if (hasCompletedItems && !masterQueueAudioUrlRef.current) {
+          scheduleStudioQueueMasterRebuild(studioQueueState);
+      }
+
+      const runningItem = studioQueueState.items.find((item) => item.status === 'running' && String(item.jobId || '').trim());
+      if (!runningItem || isGenerating || studioQueueAutoResumeAttemptedRef.current) return;
+
+      studioQueueAutoResumeAttemptedRef.current = true;
+      startSimulation(Math.max(4, Math.ceil(studioQueueState.items.reduce((sum, item) => sum + item.charCount, 0) / 18)), 'Reconnecting queued generation...', 'live');
+      void executeStudioQueue(studioQueueState).catch((error: any) => {
+          if (error?.name !== 'AbortError') {
+              showToast(error?.message || 'Queue recovery failed.', 'error');
+          }
+      });
+  }, [executeStudioQueue, isGenerating, scheduleStudioQueueMasterRebuild, showToast, studioQueueState]);
+
   const handleCancelGeneration = () => {
       if (!isGenerating) return;
 
@@ -3156,69 +3969,53 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const shouldUseBrowserKokoro = (
       engine: GenerationSettings['engine'],
       context: 'studio' | 'preview' | 'dubbing'
-  ): boolean => (
-      engine === 'KOKORO' &&
-      settings.kokoroExecutionMode !== 'backend_runtime' &&
-      context !== 'dubbing'
-  );
+  ): boolean => shouldUseBrowserKokoroExecution(engine, context);
   
-  const performGeneration = async (scriptText: string, signal?: AbortSignal) => {
+  async function performGeneration(
+      scriptText: string,
+      signal?: AbortSignal,
+      settingsOverride?: GenerationSettings,
+      options?: { createObjectUrl?: boolean }
+  ) {
       if (!scriptText.trim()) throw new Error("Text is empty");
-      const browserKokoro = shouldUseBrowserKokoro(settings.engine, 'studio');
-      setLiveProgress(14, browserKokoro ? 'Preparing Basic WebGPU runtime...' : `Checking ${settings.engine} runtime...`);
+      const studioSettings = normalizeSettings(settingsOverride || settings);
+      const multiSpeakerEnabled = studioSettings.multiSpeakerEnabled !== false;
+      const preferBrowserKokoro = shouldUseBrowserKokoro(studioSettings.engine, 'studio');
+      setLiveProgress(14, preferBrowserKokoro ? 'Preparing local ONNX CPU runtime...' : `Checking ${studioSettings.engine} runtime...`);
       let engineState: { runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string };
-      if (browserKokoro) {
-          const access = await refreshTtsAccessState(true);
-          if (!access.ok) {
-              throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
-          }
-          await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
-          await kokoroBrowserRuntime.ensureReady({
-              backendBaseUrl: mediaBackendUrl,
-              voiceId: settings.voiceId,
-              speed: settings.speed,
-              ...(signal ? { signal } : {}),
-          });
-          setManagedActiveEngine('KOKORO');
-          setTtsRuntimeStatus((prev) => ({
-              ...prev,
-              KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
-          }));
-          engineState = {
-              runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
-              catalog: getEngineVoiceCatalog('KOKORO'),
-              syncedVoiceId: settings.voiceId,
-          };
+      if (studioSettings.engine === 'KOKORO') {
+          engineState = await prepareKokoroExecution('studio', studioSettings.voiceId, studioSettings.speed, signal);
       } else {
-          engineState = await ensureEngineOnline(settings.engine, { silent: true, syncVoiceId: settings.voiceId, requireAccess: true });
+          engineState = await ensureEngineOnline(studioSettings.engine, { silent: true, syncVoiceId: studioSettings.voiceId, requireAccess: true });
       }
-      setLiveProgress(28, browserKokoro ? 'WebGPU runtime ready. Preparing voice selection...' : 'Runtime ready. Preparing voice selection...');
+      const browserKokoro = studioSettings.engine === 'KOKORO' && preferBrowserKokoro;
+      setLiveProgress(28, browserKokoro ? 'Local ONNX CPU runtime ready. Preparing voice selection...' : 'Runtime ready. Preparing voice selection...');
       
       // Auto-Add Characters to Library before generation
-      if (isStudioMultiSpeakerEnabled && detectedSpeakers.length > 0) {
+      if (multiSpeakerEnabled && detectedSpeakers.length > 0) {
           syncCast(detectedSpeakers);
       }
 
       const freshCatalog = engineState.catalog.length > 0
           ? engineState.catalog
-          : getEngineVoiceCatalog(settings.engine);
-      const requestedVoiceId = engineState.syncedVoiceId || settings.voiceId;
-      const scopedCatalog = isGemRuntimeEngine(settings.engine)
+          : getEngineVoiceCatalog(studioSettings.engine);
+      const requestedVoiceId = engineState.syncedVoiceId || studioSettings.voiceId;
+      const scopedCatalog = isGemRuntimeEngine(studioSettings.engine)
           ? freshCatalog
-          : getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode, [requestedVoiceId]);
+          : getLanguageScopedVoiceCatalog(studioSettings.engine, studioTextLanguageCode, [requestedVoiceId]);
       const voiceId = selectVoiceIdFromCatalog(
-          settings.engine,
+          studioSettings.engine,
           scopedCatalog.length > 0 ? scopedCatalog : freshCatalog,
           requestedVoiceId
       );
       const selectedVoice = getVoiceById(voiceId);
       const voiceNameDisplay = selectedVoice?.name || 'AI Voice';
-      const engineVoiceName = settings.engine === 'KOKORO'
+      const engineVoiceName = studioSettings.engine === 'KOKORO'
         ? voiceId
         : (selectedVoice?.geminiVoiceName || voiceId || 'Fenrir');
       const generationSettings = {
-          ...settings,
-          multiSpeakerEnabled: isStudioMultiSpeakerEnabled,
+          ...studioSettings,
+          multiSpeakerEnabled,
           voiceId,
           runtimeVoiceCatalog: freshCatalog,
       } as GenerationSettings & { runtimeVoiceCatalog?: VoiceOption[] };
@@ -3234,21 +4031,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           { context: 'studio', preferLiveChunks: true }
       );
       if (browserKokoro) {
-          kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 30000);
+          const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+          kokoroBrowserRuntime.scheduleSuspend(studioSettings.kokoroStandbyIdleMs || 300000);
       }
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
       const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings);
       setLiveProgress(90, 'Rendering final audio buffer...');
       const wavBlob = audioBufferToWav(mixedBuffer);
-      const url = URL.createObjectURL(wavBlob);
+      const url = options?.createObjectUrl === false ? null : URL.createObjectURL(wavBlob);
       
-      return { url, voiceNameDisplay };
-  };
+      return { url, wavBlob, voiceNameDisplay };
+  }
 
   const handleGenerate = async () => {
     if (!text.trim()) return showToast("Please enter some text.", "info");
     if (!hasUnlimitedAccess && text.length > maxCharsPerGeneration) {
-      return showToast(`This plan allows up to ${maxCharsPerGeneration.toLocaleString()} characters per generation.`, 'error');
+      if (!isStudioQueueModeEnabled) {
+        return showToast(`This plan allows up to ${maxCharsPerGeneration.toLocaleString()} characters per generation. Enable Queue to process long scripts in parts.`, 'error');
+      }
+      await startStudioQueuedGeneration();
+      return;
     }
     if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
     if (isWalletBlocked) {
@@ -3282,6 +4084,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
     try {
       const { url, voiceNameDisplay } = await performGeneration(text, controller.signal);
+      if (!url) throw new Error('Generated audio URL missing.');
       setLiveProgress(96, 'Finalizing output and updating history...');
       setGeneratedAudioUrl(url);
 
@@ -3369,6 +4172,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await playVoiceSample(voiceId, name, engine);
   };
 
+  const resolveVoicePreviewUrl = useCallback((voice?: VoiceOption): string => {
+      const raw = String(voice?.previewUrl || '').trim();
+      if (!raw) return '';
+      if (/^https?:\/\//i.test(raw)) return raw;
+      const base = String(mediaBackendUrl || '').trim().replace(/\/+$/, '');
+      if (!base) return raw;
+      return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
+  }, [mediaBackendUrl]);
+
   const playVoiceSample = async (voiceId: string, name: string, engine: GenerationSettings['engine'] = 'GEM') => {
       // Stop current
       if (previewAudioRef.current) {
@@ -3383,25 +4195,37 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
 
       setPreviewState({ id: voiceId, status: 'loading' });
+      const selectedVoice = getVoiceById(voiceId);
+      const fallbackPreviewUrl = resolveVoicePreviewUrl(selectedVoice);
+
+      const playAudioSource = async (sourceUrl: string, revokeOnEnd: boolean): Promise<void> => {
+          const audio = new Audio(sourceUrl);
+          audio.crossOrigin = 'anonymous';
+          previewAudioRef.current = audio;
+          audio.volume = 1.0;
+          audio.onended = () => {
+              setPreviewState(null);
+              previewAudioRef.current = null;
+              if (revokeOnEnd) {
+                  try {
+                      URL.revokeObjectURL(sourceUrl);
+                  } catch {
+                      // ignore cleanup errors
+                  }
+              }
+              if (engine === 'KOKORO' && shouldUseBrowserKokoroExecution(engine, 'preview')) {
+                  void loadKokoroBrowserRuntimeModule().then(({ kokoroBrowserRuntime }) => {
+                      kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 300000);
+                  });
+              }
+          };
+          await audio.play();
+          setPreviewState({ id: voiceId, status: 'playing' });
+      };
 
       try {
-          const browserKokoro = shouldUseBrowserKokoro(engine, 'preview');
-          if (browserKokoro) {
-              const access = await refreshTtsAccessState(true);
-              if (!access.ok) {
-                  throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
-              }
-              await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
-              await kokoroBrowserRuntime.ensureReady({
-                  backendBaseUrl: mediaBackendUrl,
-                  voiceId,
-                  speed: 1.0,
-              });
-              setManagedActiveEngine('KOKORO');
-              setTtsRuntimeStatus((prev) => ({
-                  ...prev,
-                  KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
-              }));
+          if (engine === 'KOKORO') {
+              await prepareKokoroExecution('preview', voiceId, 1.0);
           } else {
               await ensureEngineOnline(engine, { silent: true, syncVoiceId: voiceId, requireAccess: true });
           }
@@ -3411,7 +4235,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               engine,
               voiceId,
               speed: 1.0,
-              emotion: 'Neutral'
+              emotion: 'Neutral',
           };
 
           const text = `Hello! I am ${name}. I can bring your story to life.`;
@@ -3434,23 +4258,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           );
           const blob = audioBufferToWav(buffer);
           const url = URL.createObjectURL(blob);
-          
-          const audio = new Audio(url);
-          previewAudioRef.current = audio;
-          audio.volume = 1.0;
-          
-          audio.onended = () => {
-              setPreviewState(null);
-              URL.revokeObjectURL(url);
-              if (engine === 'KOKORO' && settings.kokoroExecutionMode !== 'backend_runtime') {
-                  kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 30000);
-              }
-          };
-          
-          await audio.play();
-          setPreviewState({ id: voiceId, status: 'playing' });
-
+          await playAudioSource(url, true);
       } catch (e: any) {
+          if (fallbackPreviewUrl) {
+              try {
+                  await playAudioSource(fallbackPreviewUrl, false);
+                  showToast('Playing speaker reference preview.', 'info');
+                  return;
+              } catch {
+                  // Fall through to primary error handling.
+              }
+          }
           syncRuntimeBlockedStateFromError(engine, e);
           showToast(e.message, 'error');
           setPreviewState(null);
@@ -3796,11 +4614,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       const phaseLabels: Record<string, string> = {
           acoustic_isolation: 'Phase 1/6: Acoustic isolation',
-          director: 'Phase 2/6: Director analysis',
-          isochrony_translation: 'Phase 3/6: Isochrony translation',
-          base_tts: 'Phase 4/6: Base TTS',
-          llvc_timbre_transfer: 'Phase 5/6: LLVC timbre transfer',
-          visual_lipsync: 'Phase 6/6: Visual lip-sync',
+          speaker_segmentation: 'Phase 2/6: Speaker segmentation',
+          translation: 'Phase 3/6: Segment translation',
+          tts: 'Phase 4/6: Gemini TTS',
+          voice_transfer: 'Phase 5/6: Voice transfer',
+          video_lipsync: 'Phase 6/6: Video lip-sync',
           preflight: 'Preflight checks',
           queued: 'Queued',
       };
@@ -3880,13 +4698,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
                   const advancedPayload: Record<string, unknown> = {
                       processing_profile: dubbingCpuProfile,
-                      tts_route: settings.engine === 'KOKORO' ? 'kokoro_only' : 'auto',
+                      tts_route: 'gem_only',
                       engine_policy: 'auto_reliable',
                       multispeaker_policy: 'hybrid_auto',
                       voice_binding_policy: 'stable_fallback',
                       qos_policy: 'adaptive_hq_first',
                       hardware_policy: 'gpu_preferred',
                       timeout_policy: 'adaptive',
+                      source_language_mode: 'auto_per_segment',
+                      language_coverage_profile: 'core12',
                       live_play_mode: 'progressive_audio',
                       live_chunk_target_ms: 3000,
                       live_include_chunk_audio: false,
@@ -3898,9 +4718,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       voice_map: settings.speakerMapping || {},
                       preserve_voice_tone: Boolean(settings.preserveDubVoiceTone),
                   };
-                  if (settings.llvcModel) {
-                      advancedPayload.llvc_model = settings.llvcModel;
-                  }
+                  advancedPayload.voice_model = settings.voiceModel;
 
                   const created = await createDubbingJobV2(mediaBackendUrl, clip.file, {
                       targetLanguage: targetLanguageHint,
@@ -4294,12 +5112,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerateLlvcCover = async () => {
       if (!llvcSourceFile) return showToast('Upload a source audio/video file first.', 'info');
-      if (!settings.llvcModel) return showToast('Select an LLVC model.', 'info');
+      if (!settings.voiceModel) return showToast('Select a voice transfer model.', 'info');
 
       setIsGeneratingLlvcCover(true);
       try {
-          await loadLlvcModel(mediaBackendUrl, settings.llvcModel);
-          const coverBlob = await convertLlvcCover(mediaBackendUrl, llvcSourceFile, settings.llvcModel, {
+          await loadVoiceTransferModel(mediaBackendUrl, settings.voiceModel);
+          const coverBlob = await convertVoiceTransferCover(mediaBackendUrl, llvcSourceFile, settings.voiceModel, {
               preset: llvcPreset,
               pitchShift: llvcPitchShift,
               f0Method: llvcF0Method,
@@ -4312,9 +5130,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (llvcCoverUrl) URL.revokeObjectURL(llvcCoverUrl);
           const nextUrl = URL.createObjectURL(coverBlob);
           setLlvcCoverUrl(nextUrl);
-          showToast('LLVC cover generated.', 'success');
+          showToast('Voice transfer generated.', 'success');
       } catch (e: any) {
-          showToast(e?.message || 'LLVC conversion failed.', 'error');
+          showToast(e?.message || 'Voice transfer failed.', 'error');
       } finally {
           setIsGeneratingLlvcCover(false);
       }
@@ -4331,23 +5149,32 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return [...dedup.values()];
   }, [getEngineVoiceCatalog]);
 
-  const filteredVoices = galleryVoicePool.filter((voice) => {
-      const searchable = [
-          voice.name,
-          voice.accent,
-          resolveVoiceCountry(voice),
-          voice.engine || '',
-      ]
-          .join(' ')
-          .toLowerCase();
-      const matchesSearch = searchable.includes(voiceSearch.toLowerCase());
-      const matchesGender = voiceFilterGender === 'All' || voice.gender === voiceFilterGender;
-      const matchesAccent = voiceFilterAccent === 'All' || resolveVoiceCountry(voice) === voiceFilterAccent;
-      return matchesSearch && matchesGender && matchesAccent;
-  });
+  const filteredVoices = useMemo(() => {
+      const normalizedSearch = deferredVoiceSearch.trim().toLowerCase();
+      return galleryVoicePool.filter((voice) => {
+          const searchable = [
+              voice.name,
+              voice.accent,
+              resolveVoiceCountry(voice),
+              voice.engine || '',
+          ]
+              .join(' ')
+              .toLowerCase();
+          const matchesSearch = !normalizedSearch || searchable.includes(normalizedSearch);
+          const matchesGender = voiceFilterGender === 'All' || voice.gender === voiceFilterGender;
+          const matchesAccent = voiceFilterAccent === 'All' || resolveVoiceCountry(voice) === voiceFilterAccent;
+          return matchesSearch && matchesGender && matchesAccent;
+      });
+  }, [deferredVoiceSearch, galleryVoicePool, voiceFilterAccent, voiceFilterGender]);
 
-  const uniqueAccents = Array.from(new Set(galleryVoicePool.map((voice) => resolveVoiceCountry(voice)))).sort();
-  const studioVoiceOptions = getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode);
+  const uniqueAccents = useMemo(
+      () => Array.from(new Set(galleryVoicePool.map((voice) => resolveVoiceCountry(voice)))).sort(),
+      [galleryVoicePool]
+  );
+  const studioVoiceOptions = useMemo(
+      () => getLanguageScopedVoiceCatalog(settings.engine, studioTextLanguageCode),
+      [getLanguageScopedVoiceCatalog, settings.engine, studioTextLanguageCode]
+  );
   const studioFreeVoiceOptions = useMemo(
       () => studioVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'free'),
       [resolveVoiceAccessTier, settings.engine, studioVoiceOptions]
@@ -4356,15 +5183,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       () => studioVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'pro'),
       [resolveVoiceAccessTier, settings.engine, studioVoiceOptions]
   );
-  const castVoiceOptions = getLanguageScopedVoiceCatalog(
-      settings.engine,
-      activeScriptLanguageCode,
-      [
-          settings.voiceId,
-          ...castSpeakers
-              .map((speaker) => resolveMappedVoiceForSpeaker(speaker))
-              .filter((voiceId): voiceId is string => Boolean(voiceId)),
-      ]
+  const castVoiceOptions = useMemo(
+      () => getLanguageScopedVoiceCatalog(
+          settings.engine,
+          activeScriptLanguageCode,
+          [
+              settings.voiceId,
+              ...castSpeakers
+                  .map((speaker) => resolveMappedVoiceForSpeaker(speaker))
+                  .filter((voiceId): voiceId is string => Boolean(voiceId)),
+          ]
+      ),
+      [activeScriptLanguageCode, castSpeakers, getLanguageScopedVoiceCatalog, resolveMappedVoiceForSpeaker, settings.engine, settings.voiceId]
   );
   const castFreeVoiceOptions = useMemo(
       () => castVoiceOptions.filter((voice) => resolveVoiceAccessTier(settings.engine, voice) === 'free'),
@@ -4435,38 +5265,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
 
       try {
-          const browserKokoro = shouldUseBrowserKokoro(engine, 'studio');
-          if (!browserKokoro) {
+          if (engine !== 'KOKORO') {
               await ensureEngineOnline(engine, { syncVoiceId: nextVoiceId });
               return;
           }
-          setManagedActiveEngine('KOKORO');
-          setTtsRuntimeStatus((prev) => ({
-              ...prev,
-              KOKORO: { state: 'starting', detail: 'Preparing browser WebGPU runtime...' },
-          }));
-          void (async () => {
-              try {
-                  await kokoroBrowserRuntime.primeAssets(mediaBackendUrl);
-                  await kokoroBrowserRuntime.ensureReady({
-                      backendBaseUrl: mediaBackendUrl,
-                      voiceId: nextVoiceId,
-                      speed: settings.speed,
-                  });
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      KOKORO: { state: 'online', detail: 'Browser WebGPU runtime ready' },
-                  }));
-              } catch (error: any) {
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      KOKORO: {
-                          state: 'offline',
-                          detail: error?.message || 'Browser WebGPU runtime unavailable.',
-                      },
-                  }));
-              }
-          })();
+          await prepareKokoroExecution('studio', nextVoiceId, settings.speed);
       } catch (error: any) {
           showToast(`Failed to activate ${getEngineLabel(engine)}: ${error?.message || 'Unknown error'}`, 'error');
       }
@@ -4479,12 +5282,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ? 'Characters'
         : activeTab === Tab.NOVEL
           ? 'Novel Workspace'
+          : activeTab === Tab.READER
+            ? 'Reader'
           : activeTab === Tab.HISTORY
             ? 'History'
-          : activeTab === Tab.ADMIN
-            ? 'Admin'
-            : 'Voice Lab';
-  const workspaceTabs = useMemo(() => buildWorkspaceTabs(isAdmin), [isAdmin]);
+            : activeTab === Tab.ADMIN
+              ? 'Admin'
+              : 'Voice Lab';
+  const contentMaxWidthClass = activeTab === Tab.STUDIO
+    ? 'max-w-[1140px]'
+    : activeTab === Tab.READER
+      ? 'max-w-[1360px]'
+      : 'max-w-5xl';
+  const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
+
+  useEffect(() => {
+      if (!hasAdminConsoleAccess && activeTab === Tab.ADMIN) {
+          setActiveTab(Tab.STUDIO);
+      }
+  }, [activeTab, hasAdminConsoleAccess]);
   const isGuestSession =
     !user.email ||
     user.email.toLowerCase() === 'guest@voiceflow.ai' ||
@@ -4505,13 +5321,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } catch (error: any) {
           showToast(error?.message || 'Sign out failed.', 'error');
       }
-  };
-
-  const handleStartServices = () => {
-      showToast('Run "npm run services:doctor" in a terminal to auto-heal backend services.', 'info');
-      void refreshBackendHealth(true);
-      void refreshTtsRuntimeStatus();
-      void refreshTtsAccessState(true);
   };
 
   const handleRedeemCoupon = async () => {
@@ -4584,7 +5393,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const Sidebar = () => (
     <aside
-      className={`fixed inset-y-0 left-0 z-[56] md:z-40 w-72 max-w-[90vw] md:w-64 transform transition-transform duration-300 md:translate-x-0 ${
+      className={`vf-sidebar-shell fixed inset-y-0 left-0 z-[56] xl:z-40 w-72 max-w-[90vw] xl:w-64 transform transition-transform duration-300 xl:translate-x-0 ${
         isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
       } ${
         isDarkUi
@@ -4592,11 +5401,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           : 'border-r border-gray-200 bg-white/95 shadow-2xl md:shadow-xl'
       } flex h-full flex-col overflow-hidden backdrop-blur-xl`}
     >
-      <div className={`flex items-center gap-3 border-b px-5 py-5 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
+      <div className={`vf-sidebar-brand flex items-center gap-3 border-b px-5 py-5 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
         <BrandLogo size="md" tone={isDarkUi ? 'light' : 'dark'} />
       </div>
 
-      <nav className={`space-y-1 border-b px-3 py-3 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
+      <nav className={`vf-sidebar-nav space-y-1 border-b px-3 py-3 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
         {workspaceTabs.map(item => (
           <button
             key={item.id}
@@ -4616,7 +5425,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ))}
       </nav>
 
-      <div className="custom-scrollbar flex-1 min-h-0 overflow-y-auto">
+      <div className="vf-sidebar-scroll custom-scrollbar flex-1 min-h-0 overflow-y-auto">
         {activeTab === Tab.STUDIO && (
           <div className="animate-in fade-in space-y-5 px-4 pb-3 pt-4">
             <div>
@@ -4659,7 +5468,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         )}
 
         <div className="px-4 pb-4">
-          <div className={`rounded-2xl border p-3 shadow-sm ${
+          <div className={`vf-sidebar-balance rounded-2xl border p-3 shadow-sm ${
             isDarkUi ? 'border-slate-800 bg-slate-900/75 shadow-black/20' : 'border-gray-200 bg-white'
           }`}>
             <div className={`rounded-xl border px-3 py-2.5 ${
@@ -4787,17 +5596,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         </div>
       </div>
 
-      <div className={`shrink-0 border-t p-4 backdrop-blur-md ${isDarkUi ? 'border-slate-800 bg-slate-950/88' : 'border-gray-200 bg-white/90'}`}>
-        <button
-          onClick={handleStartServices}
-          className={`mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
-            isDarkUi
-              ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
-              : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
-          }`}
-        >
-          <Server size={12} /> Start Services
-        </button>
+      <div className={`vf-sidebar-footer shrink-0 border-t p-4 backdrop-blur-md ${isDarkUi ? 'border-slate-800 bg-slate-950/88' : 'border-gray-200 bg-white/90'}`}>
         {isGuestSession && (
           <div className="mb-3 grid grid-cols-2 gap-2">
             <button
@@ -4836,7 +5635,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         )}
         <button
           type="button"
-          className={`flex w-full items-center gap-3 rounded-xl border p-2 text-left transition-colors ${
+          className={`vf-sidebar-profile flex w-full items-center gap-3 rounded-xl border p-2 text-left transition-colors ${
             isDarkUi
               ? 'border-slate-700 bg-slate-900/70 hover:bg-slate-900'
               : 'border-gray-200 bg-white hover:bg-gray-50'
@@ -5040,64 +5839,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   className={`w-full accent-indigo-600 h-1.5 rounded-lg appearance-none ${isDarkUi ? 'bg-slate-700' : 'bg-gray-200'}`}
                               />
                           </div>
-                      </div>
-                  </section>
-
-                  {/* Notifications */}
-                  <section>
-                      <label className={settingsLabelClass}>Notifications</label>
-                      <div className={settingsCardClass}>
-                          <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${isDarkUi ? 'border-slate-700 bg-slate-950/75' : 'border-gray-200 bg-gray-50'}`}>
-                              <div>
-                                  <div className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-100' : 'text-gray-800'}`}>Tips</div>
-                                  <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Show educational hints and helper tips.</div>
-                              </div>
-                              <button
-                                  type="button"
-                                  onClick={() => setPrefs((prev) => ({ ...prev, allowTips: !prev.allowTips }))}
-                                  className={`relative h-5 w-9 rounded-full transition-colors ${prefs.allowTips ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                  aria-label="Toggle tips notifications"
-                                  aria-pressed={prefs.allowTips}
-                              >
-                                  <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${prefs.allowTips ? 'translate-x-4' : ''}`} />
-                              </button>
-                          </div>
-
-                          <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${isDarkUi ? 'border-slate-700 bg-slate-950/75' : 'border-gray-200 bg-gray-50'}`}>
-                              <div>
-                                  <div className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-100' : 'text-gray-800'}`}>System Info</div>
-                                  <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Show runtime and backend status updates.</div>
-                              </div>
-                              <button
-                                  type="button"
-                                  onClick={() => setPrefs((prev) => ({ ...prev, allowSystemInfo: !prev.allowSystemInfo }))}
-                                  className={`relative h-5 w-9 rounded-full transition-colors ${prefs.allowSystemInfo ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                  aria-label="Toggle system notifications"
-                                  aria-pressed={prefs.allowSystemInfo}
-                              >
-                                  <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${prefs.allowSystemInfo ? 'translate-x-4' : ''}`} />
-                              </button>
-                          </div>
-
-                          <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${isDarkUi ? 'border-slate-700 bg-slate-950/75' : 'border-gray-200 bg-gray-50'}`}>
-                              <div>
-                                  <div className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-100' : 'text-gray-800'}`}>Notification Sound</div>
-                                  <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Play a tone for warning/error/critical alerts.</div>
-                              </div>
-                              <button
-                                  type="button"
-                                  onClick={() => setPrefs((prev) => ({ ...prev, playSound: !prev.playSound }))}
-                                  className={`relative h-5 w-9 rounded-full transition-colors ${prefs.playSound ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                  aria-label="Toggle notification sound"
-                                  aria-pressed={prefs.playSound}
-                              >
-                                  <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${prefs.playSound ? 'translate-x-4' : ''}`} />
-                              </button>
-                          </div>
-
-                          <p className={`text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-400'}`}>
-                              Critical alerts are always shown.
-                          </p>
                       </div>
                   </section>
 
@@ -5327,6 +6068,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   };
 
+  const usesPhoneStudioDock = activeTab === Tab.STUDIO && isPhone;
+  const usesCompactFloatingStudioDock = activeTab === Tab.STUDIO && (isTablet || isDesktop);
+  const studioScrollPaddingClass =
+    activeTab === Tab.STUDIO
+      ? isPhone
+        ? 'pb-[calc(env(safe-area-inset-bottom)+11rem)]'
+        : isTablet
+          ? 'pb-[calc(env(safe-area-inset-bottom)+8rem)]'
+          : 'pb-52'
+      : 'pb-36';
+  const studioFloatingDockWidthClass = isDesktop
+    ? 'w-[clamp(17rem,28vw,20.25rem)] max-w-[calc(100vw-2rem)]'
+    : 'w-[clamp(15.5rem,31vw,18.25rem)] max-w-[calc(100vw-2rem)]';
+  const studioFloatingDockVariantClass = isDesktop
+    ? 'vf-studio-generate-anchor--desktop'
+    : 'vf-studio-generate-anchor--tablet';
+  const studioAssistantBottomClass =
+    activeTab === Tab.STUDIO
+      ? isPhone
+        ? 'bottom-[calc(env(safe-area-inset-bottom)+8.25rem)]'
+        : isDesktop
+          ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
+          : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
+      : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
+
   return (
     <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
       <div className="vf-live-wallpaper" aria-hidden />
@@ -5335,7 +6101,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {isMobileMenuOpen && (
         <button
           type="button"
-          className="fixed inset-0 bg-black/45 backdrop-blur-[2px] z-[55] md:hidden"
+          className="fixed inset-0 bg-black/45 backdrop-blur-[2px] z-[55] xl:hidden"
           onClick={() => setIsMobileMenuOpen(false)}
           aria-label="Close mobile menu"
         />
@@ -5345,10 +6111,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       <Sidebar />
       
       {/* Main Content */}
-      <main className="flex-1 flex flex-col md:pl-64 relative h-screen overflow-hidden transition-all">
+      <main className="flex-1 flex flex-col xl:pl-64 relative h-screen overflow-hidden transition-all">
         
         {/* Floating Top Bar */}
-        <header className={`vf-topbar vf-topbar-shell fixed top-2 left-2 right-2 md:left-[calc(16rem+0.75rem)] md:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
+        <header className={`vf-topbar vf-topbar-shell fixed top-2 left-2 right-2 xl:left-[calc(16rem+0.75rem)] xl:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
           resolvedTheme === 'dark'
             ? 'border-slate-700/80 bg-slate-950/82 shadow-[0_18px_38px_rgba(2,6,23,0.72)]'
             : 'border-white/70 bg-white/85 shadow-[0_18px_38px_rgba(15,23,42,0.14)]'
@@ -5358,9 +6124,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                  ? 'bg-gradient-to-r from-cyan-500/10 via-indigo-500/8 to-fuchsia-500/10'
                  : 'bg-gradient-to-r from-cyan-100/70 via-indigo-100/70 to-fuchsia-100/70'
              }`} />
-             <div className="relative flex h-full w-full items-center gap-2 px-2 md:px-3">
+             <div className="relative flex h-full w-full items-center gap-2 px-2 xl:px-3">
                  <button
-                    className={`md:hidden p-2 -ml-1 shrink-0 ${resolvedTheme === 'dark' ? 'text-slate-300' : 'text-gray-600'}`}
+                    className={`xl:hidden p-2 -ml-1 shrink-0 ${resolvedTheme === 'dark' ? 'text-slate-300' : 'text-gray-600'}`}
                     onClick={() => setIsMobileMenuOpen(true)}
                     aria-label="Open navigation menu"
                  >
@@ -5391,6 +6157,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                        accessState={ttsAccessState}
                        activeEngine={settings.engine}
                        switchingEngine={engineSwitchInProgress}
+                       compact={isTablet}
                        resolvedTheme={resolvedTheme}
                        onActivate={(engine) => { void activateTtsEngine(engine); }}
                      />
@@ -5423,7 +6190,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   </div>
 
                   <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
-                      <div className={`hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                      <div className={`hidden xl:flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
                          resolvedTheme === 'dark'
                            ? 'bg-slate-900/85 border-slate-700 text-slate-300'
                            : 'bg-gray-100 border-gray-200 text-gray-600'
@@ -5490,9 +6257,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`vf-main-scroll flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${activeTab === Tab.STUDIO ? 'pb-44 md:pb-44 lg:pb-48 xl:pb-52' : 'pb-36'}`}
+          className={`vf-main-scroll flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${studioScrollPaddingClass}`}
         >
-            <div className={`mx-auto w-full space-y-6 ${activeTab === Tab.STUDIO ? 'max-w-[1140px]' : 'max-w-5xl'}`}>
+            <div className={`mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
                 
                 {activeTab === Tab.STUDIO && (
                     <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-center justify-center">
@@ -5502,8 +6269,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             {/* Reduced Height Editor */}
                             <SectionCard className="vf-editor-shell rounded-3xl overflow-hidden flex flex-col min-h-[23rem] h-[min(42rem,calc(100dvh-11rem))] relative group transition-all hover:shadow-md">
                                 {/* Toolbar */}
-                                <div className="vf-studio-toolbar vf-toolbar-scroll px-4 py-3 border-b flex items-center justify-between gap-2 overflow-x-auto custom-scrollbar">
-                                    <div className="flex items-center gap-1">
+                                <div className={`vf-studio-toolbar px-4 py-3 border-b gap-2 ${isPhone ? 'flex flex-col items-stretch' : 'flex flex-wrap items-start justify-between'}`}>
+                                    <div className="flex flex-wrap items-center gap-1">
                                         <button onClick={() => setText(t => t + ' [pause] ')} className="vf-toolbar-action p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
                                         <button onClick={() => setText(t => t + ' (Whisper): ')} className="vf-toolbar-action p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
                                         
@@ -5527,8 +6294,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </button>
                                     </div>
                                     
-                                    <div className="flex items-center gap-2 shrink-0">
-                                         {detectedLang && <span className="vf-toolbar-tag text-[10px] font-bold border px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
+                                    <div className={`flex items-center gap-2 ${isPhone ? 'w-full justify-between' : 'ml-auto shrink-0'}`}>
+                                         {!isPhone && detectedLang && <span className="vf-toolbar-tag text-[10px] font-bold border px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
                                          <button onClick={() => handleDirectorAI(text, 'audio_drama')} disabled={isAiWriting} className="vf-toolbar-ai text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm">
                                             {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>} 
                                             <span>AI Director</span>
@@ -5553,14 +6320,58 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     targetLang={targetLang}
                                     isBusy={isAiWriting}
                                     languages={LANGUAGES}
+                                    layoutMode={viewportMode}
                                     onTargetLang={setTargetLang}
                                     onTranslate={() => { void handleTranslate(); }}
                                 />
 
-                                <div className="vf-editor-footer px-6 py-3 border-t text-xs flex justify-between">
-                                    <span className="vf-editor-count">{text.length} chars</span>
-                                    <div className="flex items-center gap-2">
-                                         <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex items-center gap-1"><Save size={12}/> Save Draft</button>
+                                <div className="vf-editor-footer px-4 sm:px-6 py-3 border-t text-xs flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="vf-editor-count">{text.length} chars</span>
+                                        {studioQueueEligible && (
+                                            <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                                                isDarkUi
+                                                    ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200'
+                                                    : 'border-cyan-200 bg-cyan-50 text-cyan-700'
+                                            }`}>
+                                                {studioQueueDraftPartCount} parts
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setStudioQueueModeEnabled(!isStudioQueueModeEnabled)}
+                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                isStudioQueueModeEnabled
+                                                    ? isDarkUi
+                                                        ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
+                                                        : 'border-cyan-300 bg-cyan-50 text-cyan-700'
+                                                    : isDarkUi
+                                                        ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200'
+                                                        : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700'
+                                            }`}
+                                        >
+                                            <Clock size={12} />
+                                            Queue {isStudioQueueModeEnabled ? 'On' : 'Off'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSettings((prev) => ({ ...prev, multiSpeakerEnabled: !(prev.multiSpeakerEnabled !== false) }))}
+                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                isStudioMultiSpeakerEnabled
+                                                    ? isDarkUi
+                                                        ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200'
+                                                        : 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                                    : isDarkUi
+                                                        ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-indigo-500/30 hover:text-indigo-200'
+                                                        : 'border-gray-200 bg-white text-gray-600 hover:border-indigo-200 hover:text-indigo-700'
+                                            }`}
+                                        >
+                                            <Users size={12} />
+                                            Multi-Speaker {isStudioMultiSpeakerEnabled ? 'On' : 'Off'}
+                                        </button>
+                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex items-center gap-1"><Save size={12}/> Save Draft</button>
                                     </div>
                                 </div>
                             </SectionCard>
@@ -5586,28 +6397,59 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         </div>
 
 	                        {/* Controls Sidebar */}
-		                        <div className="vf-studio-rail space-y-5 h-fit xl:self-center">
+		                        <div className={`vf-studio-rail h-fit xl:self-center ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
+		                            {!isStudioMultiSpeakerEnabled && (
+                                    <>
 		                            {/* Voice Selector Card */}
-	                            <SectionCard className="p-5 rounded-3xl">
-	                                <div className="flex justify-between items-center mb-4">
-	                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speaker</h3>
-                                        <div className="flex items-center gap-2">
-	                                        <span className={`text-xs font-bold ${
-                                                    settings.engine === 'KOKORO'
-                                                      ? 'text-cyan-600'
-                                                      : settings.engine === 'GOOD'
-                                                        ? 'text-blue-600'
-                                                      : settings.engine === 'NEURAL2'
-                                                        ? 'text-amber-600'
-                                                        : 'text-indigo-600'
-                                                }`}>
-	                                            {getEngineDisplayName(settings.engine)}
-	                                        </span>
-                                            <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
-                                        </div>
-	                                </div>
-	                                
-	                                <div className="max-h-60 overflow-y-auto custom-scrollbar mb-4 space-y-3">
+	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+                                    {isPhone ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleStudioMobilePanel('speaker')}
+                                            className="flex w-full items-start justify-between gap-3 text-left"
+                                        >
+                                            <div>
+                                                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Speaker</h3>
+                                                <div className="mt-1 flex items-center gap-2">
+                                                    <span className={`text-xs font-bold ${
+                                                        settings.engine === 'KOKORO'
+                                                          ? 'text-cyan-600'
+                                                          : settings.engine === 'GOOD'
+                                                            ? 'text-blue-600'
+                                                          : settings.engine === 'NEURAL2'
+                                                            ? 'text-amber-600'
+                                                            : 'text-indigo-600'
+                                                    }`}>
+                                                        {getEngineDisplayName(settings.engine)}
+                                                    </span>
+                                                    <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
+                                                </div>
+                                            </div>
+                                            {studioMobilePanels.speaker ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                                        </button>
+                                    ) : (
+	                                    <div className="mb-4 flex items-center justify-between">
+	                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speaker</h3>
+                                            <div className="flex items-center gap-2">
+	                                            <span className={`text-xs font-bold ${
+                                                        settings.engine === 'KOKORO'
+                                                          ? 'text-cyan-600'
+                                                          : settings.engine === 'GOOD'
+                                                            ? 'text-blue-600'
+                                                          : settings.engine === 'NEURAL2'
+                                                            ? 'text-amber-600'
+                                                            : 'text-indigo-600'
+                                                    }`}>
+	                                                {getEngineDisplayName(settings.engine)}
+	                                            </span>
+                                                <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
+                                            </div>
+	                                    </div>
+                                    )}
+
+                                    {(!isPhone || studioMobilePanels.speaker) && (
+                                    <>
+	                                <div className={`max-h-60 overflow-y-auto custom-scrollbar space-y-3 ${isPhone ? 'mt-4 mb-3' : 'mb-4'}`}>
                                         <div>
                                             <div className="mb-2 flex items-center justify-between">
                                                 <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Free Speakers</span>
@@ -5616,15 +6458,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <div className="flex flex-wrap gap-2">
                                                 {studioFreeVoiceOptions.map((v: any) => {
                                                     const isSelected = settings.voiceId === v.id;
+                                                    const voiceMeta = resolveVoiceDisplayMeta(v);
                                                     return (
                                                         <button
                                                             key={v.id}
                                                             onClick={() => setSettings(s => ({ ...s, voiceId: v.id }))}
                                                             className={`vf-voice-chip ${isSelected ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
                                                         >
-                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{v.name[0]}</div>
+                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{voiceMeta.name[0] || 'V'}</div>
                                                             <div className="flex flex-col items-start leading-tight">
-                                                                <span>{v.name}</span>
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span>{voiceMeta.name}</span>
+                                                                    {voiceMeta.countryTag && (
+                                                                        <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold leading-none ${isSelected ? 'border-white/40 bg-white/15 text-white/90' : 'border-gray-300 bg-gray-100 text-gray-600'}`}>
+                                                                            {voiceMeta.countryTag}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
                                                                 <span className={`text-[10px] font-semibold ${isSelected ? 'text-white/80' : 'text-gray-500'}`}>
                                                                     {resolveVoicePersonaLabel(v)}
                                                                 </span>
@@ -5643,6 +6493,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 {studioProVoiceOptions.map((v: any) => {
                                                     const isSelected = settings.voiceId === v.id;
                                                     const locked = isVoiceLockedForFreeTier(settings.engine, v);
+                                                    const voiceMeta = resolveVoiceDisplayMeta(v);
                                                     return (
                                                         <button
                                                             key={v.id}
@@ -5656,9 +6507,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                             className={`vf-voice-chip flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${locked ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
                                                             title={locked ? 'Upgrade to use Pro voices' : undefined}
                                                         >
-                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected && !locked ? 'bg-white/20' : 'bg-amber-200'}`}>{v.name[0]}</div>
+                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected && !locked ? 'bg-white/20' : 'bg-amber-200'}`}>{voiceMeta.name[0] || 'V'}</div>
                                                             <div className="flex flex-col items-start leading-tight">
-                                                                <span>{v.name}</span>
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span>{voiceMeta.name}</span>
+                                                                    {voiceMeta.countryTag && (
+                                                                        <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold leading-none ${isSelected && !locked ? 'border-white/40 bg-white/15 text-white/90' : 'border-amber-300 bg-amber-100 text-amber-700'}`}>
+                                                                            {voiceMeta.countryTag}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
                                                                 <span className={`text-[10px] font-semibold ${isSelected && !locked ? 'text-white/80' : 'text-amber-700'}`}>
                                                                     {locked ? 'Pro - Upgrade' : resolveVoicePersonaLabel(v)}
                                                                 </span>
@@ -5686,13 +6544,30 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        </div>
 	                                    )}
 		                                </div>
+                                    </>
+                                    )}
 		                            </SectionCard>
 
 	                            {/* Studio Audio Mix */}
-		                            <SectionCard className="p-5 rounded-3xl">
+		                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+                                    {isPhone ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleStudioMobilePanel('mix')}
+                                            className="flex w-full items-center justify-between gap-3 text-left"
+                                        >
+	                                        <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
+	                                            <Sliders size={13} /> Audio Mix
+	                                        </h3>
+                                            {studioMobilePanels.mix ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                                        </button>
+                                    ) : (
 	                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
 	                                    <Sliders size={13} /> Audio Mix
 	                                </h3>
+                                    )}
+                                    {(!isPhone || studioMobilePanels.mix) && (
+                                    <div className={isPhone ? 'mt-4' : ''}>
 	                                <div className="space-y-4">
 		                                    <div>
 		                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
@@ -5734,18 +6609,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
 	                                            <span>Speech Volume</span>
 	                                            <span>
-                                                {(settings.speechVolume || 1).toFixed(2)}x
+                                                {resolveStudioSpeechGain(settings.speechVolume).toFixed(2)}x
                                                 <span className="ml-1 text-[10px] font-semibold text-gray-500">
-                                                  ({Math.round(((settings.speechVolume || 1) / 1.5) * 100)}% of max)
+                                                  ({Math.round((resolveStudioSpeechGain(settings.speechVolume) / STUDIO_SPEECH_GAIN_MAX) * 100)}% of max)
                                                 </span>
                                               </span>
 	                                        </div>
 	                                        <input
 	                                            type="range"
-	                                            min="0"
-	                                            max="1.5"
+	                                            min={String(STUDIO_SPEECH_GAIN_MIN)}
+	                                            max={String(STUDIO_SPEECH_GAIN_MAX)}
 	                                            step="0.05"
-	                                            value={settings.speechVolume || 1}
+	                                            value={resolveStudioSpeechGain(settings.speechVolume)}
 	                                            onChange={(e) => setSettings(s => ({ ...s, speechVolume: parseFloat(e.target.value) }))}
                                                 aria-label="Speech volume gain"
 	                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
@@ -5754,65 +6629,55 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                    <div>
 	                                        <div className="flex justify-between text-xs mb-1 font-bold text-gray-700">
 	                                            <span>Music Volume</span>
-	                                            <span>{(settings.musicVolume || 0.3).toFixed(2)}x ({Math.round((settings.musicVolume || 0.3) * 100)}%)</span>
+	                                            <span>{resolveStudioMusicGain(settings.musicVolume).toFixed(2)}x ({Math.round(resolveStudioMusicGain(settings.musicVolume) * 100)}%)</span>
 	                                        </div>
 		                                        <input
 		                                            type="range"
 		                                            min="0"
 		                                            max="1"
 		                                            step="0.05"
-		                                            value={settings.musicVolume || 0.3}
+		                                            value={resolveStudioMusicGain(settings.musicVolume)}
 		                                            onChange={(e) => setSettings(s => ({ ...s, musicVolume: parseFloat(e.target.value) }))}
                                                     aria-label="Music volume gain"
 		                                            className="w-full accent-indigo-600 h-1.5 bg-gray-100 rounded-lg appearance-none"
 		                                        />
 		                                </div>
 			                                </div>
+                                    </div>
+                                    )}
 			                            </SectionCard>
+                                    </>
+                                    )}
 
-                                {/* Multi-Speaker Control */}
-                                <SectionCard className="p-5 rounded-3xl border border-indigo-100/70 bg-indigo-50/60">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div>
-                                            <h3 className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Multi-Speaker Mode</h3>
-                                            <p className="text-[11px] text-indigo-600 mt-1">
-                                                Apply cast mapping for {getEngineDisplayName('GEM')} and {getEngineDisplayName('KOKORO')} in Studio generation.
-                                            </p>
-                                        </div>
+                                    {isStudioMultiSpeakerEnabled && (
+		                            <>
+		                            {/* Cast & Crew */}
+	                            <SectionCard className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
+                                      isDarkUi
+                                        ? 'bg-slate-900/75 border-indigo-500/20'
+                                        : 'bg-indigo-50 border-indigo-100'
+                                    }`}>
+                                    {isPhone ? (
                                         <button
                                             type="button"
-                                            onClick={() => setSettings((prev) => ({ ...prev, multiSpeakerEnabled: !(prev.multiSpeakerEnabled !== false) }))}
-                                            className={`relative inline-flex h-7 w-14 items-center rounded-full border transition-all ${
-                                                isStudioMultiSpeakerEnabled
-                                                    ? 'bg-emerald-500 border-emerald-500'
-                                                    : 'bg-gray-300 border-gray-300'
-                                            }`}
-                                            aria-label="Toggle multi-speaker mode"
+                                            onClick={() => toggleStudioMobilePanel('cast')}
+                                            className="mb-3 flex w-full items-center justify-between gap-3 text-left"
                                         >
-                                            <span
-                                                className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                                                    isStudioMultiSpeakerEnabled ? 'translate-x-8' : 'translate-x-1'
-                                                }`}
-                                            />
+                                            <div>
+                                                <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
+                                                    isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                                }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                    {isStudioMultiSpeakerEnabled ? `${activeScriptLanguageCode.toUpperCase()} - ${studioCrewTags.length} crew cues` : 'Disabled'}
+                                                </p>
+                                            </div>
+                                            {studioMobilePanels.cast ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
                                         </button>
-                                    </div>
-                                    <div className="mt-2 text-[10px] font-semibold uppercase tracking-wide">
-                                        <span className={isStudioMultiSpeakerEnabled ? 'text-emerald-600' : 'text-gray-500'}>
-                                            {isStudioMultiSpeakerEnabled ? 'On: speaker tags use mapped voices' : 'Off: script is generated with one selected voice'}
-                                        </span>
-                                    </div>
-                                </SectionCard>
-
-		                            {/* Cast Mapping */}
-	                            <SectionCard className={`p-5 rounded-3xl border animate-in fade-in ${
-                                      isStudioMultiSpeakerEnabled
-                                        ? 'bg-indigo-50 border-indigo-100'
-                                        : 'bg-gray-100 border-gray-200'
-                                    } ${isStudioMultiSpeakerEnabled ? '' : 'vf-section-disabled'}`}>
+                                    ) : (
                                     <div className="flex items-center justify-between mb-3">
                                         <h3 className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 ${
-                                            isStudioMultiSpeakerEnabled ? 'text-indigo-400' : 'text-gray-500'
-                                        }`}><Bot size={14}/> AI Cast</h3>
+                                            isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                        }`}><Bot size={14}/> Cast &amp; Crew</h3>
                                         <div className="flex items-center gap-2">
                                             <button
                                                 type="button"
@@ -5823,40 +6688,73 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     castSpeakers.length === 0 ||
                                                     castVoiceOptions.length === 0
                                                 }
-                                                title="AI auto-assign best speaker voices from script text"
+                                                title="AI auto-detect speakers from script text and assign voices"
                                                 className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
-                                                    isStudioMultiSpeakerEnabled
-                                                        ? 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
-                                                        : 'bg-white text-gray-500 border-gray-200'
+                                                    isDarkUi
+                                                        ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
+                                                        : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
                                                 } disabled:opacity-60`}
                                             >
                                                 {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
                                                 AI Auto
                                             </button>
+                                            {studioCrewTags.length > 0 && (
+                                                <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase ${
+                                                    isDarkUi
+                                                      ? 'bg-slate-950 text-cyan-200 border border-cyan-500/30'
+                                                      : 'bg-white text-cyan-600 border border-cyan-100'
+                                                }`}>
+                                                    {studioCrewTags.length} crew
+                                                </span>
+                                            )}
                                             <span className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase ${
-                                                isStudioMultiSpeakerEnabled
-                                                  ? 'bg-white text-indigo-500 border border-indigo-100'
-                                                  : 'bg-white text-gray-500 border border-gray-200'
+                                                isDarkUi
+                                                  ? 'bg-slate-950 text-indigo-200 border border-indigo-500/30'
+                                                  : 'bg-white text-indigo-500 border border-indigo-100'
                                             }`}>
                                                 {isStudioMultiSpeakerEnabled ? activeScriptLanguageCode.toUpperCase() : 'Disabled'}
                                             </span>
                                         </div>
                                     </div>
+                                    )}
+                                    {(!isPhone || studioMobilePanels.cast) && (
+                                    <>
+                                    {isPhone && (
+                                        <button
+                                            type="button"
+                                            onClick={autoAssignCastVoices}
+                                            disabled={
+                                                !isStudioMultiSpeakerEnabled ||
+                                                isAutoAssigningCast ||
+                                                castSpeakers.length === 0 ||
+                                                castVoiceOptions.length === 0
+                                            }
+                                            title="AI auto-detect speakers from script text and assign voices"
+                                            className={`mb-3 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                isDarkUi
+                                                    ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
+                                                    : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                                            } disabled:opacity-60`}
+                                        >
+                                            {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                                            AI Auto
+                                        </button>
+                                    )}
                                     {!isStudioMultiSpeakerEnabled && (
                                       <p className="mb-3 text-[11px] font-medium text-gray-500">
                                         Enable Multi-Speaker Mode to edit cast mappings.
                                       </p>
                                     )}
-                                    <div className={`space-y-2 ${isStudioMultiSpeakerEnabled ? '' : 'opacity-70 pointer-events-none'}`}>
+                                    <div className="space-y-2">
                                         {castSpeakers.map(speaker => (
                                             <div key={speaker} className={`flex items-center justify-between gap-2 p-2 rounded-lg border shadow-sm ${
-                                                isStudioMultiSpeakerEnabled
-                                                  ? 'bg-white border-indigo-100'
-                                                  : 'bg-white/70 border-gray-200'
+                                                isDarkUi
+                                                  ? 'bg-slate-950 border-indigo-500/20'
+                                                  : 'bg-white border-indigo-100'
                                             }`}>
-                                                <span className="text-xs font-bold text-gray-700 truncate">{speaker}</span>
+                                                <span className={`text-xs font-bold truncate ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>{speaker}</span>
                                                 <select 
-                                                    className="text-[10px] font-bold bg-gray-50 rounded p-1 outline-none max-w-[150px] disabled:opacity-60"
+                                                    className={`text-[10px] font-bold rounded p-1 outline-none max-w-[150px] ${isDarkUi ? 'bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-700'}`}
                                                     value={resolveMappedVoiceForSpeaker(speaker) || castFreeVoiceOptions[0]?.id || castVoiceOptions[0]?.id || ''}
                                                     disabled={!isStudioMultiSpeakerEnabled}
                                                     onChange={(e) => {
@@ -5893,7 +6791,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                              <optgroup label="Free Speakers">
                                                                  {castFreeVoiceOptions.map((v: any) => (
                                                                      <option key={v.id} value={v.id}>
-                                                                         {`${v.name} (${resolveVoicePersonaLabel(v)})`}
+                                                                          {`${resolveVoiceDisplayLabel(v)} (${resolveVoicePersonaLabel(v)})`}
                                                                      </option>
                                                                  ))}
                                                              </optgroup>
@@ -5901,28 +6799,71 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                          {castProVoiceOptions.length > 0 && (
                                                              <optgroup label="Pro Speakers">
                                                                  {castProVoiceOptions.map((v: any) => (
-                                                                     <option
-                                                                         key={v.id}
-                                                                         value={v.id}
-                                                                         disabled={isVoiceLockedForFreeTier(settings.engine, v)}
-                                                                     >
-                                                                         {`${v.name} (${resolveVoicePersonaLabel(v)}) - Pro`}
-                                                                     </option>
-                                                                 ))}
-                                                             </optgroup>
-                                                         )}
+                                                                      <option
+                                                                          key={v.id}
+                                                                          value={v.id}
+                                                                          disabled={isVoiceLockedForFreeTier(settings.engine, v)}
+                                                                      >
+                                                                          {`${resolveVoiceDisplayLabel(v)} (${resolveVoicePersonaLabel(v)}) - Pro`}
+                                                                      </option>
+                                                                  ))}
+                                                              </optgroup>
+                                                          )}
 			                                                </select>
 			                                            </div>
 			                                        ))}
 	                                    </div>
-	                                    <div className="mt-2 text-[10px] text-gray-400 text-center">
+                                        {studioCrewTags.length > 0 && (
+                                            <div className={`mt-3 rounded-2xl border p-3 ${isDarkUi ? 'border-cyan-500/20 bg-slate-950' : 'border-cyan-100 bg-white/90'}`}>
+                                                <div className="mb-2 flex items-center justify-between gap-2">
+                                                    <span className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-cyan-200' : 'text-cyan-600'}`}>Crew Cues</span>
+                                                    <span className={`text-[10px] font-semibold ${isDarkUi ? 'text-cyan-100/80' : 'text-cyan-700'}`}>{studioCrewTags.length}</span>
+                                                </div>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {studioCrewTags.map((tag) => (
+                                                        <span
+                                                            key={tag}
+                                                            className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200' : 'border-cyan-200 bg-cyan-50 text-cyan-700'}`}
+                                                        >
+                                                            {tag}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+	                                    <div className={`mt-2 text-[10px] text-center ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>
 	                                        {!isStudioMultiSpeakerEnabled
                                                 ? 'Enable Multi-Speaker Mode to apply cast mappings during Studio generation.'
                                                 : detectedSpeakers.length > 0
                                                 ? 'Voices are automatically saved to your Character Library.'
                                                 : 'No explicit speaker tags detected. Narrator mapping is active.'}
 	                                    </div>
+                                    </>
+                                    )}
 	                                </SectionCard>
+                                    </>
+                                    )}
+
+                                    {shouldShowStudioQueuePanel && (
+                                        <StudioQueuePanel
+                                            queueState={studioQueueState}
+                                            draftPartCount={studioQueueDraftPartCount}
+                                            planCap={maxCharsPerGeneration}
+                                            queueEligible={studioQueueEligible}
+                                            isQueueModeEnabled={isStudioQueueModeEnabled}
+                                            isGenerating={isGenerating}
+                                            audioUrls={studioQueueAudioUrls}
+                                            isDarkUi={isDarkUi}
+                                            isPhone={isPhone}
+                                            isOpen={studioMobilePanels.queue}
+                                            onToggleOpen={() => toggleStudioMobilePanel('queue')}
+                                            onResumeQueue={() => { void resumeStudioQueue(); }}
+                                            onClearQueue={() => { void clearStudioQueueState(); }}
+                                            onDeleteItem={(itemId) => { void deleteStudioQueueItem(itemId); }}
+                                            onRetryItem={retryStudioQueueItem}
+                                            onReorderItems={reorderStudioQueueItems}
+                                        />
+                                    )}
 
                         </div>
                     </div>
@@ -5934,22 +6875,22 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     <div className="max-w-5xl mx-auto animate-in fade-in">
                         
                         {/* Tab Switcher & Header */}
-                        <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-6">
+                        <div className="mb-8 flex flex-col items-start justify-between gap-4 lg:flex-row lg:items-center">
                             <div>
                                 <h2 className="text-2xl font-bold text-gray-800">Character & Voice Studio</h2>
                                 <p className="text-sm text-gray-500">Manage your cast or browse the gallery to find the perfect voice.</p>
                             </div>
                             
-                            <div className="flex bg-white p-1 rounded-xl shadow-sm border border-gray-200">
+                            <div className="flex w-full rounded-xl border border-gray-200 bg-white p-1 shadow-sm sm:w-auto">
                                 <button 
                                     onClick={() => setCharTab('CAST')}
-                                    className={`px-5 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${charTab === 'CAST' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
+                                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all sm:flex-none sm:px-5 ${charTab === 'CAST' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
                                 >
                                     <Users size={16}/> My Cast
                                 </button>
                                 <button 
                                     onClick={() => setCharTab('GALLERY')}
-                                    className={`px-5 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${charTab === 'GALLERY' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
+                                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all sm:flex-none sm:px-5 ${charTab === 'GALLERY' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
                                 >
                                     <StoreIcon size={16}/> Voice Gallery
                                 </button>
@@ -5992,14 +6933,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                      </div>
                                                  </div>
 
-                                                 <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 flex items-center justify-between">
-                                                      <div className="flex flex-col">
-                                                          <span className="text-[10px] font-bold text-gray-400 uppercase">Assigned Voice</span>
-                                                          <span className="text-sm font-bold text-indigo-600 truncate max-w-[120px]">{voice?.name || char.voiceId}</span>
-                                                      </div>
-                                                      <button 
-                                                          onClick={(e) => { e.stopPropagation(); handlePreviewCharacter(char); }} 
-                                                          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${isPlayingPreview ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-gray-200 text-indigo-600 hover:bg-indigo-50'}`}
+                                                  <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 flex items-center justify-between">
+                                                       <div className="flex flex-col">
+                                                           <span className="text-[10px] font-bold text-gray-400 uppercase">Assigned Voice</span>
+                                                           <span className="text-sm font-bold text-indigo-600 truncate max-w-[120px]">{voice ? resolveVoiceDisplayLabel(voice) : char.voiceId}</span>
+                                                       </div>
+                                                       <button 
+                                                           onClick={(e) => { e.stopPropagation(); handlePreviewCharacter(char); }} 
+                                                           className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${isPlayingPreview ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-gray-200 text-indigo-600 hover:bg-indigo-50'}`}
                                                       >
                                                           {isLoadingPreview ? <Loader2 size={18} className="animate-spin"/> : isPlayingPreview ? <Pause size={18} fill="currentColor"/> : <Play size={18} fill="currentColor" className="ml-0.5"/>}
                                                       </button>
@@ -6022,7 +6963,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             type="text" 
                                             placeholder="Search voices..." 
                                             value={voiceSearch}
-                                            onChange={(e) => setVoiceSearch(e.target.value)}
+                                            onChange={(e) => {
+                                              const nextValue = e.target.value;
+                                              startTransition(() => {
+                                                setVoiceSearch(nextValue);
+                                              });
+                                            }}
                                             className="w-full pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                                          />
                                      </div>
@@ -6051,6 +6997,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                  {/* Voice Grid */}
                                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                                      {filteredVoices.map(v => {
+                                         const voiceMeta = resolveVoiceDisplayMeta(v);
                                          const isLoading = previewState?.id === v.id && previewState.status === 'loading';
                                          const isPlaying = previewState?.id === v.id && previewState.status === 'playing';
                                          const voiceEngine = (v.engine || settings.engine) as GenerationSettings['engine'];
@@ -6059,17 +7006,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                          
                                          return (
                                              <div key={v.id} className="bg-white p-4 rounded-2xl border border-gray-200 hover:border-indigo-200 hover:shadow-md transition-all group flex flex-col gap-3">
-                                                 <div className="flex items-center justify-between">
-                                                     <div className="flex items-center gap-3">
-                                                         <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${v.gender === 'Female' ? 'bg-pink-500' : v.gender === 'Male' ? 'bg-blue-500' : 'bg-purple-500'}`}>
-                                                             {v.name[0]}
-                                                         </div>
-                                                            <div>
-                                                                <h4 className="font-bold text-gray-900 text-sm">{v.name}</h4>
-                                                                <div className="text-[10px] text-gray-500 font-medium">{resolveVoicePersonaLabel(v)}</div>
-                                                                <div className={`inline-flex mt-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
-                                                                    accessTier === 'free'
-                                                                        ? 'bg-emerald-100 text-emerald-700'
+                                                  <div className="flex items-center justify-between">
+                                                      <div className="flex items-center gap-3">
+                                                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm ${v.gender === 'Female' ? 'bg-pink-500' : v.gender === 'Male' ? 'bg-blue-500' : 'bg-purple-500'}`}>
+                                                              {voiceMeta.name[0] || 'V'}
+                                                          </div>
+                                                             <div>
+                                                                 <div className="flex items-center gap-1.5">
+                                                                     <h4 className="font-bold text-gray-900 text-sm">{voiceMeta.name}</h4>
+                                                                     {voiceMeta.countryTag && (
+                                                                         <span className="rounded-full border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-[9px] font-extrabold leading-none text-gray-600">
+                                                                             {voiceMeta.countryTag}
+                                                                         </span>
+                                                                     )}
+                                                                 </div>
+                                                                 <div className="text-[10px] text-gray-500 font-medium">{resolveVoicePersonaLabel(v)}</div>
+                                                                 <div className={`inline-flex mt-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                                                                     accessTier === 'free'
+                                                                         ? 'bg-emerald-100 text-emerald-700'
                                                                         : 'bg-amber-100 text-amber-700'
                                                                 }`}>
                                                                     {accessTier}
@@ -6130,7 +7084,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                              </div>
                                          </div>
                                          
-                                         <div className="grid grid-cols-2 gap-4">
+                                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                              <div>
                                                  <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Gender</label>
                                                  <select value={charForm.gender} onChange={e => setCharForm({...charForm, gender: e.target.value as any})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
@@ -6158,7 +7112,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                               .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'free')
                                                               .map((voice) => (
                                                                   <option key={voice.id} value={voice.id}>
-                                                                      {`${voice.name} (${resolveVoicePersonaLabel(voice)})`}
+                                                                      {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)})`}
                                                                   </option>
                                                               ))}
                                                       </optgroup>
@@ -6171,11 +7125,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                                       value={voice.id}
                                                                       disabled={isVoiceLockedForFreeTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice)}
                                                                   >
-                                                                      {`${voice.name} (${resolveVoicePersonaLabel(voice)}) - Pro`}
+                                                                      {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)}) - Pro`}
                                                                   </option>
                                                               ))}
                                                       </optgroup>
-	                                              </select>
+                                                  </select>
 	                                         </div>
 
                                          <Button fullWidth onClick={saveCharacter} className="mt-4">{editingChar ? 'Save Changes' : 'Create Character'}</Button>
@@ -6342,23 +7296,35 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
 
-                {activeTab === Tab.ADMIN && isAdmin && (
+                {activeTab === Tab.READER && (
+                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader...</SectionCard>}>
+                      <ReaderTabContent
+                          settings={settings}
+                          mediaBackendUrl={mediaBackendUrl}
+                          resolvedTheme={resolvedTheme}
+                          onToast={showToast}
+                      />
+                    </Suspense>
+                )}
+
+                {activeTab === Tab.ADMIN && hasAdminConsoleAccess && (
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading admin controls...</SectionCard>}>
                       <AdminTabContent
                           mediaBackendUrl={mediaBackendUrl}
                           onToast={showToast}
                           onRefreshEntitlements={refreshEntitlements}
+                          initialOpsTab={initialAdminOpsTab}
                       />
                     </Suspense>
                 )}
                 
                 {activeTab === Tab.LAB && (
-                     <div className="max-w-2xl mx-auto bg-white p-8 rounded-3xl shadow-sm border border-gray-200 animate-in fade-in">
+                     <div className="max-w-2xl mx-auto bg-white p-4 sm:p-6 md:p-8 rounded-3xl shadow-sm border border-gray-200 animate-in fade-in">
                          {/* ... Lab Content ... */}
-                         <div className="flex justify-center mb-8">
-                             <div className="bg-gray-100 p-1 rounded-xl flex">
-                                 <button onClick={() => setLabMode('CLONING')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${labMode === 'CLONING' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>Voice Cloning</button>
-                                 <button onClick={() => setLabMode('COVERS')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${labMode === 'COVERS' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>AI Covers (LLVC)</button>
+                         <div className="mb-8 flex justify-center">
+                             <div className="flex w-full flex-col rounded-xl bg-gray-100 p-1 sm:w-auto sm:flex-row">
+                                 <button onClick={() => setLabMode('CLONING')} className={`rounded-lg px-6 py-2 text-sm font-bold transition-all ${labMode === 'CLONING' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>Voice Cloning</button>
+                                 <button onClick={() => setLabMode('COVERS')} className={`rounded-lg px-6 py-2 text-sm font-bold transition-all ${labMode === 'COVERS' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>AI Covers (Voice Transfer)</button>
                              </div>
                          </div>
                          {labMode === 'CLONING' && (
@@ -6409,19 +7375,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                              <div className="space-y-5">
                                  <div className="text-center">
                                      <div className="w-16 h-16 bg-purple-100 text-purple-600 rounded-2xl mx-auto flex items-center justify-center mb-4"><Music size={32}/></div>
-                                     <h2 className="text-xl font-bold">AI Covers (LLVC)</h2>
-                                     <p className="text-sm text-gray-500 mt-2">Real LLVC inference via local media backend.</p>
+                                     <h2 className="text-xl font-bold">AI Covers (Voice Transfer)</h2>
+                                     <p className="text-sm text-gray-500 mt-2">Real voice transfer inference via local media backend.</p>
                                  </div>
 
                                  <div className="space-y-2">
-                                     <label className="text-xs font-bold text-gray-500 uppercase">LLVC Model</label>
+                                     <label className="text-xs font-bold text-gray-500 uppercase">Voice Model</label>
                                      <select
-                                         value={settings.llvcModel || ''}
-                                         onChange={(e) => setSettings(s => ({ ...s, llvcModel: e.target.value }))}
+                                         value={settings.voiceModel || ''}
+                                         onChange={(e) => setSettings(s => ({ ...s, voiceModel: e.target.value }))}
                                          className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                                      >
                                          <option value="">Select model...</option>
-                                         {llvcModels.map(modelName => (
+                                         {voiceTransferModels.map(modelName => (
                                              <option key={modelName} value={modelName}>{modelName}</option>
                                          ))}
                                      </select>
@@ -6441,14 +7407,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
                                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center">
                                      <input
-                                         id="llvc-source-file-input"
+                                         id="voice-transfer-source-file-input"
                                          type="file"
                                          accept="audio/*,video/*"
                                          onChange={(e) => setLlvcSourceFile(e.target.files?.[0] || null)}
                                          className="hidden"
                                      />
                                      {!llvcSourceFile && (
-                                         <label htmlFor="llvc-source-file-input" className="block cursor-pointer text-gray-400 hover:text-gray-500 transition-colors">
+                                         <label htmlFor="voice-transfer-source-file-input" className="block cursor-pointer text-gray-400 hover:text-gray-500 transition-colors">
                                              <UploadCloud size={24} className="mx-auto mb-2"/>
                                              <p className="text-xs font-bold">Upload source audio or video</p>
                                              <p className="text-[10px]">WAV/MP3/M4A/MP4/MOV/WebM</p>
@@ -6469,7 +7435,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                      {isLlvcSourcePlaying ? 'Pause' : 'Play'}
                                                  </button>
                                                  <label
-                                                     htmlFor="llvc-source-file-input"
+                                                     htmlFor="voice-transfer-source-file-input"
                                                      className="inline-flex cursor-pointer items-center gap-1 rounded border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
                                                  >
                                                      <UploadCloud size={14} />
@@ -6511,17 +7477,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                  </div>
 
                                  <div className="space-y-2 rounded-xl border border-gray-200 bg-gray-50 p-3">
-                                     <div className="text-xs font-bold text-gray-500 uppercase">Advanced LLVC Options</div>
-                                     <div className="grid grid-cols-2 gap-2">
+                                     <div className="text-xs font-bold text-gray-500 uppercase">Advanced Voice Transfer Options</div>
+                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                          <label className="space-y-1 text-left">
                                              <span className="text-[10px] font-semibold uppercase text-gray-500">Preset</span>
                                              <select
                                                  value={llvcPreset}
-                                                 onChange={(e) => setLlvcPreset(e.target.value as 'tts_realtime' | 'cover_hq' | 'llvc_hq_cpu')}
+                                                 onChange={(e) => setLlvcPreset(e.target.value as 'tts_realtime')}
                                                  className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-xs"
                                              >
-                                                 <option value="cover_hq">cover_hq</option>
-                                                 <option value="llvc_hq_cpu">llvc_hq_cpu</option>
                                                  <option value="tts_realtime">tts_realtime</option>
                                              </select>
                                          </label>
@@ -6539,7 +7503,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                              </select>
                                          </label>
                                      </div>
-                                     <div className="grid grid-cols-2 gap-2">
+                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                          <label className="space-y-1 text-left">
                                              <span className="text-[10px] font-semibold uppercase text-gray-500">Index Rate ({llvcIndexRate.toFixed(2)})</span>
                                              <input
@@ -6591,8 +7555,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                      </div>
                                  </div>
 
-                                 <Button fullWidth onClick={handleGenerateLlvcCover} disabled={isGeneratingLlvcCover || !llvcSourceFile || !settings.llvcModel}>
-                                     {isGeneratingLlvcCover ? <><Loader2 className="animate-spin mr-2" /> Converting...</> : 'Generate LLVC Cover'}
+                                 <Button fullWidth onClick={handleGenerateLlvcCover} disabled={isGeneratingLlvcCover || !llvcSourceFile || !settings.voiceModel}>
+                                     {isGeneratingLlvcCover ? <><Loader2 className="animate-spin mr-2" /> Converting...</> : 'Generate Voice Transfer'}
                                  </Button>
 
                                  {llvcCoverUrl && (
@@ -6600,7 +7564,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                          <audio controls src={llvcCoverUrl} className="w-full" />
                                          <a
                                             href={llvcCoverUrl}
-                                            download={`llvc_cover_${settings.llvcModel || 'output'}.wav`}
+                                            download={`voice_transfer_${settings.voiceModel || 'output'}.wav`}
                                             className="inline-flex items-center gap-2 text-xs font-bold text-purple-700 hover:text-purple-900"
                                          >
                                             <Download size={14} /> Download cover WAV
@@ -6613,11 +7577,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 )}
 
                 {activeTab === Tab.DUBBING && (
+                    <SimplifiedDubbingTab
+                      isDarkUi={isDarkUi}
+                      mediaBackendUrl={mediaBackendUrl}
+                      voiceOptions={runtimeVoiceCatalogs.GEM.length > 0 ? runtimeVoiceCatalogs.GEM : getStaticVoicesForEngine('GEM')}
+                      initialTargetLanguage={targetLang}
+                      onToast={showToast}
+                    />
+                )}
+
+                {LEGACY_DUBBING_UI_ENABLED && activeTab === Tab.DUBBING && (
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 xl:gap-6 animate-in fade-in">
                         {/* ... Dubbing UI ... */}
                         <div className="space-y-4">
                              {/* ... Video Player ... */}
-                             <div className={`rounded-3xl overflow-hidden flex flex-col h-[340px] sm:h-[420px] xl:h-[500px] relative group ${
+                             <div className={`rounded-3xl overflow-hidden flex flex-col h-[clamp(14rem,32vh,26rem)] sm:h-[420px] xl:h-[500px] relative group ${
                                isDarkUi
                                  ? 'bg-slate-950 border border-slate-700/80 shadow-sm'
                                  : 'bg-white border border-slate-200/90 shadow-[0_12px_34px_rgba(15,23,42,0.08)]'
@@ -6629,7 +7603,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         : 'bg-gradient-to-br from-slate-100 via-indigo-100/30 to-slate-50'
                                     }`}>
                                         <video ref={videoRef} src={videoUrl} className="max-h-full max-w-full mx-auto object-contain" controls={false} />
-                                        <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent flex flex-col gap-3 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                                        <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col gap-3 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 opacity-100 transition-opacity xl:opacity-0 xl:group-hover:opacity-100">
                                             <div className="flex justify-center items-center gap-6">
                                                 <button onClick={toggleDubPlayback} className={`p-4 rounded-full text-white transition-all transform hover:scale-110 bg-indigo-600 shadow-lg shadow-indigo-500/50`}>
                                                     {isPlayingDub ? <Pause size={28} fill="currentColor"/> : <Play size={28} fill="currentColor" className="ml-1"/>}
@@ -6762,7 +7736,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                      {isVideoPipelineGuideOpen && (
                                        <div className={`border-t px-4 py-3 space-y-3 text-xs leading-relaxed ${isDarkUi ? 'border-slate-700 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
                                          <p>
-                                           The 2026 dubbing stack uses a hybrid architecture: Gemini orchestrates content, timing, and emotion while LLVC applies voice identity with CPU-first conversion.
+                                           The 2026 dubbing stack uses a hybrid architecture: Gemini orchestrates content, timing, and emotion while W-Okada voice transfer applies voice identity with CPU-first conversion.
                                          </p>
                                          <div className="space-y-2">
                                            {VIDEO_PIPELINE_2026_PHASES.map((phase) => (
@@ -6831,7 +7805,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                               <select
                                                   value={selectedDubbingClipId}
                                                   onChange={(e) => setSelectedDubbingClipId(e.target.value)}
-                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-[11rem] vf-theme-select ${
+                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-0 w-full sm:min-w-[11rem] sm:w-auto vf-theme-select ${
                                                     isDarkUi ? 'text-slate-200' : 'text-gray-700'
                                                   }`}
                                                   title="Active clip"
@@ -6851,7 +7825,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                               <select
                                                   value={settings.dubbingSourceLanguage || 'auto'}
                                                   onChange={(e) => setSettings((s) => ({ ...s, dubbingSourceLanguage: e.target.value }))}
-                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-[8.25rem] vf-theme-select ${
+                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-0 w-full sm:min-w-[8.25rem] sm:w-auto vf-theme-select ${
                                                     isDarkUi ? 'text-slate-200' : 'text-gray-700'
                                                   }`}
                                                   title="Source language hint for transcription"
@@ -7031,7 +8005,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     }`} 
                                  />
                                   
-                                  <div className={`px-4 py-3 border-t text-[11px] font-semibold flex items-center justify-between ${
+                                  <div className={`px-4 py-3 border-t text-[11px] font-semibold flex flex-wrap items-center justify-between gap-2 ${
                                     isDarkUi ? 'bg-slate-900/75 border-slate-700 text-slate-300' : 'bg-gray-50 border-gray-100 text-gray-600'
                                   }`}>
                                       <span>
@@ -7045,12 +8019,29 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         </div>
                     </div>
                 )}
+
+                {usesPhoneStudioDock && (
+                    <div className="sticky bottom-0 z-[47] mx-auto w-full max-w-[1140px] px-1 pt-4">
+                        <div className="mx-auto w-full max-w-xl pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+                            <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
+                                <MorphingGenerateButton
+                                  onClick={handleGenerate}
+                                  onCancel={handleCancelGeneration}
+                                  disabled={!text.trim()}
+                                  isGenerating={isGenerating}
+                                  progress={progress}
+                                  stage=""
+                                />
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
 
-        {activeTab === Tab.STUDIO && (
-            <div className="vf-studio-generate-anchor fixed z-[47] w-[min(18rem,calc(100vw-6.25rem))] md:w-[min(22.5rem,calc(100vw-24rem))] lg:w-[min(23rem,calc(100vw-28rem))]">
-                <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
+        {usesCompactFloatingStudioDock && (
+            <div className={`vf-studio-generate-anchor ${studioFloatingDockVariantClass} fixed z-[47] ${studioFloatingDockWidthClass}`}>
+                <div className={`vf-studio-generate-dock rounded-2xl border border-indigo-400/35 backdrop-blur-xl ${isDesktop ? 'p-2' : 'p-1.5'}`}>
                     <MorphingGenerateButton
                       onClick={handleGenerate}
                       onCancel={handleCancelGeneration}
@@ -7058,6 +8049,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       isGenerating={isGenerating}
                       progress={progress}
                       stage=""
+                      size="compact"
                     />
                 </div>
             </div>
@@ -7067,11 +8059,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       {/* Floating AI Assistant */}
       <div
-        className={`fixed right-4 md:right-6 z-50 flex flex-col items-end gap-4 ${
-          activeTab === Tab.STUDIO
-            ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] md:bottom-28 lg:bottom-32'
-            : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] md:bottom-6'
-        }`}
+        className={`fixed right-4 xl:right-6 z-50 flex flex-col items-end gap-4 ${studioAssistantBottomClass}`}
       >
           {isChatOpen && (
               <div className="w-[min(20rem,calc(100vw-1.5rem))] h-[min(28rem,calc(100vh-8rem))] bg-white rounded-2xl shadow-2xl border border-white/50 backdrop-blur-xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300 relative z-50 ring-1 ring-gray-100">

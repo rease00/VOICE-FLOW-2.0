@@ -74,6 +74,7 @@ const RUNTIME_DIR = path.join(ROOT, ".runtime");
 const PID_DIR = path.join(RUNTIME_DIR, "pids");
 const LOG_DIR = path.join(RUNTIME_DIR, "logs");
 const STATE_DIR = path.join(RUNTIME_DIR, "state");
+const LAUNCHER_DIR = path.join(RUNTIME_DIR, "launchers");
 
 const VALID_CONCURRENCY_PROFILES = new Set(["balanced", "max", "cool"]);
 const AUTO_TUNE_WORKERS = toBoolEnv(process.env.VF_AUTO_TUNE_WORKERS, true);
@@ -104,14 +105,26 @@ const FAST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_TIMEOUT_FAST_MS || DEFAU
 const KOKORO_TIMEOUT_MS = Number(
   process.env.VF_BOOTSTRAP_TIMEOUT_KOKORO_MS || Math.max(DEFAULT_CHECK_TIMEOUT_MS, 90000)
 );
+const STARTUP_HEALTH_RETRY_INTERVAL_MS = clampInt(
+  toIntEnv(process.env.VF_STARTUP_HEALTH_RETRY_INTERVAL_MS, 1000),
+  250,
+  10000
+);
+const POST_START_VERIFY_TIMEOUT_MS = clampInt(
+  toIntEnv(process.env.VF_POST_START_VERIFY_TIMEOUT_MS, 5000),
+  1000,
+  30000
+);
+const CHECK_WAIT_LOG_AFTER_MS = Math.max(0, toIntEnv(process.env.VF_CHECK_WAIT_LOG_AFTER_MS, 8000));
 const STARTUP_PID_WAIT_TIMEOUT_MS = Math.max(1000, toIntEnv(process.env.VF_STARTUP_PID_WAIT_TIMEOUT_MS, 12000));
 const STARTUP_PID_WAIT_POLL_MS = clampInt(toIntEnv(process.env.VF_STARTUP_PID_WAIT_POLL_MS, 250), 100, 2000);
 const LOG_ROTATE_MAX_BYTES = Math.max(0, toIntEnv(process.env.VF_SERVICE_LOG_ROTATE_MAX_BYTES, 20 * 1024 * 1024));
 const LOG_ROTATE_KEEP = clampInt(toIntEnv(process.env.VF_SERVICE_LOG_ROTATE_KEEP, 3), 0, 10);
 const SERVICE_LOG_TAIL_LINES = clampInt(toIntEnv(process.env.VF_SERVICE_LOG_TAIL_LINES, 20), 0, 200);
-const SERVICE_WINDOWS_VISIBLE = toBoolEnv(process.env.VF_SERVICE_WINDOWS_VISIBLE, false);
+const SERVICE_WINDOWS_VISIBLE = toBoolEnv(process.env.VF_SERVICE_WINDOWS_VISIBLE, true);
 const DOCTOR_MAX_ATTEMPTS = clampInt(toIntEnv(process.env.VF_BOOTSTRAP_DOCTOR_MAX_ATTEMPTS, 2), 1, 5);
 const serviceStartStates = new Map();
+const pythonVersionCache = new Map();
 
 function toIntEnv(raw, fallback) {
   const parsed = Number(raw);
@@ -146,9 +159,9 @@ function resolveLogicalCpuCount() {
 }
 
 function resolveConcurrencyProfile(rawValue) {
-  const token = String(rawValue || "balanced").trim().toLowerCase();
+  const token = String(rawValue || "cool").trim().toLowerCase();
   if (VALID_CONCURRENCY_PROFILES.has(token)) return token;
-  return "balanced";
+  return "cool";
 }
 
 function computeConcurrencyPlan(profile, usableCpu) {
@@ -232,8 +245,12 @@ const pythonPathFor = (venvName) =>
   );
 
 const servicePidPath = (id) => path.join(PID_DIR, `${id}.pid`);
+const serviceLauncherPidPath = (id) => path.join(PID_DIR, `${id}.launcher.pid`);
 const serviceLogPath = (id) => path.join(LOG_DIR, `${id}.log`);
 const serviceStatePath = (id) => path.join(STATE_DIR, `${id}.sha256`);
+const serviceInstallStatePath = (id) => path.join(STATE_DIR, `${id}.install.sha256`);
+const serviceLauncherPath = (id) => path.join(LAUNCHER_DIR, `${id}.ps1`);
+const serviceLauncherCmdPath = (id) => path.join(LAUNCHER_DIR, `${id}.cmd`);
 
 const SERVICES = [
   {
@@ -248,13 +265,15 @@ const SERVICES = [
     env: (gpu) => ({
       VF_BACKEND_HOST: "127.0.0.1",
       VF_BACKEND_PORT: "7800",
-      VF_WHISPER_DEVICE: gpu ? "cuda" : "cpu",
-      VF_WHISPER_COMPUTE: gpu ? "float16" : "int8",
-      VF_LLVC_DEVICE: process.env.VF_LLVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
-      VF_LLVC_MODELS_DIR: process.env.VF_LLVC_MODELS_DIR || path.join(ROOT, "models/llvc"),
-      VF_LLVC_RUNTIME_URL: process.env.VF_LLVC_RUNTIME_URL || "http://127.0.0.1:7830",
-      VF_LLVC_MODEL_REGISTRY_FILE:
-        process.env.VF_LLVC_MODEL_REGISTRY_FILE || path.join(ROOT, "config/llvc_model_registry.json"),
+      VF_WHISPER_DEVICE: "cpu",
+      VF_WHISPER_COMPUTE: "int8",
+      VF_VOICE_TRANSFER_DEVICE: process.env.VF_VOICE_TRANSFER_DEVICE || "cpu:0",
+      VF_VOICE_TRANSFER_ONNX_PROVIDER: process.env.VF_VOICE_TRANSFER_ONNX_PROVIDER || "openvino",
+      VF_VOICE_TRANSFER_MODELS_DIR: process.env.VF_VOICE_TRANSFER_MODELS_DIR || path.join(ROOT, "models/voice-transfer"),
+      VF_VOICE_TRANSFER_RUNTIME_URL: process.env.VF_VOICE_TRANSFER_RUNTIME_URL || "http://127.0.0.1:7830",
+      VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE:
+        process.env.VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE || path.join(ROOT, "config/voice_transfer_model_registry.json"),
+      CUDA_VISIBLE_DEVICES: "",
       ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
@@ -279,6 +298,7 @@ const SERVICES = [
       "7810",
     ],
     env: () => ({
+      CUDA_VISIBLE_DEVICES: "",
       ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
@@ -289,7 +309,11 @@ const SERVICES = [
     venv: "kokoro-runtime",
     pythonEnvVar: "VF_PYTHON_BIN_KOKORO_RUNTIME",
     requirements: ["engines/kokoro-runtime/requirements.txt"],
-    sourceFiles: ["engines/kokoro-runtime/app.py", "scripts/bootstrap-services.mjs"],
+    sourceFiles: [
+      "engines/kokoro-runtime/app.py",
+      "engines/kokoro-runtime/segmentation.py",
+      "scripts/bootstrap-services.mjs",
+    ],
     command: (pythonBin) => [
       pythonBin,
       "-m",
@@ -302,39 +326,46 @@ const SERVICES = [
       "--port",
       "7820",
     ],
-    env: (gpu) => ({
-      KOKORO_DEVICE: gpu ? "cuda" : "cpu",
+    env: () => ({
+      KOKORO_DEVICE: "cpu",
+      CUDA_VISIBLE_DEVICES: "",
+      VF_KOKORO_RUNTIME_HOST: "127.0.0.1",
+      VF_KOKORO_RUNTIME_PORT: "7820",
+      KOKORO_IDLE_UNLOAD_MS: "120000",
       ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
   {
-    id: "llvc-runtime",
-    name: "LLVC Runtime",
+    id: "voice-transfer-runtime",
+    name: "Voice Transfer Runtime",
     port: 7830,
-    venv: "llvc-runtime",
-    pythonEnvVar: "VF_PYTHON_BIN_LLVC_RUNTIME",
+    venv: "voice-transfer-runtime",
+    pythonEnvVar: "VF_PYTHON_BIN_VOICE_TRANSFER_RUNTIME",
     requiredPython: { major: 3, minor: 11 },
-    requirements: ["engines/llvc-runtime/requirements.txt"],
-    sourceFiles: ["engines/llvc-runtime/app.py", "scripts/bootstrap-services.mjs"],
+    requirements: ["engines/voice-transfer-runtime/requirements.txt"],
+    sourceFiles: ["engines/voice-transfer-runtime/app.py", "scripts/bootstrap-services.mjs"],
+    postInstallHook: (pyPath) => applyVoiceTransferOrtPackage(pyPath, { id: "voice-transfer-runtime" }),
     command: (pythonBin) => [
       pythonBin,
       "-m",
       "uvicorn",
       "app:app",
       "--app-dir",
-      "engines/llvc-runtime",
+      "engines/voice-transfer-runtime",
       "--host",
       "127.0.0.1",
       "--port",
       "7830",
     ],
-    env: (gpu) => ({
-      VF_LLVC_RUNTIME_HOST: "127.0.0.1",
-      VF_LLVC_RUNTIME_PORT: "7830",
-      VF_LLVC_DEVICE: process.env.VF_LLVC_DEVICE || (gpu ? "cuda:0" : "cpu:0"),
-      VF_LLVC_MODELS_DIR: process.env.VF_LLVC_MODELS_DIR || path.join(ROOT, "models/llvc"),
-      VF_LLVC_MODEL_REGISTRY_FILE:
-        process.env.VF_LLVC_MODEL_REGISTRY_FILE || path.join(ROOT, "config/llvc_model_registry.json"),
+    env: () => ({
+      VF_VOICE_TRANSFER_RUNTIME_HOST: "127.0.0.1",
+      VF_VOICE_TRANSFER_RUNTIME_PORT: "7830",
+      VF_VOICE_TRANSFER_DEVICE: process.env.VF_VOICE_TRANSFER_DEVICE || "cpu:0",
+      VF_VOICE_TRANSFER_ONNX_PROVIDER: process.env.VF_VOICE_TRANSFER_ONNX_PROVIDER || "openvino",
+      VF_VOICE_TRANSFER_MODELS_DIR: process.env.VF_VOICE_TRANSFER_MODELS_DIR || path.join(ROOT, "models/voice-transfer"),
+      VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE:
+        process.env.VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE || path.join(ROOT, "config/voice_transfer_model_registry.json"),
+      CUDA_VISIBLE_DEVICES: "",
       ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
@@ -376,8 +407,8 @@ const CHECKS = [
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
   {
-    serviceId: "llvc-runtime",
-    name: "LLVC Runtime",
+    serviceId: "voice-transfer-runtime",
+    name: "Voice Transfer Runtime",
     url: "http://127.0.0.1:7830/v1/health",
     timeoutMs: FAST_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
@@ -389,6 +420,7 @@ function ensureDirs() {
   fs.mkdirSync(PID_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
   fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.mkdirSync(LAUNCHER_DIR, { recursive: true });
 }
 
 function sha256(content) {
@@ -404,6 +436,10 @@ function resolveServicePythonBin(service) {
 }
 
 function getPythonVersionTuple(pythonBin) {
+  const cacheKey = String(pythonBin || "").trim();
+  if (cacheKey && pythonVersionCache.has(cacheKey)) {
+    return pythonVersionCache.get(cacheKey);
+  }
   const probe = spawnSync(
     pythonBin,
     ["-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')"],
@@ -417,7 +453,11 @@ function getPythonVersionTuple(pythonBin) {
   if (![major, minor, patch].every((item) => Number.isFinite(item))) {
     throw new Error(`Failed to parse Python version from ${pythonBin}: ${token || "<empty>"}`);
   }
-  return { major, minor, patch, token };
+  const result = { major, minor, patch, token };
+  if (cacheKey) {
+    pythonVersionCache.set(cacheKey, result);
+  }
+  return result;
 }
 
 function ensureServicePythonVersion(service, pythonBin) {
@@ -433,7 +473,21 @@ function ensureServicePythonVersion(service, pythonBin) {
   }
 }
 
-function fileSha(service, pythonBin) {
+function fileSha(service, pythonBin, options = {}) {
+  const excludeBootstrapFile = options.excludeBootstrapFile === true;
+  const sourceFileSource = (service.sourceFiles || [])
+    .filter((sourcePath) => !(excludeBootstrapFile && sourcePath === "scripts/bootstrap-services.mjs"))
+    .map((sourcePath) => {
+      const abs = path.join(ROOT, sourcePath);
+      if (!fs.existsSync(abs)) {
+        return `# ${sourcePath}\n<missing>`;
+      }
+      return `# ${sourcePath}\n${fs.readFileSync(abs, "utf8")}`;
+    })
+    .join("\n\n");
+  if (service.runtime === "node") {
+    return sha256(`${process.execPath}\n${process.version}\n${sourceFileSource}`);
+  }
   const requirementSource = service.requirements
     .map((reqPath) => {
       const abs = path.join(ROOT, reqPath);
@@ -443,17 +497,15 @@ function fileSha(service, pythonBin) {
       return `# ${reqPath}\n${fs.readFileSync(abs, "utf8")}`;
     })
     .join("\n\n");
-  const sourceFileSource = (service.sourceFiles || [])
-    .map((sourcePath) => {
-      const abs = path.join(ROOT, sourcePath);
-      if (!fs.existsSync(abs)) {
-        return `# ${sourcePath}\n<missing>`;
-      }
-      return `# ${sourcePath}\n${fs.readFileSync(abs, "utf8")}`;
-    })
-    .join("\n\n");
   const pyVersion = getPythonVersionTuple(pythonBin).token;
-  return sha256(`${pythonBin}\n${pyVersion}\n${requirementSource}\n\n${sourceFileSource}`);
+  const installFlavor = service.id === "voice-transfer-runtime"
+    ? `\nvoice-transfer-ort=${resolveVoiceTransferOrtPackageKind(service)}`
+    : "";
+  return sha256(`${pythonBin}\n${pyVersion}\n${requirementSource}${installFlavor}\n\n${sourceFileSource}`);
+}
+
+function installSha(service, pythonBin) {
+  return fileSha(service, pythonBin, { excludeBootstrapFile: true });
 }
 
 function resolveServiceTarget(rawTarget) {
@@ -468,6 +520,38 @@ function resolveServiceTarget(rawTarget) {
   const direct = SERVICES.find((item) => item.id === input);
   if (direct) return direct;
   return null;
+}
+
+function resolveEffectiveGpuMode(service, requestedGpuMode) {
+  void service;
+  void requestedGpuMode;
+  return false;
+}
+
+function resolveVoiceTransferProviderPreference() {
+  const requested = String(process.env.VF_VOICE_TRANSFER_ONNX_PROVIDER || "openvino").trim().toLowerCase();
+  if (requested === "openvino" || requested === "cpu" || requested === "cuda" || requested === "dml") {
+    return requested;
+  }
+  return "auto";
+}
+
+function resolveVoiceTransferOrtPackageKind(service) {
+  const requested = resolveVoiceTransferProviderPreference();
+  if (requested === "openvino") return "openvino";
+  if (requested === "cpu" || requested === "cuda" || requested === "dml") return "standard";
+  return resolveEffectiveGpuMode(service, GPU_MODE) ? "standard" : "openvino";
+}
+
+function applyVoiceTransferOrtPackage(pyPath, service) {
+  const packageKind = resolveVoiceTransferOrtPackageKind(service);
+  if (packageKind === "openvino") {
+    runCommand(pyPath, ["-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-directml", "onnxruntime-gpu"]);
+    runCommand(pyPath, ["-m", "pip", "install", "onnxruntime-openvino>=1.20,<2"]);
+    return;
+  }
+  runCommand(pyPath, ["-m", "pip", "uninstall", "-y", "onnxruntime-openvino"]);
+  runCommand(pyPath, ["-m", "pip", "install", "onnxruntime>=1.20,<2"]);
 }
 
 function ensureKokoroTorchRuntimeDlls() {
@@ -576,12 +660,16 @@ function ensureVenv(service, servicePythonBin, desiredHash) {
     service.setupHook();
   }
 
-  const reqHash = desiredHash || fileSha(service, servicePythonBin);
-  const statePath = serviceStatePath(service.id);
+  const reqHash = desiredHash || installSha(service, servicePythonBin);
+  const statePath = serviceInstallStatePath(service.id);
   const currentHash = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "";
+  if (!currentHash && fs.existsSync(pyPath) && fs.existsSync(serviceStatePath(service.id))) {
+    fs.writeFileSync(statePath, `${reqHash}\n`, "utf8");
+    runServiceFixups(service);
+    return pyPath;
+  }
   if (currentHash === reqHash) {
     runServiceFixups(service);
-    writePipFreeze(pyPath, service.id);
     return pyPath;
   }
 
@@ -601,6 +689,15 @@ function ensureVenv(service, servicePythonBin, desiredHash) {
 
 function readPid(serviceId) {
   const pidFile = servicePidPath(serviceId);
+  if (!fs.existsSync(pidFile)) return null;
+  const pidText = fs.readFileSync(pidFile, "utf8").trim();
+  if (!pidText) return null;
+  const pid = Number(pidText);
+  return Number.isFinite(pid) ? pid : null;
+}
+
+function readLauncherPid(serviceId) {
+  const pidFile = serviceLauncherPidPath(serviceId);
   if (!fs.existsSync(pidFile)) return null;
   const pidText = fs.readFileSync(pidFile, "utf8").trim();
   if (!pidText) return null;
@@ -639,6 +736,15 @@ function listListeningPidsOnPort(port) {
   if (!Number.isFinite(numericPort) || numericPort <= 0) return [];
 
   if (process.platform === "win32") {
+    const netstat = spawnSync(
+      "cmd.exe",
+      ["/d", "/s", "/c", `netstat -ano -p tcp | findstr /R /C:\":${numericPort} .*LISTENING\"`],
+      { cwd: ROOT, encoding: "utf8" }
+    );
+    if (netstat.status === 0 && netstat.stdout?.trim()) {
+      return parsePidsFromText(netstat.stdout);
+    }
+
     const ps = spawnSync(
       "powershell.exe",
       [
@@ -650,15 +756,6 @@ function listListeningPidsOnPort(port) {
     );
     if (ps.status === 0 && ps.stdout?.trim()) {
       return parsePidsFromText(ps.stdout);
-    }
-
-    const netstat = spawnSync(
-      "cmd.exe",
-      ["/d", "/s", "/c", `netstat -ano -p tcp | findstr /R /C:\":${numericPort} .*LISTENING\"`],
-      { cwd: ROOT, encoding: "utf8" }
-    );
-    if (netstat.status === 0 && netstat.stdout?.trim()) {
-      return parsePidsFromText(netstat.stdout);
     }
     return [];
   }
@@ -717,10 +814,82 @@ function printServiceLogTail(serviceId, serviceName) {
   }
 }
 
+function toPowerShellSingleQuoted(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
+}
+
+function toCmdDoubleQuoted(value) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
+function buildVisibleWindowsServiceScript(service, cmd, args, logFile) {
+  const title = `VoiceFlow - ${service.name}`;
+  const serializedArgs = args.map((arg) => toPowerShellSingleQuoted(arg)).join(", ");
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    `$Host.UI.RawUI.WindowTitle = ${toPowerShellSingleQuoted(title)}`,
+    `Set-Location -LiteralPath ${toPowerShellSingleQuoted(ROOT)}`,
+    `$cmd = ${toPowerShellSingleQuoted(cmd)}`,
+    `$argList = @(${serializedArgs})`,
+    `& $cmd @argList *>&1 | Tee-Object -FilePath ${toPowerShellSingleQuoted(logFile)} -Append`,
+    "$exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 0 }",
+    "if ($exitCode -ne 0) {",
+    "  Write-Host ''",
+    "  Write-Host \"[VoiceFlow] Process exited with code $exitCode\" -ForegroundColor Red",
+    "  Read-Host 'Press Enter to close this window' | Out-Null",
+    "}",
+    "exit $exitCode",
+  ].join("\r\n");
+}
+
+function writeVisibleWindowsServiceLauncher(service, cmd, args, logFile) {
+  const launcherPath = serviceLauncherPath(service.id);
+  const wrapperPath = serviceLauncherCmdPath(service.id);
+  fs.writeFileSync(launcherPath, buildVisibleWindowsServiceScript(service, cmd, args, logFile), "utf8");
+  fs.writeFileSync(
+    wrapperPath,
+    [
+      "@echo off",
+      `title VoiceFlow - ${service.name}`,
+      `cd /d ${toCmdDoubleQuoted(ROOT)}`,
+      `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ${toCmdDoubleQuoted(launcherPath)}`,
+      "exit /b %ERRORLEVEL%",
+      "",
+    ].join("\r\n"),
+    "utf8"
+  );
+  return wrapperPath;
+}
+
+function spawnVisibleWindowsService(service, cmd, args, env, logFile) {
+  const wrapperPath = writeVisibleWindowsServiceLauncher(service, cmd, args, logFile);
+  return spawn("cmd.exe", ["/d", "/c", path.basename(wrapperPath)], {
+    cwd: LAUNCHER_DIR,
+    env,
+    detached: true,
+    windowsHide: false,
+    stdio: "ignore",
+  });
+}
+
 function terminatePid(pid, label) {
   if (!pid || !isPidAlive(pid)) return;
   if (label) {
     console.log(`Stopping ${label} (PID ${pid})...`);
+  }
+
+  if (process.platform === "win32") {
+    spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+      cwd: ROOT,
+      stdio: "ignore",
+    });
+    const start = Date.now();
+    while (Date.now() - start < 2000) {
+      if (!isPidAlive(pid)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+    return;
   }
 
   try {
@@ -730,7 +899,7 @@ function terminatePid(pid, label) {
   }
 
   const start = Date.now();
-  while (Date.now() - start < 10000) {
+  while (Date.now() - start < 3000) {
     if (!isPidAlive(pid)) break;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
   }
@@ -753,6 +922,14 @@ function stopPortListeners(service, exceptPid = null) {
 }
 
 function stopService(service) {
+  const launcherPid = readLauncherPid(service.id);
+  if (launcherPid) {
+    if (isPidAlive(launcherPid)) {
+      terminatePid(launcherPid, `${service.name} window`);
+    }
+    fs.rmSync(serviceLauncherPidPath(service.id), { force: true });
+  }
+
   const pid = readPid(service.id);
   if (!pid) {
     stopPortListeners(service);
@@ -770,13 +947,24 @@ function stopService(service) {
   stopPortListeners(service, pid);
 }
 
-function startService(service, gpuMode) {
-  const servicePythonBin = resolveServicePythonBin(service);
-  ensureServicePythonVersion(service, servicePythonBin);
+function startService(service, gpuMode, options = {}) {
+  const printLogTail = options.printLogTail !== false;
+  const effectiveGpuMode = resolveEffectiveGpuMode(service, gpuMode);
+  if (gpuMode && !effectiveGpuMode && service.id === "kokoro-runtime") {
+    console.log(`${service.name} enforces CPU mode and ignores --gpu.`);
+  }
+  const servicePythonBin = service.runtime === "node" ? null : resolveServicePythonBin(service);
+  if (service.runtime !== "node") {
+    ensureServicePythonVersion(service, servicePythonBin);
+  }
   const desiredFingerprint = fileSha(service, servicePythonBin);
+  const desiredInstallFingerprint =
+    service.runtime === "node" ? desiredFingerprint : installSha(service, servicePythonBin);
   const statePath = serviceStatePath(service.id);
   const currentFingerprint = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "";
   const serviceStale = desiredFingerprint !== currentFingerprint;
+  const trackedLauncherPid = readLauncherPid(service.id);
+  const trackedLauncherAlive = trackedLauncherPid && isPidAlive(trackedLauncherPid);
   const trackedPid = readPid(service.id);
   const trackedAlive = trackedPid && isPidAlive(trackedPid);
   const listeningPids = service.port ? listListeningPidsOnPort(service.port) : [];
@@ -806,46 +994,75 @@ function startService(service, gpuMode) {
       serviceStale ? `${service.name} source updated` : `${service.name} stale process`
     );
   }
+  if (trackedLauncherAlive) {
+    terminatePid(
+      trackedLauncherPid,
+      serviceStale ? `${service.name} source updated window` : `${service.name} stale window`
+    );
+  }
   fs.rmSync(servicePidPath(service.id), { force: true });
+  fs.rmSync(serviceLauncherPidPath(service.id), { force: true });
   stopPortListeners(service);
 
-  const pyPath = ensureVenv(service, servicePythonBin, desiredFingerprint);
-  const pyVersion = getPythonVersionTuple(pyPath).token;
-  console.log(
-    `${service.name} runtime: venv=${path.join(VENV_DIR, service.venv)} interpreter=${servicePythonBin} python=${pyVersion}`
-  );
-  const [cmd, ...args] = service.command(pyPath);
+  let runtimeBinDir = "";
+  let runtimePath = null;
+  if (service.runtime === "node") {
+    runtimeBinDir = path.dirname(process.execPath);
+    console.log(`${service.name} runtime: node=${process.execPath} version=${process.version}`);
+  } else {
+    const pyPath = ensureVenv(service, servicePythonBin, desiredInstallFingerprint);
+    const pyVersion = getPythonVersionTuple(pyPath).token;
+    runtimeBinDir = path.dirname(pyPath);
+    runtimePath = pyPath;
+    console.log(
+      `${service.name} runtime: venv=${path.join(VENV_DIR, service.venv)} interpreter=${servicePythonBin} python=${pyVersion}`
+    );
+  }
+  const [cmd, ...args] = service.command(runtimePath);
   const logFile = serviceLogPath(service.id);
   rotateServiceLog(logFile);
-  const outFd = fs.openSync(logFile, "a");
+  const childEnv = {
+    ...process.env,
+    PATH: `${runtimeBinDir}${path.delimiter}${process.env.PATH || ""}`,
+    ...(service.env ? service.env(effectiveGpuMode) : {}),
+  };
 
-  const child = spawn(cmd, args, {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      PATH: `${path.dirname(pyPath)}${path.delimiter}${process.env.PATH || ""}`,
-      ...(service.env ? service.env(gpuMode) : {}),
-    },
-    detached: true,
-    windowsHide: !SERVICE_WINDOWS_VISIBLE,
-    stdio: ["ignore", outFd, outFd],
-  });
+  let child;
+  if (process.platform === "win32" && SERVICE_WINDOWS_VISIBLE) {
+    child = spawnVisibleWindowsService(service, cmd, args, childEnv, logFile);
+    fs.writeFileSync(serviceLauncherPidPath(service.id), `${child.pid}\n`, "utf8");
+  } else {
+    const outFd = fs.openSync(logFile, "a");
+    child = spawn(cmd, args, {
+      cwd: ROOT,
+      env: childEnv,
+      detached: true,
+      windowsHide: !SERVICE_WINDOWS_VISIBLE,
+      stdio: ["ignore", outFd, outFd],
+    });
+    fs.closeSync(outFd);
+    fs.rmSync(serviceLauncherPidPath(service.id), { force: true });
+  }
 
   child.unref();
-  fs.closeSync(outFd);
   const resolvedListeningPid = waitForListeningPid(service);
   const stablePid = resolvedListeningPid || child.pid;
   fs.writeFileSync(servicePidPath(service.id), `${stablePid}\n`, "utf8");
+  fs.writeFileSync(statePath, `${desiredFingerprint}\n`, "utf8");
   serviceStartStates.set(service.id, "restarted");
   if (resolvedListeningPid && resolvedListeningPid !== child.pid) {
     console.log(
       `Started ${service.name} (launcher PID ${child.pid}, listener PID ${resolvedListeningPid}) -> ${logFile}`
     );
-    printServiceLogTail(service.id, service.name);
+    if (printLogTail) {
+      printServiceLogTail(service.id, service.name);
+    }
     return;
   }
   console.log(`Started ${service.name} (PID ${stablePid}) -> ${logFile}`);
-  printServiceLogTail(service.id, service.name);
+  if (printLogTail) {
+    printServiceLogTail(service.id, service.name);
+  }
 }
 
 function resolveSwitchTarget(rawEngine) {
@@ -869,6 +1086,30 @@ function resolveSwitchTarget(rawEngine) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getCheckForService(serviceOrId) {
+  const serviceId =
+    typeof serviceOrId === "string" ? String(serviceOrId).trim() : String(serviceOrId?.id || "").trim();
+  if (!serviceId) return null;
+  return CHECKS.find((check) => String(check.serviceId || "").trim() === serviceId) || null;
+}
+
+function describeCheckError(error) {
+  if (!(error instanceof Error)) return String(error);
+  const parts = [];
+  const cause = error.cause;
+  if (cause && typeof cause === "object") {
+    const code = typeof cause.code === "string" ? cause.code.trim() : "";
+    const address = typeof cause.address === "string" ? cause.address.trim() : "";
+    const port = Number.isFinite(cause.port) ? String(cause.port) : "";
+    if (code) parts.push(code);
+    if (address && port) parts.push(`${address}:${port}`);
+    else if (address) parts.push(address);
+    else if (port) parts.push(port);
+  }
+  if (parts.length === 0) return error.message;
+  return `${error.message} (${parts.join(" ")})`;
 }
 
 async function getJson(url) {
@@ -990,12 +1231,16 @@ function runVideoPipelineAssetCheck() {
   };
 }
 
-async function runCheck(check) {
+async function runCheck(check, options = {}) {
+  const timeoutMs = Math.max(250, toIntEnv(options.timeoutMs, check.timeoutMs));
+  const retryIntervalMs = Math.max(100, toIntEnv(options.retryIntervalMs, RETRY_INTERVAL_MS));
+  const logRetries = options.logRetries !== false;
+  const quietStartMs = Math.max(0, toIntEnv(options.quietStartMs, CHECK_WAIT_LOG_AFTER_MS));
   const started = Date.now();
   let attempts = 0;
   let lastError = "No response";
 
-  while (Date.now() - started < check.timeoutMs) {
+  while (Date.now() - started < timeoutMs) {
     attempts += 1;
     try {
       const payload = await getJson(check.url);
@@ -1011,18 +1256,20 @@ async function runCheck(check) {
       }
       lastError = "Validation failed";
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      lastError = describeCheckError(error);
     }
 
     const elapsed = Date.now() - started;
-    const remaining = check.timeoutMs - elapsed;
+    const remaining = timeoutMs - elapsed;
     if (remaining <= 0) break;
-    console.log(
-      `[wait] ${check.name} attempt ${attempts} failed (${lastError}). Retrying in ${Math.round(
-        RETRY_INTERVAL_MS / 1000
-      )}s...`
-    );
-    await sleep(Math.min(RETRY_INTERVAL_MS, remaining));
+    if (logRetries && elapsed >= quietStartMs) {
+      console.log(
+        `[wait] ${check.name} attempt ${attempts} failed (${lastError}). Retrying in ${Math.round(
+          retryIntervalMs / 1000
+        )}s...`
+      );
+    }
+    await sleep(Math.min(retryIntervalMs, remaining));
   }
 
   return {
@@ -1035,12 +1282,64 @@ async function runCheck(check) {
   };
 }
 
+async function warmStartedServices(services, options = {}) {
+  const checks = services
+    .map((service) => ({ service, check: getCheckForService(service) }))
+    .filter((entry) => entry.check);
+
+  if (checks.length === 0) return [];
+  if (options.announce !== false) {
+    console.log("\nWaiting for runtime health...");
+  }
+
+  const results = await Promise.all(
+    checks.map(async ({ service, check }) => {
+      const result = await runCheck(check, {
+        timeoutMs: options.timeoutMs ?? check.timeoutMs,
+        retryIntervalMs: options.retryIntervalMs ?? STARTUP_HEALTH_RETRY_INTERVAL_MS,
+        logRetries: options.logRetries ?? false,
+        quietStartMs: options.quietStartMs ?? Number.MAX_SAFE_INTEGER,
+      });
+      if (options.logReady !== false) {
+        if (result.status === "PASS") {
+          console.log(`[ready] ${service.name}`);
+        } else {
+          console.warn(`[warmup] ${service.name}: ${result.detail}`);
+        }
+      }
+      return result;
+    })
+  );
+
+  return results;
+}
+
 async function runChecks(options = {}) {
   const failOnError = options.failOnError !== false;
-  console.log("\nRunning endpoint validation...");
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : undefined;
+  const retryIntervalMs = Number.isFinite(Number(options.retryIntervalMs))
+    ? Number(options.retryIntervalMs)
+    : undefined;
+  const logRetries = options.logRetries !== false;
+  const quietStartMs = Number.isFinite(Number(options.quietStartMs)) ? Number(options.quietStartMs) : undefined;
+  const announce = options.announce !== false;
+  const onlyServiceIds = Array.isArray(options.onlyServiceIds) && options.onlyServiceIds.length > 0
+    ? new Set(options.onlyServiceIds.map((value) => String(value || "").trim()).filter(Boolean))
+    : null;
+  const selectedChecks = onlyServiceIds
+    ? CHECKS.filter((check) => onlyServiceIds.has(String(check.serviceId || "").trim()))
+    : CHECKS;
+  if (announce) {
+    console.log("\nRunning endpoint validation...");
+  }
   const endpointResults = await Promise.all(
-    CHECKS.map(async (check) => {
-      const result = await runCheck(check);
+    selectedChecks.map(async (check) => {
+      const result = await runCheck(check, {
+        timeoutMs,
+        retryIntervalMs,
+        logRetries,
+        quietStartMs,
+      });
       if (result.status === "FAIL") {
         if (check.optional) {
           result.status = "WARN";
@@ -1055,15 +1354,17 @@ async function runChecks(options = {}) {
     })
   );
   const results = [...endpointResults];
-  const assetResult = runVideoPipelineAssetCheck();
-  if (assetResult.status === "FAIL") {
-    console.error(`[fail] ${assetResult.service}: ${assetResult.detail}`);
-  } else if (assetResult.status === "WARN") {
-    console.warn(`[warn] ${assetResult.service}: ${assetResult.detail}`);
-  } else {
-    console.log(`[ok] ${assetResult.service}`);
+  if (!onlyServiceIds) {
+    const assetResult = runVideoPipelineAssetCheck();
+    if (assetResult.status === "FAIL") {
+      console.error(`[fail] ${assetResult.service}: ${assetResult.detail}`);
+    } else if (assetResult.status === "WARN") {
+      console.warn(`[warn] ${assetResult.service}: ${assetResult.detail}`);
+    } else {
+      console.log(`[ok] ${assetResult.service}`);
+    }
+    results.push(assetResult);
   }
-  results.push(assetResult);
   console.table(results);
   if (failOnError && results.some((item) => item.status === "FAIL")) {
     throw new Error("One or more endpoint checks failed.");
@@ -1082,13 +1383,23 @@ function resolveFailedServices(results) {
 
 async function runDoctor(gpuMode, maxAttempts = DOCTOR_MAX_ATTEMPTS) {
   for (const service of SERVICES) {
-    startService(service, gpuMode);
+    startService(service, gpuMode, { printLogTail: false });
   }
+  await warmStartedServices(SERVICES, {
+    retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+    logRetries: false,
+  });
 
   let lastResults = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     console.log(`\n[doctor] Health validation attempt ${attempt}/${maxAttempts}`);
-    const results = await runChecks({ failOnError: false });
+    const results = await runChecks({
+      failOnError: false,
+      timeoutMs: POST_START_VERIFY_TIMEOUT_MS,
+      retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+      logRetries: false,
+      quietStartMs: POST_START_VERIFY_TIMEOUT_MS,
+    });
     lastResults = results;
 
     const failed = results.filter((item) => item.status === "FAIL");
@@ -1111,16 +1422,24 @@ async function runDoctor(gpuMode, maxAttempts = DOCTOR_MAX_ATTEMPTS) {
         stopService(service);
       }
       for (const service of SERVICES) {
-        startService(service, gpuMode);
+        startService(service, gpuMode, { printLogTail: false });
       }
+      await warmStartedServices(SERVICES, {
+        retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+        logRetries: false,
+      });
       continue;
     }
 
     console.warn(`[doctor] Restarting unhealthy services: ${failedServices.map((service) => service.id).join(", ")}`);
     for (const service of failedServices) {
       stopService(service);
-      startService(service, gpuMode);
+      startService(service, gpuMode, { printLogTail: false });
     }
+    await warmStartedServices(failedServices, {
+      retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+      logRetries: false,
+    });
   }
 
   const failedLabels = lastResults
@@ -1170,7 +1489,7 @@ async function main() {
   }
 
   if (GPU_MODE) {
-    console.log("GPU mode enabled for local runtimes.");
+    console.log("GPU mode enabled for eligible local runtimes. Kokoro remains CPU-only.");
   }
 
   if (COMMAND === "down") {
@@ -1183,7 +1502,12 @@ async function main() {
 
   if (COMMAND === "switch") {
     const target = resolveSwitchTarget(COMMAND_ARG);
-    startService(target.service, GPU_MODE);
+    startService(target.service, GPU_MODE, { printLogTail: false });
+    await warmStartedServices([target.service], {
+      retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+      logRetries: false,
+      announce: false,
+    });
     console.log(`\nEnsured TTS engine: ${target.normalized} (${target.service.name})`);
     return;
   }
@@ -1200,28 +1524,59 @@ async function main() {
         throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (GEM/GOOD/NEURAL2/KOKORO).`);
       }
       stopService(target);
-      startService(target, GPU_MODE);
+      startService(target, GPU_MODE, { printLogTail: false });
+      await warmStartedServices([target], {
+        retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+        logRetries: false,
+      });
+      await runChecks({
+        onlyServiceIds: [target.id],
+        timeoutMs: POST_START_VERIFY_TIMEOUT_MS,
+        retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+        logRetries: false,
+        quietStartMs: POST_START_VERIFY_TIMEOUT_MS,
+      });
     } else {
       for (const service of SERVICES.slice().reverse()) {
         stopService(service);
       }
       for (const service of SERVICES) {
-        startService(service, GPU_MODE);
+        startService(service, GPU_MODE, { printLogTail: false });
       }
+      await warmStartedServices(SERVICES, {
+        retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+        logRetries: false,
+      });
+      await runChecks({
+        timeoutMs: POST_START_VERIFY_TIMEOUT_MS,
+        retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+        logRetries: false,
+        quietStartMs: POST_START_VERIFY_TIMEOUT_MS,
+      });
     }
-    await runChecks();
-    printServiceStatusSummary();
+    if (!COMMAND_ARG) {
+      printServiceStatusSummary();
+    }
     console.log("\nRestart completed and endpoint checks passed.");
     return;
   }
 
   if (COMMAND === "up") {
     for (const service of SERVICES) {
-      startService(service, GPU_MODE);
+      startService(service, GPU_MODE, { printLogTail: false });
     }
+    await warmStartedServices(SERVICES, {
+      retryIntervalMs: STARTUP_HEALTH_RETRY_INTERVAL_MS,
+      logRetries: false,
+    });
   }
 
-  await runChecks();
+  await runChecks({
+    timeoutMs: COMMAND === "up" ? POST_START_VERIFY_TIMEOUT_MS : undefined,
+    retryIntervalMs: COMMAND === "up" ? STARTUP_HEALTH_RETRY_INTERVAL_MS : undefined,
+    logRetries: COMMAND === "up" ? false : true,
+    quietStartMs: COMMAND === "up" ? POST_START_VERIFY_TIMEOUT_MS : undefined,
+  });
   if (COMMAND === "up") {
     printServiceStatusSummary();
   }

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, Download, RefreshCw, SkipBack, SkipForward } from 'lucide-react';
+import { Play, Pause, Download, RefreshCw, SkipBack, SkipForward, Loader2 } from 'lucide-react';
 import { Visualizer } from './Visualizer';
+import { shouldAutoplayFirstLiveChunk } from './audioPlayerAutoplay';
 
 interface LiveAudioChunk {
   jobId: string;
@@ -31,16 +32,10 @@ interface LiveQueueItem {
   durationSec: number;
 }
 
-export const shouldAutoplayFirstLiveChunk = (input: {
-  autoPlayOnFirstChunk: boolean;
-  activeSourceType: PlayerSourceType;
-  isPlaying: boolean;
-  liveQueueSize: number;
-}): boolean => {
-  if (!input.autoPlayOnFirstChunk) return false;
-  if (input.activeSourceType !== 'none') return false;
-  if (input.isPlaying) return false;
-  return input.liveQueueSize > 0;
+const readUiMotionLevel = (): 'off' | 'balanced' | 'rich' => {
+  if (typeof document === 'undefined') return 'off';
+  const value = document.body?.dataset.motion;
+  return value === 'rich' || value === 'balanced' || value === 'off' ? value : 'off';
 };
 
 const base64ToBlobUrl = (audioBase64: string, contentType: string): string | null => {
@@ -89,17 +84,21 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   onReset,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(Boolean(isGenerating));
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playError, setPlayError] = useState<string | null>(null);
   const [activeSourceUrl, setActiveSourceUrl] = useState<string | null>(audioUrl);
   const [activeSourceType, setActiveSourceType] = useState<PlayerSourceType>(audioUrl ? 'final' : 'none');
+  const [playedLiveChunkCount, setPlayedLiveChunkCount] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const previousGeneratingRef = useRef<boolean>(false);
   const liveQueueRef = useRef<LiveQueueItem[]>([]);
   const seenChunkKeysRef = useRef<Set<string>>(new Set());
   const liveChunkUrlsRef = useRef<string[]>([]);
+  const activeLiveChunkRef = useRef<LiveQueueItem | null>(null);
+  const liveElapsedSecondsRef = useRef(0);
   const isSwitchingLiveSourceRef = useRef<boolean>(false);
   const pendingPlayModeRef = useRef<'none' | 'manual' | 'auto'>('none');
   const suppressTransientErrorUntilRef = useRef<number>(0);
@@ -142,12 +141,36 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     liveChunkUrlsRef.current = [];
   }, []);
 
+  const sumLiveQueueDuration = useCallback(() => {
+    return liveQueueRef.current.reduce((total, item) => {
+      const value = Number(item.durationSec || 0);
+      return Number.isFinite(value) && value > 0 ? total + value : total;
+    }, 0);
+  }, []);
+
+  const syncLiveTimelineDuration = useCallback((currentChunkDurationSec?: number) => {
+    const candidate = Number((currentChunkDurationSec ?? activeLiveChunkRef.current?.durationSec) || 0);
+    const activeChunkDuration = Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
+    const knownTotal = liveElapsedSecondsRef.current + activeChunkDuration + sumLiveQueueDuration();
+    if (knownTotal > 0) {
+      setDuration((prev) => (knownTotal > prev ? knownTotal : prev));
+      return;
+    }
+    if (liveElapsedSecondsRef.current > 0) {
+      setDuration(liveElapsedSecondsRef.current);
+    }
+  }, [sumLiveQueueDuration]);
+
   const clearLiveQueue = useCallback(() => {
     liveQueueRef.current = [];
     seenChunkKeysRef.current.clear();
     isSwitchingLiveSourceRef.current = false;
     pendingPlayModeRef.current = 'none';
+    activeLiveChunkRef.current = null;
+    liveElapsedSecondsRef.current = 0;
     revokeLiveChunkUrls();
+    setPlayedLiveChunkCount(0);
+    setIsBuffering(false);
   }, [revokeLiveChunkUrls]);
 
   const playNextLiveChunk = useCallback(async (playAfterLoad: 'none' | 'manual' | 'auto' = 'none') => {
@@ -157,6 +180,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     const next = liveQueueRef.current.shift();
     if (!next) {
       isSwitchingLiveSourceRef.current = false;
+      activeLiveChunkRef.current = null;
+      liveElapsedSecondsRef.current = 0;
       if (audioUrl) {
         setActiveSourceType('final');
         setActiveSourceUrl(audioUrl);
@@ -166,20 +191,41 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
 
     isSwitchingLiveSourceRef.current = true;
+    activeLiveChunkRef.current = next;
     markIntentionalSourceSwitch(playAfterLoad);
     setActiveSourceType('live');
     setActiveSourceUrl(next.url);
-    setCurrentTime(0);
-    if (next.durationSec > 0) {
-      setDuration(next.durationSec);
-    }
+    setCurrentTime(liveElapsedSecondsRef.current);
+    setIsBuffering(true);
+    setPlayedLiveChunkCount((count) => count + 1);
+    syncLiveTimelineDuration(next.durationSec);
     setPlayError(null);
-  }, [audioUrl, markIntentionalSourceSwitch]);
+  }, [audioUrl, markIntentionalSourceSwitch, syncLiveTimelineDuration]);
 
   const hasPlayableAudio = Boolean(activeSourceUrl) || liveQueueRef.current.length > 0;
   const seekEnabled = Boolean(audioUrl && activeSourceType === 'final');
   const isLiveMode = Boolean(activeSourceType === 'live' || isLiveStreaming || (liveChunks.length > 0 && !audioUrl));
+  const showLiveVisualizer = hasPlayableAudio && readUiMotionLevel() === 'rich';
   const seekProgressPct = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0;
+  const liveQueueRemaining = liveQueueRef.current.length + (activeSourceType === 'live' && activeSourceUrl ? 1 : 0);
+  const waitingForFirstChunk = isLiveStreaming && !activeSourceUrl && liveChunks.length === 0;
+  const waitingForNextSentence = isLiveMode && isGenerating && liveQueueRemaining === 0 && !activeSourceUrl;
+  const statusLabel = waitingForFirstChunk
+    ? 'Preparing first live sentence...'
+    : isBuffering
+      ? (activeSourceType === 'live' ? 'Loading next live sentence...' : 'Buffering audio...')
+      : waitingForNextSentence
+        ? 'Waiting for next live sentence...'
+        : isLiveMode
+          ? (isPlaying ? 'Playing live stream' : 'Live stream ready')
+          : (isGenerating && !hasPlayableAudio ? 'Rendering final audio...' : isPlaying ? 'Playing final audio' : 'Ready to play');
+  const queueLabel = isLiveMode
+    ? (liveQueueRemaining > 0
+      ? `${liveQueueRemaining} live chunk${liveQueueRemaining === 1 ? '' : 's'} ready`
+      : isGenerating
+        ? 'Streaming...'
+        : `${Math.max(liveChunks.length, playedLiveChunkCount)} live chunk${Math.max(liveChunks.length, playedLiveChunkCount) === 1 ? '' : 's'} complete`)
+    : (audioUrl ? 'Final mix loaded' : 'No audio yet');
 
   useEffect(() => {
     return () => {
@@ -195,6 +241,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setActiveSourceUrl(null);
     setCurrentTime(0);
     setDuration(0);
+    setIsBuffering(true);
     setPlayError(null);
     pendingPlayModeRef.current = 'none';
   }, [audioUrl, clearLiveQueue, isLiveStreaming, liveChunks.length]);
@@ -202,18 +249,33 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   useEffect(() => {
     if (!audioUrl) {
       if (!isLiveStreaming && liveQueueRef.current.length === 0) {
+        activeLiveChunkRef.current = null;
+        liveElapsedSecondsRef.current = 0;
         setActiveSourceType('none');
         setActiveSourceUrl(null);
         setCurrentTime(0);
         setDuration(0);
+        setIsBuffering(false);
       }
       return;
     }
     if (activeSourceType !== 'live' && liveQueueRef.current.length === 0) {
+      activeLiveChunkRef.current = null;
+      liveElapsedSecondsRef.current = 0;
       setActiveSourceType('final');
       setActiveSourceUrl(audioUrl);
     }
   }, [activeSourceType, audioUrl, isLiveStreaming]);
+
+  useEffect(() => {
+    if (!hasPlayableAudio) {
+      setIsBuffering(Boolean(isGenerating || isLiveStreaming));
+      return;
+    }
+    if (!isPlaying && activeSourceType === 'final') {
+      setIsBuffering(false);
+    }
+  }, [activeSourceType, hasPlayableAudio, isGenerating, isLiveStreaming, isPlaying]);
 
   useEffect(() => {
     const sorted = [...liveChunks].sort((a, b) => a.index - b.index);
@@ -233,7 +295,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       added += 1;
     }
     if (added <= 0) return;
-  }, [liveChunks]);
+    if (activeSourceType === 'live') {
+      syncLiveTimelineDuration();
+    }
+  }, [activeSourceType, liveChunks, syncLiveTimelineDuration]);
 
   useEffect(() => {
     if (!shouldAutoplayFirstLiveChunk({
@@ -263,9 +328,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     if (!audio) return;
     setPlayError(null);
     try {
-        if (audio.paused) {
+      if (audio.paused) {
         if (!activeSourceUrl) {
-            if (liveQueueRef.current.length > 0) {
+          if (liveQueueRef.current.length > 0) {
+            setIsBuffering(true);
             await playNextLiveChunk('manual');
             return;
           }
@@ -273,13 +339,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             markIntentionalSourceSwitch('manual');
             setActiveSourceType('final');
             setActiveSourceUrl(audioUrl);
+            setIsBuffering(true);
             return;
           }
           return;
         }
+        setIsBuffering(true);
         await safePlay(audio, 'manual');
       } else {
         audio.pause();
+        setIsBuffering(false);
       }
     } catch (error: any) {
       if (isPlaybackInterruptedError(error)) return;
@@ -290,6 +359,17 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const handleTimeUpdate = () => {
     const audio = audioRef.current;
     if (!audio) return;
+    if (activeSourceType === 'live') {
+      const liveTime = Math.max(0, liveElapsedSecondsRef.current + audio.currentTime);
+      setCurrentTime(liveTime);
+      const audioDuration = Number(audio.duration || 0);
+      const queuedDuration = Number(activeLiveChunkRef.current?.durationSec || 0);
+      const resolvedChunkDuration = Number.isFinite(audioDuration) && audioDuration > 0
+        ? Math.max(audioDuration, queuedDuration, audio.currentTime)
+        : Math.max(queuedDuration, audio.currentTime);
+      syncLiveTimelineDuration(resolvedChunkDuration);
+      return;
+    }
     setCurrentTime(audio.currentTime);
     if (Number.isFinite(audio.duration) && audio.duration > 0) {
       setDuration(audio.duration);
@@ -299,8 +379,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const handleEnded = () => {
     const audio = audioRef.current;
     setIsPlaying(false);
-    setCurrentTime(0);
     if (activeSourceType === 'live') {
+      const audioDuration = Number(audio?.duration || 0);
+      const chunkDuration = Number(activeLiveChunkRef.current?.durationSec || 0);
+      const resolvedChunkDuration = chunkDuration > 0
+        ? chunkDuration
+        : (Number.isFinite(audioDuration) && audioDuration > 0 ? audioDuration : Math.max(0, Number(audio?.currentTime || 0)));
+      if (resolvedChunkDuration > 0) {
+        liveElapsedSecondsRef.current += resolvedChunkDuration;
+      }
+      activeLiveChunkRef.current = null;
+      setCurrentTime(liveElapsedSecondsRef.current);
+      syncLiveTimelineDuration(0);
       if (activeSourceUrl) {
         try {
           URL.revokeObjectURL(activeSourceUrl);
@@ -310,20 +400,29 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         liveChunkUrlsRef.current = liveChunkUrlsRef.current.filter((item) => item !== activeSourceUrl);
       }
       if (liveQueueRef.current.length > 0) {
-        void playNextLiveChunk('manual');
+        setIsBuffering(true);
+        void playNextLiveChunk('auto');
         return;
       }
       if (audioUrl) {
+        liveElapsedSecondsRef.current = 0;
         setActiveSourceType('final');
         setActiveSourceUrl(audioUrl);
+        setIsBuffering(false);
         if (audio) {
           audio.currentTime = 0;
         }
+        setCurrentTime(0);
         return;
       }
+      liveElapsedSecondsRef.current = 0;
       setActiveSourceType('none');
       setActiveSourceUrl(null);
+      setIsBuffering(false);
+      setCurrentTime(0);
+      return;
     }
+    setCurrentTime(0);
   };
 
   const formatTime = (time: number) => {
@@ -345,9 +444,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     const tick = () => {
       const audio = audioRef.current;
       if (!audio || audio.paused) return;
-      setCurrentTime(audio.currentTime);
-      if (Number.isFinite(audio.duration) && audio.duration > 0) {
-        setDuration(audio.duration);
+      if (activeSourceType === 'live') {
+        const liveTime = Math.max(0, liveElapsedSecondsRef.current + audio.currentTime);
+        setCurrentTime(liveTime);
+        const audioDuration = Number(audio.duration || 0);
+        const queuedDuration = Number(activeLiveChunkRef.current?.durationSec || 0);
+        const resolvedChunkDuration = Number.isFinite(audioDuration) && audioDuration > 0
+          ? Math.max(audioDuration, queuedDuration, audio.currentTime)
+          : Math.max(queuedDuration, audio.currentTime);
+        syncLiveTimelineDuration(resolvedChunkDuration);
+      } else {
+        setCurrentTime(audio.currentTime);
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setDuration(audio.duration);
+        }
       }
       rafId = requestAnimationFrame(tick);
     };
@@ -355,7 +465,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [isPlaying]);
+  }, [activeSourceType, isPlaying, syncLiveTimelineDuration]);
 
   if (!audioUrl && !isGenerating && liveChunks.length === 0 && activeSourceType === 'none') return null;
 
@@ -365,9 +475,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         ref={audioRef}
         src={activeSourceUrl || undefined}
         onTimeUpdate={handleTimeUpdate}
+        onLoadStart={() => setIsBuffering(Boolean(activeSourceUrl || isGenerating || isLiveStreaming))}
         onLoadedMetadata={(e) => {
           const nextDuration = Number(e.currentTarget.duration || 0);
-          if (Number.isFinite(nextDuration) && nextDuration > 0) {
+          if (activeSourceType === 'live') {
+            const queuedDuration = Number(activeLiveChunkRef.current?.durationSec || 0);
+            const resolvedChunkDuration = Number.isFinite(nextDuration) && nextDuration > 0
+              ? Math.max(nextDuration, queuedDuration)
+              : queuedDuration;
+            syncLiveTimelineDuration(resolvedChunkDuration);
+          } else if (Number.isFinite(nextDuration) && nextDuration > 0) {
             setDuration(nextDuration);
           }
           const pendingPlayMode = pendingPlayModeRef.current;
@@ -377,11 +494,25 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           }
           isSwitchingLiveSourceRef.current = false;
         }}
+        onCanPlay={() => setIsBuffering(false)}
         onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
+        onPlaying={() => {
+          setIsPlaying(true);
+          setIsBuffering(false);
+        }}
+        onPause={() => {
+          setIsPlaying(false);
+          if (!audioRef.current?.ended) {
+            setIsBuffering(false);
+          }
+        }}
+        onWaiting={() => setIsBuffering(true)}
+        onSeeking={() => setIsBuffering(true)}
+        onSeeked={() => setIsBuffering(false)}
         onEnded={handleEnded}
         onError={(event) => {
           setIsPlaying(false);
+          setIsBuffering(false);
           isSwitchingLiveSourceRef.current = false;
           pendingPlayModeRef.current = 'none';
           if (Date.now() < suppressTransientErrorUntilRef.current) return;
@@ -404,11 +535,23 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                  Press Play to Listen
              </div>
          )}
-         {hasPlayableAudio ? (
+         {showLiveVisualizer ? (
            <Visualizer audioElement={audioRef.current} isPlaying={isPlaying} height={128} />
          ) : (
            <div className="h-full w-full bg-gradient-to-r from-indigo-50/60 to-purple-50/60" />
          )}
+      </div>
+
+      <div className="vf-live-player__status" aria-live="polite">
+        <div className={`vf-live-player__status-pill ${isBuffering ? 'vf-live-player__status-pill--buffering' : isLiveMode ? 'vf-live-player__status-pill--live' : 'vf-live-player__status-pill--ready'}`}>
+          {isBuffering ? (
+            <Loader2 size={13} className="vf-live-player__status-icon" />
+          ) : (
+            <span className="vf-live-player__status-dot" />
+          )}
+          <span>{statusLabel}</span>
+        </div>
+        <span className="vf-live-player__status-metric">{queueLabel}</span>
       </div>
 
       <div className="flex flex-col gap-4">
@@ -448,10 +591,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                     disabled={!hasPlayableAudio}
                     className={`vf-live-player__play w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all transform active:scale-95 ${
                       isPlaying ? 'vf-live-player__play--playing' : ''
-                    } ${isLiveMode ? 'vf-live-player__play--live' : ''} ${!hasPlayableAudio ? 'vf-live-player__play--disabled' : ''}`}
+                    } ${isLiveMode ? 'vf-live-player__play--live' : ''} ${isBuffering ? 'vf-live-player__play--buffering' : ''} ${!hasPlayableAudio ? 'vf-live-player__play--disabled' : ''}`}
                     aria-label={isPlaying ? 'Pause audio' : 'Play audio'}
                 >
-                    {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                    {isBuffering && !isPlaying ? (
+                      <Loader2 size={22} className="animate-spin" />
+                    ) : isPlaying ? (
+                      <Pause size={24} fill="currentColor" />
+                    ) : (
+                      <Play size={24} fill="currentColor" className="ml-1" />
+                    )}
                 </button>
 
                 <button

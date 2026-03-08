@@ -189,6 +189,7 @@ export interface GeminiSourcePolicy {
   freePoolMode?: 'api_file_authoritative' | 'config_managed' | string;
   freePoolFilePath?: string;
   freePoolLocked?: boolean;
+  ttsModelFallbackEnabled?: boolean;
   failureMode?: string;
   lastSyncAt?: string;
   lastSyncStatus?: string;
@@ -474,6 +475,17 @@ export interface AdminRoleAssignment {
   updatedBy?: string;
 }
 
+export interface AdminActor {
+  uid: string;
+  userId?: string;
+  role: string;
+  status: 'active' | 'disabled' | string;
+  permissions: AdminPermission[];
+  source?: string;
+  allowOverrides?: AdminPermission[];
+  denyOverrides?: AdminPermission[];
+}
+
 export interface AdminRoleAssignmentsPayload {
   ok: boolean;
   items: AdminRoleAssignment[];
@@ -513,6 +525,56 @@ export interface AuditVerifyPayload {
   checked: number;
   mismatchAtSequence?: number | null;
   mismatchEventId?: string | null;
+}
+
+export interface AudioMetadataRecord {
+  auditId: string;
+  uid: string;
+  userId?: string;
+  identityType?: string;
+  identityValue?: string;
+  email?: string;
+  phoneNumber?: string;
+  submittedAt?: string;
+  audioCreatedAt?: string;
+  terminalAt?: string;
+  status: string;
+  failureCode?: string;
+  failureDetail?: string;
+  engine?: string;
+  voiceId?: string;
+  voiceName?: string;
+  language?: string;
+  requestId?: string;
+  jobId?: string;
+  traceId?: string;
+  inputText?: string;
+  textPreview?: string;
+  sourceIp?: string;
+  ipHash?: string;
+  paymentRefType?: string;
+  paymentRef?: string;
+  retentionDeleteAfter?: string;
+}
+
+export interface AudioMetadataFilters {
+  uid?: string;
+  userId?: string;
+  identityValue?: string;
+  paymentRef?: string;
+  status?: string;
+  engine?: string;
+  from?: string;
+  to?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface AudioMetadataListPayload {
+  ok: boolean;
+  items: AudioMetadataRecord[];
+  count: number;
+  nextCursor?: string | null;
 }
 
 export interface AlertPolicy {
@@ -1051,6 +1113,15 @@ export const fetchAdminRbacUsers = async (
   ));
 };
 
+export const fetchAdminActor = async (baseUrl?: string): Promise<AdminActor> => {
+  const payload = await readJsonOrThrow<{ ok: boolean; actor: AdminActor }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/actor`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload.actor;
+};
+
 export const assignAdminRbacUser = async (
   uid: string,
   input: {
@@ -1147,6 +1218,56 @@ export const fetchAdminAuditEventById = async (eventId: string, baseUrl?: string
     { requireAuth: true }
   ));
   return payload.event;
+};
+
+const buildAudioMetadataQuery = (options?: AudioMetadataFilters): string => {
+  const query = new URLSearchParams();
+  if (options?.uid?.trim()) query.set('uid', options.uid.trim());
+  if (options?.userId?.trim()) query.set('userId', options.userId.trim());
+  if (options?.identityValue?.trim()) query.set('identityValue', options.identityValue.trim());
+  if (options?.paymentRef?.trim()) query.set('paymentRef', options.paymentRef.trim());
+  if (options?.status?.trim()) query.set('status', options.status.trim());
+  if (options?.engine?.trim()) query.set('engine', options.engine.trim());
+  if (options?.from?.trim()) query.set('from', options.from.trim());
+  if (options?.to?.trim()) query.set('to', options.to.trim());
+  if (options?.cursor?.trim()) query.set('cursor', options.cursor.trim());
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  return query.toString();
+};
+
+export const fetchAdminAudioMetadata = async (
+  baseUrl?: string,
+  options?: AudioMetadataFilters
+): Promise<AudioMetadataListPayload> => {
+  const query = buildAudioMetadataQuery(options);
+  return readJsonOrThrow<AudioMetadataListPayload>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/audio-metadata/records${query ? `?${query}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const fetchAdminAudioMetadataById = async (auditId: string, baseUrl?: string): Promise<AudioMetadataRecord> => {
+  const payload = await readJsonOrThrow<{ record: AudioMetadataRecord }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/audio-metadata/records/${encodeURIComponent(auditId)}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload.record;
+};
+
+export const exportAdminAudioMetadataCsv = async (
+  baseUrl?: string,
+  options?: Omit<AudioMetadataFilters, 'cursor' | 'limit'>
+): Promise<Blob> => {
+  const query = buildAudioMetadataQuery(options);
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/audio-metadata/export.csv${query ? `?${query}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  );
+  if (!response.ok) throw await parseResponseError(response);
+  return response.blob();
 };
 
 export const verifyAdminAuditChain = async (

@@ -11,6 +11,11 @@ const DEFAULT_LOCAL_ADMIN_SESSION_TTL_MIN = 480;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+const truthyEnv = (value: unknown): boolean => {
+  const token = String(value || '').trim().toLowerCase();
+  return token === '1' || token === 'true' || token === 'yes' || token === 'on';
+};
+
 export interface LocalAdminSessionPayload {
   uid: string;
   email: string;
@@ -87,6 +92,7 @@ const LOCAL_ADMIN_UID =
   String(import.meta.env.VITE_LOCAL_ADMIN_UID || DEFAULT_LOCAL_ADMIN_UID).trim() || DEFAULT_LOCAL_ADMIN_UID;
 
 const LOCAL_ADMIN_EMAIL = `${LOCAL_ADMIN_USERNAME}@local.admin`;
+const LOCAL_ADMIN_DEV_LOGIN_ENABLED = truthyEnv(import.meta.env.VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN);
 
 const LOCAL_ADMIN_PBKDF2_ITERATIONS = parsePositiveInt(
   import.meta.env.VITE_LOCAL_ADMIN_PBKDF2_ITERATIONS,
@@ -98,12 +104,26 @@ const LOCAL_ADMIN_SESSION_TTL_MIN = parsePositiveInt(
   DEFAULT_LOCAL_ADMIN_SESSION_TTL_MIN
 );
 
-const localAdminPasswordHashBytes = base64ToBytes(String(import.meta.env.VITE_LOCAL_ADMIN_PASSWORD_HASH_B64 || ''));
-const localAdminPasswordSaltBytes = base64ToBytes(String(import.meta.env.VITE_LOCAL_ADMIN_PASSWORD_SALT_B64 || ''));
-const localAdminSessionKeyBytes = base64ToBytes(String(import.meta.env.VITE_LOCAL_ADMIN_SESSION_KEY_B64 || ''));
+const localAdminDevSecrets = import.meta.env.DEV
+  ? {
+      passwordHashB64: String(import.meta.env.VITE_LOCAL_ADMIN_PASSWORD_HASH_B64 || ''),
+      passwordSaltB64: String(import.meta.env.VITE_LOCAL_ADMIN_PASSWORD_SALT_B64 || ''),
+      sessionKeyB64: String(import.meta.env.VITE_LOCAL_ADMIN_SESSION_KEY_B64 || ''),
+    }
+  : {
+      passwordHashB64: '',
+      passwordSaltB64: '',
+      sessionKeyB64: '',
+    };
+
+const localAdminPasswordHashBytes = base64ToBytes(localAdminDevSecrets.passwordHashB64);
+const localAdminPasswordSaltBytes = base64ToBytes(localAdminDevSecrets.passwordSaltB64);
+const localAdminSessionKeyBytes = base64ToBytes(localAdminDevSecrets.sessionKeyB64);
 
 const localAdminConfigIssue = (() => {
   const crypto = getWebCrypto();
+  if (!import.meta.env.DEV) return 'Local admin login is disabled outside local dev mode.';
+  if (!LOCAL_ADMIN_DEV_LOGIN_ENABLED) return 'VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=1 is required for local admin login.';
   if (!crypto) return 'Web Crypto API is unavailable in this environment.';
   if (localAdminPasswordHashBytes.length === 0) return 'VITE_LOCAL_ADMIN_PASSWORD_HASH_B64 is missing or invalid.';
   if (localAdminPasswordSaltBytes.length === 0) return 'VITE_LOCAL_ADMIN_PASSWORD_SALT_B64 is missing or invalid.';

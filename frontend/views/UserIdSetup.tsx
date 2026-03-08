@@ -115,9 +115,9 @@ export const UserIdSetup: React.FC<{ setScreen: (screen: AppScreen) => void }> =
   };
 
   return (
-    <div className="min-h-[100dvh] w-full overflow-y-auto bg-transparent p-4 sm:p-6">
+    <div className="vf-auth-shell min-h-[100dvh] w-full overflow-y-auto bg-transparent p-4 sm:p-6">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(70%_60%_at_0%_0%,rgba(99,102,241,0.12),transparent_60%),radial-gradient(75%_65%_at_100%_20%,rgba(14,165,233,0.12),transparent_62%)]" />
-      <div className="vf-surface-card relative mx-auto my-6 w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl animate-in fade-in zoom-in duration-300 md:my-10 md:p-10">
+      <div className="vf-auth-card vf-surface-card relative mx-auto my-6 w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl animate-in fade-in zoom-in duration-300 md:my-10 md:p-10">
         <div className="mb-6 text-center">
           <div className="mx-auto flex justify-center">
             <BrandLogo size="lg" tone="dark" />

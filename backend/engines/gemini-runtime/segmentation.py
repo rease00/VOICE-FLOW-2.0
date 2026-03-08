@@ -2,20 +2,23 @@ import re
 from typing import Dict, List
 
 MAX_WORDS_PER_REQUEST = 5000
-SEGMENTATION_PROFILE = "quality-first"
+SEGMENTATION_PROFILE = "latency-balanced"
+SENTENCE_OVERFLOW_RATIO = 1.35
+SENTENCE_OVERFLOW_CHAR_GRACE = 96
+SENTENCE_OVERFLOW_WORD_GRACE = 18
 
 CHUNKING_PROFILES: Dict[str, Dict[str, int]] = {
     "hi": {
         "hard_char_cap": 620,
         "target_char_cap": 420,
-        "max_words_per_chunk": 80,
-        "join_crossfade_ms": 10,
+        "max_words_per_chunk": 56,
+        "join_crossfade_ms": 8,
     },
     "default": {
         "hard_char_cap": 620,
         "target_char_cap": 420,
-        "max_words_per_chunk": 80,
-        "join_crossfade_ms": 10,
+        "max_words_per_chunk": 56,
+        "join_crossfade_ms": 8,
     },
 }
 
@@ -46,6 +49,21 @@ def resolve_chunk_profile(language_code: str, text: str) -> Dict[str, int]:
     return dict(CHUNKING_PROFILES[key])
 
 
+def _resolve_overflow_char_cap(limit: int) -> int:
+    return max(limit, round(limit * SENTENCE_OVERFLOW_RATIO), limit + SENTENCE_OVERFLOW_CHAR_GRACE)
+
+
+def _resolve_overflow_word_cap(limit: int) -> int:
+    return max(limit, round(limit * SENTENCE_OVERFLOW_RATIO), limit + SENTENCE_OVERFLOW_WORD_GRACE)
+
+
+def _can_keep_unit_intact(char_count: int, word_count: int, hard_limit: int, max_words_per_chunk: int) -> bool:
+    return (
+        char_count <= _resolve_overflow_char_cap(hard_limit)
+        and word_count <= _resolve_overflow_word_cap(max_words_per_chunk)
+    )
+
+
 def _split_with_pattern(text: str, pattern: str) -> List[str]:
     units = [chunk.strip() for chunk in re.findall(pattern, text) if chunk.strip()]
     if units:
@@ -72,12 +90,8 @@ def _split_oversized_by_words(unit: str, hard_limit: int, max_words_per_chunk: i
             result.append(current)
             current = ""
             current_words = 0
-        if len(word) <= hard_limit:
-            current = word
-            current_words = 1
-            continue
-        for index in range(0, len(word), hard_limit):
-            result.append(word[index : index + hard_limit])
+        current = word
+        current_words = 1
     if current:
         result.append(current)
     return result
@@ -100,10 +114,15 @@ def chunk_text_for_tts(text: str, language_code: str) -> List[str]:
         if len(sentence) <= hard_limit and sentence_words <= max_words_per_chunk:
             granular_units.append(sentence)
             continue
+        if _can_keep_unit_intact(len(sentence), sentence_words, hard_limit, max_words_per_chunk):
+            granular_units.append(sentence)
+            continue
         phrase_units = _split_with_pattern(sentence, PHRASE_PATTERN)
         for phrase in phrase_units:
             phrase_words = count_words(phrase)
             if len(phrase) <= hard_limit and phrase_words <= max_words_per_chunk:
+                granular_units.append(phrase)
+            elif _can_keep_unit_intact(len(phrase), phrase_words, hard_limit, max_words_per_chunk):
                 granular_units.append(phrase)
             else:
                 granular_units.extend(
@@ -118,7 +137,9 @@ def chunk_text_for_tts(text: str, language_code: str) -> List[str]:
         if not unit:
             continue
         unit_words = count_words(unit)
-        if len(unit) > hard_limit or unit_words > max_words_per_chunk:
+        if (len(unit) > hard_limit or unit_words > max_words_per_chunk) and not _can_keep_unit_intact(
+            len(unit), unit_words, hard_limit, max_words_per_chunk
+        ):
             if current:
                 chunks.append(current)
                 current = ""

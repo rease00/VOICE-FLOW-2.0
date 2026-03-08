@@ -8,6 +8,45 @@ const truthy = (value: unknown): boolean => {
   return token === '1' || token === 'true' || token === 'yes' || token === 'on';
 };
 
+const hasValue = (value: unknown): boolean => String(value || '').trim().length > 0;
+
+const assertProductionAuthHardening = (mode: string, env: Record<string, string>): void => {
+  if (mode !== 'production') return;
+
+  const violations: string[] = [];
+  if (truthy(env.VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN)) {
+    violations.push('VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN must be 0 in production builds.');
+  }
+  if (truthy(env.VITE_ENABLE_DEV_UID_HEADER)) {
+    violations.push('VITE_ENABLE_DEV_UID_HEADER must be 0 in production builds.');
+  }
+  if (truthy(env.VITE_DEV_SERVER_EXPOSE)) {
+    violations.push('VITE_DEV_SERVER_EXPOSE must be 0 in production builds.');
+  }
+  if (truthy(env.VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT)) {
+    violations.push('VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT must be 0 in production builds.');
+  }
+  if (String(env.VF_AUTH_ENFORCE || '').trim() !== '1') {
+    violations.push('VF_AUTH_ENFORCE must be 1 for production.');
+  }
+
+  const localAdminSecretKeys = [
+    'VITE_LOCAL_ADMIN_PASSWORD_HASH_B64',
+    'VITE_LOCAL_ADMIN_PASSWORD_SALT_B64',
+    'VITE_LOCAL_ADMIN_SESSION_KEY_B64',
+  ];
+  const localAdminSecretsConfigured = localAdminSecretKeys.filter((key) => hasValue(env[key]));
+  if (localAdminSecretsConfigured.length > 0) {
+    violations.push(
+      `Remove local admin dev secrets from production env: ${localAdminSecretsConfigured.join(', ')}.`
+    );
+  }
+
+  if (violations.length > 0) {
+    throw new Error(`[security] Production build blocked due to unsafe auth env:\n- ${violations.join('\n- ')}`);
+  }
+};
+
 const isLoopbackHost = (value: string): boolean => {
   const host = String(value || '').trim().toLowerCase();
   if (!host) return false;
@@ -85,35 +124,53 @@ const localBootstrapPlugin = (env: Record<string, string>) => ({
 });
 
 export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, path.resolve(__dirname, '..'), '');
-    const exposeDevServer = truthy(env.VITE_DEV_SERVER_EXPOSE);
-    return {
-      envDir: path.resolve(__dirname, '..'),
-      server: {
-        port: 3000,
-        host: exposeDevServer ? '0.0.0.0' : '127.0.0.1',
+  const env = loadEnv(mode, path.resolve(__dirname, '..'), '');
+  assertProductionAuthHardening(mode, env);
+  const exposeDevServer = truthy(env.VITE_DEV_SERVER_EXPOSE);
+  return {
+    envDir: path.resolve(__dirname, '..'),
+    server: {
+      port: 3000,
+      host: exposeDevServer ? '0.0.0.0' : '127.0.0.1',
+      watch: {
+        ignored: ['**/playwright-report/**', '**/test-results/**', '**/tmp_dir/**'],
       },
-      build: {
-        rollupOptions: {
-          output: {
-            manualChunks(id) {
-              if (!id.includes('node_modules')) return undefined;
+    },
+    build: {
+      modulePreload: false,
+      rollupOptions: {
+        output: {
+          hoistTransitiveImports: false,
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined;
 
-              if (id.includes('react')) return 'vendor-react';
-              if (id.includes('lucide-react')) return 'vendor-icons';
-              if (id.includes('firebase')) return 'vendor-firebase';
-              if (id.includes('@google/genai')) return 'vendor-genai';
-              if (id.includes('kokoro-js') || id.includes('@huggingface/transformers')) return 'vendor-ml';
-              return 'vendor';
-            },
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            if (id.includes('scheduler') || id.includes('react')) return 'vendor-react';
+            if (id.includes('@firebase/auth') || id.includes('firebase/auth')) return 'vendor-firebase-auth';
+            if (id.includes('@firebase/firestore') || id.includes('firebase/firestore')) return 'vendor-firebase-db';
+            if (id.includes('@firebase/app') || id.includes('firebase/app')) return 'vendor-firebase-core';
+            if (id.includes('firebase')) return 'vendor-firebase';
+            if (id.includes('@google/genai')) return 'vendor-genai';
+            if (id.includes('onnxruntime-common') || id.includes('onnxruntime') || id.includes('onnxruntime-web')) return 'vendor-ort';
+            if (
+              id.includes('kokoro-js')
+              || id.includes('phonemizer')
+              || id.includes('@huggingface')
+              || id.includes('idb')
+              || id.includes('p-retry')
+            ) {
+              return 'vendor-ml';
+            }
+            return 'vendor';
           },
         },
       },
-      plugins: [react(), localBootstrapPlugin(env)],
-      resolve: {
-        alias: {
-          '@': path.resolve(__dirname, 'src'),
-        }
-      }
-    };
+    },
+    plugins: [react(), localBootstrapPlugin(env)],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, 'src'),
+      },
+    },
+  };
 });

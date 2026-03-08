@@ -17,6 +17,9 @@ class _DummyRuntimeResponse:
         self.headers = {
             "content-type": "audio/wav",
             "x-voiceflow-trace-id": "trace_test_123",
+            "x-voiceflow-model": "gemini-2.5-flash-preview-tts",
+            "x-voiceflow-speech-mode": "single-speaker",
+            "x-voiceflow-diagnostics": "%7B%22keySelectionIndex%22%3A0%7D",
         }
         self.text = "runtime error"
 
@@ -103,6 +106,43 @@ class _DummyRuntimeUpstreamTimeoutResponse:
         }
 
 
+class _DummyRuntimeSensitiveErrorResponse:
+    def __init__(self, status_code: int = 502) -> None:
+        self.status_code = status_code
+        self.content = b""
+        self.headers = {
+            "content-type": "application/json",
+            "x-voiceflow-trace-id": "trace_sensitive_123",
+        }
+        self.text = (
+            '{"detail":{"error":"Gemini model attempts failed.","errorCode":"GEMINI_UPSTREAM_MODEL_FAILED",'
+            '"summary":"404 NOT_FOUND. {\\"error\\":{\\"message\\":\\"models/gemini-2.5-flash-preview-tts\\"}}",'
+            '"retryAfterMs":1700,"trace_id":"trace_sensitive_123","speechModeRequested":"single-speaker",'
+            '"keyAttempts":[{"keyFingerprint":"AIzaSyAA...ZZZZ"}],'
+            '"modelAttempts":[{"model":"gemini-2.5-flash-preview-tts","error":"404 NOT_FOUND"}],'
+            '"keyStates":[{"fingerprint":"abcd1234efgh","status":"auth_issue"}]}}'
+        )
+
+    @property
+    def ok(self) -> bool:
+        return False
+
+    def json(self) -> dict:
+        return {
+            "detail": {
+                "error": "Gemini model attempts failed.",
+                "errorCode": "GEMINI_UPSTREAM_MODEL_FAILED",
+                "summary": '404 NOT_FOUND. {"error":{"message":"models/gemini-2.5-flash-preview-tts"}}',
+                "retryAfterMs": 1700,
+                "trace_id": "trace_sensitive_123",
+                "speechModeRequested": "single-speaker",
+                "keyAttempts": [{"keyFingerprint": "AIzaSyAA...ZZZZ"}],
+                "modelAttempts": [{"model": "gemini-2.5-flash-preview-tts", "error": "404 NOT_FOUND"}],
+                "keyStates": [{"fingerprint": "abcd1234efgh", "status": "auth_issue"}],
+            }
+        }
+
+
 def _make_key(seed: int) -> str:
     return f"AIza{seed:030d}"
 
@@ -132,6 +172,7 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_COUPONS.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
     backend_app._INMEMORY_GENERATION_HISTORY.clear()
+    backend_app._INMEMORY_AUDIO_GENERATION_AUDIT.clear()
     backend_app._INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
     backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
     with backend_app._ADMIN_USAGE_LOCK:
@@ -257,6 +298,105 @@ def test_generation_history_default_retention_prunes_items_older_than_one_year(m
     assert [item.get("id") for item in decoded_items] == ["fresh"]
 
 
+def test_tts_synthesize_writes_audio_metadata_record_on_success(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+    uid = "audio_meta_user_success"
+    backend_app._write_entitlement(uid, {"plan": "Pro"})
+
+    response = client.post(
+        "/tts/synthesize",
+        headers={
+            "x-dev-uid": uid,
+            "x-forwarded-for": "198.51.100.24, 10.0.0.10",
+        },
+        json={
+            "engine": "GEM",
+            "text": "Audio metadata success coverage text.",
+            "voice_id": "Fenrir",
+            "request_id": "req_audio_meta_success",
+        },
+    )
+    assert response.status_code == 200
+
+    rows = list(backend_app._INMEMORY_AUDIO_GENERATION_AUDIT.values())
+    assert len(rows) == 1
+    record = rows[0]
+    assert record["requestId"] == "req_audio_meta_success"
+    assert record["jobId"] == "req_audio_meta_success"
+    assert record["status"] == "completed"
+    assert record["inputText"] == "Audio metadata success coverage text."
+    assert record["sourceIp"] == "198.51.100.24"
+    assert record["ipHash"] == backend_app._hash_sha256_hex("198.51.100.24")
+    assert record["audioCreatedAt"]
+    assert record["terminalAt"]
+    assert record["paymentRef"] == ""
+
+
+def test_tts_synthesize_validation_failure_writes_audio_metadata_record(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    client = TestClient(backend_app.app)
+
+    response = client.post(
+        "/tts/jobs",
+        headers={"x-dev-uid": "audio_meta_user_failed"},
+        json={"engine": "GEM", "text": "   ", "request_id": "req_audio_meta_failed"},
+    )
+    assert response.status_code == 400
+
+    rows = list(backend_app._INMEMORY_AUDIO_GENERATION_AUDIT.values())
+    assert len(rows) == 1
+    record = rows[0]
+    assert record["requestId"] == "req_audio_meta_failed"
+    assert record["status"] == "failed"
+    assert record["audioCreatedAt"] == ""
+    assert record["failureCode"] == "http_400"
+    assert "text is required" in str(record["failureDetail"] or "").lower()
+
+
+def test_tts_synthesize_uses_wallet_payment_reference_fallback(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+    uid = "audio_meta_wallet_user"
+    backend_app._write_entitlement(uid, {"plan": "Pro", "subscriptionId": None, "latestInvoiceId": None})
+    backend_app._INMEMORY_WALLET_TRANSACTIONS["wallet_tx_paid_1"] = {
+        "id": "wallet_tx_paid_1",
+        "uid": uid,
+        "kind": "credit",
+        "bucket": "paidVF",
+        "amount": 150000,
+        "reason": "stripe_token_pack",
+        "metadata": {
+            "provider": "stripe",
+            "paymentIntentId": "pi_audio_meta_123",
+            "invoiceId": "in_audio_meta_123",
+        },
+        "createdAt": backend_app._utc_now().isoformat(),
+    }
+
+    response = client.post(
+        "/tts/synthesize",
+        headers={"x-dev-uid": uid},
+        json={
+            "engine": "GEM",
+            "text": "Wallet fallback coverage text.",
+            "request_id": "req_audio_meta_wallet",
+        },
+    )
+    assert response.status_code == 200
+
+    rows = list(backend_app._INMEMORY_AUDIO_GENERATION_AUDIT.values())
+    assert len(rows) == 1
+    record = rows[0]
+    assert record["paymentRefType"] == "payment_intent"
+    assert record["paymentRef"] == "pi_audio_meta_123"
+
+
 def test_admin_gemini_pool_status_requires_admin(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -368,7 +508,12 @@ def test_admin_gemini_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path:
     assert any("Single-pool mode" in str(item) for item in list(payload.get("warnings") or []))
 
     persisted = json.loads(pools_path.read_text(encoding="utf-8"))
-    assert persisted["pools"]["free"]["keys"] == [free_a, free_b]
+    persisted_keys = list((persisted.get("pools") or {}).get("free", {}).get("keys") or [])
+    assert len(persisted_keys) == 2
+    assert all(str(item).startswith("__vf_masked_key__:") for item in persisted_keys)
+    persisted_text = pools_path.read_text(encoding="utf-8")
+    assert free_a not in persisted_text
+    assert free_b not in persisted_text
 
 
 def test_admin_gemini_pools_put_ignores_free_edits_when_locked(monkeypatch, tmp_path: Path) -> None:
@@ -440,6 +585,84 @@ def test_admin_gemini_pools_put_ignores_free_edits_when_locked(monkeypatch, tmp_
     assert "single_pool_enforced:free" in list(payload.get("appliedOverrides") or [])
 
 
+def test_admin_gemini_pools_persists_tts_model_fallback_toggle(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(131)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 1}})
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+    assert warm.json()["sourcePolicy"]["ttsModelFallbackEnabled"] is False
+
+    update = client.put(
+        "/admin/gemini/pools",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": []},
+                "pro": {"keys": []},
+                "pro_plus": {"keys": []},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+                "pro_plus": ["pro_plus", "pro", "free"],
+            },
+            "constraints": {"uniqueKeyMembership": True},
+            "sourcePolicy": {
+                "ttsModelFallbackEnabled": True,
+            },
+        },
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert payload["sourcePolicy"]["ttsModelFallbackEnabled"] is True
+    assert payload["config"]["sourcePolicy"]["ttsModelFallbackEnabled"] is True
+
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    refreshed = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["sourcePolicy"]["ttsModelFallbackEnabled"] is True
+
+    persisted = json.loads(pools_path.read_text(encoding="utf-8"))
+    assert bool((persisted.get("sourcePolicy") or {}).get("ttsModelFallbackEnabled")) is True
+
+
 def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Path) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -483,8 +706,6 @@ def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: 
     _assert_masked_pool_keys(initial.json()["config"], "free", 1)
 
     keys_path.unlink()
-    backend_app._GEMINI_POOLS_CACHE = None
-    backend_app._GEMINI_POOLS_META = {}
 
     reloaded = client.post("/admin/gemini/pools/reload", headers={"x-dev-uid": "local_admin"})
     assert reloaded.status_code == 200
@@ -809,6 +1030,31 @@ def test_tts_synthesize_forwards_structured_runtime_error(monkeypatch) -> None:
     assert payload["detail"].get("trace_id") == "trace_error_123"
 
 
+def test_tts_synthesize_forwards_runtime_metadata_headers(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "local_admin"}
+
+    response = client.post(
+        "/tts/synthesize",
+        headers=headers,
+        json={
+            "engine": "GEM",
+            "text": "Header forward test.",
+            "voice_id": "Fenrir",
+            "request_id": "req_header_forward_1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("x-voiceflow-trace-id") == "trace_test_123"
+    assert response.headers.get("x-voiceflow-model") == "gemini-2.5-flash-preview-tts"
+    assert response.headers.get("x-voiceflow-speech-mode") == "single-speaker"
+    assert response.headers.get("x-voiceflow-diagnostics") == "%7B%22keySelectionIndex%22%3A0%7D"
+
+
 def test_tts_synthesize_normalizes_gem_capacity_errors_to_503(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -858,6 +1104,38 @@ def test_tts_synthesize_maps_gem_upstream_timeout_to_504(monkeypatch) -> None:
     payload = response.json()
     assert isinstance(payload.get("detail"), dict)
     assert payload["detail"].get("errorCode") == "GEMINI_UPSTREAM_REQUEST_TIMEOUT"
+
+
+def test_tts_synthesize_redacts_runtime_key_pool_internals_from_error_detail(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(
+        backend_app.requests,
+        "post",
+        lambda *args, **kwargs: _DummyRuntimeSensitiveErrorResponse(status_code=502),
+    )
+    client = TestClient(backend_app.app)
+
+    response = client.post(
+        "/tts/synthesize",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "engine": "GEM",
+            "text": "sanitize sensitive runtime detail",
+            "voice_id": "Fenrir",
+            "request_id": "req_sensitive_1",
+        },
+    )
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail.get("errorCode") == "GEMINI_UPSTREAM_MODEL_FAILED"
+    assert detail.get("trace_id") == "trace_sensitive_123"
+    assert "keyStates" not in detail
+    assert "keyAttempts" not in detail
+    assert "modelAttempts" not in detail
+    assert "AIza" not in json.dumps(detail)
+    assert "404 NOT_FOUND" not in str(detail.get("summary") or "")
 
 
 def test_tts_synthesize_enforces_free_plan_success_limit(monkeypatch) -> None:

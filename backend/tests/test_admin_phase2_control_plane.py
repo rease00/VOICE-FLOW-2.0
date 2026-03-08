@@ -21,6 +21,7 @@ def _reset_phase2_state() -> None:
     backend_app._INMEMORY_SCHEDULER_TASKS.clear()
     backend_app._INMEMORY_SCHEDULER_RUNS.clear()
     backend_app._INMEMORY_SCHEDULER_LOCK.clear()
+    backend_app._INMEMORY_AUDIO_GENERATION_AUDIT.clear()
 
     backend_app._INMEMORY_COUPON_ANALYTICS_DAILY.clear()
     backend_app._INMEMORY_COUPON_SUB_ATTRIBUTIONS.clear()
@@ -32,6 +33,7 @@ def _reset_phase2_state() -> None:
     backend_app._INMEMORY_COUPON_CODE_INDEX.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
     backend_app._INMEMORY_STRIPE_CUSTOMERS.clear()
+    backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
 
 
 def _empty_request() -> Request:
@@ -223,6 +225,108 @@ def test_scheduler_manual_run_records_runs_and_idempotency_key(monkeypatch) -> N
     assert run_two["status"] == "completed"
     assert run_one["idempotencyKey"] == run_two["idempotencyKey"]
     assert len(backend_app._INMEMORY_SCHEDULER_RUNS) >= 2
+
+
+def test_audio_metadata_admin_endpoints_require_audit_read_and_log_exports(monkeypatch) -> None:
+    _reset_phase2_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+
+    row = backend_app._audio_generation_audit_create(
+        {
+            "auditId": "audit_audio_meta_1",
+            "uid": "user_audio_meta_1",
+            "userId": "user_audio_meta_1",
+            "identityType": "email",
+            "identityValue": "user@example.com",
+            "email": "user@example.com",
+            "submittedAt": backend_app._utc_now().isoformat(),
+            "status": "completed",
+            "engine": "GEM",
+            "requestId": "req_audio_meta_1",
+            "jobId": "req_audio_meta_1",
+            "traceId": "trace_audio_meta_1",
+            "inputText": "Audit export coverage text.",
+            "sourceIp": "203.0.113.8",
+            "paymentRefType": "invoice",
+            "paymentRef": "in_audio_meta_1",
+        }
+    )
+    assert row["auditId"] == "audit_audio_meta_1"
+
+    backend_app._rbac_write_assignment(
+        "audit_reader",
+        {
+            "role": "read_only_ops",
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "updatedBy": "seed",
+        },
+    )
+
+    client = TestClient(backend_app.app)
+
+    denied = client.get("/admin/audio-metadata/records", headers={"x-dev-uid": "plain_user"})
+    assert denied.status_code == 403
+
+    listed = client.get("/admin/audio-metadata/records", headers={"x-dev-uid": "audit_reader"})
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 1
+
+    detail = client.get("/admin/audio-metadata/records/audit_audio_meta_1", headers={"x-dev-uid": "audit_reader"})
+    assert detail.status_code == 200
+    assert detail.json()["record"]["inputText"] == "Audit export coverage text."
+
+    exported = client.get("/admin/audio-metadata/export.csv", headers={"x-dev-uid": "audit_reader"})
+    assert exported.status_code == 200
+    assert "audit_audio_meta_1" in exported.text
+    assert "Audit export coverage text." in exported.text
+
+    actions = [str(item.get("action") or "") for item in backend_app._INMEMORY_AUDIT_LEDGER_EVENTS.values()]
+    assert "audio_metadata_view" in actions
+    assert "audio_metadata_export" in actions
+
+
+def test_audio_metadata_retention_cleanup_removes_only_expired_records(monkeypatch) -> None:
+    _reset_phase2_state()
+    monkeypatch.setattr(backend_app, "VF_SCHEDULER_ENABLED", True)
+
+    now = backend_app._utc_now()
+    expired_submitted = now.replace(year=now.year - 6).isoformat()
+    fresh_submitted = now.isoformat()
+
+    backend_app._audio_generation_audit_create(
+        {
+            "auditId": "audit_expired",
+            "uid": "expired_user",
+            "submittedAt": expired_submitted,
+            "status": "failed",
+            "inputText": "expired",
+            "sourceIp": "198.51.100.10",
+        }
+    )
+    backend_app._audio_generation_audit_create(
+        {
+            "auditId": "audit_fresh",
+            "uid": "fresh_user",
+            "submittedAt": fresh_submitted,
+            "status": "completed",
+            "inputText": "fresh",
+            "sourceIp": "198.51.100.11",
+        }
+    )
+
+    result = backend_app._scheduler_execute_task(
+        {"taskType": "audio_generation_audit_retention_cleanup"},
+        requested_by="tester",
+        dry_run=False,
+    )
+    assert result["ok"] is True
+    assert result["deletedCount"] == 1
+    assert "audit_expired" not in backend_app._INMEMORY_AUDIO_GENERATION_AUDIT
+    assert "audit_fresh" in backend_app._INMEMORY_AUDIO_GENERATION_AUDIT
 
 
 def test_analytics_rate_math_definitions() -> None:

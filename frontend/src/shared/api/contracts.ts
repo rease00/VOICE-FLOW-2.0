@@ -20,6 +20,7 @@ export interface RuntimeVoiceItem {
   name: string;
   voice?: string;
   language?: string;
+  accent?: string;
   gender?: string;
   source?: string;
   profile_id?: string;
@@ -82,6 +83,54 @@ export interface TtsEngineCapabilitiesResponse {
   fetchedAt: string;
 }
 
+export interface TtsJobChunkResponse {
+  index: number;
+  contentType?: string;
+  durationMs?: number;
+  textChars?: number;
+  engine?: string;
+  traceId?: string;
+  downloadUrl?: string;
+  audioBase64?: string;
+}
+
+export interface TtsJobStatusResponse {
+  ok: boolean;
+  accepted?: boolean;
+  jobId: string;
+  requestId?: string;
+  traceId?: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  engine?: string;
+  lane?: string;
+  attempts?: number;
+  maxAttempts?: number;
+  createdAtMs?: number;
+  updatedAtMs?: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  deadlineAtMs?: number;
+  queueAgeMs?: number;
+  queueDepthAtRead?: number;
+  engineConcurrencyAtRead?: number;
+  statusCode?: number;
+  error?: string | Record<string, unknown>;
+  queue?: Record<string, unknown>;
+  live?: {
+    enabled?: boolean;
+    playableChunks?: number;
+    playableDurationMs?: number;
+  };
+  chunkCursor?: number;
+  chunkCursorNext?: number;
+  chunks?: TtsJobChunkResponse[];
+  result?: {
+    audioBase64?: string;
+    mediaType?: string;
+    headers?: Record<string, string>;
+  };
+}
+
 export interface VideoTranscriptionSegment {
   id: number;
   start: number;
@@ -100,10 +149,19 @@ export interface VideoTranscriptionResponse {
   language?: string;
   script: string;
   durationSec?: number;
+  speakerCount?: number;
+  speakers?: Array<{
+    id?: string;
+    label?: string;
+    segmentCount?: number;
+  }>;
   director?: {
     modelPreferred?: string;
     modelResolved?: string;
     sceneComplexity?: string;
+    speakerCount?: number;
+    speakerPolicy?: string;
+    diarizationApplied?: boolean;
     segments?: Array<{
       index: number;
       speaker: string;
@@ -143,8 +201,9 @@ export interface DubbingJobStatusResponse {
     resultPath?: string | null;
     directorJson?: Record<string, unknown> | null;
     isochronyStats?: Record<string, unknown> | null;
-    llvcMetrics?: Record<string, unknown> | null;
-    lipsyncMetrics?: Record<string, unknown> | null;
+    voiceTransferMetrics?: Record<string, unknown> | null;
+    videoSyncMetrics?: Record<string, unknown> | null;
+    tokenUsage?: Record<string, unknown> | null;
     assets?: Record<string, unknown> | null;
     thinkingPolicy?: Record<string, unknown> | null;
     processingProfile?: 'cpu_quality' | 'cpu_balanced' | 'cpu_fast' | string;
@@ -164,6 +223,9 @@ export interface DubbingJobStatusResponse {
       engine?: string;
       voiceId?: string;
       textChars?: number;
+      timelineStartMs?: number;
+      timelineEndMs?: number;
+      previewKind?: string;
       downloadUrl?: string;
       audioBase64?: string;
     }>;
@@ -179,6 +241,20 @@ export interface DubbingJobStatusResponse {
       downgraded?: boolean;
       reason?: string;
       gpuUsed?: boolean;
+    };
+    languageStats?: {
+      mixedSourceDetected?: boolean;
+      dominantSourceLanguage?: string;
+      segmentLanguageCounts?: Record<string, number>;
+      targetLanguageApplied?: string;
+      unsupportedSegments?: Array<Record<string, unknown>> | number;
+    };
+    policyEnforcement?: {
+      requestedTtsRoute?: string;
+      appliedTtsRoute?: string;
+      pinnedDirectorModel?: string;
+      pinnedTtsModel?: string;
+      strictNoFallback?: boolean;
     };
     [key: string]: unknown;
   };

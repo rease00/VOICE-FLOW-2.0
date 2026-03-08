@@ -6,6 +6,8 @@ const trimTrailingSlashes = (input: string): string => input.replace(/\/+$/, '')
 
 const normalizeTypoPrefix = (input: string): string => input.replace(LEADING_SCHEME_TYPO_PATTERN, '$1');
 
+const isLocalHostname = (input: string): boolean => LOCAL_HOSTS.has(String(input || '').trim().toLowerCase());
+
 const toNormalizedHttpUrl = (input: string): string => {
   const candidate = String(input || '').trim();
   const withScheme = /^https?:\/\//i.test(candidate) ? candidate : `http://${candidate}`;
@@ -14,6 +16,14 @@ const toNormalizedHttpUrl = (input: string): string => {
     throw new Error('Only http(s) URLs are supported.');
   }
   return trimTrailingSlashes(parsed.toString());
+};
+
+const isLocalHttpUrl = (input: string): boolean => {
+  try {
+    return isLocalHostname(new URL(String(input || '').trim()).hostname);
+  } catch {
+    return false;
+  }
 };
 
 export interface SanitizedApiBaseUrlResult {
@@ -26,9 +36,29 @@ export interface SanitizedApiBaseUrlResult {
   fallbackValue: string;
 }
 
+const resolveBrowserOriginBaseUrl = (): string => {
+  if (typeof window === 'undefined' || !window.location) return '';
+  const protocol = String(window.location.protocol || '').toLowerCase();
+  const hostname = String(window.location.hostname || '').trim().toLowerCase();
+  const origin = String(window.location.origin || '').trim();
+  if (!origin) return '';
+  if (protocol !== 'http:' && protocol !== 'https:') return '';
+  if (isLocalHostname(hostname)) return '';
+  return trimTrailingSlashes(origin);
+};
+
+const healHostedRuntimeLocalUrl = (candidate: string): string => {
+  const browserOrigin = resolveBrowserOriginBaseUrl();
+  if (!browserOrigin) return candidate;
+  if (!isLocalHttpUrl(candidate)) return candidate;
+  return browserOrigin;
+};
+
 const sanitizeConfiguredApiBaseUrlInternal = (input: string | undefined, fallbackValue: string): SanitizedApiBaseUrlResult => {
   const raw = String(input || '').trim();
-  const fallback = trimTrailingSlashes(String(fallbackValue || FALLBACK_MEDIA_BACKEND_URL).trim() || FALLBACK_MEDIA_BACKEND_URL);
+  const fallback = healHostedRuntimeLocalUrl(
+    trimTrailingSlashes(String(fallbackValue || FALLBACK_MEDIA_BACKEND_URL).trim() || FALLBACK_MEDIA_BACKEND_URL)
+  );
 
   if (!raw) {
     return {
@@ -45,7 +75,7 @@ const sanitizeConfiguredApiBaseUrlInternal = (input: string | undefined, fallbac
   const typoHealed = normalizeTypoPrefix(raw);
 
   try {
-    const normalized = toNormalizedHttpUrl(typoHealed);
+    const normalized = healHostedRuntimeLocalUrl(toNormalizedHttpUrl(typoHealed));
     return {
       input: raw,
       value: normalized,
@@ -73,17 +103,6 @@ export const sanitizeConfiguredApiBaseUrl = (
   fallbackValue: string = resolveApiBaseUrl()
 ): SanitizedApiBaseUrlResult => {
   return sanitizeConfiguredApiBaseUrlInternal(input, fallbackValue);
-};
-
-const resolveBrowserOriginBaseUrl = (): string => {
-  if (typeof window === 'undefined' || !window.location) return '';
-  const protocol = String(window.location.protocol || '').toLowerCase();
-  const hostname = String(window.location.hostname || '').trim().toLowerCase();
-  const origin = String(window.location.origin || '').trim();
-  if (!origin) return '';
-  if (protocol !== 'http:' && protocol !== 'https:') return '';
-  if (LOCAL_HOSTS.has(hostname)) return '';
-  return trimTrailingSlashes(origin);
 };
 
 export const getDefaultApiBaseUrl = (): string => {
