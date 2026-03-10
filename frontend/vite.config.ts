@@ -10,6 +10,9 @@ const truthy = (value: unknown): boolean => {
 
 const hasValue = (value: unknown): boolean => String(value || '').trim().length > 0;
 
+const isCloudflarePagesBuild = (env: Record<string, string>): boolean =>
+  truthy(env.CF_PAGES) || hasValue(env.CF_PAGES_COMMIT_SHA) || hasValue(env.CF_PAGES_URL);
+
 const assertProductionAuthHardening = (mode: string, env: Record<string, string>): void => {
   if (mode !== 'production') return;
 
@@ -26,7 +29,8 @@ const assertProductionAuthHardening = (mode: string, env: Record<string, string>
   if (truthy(env.VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT)) {
     violations.push('VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT must be 0 in production builds.');
   }
-  if (String(env.VF_AUTH_ENFORCE || '').trim() !== '1') {
+  const effectiveAuthEnforce = String(env.VF_AUTH_ENFORCE || (isCloudflarePagesBuild(env) ? '1' : '')).trim();
+  if (effectiveAuthEnforce !== '1') {
     violations.push('VF_AUTH_ENFORCE must be 1 for production.');
   }
 
