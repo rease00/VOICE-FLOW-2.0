@@ -62,3 +62,6 @@ backend/config/gemini_api_pools.json
 backend/video_dubbing/models/nllb_ct2/model.bin
 backend/video_dubbing/models/nllb_ct2/sentencepiece.bpe.model
 backend/video_dubbing/models/nllb_ct2/tokenizer.json
+
+# Local media scratch files
+✨Soul Land EP 260 [MULTI SUB].mp4
