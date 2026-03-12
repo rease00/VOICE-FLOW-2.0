@@ -132,7 +132,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
         setScreen(AppScreen.USER_ID_SETUP);
         return;
       }
-      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
       setScreen(AppScreen.MAIN);
     } finally {
       setIsLoading(false);
@@ -199,7 +198,6 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
         setScreen(AppScreen.USER_ID_SETUP);
         return;
       }
-      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
       setScreen(AppScreen.MAIN);
     } finally {
       setIsLoading(false);

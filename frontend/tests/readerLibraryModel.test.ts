@@ -46,6 +46,8 @@ describe('reader library model', () => {
     expect(getReaderPrimaryAction(buildItem({ sessionId: 'session-1', resume: { hasProgress: true, consumedChars: 20, currentPanelIndex: 0, progressPct: 10 } })).label).toBe('Resume');
     expect(getReaderPrimaryAction(buildItem({ sessionId: 'session-1', readiness: { state: 'ready', label: 'Ready', playableItems: 1 } })).label).toBe('Play');
     expect(getReaderPrimaryAction(buildItem({ surface: 'uploads', supportsReadHere: true })).label).toBe('Prepare');
+    expect(getReaderPrimaryAction(buildItem({ commercialUseStatus: 'blocked' })).label).toBe('Blocked');
+    expect(getReaderPrimaryAction(buildItem({ commercialUseStatus: 'review' })).label).toBe('Needs Review');
     expect(getReaderPrimaryAction(buildItem({ supportsReadHere: false, readiness: { state: 'blocked', label: 'Blocked', playableItems: 0 } })).disabled).toBe(true);
   });
 

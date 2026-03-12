@@ -1,362 +1,340 @@
-import React from 'react';
-import { Compass, LayoutGrid, List, PanelsTopLeft, Search, Sparkles } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Compass, Search } from 'lucide-react';
 import type { ReaderCatalogItem, ReaderLibrary, ReaderSession } from '../../../../types';
-import type { ReaderPrimaryAction, ReaderSurfaceFilter } from '../model/library';
-import type { ReaderViewMode } from './readerTypes';
+import { getReaderPrimaryAction, type ReaderSurfaceFilter } from '../model/library';
 
 interface ReaderBrowseHomeProps {
   library: ReaderLibrary | null;
   filteredItems: ReaderCatalogItem[];
-  selectedItem: ReaderCatalogItem | null;
+  selectedItemId: string;
   resumeSession: ReaderSession | null;
   resumeItem: ReaderCatalogItem | null;
   surface: ReaderSurfaceFilter;
   regionId: string;
-  resultsCountLabel: string;
-  viewMode: ReaderViewMode;
+  searchQuery: string;
   isLoading: boolean;
-  currentPrimaryAction: ReaderPrimaryAction | null;
   onSelectSurface: (surface: ReaderSurfaceFilter) => void;
   onSelectRegion: (regionId: string) => void;
+  onSetSearchQuery: (value: string) => void;
   onSelectItem: (itemId: string) => void;
-  onPrimaryAction: () => void;
+  onOpenItem: (itemId: string) => void;
   onResumeSession: () => void;
-  onOpenTools: () => void;
-  onOpenAudit: () => void;
-  onSetViewMode: (mode: ReaderViewMode) => void;
   resolveMediaUrl: (url: string | undefined) => string;
   formatCompactStat: (item: ReaderCatalogItem | null) => string;
   formatProgressLabel: (item: ReaderCatalogItem | null) => string;
 }
 
-const SURFACE_LABELS: Array<{ id: ReaderSurfaceFilter; label: string }> = [
-  { id: 'all', label: 'All Collections' },
-  { id: 'books', label: 'Books' },
-  { id: 'comics', label: 'Manga & Comics' },
-  { id: 'uploads', label: 'Imports' },
+const SURFACE_OPTIONS: Array<{ id: ReaderSurfaceFilter; label: string }> = [
+  { id: 'all', label: 'novels' },
+  { id: 'books', label: 'books' },
+  { id: 'comics', label: 'manga/comics' },
 ];
 
-const SHELF_LABELS: Record<keyof ReaderLibrary['shelves'], string> = {
-  continueReading: 'Continue Reading',
-  trending: 'Trending & Popular',
-  newArrivals: 'New Releases',
-  recentlyImported: 'Recently Imported',
-};
+const buildShelf = (source: ReaderCatalogItem[], surface: ReaderSurfaceFilter): ReaderCatalogItem[] =>
+  source.filter((item) => {
+    if (surface === 'all') return true;
+    if (surface === 'uploads') return item.surface === 'uploads';
+    return item.surface === surface;
+  });
 
-const renderCover = (
-  item: ReaderCatalogItem,
-  resolveMediaUrl: (url: string | undefined) => string,
-  className: string
-): React.ReactNode => {
+const buildReadingLibrary = (source: ReaderCatalogItem[], surface: ReaderSurfaceFilter): ReaderCatalogItem[] =>
+  buildShelf(source, surface)
+    .filter((item) => item.surface === 'uploads' || Boolean(item.sessionId || item.resume?.hasProgress))
+    .sort((left, right) => {
+      const rightScore = Number(right.resume?.progressPct || 0) + (right.sessionId ? 20 : 0) + (right.surface === 'uploads' ? 8 : 0);
+      const leftScore = Number(left.resume?.progressPct || 0) + (left.sessionId ? 20 : 0) + (left.surface === 'uploads' ? 8 : 0);
+      if (rightScore !== leftScore) return rightScore - leftScore;
+      return String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''));
+    });
+
+const renderCardCover = (item: ReaderCatalogItem, resolveMediaUrl: (url: string | undefined) => string): React.ReactNode => {
   const coverUrl = resolveMediaUrl(item.coverUrl);
   if (coverUrl) {
-    return <img src={coverUrl} alt={item.title} className={className} />;
+    return <img src={coverUrl} alt={item.title} className="vf-reader-home__card-cover-image" />;
   }
   return (
-    <div className={`${className} vf-reader__poster-fallback`}>
+    <div className="vf-reader-home__card-cover-fallback">
       <span>{item.title}</span>
     </div>
   );
 };
 
+const normalizeCommercialStatus = (value: string | null | undefined): 'allowed' | 'blocked' | 'review' | 'unknown' => {
+  const safe = String(value || '').trim().toLowerCase();
+  if (safe === 'allowed' || safe === 'blocked' || safe === 'review') return safe;
+  return 'unknown';
+};
+
+const formatCommercialLabel = (status: 'allowed' | 'blocked' | 'review' | 'unknown'): string => {
+  if (status === 'allowed') return 'Commercial Ready';
+  if (status === 'review') return 'Needs Review';
+  if (status === 'blocked') return 'Blocked';
+  return 'Reader Ready';
+};
+
+const formatProviderLabel = (value: string | undefined): string =>
+  String(value || '')
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+
+const formatBlockedProvidersLabel = (providers: string[]): string => {
+  if (!providers.length) return 'Catalog restrictions are active for non-vetted sources.';
+  const labels = providers.slice(0, 3).map((provider) => formatProviderLabel(provider));
+  return `Restricted source families: ${labels.join(', ')}${providers.length > 3 ? ` +${providers.length - 3} more` : ''}.`;
+};
+
+const resolveCardActionLabel = (item: ReaderCatalogItem): string => {
+  const primaryAction = getReaderPrimaryAction(item);
+  if (primaryAction.disabled) return primaryAction.label;
+  if (primaryAction.intent === 'resume') return 'Resume Reading';
+  return `Open In ${item.contentKind === 'comic' ? 'Manga Player' : 'Book Player'}`;
+};
+
+const ShelfSection: React.FC<{
+  title: string;
+  eyebrow: string;
+  items: ReaderCatalogItem[];
+  selectedItemId: string;
+  onSelectItem: (itemId: string) => void;
+  onOpenItem: (itemId: string) => void;
+  resolveMediaUrl: (url: string | undefined) => string;
+  formatCompactStat: (item: ReaderCatalogItem | null) => string;
+  formatProgressLabel: (item: ReaderCatalogItem | null) => string;
+}> = ({
+  title,
+  eyebrow,
+  items,
+  selectedItemId,
+  onSelectItem,
+  onOpenItem,
+  resolveMediaUrl,
+  formatCompactStat,
+  formatProgressLabel,
+}) => (
+  <section className="vf-reader-home__shelf">
+    <div className="vf-reader-home__shelf-head">
+      <div>
+        <span>{eyebrow}</span>
+        <h3>{title}</h3>
+      </div>
+      <div className="vf-reader-home__shelf-count">{items.length} titles</div>
+    </div>
+    {items.length === 0 ? (
+      <div className="vf-reader-home__empty-card">No surfaced titles yet for this section.</div>
+    ) : (
+      <div className="vf-reader-home__card-grid">
+        {items.map((item) => {
+          const primaryAction = getReaderPrimaryAction(item);
+          const commercialStatus = normalizeCommercialStatus(item.commercialUseStatus);
+          const commercialReason = commercialStatus === 'blocked' || commercialStatus === 'review'
+            ? String(item.commercialUseReason || '').trim()
+            : '';
+          const actionLabel = resolveCardActionLabel(item);
+          const isDisabled = primaryAction.disabled;
+          const isCommercialRestricted = commercialStatus === 'blocked' || commercialStatus === 'review';
+
+          return (
+            <article
+              key={item.id}
+              className={[
+                'vf-reader-home__card',
+                selectedItemId === item.id ? 'vf-reader-home__card--selected' : '',
+                isDisabled ? 'vf-reader-home__card--disabled' : '',
+                isCommercialRestricted ? `vf-reader-home__card--${commercialStatus}` : '',
+              ].filter(Boolean).join(' ')}
+              onMouseEnter={() => onSelectItem(item.id)}
+              onPointerDown={() => onSelectItem(item.id)}
+              onFocusCapture={() => onSelectItem(item.id)}
+            >
+              <button
+                type="button"
+                className="vf-reader-home__card-cover"
+                onClick={() => onOpenItem(item.id)}
+                disabled={isDisabled}
+                title={commercialReason || undefined}
+              >
+                {renderCardCover(item, resolveMediaUrl)}
+              </button>
+              <div className="vf-reader-home__card-body">
+                <div className="vf-reader-home__card-tags">
+                  <span>{item.surface === 'uploads' ? 'import' : 'legal discovery'}</span>
+                  <span>{formatProviderLabel(item.provider)}</span>
+                  <span className={`vf-reader-home__card-badge vf-reader-home__card-badge--${commercialStatus}`}>
+                    {formatCommercialLabel(commercialStatus)}
+                  </span>
+                </div>
+                <h4>{item.title}</h4>
+                <p>{item.author}</p>
+                {commercialReason ? <div className="vf-reader-home__card-reason">{commercialReason}</div> : null}
+                <div className="vf-reader-home__card-meta">
+                  <span>{formatCompactStat(item)}</span>
+                  <span>{formatProgressLabel(item)}</span>
+                </div>
+                <button
+                  type="button"
+                  className="vf-reader-home__card-action"
+                  onClick={() => onOpenItem(item.id)}
+                  disabled={isDisabled}
+                  title={commercialReason || undefined}
+                >
+                  {actionLabel}
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    )}
+  </section>
+);
+
 export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   library,
   filteredItems,
-  selectedItem,
-  resumeSession,
-  resumeItem,
+  selectedItemId,
   surface,
   regionId,
-  resultsCountLabel,
-  viewMode,
+  searchQuery,
   isLoading,
-  currentPrimaryAction,
   onSelectSurface,
   onSelectRegion,
+  onSetSearchQuery,
   onSelectItem,
-  onPrimaryAction,
-  onResumeSession,
-  onOpenTools,
-  onOpenAudit,
-  onSetViewMode,
+  onOpenItem,
   resolveMediaUrl,
   formatCompactStat,
   formatProgressLabel,
 }) => {
-  const featuredItem = resumeItem || selectedItem || library?.shelves.trending[0] || library?.items[0] || null;
-  const shelfEntries = (Object.keys(SHELF_LABELS) as Array<keyof ReaderLibrary['shelves']>).map((key) => ({
-    key,
-    label: SHELF_LABELS[key],
-    items: (library?.shelves[key] || []).slice(0, 2),
-    total: (library?.shelves[key] || []).length,
-  }));
-  const previewResults = filteredItems.slice(0, viewMode === 'grid' ? 8 : 6);
-  const hiddenResultsCount = Math.max(0, filteredItems.length - previewResults.length);
-  const featuredUsesResume = Boolean(resumeSession && resumeItem && featuredItem?.id === resumeItem.id);
+  const continueReading = useMemo(() => buildShelf(library?.shelves.continueReading || [], surface), [library?.shelves.continueReading, surface]);
+  const discoveryRail = useMemo(() => buildShelf(library?.shelves.trending || [], surface), [library?.shelves.trending, surface]);
+  const readingLibrary = useMemo(() => buildReadingLibrary(library?.items || [], surface), [library?.items, surface]);
+  const newArrivals = useMemo(() => buildShelf(library?.shelves.newArrivals || [], surface), [library?.shelves.newArrivals, surface]);
+  const hasCommercialPolicy = Boolean(library?.commercialPolicyVersion || library?.blockedProviders?.length);
+  const regionOptions = useMemo(() => {
+    const safeRegions = (library?.regions || []).filter((region) => {
+      const regionId = String(region?.id || '').trim();
+      const label = String(region?.label || '').trim();
+      return Boolean(regionId && label);
+    });
+    if (safeRegions.length > 0) return safeRegions;
+    return [
+      {
+        id: regionId || 'global',
+        label: isLoading ? 'Loading regions' : 'All regions',
+      },
+    ];
+  }, [isLoading, library?.regions, regionId]);
+  const isRegionSelectDisabled = regionOptions.length <= 1;
 
   return (
-    <div className="vf-reader__browse-home" data-testid="reader-browse-home">
-      <section className="vf-reader__hero">
-        <div className="vf-reader__hero-grid">
-          <div className="vf-reader__hero-copy">
-            <div className="vf-reader__eyebrow">
-              <Compass size={14} />
-              Reader Home
-            </div>
-            <h2 className="vf-reader__hero-title">
-              Scroll-first browsing, episode-style discovery, and a reading flow that stays focused on the art.
-            </h2>
-            <p className="vf-reader__hero-lede">
-              Browse comics and books like a premium shelf, then enter playback only when you explicitly want to read or listen.
+    <div className="vf-reader-home" data-testid="reader-browse-home">
+      {hasCommercialPolicy ? (
+        <section className="vf-reader-home__policy">
+          <div className="vf-reader-home__policy-copy">
+            <span>Commercial Mode</span>
+            <strong>Reader is running with commercial rights checks enabled.</strong>
+            <p>
+              Use imported owned or licensed material for production work, and only open catalog titles marked commercial-ready.
+              {' '}
+              {formatBlockedProvidersLabel(library?.blockedProviders || [])}
             </p>
-            <div className="vf-reader__chip-row">
-              {SURFACE_LABELS.map((option) => (
+          </div>
+          {library?.commercialPolicyVersion ? (
+            <div className="vf-reader-home__policy-version">Policy {library.commercialPolicyVersion}</div>
+          ) : null}
+        </section>
+      ) : null}
+
+      <section className="vf-reader-home__hero">
+        <div className="vf-reader-home__hero-copy">
+          <div className="vf-reader-home__eyebrow">
+            <Compass size={14} />
+            Reader Home
+          </div>
+          <div className="vf-reader-home__hero-actions">
+            <div className="vf-reader-home__surface-strip">
+              {SURFACE_OPTIONS.map((option) => (
                 <button
                   key={option.id}
                   type="button"
-                  className={`vf-reader__chip ${surface === option.id ? 'vf-reader__chip--active' : ''}`}
+                  className={`vf-reader-home__chip ${surface === option.id ? 'vf-reader-home__chip--active' : ''}`}
                   onClick={() => onSelectSurface(option.id)}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
-            <div className="vf-reader__chip-row">
-              {(library?.regions || []).map((region) => (
-                <button
-                  key={region.id}
-                  type="button"
-                  className={`vf-reader__chip vf-reader__chip--subtle ${regionId === region.id ? 'vf-reader__chip--active' : ''}`}
-                  onClick={() => onSelectRegion(region.id)}
-                >
-                  {region.label}
-                </button>
-              ))}
-            </div>
-            {resumeSession && (
-              <div className="vf-reader__resume-banner">
-                <div className="vf-reader__resume-copy">
-                  <div className="vf-reader__section-eyebrow">Resume Session</div>
-                  <strong>{resumeSession.title}</strong>
-                  <p>
-                    {Math.round(resumeSession.progressPct)}% complete
-                    {resumeSession.contentKind === 'comic'
-                      ? ` | ${Math.min(resumeSession.currentPanelIndex + 1, Math.max(1, resumeSession.totalPanels))}/${Math.max(1, resumeSession.totalPanels)} panels read`
-                      : ` | ${resumeSession.consumedChars.toLocaleString()}/${Math.max(1, resumeSession.totalChars).toLocaleString()} chars read`}
-                  </p>
-                </div>
-                <div className="vf-reader__action-row">
-                  <button type="button" className="vf-reader__btn vf-reader__btn--primary" onClick={onResumeSession}>
-                    Continue Reading
-                  </button>
-                  <button type="button" className="vf-reader__btn vf-reader__btn--secondary" onClick={onOpenAudit}>
-                    Review Audit
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="vf-reader__feature-panel">
-            {featuredItem ? (
-              <>
-                <div className="vf-reader__feature-cover">
-                  {renderCover(featuredItem, resolveMediaUrl, 'vf-reader__feature-cover-image')}
-                </div>
-                <div className="vf-reader__feature-body">
-                  <div className="vf-reader__meta-line">
-                    <span className="vf-reader__pill">{featuredItem.collectionLabel || featuredItem.provider}</span>
-                    <span className="vf-reader__pill vf-reader__pill--muted">{featuredItem.contentKind}</span>
-                    {featuredUsesResume && <span className="vf-reader__pill vf-reader__pill--muted">Live resume</span>}
-                  </div>
-                  <div>
-                    <div className="vf-reader__feature-title">{featuredItem.title}</div>
-                    <div className="vf-reader__feature-author">{featuredItem.author}</div>
-                  </div>
-                  <p className="vf-reader__feature-summary">{featuredItem.summary || 'Prepared for Reader playback.'}</p>
-                  <div className="vf-reader__stat-grid">
-                    <div className="vf-reader__stat-card">
-                      <span className="vf-reader__stat-label">Progress</span>
-                      <strong>{featuredUsesResume ? `${Math.round(resumeSession?.progressPct || 0)}% complete` : formatProgressLabel(featuredItem)}</strong>
-                    </div>
-                    <div className="vf-reader__stat-card">
-                      <span className="vf-reader__stat-label">Collection</span>
-                      <strong>{formatCompactStat(featuredItem)}</strong>
-                    </div>
-                  </div>
-                  <div className="vf-reader__action-row">
-                    <button
-                      type="button"
-                      className="vf-reader__btn vf-reader__btn--primary"
-                      onClick={featuredUsesResume ? onResumeSession : onPrimaryAction}
-                      disabled={!featuredUsesResume && Boolean(currentPrimaryAction?.disabled)}
-                    >
-                      {featuredUsesResume ? 'Continue Reading' : currentPrimaryAction?.label || 'Prepare'}
-                    </button>
-                    <button type="button" className="vf-reader__btn vf-reader__btn--secondary" onClick={onOpenTools}>
-                      Tools
-                    </button>
-                    <button type="button" className="vf-reader__btn vf-reader__btn--ghost" onClick={onOpenAudit}>
-                      Audit
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="vf-reader__empty">
-                <Sparkles size={18} />
-                <div>
-                  <strong>No featured title yet</strong>
-                  <p>Open the Tools panel to import content or adjust filters.</p>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section className="vf-reader__section">
-        <div className="vf-reader__section-header">
-          <div>
-            <div className="vf-reader__section-eyebrow">Discovery Rail</div>
-            <h3>Compact Reader shelves</h3>
-          </div>
-          <p className="vf-reader__section-note">Each rail previews top surfaced titles without forcing the reader into playback.</p>
-        </div>
-
-        <div className="vf-reader__shelf-grid">
-          {shelfEntries.map((shelf) => (
-            <div key={shelf.key} className="vf-reader__shelf-card">
-              <div className="vf-reader__shelf-head">
-                <div>
-                  <div className="vf-reader__section-eyebrow">Discovery Rail</div>
-                  <h3>{shelf.label}</h3>
-                </div>
-                <span className="vf-reader__pill vf-reader__pill--muted">
-                  {shelf.total.toLocaleString()} title{shelf.total === 1 ? '' : 's'}
-                </span>
-              </div>
-
-              {shelf.items.length === 0 && (
-                <div className="vf-reader__empty vf-reader__empty--compact">
-                  <PanelsTopLeft size={18} />
-                  <div>
-                    <strong>Nothing surfaced yet</strong>
-                    <p>Try another region or import a title from the Tools panel.</p>
-                  </div>
-                </div>
-              )}
-
-              {shelf.items.length > 0 && (
-                <div className="vf-reader__shelf-stack">
-                  {shelf.items.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`vf-reader__shelf-item ${selectedItem?.id === item.id ? 'vf-reader__shelf-item--selected' : ''}`}
-                      onClick={() => onSelectItem(item.id)}
-                    >
-                      <div className="vf-reader__shelf-item-cover">
-                        {renderCover(item, resolveMediaUrl, 'vf-reader__shelf-item-cover-image')}
-                      </div>
-                      <div className="vf-reader__shelf-item-body">
-                        <div className="vf-reader__shelf-item-title">{item.title}</div>
-                        <div className="vf-reader__shelf-item-subtitle">{item.author}</div>
-                        <div className="vf-reader__rail-meta">
-                          <span>{formatCompactStat(item)}</span>
-                          <span>{formatProgressLabel(item)}</span>
-                        </div>
-                      </div>
-                    </button>
+            <div className="vf-reader-home__hero-toolbar">
+              <label className="vf-reader-home__search vf-reader-home__search--hero">
+                <Search size={16} />
+                <input value={searchQuery} onChange={(event) => onSetSearchQuery(event.target.value)} placeholder="search" aria-label="Search reader titles" />
+              </label>
+              <label className="vf-reader-home__region-toggle" aria-label="Reader region">
+                <select value={regionOptions.some((region) => region.id === regionId) ? regionId : regionOptions[0]?.id} onChange={(event) => onSelectRegion(event.target.value)} disabled={isRegionSelectDisabled}>
+                  {regionOptions.map((region) => (
+                    <option key={region.id} value={region.id}>
+                      {region.label}
+                    </option>
                   ))}
-                </div>
-              )}
+                </select>
+              </label>
             </div>
-          ))}
+          </div>
         </div>
       </section>
 
-      <section className="vf-reader__section">
-        <div className="vf-reader__section-header">
-          <div>
-            <div className="vf-reader__section-eyebrow">Library Results</div>
-            <h3>{resultsCountLabel}</h3>
-            {hiddenResultsCount > 0 && (
-              <p className="vf-reader__section-note">
-                Showing the first {previewResults.length} titles here. Use the Library panel for the full catalog.
-              </p>
-            )}
-          </div>
-          <div className="vf-reader__toggle-row">
-            <button
-              type="button"
-              className={`vf-reader__icon-toggle ${viewMode === 'grid' ? 'vf-reader__icon-toggle--active' : ''}`}
-              onClick={() => onSetViewMode('grid')}
-              aria-label="Grid view"
-            >
-              <LayoutGrid size={16} />
-            </button>
-            <button
-              type="button"
-              className={`vf-reader__icon-toggle ${viewMode === 'list' ? 'vf-reader__icon-toggle--active' : ''}`}
-              onClick={() => onSetViewMode('list')}
-              aria-label="List view"
-            >
-              <List size={16} />
-            </button>
-          </div>
-        </div>
+      <div className="vf-reader-home__shelves">
+        <ShelfSection
+          title="Continue Reading"
+          eyebrow="Creator Queue"
+          items={continueReading}
+          selectedItemId={selectedItemId}
+          onSelectItem={onSelectItem}
+          onOpenItem={onOpenItem}
+          resolveMediaUrl={resolveMediaUrl}
+          formatCompactStat={formatCompactStat}
+          formatProgressLabel={formatProgressLabel}
+        />
+        <ShelfSection
+          title="Reading Library"
+          eyebrow="Your Library"
+          items={readingLibrary}
+          selectedItemId={selectedItemId}
+          onSelectItem={onSelectItem}
+          onOpenItem={onOpenItem}
+          resolveMediaUrl={resolveMediaUrl}
+          formatCompactStat={formatCompactStat}
+          formatProgressLabel={formatProgressLabel}
+        />
+        <ShelfSection
+          title="Top Trending"
+          eyebrow="Discovery Rail"
+          items={discoveryRail}
+          selectedItemId={selectedItemId}
+          onSelectItem={onSelectItem}
+          onOpenItem={onOpenItem}
+          resolveMediaUrl={resolveMediaUrl}
+          formatCompactStat={formatCompactStat}
+          formatProgressLabel={formatProgressLabel}
+        />
+        <ShelfSection
+          title="New Arrivals"
+          eyebrow="Discovery Rail"
+          items={newArrivals}
+          selectedItemId={selectedItemId}
+          onSelectItem={onSelectItem}
+          onOpenItem={onOpenItem}
+          resolveMediaUrl={resolveMediaUrl}
+          formatCompactStat={formatCompactStat}
+          formatProgressLabel={formatProgressLabel}
+        />
+      </div>
 
-        {isLoading && (
-          <div className="vf-reader__empty">
-            <Search size={18} />
-            <div>
-              <strong>Loading Reader library...</strong>
-              <p>Fetching shelves, resumable sessions, and imports.</p>
-            </div>
-          </div>
-        )}
-
-        {!isLoading && filteredItems.length === 0 && (
-          <div className="vf-reader__empty">
-            <Search size={18} />
-            <div>
-              <strong>No titles match the current filters</strong>
-              <p>Use the Tools panel to change provider, region, or import your own content.</p>
-            </div>
-          </div>
-        )}
-
-        {!isLoading && previewResults.length > 0 && (
-          <div className={viewMode === 'grid' ? 'vf-reader__results-grid' : 'vf-reader__results-list'}>
-            {previewResults.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`vf-reader__result-card ${viewMode === 'list' ? 'vf-reader__result-card--list' : ''} ${selectedItem?.id === item.id ? 'vf-reader__result-card--selected' : ''}`}
-                onClick={() => onSelectItem(item.id)}
-              >
-                <div className={viewMode === 'grid' ? 'vf-reader__result-cover' : 'vf-reader__result-cover vf-reader__result-cover--list'}>
-                  {renderCover(item, resolveMediaUrl, viewMode === 'grid' ? 'vf-reader__result-cover-image' : 'vf-reader__result-cover-image vf-reader__result-cover-image--list')}
-                </div>
-                <div className="vf-reader__result-body">
-                  <div className="vf-reader__meta-line">
-                    <span className="vf-reader__pill">{item.collectionLabel || item.provider}</span>
-                    <span className="vf-reader__pill vf-reader__pill--muted">{item.contentKind}</span>
-                  </div>
-                  <div className="vf-reader__result-title">{item.title}</div>
-                  <div className="vf-reader__result-subtitle">{item.author}</div>
-                  <p className="vf-reader__result-summary">{item.summary || 'Prepared for Reader playback.'}</p>
-                  <div className="vf-reader__rail-meta">
-                    <span>{formatCompactStat(item)}</span>
-                    <span>{formatProgressLabel(item)}</span>
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
+      {isLoading ? <div className="vf-reader-home__loading">Loading Reader library...</div> : null}
+      {filteredItems.length === 0 && !isLoading ? (
+        <div className="vf-reader-home__loading">No titles match the current search or surface filter.</div>
+      ) : null}
     </div>
   );
 };

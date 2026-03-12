@@ -13,5 +13,5 @@ def test_system_version_contract() -> None:
     assert isinstance(payload.get("buildTime"), str)
     assert "gitSha" in payload
     assert isinstance(payload.get("features"), dict)
-    assert "dubbingPrepare" in payload["features"]
+    assert "dubbingPrepare" not in payload["features"]
     assert payload["features"].get("aiOpsGuardian") is True

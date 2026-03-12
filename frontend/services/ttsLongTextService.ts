@@ -36,7 +36,7 @@ export interface LiveChunkRequestProfile {
 }
 
 export const MAX_WORDS_PER_REQUEST = 5000;
-export const MAX_WORDS_PER_WINDOW = 500;
+export const MAX_WORDS_PER_WINDOW = 400;
 export const RETRY_ATTEMPTS_PER_CHUNK = 3;
 export const RETRY_BACKOFF_MS: readonly [number, number] = [500, 1200];
 const SENTENCE_OVERFLOW_RATIO = 1.35;

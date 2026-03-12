@@ -903,13 +903,38 @@ async function openWorkspaceTab(page: Parameters<typeof test>[0]['page'], label:
 }
 
 async function ensureSidebarNavigationVisible(page: Parameters<typeof test>[0]['page']) {
-  const primaryNavButton = page.locator('aside nav button').first();
-  if (await primaryNavButton.isVisible().catch(() => false)) return;
+  const shopButton = page.locator('aside button[aria-label="Shop"]').first();
+  if (await shopButton.isVisible().catch(() => false)) return;
   const openMenuButton = page.getByRole('button', { name: 'Open navigation menu' });
   if (await openMenuButton.isVisible().catch(() => false)) {
     await openMenuButton.click({ force: true });
     await page.waitForTimeout(80);
   }
+}
+
+async function clickSidebarShop(page: Parameters<typeof test>[0]['page']) {
+  await ensureSidebarNavigationVisible(page);
+
+  const shopButtons = page.locator('aside button[aria-label="Shop"]');
+  const buttonCount = await shopButtons.count();
+  for (let index = 0; index < buttonCount; index += 1) {
+    const button = shopButtons.nth(index);
+    await button.evaluate((node) => {
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+      }
+    }).catch(() => undefined);
+    if (!(await button.isVisible().catch(() => false))) continue;
+    await button.evaluate((node) => {
+      if (node instanceof HTMLButtonElement) node.click();
+    });
+    return;
+  }
+
+  await expect(shopButtons.first()).toBeVisible();
+  await shopButtons.first().evaluate((node) => {
+    if (node instanceof HTMLButtonElement) node.click();
+  });
 }
 
 async function clickLabRailButton(page: Parameters<typeof test>[0]['page'], label: string) {
@@ -964,7 +989,6 @@ interface StudioSmokeAudit {
 interface StudioSmokeStubOptions {
   completeAfterPolls?: number;
   failuresToInject?: number;
-  lowTokenBalance?: boolean;
 }
 
 interface StudioSmokeRouteHarness {
@@ -1001,13 +1025,10 @@ const resolveStudioSmokeCredentials = (): StudioSmokeCredentials | null => {
   return { email, password, username: username || derivedUsername || undefined };
 };
 
-const buildStudioSmokeEntitlements = (options?: { lowTokenBalance?: boolean }) => {
-  const lowTokenBalance = Boolean(options?.lowTokenBalance);
+const buildStudioSmokeEntitlements = () => {
   const now = new Date();
   const currentIso = now.toISOString();
   const nextIso = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  const spendable = lowTokenBalance ? 0 : 5000;
-  const monthlyFree = lowTokenBalance ? 0 : 5000;
   return {
     entitlements: {
       uid: 'studio-smoke-admin',
@@ -1061,14 +1082,14 @@ const buildStudioSmokeEntitlements = (options?: { lowTokenBalance?: boolean }) =
         earlyAccess: true,
       },
       wallet: {
-        monthlyFreeRemaining: monthlyFree,
-        monthlyFreeLimit: monthlyFree,
-        vffBalance: monthlyFree,
+        monthlyFreeRemaining: 5000,
+        monthlyFreeLimit: 5000,
+        vffBalance: 5000,
         paidVfBalance: 0,
         spendableNowByEngine: {
-          KOKORO: spendable,
-          NEURAL2: spendable,
-          GEM: spendable,
+          KOKORO: 5000,
+          NEURAL2: 5000,
+          GEM: 5000,
         },
         adClaimsToday: 0,
         adClaimsDailyLimit: 5,
@@ -1197,7 +1218,7 @@ async function installStudioTtsRouteHarness(
       return;
     }
     audit.entitlementsReads += 1;
-    await fulfillJson(route, buildStudioSmokeEntitlements({ lowTokenBalance: options?.lowTokenBalance }), 200);
+    await fulfillJson(route, buildStudioSmokeEntitlements(), 200);
   });
 
   await page.route('**/account/profile**', async (route) => {
@@ -1458,7 +1479,7 @@ test('workspace navigation keeps all non-admin tabs reachable and URL-synced', a
   await page.goto('/?vf-screen=main&vf-tab=READER');
   await expect(page.getByTestId('reader-browse-home')).toBeVisible();
 
-  const candidateTabs: Array<{ label: string; query: string }> = [
+  const tabs: Array<{ label: string; query: string }> = [
     { label: 'Studio', query: 'STUDIO' },
     { label: 'Podcast', query: 'PODCAST' },
     { label: 'Reader', query: 'READER' },
@@ -1467,14 +1488,6 @@ test('workspace navigation keeps all non-admin tabs reachable and URL-synced', a
     { label: 'History', query: 'HISTORY' },
   ];
 
-  const tabs: Array<{ label: string; query: string }> = [];
-  for (const tab of candidateTabs) {
-    const navButton = page.getByRole('button', { name: new RegExp(`^${tab.label}$`, 'i') }).first();
-    const visible = await navButton.isVisible().catch(() => false);
-    if (visible) tabs.push(tab);
-  }
-  expect(tabs.length).toBeGreaterThanOrEqual(4);
-
   for (const tab of tabs) {
     await openWorkspaceTab(page, tab.label);
     await expect(page.locator('#root')).toBeVisible();
@@ -1482,10 +1495,31 @@ test('workspace navigation keeps all non-admin tabs reachable and URL-synced', a
     await expect.poll(() => new URL(page.url()).searchParams.get('vf-tab')).toBe(tab.query);
   }
 
-  await expect(page.locator('aside button[aria-label="Shop"]')).toHaveCount(0);
-  const planLabel = await page.getByRole('button', { name: /Open plan and credits/i }).first().innerText().catch(() => '');
-  expect(String(planLabel || '').toLowerCase()).not.toContain(' left');
-  await expect(page.getByText('Daily Left')).toHaveCount(0);
+  const tabBeforeShop = new URL(page.url()).searchParams.get('vf-tab');
+  await clickSidebarShop(page);
+  await expect.poll(() => new URL(page.url()).searchParams.get('vf-tab')).toBe(tabBeforeShop);
+  await expect(page.locator('aside button[aria-label="Shop"]')).toHaveCount(1);
+
+  let shopOutcome: 'credits' | 'signup' | null = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await page.getByText('Plan & Credits').first().isVisible().catch(() => false)) {
+      shopOutcome = 'credits';
+      break;
+    }
+    const authIntent = await page.evaluate(() => window.localStorage.getItem('vf_auth_intent'));
+    if (authIntent === 'signup') {
+      shopOutcome = 'signup';
+      break;
+    }
+    await page.waitForTimeout(100);
+  }
+  expect(shopOutcome).not.toBeNull();
+
+  if (shopOutcome === 'credits') {
+    await expect(page.getByText('Plan & Credits').first()).toBeVisible();
+  } else {
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('vf_auth_intent'))).toBe('signup');
+  }
 });
 
 test('studio tab deep-link keeps URL state in sync after navigation', async ({ page }) => {
@@ -1594,33 +1628,7 @@ test('studio queue mode can resume after a failed part', async ({ page }, testIn
   await expect(page.getByRole('button', { name: 'Reset and start new generation' }).first()).toBeVisible({ timeout: 45_000 });
 });
 
-test('low-token block opens Token Shop surface on Tokens tab', async ({ page }) => {
-  test.setTimeout(120000);
-  const credentials = resolveStudioSmokeCredentials();
-  test.skip(!credentials, 'Set PLAYWRIGHT_ADMIN_EMAIL and PLAYWRIGHT_ADMIN_PASSWORD for authenticated Studio smoke.');
-  if (!credentials) return;
-
-  const harness = await installStudioTtsRouteHarness(page, credentials, {
-    completeAfterPolls: 1,
-    lowTokenBalance: true,
-  });
-  await ensureStudioSmokeAuthenticated(page, credentials);
-  await expect.poll(() => harness.audit.entitlementsReads, { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
-
-  await fillStudioRawScript(page, 'Low token prompt trigger.');
-  await page.getByRole('button', { name: 'Generate Audio' }).first().click();
-
-  const lowTokenDialog = page.getByRole('dialog', { name: /Low token alert/i }).first();
-  await expect(lowTokenDialog).toBeVisible({ timeout: 10_000 });
-  await lowTokenDialog.getByRole('button', { name: /Open Token Shop/i }).click();
-
-  await expect(page.getByText('Plan & Credits').first()).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Tokens$/ }).first()).toBeVisible();
-  await expect(page.getByText('Token Pack').first()).toBeVisible();
-  await expect(page.getByText('Daily Left')).toHaveCount(0);
-});
-
-test('guest plan and credits action routes to sign up', async ({ page }) => {
+test('guest shop action routes to sign up', async ({ page }) => {
   await page.goto('/?vf-screen=main&vf-tab=STUDIO');
   await ensureSidebarNavigationVisible(page);
   const sidebar = page.locator('aside').first();
@@ -1631,9 +1639,7 @@ test('guest plan and credits action routes to sign up', async ({ page }) => {
     await ensureSidebarNavigationVisible(page);
   }
   await expect(sidebar.getByRole('button', { name: /^login$/i }).first()).toBeVisible();
-  const planButton = page.getByRole('button', { name: /Open plan and credits/i }).first();
-  await planButton.click({ force: true });
-  await expect(page.locator('aside button[aria-label="Shop"]')).toHaveCount(0);
+  await openWorkspaceTab(page, 'Shop');
   await expect(page.getByRole('button', { name: /create account/i })).toBeVisible();
 });
 

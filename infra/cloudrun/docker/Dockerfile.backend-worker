@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app/backend
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt backend/requirements-core.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
+
+COPY backend/ /app/backend/
+
+ENV PORT=8080 \
+    VF_BACKEND_HOST=0.0.0.0
+
+EXPOSE 8080
+
+CMD ["sh", "-lc", "python -m uvicorn app:app --app-dir . --host ${VF_BACKEND_HOST:-0.0.0.0} --port ${PORT:-8080}"]

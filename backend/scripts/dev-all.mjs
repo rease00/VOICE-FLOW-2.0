@@ -9,13 +9,12 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_ROOT = path.resolve(ROOT, "..");
 const PID_DIR = path.join(ROOT, ".runtime", "pids");
-
-const SERVICES = [
+const SERVICE_CATALOG = [
   { id: "media-backend", name: "Media Backend", logFile: ".runtime/logs/media-backend.log" },
   { id: "gemini-runtime", name: "Gemini Runtime", logFile: ".runtime/logs/gemini-runtime.log" },
   { id: "kokoro-runtime", name: "Kokoro Runtime", logFile: ".runtime/logs/kokoro-runtime.log" },
-  { id: "voice-transfer-runtime", name: "Voice Transfer Runtime", logFile: ".runtime/logs/voice-transfer-runtime.log" },
 ];
+const SERVICES = SERVICE_CATALOG;
 
 const BOOTSTRAP_MODE = String(process.env.VF_DEV_BOOTSTRAP_MODE || "cpu").trim().toLowerCase() === "gpu" ? "gpu" : "cpu";
 const KEEP_SERVICES = toBool(process.env.VF_DEV_KEEP_SERVICES, false);
@@ -330,12 +329,18 @@ async function cleanupSessionServices() {
 
 function startVite() {
   return new Promise((resolve) => {
-    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-    const args = ["--prefix", "frontend", "run", "dev:ui"];
+    const frontendRoot = path.join(WORKSPACE_ROOT, "frontend");
+    const npmExecPath = process.env.npm_execpath;
+    if (!npmExecPath) {
+      console.error('[dev-all] stage=vite status=fail cause="npm_execpath is not set"');
+      resolve(1);
+      return;
+    }
+    const args = [npmExecPath, "run", "dev:ui"];
 
     try {
-      viteChild = spawn(npmCmd, args, {
-        cwd: WORKSPACE_ROOT,
+      viteChild = spawn(process.execPath, args, {
+        cwd: frontendRoot,
         stdio: "inherit",
         env: process.env,
         windowsHide: false,

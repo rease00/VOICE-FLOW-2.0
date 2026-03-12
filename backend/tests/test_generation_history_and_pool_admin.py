@@ -560,6 +560,84 @@ def test_admin_gemini_pools_syncs_authoritative_free_pool(monkeypatch, tmp_path:
     assert free_b not in persisted_text
 
 
+def test_admin_gemini_pools_rotate_persists_authoritative_file_order(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_a = _make_key(104)
+    free_b = _make_key(105)
+    free_c = _make_key(106)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_a}\n{free_b}\n{free_c}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(
+        backend_app,
+        "_runtime_gemini_pool_reload",
+        lambda: {"ok": True, "reloaded": True},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_runtime_gemini_pool_snapshot",
+        lambda: {"ok": True, "pool": {"keyCount": 3}},
+    )
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+
+    rotated = client.post(
+        "/admin/gemini/pools/rotate",
+        headers={"x-dev-uid": "local_admin"},
+        json={"steps": 1},
+    )
+    assert rotated.status_code == 200
+    payload = rotated.json()
+    assert payload["ok"] is True
+    assert payload["rotation"]["storageMode"] == "api_file_authoritative"
+    assert int(payload["rotation"]["stepsApplied"]) == 1
+    assert payload["rotation"]["beforeHead"]["fingerprint"] != payload["rotation"]["afterHead"]["fingerprint"]
+    _assert_masked_pool_keys(payload["config"], "free", 3)
+
+    rotated_lines = [line.strip() for line in keys_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert rotated_lines == [free_b, free_c, free_a]
+
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    refreshed = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert refreshed.status_code == 200
+    refreshed_payload = refreshed.json()
+    _assert_masked_pool_keys(refreshed_payload["config"], "free", 3)
+    key_metadata = list(((refreshed_payload["config"].get("pools") or {}).get("free") or {}).get("keyMetadata") or [])
+    assert key_metadata
+    assert str(key_metadata[0].get("fingerprint") or "") == backend_app._gemini_key_fingerprint(free_b)
+
+
 def test_admin_gemini_pools_put_ignores_free_edits_when_locked(monkeypatch, tmp_path: Path) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -1189,7 +1267,7 @@ def test_tts_synthesize_enforces_free_plan_success_limit(monkeypatch) -> None:
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": "burst_free_user"}
     payload = {
-        "engine": "GOOD",
+        "engine": "NEURAL2",
         "text": "burst limit test",
         "voice_id": "v2",
     }
@@ -1219,7 +1297,7 @@ def test_tts_synthesize_enforces_plan_char_limit(monkeypatch) -> None:
         "/tts/synthesize",
         headers=headers,
         json={
-            "engine": "GOOD",
+            "engine": "NEURAL2",
             "text": too_long_text,
             "voice_id": "v2",
         },
@@ -1274,7 +1352,7 @@ def test_tts_success_limit_does_not_count_failed_generation(monkeypatch) -> None
     monkeypatch.setattr(backend_app.requests, "post", _runtime)
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": "success_only_user"}
-    payload = {"engine": "GOOD", "text": "success-only limit", "voice_id": "v2"}
+    payload = {"engine": "NEURAL2", "text": "success-only limit", "voice_id": "v2"}
 
     first = client.post("/tts/synthesize", headers=headers, json=payload)
     failed = client.post("/tts/synthesize", headers=headers, json=payload)
@@ -1298,7 +1376,7 @@ def test_tts_success_limit_idempotency_key_does_not_double_count(monkeypatch) ->
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
     client = TestClient(backend_app.app)
     uid = "idempotency_user"
-    payload = {"engine": "GOOD", "text": "idempotency success test", "voice_id": "v2"}
+    payload = {"engine": "NEURAL2", "text": "idempotency success test", "voice_id": "v2"}
 
     free_limit = max(2, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_FREE", 2) or 2))
     first = client.post("/tts/synthesize", headers={"x-dev-uid": uid, "Idempotency-Key": "idem-1"}, json=payload)

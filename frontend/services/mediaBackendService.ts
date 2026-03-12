@@ -23,7 +23,7 @@ import {
   type RuntimeLogService,
 } from '../src/shared/api/gatewayClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
-import { requestBlob, requestJson } from '../src/shared/api/httpClient';
+import { requestBlob, requestJson, requestPublicJson } from '../src/shared/api/httpClient';
 
 export interface MediaBackendHealth {
   ok: boolean;
@@ -140,38 +140,26 @@ export type DubbingJobStatusResult = {
 };
 
 const toBaseUrl = (input?: string): string => resolveApiBaseUrl(input);
+const removedFeatureError = (feature: string): Error =>
+  new Error(`${feature} was removed from this project.`);
 
 export const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'mediaBackendUrl'>): string => {
   return toBaseUrl(settings.mediaBackendUrl);
 };
 
 export const checkMediaBackendHealth = async (baseUrl: string): Promise<MediaBackendHealth> => {
-  return requestJson<MediaBackendHealth>('/health', undefined, { baseUrl: toBaseUrl(baseUrl) });
+  return requestPublicJson<MediaBackendHealth>('/health', undefined, { baseUrl: toBaseUrl(baseUrl) });
 };
 
 export const listVoiceTransferModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {
-  const payload = await requestJson<{ models?: string[]; currentModel?: string }>('/voice-transfer/models', undefined, {
-    baseUrl: toBaseUrl(baseUrl),
-  });
-  const response: { models: string[]; currentModel?: string } = {
-    models: Array.isArray(payload?.models) ? payload.models : [],
-  };
-  if (typeof payload?.currentModel === 'string') {
-    response.currentModel = payload.currentModel;
-  }
-  return response;
+  void baseUrl;
+  throw removedFeatureError('Voice transfer models');
 };
 
 export const loadVoiceTransferModel = async (baseUrl: string, modelName: string): Promise<void> => {
-  await requestJson<{ ok: boolean }>(
-    '/voice-transfer/load-model',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelName }),
-    },
-    { baseUrl: toBaseUrl(baseUrl) }
-  );
+  void baseUrl;
+  void modelName;
+  throw removedFeatureError('Voice transfer model loading');
 };
 
 export const convertVoiceTransferCover = async (
@@ -189,27 +177,11 @@ export const convertVoiceTransferCover = async (
     separateStem?: boolean;
   }
 ): Promise<Blob> => {
-  const form = new FormData();
-  // Backend accepts audio/video source and normalizes it to WAV before voice transfer.
-  form.append('file', sourceAudio);
-  form.append('model_name', modelName);
-  form.append('preset', options?.preset || 'tts_realtime');
-  form.append('pitch_shift', String(Math.round(options?.pitchShift ?? 0)));
-  form.append('index_rate', String(options?.indexRate ?? 0.5));
-  form.append('filter_radius', String(options?.filterRadius ?? 3));
-  form.append('rms_mix_rate', String(options?.rmsMixRate ?? 1.0));
-  form.append('protect', String(options?.protect ?? 0.33));
-  form.append('f0_method', options?.f0Method || 'rmvpe');
-  form.append('separate_stem', String(options?.separateStem ?? true));
-
-  return requestBlob(
-    '/voice-transfer/convert',
-    {
-      method: 'POST',
-      body: form,
-    },
-    { baseUrl: toBaseUrl(baseUrl) }
-  );
+  void baseUrl;
+  void sourceAudio;
+  void modelName;
+  void options;
+  throw removedFeatureError('Voice transfer conversion');
 };
 
 export const transcribeVideoWithBackend = async (
@@ -222,24 +194,19 @@ export const transcribeVideoWithBackend = async (
     speakerLabel?: string;
   }
 ): Promise<VideoTranscriptionResult> => {
-  const request = {
-    baseUrl: toBaseUrl(baseUrl),
-    returnWords: true,
-    ...(options?.language ? { language: options.language } : {}),
-    ...(options?.task ? { task: options.task } : {}),
-    ...(typeof options?.captureEmotions === 'boolean' ? { includeEmotion: options.captureEmotions } : {}),
-    ...(options?.speakerLabel ? { speakerLabel: options.speakerLabel } : {}),
-  };
-  return transcribeVideo(videoFile, request);
+  void baseUrl;
+  void videoFile;
+  void options;
+  throw removedFeatureError('Video transcription');
 };
 
 export const extractAudioFromVideoWithBackend = async (
   baseUrl: string,
   sourceFile: File
 ): Promise<Blob> => {
-  return gatewayExtractAudioFromVideo(sourceFile, {
-    baseUrl: toBaseUrl(baseUrl),
-  });
+  void baseUrl;
+  void sourceFile;
+  throw removedFeatureError('Extract audio from video');
 };
 
 export const separateVideoStemWithBackend = async (
@@ -250,12 +217,10 @@ export const separateVideoStemWithBackend = async (
     modelName?: string;
   }
 ): Promise<Blob> => {
-  const request = {
-    baseUrl: toBaseUrl(baseUrl),
-    ...(options?.stem ? { stem: options.stem } : {}),
-    ...(options?.modelName ? { modelName: options.modelName } : {}),
-  };
-  return separateStem(sourceFile, request);
+  void baseUrl;
+  void sourceFile;
+  void options;
+  throw removedFeatureError('Video stem separation');
 };
 
 export const muxDubbedVideo = async (
@@ -264,14 +229,11 @@ export const muxDubbedVideo = async (
   dubAudioFile: File,
   options?: { speechGain?: number; backgroundGain?: number; normalize?: boolean; backgroundAudio?: File }
 ): Promise<Blob> => {
-  const request = {
-    baseUrl: toBaseUrl(baseUrl),
-    ...(typeof options?.speechGain === 'number' ? { speechGain: options.speechGain } : {}),
-    ...(typeof options?.backgroundGain === 'number' ? { backgroundGain: options.backgroundGain } : {}),
-    ...(typeof options?.normalize === 'boolean' ? { normalize: options.normalize } : {}),
-    ...(options?.backgroundAudio ? { backgroundAudio: options.backgroundAudio } : {}),
-  };
-  return gatewayMuxDubbedVideo(videoFile, dubAudioFile, request);
+  void baseUrl;
+  void videoFile;
+  void dubAudioFile;
+  void options;
+  throw removedFeatureError('Video dubbing mux');
 };
 
 export const switchTtsEngineRuntime = async (
@@ -315,20 +277,10 @@ export const createDubbingJobV2 = async (
     advanced?: Record<string, unknown>;
   }
 ): Promise<DubbingJobCreateResult> => {
-  const rawAdvanced = (options?.advanced && typeof options.advanced === 'object')
-    ? options.advanced
-    : {};
-  const advanced = {
-    ...rawAdvanced,
-    tts_route: String((rawAdvanced as Record<string, unknown>).tts_route || 'auto').trim() || 'auto',
-  };
-  return gatewayCreateDubbingJobV2(sourceFile, {
-    baseUrl: toBaseUrl(baseUrl),
-    targetLanguage: options?.targetLanguage || 'auto',
-    mode: options?.mode || 'strict_full',
-    output: options?.output || 'audio+video',
-    advanced,
-  });
+  void baseUrl;
+  void sourceFile;
+  void options;
+  throw removedFeatureError('Dubbing jobs');
 };
 
 export const getDubbingJob = async (
@@ -341,36 +293,33 @@ export const getDubbingJob = async (
     includeChunkAudio?: boolean;
   }
 ): Promise<DubbingJobStatusResult> => {
-  const hasAdvancedOptions = Boolean(
-    options
-    && (
-      options.includeChunks
-      || typeof options.chunkCursor === 'number'
-      || typeof options.chunkLimit === 'number'
-      || typeof options.includeChunkAudio === 'boolean'
-    )
-  );
-  if (hasAdvancedOptions) {
-    return gatewayGetDubbingJobWithOptions(jobId, {
-      ...(options || {}),
-      baseUrl: toBaseUrl(baseUrl),
-    }) as Promise<DubbingJobStatusResult>;
-  }
-  return gatewayGetDubbingJob(jobId, toBaseUrl(baseUrl)) as Promise<DubbingJobStatusResult>;
+  void baseUrl;
+  void jobId;
+  void options;
+  throw removedFeatureError('Dubbing jobs');
 };
 
 export const cancelDubbingJob = async (baseUrl: string, jobId: string): Promise<{ ok: boolean; job_id: string }> => {
-  return gatewayCancelDubbingJob(jobId, toBaseUrl(baseUrl));
+  void baseUrl;
+  void jobId;
+  throw removedFeatureError('Dubbing jobs');
 };
 
 export const downloadDubbingReport = async (baseUrl: string, jobId: string): Promise<Blob> => {
-  return gatewayDownloadDubbingReport(jobId, toBaseUrl(baseUrl));
+  void baseUrl;
+  void jobId;
+  throw removedFeatureError('Dubbing reports');
 };
 
 export const downloadDubbingResult = async (baseUrl: string, jobId: string): Promise<Blob> => {
-  return gatewayDownloadDubbingResult(jobId, toBaseUrl(baseUrl));
+  void baseUrl;
+  void jobId;
+  throw removedFeatureError('Dubbing results');
 };
 
 export const downloadDubbingChunk = async (baseUrl: string, jobId: string, chunkIndex: number): Promise<Blob> => {
-  return gatewayDownloadDubbingChunk(jobId, chunkIndex, toBaseUrl(baseUrl));
+  void baseUrl;
+  void jobId;
+  void chunkIndex;
+  throw removedFeatureError('Dubbing chunks');
 };

@@ -194,6 +194,14 @@ const requiresEmailVerificationForUser = (user: { email?: string | null; emailVe
   return user.emailVerified !== true;
 };
 
+const syncUserIdSetupRequirement = (required: boolean): void => {
+  if (required) {
+    writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
+    return;
+  }
+  removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+};
+
 const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
   const token = String(value || '').trim().toLowerCase();
   if (token === 'starter') return 'Starter';
@@ -759,7 +767,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const profile = await mapFirebaseUserToProfile();
       setUser(profile);
       bootstrapCharacterSync(firebaseUser.uid);
-      await applyPendingSignupProfile(firebaseUser.uid, String(firebaseUser.email || ''));
       await Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
     });
     return () => {
@@ -838,17 +845,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       }
       try {
-        const credential = await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
-        await credential.user.reload().catch(() => undefined);
-        if (requiresEmailVerificationForUser(credential.user)) {
-          await signOut(firebaseAuth).catch(() => undefined);
-          return {
-            ok: false,
-            error: unverifiedEmailAuthMessage,
-            requiresEmailVerification: true,
-            canResendVerification: true,
-          };
-        }
+        await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
         return { ok: true };
       } catch (error: any) {
         return {
@@ -871,17 +868,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: 'Use a full email address to sign in. If needed, map an admin username or admin UID using VITE_ADMIN_LOGIN_EMAIL in .env.',
         };
       }
-      const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
-      await credential.user.reload().catch(() => undefined);
-      if (requiresEmailVerificationForUser(credential.user)) {
-        await signOut(firebaseAuth).catch(() => undefined);
-        return {
-          ok: false,
-          error: unverifiedEmailAuthMessage,
-          requiresEmailVerification: true,
-          canResendVerification: true,
-        };
-      }
+      await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1054,16 +1041,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     try {
-      const result = await signInWithPopup(firebaseAuth, facebookProvider);
-      await result.user.reload().catch(() => undefined);
-      if (requiresEmailVerificationForUser(result.user)) {
-        await signOut(firebaseAuth).catch(() => undefined);
-        return {
-          ok: false,
-          error: unverifiedEmailAuthMessage,
-          requiresEmailVerification: true,
-        };
-      }
+      await signInWithPopup(firebaseAuth, facebookProvider);
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };

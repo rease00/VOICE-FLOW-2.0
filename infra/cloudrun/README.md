@@ -6,7 +6,6 @@ This folder contains Cloud Run production deployment assets for the split topolo
 - `voiceflow-worker` (internal ingress)
 - `voiceflow-gemini-runtime` (internal ingress)
 - `voiceflow-kokoro-runtime` (internal ingress)
-- `voiceflow-voice-transfer-runtime` (internal ingress)
 
 The API and worker use the same backend image with role-based startup:
 
@@ -17,6 +16,7 @@ The API and worker use the same backend image with role-based startup:
 ## Files
 
 - `services.default.json`: service defaults, scaling, env mapping, Secret Manager bindings.
+- `profiles.cloudrun-2vcpu.json`: named capacity contract used by deploy and load-test tooling.
 - `deploy.ps1`: build + deploy script for all services.
 - `rollout-traffic.ps1`: staged traffic rollout (`10% -> 50% -> 100%`) with optional auto-rollback checks.
 - `docker/`: container definitions.
@@ -59,16 +59,16 @@ Deploy without rebuilding images:
 
 `services.default.json` is preconfigured for growth-oriented defaults:
 
-- API: `min=2`, `max=50`, concurrency `80`
-- Worker: `min=2`, `max=50`, concurrency `1`, CPU always allocated
-- Gemini runtime: `min=1`, `max=20`
-- Kokoro runtime: `min=1`, `max=20`
-- Voice Transfer runtime: `min=0`, `max=10`
+- Default profile: `cloudrun-2vcpu`
+- API: `min=1`, `max=20`, concurrency `16`
+- Worker: `min=1`, `max=12`, concurrency `1`, CPU always allocated
+- Gemini runtime: `min=1`, `max=10`, concurrency `2`
+- Kokoro runtime: `min=0`, `max=6`, concurrency `1`
 - Execution environment: `gen2`
 - Startup CPU boost: enabled
 - Request timeouts: service-specific (`300s` to `1200s`)
 
-Adjust max instances after staging load tests.
+Adjust max instances only after the `cloudrun-2vcpu` load profile is green in staging.
 
 ## Service Config Knobs
 

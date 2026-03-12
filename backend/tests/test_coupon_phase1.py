@@ -228,7 +228,7 @@ def test_sensitive_ops_and_runtime_routes_require_admin(monkeypatch) -> None:
 
     assert client.get("/runtime/logs/tail?service=media-backend", headers=plain_headers).status_code == 403
     assert client.post("/tts/engines/switch", headers=plain_headers, json={"engine": "GEM", "gpu": False}).status_code == 403
-    assert client.post("/services/dubbing/prepare", headers=plain_headers, json={"gpu": False}).status_code == 403
+    assert client.post("/services/dubbing/prepare", headers=plain_headers, json={"gpu": False}).status_code == 404
     assert client.post("/ops/guardian/scan", headers=plain_headers, json={"autoFixMinor": False}).status_code == 403
     assert client.get("/ops/guardian/approvals", headers=plain_headers).status_code == 403
     assert client.post("/ops/guardian/actions", headers=plain_headers, json={"action": "enable_soft_shedding"}).status_code == 403

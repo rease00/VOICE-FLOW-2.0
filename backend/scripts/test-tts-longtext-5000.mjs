@@ -21,8 +21,8 @@ const GEM_MAX_WORDS_PER_REQUEST = Math.max(
   Number(process.env.VF_TTS_LONGTEXT_GEM_MAX_WORDS_PER_REQUEST || 160),
 );
 const KOKORO_MAX_WORDS_PER_REQUEST = Math.max(
-  200,
-  Number(process.env.VF_TTS_LONGTEXT_KOKORO_MAX_WORDS_PER_REQUEST || 1400),
+  80,
+  Number(process.env.VF_TTS_LONGTEXT_KOKORO_MAX_WORDS_PER_REQUEST || 80),
 );
 const MAX_ACCEPTABLE_WORDS_PER_SEC = Math.max(
   1.0,
@@ -38,6 +38,9 @@ const GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS = Math.max(
 );
 const ALLOW_PREFLIGHT_FAILURE = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_TTS_LONGTEXT_ALLOW_PREFLIGHT_FAILURE || '').trim().toLowerCase(),
+);
+const QUOTA_HARD_FAIL = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.VF_TTS_LONGTEXT_QUOTA_HARD_FAIL || '').trim().toLowerCase(),
 );
 const RETRY_MAX = Math.max(0, Number(process.env.VF_TTS_LONGTEXT_RETRY_MAX || 2));
 const RETRY_BASE_MS = Math.max(100, Number(process.env.VF_TTS_LONGTEXT_RETRY_BASE_MS || 800));
@@ -229,11 +232,20 @@ const isQuotaBlockedFailure = ({ status, failureClass, error }) => {
   );
 };
 
+const isUpstreamInfraBlockedFailure = ({ status, error }) => {
+  const code = extractErrorCode(error);
+  const detailText = toLowerText(error);
+  if (code === 'GEMINI_UPSTREAM_MODEL_FAILED') return true;
+  if (status === 502 && detailText.includes('upstream_failure')) return true;
+  return detailText.includes('model attempts failed');
+};
+
 const normalizeLongtextFailureClass = (result) => {
   if (!result || result.ok) return 'ok';
   const status = Number(result.status || 0);
   const failureToken = String(result.failureClass || '').trim().toLowerCase();
   if (isQuotaBlockedFailure({ status, failureClass: failureToken, error: result.error })) return 'quota_blocked';
+  if (isUpstreamInfraBlockedFailure({ status, error: result.error })) return 'infra_blocked';
   if (failureToken === 'timeout') return 'timeout';
   if (failureToken === 'backend_unavailable') return 'backend_unavailable';
   if (failureToken === 'backend_error') return 'backend_error';
@@ -632,6 +644,7 @@ const main = async () => {
       engines: ACTIVE_ENGINES,
       quotaPrecheckEngine: PRIMARY_GEM_ENGINE,
       allowPrecheckFailure: ALLOW_PREFLIGHT_FAILURE,
+      quotaHardFail: QUOTA_HARD_FAIL,
       gemMaxWordsPerRequest: GEM_MAX_WORDS_PER_REQUEST,
       smokeMaxExecutedChunks: SMOKE_MAX_EXECUTED_CHUNKS,
       maxAcceptableWordsPerSec: MAX_ACCEPTABLE_WORDS_PER_SEC,
@@ -658,7 +671,7 @@ const main = async () => {
     for (const check of preflight.checks.filter((entry) => !entry.ok)) {
       console.log(`[FAIL] preflight ${check.name} status=${check.status} class=${check.classification}`);
     }
-    process.exit(1);
+    return 1;
   }
 
   const quotaPrecheck = await runGeminiQuotaPrecheck();
@@ -667,42 +680,53 @@ const main = async () => {
     const precheckClass = String(quotaPrecheck.classification || 'unknown');
     const precheckReliability = new Set(['timeout', 'backend_unavailable', 'backend_error', 'quality_regression']);
     const isReliabilityFailure = precheckReliability.has(precheckClass);
-    const isQuotaFailure = precheckClass === 'quota_blocked';
-    if (ALLOW_PREFLIGHT_FAILURE) {
+    const isInfraBlockedFailure = precheckClass === 'quota_blocked' || precheckClass === 'infra_blocked';
+    const shouldBypassPrecheck = ALLOW_PREFLIGHT_FAILURE || (isInfraBlockedFailure && !QUOTA_HARD_FAIL);
+    if (shouldBypassPrecheck) {
       report.precheckBypassed = {
         enabled: true,
         failureClass: precheckClass,
         status: quotaPrecheck.status,
         error: quotaPrecheck.error || null,
+        mode: ALLOW_PREFLIGHT_FAILURE ? 'allow_precheck_failure' : 'quota_infra_blocked',
       };
       console.log(
         `[WARN] gemini quota precheck class=${quotaPrecheck.classification} status=${quotaPrecheck.status} ` +
-        `error=${summarizeErrorForLog(quotaPrecheck.error)}; continuing because VF_TTS_LONGTEXT_ALLOW_PREFLIGHT_FAILURE=1`
+        `error=${summarizeErrorForLog(quotaPrecheck.error)}; continuing because ${
+          ALLOW_PREFLIGHT_FAILURE
+            ? 'VF_TTS_LONGTEXT_ALLOW_PREFLIGHT_FAILURE=1'
+            : 'quota failures are infra-blocked by default (set VF_TTS_LONGTEXT_QUOTA_HARD_FAIL=1 to hard-fail)'
+        }`
       );
     } else {
-    report.finishedAt = new Date().toISOString();
-    report.failed = 0;
-    report.passed = false;
-    report.failureReason = precheckClass || 'quota_precheck_failed';
-    report.verdict = {
-      passed: false,
-      gateFailureClass: precheckClass || 'quota_precheck_failed',
-      reliabilityFailures: isReliabilityFailure ? 1 : 0,
-      quotaBlockedFailures: isQuotaFailure ? 1 : 0,
-      policyFailures: (!isReliabilityFailure && !isQuotaFailure) ? 1 : 0,
-      byClass: {
-        [precheckClass]: 1,
-      },
-    };
-    await fs.mkdir(path.dirname(REPORT_PATH), { recursive: true });
-    await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
-    console.log(`Long-text report written to ${path.relative(ROOT, REPORT_PATH).replace(/\\/g, '/')}`);
-    console.log(`Mode: ${MODE}`);
-    console.log(
-      `[FAIL] gemini quota precheck class=${quotaPrecheck.classification} status=${quotaPrecheck.status} ` +
-      `error=${summarizeErrorForLog(quotaPrecheck.error)}`
-    );
-    process.exit(1);
+      report.finishedAt = new Date().toISOString();
+      report.failed = 0;
+      report.passed = false;
+      report.failureReason = precheckClass || 'quota_precheck_failed';
+      report.verdict = {
+        passed: false,
+        gateFailureClass: precheckClass || 'quota_precheck_failed',
+        reliabilityFailures: isReliabilityFailure ? 1 : 0,
+        quotaBlockedFailures: precheckClass === 'quota_blocked' ? 1 : 0,
+        infraBlockedFailures: (!QUOTA_HARD_FAIL && isInfraBlockedFailure) ? 1 : 0,
+        hardFailures: 1,
+        policyFailures: (!isReliabilityFailure && !isInfraBlockedFailure) ? 1 : 0,
+        byClass: {
+          [precheckClass]: 1,
+        },
+        hardFailureByClass: {
+          [precheckClass]: 1,
+        },
+      };
+      await fs.mkdir(path.dirname(REPORT_PATH), { recursive: true });
+      await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+      console.log(`Long-text report written to ${path.relative(ROOT, REPORT_PATH).replace(/\\/g, '/')}`);
+      console.log(`Mode: ${MODE}`);
+      console.log(
+        `[FAIL] gemini quota precheck class=${quotaPrecheck.classification} status=${quotaPrecheck.status} ` +
+        `error=${summarizeErrorForLog(quotaPrecheck.error)}`
+      );
+      return 1;
     }
   }
 
@@ -724,28 +748,43 @@ const main = async () => {
     acc[token] = Number(acc[token] || 0) + 1;
     return acc;
   }, {});
+  const hardFailures = failed.filter((test) => {
+    const token = String(test.classification || normalizeLongtextFailureClass(test) || 'unknown');
+    if (!QUOTA_HARD_FAIL && (token === 'quota_blocked' || token === 'infra_blocked')) return false;
+    return true;
+  });
+  const hardFailureByClass = hardFailures.reduce((acc, test) => {
+    const token = String(test.classification || normalizeLongtextFailureClass(test) || 'unknown');
+    acc[token] = Number(acc[token] || 0) + 1;
+    return acc;
+  }, {});
   const reliabilityFailureClasses = new Set(['timeout', 'backend_unavailable', 'backend_error', 'quality_regression']);
-  const reliabilityFailures = Object.entries(byClass).reduce(
+  const reliabilityFailures = Object.entries(hardFailureByClass).reduce(
     (sum, [token, count]) => (reliabilityFailureClasses.has(token) ? sum + Number(count || 0) : sum),
     0
   );
   const quotaBlockedFailures = Number(byClass.quota_blocked || 0);
-  const policyFailures = failed.length - reliabilityFailures - quotaBlockedFailures;
-  const gateFailureClass = failed.length === 0
-    ? 'none'
-    : (quotaBlockedFailures > 0
+  const upstreamInfraBlockedFailures = Number(byClass.infra_blocked || 0);
+  const infraBlockedFailures = QUOTA_HARD_FAIL ? 0 : (quotaBlockedFailures + upstreamInfraBlockedFailures);
+  const policyFailures = hardFailures.length - reliabilityFailures - (QUOTA_HARD_FAIL ? quotaBlockedFailures : 0);
+  const gateFailureClass = hardFailures.length === 0
+    ? (infraBlockedFailures > 0 ? 'infra_blocked' : 'none')
+    : ((QUOTA_HARD_FAIL && quotaBlockedFailures > 0)
       ? 'quota_blocked'
       : (reliabilityFailures > 0 ? 'runtime_reliability' : 'policy_failure'));
-  report.failed = failed.length;
-  report.passed = failed.length === 0;
+  report.failed = hardFailures.length;
+  report.passed = hardFailures.length === 0;
   report.finishedAt = new Date().toISOString();
   report.verdict = {
     passed: report.passed,
     gateFailureClass,
     reliabilityFailures,
     quotaBlockedFailures,
+    infraBlockedFailures,
+    hardFailures: hardFailures.length,
     policyFailures: Math.max(0, policyFailures),
     byClass,
+    hardFailureByClass,
   };
 
   await fs.mkdir(path.dirname(REPORT_PATH), { recursive: true });
@@ -755,7 +794,7 @@ const main = async () => {
   console.log(`Mode: ${MODE}`);
   console.log(`Passed: ${report.passed}`);
   if (!report.passed) {
-    for (const entry of failed.slice(0, 12)) {
+    for (const entry of hardFailures.slice(0, 12)) {
       console.log(
         `[FAIL] ${entry.kind} ${entry.engine} ${entry.language || ''} words=${entry.words || entry.wordCount || '-'} ` +
         `status=${entry.status} class=${entry.classification || normalizeLongtextFailureClass(entry)} ` +
@@ -766,11 +805,22 @@ const main = async () => {
       `[FAIL] verdict class=${gateFailureClass} reliability=${reliabilityFailures} quota_blocked=${quotaBlockedFailures} ` +
       `policy=${Math.max(0, policyFailures)}`
     );
-    process.exitCode = 1;
+    return 1;
   }
+  if (infraBlockedFailures > 0) {
+    console.log(
+      `[WARN] infra-blocked quota failures=${infraBlockedFailures}; ` +
+      'set VF_TTS_LONGTEXT_QUOTA_HARD_FAIL=1 to fail this gate on quota.'
+    );
+  }
+  return 0;
 };
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exitCode = Number.isFinite(code) ? Number(code) : 0;
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });

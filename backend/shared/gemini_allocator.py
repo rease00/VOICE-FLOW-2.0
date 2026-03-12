@@ -281,6 +281,13 @@ class GeminiRateAllocator:
             for key in key_pool:
                 self._key_state(str(key))
 
+    def reset_rotation(self, *, next_index: int = 0) -> None:
+        with self._lock:
+            self._next_key_index = max(0, int(next_index or 0))
+            self._active_burst_key = ""
+            self._active_burst_count = 0
+            self._active_burst_target = 0
+
     def _reset_lane_if_window_rolled(self, lane: _LaneState, now_ms: int) -> None:
         started = int(lane.window_started_ms or 0)
         if started <= 0:

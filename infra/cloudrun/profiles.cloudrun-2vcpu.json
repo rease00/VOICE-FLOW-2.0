@@ -1,0 +1,42 @@
+{
+  "name": "cloudrun-2vcpu",
+  "description": "Production capacity contract for a 2 vCPU Cloud Run topology with queue-first worker isolation.",
+  "services": {
+    "voiceflow-api": {
+      "cpu": "2",
+      "memory": "2Gi",
+      "minInstances": 1,
+      "maxInstances": 20,
+      "concurrency": 16
+    },
+    "voiceflow-worker": {
+      "cpu": "2",
+      "memory": "2Gi",
+      "minInstances": 1,
+      "maxInstances": 12,
+      "concurrency": 1,
+      "cpuAlwaysAllocated": true
+    },
+    "voiceflow-gemini-runtime": {
+      "cpu": "2",
+      "memory": "2Gi",
+      "minInstances": 1,
+      "maxInstances": 10,
+      "concurrency": 2
+    },
+    "voiceflow-kokoro-runtime": {
+      "cpu": "2",
+      "memory": "4Gi",
+      "minInstances": 0,
+      "maxInstances": 6,
+      "concurrency": 1
+    }
+  },
+  "loadTest": {
+    "concurrency": 12,
+    "requests": 12,
+    "maxQueueDepth": 60,
+    "maxOldestQueuedAgeMs": 60000,
+    "minCompletionRate": 1
+  }
+}

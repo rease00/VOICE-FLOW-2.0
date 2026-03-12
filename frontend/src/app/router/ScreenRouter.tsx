@@ -7,11 +7,17 @@ import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../sh
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { readStorageString, removeStorageKey } from '../../shared/storage/localStore';
 
-const Login = lazy(async () => import('../../pages/Login').then((module) => ({ default: module.Login })));
-const MainApp = lazy(async () => import('../../pages/MainApp').then((module) => ({ default: module.MainApp })));
-const Onboarding = lazy(async () => import('../../pages/Onboarding').then((module) => ({ default: module.Onboarding })));
-const Profile = lazy(async () => import('../../pages/Profile').then((module) => ({ default: module.Profile })));
-const UserIdSetup = lazy(async () => import('../../pages/UserIdSetup').then((module) => ({ default: module.UserIdSetup })));
+const loadLogin = async () => import('../../pages/Login').then((module) => ({ default: module.Login }));
+const loadMainApp = async () => import('../../pages/MainApp').then((module) => ({ default: module.MainApp }));
+const loadOnboarding = async () => import('../../pages/Onboarding').then((module) => ({ default: module.Onboarding }));
+const loadProfile = async () => import('../../pages/Profile').then((module) => ({ default: module.Profile }));
+const loadUserIdSetup = async () => import('../../pages/UserIdSetup').then((module) => ({ default: module.UserIdSetup }));
+
+const Login = lazy(loadLogin);
+const MainApp = lazy(loadMainApp);
+const Onboarding = lazy(loadOnboarding);
+const Profile = lazy(loadProfile);
+const UserIdSetup = lazy(loadUserIdSetup);
 
 const resolveInitialScreen = (): AppScreen => {
   if (typeof window === 'undefined') return AppScreen.ONBOARDING;
@@ -28,6 +34,20 @@ export const ScreenRouter: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<AppScreen>(resolveInitialScreen);
   const { user } = useUser();
   const canOpenAdminConsole = hasAdminConsoleAccess(user);
+
+  useEffect(() => {
+    if (currentScreen === AppScreen.ONBOARDING) {
+      void loadLogin().catch(() => undefined);
+      return;
+    }
+    if (currentScreen === AppScreen.LOGIN) {
+      void Promise.allSettled([loadMainApp(), loadUserIdSetup()]);
+      return;
+    }
+    if (currentScreen === AppScreen.MAIN) {
+      void loadProfile().catch(() => undefined);
+    }
+  }, [currentScreen]);
 
   useEffect(() => {
     const syncFromDeepLink = (): void => {

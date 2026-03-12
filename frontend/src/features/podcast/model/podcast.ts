@@ -109,6 +109,8 @@ export const PODCAST_DEFAULT_LIVE_PACING = 'fast-paced debate';
 export const PODCAST_DEFAULT_STANDARD_PACING = 'conversational deep dive';
 
 export const PODCAST_LIVE_DURATION_OPTIONS = [
+  { value: 180, label: '3 min' },
+  { value: 300, label: '5 min' },
   { value: 600, label: '10 min' },
   { value: 900, label: '15 min' },
   { value: 1200, label: '20 min' },
@@ -184,7 +186,7 @@ export const clampPodcastSpeakerCount = (mode: PodcastMode, value: number): numb
 
 export const clampPodcastDurationSec = (mode: PodcastMode, value: number): number => {
   const safe = Math.floor(Number(value || 0));
-  if (mode === 'live') return Math.max(600, Math.min(1800, safe || 600));
+  if (mode === 'live') return Math.max(60, Math.min(1800, safe || 180));
   return Math.max(60, Math.min(3600, safe || 1800));
 };
 

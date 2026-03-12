@@ -70,19 +70,30 @@ const main = async () => {
     optionalChecks: [],
     summary: {
       failed: 0,
+      warnings: [],
       skippedOptional: [],
     },
   };
 
-  const { headers: authHeaders, auth } = buildAuditHeaders(
+  const { headers: authHeaders, auth, authError } = buildAuditHeaders(
     { Accept: 'application/json' },
-    { scriptName: 'audit:media', defaultDevUid: 'local_admin' },
+    { scriptName: 'audit:media', defaultDevUid: 'local_admin', throwOnMissingAuth: false },
   );
   report.auth = {
     mode: auth.mode,
     hasAuth: auth.hasAuth,
     requireAuth: auth.requireAuth,
+    authEnforced: auth.authEnforced,
+    tokenPresent: auth.tokenPresent,
+    allowDevUid: auth.allowDevUid,
+    devUidApplied: auth.devUidApplied,
+    failureReason: auth.failureReason || '',
+    guidance: auth.missingAuthMessage,
   };
+  if (authError) {
+    report.summary.failed += 1;
+    report.summary.warnings.push(authError);
+  }
 
   const checks = await Promise.all([
     fetchCheck('backend_health', `${BACKEND_BASE_URL}/health`, {

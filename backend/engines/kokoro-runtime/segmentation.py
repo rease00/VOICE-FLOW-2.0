@@ -1,7 +1,9 @@
 import re
 from typing import Dict, List
 
-MAX_WORDS_PER_REQUEST = 5000
+# Keep direct runtime requests close to the frontend's latency-balanced
+# planner so oversized calls fail fast instead of timing out after minutes.
+MAX_WORDS_PER_REQUEST = 80
 SEGMENTATION_PROFILE = "latency-balanced"
 SENTENCE_OVERFLOW_RATIO = 1.35
 SENTENCE_OVERFLOW_CHAR_GRACE = 96

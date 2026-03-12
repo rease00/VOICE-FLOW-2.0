@@ -1,6 +1,7 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { GenerationSettings, RemoteSpeaker, ClonedVoice, CharacterProfile, VoiceOption, VoiceSampleAnalysis } from "../types";
 import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, KOKORO_VOICES } from "../constants";
+import { getSharedAudioContext } from "../src/shared/audio/audioContext";
 import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisContractService";
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
@@ -90,6 +91,8 @@ const formatRetryDelayHint = (retryAfterMs?: number): string => {
 
 const MAX_RUNTIME_ERROR_DETAIL_CHARS = 220;
 const RUNTIME_QUOTA_MESSAGE = 'Usage limit exceeded. Please check your API keys in settings.';
+const KOKORO_BROWSER_LIVE_CHUNK_MAX_CHARS = 900;
+const KOKORO_BROWSER_EMIT_YIELD_EVERY = 2;
 
 const collapseRuntimeErrorWhitespace = (value: string): string => {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -119,6 +122,58 @@ const isRuntimeQuotaLikeError = (value: string): boolean => {
 
 const quotaRuntimeMessage = (retryAfterMs?: number): string => {
   return `${RUNTIME_QUOTA_MESSAGE}${formatRetryDelayHint(retryAfterMs)}`.trim();
+};
+
+const yieldToBrowserPaint = async (): Promise<void> => {
+  if (typeof window === 'undefined') {
+    await sleepMs(0);
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => resolve());
+      return;
+    }
+    window.setTimeout(() => resolve(), 0);
+  });
+};
+
+const createAbortError = (): DOMException => new DOMException('Aborted', 'AbortError');
+
+interface SegmentedBatchRunnerOptions<TSegment> {
+  segments: TSegment[];
+  batchSize: number;
+  runSerially: boolean;
+  signal?: AbortSignal;
+  processSegment: (segment: TSegment) => Promise<void>;
+}
+
+export const runSegmentedBatchRunner = async <TSegment>({
+  segments,
+  batchSize,
+  runSerially,
+  signal,
+  processSegment,
+}: SegmentedBatchRunnerOptions<TSegment>): Promise<void> => {
+  const safeBatchSize = Math.max(1, Math.floor(Number(batchSize) || 1));
+  for (let index = 0; index < segments.length; index += safeBatchSize) {
+    if (signal?.aborted) throw createAbortError();
+    const batch = segments.slice(index, index + safeBatchSize);
+    const guardedProcessSegment = async (segment: TSegment): Promise<void> => {
+      if (signal?.aborted) throw createAbortError();
+      await processSegment(segment);
+      if (signal?.aborted) throw createAbortError();
+    };
+    if (runSerially) {
+      for (const segment of batch) {
+        await guardedProcessSegment(segment);
+      }
+    } else {
+      await Promise.all(batch.map((segment) => guardedProcessSegment(segment)));
+    }
+    if (signal?.aborted) throw createAbortError();
+  }
+  if (signal?.aborted) throw createAbortError();
 };
 
 const normalizeRuntimeUserMessage = (value: string, retryAfterMs?: number): string => {
@@ -233,6 +288,8 @@ const optionalBearerAuthHeaders = (apiKey?: string): Record<string, string> => {
 // --- MODEL FALLBACK LISTS (Priority High -> Low) ---
 // Keep direct personal-key mode aligned with runtime allocator routing.
 const TEXT_MODELS_FALLBACK = [
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-3-flash",
   "gemini-2.5-flash",
@@ -244,6 +301,8 @@ const TEXT_MODELS_FALLBACK = [
 ];
 
 const STUDIO_CAST_TEXT_MODELS = [
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-3-flash",
   "gemini-2.5-flash",
@@ -392,26 +451,13 @@ const VALID_VOICE_NAMES = [
   "vindemiatrix", "zephyr", "zubenelgenubi"
 ];
 
-// Singleton AudioContext - Lazy Initialization
-let audioContextInstance: AudioContext | null = null;
-
 export function getAudioContext(): AudioContext {
-  if (!audioContextInstance || audioContextInstance.state === 'closed') {
-    try {
-      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-      audioContextInstance = new AudioContext();
-    } catch (e) {
-      console.error("AudioContext not supported", e);
-      throw new Error("Audio playback is not supported in this browser.");
-    }
+  try {
+    return getSharedAudioContext();
+  } catch (error) {
+    console.error("AudioContext not supported", error);
+    throw error;
   }
-  
-  // Attempt to resume if suspended (browser policy)
-  if (audioContextInstance.state === 'suspended') {
-    audioContextInstance.resume().catch(err => console.debug("Auto-resume AudioContext:", err));
-  }
-  
-  return audioContextInstance;
 }
 
 // Helper to parse API error message nicely
@@ -1841,7 +1887,6 @@ export interface DirectorOptions {
   tone: 'neutral' | 'dramatic' | 'funny' | 'professional' | 'hype';
   model?: string;
   preferredModels?: string[];
-  temperature?: number;
 }
 
 const suggestMusicTrackFromMood = (rawMood: unknown): string | undefined => {
@@ -1925,15 +1970,19 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
   const userPrompt = `Direct this text (preserve its original language/script exactly):\n"${text.substring(0, 50000)}"`;
   
   try {
-    const generationOptions: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {};
-    if (options?.model) generationOptions.model = options.model;
-    if (Array.isArray(options?.preferredModels) && options.preferredModels.length > 0) {
-      generationOptions.preferredModels = options.preferredModels;
-    }
-    if (Number.isFinite(Number(options?.temperature))) {
-      generationOptions.temperature = Number(options?.temperature);
-    }
-    const resultText = await generateText(systemPrompt, userPrompt, settings, true, generationOptions);
+    const preferredSeed =
+      Array.isArray(options?.preferredModels) && options.preferredModels.length > 0
+        ? options.preferredModels
+        : STUDIO_CAST_TEXT_MODELS;
+    const preferredModels = normalizeTextModelCandidates(
+      preferredSeed,
+      options?.model
+    );
+    const resultText = await generateText(systemPrompt, userPrompt, settings, true, {
+      preferredModels,
+      ...(String(options?.model || '').trim() ? { model: String(options?.model || '').trim() } : {}),
+      temperature: 0.2,
+    });
     const json = extractJSON(resultText);
     
     if (!json || !json.script) {
@@ -2389,13 +2438,11 @@ export const generateSpeech = async (
   const allowPersonalGeminiBypass = Boolean(runtimeSettings.preferUserGeminiKey);
   const rawEngine = String(runtimeSettings.engine || 'GEM').trim().toUpperCase();
   const activeEngine =
-    rawEngine === 'GEMINI'
+    rawEngine === 'GEMINI' || rawEngine === 'GOOD' || rawEngine === 'GOOD_LITE' || rawEngine === 'PRIME' || rawEngine === 'PR'
       ? 'GEM'
-    : rawEngine === 'GOOD_RUNTIME' || rawEngine === 'GEMINI_2_5_LITE_TTS'
-      ? 'GEM'
-      : rawEngine === 'NEURAL_2' || rawEngine === 'NURAL2' || rawEngine === 'NURAL_2'
+      : rawEngine === 'NEURAL_2' || rawEngine === 'NURAL2' || rawEngine === 'NURAL_2' || rawEngine === 'HD'
         ? 'NEURAL2'
-      : rawEngine === 'KOKORO_RUNTIME'
+      : rawEngine === 'KOKORO_RUNTIME' || rawEngine === 'BASIC' || rawEngine === 'BS'
         ? 'KOKORO'
         : rawEngine;
   const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'NEURAL2';
@@ -2988,16 +3035,12 @@ export const generateSpeech = async (
       .filter(s => s.text.trim() || s.isSfx);
     
     const segmentResults: { index: number, buffer: AudioBuffer }[] = [];
+    const expectedSegmentCount = validSegments.length;
     const autoSpeakerVoiceCache = new Map<string, { voiceId: string; voiceName: string }>();
     const BATCH_SIZE = activeEngine === 'KOKORO' ? 1 : 2;
-    
-    for (let i = 0; i < validSegments.length; i += BATCH_SIZE) {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      
-      const batch = validSegments.slice(i, i + BATCH_SIZE);
-      
-      await Promise.all(batch.map(async (seg) => {
-        if (signal?.aborted) return;
+
+      const processSegment = async (seg: typeof validSegments[number]): Promise<void> => {
+        if (signal?.aborted) throw createAbortError();
         
         try {
           const speakerName = String(seg.speaker || '').trim();
@@ -3172,7 +3215,20 @@ export const generateSpeech = async (
             buffer: ctx.createBuffer(1, Math.ceil(estimatedDuration * 24000), 24000) 
           });
         }
-      }));
+      };
+
+    await runSegmentedBatchRunner({
+      segments: validSegments,
+      batchSize: BATCH_SIZE,
+      runSerially: activeEngine === 'KOKORO',
+      processSegment,
+      ...(signal ? { signal } : {}),
+    });
+    if (segmentResults.length !== expectedSegmentCount) {
+      if (signal?.aborted) throw createAbortError();
+      throw new Error(
+        `Segmented synthesis produced incomplete output (${segmentResults.length}/${expectedSegmentCount} segments).`
+      );
     }
     
     // Sort and concatenate
@@ -3272,7 +3328,7 @@ export const generateSpeech = async (
 
   // --- KOKORO RUNTIME ---
   if (activeEngine === 'KOKORO') {
-    const useBrowserKokoro = shouldUseBrowserKokoroExecution(activeEngine, context);
+    const useBrowserKokoro = shouldUseBrowserKokoroExecution(activeEngine, context) && options?.preferBrowserKokoro !== false;
     if (useBrowserKokoro) {
       try {
         const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
@@ -3281,30 +3337,37 @@ export const generateSpeech = async (
         const jobId = `kokoro-browser-${traceId}`;
         const startedAt = Date.now();
         let firstChunkAtMs = 0;
-        const chunkEmitTasks: Array<Promise<void>> = [];
+        const shouldEmitLiveChunks = options?.preferLiveChunks !== false
+          && processedText.length <= KOKORO_BROWSER_LIVE_CHUNK_MAX_CHARS;
+        let chunkEmitCount = 0;
+        let chunkEmitQueue = Promise.resolve();
 
         const emitChunk = (chunk: KokoroLiveChunk): void => {
-          const task = (async () => {
-            const chunkBuffer = ctx.createBuffer(1, chunk.audioData.length, Math.max(1, chunk.sampleRate));
-            chunkBuffer.copyToChannel(chunk.audioData, 0);
-            const chunkBlob = audioBufferToWav(chunkBuffer);
-            const chunkArray = await chunkBlob.arrayBuffer();
-            const audioBase64 = await arrayBufferToBase64(chunkArray);
-            emitGatewayAudioChunk({
-              jobId,
-              index: chunk.index,
-              engine: 'KOKORO',
-              contentType: 'audio/wav',
-              durationMs: chunk.durationMs,
-              textChars: Math.max(0, String(chunk.text || '').length),
-              traceId,
-              audioBase64,
+          chunkEmitQueue = chunkEmitQueue
+            .then(async () => {
+              if (chunkEmitCount > 0 && (chunkEmitCount % KOKORO_BROWSER_EMIT_YIELD_EVERY) === 0) {
+                await yieldToBrowserPaint();
+              }
+              const chunkBuffer = ctx.createBuffer(1, chunk.audioData.length, Math.max(1, chunk.sampleRate));
+              chunkBuffer.copyToChannel(chunk.audioData, 0);
+              const chunkBlob = audioBufferToWav(chunkBuffer);
+              const chunkArray = await chunkBlob.arrayBuffer();
+              const audioBase64 = await arrayBufferToBase64(chunkArray);
+              emitGatewayAudioChunk({
+                jobId,
+                index: chunk.index,
+                engine: 'KOKORO',
+                contentType: 'audio/wav',
+                durationMs: chunk.durationMs,
+                textChars: Math.max(0, String(chunk.text || '').length),
+                traceId,
+                audioBase64,
+              });
+              chunkEmitCount += 1;
+            })
+            .catch(() => {
+              // Best-effort live chunk emission.
             });
-          })();
-          chunkEmitTasks.push(task);
-          void task.catch(() => {
-            // Best-effort live chunk emission.
-          });
         };
 
         emitGatewayProgress({
@@ -3348,13 +3411,12 @@ export const generateSpeech = async (
                 progressPct: 22,
               });
             }
+            if (!shouldEmitLiveChunks) return;
             emitChunk(chunk);
           },
         });
 
-        if (chunkEmitTasks.length > 0) {
-          await Promise.all(chunkEmitTasks);
-        }
+        await chunkEmitQueue;
 
         emitGatewayProgress({
           jobId,

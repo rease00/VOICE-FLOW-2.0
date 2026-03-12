@@ -57,9 +57,14 @@ import {
   pickNovelRootFolder,
   syncNovelProjectToFolder,
 } from '../services/novelLocalFsService';
+import {
+  persistNovelWorkspaceMeta,
+  readNovelWorkspaceMeta,
+  readNovelWorkspaceSnapshot,
+  writeNovelWorkspaceSnapshot,
+} from '../src/features/novel/services/localSnapshotStorage';
 
 type ToastKind = 'success' | 'error' | 'info';
-type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
 interface NovelWorkspaceV2Props {
   settings: GenerationSettings;
@@ -105,7 +110,6 @@ const LOCAL_NOVEL_STORAGE_KEYS = [
   'vf_novel_workspace_v1',
   'vf_novel_workspace',
 ];
-const ACTIVE_LOCAL_NOVEL_STORAGE_KEY = LOCAL_NOVEL_STORAGE_KEYS[0] ?? 'vf_novel_workspace_v3';
 
 const chapterSort = (a: NovelChapter, b: NovelChapter): number => a.index - b.index || a.name.localeCompare(b.name);
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
@@ -236,27 +240,53 @@ const parseLocalSnapshot = (raw: string | null): LocalNovelWorkspaceSnapshot | n
   }
 };
 
-const readLocalSnapshot = (): LocalNovelWorkspaceSnapshot => {
-  for (const key of LOCAL_NOVEL_STORAGE_KEYS) {
-    const parsed = parseLocalSnapshot(window.localStorage.getItem(key));
-    if (parsed) return parsed;
-  }
+const createEmptyLocalSnapshot = (): LocalNovelWorkspaceSnapshot => ({
+  version: 4,
+  projects: [],
+  chaptersByProjectId: {},
+  selectedProjectId: '',
+  selectedChapterId: '',
+  memoryLedgerByProjectId: {},
+  adaptationStateByProjectId: {},
+  chapterSummariesByProjectId: {},
+  chapterVersionsByProjectId: {},
+});
+
+const applyWorkspaceMetaSelection = (snapshot: LocalNovelWorkspaceSnapshot): LocalNovelWorkspaceSnapshot => {
+  const meta = readNovelWorkspaceMeta();
+  if (!meta) return snapshot;
+  const nextProjectId = String(meta.selectedProjectId || '').trim();
+  const resolvedProjectId = nextProjectId && snapshot.projects.some((project) => project.id === nextProjectId)
+    ? nextProjectId
+    : snapshot.selectedProjectId;
+  const projectChapters = snapshot.chaptersByProjectId[resolvedProjectId] || [];
+  const nextChapterId = String(meta.selectedChapterId || '').trim();
+  const resolvedChapterId = nextChapterId && projectChapters.some((chapter) => chapter.id === nextChapterId)
+    ? nextChapterId
+    : snapshot.selectedChapterId;
   return {
-    version: 4,
-    projects: [],
-    chaptersByProjectId: {},
-    selectedProjectId: '',
-    selectedChapterId: '',
-    memoryLedgerByProjectId: {},
-    adaptationStateByProjectId: {},
-    chapterSummariesByProjectId: {},
-    chapterVersionsByProjectId: {},
+    ...snapshot,
+    selectedProjectId: resolvedProjectId,
+    selectedChapterId: resolvedChapterId,
   };
 };
 
-const writeLocalSnapshot = (snapshot: LocalNovelWorkspaceSnapshot): void => {
+const readLocalSnapshot = async (): Promise<LocalNovelWorkspaceSnapshot> => {
+  const snapshot = await readNovelWorkspaceSnapshot<LocalNovelWorkspaceSnapshot>({
+    legacyKeys: LOCAL_NOVEL_STORAGE_KEYS,
+    parseLegacy: parseLocalSnapshot,
+    createEmpty: createEmptyLocalSnapshot,
+  });
+  return applyWorkspaceMetaSelection(snapshot);
+};
+
+const writeLocalSnapshot = async (snapshot: LocalNovelWorkspaceSnapshot): Promise<void> => {
   try {
-    window.localStorage.setItem(ACTIVE_LOCAL_NOVEL_STORAGE_KEY, JSON.stringify(snapshot));
+    await writeNovelWorkspaceSnapshot(snapshot);
+    persistNovelWorkspaceMeta({
+      selectedProjectId: snapshot.selectedProjectId,
+      selectedChapterId: snapshot.selectedChapterId,
+    });
   } catch (error) {
     // Ignore local persistence failures (quota/private mode) so editor interactions keep working.
     console.warn('Failed to persist local novel snapshot.', error);
@@ -331,7 +361,7 @@ const buildMemoryInstruction = (ledger: ProjectMemoryLedger): string => {
   return [render(chars, 'Locked character mappings'), render(places, 'Locked place mappings')].join('\n');
 };
 
-export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, mediaBackendUrl, onToast }) => {
+export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, mediaBackendUrl, onToast, onSendToStudio }) => {
   const { isPhone, isDesktop } = useWorkspaceViewport();
   const [mobileEditorPane, setMobileEditorPane] = useState<'source' | 'adapted'>('source');
   const [mobilePanelOpen, setMobilePanelOpen] = useState({
@@ -358,7 +388,6 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   const [isHydratingLocal, setIsHydratingLocal] = useState(true);
   const [chapterText, setChapterText] = useState('');
   const [adaptedOutput, setAdaptedOutput] = useState('');
-  const [saveState, setSaveState] = useState<SaveState>('idle');
   const [targetLang, setTargetLang] = useState('Hinglish');
   const [targetCulture, setTargetCulture] = useState('');
   const [newProjectName, setNewProjectName] = useState('');
@@ -458,16 +487,23 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
   }, []);
 
   useEffect(() => {
-    const snapshot = readLocalSnapshot();
-    setProjects(snapshot.projects);
-    setChaptersByProjectId(snapshot.chaptersByProjectId);
-    setMemoryLedgerByProjectId(snapshot.memoryLedgerByProjectId);
-    setAdaptationStateByProjectId(snapshot.adaptationStateByProjectId);
-    setChapterSummariesByProjectId(snapshot.chapterSummariesByProjectId || {});
-    setChapterVersionsByProjectId(snapshot.chapterVersionsByProjectId || {});
-    setSelectedProjectId(snapshot.selectedProjectId);
-    setSelectedChapterId(snapshot.selectedChapterId);
-    setIsHydratingLocal(false);
+    let active = true;
+    void (async () => {
+      const snapshot = await readLocalSnapshot();
+      if (!active) return;
+      setProjects(snapshot.projects);
+      setChaptersByProjectId(snapshot.chaptersByProjectId);
+      setMemoryLedgerByProjectId(snapshot.memoryLedgerByProjectId);
+      setAdaptationStateByProjectId(snapshot.adaptationStateByProjectId);
+      setChapterSummariesByProjectId(snapshot.chapterSummariesByProjectId || {});
+      setChapterVersionsByProjectId(snapshot.chapterVersionsByProjectId || {});
+      setSelectedProjectId(snapshot.selectedProjectId);
+      setSelectedChapterId(snapshot.selectedChapterId);
+      setIsHydratingLocal(false);
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(() => { void refreshDriveSession(); }, [refreshDriveSession]);
   useEffect(() => {
@@ -598,7 +634,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
 
   useEffect(() => {
     if (isHydratingLocal) return;
-    writeLocalSnapshot({
+    void writeLocalSnapshot({
       version: 4,
       projects,
       chaptersByProjectId,
@@ -662,19 +698,15 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     setChapterText(text);
     setAdaptedOutput(chapter?.adaptedText || '');
     lastSavedTextRef.current = text;
-    setSaveState('idle');
   }, [selectedProjectId, selectedChapterId, chaptersByProjectId]);
 
   useEffect(() => {
     if (isHydratingLocal || !selectedProjectId || !selectedChapterId) return;
     if (chapterText === lastSavedTextRef.current) return;
-    setSaveState('pending');
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = setTimeout(() => {
-      setSaveState('saving');
       setChaptersByProjectId((previous) => patchChapterText(previous, selectedProjectId, selectedChapterId, chapterText));
       lastSavedTextRef.current = chapterText;
-      setSaveState('saved');
     }, 1100);
     return () => { if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current); };
   }, [chapterText, selectedProjectId, selectedChapterId, isHydratingLocal]);
@@ -1026,12 +1058,19 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
 
   const handleManualSave = (): void => {
     if (!selectedProjectId || !selectedChapterId) return;
-    setSaveState('saving');
     setChaptersByProjectId((previous) => patchChapterText(previous, selectedProjectId, selectedChapterId, chapterText));
     lastSavedTextRef.current = chapterText;
     appendChapterVersion(selectedProjectId, selectedChapterId, chapterText, adaptedOutput, 'manual_save', 'manual_edit');
-    setSaveState('saved');
     onToast('Chapter saved.', 'success');
+  };
+
+  const sendEditorTextToStudio = (pane: 'source' | 'adapted'): void => {
+    const nextText = pane === 'source' ? chapterText : adaptedOutput;
+    if (!nextText.trim()) {
+      onToast(pane === 'source' ? 'Source text is empty.' : 'Adapted text is empty.', 'info');
+      return;
+    }
+    onSendToStudio(nextText);
   };
 
   const applyAdaptedToEditor = (): void => {
@@ -1361,7 +1400,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       </div>
       <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-700">
         {boundLocalFolderName ? `Local folder: ${boundLocalFolderName}` : 'No local folder bound'}.
-        {localFolderStatus ? ` ${localFolderStatus}` : ''}
+        {localFolderStatus && localFolderStatus !== 'No local folder bound.' ? ` ${localFolderStatus}` : ''}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 min-h-[650px]">
@@ -1454,7 +1493,6 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
           </div>
           <div className="px-4 py-3 border-t border-gray-100 bg-gray-50 flex flex-wrap gap-2 justify-between items-center">
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">{saveState}</span>
               {sourceAndAdaptedSame && (
                 <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
                   Source and adapted panes currently match
@@ -1462,6 +1500,20 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
               )}
             </div>
             <div className="flex gap-2">
+              <button
+                onClick={() => sendEditorTextToStudio('source')}
+                disabled={!chapterText.trim()}
+                className="px-3 py-1.5 rounded-lg border border-indigo-200 text-xs font-semibold text-indigo-700 disabled:opacity-50"
+              >
+                Send Source to Studio
+              </button>
+              <button
+                onClick={() => sendEditorTextToStudio('adapted')}
+                disabled={!adaptedOutput.trim()}
+                className="px-3 py-1.5 rounded-lg border border-indigo-200 text-xs font-semibold text-indigo-700 disabled:opacity-50"
+              >
+                Send Adapted to Studio
+              </button>
               <button onClick={applyAdaptedToEditor} disabled={!adaptedOutput.trim()} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-700 disabled:opacity-50">Replace Source</button>
               <button onClick={saveAdaptedAsNewChapter} disabled={!adaptedOutput.trim()} className="px-3 py-1.5 rounded-lg border border-emerald-200 text-xs font-semibold text-emerald-700 disabled:opacity-50">Save Adapted as Chapter</button>
             </div>

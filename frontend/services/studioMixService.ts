@@ -1,5 +1,7 @@
 import { MUSIC_TRACKS } from "../constants";
 import { GenerationSettings } from "../types";
+import { getSharedAudioContext } from "../src/shared/audio/audioContext";
+import { resolveMusicTrackUrlById } from "../src/shared/media/audioCatalog";
 
 export const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
 export const STUDIO_SPEECH_GAIN_MIN = 0.05;
@@ -22,16 +24,8 @@ export const resolveStudioMusicGain = (value: unknown): number => (
   clampFiniteNumber(value, STUDIO_MUSIC_GAIN_MIN, STUDIO_MUSIC_GAIN_MAX, STUDIO_MUSIC_GAIN_DEFAULT)
 );
 
-function getAudioContext(): AudioContext {
-  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-  if (!AudioContextClass) {
-    throw new Error("AudioContext is not supported in this browser.");
-  }
-  return new AudioContextClass();
-}
-
 async function fetchTrackBuffer(url: string): Promise<AudioBuffer> {
-  const ctx = getAudioContext();
+  const ctx = getSharedAudioContext();
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -79,9 +73,10 @@ export async function applyStudioAudioMix(
 
   if (hasMusic && musicGainValue > 0) {
     const track = MUSIC_TRACKS.find((t) => t.id === settings.musicTrackId);
-    if (track?.url) {
+    const trackUrl = await resolveMusicTrackUrlById(String(settings.musicTrackId || ''), track?.url || '');
+    if (trackUrl) {
       try {
-        const musicBuffer = await fetchTrackBuffer(track.url);
+        const musicBuffer = await fetchTrackBuffer(trackUrl);
         const musicGain = offline.createGain();
         musicGain.gain.value = musicGainValue;
         musicGain.connect(offline.destination);

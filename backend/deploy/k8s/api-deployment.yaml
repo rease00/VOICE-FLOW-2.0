@@ -17,7 +17,17 @@ spec:
         - name: api
           image: ghcr.io/voiceflow/backend:latest
           imagePullPolicy: IfNotPresent
-          command: ["python", "app.py"]
+          command:
+            - python
+            - -m
+            - uvicorn
+            - app:app
+            - --app-dir
+            - .
+            - --host
+            - 0.0.0.0
+            - --port
+            - "7800"
           ports:
             - containerPort: 7800
               name: http

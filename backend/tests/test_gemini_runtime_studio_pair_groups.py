@@ -430,7 +430,7 @@ def test_grouped_long_text_is_windowed_and_reassembled() -> None:
         runtime._synthesize_studio_pair_groups = original
 
 
-def test_good_engine_pair_mode_falls_back_to_split_windows() -> None:
+def test_pair_mode_falls_back_to_split_windows_when_grouping_fails() -> None:
     runtime = _load_gemini_runtime_module()
     key_pool = [_make_key(51), _make_key(52)]
     _configure_runtime_for_local_tests(runtime, key_pool)
@@ -454,7 +454,7 @@ def test_good_engine_pair_mode_falls_back_to_split_windows() -> None:
         line_map = _line_map_for_speakers(["A", "B", "A", "B"])
         request = runtime.SynthesizeRequest(
             text="\n".join(f"{line['speaker']}: {line['text']}" for line in line_map),
-            engine="GOOD",
+            engine="NEURAL2",
             voiceName="Fenrir",
             speaker_voices=_speaker_voices(["A", "B"]),
             multi_speaker_mode="studio_pair_groups",
@@ -467,9 +467,9 @@ def test_good_engine_pair_mode_falls_back_to_split_windows() -> None:
 
         assert len(bytes(result["wavBytes"])) > 0
         assert bool(diagnostics.get("recoveryUsed")) is True
-        assert "good_pair_split_fallback" in strategies
+        assert "pair_group_split_fallback" in strategies
         assert "single_speaker_line_windows" in strategies
-        assert result.get("speechModeRequested") == "good_pair_split_fallback"
+        assert result.get("speechModeRequested") == "pair_group_split_fallback"
     finally:
         runtime._synthesize_studio_pair_group_windows = original_group_windows
         runtime._synthesize_pcm_with_key_pool = original_pcm_with_pool

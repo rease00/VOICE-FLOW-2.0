@@ -37,6 +37,23 @@ Run all frontend commands from one root command:
 - Example: `npm run frontend -- build`
 - Production frontend audit contract (used by root CI): `npm run frontend -- audit:prod`
 
+Single frontend policy (permanent):
+- Canonical frontend source: `frontend/` (Vite).
+- Forbidden drift markers: root `dist/`, `frontend/.next*`, `frontend/app`, `frontend/next.config.*`, `frontend/next-env.d.ts`.
+- Verify policy: `npm run frontend:verify:single`.
+- Cleanup forbidden artifacts: `npm run frontend:clean:artifacts`.
+
+## Cloudflare Pages Frontend Deploy
+
+- Root directory: `frontend`
+- Build command: `node scripts/verify-cloudflare-pages.mjs && npm run build`
+- Build output directory: `dist`
+- Required Pages env: `VITE_API_BASE_URL=https://<your-backend-origin>`
+- The preflight uses Cloudflare's `CF_PAGES=1` build env and blocks deployments that still point at localhost or omit the backend origin.
+- `frontend/public/_headers` ships the static security headers for Pages. Avoid custom cache overrides there because Pages already handles static asset caching.
+- This repo does not include a top-level `404.html`, so Cloudflare Pages will serve the SPA shell fallback automatically.
+- Optional dashboard optimization for this monorepo: limit build watch paths to `frontend/*`, `.env.production`, and `.env.example`.
+
 Run all backend commands from one root command:
 - `npm run backend -- <backend-script>`
 - Example: `npm run backend -- services:check`
@@ -140,11 +157,7 @@ python scripts/firebase_project_wipe.py --apply --confirm WIPE_FIREBASE_NOW
 - `--apply` requires explicit confirmation token.
 - Use `--skip-firestore` or `--skip-auth-users` for partial cleanup.
 
-## Real Voice Transfer + Media Backend
-
-The app now supports a real local media backend for:
-- Voice transfer cover conversion (`w-okada`)
-- FFmpeg-based media utilities
+## Media Backend
 
 ## Isolated Python Runtimes (Per-Engine venv)
 
@@ -152,7 +165,6 @@ All backends now run locally using Python, each in its own virtual environment:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
 - `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
-- `Voice Transfer runtime` on `7830` (isolated timbre-transfer inference service)
 
 Runtime/backend URLs are wired internally to local defaults in the app.
 
@@ -161,7 +173,7 @@ Runtime/backend URLs are wired internally to local defaults in the app.
 Create/update venvs, start all local services, and validate endpoints:
 - `npm run services:bootstrap`
 
-GPU-capable host (Gemini/voice-transfer can prefer GPU; Kokoro remains CPU-only):
+GPU-capable host (Gemini can prefer GPU; Kokoro remains CPU-only):
 - `npm run services:bootstrap:gpu`
 
 Validate endpoints only:
@@ -190,7 +202,6 @@ Health checks include:
 - `http://127.0.0.1:7800/health` (media backend)
 - `http://127.0.0.1:7810/health` (Gemini runtime)
 - `http://127.0.0.1:7820/health` (Kokoro runtime)
-- `http://127.0.0.1:7830/v1/health` (Voice Transfer runtime)
 
 Notes:
 - Each runtime gets an isolated venv under `backend/.venvs/`.
@@ -198,7 +209,7 @@ Notes:
 - `services:bootstrap:gpu` sets GPU-first runtime envs for eligible runtimes; Kokoro ignores GPU mode and stays on CPU.
 - Kokoro runtime includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and runs in strict no-fallback mode.
 - `KOKORO_DEVICE` is retained for compatibility, but the Kokoro runtime is hard-pinned to CPU.
-- Browser-side Kokoro execution is disabled. The app uses the backend Python Kokoro runtime instead of frontend-local inference.
+- Browser-side Kokoro execution is disabled by default for normal app flows. The dedicated Kokoro browser audit harness opt-in uses same-origin `/kokoro-assets/` resources for frontend-local inference.
 - Runtime PID files are reconciled against live port listeners to avoid Windows launcher-PID drift.
 - Service logs auto-rotate on startup/restart.
 
@@ -208,9 +219,6 @@ Set these only when you need hard interpreter isolation:
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
 - `VF_PYTHON_BIN_KOKORO_RUNTIME`
-- `VF_PYTHON_BIN_VOICE_TRANSFER_RUNTIME`
-
-`voice-transfer-runtime` enforces Python `3.11.x` and bootstrap will fail fast on mismatch.
 
 ### Bootstrap Log Rotation
 
@@ -227,34 +235,6 @@ If a service appears to restart repeatedly, verify listeners directly:
 
 - `npm run backend -- services:check`
 - `npm run backend -- audit:bootstrap:idempotency`
-
-### Voice Transfer model folder
-
-Put your voice-transfer model files under:
-- `backend/models/voice-transfer/<model-name>/model.pth`
-- `backend/models/voice-transfer/<model-name>/model.index` (optional)
-
-Then open Voice Lab -> `AI Covers (Voice Transfer)` -> `Refresh Models`.
-
-### Voice Transfer OpenVINO (optional)
-
-The default voice-transfer ONNX provider mode is `auto`.
-On CPU/default bootstraps, `auto` now prefers OpenVINO first and bootstrap installs `onnxruntime-openvino` by default.
-On GPU bootstraps, the runtime keeps the generic `onnxruntime` wheel and the existing CUDA -> DML -> CPU fallback path.
-
-If you want the Intel OpenVINO execution provider instead:
-- install `onnxruntime-openvino`
-- on Windows, install the OpenVINO runtime/toolkit and load `setupvars.bat` before bootstrap
-- set `VF_VOICE_TRANSFER_ONNX_PROVIDER=openvino`
-- optionally set `VF_VOICE_TRANSFER_OPENVINO_DEVICE_TYPE` to `CPU`, `GPU`, `NPU`, or `AUTO:GPU,NPU,CPU`
-
-### Voice Transfer CPU Defaults
-
-CPU-oriented defaults now bias toward lower latency and cheaper pitch extraction:
-- `VF_VOICE_TRANSFER_EXTRA_CONVERT_SIZE=256`
-- default F0 extractor stays `rmvpe`
-- CPU runtime requests that ask for `harvest` or `crepe*` are coerced back to `rmvpe`
-- `pm` remains allowed and is mapped to the runtime's `dio` path
 
 ### Deep audit command
 
@@ -291,15 +271,22 @@ Run long-text smoke audit:
 Run long-text matrix audit:
 - `npm run audit:tts:longtext:matrix`
 
+Run browser-only Kokoro 16-voice ASR audit:
+- `npm run audit:kokoro:browser:asr`
+
 Full strict reliability pipeline (type checks + all required audits/contracts):
 - `npm run ci:reliability`
 
 Primary outputs:
 - `backend/artifacts/tts_hi_30s_report.json`
 - `backend/artifacts/runtime_contract_conformance_report.json`
+- `output/audits/kokoro-browser-speakers-asr-*.json`
+- `output/audits/kokoro-browser-speaker-audio/*.wav`
 
 Notes:
 - Reliability runbook: `docs/RELIABILITY_RUNBOOK.md`
+- Browser Kokoro audit starts a dedicated frontend server with `NEXT_PUBLIC_ENABLE_KOKORO_AUDIT_HARNESS=1`, serves Kokoro model files from `backend/models/onnx-community/Kokoro-82M-v1.0-ONNX/`, and serves the ONNX WASM runtime from same-origin `/kokoro-assets/runtime/`.
+- ASR scoring uses `backend/scripts/transcribe-audio-asr.py` with the media-backend venv when present (`backend/.venvs/media-backend`) or falls back to `python` on `PATH`.
 - Auth-first audit scripts:
   - `AUDIT_BEARER_TOKEN=<firebase_id_token>` (primary)
   - `AUDIT_RUNTIME_ADMIN_TOKEN=<gemini_runtime_admin_token>` for `audit:gemini-stack`
@@ -325,7 +312,7 @@ Notes:
 
 - Canonical plans: `Free`, `Starter`, `Creator`, `Pro`, `Scale`.
 - TTS engine access:
-  - Free: `KOKORO`, `GOOD`, `NEURAL2` only (Prime `GEM` blocked).
+  - Free: `KOKORO`, `NEURAL2` only (Prime `GEM` blocked).
   - Paid (`Starter|Creator|Pro|Scale`): all engines.
 - Per-generation character cap:
   - Free: `8,000`
@@ -363,7 +350,7 @@ Notes:
   - `POST /billing/token-pack/checkout-session` accepts `pack`=`micro|standard|mega|ultra`
   - pricing matrix is fixed all-inclusive INR; Scale plan receives 20% pack discount
 - Security hardening:
-  - runtime-sensitive routes (`/runtime/logs/tail`, `/tts/engines/switch`, `/services/dubbing/prepare`, `/voice-transfer/load-model`) are admin-gated
+  - runtime-sensitive routes (`/runtime/logs/tail`, `/tts/engines/switch`) are admin-gated
   - mutating guardian operations are admin-gated
   - Gemini runtime `/v1/admin/api-pool*` routes require `GEMINI_RUNTIME_ADMIN_TOKEN`
   - production defaults should remain strict (`VF_AUTH_ENFORCE=1`, `VITE_ENABLE_DEV_UID_HEADER=0`)

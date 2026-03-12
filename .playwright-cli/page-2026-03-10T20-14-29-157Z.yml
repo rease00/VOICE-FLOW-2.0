@@ -1,0 +1,122 @@
+- generic [ref=e7]:
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - button "Back to workspace" [ref=e11]:
+        - img [ref=e12]
+        - text: Back to workspace
+      - generic [ref=e14]:
+        - button "Refresh account" [ref=e15]:
+          - img [ref=e16]
+          - text: Refresh account
+        - button "Sign out" [ref=e21]:
+          - img [ref=e22]
+          - text: Sign out
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - generic [ref=e29]:
+              - img [ref=e33]
+              - img [ref=e38]
+              - img [ref=e42]
+            - generic [ref=e44]:
+              - generic [ref=e45]: VoiceFlow
+              - generic [ref=e46]: AI Studio
+          - generic [ref=e47]: Account Center
+        - heading "Account controls without the clutter." [level=1] [ref=e49]
+        - generic [ref=e50]:
+          - generic [ref=e51]:
+            - generic [ref=e52]: Current plan
+            - generic [ref=e53]: Free
+            - generic [ref=e54]: Basic, Vector | 8K chars / generation
+          - generic [ref=e55]:
+            - generic [ref=e56]: Usage now
+            - generic [ref=e57]: 0 / 0 VF
+            - generic [ref=e58]: "Daily generations: 0 / 5"
+          - generic [ref=e59]:
+            - generic [ref=e60]: Available now
+            - generic [ref=e61]: 0 VF
+            - generic [ref=e62]: 0 free VF and 0 paid VF available.
+          - generic [ref=e63]:
+            - generic [ref=e64]: Queue health
+            - generic [ref=e65]: No support queue
+            - generic [ref=e66]: Open Activity to load recent generation history.
+      - generic [ref=e67]:
+        - generic [ref=e68]: V
+        - generic [ref=e69]:
+          - generic [ref=e70]: VoiceFlow user
+          - generic [ref=e71]: Email unavailable
+          - generic [ref=e72]:
+            - generic [ref=e73]: Free
+            - generic [ref=e74]: Active
+          - generic [ref=e75]:
+            - generic [ref=e76]: "Monthly: 0/0"
+            - generic [ref=e77]: "Daily: 0/5"
+  - tablist "Account sections" [ref=e78]:
+    - generic [ref=e79]:
+      - tab "Account" [ref=e80]:
+        - img [ref=e81]
+        - text: Account
+      - tab "Billing" [active] [selected] [ref=e84]:
+        - img [ref=e85]
+        - text: Billing
+      - tab "Usage" [ref=e87]:
+        - img [ref=e88]
+        - text: Usage
+      - tab "Preferences" [ref=e92]:
+        - img [ref=e93]
+        - text: Preferences
+      - tab "Support" [ref=e96]:
+        - img [ref=e97]
+        - text: Support
+      - tab "Activity" [ref=e99]:
+        - img [ref=e100]
+        - text: Activity
+  - tabpanel "Billing" [ref=e168]:
+    - generic [ref=e105]:
+      - generic [ref=e107]:
+        - generic [ref=e108]:
+          - generic [ref=e109]: Billing section
+          - heading "Billing" [level=2] [ref=e169]
+          - paragraph [ref=e111]: Plan actions, payment status, invoices, and renewal controls.
+        - generic [ref=e112]: Portal unavailable
+      - generic [ref=e114]:
+        - button "Change plan" [ref=e170]
+        - generic [ref=e135]: Billing portal actions appear after recurring billing is enabled.
+        - generic [ref=e171]:
+          - generic [ref=e173]:
+            - generic [ref=e174]:
+              - generic [ref=e175]: Plan
+              - generic [ref=e176]: Free
+            - generic [ref=e177]:
+              - generic [ref=e178]: Plan status
+              - generic [ref=e179]: Inactive
+            - generic [ref=e180]:
+              - generic [ref=e181]: Renewal
+              - generic [ref=e182]: Free plan
+            - generic [ref=e183]:
+              - generic [ref=e184]: Recurring rate
+              - generic [ref=e185]: Free
+            - generic [ref=e186]:
+              - generic [ref=e187]: Current period
+              - generic [ref=e188]: Unavailable
+            - generic [ref=e189]:
+              - generic [ref=e190]: Allowed engines
+              - generic [ref=e191]: Basic, Vector
+          - generic [ref=e192]:
+            - generic [ref=e193]: Payment method
+            - generic [ref=e194]: No payment method on file
+            - generic [ref=e195]: No live billing portal session is available yet.
+            - generic [ref=e196]:
+              - generic [ref=e197]:
+                - generic [ref=e198]: Billing country
+                - generic [ref=e199]: Unavailable
+              - generic [ref=e200]:
+                - generic [ref=e201]: Currency mode
+                - generic [ref=e202]: Unavailable
+            - generic [ref=e203]: Recurring discounts are not currently available for this plan.
+        - generic [ref=e204]:
+          - generic [ref=e206]:
+            - generic [ref=e207]: Invoices
+            - generic [ref=e208]: Invoices and receipts
+          - generic [ref=e209]: No invoices are synced yet. Stripe receipts appear here after billing activity posts.

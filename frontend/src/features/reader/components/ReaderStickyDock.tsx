@@ -1,10 +1,12 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, Loader2, Music2, Pause, Play, Volume2 } from 'lucide-react';
-import { MUSIC_TRACKS } from '../../../../constants';
+import { ChevronLeft, ChevronRight, Home, Languages, Pause, Play, UploadCloud, Users, Volume2, Waves } from 'lucide-react';
+import type { VoiceOption } from '../../../../types';
 import type { ReaderCatalogItem, ReaderSession } from '../../../../types';
 import type { PlaylistItem } from './readerTypes';
 
 interface ReaderPlayerDockProps {
+  dockRef?: React.Ref<HTMLDivElement>;
+  dockScale: number;
   session: ReaderSession | null;
   selectedItem: ReaderCatalogItem | null;
   activeItem: PlaylistItem | null;
@@ -15,22 +17,25 @@ interface ReaderPlayerDockProps {
   playlistLength: number;
   warningCountdown: string;
   billingLabel: string;
-  isMusicPlaying: boolean;
-  musicTrackId: string;
+  audioEngine: 'tts_hd' | 'native_audio_dialog';
+  audioEngineStatus: string;
+  narratorVoiceId: string;
+  multiSpeakerEnabled: boolean;
+  voiceOptions: VoiceOption[];
   onTransportToggle: () => void;
   onPrev: () => void;
   onNext: () => void;
-  onToggleMusic: () => void;
-  onMusicTrackChange: (value: string) => void;
-  onExport: () => void;
-  onRefresh: () => void;
-  onClose: () => void;
-  onAutoAssignCast: () => void;
-  canAutoAssignCast: boolean;
-  isAutoAssigningCast: boolean;
+  onGoHome: () => void;
+  onOpenImport: () => void;
+  onOpenTranslate: () => void;
+  onToggleNativeAudio: () => void;
+  onNarratorVoiceChange: (value: string) => void;
+  onToggleMultiSpeaker: () => void;
 }
 
 export const ReaderPlayerDock: React.FC<ReaderPlayerDockProps> = ({
+  dockRef,
+  dockScale,
   session,
   selectedItem,
   activeItem,
@@ -41,94 +46,93 @@ export const ReaderPlayerDock: React.FC<ReaderPlayerDockProps> = ({
   playlistLength,
   warningCountdown,
   billingLabel,
-  isMusicPlaying,
-  musicTrackId,
+  audioEngine,
+  audioEngineStatus,
+  narratorVoiceId,
+  multiSpeakerEnabled,
+  voiceOptions,
   onTransportToggle,
   onPrev,
   onNext,
-  onToggleMusic,
-  onMusicTrackChange,
-  onExport,
-  onRefresh,
-  onClose,
-  onAutoAssignCast,
-  canAutoAssignCast,
-  isAutoAssigningCast,
+  onGoHome,
+  onOpenImport,
+  onOpenTranslate,
+  onToggleNativeAudio,
+  onNarratorVoiceChange,
+  onToggleMultiSpeaker,
 }) => {
-  const currentTrack = MUSIC_TRACKS.find((track) => track.id === musicTrackId);
+  const title = activeItem?.title || session?.title || selectedItem?.title || 'Reader Dock';
+  const queueLabel = playlistLength > 0 ? `${activeQueueIndex + 1}/${playlistLength}` : 'Idle';
+  const dockStyle = { '--reader-dock-scale': String(dockScale) } as React.CSSProperties;
 
   return (
-    <div className="vf-reader__dock" data-testid="reader-sticky-dock">
-      <div className="vf-reader__dock-main">
+    <div ref={dockRef} className="vf-reader-dock" data-testid="reader-sticky-dock" style={dockStyle}>
+      <div className="vf-reader-dock__transport-cluster">
+        <button type="button" className="vf-reader-dock__nav" onClick={onGoHome} aria-label="Open Reader home">
+          <Home size={16} />
+        </button>
+
         <button
           type="button"
-          className={`vf-reader__dock-play ${isSpeechPlaying ? 'vf-reader__dock-play--playing' : ''}${isSpeechBuffering ? ' vf-reader__dock-play--buffering' : ''}`}
+          className={`vf-reader-dock__transport ${isSpeechPlaying ? 'vf-reader-dock__transport--playing' : ''}${isSpeechBuffering ? ' vf-reader-dock__transport--buffering' : ''}`}
           onClick={onTransportToggle}
           disabled={!activeItem}
           aria-label={isSpeechPlaying ? 'Pause reader audio' : 'Play reader audio'}
         >
-          {isSpeechBuffering && !isSpeechPlaying ? <Loader2 size={18} className="animate-spin" /> : isSpeechPlaying ? <Pause size={18} /> : <Play size={18} />}
+          {isSpeechPlaying ? <Pause size={18} /> : <Play size={18} />}
         </button>
 
-        <div className="vf-reader__dock-copy">
-          <div className="vf-reader__eyebrow">
-            <Volume2 size={13} />
-            Sticky Player
-          </div>
-          <div className="vf-reader__dock-title">
-            {activeItem?.title || session?.title || selectedItem?.title || 'No reader audio ready yet'}
-          </div>
-          <div className="vf-reader__dock-summary">
-            {isSpeechBuffering
-              ? 'Loading the next reader section...'
-              : activeItem?.text || session?.summary || selectedItem?.summary || 'Open a title and press Prepare & Play.'}
-          </div>
-          <div className="vf-reader__dock-progress">
-            <div className="vf-reader__dock-progress-fill" style={{ width: `${speechProgressPct}%` }} />
-          </div>
-          <div className="vf-reader__dock-meta">
-            {session?.warningActive
-              ? `Unsaved cache expires in ${warningCountdown}. Savepoint or export to preserve the session.`
-              : `${billingLabel}. ${currentTrack?.name ? `Ambience: ${currentTrack.name}.` : 'Select ambience from the player.'}`}
-          </div>
+        <button type="button" className="vf-reader-dock__nav" onClick={onPrev} disabled={activeQueueIndex <= 0} aria-label="Previous reader item">
+          <ChevronLeft size={16} />
+        </button>
+        <button type="button" className="vf-reader-dock__nav" onClick={onNext} disabled={!playlistLength || activeQueueIndex >= playlistLength - 1} aria-label="Next reader item">
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      <div className="vf-reader-dock__copy">
+        <div className="vf-reader-dock__eyebrow">
+          <Volume2 size={13} />
+          Reader Dock
+        </div>
+        <strong>{title}</strong>
+        <div className="vf-reader-dock__meta">
+          <span>{queueLabel}</span>
+          <span>{billingLabel}</span>
+          {session?.warningActive ? <span>Unsaved cache {warningCountdown}</span> : <span>Status: {audioEngineStatus}</span>}
         </div>
       </div>
 
-      <div className="vf-reader__dock-actions">
-        <button type="button" className="vf-reader__dock-btn" onClick={onPrev} disabled={activeQueueIndex <= 0}>
-          <ChevronLeft size={15} />
-          Prev
+      <div className="vf-reader-dock__controls">
+        <button type="button" className="vf-reader-dock__button" onClick={onOpenImport}>
+          <UploadCloud size={12} />
+          Import
         </button>
-        <button type="button" className="vf-reader__dock-btn" onClick={onNext} disabled={!playlistLength || activeQueueIndex >= playlistLength - 1}>
-          Next
-          <ChevronRight size={15} />
+
+        <button type="button" className="vf-reader-dock__button" onClick={onOpenTranslate}>
+          <Languages size={12} />
+          Translate
         </button>
-        <button type="button" className="vf-reader__dock-btn" onClick={onToggleMusic}>
-          <Music2 size={15} />
-          {isMusicPlaying ? 'Ambience On' : 'Ambience'}
+
+        <button type="button" className={`vf-reader-dock__button ${multiSpeakerEnabled ? 'vf-reader-dock__button--active' : ''}`} onClick={onToggleMultiSpeaker}>
+          <Users size={12} />
+          Multi {multiSpeakerEnabled ? 'On' : 'Off'}
         </button>
-        <label className="vf-reader__dock-select">
-          <span>Track</span>
-          <select value={musicTrackId} onChange={(event) => onMusicTrackChange(event.target.value)} className="vf-reader__select vf-reader__select--dock vf-theme-select">
-            {MUSIC_TRACKS.map((track) => (
-              <option key={track.id} value={track.id}>
-                {track.name}
+
+        <button type="button" className={`vf-reader-dock__button ${audioEngine === 'native_audio_dialog' ? 'vf-reader-dock__button--active' : ''}`} onClick={onToggleNativeAudio}>
+          <Waves size={12} />
+          Native {audioEngine === 'native_audio_dialog' ? 'On' : 'Off'}
+        </button>
+
+        <label className="vf-reader-dock__select">
+          <select aria-label="Voice narrator" value={narratorVoiceId} onChange={(event) => onNarratorVoiceChange(event.target.value)}>
+            {voiceOptions.map((voice) => (
+              <option key={voice.id} value={voice.id}>
+                {voice.name}
               </option>
             ))}
           </select>
         </label>
-        <button type="button" className="vf-reader__dock-btn" onClick={onExport}>
-          Export
-        </button>
-        <button type="button" className="vf-reader__dock-btn" onClick={onRefresh}>
-          Refresh
-        </button>
-        <button type="button" className="vf-reader__dock-btn" onClick={onClose}>
-          Close
-        </button>
-        <button type="button" className="vf-reader__dock-btn" onClick={onAutoAssignCast} disabled={!canAutoAssignCast || isAutoAssigningCast}>
-          AI Auto
-        </button>
       </div>
     </div>
   );

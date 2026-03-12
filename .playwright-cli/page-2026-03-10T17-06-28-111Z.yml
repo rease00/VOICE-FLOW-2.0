@@ -1,0 +1,115 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - link [ref=e11] [cursor=pointer]:
+        - /url: https://clideo.com/
+        - img [ref=e12]
+      - textbox "Untitled project" [ref=e16]: 10 Mar 2026
+    - generic [ref=e17]:
+      - button "Undo" [disabled] [ref=e19]:
+        - img [ref=e21]
+      - button "Redo" [disabled] [ref=e24]:
+        - img [ref=e26]
+    - generic [ref=e28]:
+      - button [ref=e30] [cursor=pointer]:
+        - img [ref=e32]
+      - button "Export" [disabled] [ref=e35]:
+        - img [ref=e37]
+        - generic [ref=e39]: Export
+  - generic [ref=e41]: /
+  - generic [ref=e52]:
+    - generic [ref=e53]:
+      - img [ref=e60] [cursor=pointer]
+      - generic [ref=e62]:
+        - button "Media" [ref=e63] [cursor=pointer]:
+          - img [ref=e65]
+          - generic [ref=e67]: Media
+        - button "Canvas" [active] [ref=e68] [cursor=pointer]:
+          - img [ref=e70]
+          - generic [ref=e72]: Canvas
+        - button "Text" [ref=e73] [cursor=pointer]:
+          - img [ref=e75]
+          - generic [ref=e77]: Text
+        - button "Audio" [ref=e78] [cursor=pointer]:
+          - img [ref=e80]
+          - generic [ref=e82]: Audio
+        - button "Videos" [ref=e83] [cursor=pointer]:
+          - img [ref=e85]
+          - generic [ref=e87]: Videos
+        - button "Images" [ref=e88] [cursor=pointer]:
+          - img [ref=e90]
+          - generic [ref=e92]: Images
+        - button "Elements" [ref=e93] [cursor=pointer]:
+          - img [ref=e95]
+          - generic [ref=e97]: Elements
+        - button "Record" [ref=e98] [cursor=pointer]:
+          - img [ref=e100]
+          - generic [ref=e102]: Record
+        - button "TTS" [ref=e103] [cursor=pointer]:
+          - img [ref=e105]
+          - generic [ref=e107]: TTS
+    - generic [ref=e329]:
+      - generic [ref=e330]:
+        - generic [ref=e331]: Resize
+        - button "Widescreen — 16:9" [ref=e333] [cursor=pointer]:
+          - generic [ref=e335]:
+            - img [ref=e336]
+            - generic [ref=e338]: Widescreen
+            - generic [ref=e339]: — 16:9
+          - img [ref=e341]
+      - generic [ref=e343]:
+        - generic [ref=e344]: Background
+        - generic [ref=e345]:
+          - button [ref=e348] [cursor=pointer]
+          - button [ref=e352] [cursor=pointer]
+          - button [ref=e355] [cursor=pointer]
+          - button [ref=e358] [cursor=pointer]
+          - button [ref=e361] [cursor=pointer]
+          - button [ref=e364] [cursor=pointer]
+          - button [ref=e367] [cursor=pointer]
+          - button [ref=e370] [cursor=pointer]
+          - button [ref=e373] [cursor=pointer]
+          - button [ref=e376] [cursor=pointer]
+          - button [ref=e379] [cursor=pointer]
+          - button [ref=e382] [cursor=pointer]
+          - button [ref=e385] [cursor=pointer]
+          - button [ref=e388] [cursor=pointer]
+          - button [ref=e391] [cursor=pointer]
+          - button [ref=e394] [cursor=pointer]
+          - button [ref=e397] [cursor=pointer]
+          - button [ref=e400] [cursor=pointer]
+          - button [ref=e403] [cursor=pointer]
+          - button [ref=e406] [cursor=pointer]
+  - generic [ref=e154]:
+    - generic [ref=e156]:
+      - generic [ref=e158]:
+        - button [disabled] [ref=e161]:
+          - img [ref=e163]
+        - button [disabled] [ref=e167]:
+          - img [ref=e169]
+        - button [disabled] [ref=e173]:
+          - img [ref=e175]
+      - generic [ref=e177]:
+        - generic [ref=e179]:
+          - button [disabled] [ref=e180]:
+            - img [ref=e182]
+          - button [disabled] [ref=e184]:
+            - img [ref=e186]
+          - button [disabled] [ref=e188]:
+            - img [ref=e190]
+        - generic [ref=e193]:
+          - generic [ref=e194]: 0:00.00
+          - generic [ref=e195]: /
+          - generic [ref=e196]: 0:00.00
+      - generic [ref=e197]:
+        - button [ref=e201] [cursor=pointer]:
+          - img [ref=e203]
+        - button [disabled] [ref=e207]:
+          - img [ref=e209]
+        - button [disabled] [ref=e212]:
+          - img [ref=e214]
+        - button [disabled] [ref=e217]:
+          - img [ref=e219]
+        - button [disabled] [ref=e223]:
+          - img [ref=e225]
+    - generic [ref=e229]: Add media to timeline to start creating video!

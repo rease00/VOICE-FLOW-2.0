@@ -151,7 +151,7 @@ Python entrypoints now auto-load `backend/.env` then root `.env` when env vars a
 Media backend (port `7800`):
 
 ```powershell
-python backend/app.py
+python -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port 7800
 ```
 
 Gemini runtime (port `7810`):
@@ -249,12 +249,6 @@ Install backend requirements:
 npm run backend:install
 ```
 
-Install optional LLVC requirements:
-
-```powershell
-npm run backend:install:llvc
-```
-
 Switch active TTS engine (bootstrap helper):
 
 ```powershell
@@ -293,4 +287,3 @@ Per-service Python interpreter env vars (optional):
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
 - `VF_PYTHON_BIN_KOKORO_RUNTIME`
-- `VF_PYTHON_BIN_LLVC_RUNTIME` (must resolve to Python `3.11.x`)

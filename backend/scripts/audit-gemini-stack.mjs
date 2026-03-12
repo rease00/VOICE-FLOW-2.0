@@ -51,15 +51,25 @@ const main = async () => {
     },
   };
 
-  const { headers: backendAuthHeaders, auth } = buildAuditHeaders(
+  const { headers: backendAuthHeaders, auth, authError } = buildAuditHeaders(
     { Accept: 'application/json' },
-    { scriptName: 'audit:gemini-stack', defaultDevUid: 'local_admin' },
+    { scriptName: 'audit:gemini-stack', defaultDevUid: 'local_admin', throwOnMissingAuth: false },
   );
   report.auth = {
     mode: auth.mode,
     hasAuth: auth.hasAuth,
     requireAuth: auth.requireAuth,
+    authEnforced: auth.authEnforced,
+    tokenPresent: auth.tokenPresent,
+    allowDevUid: auth.allowDevUid,
+    devUidApplied: auth.devUidApplied,
+    failureReason: auth.failureReason || '',
+    guidance: auth.missingAuthMessage,
   };
+  if (authError) {
+    report.summary.failed += 1;
+    report.summary.warnings.push(authError);
+  }
 
   const checks = [
     fetchCheck('backend_health', `${BACKEND_BASE_URL}/health`, {

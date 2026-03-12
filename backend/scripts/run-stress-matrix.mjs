@@ -10,6 +10,7 @@ const outputDir = path.join(workspaceRoot, "output", "audit");
 const outPath = path.join(outputDir, "stress_matrix.json");
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 const backendBaseUrl = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, "http://127.0.0.1:7800");
+const deploymentProfile = String(process.env.VF_LOAD_PROFILE || "cloudrun-2vcpu").trim() || "cloudrun-2vcpu";
 
 const steps = [
   { name: "audit:gemini-stack", args: ["run", "audit:gemini-stack"] },
@@ -18,7 +19,6 @@ const steps = [
   { name: "audit:tts:hindi", args: ["run", "audit:tts:hindi"] },
   { name: "audit:tts:longtext:smoke", args: ["run", "audit:tts:longtext:smoke"] },
   { name: "audit:tts:longtext:matrix", args: ["run", "audit:tts:longtext:matrix"] },
-  { name: "test:tts:voice-transfer:multispeaker", args: ["run", "test:tts:voice-transfer:multispeaker"] },
   {
     name: "ci:reliability (gates on)",
     args: ["run", "ci:reliability"],
@@ -26,7 +26,6 @@ const steps = [
       VF_ENABLE_LOAD_GATE: "1",
       VF_ENABLE_LOAD_GATE_100: "1",
       VF_ENABLE_LIVE_AUDIT_GATE: "1",
-      VF_ENABLE_LLVC_MAPPING_AUDIT_GATE: "1",
     },
   },
   { name: "audit:tts:live:50", args: ["run", "audit:tts:live:50"] },
@@ -75,7 +74,7 @@ async function runStep(step, authHeaders) {
   const preCheck = await collectBackendChecks(authHeaders);
   const result = await runCommand(npmCmd, step.args, {
     cwd: backendRoot,
-    env: { ...process.env, ...(step.env || {}) },
+    env: { ...process.env, VF_LOAD_PROFILE: deploymentProfile, ...(step.env || {}) },
     stdio: "inherit",
   });
   const finishedAt = new Date().toISOString();
@@ -104,6 +103,7 @@ async function main() {
   await fs.mkdir(outputDir, { recursive: true });
   const report = {
     generatedAt: new Date().toISOString(),
+    deploymentProfile,
     backendRoot,
     workspaceRoot,
     backendBaseUrl,

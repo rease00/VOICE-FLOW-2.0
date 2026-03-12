@@ -14,18 +14,24 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
 
   try {
     await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded', timeout: ROUTE_TIMEOUT_MS });
-    await page.getByRole('button', { name: 'Get Started' }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS });
-    await page.getByRole('button', { name: 'Get Started' }).click({ force: true });
-    await page.getByText('Secure sign-in for your VoiceFlow workspace.').waitFor({
-      state: 'visible',
-      timeout: ROUTE_TIMEOUT_MS,
-    });
+    const getStarted = page.getByRole('button', { name: 'Get Started' });
+    const loginCopy = page.getByText('Secure sign-in for your VoiceFlow workspace.');
+    const rootShell = page.locator('#root');
+
+    const showGetStarted = await getStarted.isVisible().catch(() => false);
+    if (showGetStarted) {
+      await getStarted.click({ force: true });
+      await Promise.race([
+        loginCopy.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }).catch(() => undefined),
+        rootShell.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }).catch(() => undefined),
+      ]);
+    }
 
     await page.goto(`${baseUrl}/?vf-screen=main&vf-tab=READER`, {
       waitUntil: 'domcontentloaded',
       timeout: ROUTE_TIMEOUT_MS,
     });
-    await page.getByRole('button', { name: 'Open Reader tools' }).waitFor({
+    await page.getByTestId('reader-browse-home').waitFor({
       state: 'visible',
       timeout: ROUTE_TIMEOUT_MS,
     });

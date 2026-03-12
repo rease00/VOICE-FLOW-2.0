@@ -27,6 +27,10 @@ const AUDIT_TEXT =
   ).trim() ||
   'Clara’s eyes snapped open. A tear tracked through her reflection in the glass. "That’s it," she whispered. "How much?"';
 const ASR_SCRIPT_PATH = path.join(SCRIPT_DIR, 'transcribe-audio-asr.py');
+const DEFAULT_ASR_PYTHON =
+  process.platform === 'win32'
+    ? path.join(ROOT, '.venvs', 'media-backend', 'Scripts', 'python.exe')
+    : path.join(ROOT, '.venvs', 'media-backend', 'bin', 'python');
 const ASR_WHISPER_MODEL = String(process.env.VF_WHISPER_MODEL || 'tiny').trim() || 'tiny';
 const ASR_WHISPER_DEVICE = String(process.env.VF_WHISPER_DEVICE || 'cpu').trim() || 'cpu';
 const ASR_WHISPER_COMPUTE = String(process.env.VF_WHISPER_COMPUTE || 'int8').trim() || 'int8';
@@ -35,6 +39,7 @@ const PYTHON_BIN_CANDIDATES = Array.from(
   new Set(
     [
       process.env.VF_PYTHON_BIN,
+      DEFAULT_ASR_PYTHON,
       process.platform === 'win32' ? 'python' : 'python3',
       process.platform === 'win32' ? 'py' : 'python',
       'python',
@@ -54,11 +59,6 @@ const ENGINES = [
     engine: 'KOKORO',
     voiceId: String(process.env.VF_TTS_AUDIT_KOKORO_VOICE || 'af_heart').trim() || 'af_heart',
     language: String(process.env.VF_TTS_AUDIT_KOKORO_LANGUAGE || 'en').trim() || 'en',
-  },
-  {
-    engine: 'GOOD',
-    voiceName: String(process.env.VF_TTS_AUDIT_GOOD_VOICE || 'Fenrir').trim() || 'Fenrir',
-    language: String(process.env.VF_TTS_AUDIT_GOOD_LANGUAGE || 'en').trim() || 'en',
   },
   {
     engine: 'NEURAL2',
@@ -566,7 +566,6 @@ const main = async () => {
   const capabilitiesByEngine = capabilitiesProbe.ok
     ? {
         KOKORO: resolveEngineCapabilities(capabilitiesProbe.payload, 'KOKORO'),
-        GOOD: resolveEngineCapabilities(capabilitiesProbe.payload, 'GOOD'),
         NEURAL2: resolveEngineCapabilities(capabilitiesProbe.payload, 'NEURAL2'),
         GEM: resolveEngineCapabilities(capabilitiesProbe.payload, 'GEM'),
       }

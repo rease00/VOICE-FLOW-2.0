@@ -59,6 +59,13 @@ export const filterReaderLibraryItems = (
 };
 
 export const getReaderPrimaryAction = (item: ReaderCatalogItem): ReaderPrimaryAction => {
+  const commercialStatus = String(item.commercialUseStatus || '').trim().toLowerCase();
+  if (commercialStatus === 'blocked') {
+    return { label: 'Blocked', intent: 'blocked', disabled: true };
+  }
+  if (commercialStatus === 'review') {
+    return { label: 'Needs Review', intent: 'blocked', disabled: true };
+  }
   const prepState = String(item.prep?.state || '').trim().toLowerCase();
   const hasPrepError = prepState === 'error';
   if (item.readiness?.state === 'blocked' && (hasPrepError || (!item.supportsReadHere && item.surface !== 'uploads' && !item.sessionId))) {

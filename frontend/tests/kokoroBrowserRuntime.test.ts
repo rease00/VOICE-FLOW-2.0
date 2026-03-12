@@ -63,7 +63,7 @@ describe('kokoroBrowserRuntime', () => {
       { dispose: vi.fn() },
     );
     vi.stubGlobal('window', { isSecureContext: true } as any);
-    vi.stubGlobal('navigator', { gpu: {} } as any);
+    vi.stubGlobal('navigator', { gpu: {}, deviceMemory: 12, hardwareConcurrency: 8 } as any);
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => makePrimeStatus(),
@@ -104,6 +104,12 @@ describe('kokoroBrowserRuntime', () => {
 
   it('supports an env opt-out for browser kokoro execution', () => {
     vi.stubEnv('VITE_ENABLE_BROWSER_KOKORO', 'false');
+    expect(isBrowserKokoroExecutionEnabled()).toBe(false);
+    expect(shouldUseBrowserKokoroExecution('KOKORO', 'studio')).toBe(false);
+  });
+
+  it('keeps browser kokoro disabled on smaller devices even when the runtime exists', () => {
+    vi.stubGlobal('navigator', { deviceMemory: 4, hardwareConcurrency: 4 } as any);
     expect(isBrowserKokoroExecutionEnabled()).toBe(false);
     expect(shouldUseBrowserKokoroExecution('KOKORO', 'studio')).toBe(false);
   });

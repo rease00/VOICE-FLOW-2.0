@@ -1,0 +1,122 @@
+- generic [ref=e7]:
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - button "Back to workspace" [ref=e11]:
+        - img [ref=e12]
+        - text: Back to workspace
+      - generic [ref=e14]:
+        - button "Refresh account" [ref=e15]:
+          - img [ref=e16]
+          - text: Refresh account
+        - button "Sign out" [ref=e21]:
+          - img [ref=e22]
+          - text: Sign out
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - generic [ref=e29]:
+              - img [ref=e33]
+              - img [ref=e38]
+              - img [ref=e42]
+            - generic [ref=e44]:
+              - generic [ref=e45]: VoiceFlow
+              - generic [ref=e46]: AI Studio
+          - generic [ref=e47]: Account Center
+        - generic [ref=e48]:
+          - heading "Account controls without the clutter." [level=1] [ref=e49]
+          - paragraph [ref=e50]: Billing, usage, support, and preferences stay in focused sections so common tasks are faster to reach.
+        - generic [ref=e51]:
+          - generic [ref=e52]:
+            - generic [ref=e53]: Current plan
+            - generic [ref=e54]: Free
+            - generic [ref=e55]: Basic, Vector
+          - generic [ref=e56]:
+            - generic [ref=e57]: Renewal state
+            - generic [ref=e58]: Free plan
+            - generic [ref=e59]: Upgrade to unlock recurring billing, invoices, and larger production limits.
+          - generic [ref=e60]:
+            - generic [ref=e61]: Payment status
+            - generic [ref=e62]: No payment method on file
+            - generic [ref=e63]: Billing portal access is not available yet.
+          - generic [ref=e64]:
+            - generic [ref=e65]: Available now
+            - generic [ref=e66]: 0 VF
+            - generic [ref=e67]: 0 free VF and 0 paid VF available.
+      - generic [ref=e68]:
+        - generic [ref=e69]: V
+        - generic [ref=e70]:
+          - generic [ref=e71]: VoiceFlow user
+          - generic [ref=e72]: Email unavailable
+          - generic [ref=e73]:
+            - generic [ref=e74]: Free
+            - generic [ref=e75]: Active
+  - tablist "Account sections" [ref=e76]:
+    - generic [ref=e77]:
+      - tab "Account" [active] [selected] [ref=e78]:
+        - img [ref=e79]
+        - text: Account
+      - tab "Billing" [ref=e82]:
+        - img [ref=e83]
+        - text: Billing
+      - tab "Usage" [ref=e85]:
+        - img [ref=e86]
+        - text: Usage
+      - tab "Preferences" [ref=e90]:
+        - img [ref=e91]
+        - text: Preferences
+      - tab "Support" [ref=e94]:
+        - img [ref=e95]
+        - text: Support
+      - tab "Activity" [ref=e97]:
+        - img [ref=e98]
+        - text: Activity
+  - tabpanel "Account" [ref=e422]:
+    - generic [ref=e103]:
+      - generic [ref=e105]:
+        - generic [ref=e106]:
+          - generic [ref=e107]: Account section
+          - heading "Account" [level=2] [ref=e423]
+          - paragraph [ref=e109]: Identity, access, membership, and synced entitlements.
+        - generic [ref=e110]: Free
+      - generic [ref=e112]:
+        - generic [ref=e424]:
+          - generic [ref=e425]:
+            - generic [ref=e426]: Display name
+            - generic [ref=e427]: VoiceFlow user
+          - generic [ref=e428]:
+            - generic [ref=e429]: Email
+            - generic [ref=e430]: Email unavailable
+          - generic [ref=e431]:
+            - generic [ref=e432]: User ID
+            - generic [ref=e433]: Pending
+          - generic [ref=e434]:
+            - generic [ref=e435]: Account status
+            - generic [ref=e436]: Active
+          - generic [ref=e437]:
+            - generic [ref=e438]: Auth providers
+            - generic [ref=e439]: Email
+          - generic [ref=e440]:
+            - generic [ref=e441]: Member since
+            - generic [ref=e442]: Unavailable
+        - generic [ref=e443]:
+          - generic [ref=e444]:
+            - img [ref=e446]
+            - paragraph [ref=e449]: Plan
+            - generic [ref=e450]: Free
+            - generic [ref=e451]: Basic, Vector | 8K chars per generation
+          - generic [ref=e452]:
+            - img [ref=e454]
+            - paragraph [ref=e457]: Monthly remaining
+            - generic [ref=e458]: 0 VF
+            - generic [ref=e459]: 0 VF already used in the active monthly window.
+          - generic [ref=e460]:
+            - img [ref=e462]
+            - paragraph [ref=e465]: Spendable now
+            - generic [ref=e466]: 0 VF
+            - generic [ref=e467]: 0 VFF and 0 paid VF remain available.
+          - generic [ref=e468]:
+            - img [ref=e470]
+            - paragraph [ref=e474]: Renewal
+            - generic [ref=e475]: Free plan
+            - generic [ref=e476]: Upgrade to unlock recurring billing, invoices, and larger production limits.

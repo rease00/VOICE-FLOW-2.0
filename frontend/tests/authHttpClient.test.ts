@@ -20,6 +20,7 @@ import { authFetch } from '../services/authHttpClient';
 
 describe('authFetch', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     mockFirebaseAuth.currentUser = null;
     mockReadLocalAdminSession.mockClear();
     vi.stubGlobal('fetch', vi.fn());
@@ -37,5 +38,29 @@ describe('authFetch', () => {
       'System clock is out of sync. Sync your device clock and sign in again.'
     );
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('fails with a readable timeout when the backend does not respond', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        signal?.addEventListener('abort', abort, { once: true });
+      })
+    )));
+
+    const request = authFetch('https://example.com/reader/library', undefined, { timeoutMs: 1200 });
+    const expectation = expect(request).rejects.toThrow(
+      'Request to https://example.com timed out after 1s. Verify backend availability and retry.'
+    );
+
+    await vi.advanceTimersByTimeAsync(1200);
+
+    await expectation;
   });
 });

@@ -44,6 +44,33 @@ const validateRuntimeManifest = (manifest, { runtimeName, port }) => {
   return { failures, warnings };
 };
 
+const validateApiManifest = (manifest) => {
+  const failures = [];
+  const warnings = [];
+  const text = manifest.content;
+
+  if (has(text, /command:\s*\[\s*"python"\s*,\s*"app\.py"\s*\]/i)) {
+    failures.push('Uses python app.py command instead of uvicorn module command.');
+  }
+  if (!has(text, /command:\s*[\s\S]*uvicorn[\s\S]*app:app/is)) {
+    failures.push('Missing uvicorn app:app command wiring.');
+  }
+  if (!has(text, /--host[\s\S]*0\.0\.0\.0/i)) {
+    failures.push('Missing explicit host bind 0.0.0.0.');
+  }
+  if (!has(text, /--port[\s\S]*7800/i)) {
+    failures.push('Missing explicit runtime port argument 7800.');
+  }
+  if (!has(text, /envFrom:\s*[\s\S]*configMapRef:\s*[\s\S]*name:\s*voiceflow-backend-config/i)) {
+    failures.push('API deployment missing envFrom configMap voiceflow-backend-config.');
+  }
+  if (!has(text, /envFrom:\s*[\s\S]*secretRef:\s*[\s\S]*name:\s*voiceflow-runtime-admin/i)) {
+    failures.push('API deployment missing envFrom secretRef voiceflow-runtime-admin.');
+  }
+
+  return { failures, warnings };
+};
+
 const main = async () => {
   const files = await Promise.all([
     readFileText('runtime-gemini.yaml'),
@@ -87,12 +114,10 @@ const main = async () => {
   }
   report.checks.push({ file: 'worker-deployment.yaml', failures: workerFailures, warnings: [] });
 
-  const apiText = index['api-deployment.yaml'].content;
-  const apiFailures = [];
-  if (!has(apiText, /envFrom:\s*[\s\S]*secretRef:\s*[\s\S]*name:\s*voiceflow-runtime-admin/i)) {
-    apiFailures.push('API deployment missing envFrom secretRef voiceflow-runtime-admin.');
-  }
-  report.checks.push({ file: 'api-deployment.yaml', failures: apiFailures, warnings: [] });
+  report.checks.push({
+    file: 'api-deployment.yaml',
+    ...validateApiManifest(index['api-deployment.yaml']),
+  });
 
   const kustomizationText = index['kustomization.yaml'].content;
   const kustomizationFailures = [];

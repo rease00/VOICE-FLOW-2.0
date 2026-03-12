@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -13,6 +14,7 @@ import {
 const ROOT = process.cwd();
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts', 'load');
 const DEFAULT_BASE_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
+const PROFILE_CONTRACT_PATH = path.resolve(ROOT, '..', 'infra', 'cloudrun', 'profiles.cloudrun-2vcpu.json');
 
 const asInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -53,26 +55,51 @@ const parseArgs = (argv) => {
 };
 
 const args = parseArgs(process.argv.slice(2));
+const deploymentProfile = String(args.get('profile') || process.env.VF_LOAD_PROFILE || 'cloudrun-2vcpu').trim() || 'cloudrun-2vcpu';
+const loadProfileDefaults = (() => {
+  try {
+    if (!fsSync.existsSync(PROFILE_CONTRACT_PATH)) return null;
+    const parsed = JSON.parse(fsSync.readFileSync(PROFILE_CONTRACT_PATH, 'utf8'));
+    if (String(parsed?.name || '').trim() !== deploymentProfile) return null;
+    return parsed?.loadTest && typeof parsed.loadTest === 'object' ? parsed.loadTest : null;
+  } catch {
+    return null;
+  }
+})();
 const mode = String(args.get('mode') || process.env.VF_LOAD_MODE || 'mixed').trim().toLowerCase();
-const concurrency = Math.max(1, asInt(args.get('concurrency') || process.env.VF_LOAD_CONCURRENCY, 50));
-const requestsTotal = Math.max(concurrency, asInt(args.get('requests') || process.env.VF_LOAD_REQUESTS, 50));
+const concurrency = Math.max(
+  1,
+  asInt(args.get('concurrency') || process.env.VF_LOAD_CONCURRENCY, asInt(loadProfileDefaults?.concurrency, 50))
+);
+const requestsTotal = Math.max(
+  concurrency,
+  asInt(args.get('requests') || process.env.VF_LOAD_REQUESTS, asInt(loadProfileDefaults?.requests, 50))
+);
 const timeoutMs = Math.max(1_000, asInt(args.get('timeout-ms') || process.env.VF_LOAD_TIMEOUT_MS, 120_000));
 const pollMs = Math.max(100, asInt(args.get('poll-ms') || process.env.VF_LOAD_POLL_MS, 350));
 const syncWaitMs = Math.max(0, asInt(args.get('sync-wait-ms') || process.env.VF_LOAD_SYNC_WAIT_MS, 3_000));
 const textChars = Math.max(20, asInt(args.get('chars') || process.env.VF_LOAD_TEXT_CHARS, 100));
 const baseUrl = normalizeBaseUrl(args.get('base-url') || DEFAULT_BASE_URL, DEFAULT_BASE_URL);
 const uid = String(args.get('uid') || process.env.VF_LOAD_UID || 'load_test_user').trim() || 'load_test_user';
-const minCompletionRate = Number.parseFloat(String(args.get('min-completion-rate') || process.env.VF_LOAD_MIN_COMPLETION_RATE || '1'));
+const minCompletionRate = Number.parseFloat(
+  String(args.get('min-completion-rate') || process.env.VF_LOAD_MIN_COMPLETION_RATE || String(loadProfileDefaults?.minCompletionRate || '1'))
+);
 const retryMax = Math.max(0, asInt(args.get('retry-max') || process.env.VF_LOAD_RETRY_MAX, 2));
 const retryBaseMs = Math.max(100, asInt(args.get('retry-base-ms') || process.env.VF_LOAD_RETRY_BASE_MS, 650));
 const queueSampleMs = Math.max(250, asInt(args.get('queue-sample-ms') || process.env.VF_LOAD_QUEUE_SAMPLE_MS, 1000));
 const maxQueueDepth = Math.max(
   1,
-  asInt(args.get('max-queue-depth') || process.env.VF_LOAD_MAX_QUEUE_DEPTH, Math.max(100, concurrency * 4))
+  asInt(
+    args.get('max-queue-depth') || process.env.VF_LOAD_MAX_QUEUE_DEPTH,
+    asInt(loadProfileDefaults?.maxQueueDepth, Math.max(100, concurrency * 4))
+  )
 );
 const maxOldestQueuedAgeMs = Math.max(
   1,
-  asInt(args.get('max-oldest-age-ms') || process.env.VF_LOAD_MAX_OLDEST_QUEUED_AGE_MS, Math.max(timeoutMs, 120_000))
+  asInt(
+    args.get('max-oldest-age-ms') || process.env.VF_LOAD_MAX_OLDEST_QUEUED_AGE_MS,
+    asInt(loadProfileDefaults?.maxOldestQueuedAgeMs, Math.max(timeoutMs, 120_000))
+  )
 );
 
 const splitRaw = String(args.get('engine-split') || process.env.VF_LOAD_ENGINE_SPLIT || 'gem=0.6,kokoro=0.4').toLowerCase();
@@ -522,6 +549,7 @@ const summarize = (results, startedAt, finishedAt, preflight, queueTelemetry = [
     schemaVersion: '1.0.0',
     startedAt,
     finishedAt,
+    deploymentProfile,
     target: {
       baseUrl,
       uid,

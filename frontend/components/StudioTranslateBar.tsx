@@ -24,12 +24,12 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
   const isTablet = layoutMode === 'tablet';
 
   return (
-    <div className={`vf-translate-bar relative z-10 gap-2 px-4 py-2 ${isPhone ? 'flex flex-col items-stretch' : 'flex items-center justify-between'}`}>
-      <div className={`overflow-hidden ${isPhone ? 'w-full' : 'flex items-center gap-2'}`}>
-        <div className={`flex items-center gap-2 overflow-hidden ${isPhone ? 'w-full flex-wrap' : ''}`}>
+    <div className={`vf-translate-bar relative z-10 gap-2 px-4 py-2 ${isPhone ? 'flex items-center' : 'flex items-center justify-between'}`}>
+      <div className={`overflow-hidden ${isPhone ? 'w-full min-w-0' : 'flex items-center gap-2'}`}>
+        <div className={`flex items-center gap-2 overflow-hidden ${isPhone ? 'w-full min-w-0' : ''}`}>
         <Languages size={14} className="vf-translate-icon shrink-0" />
         <span className={`vf-translate-label text-xs font-bold ${isPhone ? 'sr-only' : 'hidden sm:inline'}`}>Translate:</span>
-        <div className={`vf-translate-shell vf-translate-tabs p-0.5 shadow-sm custom-scrollbar ${isPhone ? 'grid grid-cols-2 gap-1 overflow-visible rounded-xl' : 'flex items-center gap-1 overflow-x-auto'}`}>
+        <div className={`vf-translate-shell vf-translate-tabs p-0.5 shadow-sm custom-scrollbar ${isPhone ? 'flex min-w-0 items-center gap-1 overflow-x-auto rounded-xl' : 'flex items-center gap-1 overflow-x-auto'}`}>
           <button
             onClick={() => onTargetLang('Hinglish')}
             className={`vf-translate-chip rounded-md px-3 py-1 text-[10px] font-bold transition-all whitespace-nowrap ${targetLang === 'Hinglish' ? 'vf-translate-chip--active' : ''}`}
@@ -52,7 +52,11 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
             value={targetLang}
             onChange={(e) => onTargetLang(e.target.value)}
             className={`vf-theme-select bg-transparent px-2 py-1 text-[10px] font-bold outline-none cursor-pointer ${
-              isPhone ? 'col-span-2 min-w-0 w-full rounded-md border border-current/10' : isTablet ? 'max-w-[120px]' : 'max-w-[96px]'
+              isPhone
+                ? 'min-w-[7.2rem] max-w-[8.4rem] rounded-md border border-current/10'
+                : isTablet
+                  ? 'max-w-[120px]'
+                  : 'max-w-[96px]'
             }`}
           >
             {languages.map((lang) => (
@@ -66,11 +70,11 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
         onClick={onTranslate}
         disabled={isBusy}
         className={`vf-translate-run rounded-lg px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1 whitespace-nowrap disabled:opacity-55 ${
-          isPhone ? 'w-full justify-center' : ''
+          isPhone ? 'shrink-0 px-2.5 py-1.5 text-[11px]' : ''
         }`}
       >
         <Globe size={12} />
-        Run Translate
+        {isPhone ? 'Run' : 'Run Translate'}
       </button>
     </div>
   );

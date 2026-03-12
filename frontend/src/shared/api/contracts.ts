@@ -1,10 +1,9 @@
 import type {
   GenerationSettings,
+  LabCatalogImportResult,
+  LabCatalogSearchResult,
   RuntimeCapabilities,
 } from '../../../types';
-
-type LabCatalogSearchResult = Record<string, unknown>;
-type LabCatalogImportResult = Record<string, unknown>;
 
 export interface EngineStatusItem {
   engine: GenerationSettings['engine'];

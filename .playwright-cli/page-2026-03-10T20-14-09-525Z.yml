@@ -1,0 +1,123 @@
+- generic [ref=e7]:
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - button "Back to workspace" [ref=e11]:
+        - img [ref=e12]
+        - text: Back to workspace
+      - generic [ref=e14]:
+        - button "Refresh account" [ref=e15]:
+          - img [ref=e16]
+          - text: Refresh account
+        - button "Sign out" [ref=e21]:
+          - img [ref=e22]
+          - text: Sign out
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - generic [ref=e29]:
+              - img [ref=e33]
+              - img [ref=e37]
+              - img [ref=e41]
+            - generic [ref=e43]:
+              - generic [ref=e44]: VoiceFlow
+              - generic [ref=e45]: AI Studio
+          - generic [ref=e46]: Account Center
+        - heading "Account controls without the clutter." [level=1] [ref=e48]
+        - generic [ref=e50]:
+          - generic [ref=e51]:
+            - generic [ref=e52]: Current plan
+            - generic [ref=e53]: Free
+            - generic [ref=e54]: Basic, Vector | 8K chars / generation
+          - generic [ref=e55]:
+            - generic [ref=e56]: Usage now
+            - generic [ref=e57]: 0 / 0 VF
+            - generic [ref=e58]: "Daily generations: 0 / 5"
+          - generic [ref=e59]:
+            - generic [ref=e60]: Available now
+            - generic [ref=e61]: 0 VF
+            - generic [ref=e62]: 0 free VF and 0 paid VF available.
+          - generic [ref=e63]:
+            - generic [ref=e64]: Queue health
+            - generic [ref=e65]: No support queue
+            - generic [ref=e66]: Open Activity to load recent generation history.
+      - generic [ref=e67]:
+        - generic [ref=e68]: V
+        - generic [ref=e69]:
+          - generic [ref=e70]: VoiceFlow user
+          - generic [ref=e71]: Email unavailable
+          - generic [ref=e72]:
+            - generic [ref=e73]: Free
+            - generic [ref=e74]: Active
+          - generic [ref=e75]:
+            - generic [ref=e76]: "Monthly: 0/0"
+            - generic [ref=e77]: "Daily: 0/5"
+  - tablist "Account sections" [ref=e78]:
+    - generic [ref=e79]:
+      - tab "Account" [active] [selected] [ref=e80]:
+        - img [ref=e81]
+        - text: Account
+      - tab "Billing" [ref=e84]:
+        - img [ref=e85]
+        - text: Billing
+      - tab "Usage" [ref=e87]:
+        - img [ref=e88]
+        - text: Usage
+      - tab "Preferences" [ref=e92]:
+        - img [ref=e93]
+        - text: Preferences
+      - tab "Support" [ref=e96]:
+        - img [ref=e97]
+        - text: Support
+      - tab "Activity" [ref=e99]:
+        - img [ref=e100]
+        - text: Activity
+  - tabpanel "Account" [ref=e104]:
+    - generic [ref=e105]:
+      - generic [ref=e107]:
+        - generic [ref=e108]:
+          - generic [ref=e109]: Account section
+          - heading "Account" [level=2] [ref=e110]
+          - paragraph [ref=e111]: Identity, access, membership, and synced entitlements.
+        - generic [ref=e112]: Free
+      - generic [ref=e114]:
+        - generic [ref=e116]:
+          - generic [ref=e117]:
+            - generic [ref=e118]: Display name
+            - generic [ref=e119]: VoiceFlow user
+          - generic [ref=e120]:
+            - generic [ref=e121]: Email
+            - generic [ref=e122]: Email unavailable
+          - generic [ref=e123]:
+            - generic [ref=e124]: User ID
+            - generic [ref=e125]: Pending
+          - generic [ref=e126]:
+            - generic [ref=e127]: Account status
+            - generic [ref=e128]: Active
+          - generic [ref=e129]:
+            - generic [ref=e130]: Auth providers
+            - generic [ref=e131]: Email
+          - generic [ref=e132]:
+            - generic [ref=e133]: Member since
+            - generic [ref=e134]: Unavailable
+        - generic [ref=e135]:
+          - generic [ref=e136]:
+            - img [ref=e138]
+            - paragraph [ref=e141]: Access limits
+            - generic [ref=e142]: 8K chars
+            - generic [ref=e143]: Basic, Vector
+          - generic [ref=e144]:
+            - img [ref=e146]
+            - paragraph [ref=e149]: Monthly usage
+            - generic [ref=e150]: 0 / 0 VF
+            - generic [ref=e151]: 0 VF remaining in this monthly window.
+          - generic [ref=e152]:
+            - img [ref=e154]
+            - paragraph [ref=e157]: Daily generations
+            - generic [ref=e158]: 0 / 5
+            - generic [ref=e159]: Tracked against the current entitlement window.
+          - generic [ref=e160]:
+            - img [ref=e162]
+            - paragraph [ref=e165]: Identity state
+            - generic [ref=e166]: Active
+            - generic [ref=e167]: "Providers: Email"

@@ -73,15 +73,25 @@ const main = async () => {
     },
   };
 
-  const { headers: authHeaders, auth } = buildAuditHeaders(
+  const { headers: authHeaders, auth, authError } = buildAuditHeaders(
     { Accept: 'application/json' },
-    { scriptName: 'audit:connectivity', defaultDevUid: 'local_admin' },
+    { scriptName: 'audit:connectivity', defaultDevUid: 'local_admin', throwOnMissingAuth: false },
   );
   report.auth = {
     mode: auth.mode,
     hasAuth: auth.hasAuth,
     requireAuth: auth.requireAuth,
+    authEnforced: auth.authEnforced,
+    tokenPresent: auth.tokenPresent,
+    allowDevUid: auth.allowDevUid,
+    devUidApplied: auth.devUidApplied,
+    failureReason: auth.failureReason || '',
+    guidance: auth.missingAuthMessage,
   };
+  if (authError) {
+    report.summary.failed += 1;
+    report.summary.warnings.push(authError);
+  }
 
   const preflightTargets = [
     { endpoint: '/tts/jobs', method: 'POST' },
@@ -125,7 +135,7 @@ const main = async () => {
       report.checks.boundaries.push({
         name: check.name,
         skipped: true,
-        reason: 'auth_unavailable',
+        reason: auth.failureReason || 'auth_unavailable',
       });
       continue;
     }

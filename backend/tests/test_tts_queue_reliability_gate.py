@@ -6,6 +6,7 @@ import time
 import wave
 from io import BytesIO
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -41,6 +42,8 @@ def _reset_tts_metrics_state(monkeypatch, *, gem_limit: int = 12, kokoro_limit: 
         "GEM": int(gem_limit),
         "KOKORO": int(kokoro_limit),
     }
+    monkeypatch.setattr(backend_app, "VF_GEMINI_AUTO_ROTATE_ON_POOL_EXHAUSTED", True)
+    monkeypatch.setattr(backend_app, "VF_GEMINI_AUTO_ROTATE_COOLDOWN_MS", 0)
     monkeypatch.setattr(backend_app, "_TTS_ENGINE_CONCURRENCY_LIMITS", engine_limits)
     monkeypatch.setattr(
         backend_app,
@@ -74,6 +77,10 @@ def _reset_tts_metrics_state(monkeypatch, *, gem_limit: int = 12, kokoro_limit: 
             "liveFirstChunkLatencyMs": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
             "liveChunkCount": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
             "liveChunkRvcLatencyMs": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
+            "liveNativeTurnLatencyMs": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
+            "liveNativeResumeCount": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
+            "liveNativeFallbackCount": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
+            "liveNativeChunkGapCount": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
             "terminalEvents": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
             "runtimeLatencyByEngine": {
                 "GEM": backend_app.deque(maxlen=backend_app.VF_TTS_QUEUE_METRICS_WINDOW),
@@ -85,12 +92,296 @@ def _reset_tts_metrics_state(monkeypatch, *, gem_limit: int = 12, kokoro_limit: 
             },
         },
     )
+    backend_app._GEMINI_AUTO_ROTATE_STATE.update(
+        {
+            "lastRotatedAtMs": 0,
+            "lastErrorCode": "",
+            "lastTraceId": "",
+            "lastJobId": "",
+            "lastBeforeFingerprint": "",
+            "lastAfterFingerprint": "",
+            "lastRotationDetail": "",
+        }
+    )
+
+
+def test_live_native_request_shape_accepts_valid_speaker_counts() -> None:
+    for speaker_count in (2, 3, 4):
+        cast = backend_app._default_live_native_cast(speaker_count)
+        payload = {
+            "topic": "AI-native live podcasting",
+            "speakerCount": speaker_count,
+            "cast": cast,
+            "limits": {
+                "sessionMaxSec": 840,
+                "connectionMaxSec": 570,
+                "perTurnTimeoutSec": 20,
+            },
+        }
+        backend_app._validate_live_native_request_shape(payload)
+
+
+def test_live_native_request_shape_rejects_invalid_speaker_count() -> None:
+    with pytest.raises(backend_app.HTTPException) as exc_info:
+        backend_app._validate_live_native_request_shape(
+            {
+                "topic": "invalid count",
+                "speakerCount": 5,
+                "cast": backend_app._default_live_native_cast(4),
+            }
+        )
+    assert exc_info.value.status_code == 400
+    assert "speakerCount" in str(exc_info.value.detail)
+
+
+def test_live_native_request_shape_rejects_missing_cast_fields() -> None:
+    with pytest.raises(backend_app.HTTPException) as exc_info:
+        backend_app._validate_live_native_request_shape(
+            {
+                "topic": "missing cast fields",
+                "speakerCount": 2,
+                "cast": [
+                    {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck"},
+                    {"id": "guest", "name": "GUEST", "role": "skeptic"},
+                ],
+            }
+        )
+    assert exc_info.value.status_code == 400
+    assert "missing required fields" in str(exc_info.value.detail)
+
+
+def test_live_native_request_shape_rejects_invalid_limits() -> None:
+    with pytest.raises(backend_app.HTTPException) as exc_info:
+        backend_app._validate_live_native_request_shape(
+            {
+                "topic": "invalid limits",
+                "speakerCount": 4,
+                "cast": backend_app._default_live_native_cast(4),
+                "limits": {
+                    "sessionMaxSec": 300,
+                    "connectionMaxSec": 450,
+                    "perTurnTimeoutSec": 20,
+                },
+            }
+        )
+    assert exc_info.value.status_code == 400
+    assert "connectionMaxSec" in str(exc_info.value.detail)
+
+
+def test_process_tts_job_live_native_turn_order_and_artifacts(monkeypatch, tmp_path) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_NATIVE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_NATIVE_MAX_TURNS", 4)
+    monkeypatch.setattr(backend_app, "_finalize_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_build_tts_history_item", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:live-native-turn-order:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+    monkeypatch.setattr(backend_app, "TTS_LIVE_ARTIFACTS_DIR", tmp_path / "tts-live")
+    monkeypatch.setattr(backend_app, "TTS_RESULT_ARTIFACTS_DIR", tmp_path / "tts-results")
+    backend_app.TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    backend_app.TTS_RESULT_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _fake_turn_text(*, speaker, next_speaker, **_kwargs) -> str:
+        current = str((speaker or {}).get("name") or "SPEAKER")
+        nxt = str((next_speaker or {}).get("name") or "NEXT")
+        return f"{current} shares a point and passes to {nxt}."
+
+    class _RuntimeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.content = _tiny_wav_bytes(240)
+            self.headers = {
+                "content-type": "audio/wav",
+                "x-voiceflow-trace-id": "trace_live_native_runtime",
+            }
+            self.text = ""
+
+        @property
+        def ok(self) -> bool:
+            return True
+
+        def json(self) -> dict:
+            return {}
+
+    monkeypatch.setattr(backend_app, "_runtime_generate_live_native_turn_text", _fake_turn_text)
+    monkeypatch.setattr(backend_app, "_runtime_tts_request_with_gemini_failover", lambda *_args, **_kwargs: _RuntimeResponse())
+
+    job_id = "live_native_turn_order_job"
+    payload = {
+        "jobId": job_id,
+        "uid": "live_turn_user",
+        "requestId": job_id,
+        "traceId": f"trace_{job_id}",
+        "engine": "GEM",
+        "text": "Live native deterministic handoff test",
+        "voiceId": "Puck",
+        "voiceName": "Puck",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "idempotencyKey": f"idem_{job_id}",
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "seed", "language": "en"},
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+        "mode": "live_native",
+        "liveNative": {
+            "topic": "AI-native podcasting",
+            "durationSec": 30,
+            "speakerCount": 2,
+            "cast": backend_app._default_live_native_cast(2),
+            "limits": {
+                "sessionMaxSec": 840,
+                "connectionMaxSec": 570,
+                "perTurnTimeoutSec": 20,
+            },
+            "recovery": {
+                "strategy": "resume_then_fallback",
+                "maxResumeAttempts": 1,
+                "fallbackMode": "runtime_nonlive_same_cast",
+            },
+            "output": {
+                "autoSave": True,
+                "audioFormat": "wav",
+                "includeTranscript": True,
+            },
+        },
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=payload)
+    backend_app._record_tts_job_enqueued(job_id=job_id, engine="GEM", created_at_ms=int(time.time() * 1000))
+    backend_app._process_tts_job(payload, "worker-live-native-turn-order")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_id) or {}
+    assert str(completed.get("status") or "") == "completed"
+    assert str(completed.get("mode") or "") == "live_native"
+    live_state = completed.get("liveState") if isinstance(completed.get("liveState"), dict) else {}
+    chunks = list(live_state.get("chunks") or [])
+    assert len(chunks) >= 2
+    assert str(chunks[0].get("speakerId") or "") == "host"
+    assert str(chunks[1].get("speakerId") or "") == "cohost"
+
+    summary = completed.get("liveNativeSummary") if isinstance(completed.get("liveNativeSummary"), dict) else {}
+    assert int(summary.get("fallbackCount") or 0) == 0
+    artifacts = completed.get("liveNativeArtifacts") if isinstance(completed.get("liveNativeArtifacts"), dict) else {}
+    assert bool((artifacts.get("transcriptJson") or {}).get("downloadUrl"))
+    assert bool((artifacts.get("summaryJson") or {}).get("downloadUrl"))
+
+
+def test_process_tts_job_live_native_runtime_failure_fallbacks_and_completes(monkeypatch, tmp_path) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_NATIVE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_TTS_LIVE_NATIVE_MAX_TURNS", 2)
+    monkeypatch.setattr(backend_app, "_finalize_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_build_tts_history_item", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:live-native-fallback:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+    monkeypatch.setattr(backend_app, "TTS_LIVE_ARTIFACTS_DIR", tmp_path / "tts-live")
+    monkeypatch.setattr(backend_app, "TTS_RESULT_ARTIFACTS_DIR", tmp_path / "tts-results")
+    backend_app.TTS_LIVE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    backend_app.TTS_RESULT_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    runtime_calls = {"count": 0}
+
+    def _fake_turn_text(*_args, **_kwargs) -> str:
+        return "Quick response with a handoff."
+
+    class _RuntimeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.content = _tiny_wav_bytes(220)
+            self.headers = {
+                "content-type": "audio/wav",
+                "x-voiceflow-trace-id": "trace_live_native_fallback_runtime",
+            }
+            self.text = ""
+
+        @property
+        def ok(self) -> bool:
+            return True
+
+        def json(self) -> dict:
+            return {}
+
+    def _fake_runtime(*_args, **kwargs):
+        runtime_calls["count"] += 1
+        body = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else {}
+        if runtime_calls["count"] == 1 and str(body.get("model") or "").strip():
+            raise RuntimeError("simulated live transport disconnect")
+        return _RuntimeResponse()
+
+    monkeypatch.setattr(backend_app, "_runtime_generate_live_native_turn_text", _fake_turn_text)
+    monkeypatch.setattr(backend_app, "_runtime_tts_request_with_gemini_failover", _fake_runtime)
+
+    job_id = "live_native_fallback_job"
+    payload = {
+        "jobId": job_id,
+        "uid": "live_fallback_user",
+        "requestId": job_id,
+        "traceId": f"trace_{job_id}",
+        "engine": "GEM",
+        "text": "Live native fallback test",
+        "voiceId": "Puck",
+        "voiceName": "Puck",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "idempotencyKey": f"idem_{job_id}",
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "seed", "language": "en"},
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+        "mode": "live_native",
+        "liveNative": {
+            "topic": "Live recovery and fallback",
+            "durationSec": 30,
+            "speakerCount": 2,
+            "cast": backend_app._default_live_native_cast(2),
+            "limits": {
+                "sessionMaxSec": 840,
+                "connectionMaxSec": 570,
+                "perTurnTimeoutSec": 20,
+            },
+            "recovery": {
+                "strategy": "resume_then_fallback",
+                "maxResumeAttempts": 0,
+                "fallbackMode": "runtime_nonlive_same_cast",
+            },
+            "output": {
+                "autoSave": True,
+                "audioFormat": "wav",
+                "includeTranscript": True,
+            },
+        },
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=payload)
+    backend_app._record_tts_job_enqueued(job_id=job_id, engine="GEM", created_at_ms=int(time.time() * 1000))
+    backend_app._process_tts_job(payload, "worker-live-native-fallback")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_id) or {}
+    assert str(completed.get("status") or "") == "completed"
+    summary = completed.get("liveNativeSummary") if isinstance(completed.get("liveNativeSummary"), dict) else {}
+    assert int(summary.get("fallbackCount") or 0) >= 1
+    orchestration = completed.get("liveOrchestration") if isinstance(completed.get("liveOrchestration"), dict) else {}
+    assert str(orchestration.get("status") or "") == "completed"
 
 
 def test_process_tts_job_respects_engine_semaphore_limit(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch, gem_limit=2, kokoro_limit=1)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(backend_app, "_finalize_usage", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         backend_app,
         "_TTS_JOB_QUEUE",
@@ -100,7 +391,7 @@ def test_process_tts_job_respects_engine_semaphore_limit(monkeypatch) -> None:
     tracker = {"active": 0, "max": 0}
     tracker_lock = threading.Lock()
 
-    def _fake_post(*_args, **_kwargs):
+    def _fake_runtime_request(*_args, **_kwargs):
         with tracker_lock:
             tracker["active"] += 1
             tracker["max"] = max(tracker["max"], tracker["active"])
@@ -109,7 +400,7 @@ def test_process_tts_job_respects_engine_semaphore_limit(monkeypatch) -> None:
             tracker["active"] -= 1
         return _DummyRuntimeResponse()
 
-    monkeypatch.setattr(backend_app.requests, "post", _fake_post)
+    monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
 
     jobs: list[dict[str, object]] = []
     for idx in range(6):
@@ -313,6 +604,95 @@ def test_tts_job_gemini_capacity_pressure_fails_without_requeue(monkeypatch) -> 
     assert requeues["count"] == 0
 
 
+def test_tts_job_gemini_pool_exhaustion_auto_rotates_and_retries_once(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(
+            redis_url="",
+            key_prefix=f"test:tts:gemini-auto-rotate:{time.time_ns()}",
+            lane_weights=backend_app.VF_TTS_LANE_WEIGHTS,
+        ),
+    )
+    monkeypatch.setattr(backend_app._TTS_JOB_QUEUE, "dequeue_next", lambda: None)
+
+    runtime_calls = {"count": 0}
+    rotations = {"count": 0}
+
+    def _fake_runtime_request(*_args, **_kwargs):
+        runtime_calls["count"] += 1
+        if runtime_calls["count"] == 1:
+            return _DummyRuntimeResponse(
+                status_code=502,
+                body={
+                    "detail": {
+                        "error": "Gemini model attempts failed.",
+                        "summary": "Gemini TTS capacity is saturated.",
+                        "errorCode": "GEMINI_UPSTREAM_MODEL_FAILED",
+                        "classification": "upstream_failure",
+                        "poolExhausted": True,
+                        "attemptsUsed": 1,
+                        "retryAfterMs": 0,
+                    }
+                },
+                content_type="application/json",
+            )
+        return _DummyRuntimeResponse()
+
+    def _fake_rotate(*, steps: int = 1):
+        rotations["count"] += 1
+        assert steps == 1
+        return {
+            "ok": True,
+            "detail": "Gemini free pool rotated and reloaded.",
+            "rotation": {
+                "beforeHead": {"fingerprint": "before123"},
+                "afterHead": {"fingerprint": "after456"},
+            },
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
+    monkeypatch.setattr(backend_app, "_rotate_gemini_free_pool_once", _fake_rotate)
+
+    job_payload = {
+        "jobId": "gemini_auto_rotate_job_1",
+        "uid": "gemini_auto_rotate_user",
+        "requestId": "gemini_auto_rotate_req_1",
+        "traceId": "gemini_auto_rotate_trace_1",
+        "engine": "GEM",
+        "text": "auto rotate should recover the request",
+        "voiceId": "Fenrir",
+        "voiceName": "Fenrir",
+        "planName": "Free",
+        "planKey": "free",
+        "adminLimitBypass": True,
+        "runtimeBase": "http://127.0.0.1:7810",
+        "runtimePath": "/synthesize",
+        "upstreamPayload": {"text": "auto rotate should recover the request", "voiceName": "Fenrir"},
+        "postTtsDisable": True,
+        "deadlineAtMs": int(time.time() * 1000) + 60_000,
+        "maxAttempts": 1,
+        "attempts": 0,
+    }
+    backend_app._TTS_JOB_QUEUE.enqueue(lane="free", payload=job_payload)
+    backend_app._record_tts_job_enqueued(job_id=job_payload["jobId"], engine="GEM", created_at_ms=int(time.time() * 1000))
+
+    backend_app._process_tts_job(job_payload, "worker-gemini-auto-rotate")
+
+    completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(completed.get("status") or "") == "completed"
+    assert runtime_calls["count"] == 2
+    assert rotations["count"] == 1
+    assert str(backend_app._GEMINI_AUTO_ROTATE_STATE.get("lastErrorCode") or "") == "GEMINI_UPSTREAM_MODEL_FAILED"
+    assert str(backend_app._GEMINI_AUTO_ROTATE_STATE.get("lastJobId") or "") == job_payload["jobId"]
+    assert str(backend_app._GEMINI_AUTO_ROTATE_STATE.get("lastTraceId") or "") == job_payload["traceId"]
+    assert str(backend_app._GEMINI_AUTO_ROTATE_STATE.get("lastAfterFingerprint") or "") == "after456"
+
+
 def test_admin_tts_queue_metrics_auth_and_payload(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -331,7 +711,7 @@ def test_admin_tts_queue_metrics_auth_and_payload(monkeypatch) -> None:
     assert "telemetry" in payload
 
 
-def test_tts_job_strict_post_tts_failure_populates_reason_error_code_and_trace_id(monkeypatch) -> None:
+def test_tts_job_strict_post_tts_flags_do_not_fail_job_after_vc_removal(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
@@ -342,7 +722,7 @@ def test_tts_job_strict_post_tts_failure_populates_reason_error_code_and_trace_i
         "_TTS_JOB_QUEUE",
         backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:post-tts-strict:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
     )
-    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    monkeypatch.setattr(backend_app, "_runtime_http_request", lambda *args, **kwargs: _DummyRuntimeResponse())
 
     def _raise_conversion_failure(*_args, **_kwargs):
         raise RuntimeError("llvc runtime unavailable")
@@ -373,13 +753,11 @@ def test_tts_job_strict_post_tts_failure_populates_reason_error_code_and_trace_i
 
     backend_app._process_tts_job(job_payload, "worker-strict-post-tts")
 
-    failed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
-    assert str(failed.get("status") or "") == "failed"
-    assert int(failed.get("statusCode") or 0) == 503
-    error = failed.get("error") if isinstance(failed.get("error"), dict) else {}
-    assert str(error.get("reason") or "") == "post_tts_conversion_failed"
-    assert str(error.get("errorCode") or "") == backend_app.ENGINE_OVERLOADED
-    assert str(error.get("trace_id") or "").strip() != ""
+    completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
+    assert str(completed.get("status") or "") == "completed"
+    result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
+    headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled"
 
 
 def test_tts_job_silent_post_tts_output_bypasses_to_original_audio_when_not_required(monkeypatch) -> None:
@@ -447,7 +825,7 @@ def test_tts_job_silent_post_tts_output_bypasses_to_original_audio_when_not_requ
     assert str(completed.get("status") or "") == "completed"
     result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
     headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
-    assert str(headers.get("x-vf-post-tts-conversion") or "") == "bypassed_silent_output"
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled"
     audio_base64 = str(result.get("audioBase64") or "")
     assert audio_base64
     audio_bytes = base64.b64decode(audio_base64)
@@ -648,8 +1026,7 @@ def test_tts_job_live_pipeline_llvc_concurrency_respects_limit(monkeypatch) -> N
     }
     backend_app._process_tts_job(job_payload, "worker-live-pipeline")
 
-    assert tracker["max"] <= 2
-    assert tracker["max"] >= 2
+    assert tracker["max"] == 0
     chunk_samples = list(backend_app._TTS_QUEUE_TELEMETRY.get("liveChunkCount") or [])
     assert chunk_samples
     assert int(chunk_samples[-1]) == 4
@@ -839,6 +1216,162 @@ def test_tts_job_status_payload_live_chunks_cursor_and_audio(tmp_path) -> None:
     assert payload_with_audio["chunks"][0]["audioBase64"] != ""
 
 
+def test_tts_job_status_payload_completed_result_toggle(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(backend_app, "TTS_RESULT_ARTIFACTS_DIR", tmp_path / "tts-results")
+    backend_app.TTS_RESULT_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    job_id = "status_result_toggle_job"
+    synthesized_audio = _tiny_wav_bytes(360, sample_value=1200)
+    audio_ref = backend_app._persist_tts_result_audio(job_id, synthesized_audio, "audio/wav")
+    job = {
+        "jobId": job_id,
+        "requestId": job_id,
+        "traceId": f"trace_{job_id}",
+        "status": "completed",
+        "engine": "GEM",
+        "createdAtMs": int(time.time() * 1000) - 1200,
+        "updatedAtMs": int(time.time() * 1000) - 800,
+        "finishedAtMs": int(time.time() * 1000) - 400,
+        "result": {
+            "mediaType": "audio/wav",
+            "headers": {
+                "x-test-header": "ok",
+            },
+            "audioRef": audio_ref,
+        },
+    }
+
+    payload_without_result = backend_app._tts_job_status_payload(job, include_result=False)
+    assert "result" not in payload_without_result
+
+    payload_with_result = backend_app._tts_job_status_payload(job, include_result=True)
+    assert "result" in payload_with_result
+    result = payload_with_result.get("result") if isinstance(payload_with_result.get("result"), dict) else {}
+    assert str(result.get("mediaType") or "") == "audio/wav"
+    assert str((result.get("headers") or {}).get("x-test-header") or "") == "ok"
+    assert str(result.get("audioBase64") or "") == base64.b64encode(synthesized_audio).decode("ascii")
+
+
+def test_tts_job_status_payload_live_native_orchestration_and_artifacts(tmp_path) -> None:
+    chunk0 = tmp_path / "chunk_0000.wav"
+    chunk0.write_bytes(_tiny_wav_bytes(300))
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text('{"turns":[]}', encoding="utf-8")
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text('{"ok":true}', encoding="utf-8")
+
+    job = {
+        "jobId": "live_native_status_job",
+        "requestId": "live_native_status_job",
+        "traceId": "trace_live_native_status_job",
+        "status": "running",
+        "engine": "GEM",
+        "mode": "live_native",
+        "createdAtMs": int(time.time() * 1000) - 1000,
+        "liveOrchestration": {
+            "mode": "live_native",
+            "status": "running",
+            "activeSpeakerName": "HOST",
+            "turnIndex": 2,
+            "sessionEpoch": 1,
+            "resumeCount": 1,
+            "fallbackCount": 0,
+        },
+        "liveNativeArtifacts": {
+            "audio": {"downloadUrl": "/tts/jobs/live_native_status_job/audio"},
+            "transcriptJson": {
+                "path": str(transcript_path),
+                "downloadUrl": "/tts/jobs/live_native_status_job/artifacts/transcript_json",
+                "contentType": "application/json",
+            },
+            "summaryJson": {
+                "path": str(summary_path),
+                "downloadUrl": "/tts/jobs/live_native_status_job/artifacts/summary_json",
+                "contentType": "application/json",
+            },
+        },
+        "liveState": {
+            "enabled": True,
+            "mode": "live_native",
+            "playableChunks": 1,
+            "playableDurationMs": 20,
+            "chunkCursorNext": 1,
+            "chunks": [
+                {
+                    "index": 0,
+                    "contentType": "audio/wav",
+                    "durationMs": 20,
+                    "textChars": 16,
+                    "engine": "GEM",
+                    "traceId": "trace0",
+                    "speakerId": "host",
+                    "turnIndex": 0,
+                    "sessionEpoch": 1,
+                    "resumeAttempt": 1,
+                    "fallbackUsed": False,
+                    "path": str(chunk0),
+                }
+            ],
+        },
+    }
+
+    payload = backend_app._tts_job_status_payload(
+        job,
+        include_result=False,
+        include_chunks=True,
+        chunk_cursor=0,
+        chunk_limit=2,
+        include_chunk_audio=False,
+    )
+    assert payload["mode"] == "live_native"
+    assert payload["liveOrchestration"]["activeSpeakerName"] == "HOST"
+    assert payload["artifacts"]["transcriptJson"]["downloadUrl"].endswith("/artifacts/transcript_json")
+    assert payload["chunks"][0]["speakerId"] == "host"
+    assert payload["chunks"][0]["turnIndex"] == 0
+    assert payload["chunks"][0]["sessionEpoch"] == 1
+    assert payload["chunks"][0]["resumeAttempt"] == 1
+    assert payload["chunks"][0]["fallbackUsed"] is False
+
+
+def test_tts_job_artifact_download_endpoint_live_native(monkeypatch, tmp_path) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:artifact-download:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+
+    job_id = "live_native_artifact_job"
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text('{"turns":[{"speaker":"HOST","text":"Hello"}]}', encoding="utf-8")
+    backend_app._TTS_JOB_QUEUE.enqueue(
+        lane="free",
+        payload={
+            "jobId": job_id,
+            "uid": "artifact_user",
+            "requestId": job_id,
+            "traceId": job_id,
+            "engine": "GEM",
+            "text": "artifact test",
+            "mode": "live_native",
+            "liveNativeArtifacts": {
+                "transcriptJson": {
+                    "path": str(transcript_path),
+                    "downloadUrl": f"/tts/jobs/{job_id}/artifacts/transcript_json",
+                    "contentType": "application/json",
+                }
+            },
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.get(f"/tts/jobs/{job_id}/artifacts/transcript_json", headers={"x-dev-uid": "artifact_user"})
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("application/json")
+    assert "turns" in response.text
+
+
 def test_tts_job_chunk_download_endpoint(monkeypatch, tmp_path) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -882,6 +1415,40 @@ def test_tts_job_chunk_download_endpoint(monkeypatch, tmp_path) -> None:
 
     client = TestClient(backend_app.app)
     response = client.get(f"/tts/jobs/{job_id}/chunks/0", headers={"x-dev-uid": "chunk_user"})
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("audio/wav")
+    assert len(response.content) > 64
+
+
+def test_tts_job_audio_download_endpoint(monkeypatch) -> None:
+    _reset_tts_metrics_state(monkeypatch)
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(
+        backend_app,
+        "_TTS_JOB_QUEUE",
+        backend_app.TtsJobQueue(redis_url="", key_prefix=f"test:tts:audio-download:{time.time_ns()}", lane_weights=backend_app.VF_TTS_LANE_WEIGHTS),
+    )
+
+    job_id = "audio_download_job_1"
+    backend_app._TTS_JOB_QUEUE.enqueue(
+        lane="free",
+        payload={
+            "jobId": job_id,
+            "uid": "audio_user",
+            "requestId": job_id,
+            "traceId": job_id,
+            "engine": "GEM",
+            "text": "audio test",
+        },
+    )
+    backend_app._TTS_JOB_QUEUE.mark_completed(
+        job_id,
+        audio_bytes=_tiny_wav_bytes(480),
+        media_type="audio/wav",
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.get(f"/tts/jobs/{job_id}/audio", headers={"x-dev-uid": "audio_user"})
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("audio/wav")
     assert len(response.content) > 64

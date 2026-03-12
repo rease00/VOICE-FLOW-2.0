@@ -22,7 +22,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def configure_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
+
+
 def main() -> int:
+    configure_stdio()
     args = parse_args()
     model = WhisperModel(
         str(args.whisper_model),

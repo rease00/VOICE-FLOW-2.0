@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+import threading
+import time
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -14,6 +14,13 @@ client = TestClient(backend_app.app)
 @pytest.fixture(autouse=True)
 def _disable_auth_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_status_cache() -> None:
+    backend_app._invalidate_tts_status_cache()
+    yield
+    backend_app._invalidate_tts_status_cache()
 
 
 def test_tts_engines_status_contract(monkeypatch) -> None:
@@ -28,6 +35,127 @@ def test_tts_engines_status_contract(monkeypatch) -> None:
     assert "runtimeUrl" in payload["engines"]["GEM"]
 
 
+def test_tts_engines_status_uses_cache_within_ttl(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def _fake_uncached(engine: str) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "engine": engine,
+            "runtimeUrl": "http://127.0.0.1:7810",
+            "healthUrl": "http://127.0.0.1:7810/health",
+            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
+            "ready": True,
+            "state": "online",
+            "detail": "Runtime online",
+            "capabilities": {"ready": True},
+        }
+
+    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 5_000)
+
+    first = client.get("/tts/engines/status", params={"engine": "GEM"})
+    second = client.get("/tts/engines/status", params={"engine": "GEM"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls["count"] == 1
+
+
+def test_tts_engines_status_degraded_cache_refreshes_quickly(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def _fake_uncached(engine: str) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "engine": engine,
+            "runtimeUrl": "http://127.0.0.1:7810",
+            "healthUrl": "http://127.0.0.1:7810/health",
+            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
+            "ready": False,
+            "state": "offline",
+            "detail": "Runtime offline",
+            "capabilities": {"ready": False},
+        }
+
+    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 10)
+
+    first = client.get("/tts/engines/status", params={"engine": "GEM"})
+    assert first.status_code == 200
+    time.sleep(0.03)
+    second = client.get("/tts/engines/status", params={"engine": "GEM"})
+    assert second.status_code == 200
+    assert calls["count"] == 2
+
+
+def test_tts_engines_capabilities_reuses_status_cache(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def _fake_uncached(engine: str) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "engine": engine,
+            "runtimeUrl": "http://127.0.0.1:7810",
+            "healthUrl": "http://127.0.0.1:7810/health",
+            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
+            "ready": True,
+            "state": "online",
+            "detail": "Runtime online",
+            "capabilities": {"ready": True, "metadata": {"source": "runtime"}},
+        }
+
+    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 5_000)
+
+    status_response = client.get("/tts/engines/status", params={"engine": "GEM"})
+    caps_response = client.get("/tts/engines/capabilities", params={"engine": "GEM"})
+    assert status_response.status_code == 200
+    assert caps_response.status_code == 200
+    assert calls["count"] == 1
+    assert caps_response.json()["engines"]["GEM"]["ready"] is True
+
+
+def test_tts_status_cache_coalesces_concurrent_refresh(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def _fake_uncached(engine: str) -> dict[str, object]:
+        calls["count"] += 1
+        time.sleep(0.08)
+        return {
+            "engine": engine,
+            "runtimeUrl": "http://127.0.0.1:7810",
+            "healthUrl": "http://127.0.0.1:7810/health",
+            "capabilitiesUrl": "http://127.0.0.1:7810/v1/capabilities",
+            "ready": True,
+            "state": "online",
+            "detail": "Runtime online",
+            "capabilities": {"ready": True},
+        }
+
+    monkeypatch.setattr(backend_app, "_engine_status_entry_uncached", _fake_uncached)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_READY_TTL_MS", 60_000)
+    monkeypatch.setattr(backend_app, "TTS_STATUS_CACHE_DEGRADED_TTL_MS", 5_000)
+
+    results: list[str] = []
+
+    def _worker() -> None:
+        payload = backend_app._engine_status_entry("GEM")
+        results.append(str(payload.get("state") or ""))
+
+    threads = [threading.Thread(target=_worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert len(results) == 4
+    assert calls["count"] == 1
+    assert all(state == "online" for state in results)
+
+
 def test_frontend_gateway_routes_are_registered() -> None:
     expected = {
         ("GET", "/health"),
@@ -38,23 +166,23 @@ def test_frontend_gateway_routes_are_registered() -> None:
         ("GET", "/tts/engines/voices"),
         ("GET", "/tts/voice-mapping/catalog"),
         ("GET", "/runtime/logs/tail"),
-        ("POST", "/audio/extract-from-video"),
-        ("POST", "/video/transcribe"),
-        ("POST", "/video/separate-stem"),
-        ("POST", "/video/mux-dub"),
         ("POST", "/tts/jobs"),
         ("GET", "/tts/jobs/{job_id}"),
+        ("GET", "/tts/jobs/{job_id}/audio"),
         ("GET", "/tts/jobs/{job_id}/chunks/{chunk_index}"),
+        ("POST", "/podcast/live/jobs"),
+        ("GET", "/podcast/live/jobs/{job_id}"),
+        ("GET", "/podcast/live/jobs/{job_id}/audio"),
+        ("GET", "/podcast/live/jobs/{job_id}/chunks/{chunk_index}"),
+        ("GET", "/podcast/live/jobs/{job_id}/artifacts/{artifact_kind}"),
+        ("DELETE", "/podcast/live/jobs/{job_id}"),
+        ("POST", "/podcast/standard/jobs"),
+        ("GET", "/podcast/standard/jobs/{job_id}"),
+        ("GET", "/podcast/standard/jobs/{job_id}/audio"),
+        ("GET", "/podcast/standard/jobs/{job_id}/chunks/{chunk_index}"),
+        ("GET", "/podcast/standard/jobs/{job_id}/artifacts/{artifact_kind}"),
+        ("DELETE", "/podcast/standard/jobs/{job_id}"),
         ("DELETE", "/tts/jobs/{job_id}"),
-        ("POST", "/dubbing/jobs/v2"),
-        ("GET", "/dubbing/jobs/{job_id}"),
-        ("GET", "/dubbing/jobs/{job_id}/chunks/{chunk_index}"),
-        ("POST", "/dubbing/jobs/{job_id}/cancel"),
-        ("GET", "/dubbing/jobs/{job_id}/report"),
-        ("GET", "/dubbing/jobs/{job_id}/result"),
-        ("GET", "/voice-transfer/models"),
-        ("POST", "/voice-transfer/load-model"),
-        ("POST", "/voice-transfer/convert"),
     }
 
     registered: set[tuple[str, str]] = set()
@@ -70,6 +198,111 @@ def test_frontend_gateway_routes_are_registered() -> None:
 
     missing = sorted(expected - registered)
     assert not missing, f"Missing frontend gateway route bindings: {missing}"
+
+
+def test_podcast_live_job_create_alias_builds_live_native_request(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_submit(payload, request, *, sync_wait_ms: int):
+        captured["payload"] = payload
+        captured["wait_ms"] = sync_wait_ms
+        return backend_app.JSONResponse({"ok": True, "accepted": True, "jobId": "podcast_live_job"})
+
+    monkeypatch.setattr(backend_app, "_submit_tts_job", _fake_submit)
+
+    response = client.post(
+        "/podcast/live/jobs",
+        json={
+            "topic": "Should AI podcasts sound live?",
+            "durationSec": 180,
+            "speakerCount": 2,
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the discussion."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test claims."},
+            ],
+            "pacingStyle": "fast-paced debate",
+        },
+        headers={"x-dev-uid": "podcast_user"},
+    )
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, backend_app.TtsSynthesizeRequest)
+    assert payload.engine == "GEM"
+    assert payload.mode == "live_native"
+    assert payload.text == "Should AI podcasts sound live?"
+    assert payload.liveNative is not None
+    assert payload.liveNative.topic == "Should AI podcasts sound live?"
+    assert payload.liveNative.speakerCount == 2
+    assert payload.liveNative.durationSec == 180
+    assert payload.liveNative.nativeAudioModel == "gemini-2.5-flash-native-audio-preview-12-2025"
+    assert captured["wait_ms"] == 0
+
+
+def test_podcast_live_job_create_rejects_duration_above_30_minutes() -> None:
+    response = client.post(
+        "/podcast/live/jobs",
+        json={
+            "topic": "Too long",
+            "durationSec": 1801,
+            "speakerCount": 2,
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
+            ],
+        },
+        headers={"x-dev-uid": "podcast_user"},
+    )
+
+    assert response.status_code == 400
+    assert "1800" in str(response.json()["detail"])
+
+
+def test_podcast_standard_job_create_returns_queued_job(monkeypatch) -> None:
+    started: dict[str, object] = {}
+
+    class _FakeThread:
+        def __init__(self, *, target=None, args=(), kwargs=None, name=None, daemon=None):
+            started["target"] = target
+            started["args"] = args
+            started["kwargs"] = kwargs or {}
+            started["name"] = name
+            started["daemon"] = daemon
+
+        def start(self):
+            started["started"] = True
+
+    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda request, uid: {"userId": uid})
+    monkeypatch.setattr(backend_app.threading, "Thread", _FakeThread)
+
+    response = client.post(
+        "/podcast/standard/jobs",
+        json={
+            "topic": "How should AI podcasts keep continuity?",
+            "durationSec": 3600,
+            "speakerCount": 4,
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the show."},
+                {"id": "cohost", "name": "COHOST", "role": "witty", "voice": "Aoede", "persona": "Keep it lively."},
+                {"id": "expert", "name": "EXPERT", "role": "authority", "voice": "Charon", "persona": "Explain clearly."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test ideas."},
+            ],
+            "pacingStyle": "conversational deep dive",
+        },
+        headers={"x-dev-uid": "podcast_user"},
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["accepted"] is True
+    assert payload["mode"] == "podcast_standard"
+    assert payload["podcastMode"] == "standard"
+    assert payload["engine"] == "GEM"
+    assert payload["status"] == "queued"
+    assert payload["liveOrchestration"]["speakerCount"] == 4
+    assert started["started"] is True
+    assert started["target"] == backend_app._process_podcast_standard_job
 
 
 def test_tts_engines_status_reports_not_configured_when_gemini_keys_missing(monkeypatch) -> None:
@@ -204,10 +437,10 @@ def test_build_tts_upstream_payload_preserves_explicit_model_fields(monkeypatch)
         text="A: hello\nB: hi",
         model="gemini-2.5-flash-preview-tts",
         modelCandidates=["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-lite-preview-tts"],
-        voiceName="Fenrir",
+        voiceName="v1",
         speaker_voices=[
-            {"speaker": "A", "voiceName": "Fenrir"},
-            {"speaker": "B", "voiceName": "Kore"},
+            {"speaker": "A", "voiceName": "v1"},
+            {"speaker": "B", "voiceName": "Meera India Female"},
         ],
         multi_speaker_mode="studio_pair_groups",
         multi_speaker_line_map=[
@@ -232,176 +465,8 @@ def test_build_tts_upstream_payload_preserves_explicit_model_fields(monkeypatch)
         "gemini-2.5-flash-lite-preview-tts",
     ]
     assert upstream_payload["multi_speaker_mode"] == "studio_pair_groups"
+    assert upstream_payload["speaker_voices"] == [
+        {"speaker": "A", "voiceName": "Fenrir", "voice_id": "Fenrir", "voiceId": "Fenrir"},
+        {"speaker": "B", "voiceName": "Kore", "voice_id": "Kore", "voiceId": "Kore"},
+    ]
     assert upstream_payload["poolHint"] == "free"
-
-
-def test_video_separate_stem_contract(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(backend_app, "ENABLE_SOURCE_SEPARATION", True)
-    from video_dubbing.pipeline import phase1_acoustic_isolation
-
-    def fake_phase1_run(ctx: dict, _cfg, _log):
-        speech = tmp_path / "speech.wav"
-        background = tmp_path / "background.wav"
-        speech.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        background.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        ctx["vocals_dry"] = str(speech)
-        ctx["music_effects"] = str(background)
-        return ctx
-
-    monkeypatch.setattr(phase1_acoustic_isolation, "run", fake_phase1_run)
-
-    response = client.post(
-        "/video/separate-stem",
-        files={"file": ("sample.wav", b"abc", "audio/wav")},
-        data={"stem": "speech"},
-    )
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/wav")
-
-
-def test_video_transcribe_compat_capture_emotions_alias(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(backend_app, "ENABLE_TRANSCRIBE_EMOTION_CAPTURE", True)
-    monkeypatch.setattr(backend_app, "TRANSCRIBE_EMOTION_MAX_SEGMENTS", 10)
-    monkeypatch.setattr(backend_app, "TRANSCRIBE_EMOTION_MIN_SECONDS", 0.0)
-
-    def fake_convert_media_to_wav(_src: str, dst: str, sample_rate: int = 16000, channels: int = 1):
-        Path(dst).write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-    def fake_transcribe_with_whisper(_asr_path: Path, language: str, task: str, return_words: bool):
-        return {
-            "language": "en",
-            "segments": [
-                {
-                    "id": 0,
-                    "start": 0.0,
-                    "end": 1.0,
-                    "text": "Hello",
-                    "speaker": "Speaker 1",
-                }
-            ],
-        }
-
-    def fake_slice_audio_segment_to_wav(_src: str, dst: str, start: float, end: float, sample_rate: int = 16000):
-        Path(dst).write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-    monkeypatch.setattr(backend_app, "_convert_media_to_wav", fake_convert_media_to_wav)
-    monkeypatch.setattr(backend_app, "_transcribe_with_whisper", fake_transcribe_with_whisper)
-    monkeypatch.setattr(backend_app, "_slice_audio_segment_to_wav", fake_slice_audio_segment_to_wav)
-    monkeypatch.setattr(
-        backend_app,
-        "_detect_emotion_from_segment_audio",
-        lambda *_args, **_kwargs: ("Happy", "mock", 0.99),
-    )
-    monkeypatch.setattr(backend_app, "_wav_duration_seconds", lambda _path: 1.0)
-
-    response = client.post(
-        "/video/transcribe",
-        files={"file": ("clip.wav", b"abc", "audio/wav")},
-        data={
-            "language": "auto",
-            "task": "transcribe",
-            "include_emotion": "false",
-            "capture_emotions": "true",
-            "return_words": "true",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["segments"][0]["emotion"] == "Happy"
-    assert payload["speakerCount"] == 1
-    assert payload["speakers"][0]["label"] == "Speaker 1"
-    assert isinstance(payload.get("director"), dict)
-    assert payload["director"].get("modelPreferred") == backend_app.VF_DUB_DIRECTOR_MODEL
-
-
-def test_video_transcribe_returns_speaker_summary_from_phase2_merge(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(backend_app, "ENABLE_TRANSCRIBE_EMOTION_CAPTURE", False)
-
-    def fake_convert_media_to_wav(_src: str, dst: str, sample_rate: int = 16000, channels: int = 1):
-        Path(dst).write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-    def fake_transcribe_with_whisper(_asr_path: Path, language: str, task: str, return_words: bool):
-        return {
-            "language": "en",
-            "segments": [
-                {"id": 0, "start": 0.0, "end": 1.0, "text": "Hello there", "speaker": "Speaker"},
-                {"id": 1, "start": 1.1, "end": 2.0, "text": "General Kenobi", "speaker": "Speaker"},
-            ],
-        }
-
-    monkeypatch.setattr(backend_app, "_convert_media_to_wav", fake_convert_media_to_wav)
-    monkeypatch.setattr(backend_app, "_transcribe_with_whisper", fake_transcribe_with_whisper)
-    monkeypatch.setattr(backend_app, "_wav_duration_seconds", lambda _path: 2.0)
-
-    from video_dubbing import config as dubbing_config
-    from video_dubbing.pipeline import phase2_director_multimodal as phase2
-
-    class _FakeConfig:
-        director_model = "gemini-2.5-flash"
-
-    monkeypatch.setattr(dubbing_config, "build_config", lambda *_args, **_kwargs: _FakeConfig())
-    monkeypatch.setattr(phase2, "_run_diarization", lambda *_args, **_kwargs: [(0.0, 1.0, "speaker_00"), (1.0, 2.0, "speaker_01")])
-
-    def fake_apply_diarization_labels(segments, _turns):
-        segments[0]["speaker_diarized"] = "speaker_00"
-        segments[0]["speaker_diarization_confidence"] = 0.98
-        segments[1]["speaker_diarized"] = "speaker_01"
-        segments[1]["speaker_diarization_confidence"] = 0.98
-
-    def fake_merge_speaker_labels(segments, _policy, _max_speaker_count):
-        segments[0]["speaker"] = "SPEAKER_00"
-        segments[0]["speaker_raw"] = "speaker_00"
-        segments[0]["speaker_source"] = "diarization"
-        segments[0]["speaker_confidence"] = 0.98
-        segments[1]["speaker"] = "SPEAKER_01"
-        segments[1]["speaker_raw"] = "speaker_01"
-        segments[1]["speaker_source"] = "diarization"
-        segments[1]["speaker_confidence"] = 0.98
-
-    monkeypatch.setattr(phase2, "_apply_diarization_labels", fake_apply_diarization_labels)
-    monkeypatch.setattr(phase2, "_merge_speaker_labels", fake_merge_speaker_labels)
-    monkeypatch.setattr(phase2, "_infer_affective_tags", lambda _text: ["neutral"])
-    monkeypatch.setattr(phase2, "_refine_director_with_gemini", lambda **_kwargs: None)
-    monkeypatch.setattr(phase2, "_scene_complexity", lambda _segments, speaker_count: "medium" if speaker_count > 1 else "low")
-
-    response = client.post(
-        "/video/transcribe",
-        files={"file": ("clip.wav", b"abc", "audio/wav")},
-        data={"language": "auto", "task": "transcribe", "return_words": "true"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["speakerCount"] == 2
-    assert [item["label"] for item in payload["speakers"]] == ["Speaker 1", "Speaker 2"]
-    assert payload["director"]["speakerCount"] == 2
-    assert payload["director"]["sceneComplexity"] == "medium"
-
-
-def test_video_mux_dub_accepts_legacy_mix_alias(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(backend_app, "_get_ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr(backend_app, "_cleanup_paths", lambda *_args, **_kwargs: None)
-
-    def fake_run(args):
-        # last argument in ffmpeg command is output path
-        Path(args[-1]).write_bytes(b"00")
-
-    monkeypatch.setattr(backend_app, "_run", fake_run)
-
-    response = client.post(
-        "/video/mux-dub",
-        files={
-            "video": ("video.mp4", b"video", "video/mp4"),
-            "dub_audio": ("dub.wav", b"audio", "audio/wav"),
-        },
-        data={
-            "speech_gain": "1.0",
-            "background_gain": "0.3",
-            "normalize": "true",
-            "mix_with_video_audio": "false",
-        },
-    )
-
-    assert response.status_code == 200

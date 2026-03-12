@@ -49,8 +49,8 @@ const baseSession: ReaderSession = {
     label: 'Reader pricing: 1 char = 1.5 VF',
   },
   limits: {
-    textWindowChars: 1000,
-    prefetchThresholdChars: 500,
+    textWindowChars: 1500,
+    prefetchThresholdChars: 1000,
     panelBatchSize: 10,
     panelTriggerIndex: 5,
     deleteWarningMs: 180000,

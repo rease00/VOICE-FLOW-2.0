@@ -200,23 +200,5 @@ def test_docs_paths_not_exempt_when_docs_disabled(monkeypatch) -> None:
     assert backend_app._auth_exempt_path("/redoc") is False
 
 
-def test_video_asset_manifest_loader_accepts_bom_and_non_bom(monkeypatch, tmp_path: Path) -> None:
-    payload = {
-        "assets": [
-            {"id": "wav2lip", "outputPath": "models/video-pipeline/wav2lip/wav2lip.onnx", "required": True},
-        ]
-    }
-
-    manifest_non_bom = tmp_path / "video_pipeline_asset_sources.nonbom.json"
-    manifest_non_bom.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
-    monkeypatch.setattr(backend_app, "VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST", manifest_non_bom)
-    non_bom_rows = backend_app._load_video_pipeline_asset_sources()
-
-    manifest_bom = tmp_path / "video_pipeline_asset_sources.bom.json"
-    manifest_bom.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8-sig")
-    monkeypatch.setattr(backend_app, "VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST", manifest_bom)
-    bom_rows = backend_app._load_video_pipeline_asset_sources()
-
-    assert non_bom_rows == bom_rows
-    assert len(bom_rows) == 1
-    assert str(bom_rows[0].get("id") or "") == "wav2lip"
+def test_video_asset_manifest_loader_removed() -> None:
+    assert not hasattr(backend_app, "_load_video_pipeline_asset_sources")

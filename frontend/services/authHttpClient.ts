@@ -4,6 +4,7 @@ import { resolveAuthHeaders } from '../src/shared/auth/tokenPolicy';
 
 export interface AuthFetchOptions {
   requireAuth?: boolean;
+  timeoutMs?: number;
 }
 
 interface TokenResolution {
@@ -63,6 +64,12 @@ const resolveRequestTarget = (input: RequestInfo | URL): string => {
   } catch {
     return safeRaw;
   }
+};
+
+const formatRequestTimeoutMessage = (input: RequestInfo | URL, timeoutMs: number): string => {
+  const target = resolveRequestTarget(input);
+  const timeoutSeconds = Math.max(1, Math.round(timeoutMs / 1000));
+  return `Request to ${target} timed out after ${timeoutSeconds}s. Verify backend availability and retry.`;
 };
 
 export const getCurrentIdToken = async (): Promise<string> => {
@@ -162,14 +169,53 @@ export const authFetch = async (
 
   const runAttempt = async (forceTokenRefresh: boolean): Promise<{ response: Response; hasFirebaseToken: boolean }> => {
     const attempt = await resolveRequestHeaders(forceTokenRefresh);
-    const response = await fetch(input, {
-      ...init,
-      headers: attempt.headers,
-    });
-    return {
-      response,
-      hasFirebaseToken: attempt.hasFirebaseToken,
-    };
+    const timeoutMs = Number(options.timeoutMs || 0);
+    const shouldApplyTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+    const controller = shouldApplyTimeout ? new AbortController() : null;
+    const originalSignal = init.signal;
+    let timeoutTriggered = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const forwardAbort = () => controller?.abort();
+
+    if (originalSignal && controller) {
+      if (originalSignal.aborted) {
+        controller.abort();
+      } else {
+        originalSignal.addEventListener('abort', forwardAbort, { once: true });
+      }
+    }
+
+    if (controller) {
+      timeoutId = setTimeout(() => {
+        timeoutTriggered = true;
+        controller.abort();
+      }, timeoutMs);
+    }
+
+    try {
+      const fetchInit: RequestInit = {
+        ...init,
+        headers: attempt.headers,
+      };
+      if (controller?.signal || originalSignal) {
+        fetchInit.signal = controller?.signal || originalSignal || null;
+      }
+      const response = await fetch(input, fetchInit);
+      return {
+        response,
+        hasFirebaseToken: attempt.hasFirebaseToken,
+      };
+    } catch (error: unknown) {
+      if (timeoutTriggered && controller && !originalSignal?.aborted) {
+        throw new Error(formatRequestTimeoutMessage(input, timeoutMs));
+      }
+      throw error;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (originalSignal && controller) {
+        originalSignal.removeEventListener('abort', forwardAbort);
+      }
+    }
   };
 
   try {

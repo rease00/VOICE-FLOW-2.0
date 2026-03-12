@@ -19,13 +19,13 @@ export const TelemetrySparkline: React.FC<TelemetrySparklineProps> = ({
   title,
   compact = false,
 }) => {
-  const { points, baseline } = useMemo(() => {
+  const { points, baseline, width, height } = useMemo(() => {
     const source = Array.isArray(values) && values.length > 1 ? values : [0, 0];
     const min = Math.min(...source);
     const max = Math.max(...source);
     const span = Math.max(1, max - min);
-    const width = 80;
-    const height = 24;
+    const width = compact ? 56 : 80;
+    const height = compact ? 18 : 24;
     const output = source.map((value, index) => {
       const x = (index / Math.max(1, source.length - 1)) * width;
       const y = height - (((value - min) / span) * height);
@@ -35,26 +35,27 @@ export const TelemetrySparkline: React.FC<TelemetrySparklineProps> = ({
     return {
       points: output,
       baseline: clamp(baselineY, 0, height),
+      width,
+      height,
     };
-  }, [values]);
+  }, [compact, values]);
 
   return (
     <svg
-      viewBox="0 0 80 24"
-      className={`${compact ? 'h-5 w-16' : 'h-6 w-20'} ${colorClassName} ${glow ? 'vf-telemetry-glow' : ''}`}
+      viewBox={`0 0 ${width} ${height}`}
+      className={`${compact ? 'h-4 w-14' : 'h-6 w-20'} ${colorClassName} ${glow ? 'vf-telemetry-glow' : ''}`}
       role="img"
       aria-label={title || 'Telemetry sparkline'}
     >
-      <line x1="0" y1={baseline} x2="80" y2={baseline} className="stroke-current opacity-15" strokeWidth="1" />
+      <line x1="0" y1={baseline} x2={width} y2={baseline} className="stroke-current opacity-15" strokeWidth="1" />
       <polyline
         points={points}
         fill="none"
         className="stroke-current"
-        strokeWidth="2"
+        strokeWidth={compact ? '1.75' : '2'}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
     </svg>
   );
 };
-

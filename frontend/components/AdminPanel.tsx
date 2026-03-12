@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Activity, Key, Loader2, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
+import { Activity, Key, Loader2, MessageSquareText, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { useAdminCoupons } from '../src/features/admin/hooks/useAdminCoupons';
 import { useAdminUsers } from '../src/features/admin/hooks/useAdminUsers';
@@ -32,6 +32,7 @@ import {
   fetchAdminRbacUsers,
   fetchAdminTtsGatewayStatus,
   fetchAdminTtsQueueMetrics,
+  fetchAdminLabRuntimeDefaults,
   fetchAlertDestinations,
   fetchAlertEvents,
   fetchAlertPolicies,
@@ -65,6 +66,7 @@ import {
   fetchOpsGuardianStatus,
   type OpsGuardianApprovalsPayload,
   type OpsGuardianStatusPayload,
+  type AdminLabRuntimeDefaults,
   fetchSchedulerRuns,
   fetchSchedulerTasks,
   createSchedulerTask,
@@ -74,8 +76,30 @@ import {
   type ScheduledTaskRun,
   verifyAdminSessionUnlock,
   verifyAdminAuditChain,
+  updateAdminLabRuntimeDefaults,
+  fetchAdminSupportConversations,
+  fetchAdminSupportConversationById,
+  replyAdminSupportConversation,
+  resolveAdminSupportConversation,
+  fetchAdminSupportAiPolicy,
+  patchAdminSupportAiPolicy,
+  type SupportConversation,
+  type SupportMessage,
+  type SupportAiPolicy,
 } from '../services/adminService';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
+import { useManagedTabs } from '../src/shared/ui/tabs';
+import {
+  ADMIN_MESSAGES_TAB_ORDER,
+  DEFAULT_ADMIN_MESSAGES_TAB,
+  type AdminMessagesTab,
+  segmentSupportConversations,
+} from '../src/features/admin/model/messages';
+import {
+  ADMIN_MAIN_TAB_ORDER,
+  DEFAULT_ADMIN_MAIN_TAB,
+  type AdminMainTab,
+} from '../src/features/admin/model/tabs';
 import {
   applyKeysToPoolInConfig,
   applySelectedPoolToAllPlans,
@@ -138,6 +162,10 @@ const allPermissions: AdminPermission[] = [
   'scheduler.write',
   'rbac.read',
   'rbac.write',
+  'support.read',
+  'support.reply',
+  'support.ai.review',
+  'support.ai.config',
 ];
 
 const toDateInput = (date: Date): string => {
@@ -262,11 +290,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isExecutingDailyReset, setIsExecutingDailyReset] = useState(false);
 
   const [opsTab, setOpsTab] = useState<OpsTab>(initialOpsTab);
+  const [adminMainTab, setAdminMainTab] = useState<AdminMainTab>(DEFAULT_ADMIN_MAIN_TAB);
+  const [adminMessagesTab, setAdminMessagesTab] = useState<AdminMessagesTab>(DEFAULT_ADMIN_MESSAGES_TAB);
+  const [supportConversations, setSupportConversations] = useState<SupportConversation[]>([]);
+  const [selectedSupportConversationId, setSelectedSupportConversationId] = useState('');
+  const [selectedSupportConversation, setSelectedSupportConversation] = useState<SupportConversation | null>(null);
+  const [selectedSupportMessages, setSelectedSupportMessages] = useState<SupportMessage[]>([]);
+  const [supportSearch, setSupportSearch] = useState('');
+  const [supportReplyText, setSupportReplyText] = useState('');
+  const [supportAiPolicy, setSupportAiPolicy] = useState<SupportAiPolicy | null>(null);
+  const [supportAiPolicyDraft, setSupportAiPolicyDraft] = useState<SupportAiPolicy | null>(null);
+  const [isLoadingSupportConversations, setIsLoadingSupportConversations] = useState(false);
+  const [isLoadingSupportDetail, setIsLoadingSupportDetail] = useState(false);
+  const [isLoadingSupportAiPolicy, setIsLoadingSupportAiPolicy] = useState(false);
   const [opsUsage, setOpsUsage] = useState<Record<string, unknown> | null>(null);
   const [opsGuardian, setOpsGuardian] = useState<OpsGuardianStatusPayload | null>(null);
   const [opsApprovals, setOpsApprovals] = useState<OpsGuardianApprovalsPayload | null>(null);
   const [opsGateway, setOpsGateway] = useState<Record<string, unknown> | null>(null);
   const [opsQueue, setOpsQueue] = useState<Record<string, unknown> | null>(null);
+  const [labRuntimeDefaults, setLabRuntimeDefaults] = useState<AdminLabRuntimeDefaults | null>(null);
   const [isLoadingOps, setIsLoadingOps] = useState(false);
 
   const [alertPolicies, setAlertPolicies] = useState<AlertPolicy[]>([]);
@@ -335,6 +377,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isVerifyingAdminUnlockKey, setIsVerifyingAdminUnlockKey] = useState(false);
   const [isRefreshingAdminUnlockStatus, setIsRefreshingAdminUnlockStatus] = useState(false);
 
+  const couponTabs = useManagedTabs({
+    items: [
+      { id: 'wallet_credit' as CouponKind },
+      { id: 'subscription_discount' as CouponKind },
+    ],
+    activeId: couponTab,
+    onChange: setCouponTab,
+    label: 'Coupon types',
+    idBase: 'admin-coupon-types',
+  });
+  const opsTabs = useManagedTabs({
+    items: [
+      { id: 'usage' as OpsTab },
+      { id: 'guardian' as OpsTab },
+      { id: 'alerts' as OpsTab },
+      { id: 'scheduler' as OpsTab },
+      { id: 'audit' as OpsTab },
+      { id: 'analytics' as OpsTab },
+    ],
+    activeId: opsTab,
+    onChange: setOpsTab,
+    label: 'Admin ops sections',
+    idBase: 'admin-ops-sections',
+  });
+  const adminMainTabs = useManagedTabs({
+    items: ADMIN_MAIN_TAB_ORDER.map((id) => ({ id })),
+    activeId: adminMainTab,
+    onChange: setAdminMainTab,
+    label: 'Admin control sections',
+    idBase: 'admin-main-sections',
+  });
+  const adminMessagesTabs = useManagedTabs({
+    items: ADMIN_MESSAGES_TAB_ORDER.map((id) => ({ id })),
+    activeId: adminMessagesTab,
+    onChange: setAdminMessagesTab,
+    label: 'Support message sections',
+    idBase: 'admin-message-sections',
+  });
+
   const notifyError = (error: unknown, fallback: string) => {
     if (isForbiddenError(error) && !isUidAllowlistAuthorizationError(error)) return;
     onToast(sanitizeUiText(getErrorMessage(error, fallback)), 'error');
@@ -384,34 +465,111 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const reloadSupportConversationsSafely = async (query = supportSearch) => {
+    setIsLoadingSupportConversations(true);
+    try {
+      const rows = await fetchAdminSupportConversations(mediaBackendUrl, {
+        ...(query.trim() ? { q: query.trim() } : {}),
+        limit: 200,
+      });
+      setSupportConversations(rows);
+      setSelectedSupportConversation((previous) => {
+        if (!previous) return null;
+        const next = rows.find((item) => item.conversationId === previous.conversationId);
+        return next || null;
+      });
+      if (selectedSupportConversationId && !rows.some((item) => item.conversationId === selectedSupportConversationId)) {
+        setSelectedSupportConversationId('');
+        setSelectedSupportMessages([]);
+      }
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load support conversations.');
+    } finally {
+      setIsLoadingSupportConversations(false);
+    }
+  };
+
+  const loadSupportConversationDetailSafely = async (conversationId: string) => {
+    const safeConversationId = String(conversationId || '').trim();
+    if (!safeConversationId) return;
+    setIsLoadingSupportDetail(true);
+    try {
+      const payload = await fetchAdminSupportConversationById(safeConversationId, mediaBackendUrl);
+      setSelectedSupportConversationId(safeConversationId);
+      setSelectedSupportConversation(payload.conversation);
+      setSelectedSupportMessages(Array.isArray(payload.messages) ? payload.messages : []);
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load support conversation detail.');
+    } finally {
+      setIsLoadingSupportDetail(false);
+    }
+  };
+
+  const reloadSupportAiPolicySafely = async () => {
+    setIsLoadingSupportAiPolicy(true);
+    try {
+      const policy = await fetchAdminSupportAiPolicy(mediaBackendUrl);
+      setSupportAiPolicy(policy);
+      setSupportAiPolicyDraft(policy);
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load support AI policy.');
+    } finally {
+      setIsLoadingSupportAiPolicy(false);
+    }
+  };
+
   const reloadOpsSafely = async () => {
     setIsLoadingOps(true);
     try {
-      const [usage, guardian, approvals, gateway, queue] = await Promise.allSettled([
+      const [usage, guardian, approvals, gateway, queue, labRuntime] = await Promise.allSettled([
         fetchAdminIntegrationsUsage(mediaBackendUrl),
         fetchOpsGuardianStatus(mediaBackendUrl, true),
         fetchOpsGuardianApprovals(mediaBackendUrl, 'pending'),
         fetchAdminTtsGatewayStatus(mediaBackendUrl),
         fetchAdminTtsQueueMetrics(mediaBackendUrl),
+        fetchAdminLabRuntimeDefaults(mediaBackendUrl),
       ]);
       if (usage.status === 'fulfilled') setOpsUsage(usage.value as unknown as Record<string, unknown>);
       if (guardian.status === 'fulfilled') setOpsGuardian(guardian.value);
       if (approvals.status === 'fulfilled') setOpsApprovals(approvals.value);
       if (gateway.status === 'fulfilled') setOpsGateway(gateway.value as Record<string, unknown>);
       if (queue.status === 'fulfilled') setOpsQueue(queue.value as Record<string, unknown>);
-      const failures = [usage, guardian, approvals, gateway, queue].filter(
+      if (labRuntime.status === 'fulfilled') setLabRuntimeDefaults(labRuntime.value);
+      const failures = [usage, guardian, approvals, gateway, queue, labRuntime].filter(
         (result) => result.status === 'rejected'
       ) as PromiseRejectedResult[];
       if (failures.length > 0) {
-        const fallback = failures.length === 5
+        const fallback = failures.length === 6
           ? 'Failed to load ops telemetry.'
-          : `Some ops telemetry endpoints failed (${failures.length}/5).`;
+          : `Some ops telemetry endpoints failed (${failures.length}/6).`;
         notifyError(failures[0]?.reason, fallback);
       }
     } catch (error: unknown) {
       notifyError(error, 'Failed to load ops telemetry.');
     } finally {
       setIsLoadingOps(false);
+    }
+  };
+
+  const handleSaveLabRuntimeDefaults = async (patch: Partial<AdminLabRuntimeDefaults>) => {
+    if (!canOpsMutate) {
+      onToast('Missing ops.mutate permission.', 'info');
+      return;
+    }
+    try {
+      await withSaving('lab_runtime_defaults', async () => {
+        const nextDefaults = await updateAdminLabRuntimeDefaults(
+          {
+            ...(labRuntimeDefaults || {}),
+            ...patch,
+          },
+          mediaBackendUrl
+        );
+        setLabRuntimeDefaults(nextDefaults);
+        onToast('Lab runtime defaults updated.', 'success');
+      });
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to update Lab runtime defaults.');
     }
   };
 
@@ -666,6 +824,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
   };
 
+  const handleDeleteAuthIssueGeminiPoolKeys = (poolName: string, keysForRemoval: string[]) => {
+    const safePool = String(poolName || '').trim();
+    if (!safePool) return;
+    const normalizedKeys = Array.from(new Set(
+      (Array.isArray(keysForRemoval) ? keysForRemoval : [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    ));
+    if (normalizedKeys.length === 0) {
+      onToast('No auth_issue keys found in this pool.', 'info');
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete ${normalizedKeys.length} auth_issue key${normalizedKeys.length === 1 ? '' : 's'} from "${safePool}"?`
+    );
+    if (!confirmed) return;
+    updateGeminiPoolEditorConfig((previous) => {
+      const pools = { ...(previous.pools || {}) };
+      const current = pools[safePool] || { keys: [] as string[] };
+      const currentKeys = Array.isArray(current.keys) ? current.keys : [];
+      const removals = new Set(normalizedKeys);
+      const nextKeys = currentKeys.filter((item) => !removals.has(String(item || '').trim()));
+      pools[safePool] = { keys: nextKeys };
+      return { ...previous, pools };
+    });
+    onToast(
+      `Removed ${normalizedKeys.length} auth_issue key${normalizedKeys.length === 1 ? '' : 's'} from ${safePool}. Save pools to apply.`,
+      'success'
+    );
+  };
+
   const handlePlanPoolChange = (planKey: 'free' | 'pro' | 'plus', poolName: string) => {
     updateGeminiPoolEditorConfig((previous) => setPlanPoolInConfig(previous, planKey, poolName) as GeminiPoolConfig);
   };
@@ -882,6 +1071,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     void reloadAuditSafely();
     void reloadAudioMetadataSafely();
     void reloadAnalyticsSafely();
+    void reloadSupportConversationsSafely('');
+    void reloadSupportAiPolicySafely();
     void reloadAdminUnlockStatusSafely();
     void hydrateGeneratedCouponCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -976,7 +1167,94 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const canSchedulerWrite = can('scheduler.write');
   const canAuditRead = can('audit.read');
   const canAnalyticsRead = can('analytics.read');
-  const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite;
+  const canSupportRead = can('support.read');
+  const canSupportReply = can('support.reply');
+  const canSupportAiReview = can('support.ai.review');
+  const canSupportAiConfig = can('support.ai.config');
+  const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite || canSupportReply || canSupportAiConfig;
+
+  const handleReplySupportConversation = async () => {
+    const safeConversationId = String(selectedSupportConversationId || '').trim();
+    const safeReply = String(supportReplyText || '').trim();
+    if (!safeConversationId) {
+      onToast('Select a conversation first.', 'info');
+      return;
+    }
+    if (!safeReply) {
+      onToast('Reply text is required.', 'info');
+      return;
+    }
+    await withSaving('support_reply', async () => {
+      const payload = await replyAdminSupportConversation(safeConversationId, safeReply, mediaBackendUrl);
+      setSupportReplyText('');
+      setSelectedSupportConversation(payload.conversation);
+      await reloadSupportConversationsSafely(supportSearch);
+      await loadSupportConversationDetailSafely(safeConversationId);
+      onToast('Support reply sent.', 'success');
+    }, 'Failed to send support reply.');
+  };
+
+  const handleResolveSupportConversation = async () => {
+    const safeConversationId = String(selectedSupportConversationId || '').trim();
+    if (!safeConversationId) {
+      onToast('Select a conversation first.', 'info');
+      return;
+    }
+    await withSaving('support_resolve', async () => {
+      const conversation = await resolveAdminSupportConversation(safeConversationId, mediaBackendUrl);
+      setSelectedSupportConversation(conversation);
+      await reloadSupportConversationsSafely(supportSearch);
+      await loadSupportConversationDetailSafely(safeConversationId);
+      onToast('Support conversation resolved.', 'success');
+    }, 'Failed to resolve support conversation.');
+  };
+
+  const handleSaveSupportAiPolicy = async () => {
+    if (!supportAiPolicyDraft) return;
+    if (!canSupportAiConfig) {
+      onToast('Missing support.ai.config permission.', 'info');
+      return;
+    }
+    await withSaving('support_ai_policy', async () => {
+      const next = await patchAdminSupportAiPolicy(
+        {
+          enabled: Boolean(supportAiPolicyDraft.enabled),
+          confidenceThreshold: Math.max(0, Math.min(1, Number(supportAiPolicyDraft.confidenceThreshold || 0))),
+          maxAutoRepliesPerConversation: Math.max(0, Math.floor(Number(supportAiPolicyDraft.maxAutoRepliesPerConversation || 0))),
+          allowedActions: Array.isArray(supportAiPolicyDraft.allowedActions)
+            ? supportAiPolicyDraft.allowedActions.map((item) => String(item || '').trim()).filter(Boolean)
+            : [],
+          blockedTopics: Array.isArray(supportAiPolicyDraft.blockedTopics)
+            ? supportAiPolicyDraft.blockedTopics.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+            : [],
+          requireHumanForTags: Array.isArray(supportAiPolicyDraft.requireHumanForTags)
+            ? supportAiPolicyDraft.requireHumanForTags.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+            : [],
+        },
+        mediaBackendUrl
+      );
+      setSupportAiPolicy(next);
+      setSupportAiPolicyDraft(next);
+      onToast('Support AI policy updated.', 'success');
+    }, 'Failed to save support AI policy.');
+  };
+  const updateSupportAiPolicyDraft = (patch: Partial<SupportAiPolicy>) => {
+    setSupportAiPolicyDraft((previous) => {
+      const fallback: SupportAiPolicy = {
+        enabled: true,
+        confidenceThreshold: 0.78,
+        maxAutoRepliesPerConversation: 2,
+        allowedActions: ['classify_message', 'retrieve_kb_snippets', 'emit_support_reply'],
+        blockedTopics: ['legal_notice', 'fraud', 'chargeback'],
+        requireHumanForTags: ['billing_dispute', 'account_lock', 'security'],
+      };
+      return {
+        ...(previous || supportAiPolicy || fallback),
+        ...patch,
+      };
+    });
+  };
+
   const adminUnlockStatus = adminUnlockStatusPayload?.status || null;
   const adminUnlockTokenPresent = Boolean(getAdminUnlockToken());
   const adminUnlockActive = Boolean(adminUnlockStatus?.isUnlocked) && adminUnlockTokenPresent;
@@ -1255,6 +1533,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!status || !Array.isArray(status.models) || status.models.length === 0) return '-';
     return poolModelPressureLabel(status.models as GeminiPoolModelStatus[]);
   };
+  const hasAuthIssueInKeyStatus = (status: GeminiPoolKeyStatus | null): boolean => {
+    if (!status) return false;
+    const statusToken = String(status.status || '').trim().toLowerCase();
+    const healthToken = String(status.health?.reason || '').trim().toLowerCase();
+    if (statusToken === 'auth_issue' || healthToken === 'auth_issue') return true;
+    if (!Array.isArray(status.models)) return false;
+    return status.models.some((model) => String((model as GeminiPoolModelStatus).status || '').trim().toLowerCase() === 'auth_issue');
+  };
   const selectedPoolRows = selectedPoolKeys.map((key, index) => {
     const keyToken = String(key || '').trim();
     const metadata = selectedPoolKeyMetadata[index] || {};
@@ -1272,6 +1558,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       driftWarnings,
     };
   });
+  const filteredSupportConversations = useMemo(() => {
+    const needle = supportSearch.trim().toLowerCase();
+    if (!needle) return supportConversations;
+    return supportConversations.filter((conversation) => (
+      String(conversation.conversationId || '').toLowerCase().includes(needle)
+      || String(conversation.uid || '').toLowerCase().includes(needle)
+      || String(conversation.userId || '').toLowerCase().includes(needle)
+      || String(conversation.status || '').toLowerCase().includes(needle)
+      || String(conversation.priority || '').toLowerCase().includes(needle)
+    ));
+  }, [supportConversations, supportSearch]);
+  const segmentedSupportConversations = useMemo(
+    () => segmentSupportConversations(filteredSupportConversations),
+    [filteredSupportConversations]
+  );
+  const criticalSupportConversations = segmentedSupportConversations.critical;
+  const userSupportConversations = segmentedSupportConversations.users;
+  const activeSupportConversations = adminMessagesTab === 'critical'
+    ? criticalSupportConversations
+    : userSupportConversations;
+  const supportPriorityToneClass = (priority: string): string => {
+    const token = String(priority || '').trim().toLowerCase();
+    if (token === 'red') return 'border-red-200 bg-red-50 text-red-700';
+    if (token === 'yellow') return 'border-amber-200 bg-amber-50 text-amber-700';
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  };
+  const supportStatusToneClass = (status: string): string => {
+    const token = String(status || '').trim().toLowerCase();
+    if (token === 'resolved') return 'border-gray-200 bg-gray-100 text-gray-600';
+    if (token === 'needs_human') return 'border-red-200 bg-red-50 text-red-700';
+    if (token === 'ai_answered') return 'border-blue-200 bg-blue-50 text-blue-700';
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  };
+  useEffect(() => {
+    if (adminMainTab !== 'messages' || !canSupportRead) return;
+    if (activeSupportConversations.length === 0) {
+      setSelectedSupportConversationId('');
+      setSelectedSupportConversation(null);
+      setSelectedSupportMessages([]);
+      return;
+    }
+    if (activeSupportConversations.some((conversation) => conversation.conversationId === selectedSupportConversationId)) {
+      return;
+    }
+    const nextConversation = activeSupportConversations[0];
+    if (!nextConversation) return;
+    void loadSupportConversationDetailSafely(nextConversation.conversationId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminMainTab, canSupportRead, activeSupportConversations, selectedSupportConversationId]);
+  const selectedPoolAuthIssueKeys = Array.from(new Set(
+    selectedPoolRows
+      .filter((row) => hasAuthIssueInKeyStatus(row.backendStatus) || hasAuthIssueInKeyStatus(row.runtimeStatus))
+      .map((row) => String(row.keyToken || '').trim())
+      .filter(Boolean)
+  ));
   const geminiSourcePolicy = (geminiConfig?.sourcePolicy || {}) as Record<string, unknown>;
   const geminiSourceProvider = String(geminiSourcePolicy.provider || 'gemini_api').trim().toLowerCase() === 'vertex'
     ? 'vertex'
@@ -1318,8 +1659,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm">
+    <div className="flex h-[calc(100dvh-10.25rem)] min-h-[30rem] flex-col gap-4 overflow-hidden">
+      <section className="shrink-0 rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
             <Shield size={16} className="text-indigo-600" />
@@ -1338,6 +1679,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               void reloadAuditSafely();
               void reloadAudioMetadataSafely();
               void reloadAnalyticsSafely();
+              void reloadSupportConversationsSafely(supportSearch);
+              void reloadSupportAiPolicySafely();
               void reloadAdminUnlockStatusSafely();
             }}
             className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
@@ -1346,10 +1689,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             Refresh All
           </button>
         </div>
-        <p className="text-xs text-gray-500">Priority order: Users, Access Control, Coupons, Primary AI Pool, Ops.</p>
+        <p className="text-xs text-gray-500">Use section tabs to keep controls in one page view on all display sizes.</p>
       </section>
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div
+        {...adminMainTabs.listProps}
+        className="shrink-0 overflow-x-auto rounded-xl border border-gray-200 bg-white p-1"
+      >
+        <div className="flex min-w-max gap-2">
+          {([
+            ['unlock', 'Unlock', <Key size={13} key="unlock-icon" />],
+            ['users', 'Users', <Users size={13} key="users-icon" />],
+            ['messages', 'Messages', <MessageSquareText size={13} key="messages-icon" />],
+            ['pools', 'Primary AI Pool', <Key size={13} key="pools-icon" />],
+            ['ops', 'Ops', <Activity size={13} key="ops-icon" />],
+          ] as Array<[AdminMainTab, string, React.ReactNode]>).map(([tabId, label, icon]) => (
+            <button
+              key={tabId}
+              {...adminMainTabs.getTabProps(tabId)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${
+                adminMainTab === tabId ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'
+              }`}
+            >
+              {icon}
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <section
+        {...adminMainTabs.getPanelProps(adminMainTab)}
+        className="min-h-0 flex-1 overflow-hidden"
+      >
+      <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+      <section className={`${adminMainTab === 'unlock' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
             <Key size={16} className="text-indigo-600" />
@@ -1413,6 +1787,268 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               >
                 {isRefreshingAdminUnlockStatus ? 'Refreshing...' : 'Refresh Status'}
               </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className={`${adminMainTab === 'messages' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
+            <MessageSquareText size={16} className="text-indigo-600" />
+            Messages
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={supportSearch}
+              onChange={(event) => setSupportSearch(event.target.value)}
+              placeholder="Search uid, userId, status"
+              className="h-8 w-52 rounded border border-gray-200 px-2 text-xs"
+            />
+            <button
+              onClick={() => { void reloadSupportConversationsSafely(supportSearch); }}
+              className="h-8 rounded border border-indigo-200 bg-indigo-50 px-2.5 text-xs font-semibold text-indigo-700"
+            >
+              Search
+            </button>
+            <button
+              onClick={() => {
+                void reloadSupportConversationsSafely(supportSearch);
+                void reloadSupportAiPolicySafely();
+              }}
+              className="h-8 rounded border border-gray-200 px-2.5 text-xs font-semibold text-gray-700"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="rounded border border-red-200 bg-red-50 px-2 py-1 font-semibold text-red-700">
+            Critical: {criticalSupportConversations.length}
+          </span>
+          <span className="rounded border border-blue-200 bg-blue-50 px-2 py-1 font-semibold text-blue-700">
+            Users: {userSupportConversations.length}
+          </span>
+          <span className="rounded border border-gray-200 bg-gray-50 px-2 py-1 text-gray-600">
+            Total: {filteredSupportConversations.length}
+          </span>
+        </div>
+
+        <div className="mb-3 inline-flex rounded-lg border border-gray-200 p-0.5" {...adminMessagesTabs.listProps}>
+          <button
+            {...adminMessagesTabs.getTabProps('critical')}
+            className={`rounded px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${
+              adminMessagesTab === 'critical' ? 'bg-indigo-600 text-white' : 'text-gray-600'
+            }`}
+          >
+            Critical
+          </button>
+          <button
+            {...adminMessagesTabs.getTabProps('users')}
+            className={`rounded px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${
+              adminMessagesTab === 'users' ? 'bg-indigo-600 text-white' : 'text-gray-600'
+            }`}
+          >
+            Users
+          </button>
+        </div>
+
+        {!canSupportRead ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `support.read` permission.</div>
+        ) : (
+          <div {...adminMessagesTabs.getPanelProps(adminMessagesTab)} className="grid gap-3 lg:grid-cols-[minmax(18rem,22rem)_1fr]">
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 text-xs font-semibold text-gray-700">
+                {adminMessagesTab === 'critical' ? 'Critical queue' : 'Users queue'}
+              </div>
+              <div className="space-y-2">
+                {isLoadingSupportConversations ? (
+                  <div className="inline-flex items-center gap-2 text-xs text-gray-500">
+                    <Loader2 size={13} className="animate-spin" />
+                    Loading conversations...
+                  </div>
+                ) : activeSupportConversations.length === 0 ? (
+                  <div className="text-xs text-gray-500">No conversations in this queue.</div>
+                ) : (
+                  activeSupportConversations.map((conversation) => {
+                    const isSelected = conversation.conversationId === selectedSupportConversationId;
+                    return (
+                      <button
+                        key={conversation.conversationId}
+                        type="button"
+                        onClick={() => { void loadSupportConversationDetailSafely(conversation.conversationId); }}
+                        className={`w-full rounded-lg border px-2 py-2 text-left text-xs transition ${
+                          isSelected ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 bg-white hover:border-indigo-200'
+                        }`}
+                      >
+                        <div className="font-semibold text-gray-800">{conversation.userId || conversation.uid || conversation.conversationId}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${supportStatusToneClass(conversation.status || '')}`}>
+                            {String(conversation.status || 'open')}
+                          </span>
+                          <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${supportPriorityToneClass(conversation.priority || '')}`}>
+                            {String(conversation.priority || 'green')}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-gray-500">
+                          uid: {conversation.uid || '-'} | {formatDate(conversation.lastMessageAt)}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                {!selectedSupportConversationId ? (
+                  <div className="text-xs text-gray-500">Select a conversation to view details.</div>
+                ) : isLoadingSupportDetail ? (
+                  <div className="inline-flex items-center gap-2 text-xs text-gray-500">
+                    <Loader2 size={13} className="animate-spin" />
+                    Loading conversation...
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-gray-800">
+                        Conversation {selectedSupportConversationId}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${supportStatusToneClass(selectedSupportConversation?.status || '')}`}>
+                          {String(selectedSupportConversation?.status || '-')}
+                        </span>
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${supportPriorityToneClass(selectedSupportConversation?.priority || '')}`}>
+                          {String(selectedSupportConversation?.priority || '-')}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-2 rounded border border-gray-200 bg-white p-2">
+                      {selectedSupportMessages.length === 0 ? (
+                        <div className="text-xs text-gray-500">No messages found.</div>
+                      ) : (
+                        selectedSupportMessages.map((message) => (
+                          <div key={message.messageId} className="rounded border border-gray-100 bg-gray-50 p-2">
+                            <div className="mb-1 text-[10px] font-semibold uppercase text-gray-500">
+                              {message.fromType} | {formatDate(message.createdAt)}
+                            </div>
+                            <div className="whitespace-pre-wrap break-words text-xs text-gray-800">{message.text || '-'}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <textarea
+                      value={supportReplyText}
+                      onChange={(event) => setSupportReplyText(event.target.value)}
+                      rows={3}
+                      placeholder="Reply to this conversation"
+                      className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => { void handleReplySupportConversation(); }}
+                        disabled={!canSupportReply || !selectedSupportConversationId || !supportReplyText.trim() || Boolean(isSaving)}
+                        className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
+                      >
+                        Send reply
+                      </button>
+                      <button
+                        onClick={() => { void handleResolveSupportConversation(); }}
+                        disabled={!canSupportReply || !selectedSupportConversationId || String(selectedSupportConversation?.status || '').trim().toLowerCase() === 'resolved' || Boolean(isSaving)}
+                        className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 disabled:opacity-60"
+                      >
+                        Resolve
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {canSupportAiReview && (
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold text-gray-800">Support AI policy</div>
+                    {isLoadingSupportAiPolicy ? <Loader2 size={13} className="animate-spin text-gray-500" /> : null}
+                  </div>
+                  {!supportAiPolicyDraft ? (
+                    <div className="text-xs text-gray-500">Policy not loaded.</div>
+                  ) : (
+                    <div className="grid gap-2 text-xs">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(supportAiPolicyDraft.enabled)}
+                          onChange={(event) => updateSupportAiPolicyDraft({ enabled: event.target.checked })}
+                          disabled={!canSupportAiConfig}
+                        />
+                        Enabled
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Confidence threshold</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={Number(supportAiPolicyDraft.confidenceThreshold || 0)}
+                          onChange={(event) => updateSupportAiPolicyDraft({ confidenceThreshold: Number(event.target.value) })}
+                          disabled={!canSupportAiConfig}
+                          className="h-8 rounded border border-gray-200 px-2 text-xs"
+                        />
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Max auto replies</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={Math.max(0, Math.floor(Number(supportAiPolicyDraft.maxAutoRepliesPerConversation || 0)))}
+                          onChange={(event) => updateSupportAiPolicyDraft({ maxAutoRepliesPerConversation: Number(event.target.value) })}
+                          disabled={!canSupportAiConfig}
+                          className="h-8 rounded border border-gray-200 px-2 text-xs"
+                        />
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Allowed actions (csv)</span>
+                        <input
+                          value={Array.isArray(supportAiPolicyDraft.allowedActions) ? supportAiPolicyDraft.allowedActions.join(', ') : ''}
+                          onChange={(event) => updateSupportAiPolicyDraft({ allowedActions: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })}
+                          disabled={!canSupportAiConfig}
+                          className="h-8 rounded border border-gray-200 px-2 text-xs"
+                        />
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Blocked topics (csv)</span>
+                        <input
+                          value={Array.isArray(supportAiPolicyDraft.blockedTopics) ? supportAiPolicyDraft.blockedTopics.join(', ') : ''}
+                          onChange={(event) => updateSupportAiPolicyDraft({ blockedTopics: event.target.value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean) })}
+                          disabled={!canSupportAiConfig}
+                          className="h-8 rounded border border-gray-200 px-2 text-xs"
+                        />
+                      </label>
+                      <label className="grid gap-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Require human tags (csv)</span>
+                        <input
+                          value={Array.isArray(supportAiPolicyDraft.requireHumanForTags) ? supportAiPolicyDraft.requireHumanForTags.join(', ') : ''}
+                          onChange={(event) => updateSupportAiPolicyDraft({ requireHumanForTags: event.target.value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean) })}
+                          disabled={!canSupportAiConfig}
+                          className="h-8 rounded border border-gray-200 px-2 text-xs"
+                        />
+                      </label>
+                      <div className="mt-1">
+                        <button
+                          onClick={() => { void handleSaveSupportAiPolicy(); }}
+                          disabled={!canSupportAiConfig || Boolean(isSaving)}
+                          className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
+                        >
+                          Save AI policy
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1639,7 +2275,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
       </section>
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <section className={`${adminMainTab === 'users' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
             <Users size={16} className="text-indigo-600" />
@@ -1886,13 +2522,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       <section className="hidden rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Ticket size={16} className="text-indigo-600" />Coupons</div>
-          <div className="inline-flex rounded-lg border border-gray-200 p-0.5">
-            <button onClick={() => setCouponTab('wallet_credit')} className={`rounded px-2 py-1 text-[11px] font-semibold ${couponTab === 'wallet_credit' ? 'bg-indigo-600 text-white' : 'text-gray-600'}`}>Wallet</button>
-            <button onClick={() => setCouponTab('subscription_discount')} className={`rounded px-2 py-1 text-[11px] font-semibold ${couponTab === 'subscription_discount' ? 'bg-indigo-600 text-white' : 'text-gray-600'}`}>Subscription</button>
+          <div className="inline-flex rounded-lg border border-gray-200 p-0.5" {...couponTabs.listProps}>
+            <button {...couponTabs.getTabProps('wallet_credit')} className={`rounded px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${couponTab === 'wallet_credit' ? 'bg-indigo-600 text-white' : 'text-gray-600'}`}>Wallet</button>
+            <button {...couponTabs.getTabProps('subscription_discount')} className={`rounded px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${couponTab === 'subscription_discount' ? 'bg-indigo-600 text-white' : 'text-gray-600'}`}>Subscription</button>
           </div>
         </div>
         {!canCouponsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `coupons.read` permission.</div> : (
-          <>
+          <div {...couponTabs.getPanelProps(couponTab)}>
             {canCouponsWrite && (
               <div className="grid gap-2">
                 <div className="grid grid-cols-3 gap-2">
@@ -2003,11 +2639,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </tbody>
               </table>
             </div>
-          </>
+          </div>
         )}
       </section>
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <section className={`${adminMainTab === 'pools' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Key size={16} className="text-indigo-600" />Primary AI Pool</div>
           <div className="inline-flex items-center gap-2">
@@ -2091,12 +2727,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                 />
                 <div className="space-y-1">
-                  <div className="font-semibold text-gray-800">Enable Gemini TTS model fallback</div>
+                  <div className="font-semibold text-gray-800">Enable Prime TTS model fallback</div>
                   <div>
                     Current mode: <strong>{ttsModelFallbackEnabled ? 'Fallback enabled' : 'Strict primary model only'}</strong>
                   </div>
                   <div className="text-gray-600">
-                    Off means each Gemini-backed engine uses only its configured primary TTS model. On allows the runtime to try alternate configured Gemini TTS models when the primary model is unavailable.
+                    Off means each Prime-backed engine uses only its configured primary TTS model. On allows the runtime to try alternate configured Prime TTS models when the primary model is unavailable.
                   </div>
                 </div>
               </label>
@@ -2248,6 +2884,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     >
                       Delete Pool
                     </button>
+                    <button
+                      onClick={() => handleDeleteAuthIssueGeminiPoolKeys(selectedPoolName, selectedPoolAuthIssueKeys)}
+                      disabled={!canOpsMutate || selectedPoolAuthIssueKeys.length === 0}
+                      className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700 disabled:opacity-60"
+                    >
+                      Delete auth issues
+                    </button>
+                    <div className="text-[11px] text-gray-500">
+                      auth_issue keys: {selectedPoolAuthIssueKeys.length}
+                    </div>
                   </div>
 
                   <div className="max-h-64 overflow-auto rounded border border-gray-200 bg-white">
@@ -2335,12 +2981,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
       </section>
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <section className={`${adminMainTab === 'ops' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Activity size={16} className="text-indigo-600" />Ops</div>
           <button onClick={() => { void reloadOpsSafely(); void reloadAlertsSafely(); void reloadSchedulerSafely(); void reloadAuditSafely(); void reloadAudioMetadataSafely(); void reloadAnalyticsSafely(); }} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700"><RefreshCw size={13} />Refresh</button>
         </div>
-        <div className="mb-3 flex flex-wrap gap-2">
+        <div className="mb-3 flex flex-wrap gap-2" {...opsTabs.listProps}>
           {([
             ['usage', 'Usage'],
             ['guardian', 'Guardian'],
@@ -2349,10 +2995,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             ['audit', 'Audit Ledger'],
             ['analytics', 'Coupon Analytics'],
           ] as Array<[OpsTab, string]>).map(([tabId, label]) => (
-            <button key={tabId} onClick={() => setOpsTab(tabId)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${opsTab === tabId ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}>{label}</button>
+            <button key={tabId} {...opsTabs.getTabProps(tabId)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${opsTab === tabId ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}>{label}</button>
           ))}
         </div>
 
+        <div {...opsTabs.getPanelProps(opsTab)}>
         {opsTab === 'usage' && (!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : (
           <div className="space-y-3 text-xs">
             {isLoadingOps ? <div className="text-gray-500">Loading ops telemetry...</div> : (
@@ -2363,6 +3010,77 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Pending approvals</div><div className="text-lg font-bold text-gray-900">{asNumber(opsApprovals?.count || opsGuardian?.pendingApprovalCount).toLocaleString()}</div></div>
                 </div>
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Daily reset</div><div>Last run: <strong>{lastRun?.ranAt ? formatDate(lastRun.ranAt) : 'Never'}</strong></div><div>Dry run users: <strong>{asNumber(lastDailyDryRun?.usersAffected).toLocaleString()}</strong></div>{canOpsMutate && <div className="mt-2 flex gap-2"><button onClick={() => { void handleDryRunDailyReset(); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{isDryRunningDailyReset ? 'Running...' : 'Dry Run'}</button><button onClick={() => { void handleExecuteDailyReset(); }} className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-semibold text-red-700">{isExecutingDailyReset ? 'Running...' : 'Reset Daily'}</button></div>}</div>
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <div className="font-semibold text-gray-800">Lab runtime defaults</div>
+                    <div className="text-[10px] text-gray-500">{labRuntimeDefaults?.updatedAt ? formatDate(labRuntimeDefaults.updatedAt) : 'system defaults'}</div>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <label className="grid gap-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Browser acceleration</span>
+                      <select
+                        value={labRuntimeDefaults?.browserAccelerationDefault || 'webgpu_preferred'}
+                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ browserAccelerationDefault: event.target.value as AdminLabRuntimeDefaults['browserAccelerationDefault'] }); }}
+                        disabled={!canOpsMutate}
+                        className="h-8 rounded border border-gray-200 px-2 text-xs"
+                      >
+                        <option value="webgpu_preferred">WebGPU preferred</option>
+                        <option value="cpu_only">CPU only</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Backend hardware</span>
+                      <select
+                        value={labRuntimeDefaults?.backendHardwareDefault || 'gpu_preferred'}
+                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ backendHardwareDefault: event.target.value as AdminLabRuntimeDefaults['backendHardwareDefault'] }); }}
+                        disabled={!canOpsMutate}
+                        className="h-8 rounded border border-gray-200 px-2 text-xs"
+                      >
+                        <option value="gpu_preferred">GPU preferred</option>
+                        <option value="cpu_only">CPU only</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Separator backend</span>
+                      <select
+                        value={labRuntimeDefaults?.separatorBackendDefault || 'gpu_preferred'}
+                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ separatorBackendDefault: event.target.value as AdminLabRuntimeDefaults['separatorBackendDefault'] }); }}
+                        disabled={!canOpsMutate}
+                        className="h-8 rounded border border-gray-200 px-2 text-xs"
+                      >
+                        <option value="gpu_preferred">GPU preferred</option>
+                        <option value="cpu_only">CPU only</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Lab performance mode</span>
+                      <select
+                        value={labRuntimeDefaults?.labPerformanceMode || 'conservative'}
+                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ labPerformanceMode: event.target.value as AdminLabRuntimeDefaults['labPerformanceMode'] }); }}
+                        disabled={!canOpsMutate}
+                        className="h-8 rounded border border-gray-200 px-2 text-xs"
+                      >
+                        <option value="conservative">Conservative</option>
+                        <option value="balanced">Balanced</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Export strategy</span>
+                      <select
+                        value={labRuntimeDefaults?.exportStrategyDefault || 'browser_first'}
+                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ exportStrategyDefault: event.target.value as AdminLabRuntimeDefaults['exportStrategyDefault'] }); }}
+                        disabled={!canOpsMutate}
+                        className="h-8 rounded border border-gray-200 px-2 text-xs"
+                      >
+                        <option value="browser_first">Browser first</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between rounded border border-dashed border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-600">
+                    <span>User override</span>
+                    <strong>{labRuntimeDefaults?.allowUserOverride ? 'Enabled' : 'Disabled'}</strong>
+                  </div>
+                </div>
               </>
             )}
           </div>
@@ -2451,8 +3169,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </select>
                 <select value={audioMetadataEngine} onChange={(event) => setAudioMetadataEngine(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs">
                   <option value="">All engines</option>
-                  <option value="GEM">GEM</option>
-                  <option value="KOKORO">KOKORO</option>
+                  <option value="GEM">Prime</option>
+                  <option value="KOKORO">Basic</option>
                 </select>
                 <input type="date" value={audioMetadataFrom} onChange={(event) => setAudioMetadataFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
                 <input type="date" value={audioMetadataTo} onChange={(event) => setAudioMetadataTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
@@ -2529,6 +3247,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div className="max-h-36 overflow-auto rounded-xl border border-gray-100"><table className="min-w-full text-xs"><thead className="sticky top-0 bg-gray-50 text-gray-600"><tr><th className="px-2 py-2 text-left">Date</th><th className="px-2 py-2 text-left">Plan</th><th className="px-2 py-2 text-left">Started</th><th className="px-2 py-2 text-left">Activated</th></tr></thead><tbody>{analyticsSeries.slice(0, 60).map((point, idx) => <tr key={`${point.bucket || point.date || 'bucket'}-${idx}`} className="border-t border-gray-100"><td className="px-2 py-2">{point.bucket || point.date || '-'}</td><td className="px-2 py-2">{point.plan || '-'}</td><td className="px-2 py-2">{asNumber(point.checkoutsStarted)}</td><td className="px-2 py-2">{asNumber(point.subscriptionsActivated)}</td></tr>)}</tbody></table></div>
           </div>
         ))}
+        </div>
+      </section>
+      </div>
       </section>
     </div>
   );

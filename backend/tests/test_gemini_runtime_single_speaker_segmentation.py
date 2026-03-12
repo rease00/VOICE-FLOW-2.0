@@ -90,5 +90,9 @@ def test_capabilities_publish_segmentation_metadata() -> None:
     assert metadata.get("segmentation") == "enabled"
     assert metadata.get("segmentationProfile") == "latency-balanced"
     profiles = dict(metadata.get("segmentationProfiles") or {})
+    assert int((profiles.get("default") or {}).get("hard_char_cap") or 0) == 360
+    assert int((profiles.get("default") or {}).get("target_char_cap") or 0) == 260
     assert int((profiles.get("default") or {}).get("max_words_per_chunk") or 0) == 56
+    assert int((profiles.get("hi") or {}).get("hard_char_cap") or 0) == 360
+    assert int((profiles.get("hi") or {}).get("target_char_cap") or 0) == 260
     assert int((profiles.get("hi") or {}).get("max_words_per_chunk") or 0) == 56

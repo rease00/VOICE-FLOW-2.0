@@ -65,6 +65,14 @@ describe('studio queue model', () => {
           status: 'completed',
           sourceText: 'Hello there.',
           charCount: 12,
+          settingsSnapshot: {
+            voiceId: 'legacy_voice',
+            speed: 1,
+            pitch: 'Medium',
+            language: 'Auto',
+            engine: 'GOOD',
+            helperProvider: 'GEMINI',
+          },
           createdAt: Date.now(),
         },
       ],
@@ -76,7 +84,56 @@ describe('studio queue model', () => {
 
     expect(normalized).not.toBeNull();
     expect(normalized?.items[0]?.audioCacheKey).toBe('');
+    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('GEM');
     expect(normalized?.masterOrder).toBe('1');
     expect(normalized?.masterStatus).toBe('idle');
+  });
+
+  it('accepts production engine labels when rebuilding persisted queue state', () => {
+    const rawState = {
+      items: [
+        {
+          id: 'item-basic',
+          order: 0,
+          label: 'Part 1',
+          status: 'queued',
+          sourceText: 'Basic engine text.',
+          charCount: 18,
+          settingsSnapshot: {
+            voiceId: 'legacy_voice',
+            speed: 1,
+            pitch: 'Medium',
+            language: 'Auto',
+            engine: 'Basic',
+            helperProvider: 'GEMINI',
+          },
+          createdAt: Date.now(),
+        },
+        {
+          id: 'item-vector',
+          order: 1,
+          label: 'Part 2',
+          status: 'queued',
+          sourceText: 'Vector engine text.',
+          charCount: 19,
+          settingsSnapshot: {
+            voiceId: 'legacy_voice',
+            speed: 1,
+            pitch: 'Medium',
+            language: 'Auto',
+            engine: 'Vector',
+            helperProvider: 'GEMINI',
+          },
+          createdAt: Date.now(),
+        },
+      ],
+      queueModeEnabled: true,
+      sourceHash: 'studio_hash_labels',
+    } satisfies Partial<StudioQueueState>;
+
+    const normalized = normalizeStoredStudioQueueState(rawState);
+
+    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('KOKORO');
+    expect(normalized?.items[1]?.settingsSnapshot.engine).toBe('NEURAL2');
   });
 });

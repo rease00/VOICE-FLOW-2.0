@@ -1,0 +1,83 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - button "Back to workspace" [ref=e10]:
+        - img [ref=e11]
+        - text: Back to workspace
+      - generic [ref=e13]:
+        - button "Refresh account" [ref=e14]:
+          - img [ref=e15]
+          - text: Refresh account
+        - button "Sign out" [ref=e20]:
+          - img [ref=e21]
+          - text: Sign out
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - generic [ref=e27]:
+            - generic [ref=e28]:
+              - img [ref=e32]
+              - img [ref=e36]
+              - img [ref=e40]
+            - generic [ref=e42]:
+              - generic [ref=e43]: VoiceFlow
+              - generic [ref=e44]: AI Studio
+          - generic [ref=e45]: Account Center
+        - heading "Account controls without the clutter." [level=1] [ref=e47]
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50]: Current plan
+            - generic [ref=e51]: Free
+            - generic [ref=e52]: Basic, Vector | 8K chars / generation
+          - generic [ref=e53]:
+            - generic [ref=e54]: Usage now
+            - generic [ref=e55]: 0 / 0 VF
+            - generic [ref=e56]: "Daily generations: 0 / 5"
+          - generic [ref=e57]:
+            - generic [ref=e58]: Available now
+            - generic [ref=e59]: 0 VF
+            - generic [ref=e60]: 0 free VF and 0 paid VF available.
+          - generic [ref=e61]:
+            - generic [ref=e62]: Queue health
+            - generic [ref=e63]: No support queue
+            - generic [ref=e64]: 0 recent generations loaded
+      - generic [ref=e65]:
+        - generic [ref=e66]: V
+        - generic [ref=e67]:
+          - generic [ref=e68]: VoiceFlow user
+          - generic [ref=e69]: Email unavailable
+          - generic [ref=e70]:
+            - generic [ref=e71]: Free
+            - generic [ref=e72]: Active
+          - generic [ref=e73]:
+            - generic [ref=e74]: "Monthly: 0/0"
+            - generic [ref=e75]: "Daily: 0/5"
+  - tablist "Account sections" [ref=e76]:
+    - generic [ref=e77]:
+      - tab "Account" [ref=e78]:
+        - img [ref=e79]
+        - text: Account
+      - tab "Billing" [ref=e82]:
+        - img [ref=e83]
+        - text: Billing
+      - tab "Usage" [ref=e85]:
+        - img [ref=e86]
+        - text: Usage
+      - tab "Preferences" [ref=e90]:
+        - img [ref=e91]
+        - text: Preferences
+      - tab "Support" [ref=e94]:
+        - img [ref=e95]
+        - text: Support
+      - tab "Activity" [active] [selected] [ref=e97]:
+        - img [ref=e98]
+        - text: Activity
+  - tabpanel "Activity" [ref=e457]:
+    - generic [ref=e103]:
+      - generic [ref=e105]:
+        - generic [ref=e106]:
+          - generic [ref=e107]: Activity section
+          - heading "Activity" [level=2] [ref=e458]
+          - paragraph [ref=e109]: Recent generation history with normalized engine naming.
+        - generic [ref=e110]: No history
+      - generic [ref=e113]: No generation history yet.

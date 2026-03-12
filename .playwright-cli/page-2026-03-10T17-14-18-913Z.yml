@@ -1,0 +1,133 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - link [ref=e11] [cursor=pointer]:
+        - /url: https://clideo.com/
+        - img [ref=e12]
+      - textbox "Untitled project" [ref=e16]: 10 Mar 2026
+    - generic [ref=e17]:
+      - button "Undo" [disabled] [ref=e19]:
+        - img [ref=e21]
+      - button "Redo" [disabled] [ref=e24]:
+        - img [ref=e26]
+    - generic [ref=e28]:
+      - button [ref=e30] [cursor=pointer]:
+        - img [ref=e32]
+      - button "Export" [disabled] [ref=e35]:
+        - img [ref=e37]
+        - generic [ref=e39]: Export
+  - generic [ref=e41]: /
+  - generic [ref=e581]:
+    - generic [ref=e582]:
+      - img [ref=e589] [cursor=pointer]
+      - generic [ref=e591]:
+        - button "Media" [ref=e592] [cursor=pointer]:
+          - img [ref=e594]
+          - generic [ref=e596]: Media
+        - button "Canvas" [ref=e597] [cursor=pointer]:
+          - img [ref=e599]
+          - generic [ref=e601]: Canvas
+        - button "Text" [ref=e602] [cursor=pointer]:
+          - img [ref=e604]
+          - generic [ref=e606]: Text
+        - button "Audio" [ref=e607] [cursor=pointer]:
+          - img [ref=e609]
+          - generic [ref=e611]: Audio
+        - button "Videos" [active] [ref=e612] [cursor=pointer]:
+          - img [ref=e614]
+          - generic [ref=e616]: Videos
+        - button "Images" [ref=e617] [cursor=pointer]:
+          - img [ref=e619]
+          - generic [ref=e621]: Images
+        - button "Elements" [ref=e622] [cursor=pointer]:
+          - img [ref=e624]
+          - generic [ref=e626]: Elements
+        - button "Record" [ref=e627] [cursor=pointer]:
+          - img [ref=e629]
+          - generic [ref=e631]: Record
+        - button "TTS" [ref=e632] [cursor=pointer]:
+          - img [ref=e634]
+          - generic [ref=e636]: TTS
+    - generic [ref=e982]:
+      - generic [ref=e985]:
+        - searchbox "Search videos..." [ref=e986]
+        - button [ref=e987] [cursor=pointer]:
+          - img [ref=e988]
+      - generic [ref=e990]:
+        - generic [ref=e995]:
+          - generic [ref=e996] [cursor=pointer]: background
+          - generic [ref=e997] [cursor=pointer]: travel
+          - generic [ref=e998] [cursor=pointer]: nature
+          - generic [ref=e999] [cursor=pointer]: flowers
+          - generic [ref=e1000] [cursor=pointer]: sky
+          - generic [ref=e1001] [cursor=pointer]: sunset
+          - generic [ref=e1002] [cursor=pointer]: water
+          - generic [ref=e1003] [cursor=pointer]: food
+          - generic [ref=e1004] [cursor=pointer]: people
+          - generic [ref=e1005] [cursor=pointer]: animals
+        - generic [ref=e1007]:
+          - list [ref=e1010]:
+            - listitem [ref=e1011]:
+              - generic [ref=e1018] [cursor=pointer]: 0:05
+            - listitem [ref=e1019]:
+              - generic [ref=e1026] [cursor=pointer]: 0:05
+            - listitem [ref=e1027]:
+              - generic [ref=e1034] [cursor=pointer]: 0:08
+            - listitem [ref=e1035]:
+              - generic [ref=e1042] [cursor=pointer]: 0:20
+            - listitem [ref=e1043]:
+              - generic [ref=e1050] [cursor=pointer]: 0:05
+            - listitem [ref=e1051]:
+              - generic [ref=e1058] [cursor=pointer]: 0:24
+            - listitem [ref=e1059]:
+              - generic [ref=e1066] [cursor=pointer]: 1:20
+            - listitem [ref=e1067]:
+              - generic [ref=e1074] [cursor=pointer]: 0:07
+            - listitem [ref=e1075]:
+              - generic [ref=e1082] [cursor=pointer]: 0:06
+            - listitem [ref=e1083]:
+              - generic [ref=e1090] [cursor=pointer]: 0:18
+            - listitem [ref=e1091]:
+              - generic [ref=e1098] [cursor=pointer]: 0:16
+            - listitem [ref=e1099]:
+              - generic [ref=e1106] [cursor=pointer]: 0:16
+            - listitem [ref=e1107]:
+              - generic [ref=e1114] [cursor=pointer]: 0:10
+            - listitem [ref=e1115]:
+              - generic [ref=e1122] [cursor=pointer]: 0:10
+            - listitem [ref=e1123]:
+              - generic [ref=e1130] [cursor=pointer]: 0:08
+          - img [ref=e1132]
+  - generic [ref=e154]:
+    - generic [ref=e156]:
+      - generic [ref=e158]:
+        - button [disabled] [ref=e161]:
+          - img [ref=e163]
+        - button [disabled] [ref=e167]:
+          - img [ref=e169]
+        - button [disabled] [ref=e173]:
+          - img [ref=e175]
+      - generic [ref=e177]:
+        - generic [ref=e179]:
+          - button [disabled] [ref=e180]:
+            - img [ref=e182]
+          - button [disabled] [ref=e184]:
+            - img [ref=e186]
+          - button [disabled] [ref=e188]:
+            - img [ref=e190]
+        - generic [ref=e193]:
+          - generic [ref=e194]: 0:00.00
+          - generic [ref=e195]: /
+          - generic [ref=e196]: 0:00.00
+      - generic [ref=e197]:
+        - button [ref=e201] [cursor=pointer]:
+          - img [ref=e203]
+        - button [disabled] [ref=e207]:
+          - img [ref=e209]
+        - button [disabled] [ref=e212]:
+          - img [ref=e214]
+        - button [disabled] [ref=e217]:
+          - img [ref=e219]
+        - button [disabled] [ref=e223]:
+          - img [ref=e225]
+    - generic [ref=e229]: Add media to timeline to start creating video!

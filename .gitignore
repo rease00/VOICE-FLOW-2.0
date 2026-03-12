@@ -38,6 +38,7 @@ backend/artifacts/**
 output/
 backend/output/
 frontend/playwright-report/
+frontend/.next*
 test-results/
 mcp-before-revert/
 mcp-after-revert/

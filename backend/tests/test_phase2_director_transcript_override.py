@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from video_dubbing.config import build_config
-from video_dubbing.pipeline import phase2_director_multimodal as phase2
+import pytest
+
+_video_dubbing_config = pytest.importorskip("video_dubbing.config")
+phase2 = pytest.importorskip("video_dubbing.pipeline.phase2_director_multimodal")
+build_config = _video_dubbing_config.build_config
 
 
 def test_phase2_uses_transcript_override_without_whisper(monkeypatch, tmp_path: Path) -> None:

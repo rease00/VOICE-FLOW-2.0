@@ -730,6 +730,17 @@ export interface SupportAiPolicy {
   updatedBy?: string;
 }
 
+export interface AdminLabRuntimeDefaults {
+  browserAccelerationDefault: 'webgpu_preferred' | 'cpu_only';
+  backendHardwareDefault: 'gpu_preferred' | 'cpu_only';
+  separatorBackendDefault: 'gpu_preferred' | 'cpu_only';
+  labPerformanceMode: 'conservative' | 'balanced';
+  exportStrategyDefault: 'browser_first';
+  allowUserOverride: boolean;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export const fetchAdminUsers = async (
   baseUrl?: string,
   options?: { q?: string; limit?: number }
@@ -1733,4 +1744,29 @@ export const patchAdminSupportAiPolicy = async (
     { requireAuth: true }
   ));
   return payload.policy;
+};
+
+export const fetchAdminLabRuntimeDefaults = async (baseUrl?: string): Promise<AdminLabRuntimeDefaults> => {
+  const payload = await readJsonOrThrow<{ defaults: AdminLabRuntimeDefaults }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/lab/runtime-defaults`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return payload.defaults;
+};
+
+export const updateAdminLabRuntimeDefaults = async (
+  patch: Partial<AdminLabRuntimeDefaults>,
+  baseUrl?: string
+): Promise<AdminLabRuntimeDefaults> => {
+  const payload = await readJsonOrThrow<{ defaults: AdminLabRuntimeDefaults }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/lab/runtime-defaults`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+    { requireAuth: true }
+  ));
+  return payload.defaults;
 };

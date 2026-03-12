@@ -1098,6 +1098,7 @@ def health() -> JSONResponse:
                 "hindi": True,
                 "voices": len(VOICE_IDS),
                 "max_active_synth": KOKORO_MAX_ACTIVE_SYNTH,
+                "max_words_per_request": MAX_WORDS_PER_REQUEST,
             }
         )
 
@@ -1123,6 +1124,7 @@ def health() -> JSONResponse:
                 "hindi": True,
                 "voices": len(VOICE_IDS),
                 "max_active_synth": KOKORO_MAX_ACTIVE_SYNTH,
+                "max_words_per_request": MAX_WORDS_PER_REQUEST,
             }
         )
 
@@ -1148,6 +1150,7 @@ def health() -> JSONResponse:
                 "hindi": True,
                 "voices": len(VOICE_IDS),
                 "max_active_synth": KOKORO_MAX_ACTIVE_SYNTH,
+                "max_words_per_request": MAX_WORDS_PER_REQUEST,
             }
         )
 
@@ -1172,6 +1175,7 @@ def health() -> JSONResponse:
             "hindi": True,
             "voices": len(VOICE_IDS),
             "error": kokoro_full.error or "Kokoro runtime init failed.",
+            "max_words_per_request": MAX_WORDS_PER_REQUEST,
         }
     )
 
@@ -1282,12 +1286,6 @@ def _synthesize_item(payload: SynthesizeRequest) -> Tuple[bytes, Dict[str, objec
             },
         )
         return wav_bytes, meta, trace_id
-    except RuntimeError as exc:
-        detail = str(exc).strip() or "Kokoro runtime unavailable"
-        if "unavailable" in detail.lower() or "import failed" in detail.lower():
-            _emit_stage_event(trace_id, "failed", "error", {"error": detail})
-            raise HTTPException(status_code=503, detail=f"Kokoro runtime unavailable: {detail}") from exc
-        raise
     except InputValidationError as exc:
         detail_payload = exc.detail
         _emit_stage_event(trace_id, "failed", "error", {"error": detail_payload})
@@ -1296,6 +1294,12 @@ def _synthesize_item(payload: SynthesizeRequest) -> Tuple[bytes, Dict[str, objec
         detail_payload = exc.detail
         _emit_stage_event(trace_id, "failed", "error", {"error": detail_payload})
         raise HTTPException(status_code=504, detail=detail_payload) from exc
+    except RuntimeError as exc:
+        detail = str(exc).strip() or "Kokoro runtime unavailable"
+        if "unavailable" in detail.lower() or "import failed" in detail.lower():
+            _emit_stage_event(trace_id, "failed", "error", {"error": detail})
+            raise HTTPException(status_code=503, detail=f"Kokoro runtime unavailable: {detail}") from exc
+        raise
     except Exception as exc:  # noqa: BLE001
         detail = f"Kokoro synthesis failed: {exc}"
         _emit_stage_event(trace_id, "failed", "error", {"error": detail})

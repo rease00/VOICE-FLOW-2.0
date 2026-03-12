@@ -1,4 +1,4 @@
-export const READER_TEXT_PREFETCH_THRESHOLD_CHARS = 500;
+export const READER_TEXT_PREFETCH_THRESHOLD_CHARS = 1000;
 export const READER_PANEL_BATCH_SIZE = 10;
 export const READER_PANEL_PREFETCH_TRIGGER_INDEX = 5;
 export const READER_BILLING_RULE = '1 char = 1.5 VF';
@@ -37,4 +37,27 @@ export const getReaderDeleteCountdownLabel = (deleteAtMs: number, nowMs: number 
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+export const getReaderAudioSyncFallbackDelay = (input: {
+  emotionAwareReadMs?: number | null | undefined;
+  estimatedReadMs?: number | null | undefined;
+  defaultMs?: number;
+}): number => {
+  const defaultMs = Math.max(1200, Number(input.defaultMs ?? 5200));
+  const emotionAware = Number(input.emotionAwareReadMs ?? 0);
+  const estimated = Number(input.estimatedReadMs ?? 0);
+  const paceMs = emotionAware > 0 ? emotionAware : estimated > 0 ? estimated : defaultMs;
+  return Math.max(1200, Math.min(60000, Math.round(paceMs + 350)));
+};
+
+export const shouldRunReaderBackgroundPolling = (input: {
+  sessionId?: string | null | undefined;
+  workspaceMode: 'browse' | 'playback';
+  visibilityState?: DocumentVisibilityState | undefined;
+}): boolean => {
+  const sessionId = String(input.sessionId || '').trim();
+  if (!sessionId) return false;
+  if (input.workspaceMode !== 'playback') return false;
+  return String(input.visibilityState || 'visible') !== 'hidden';
 };

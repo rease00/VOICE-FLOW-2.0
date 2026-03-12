@@ -229,6 +229,19 @@ def test_guardian_minor_action_ignores_legacy_admin_token_when_configured(monkey
         "_require_admin_mutation_unlock",
         lambda request, expected_uid=None: str(expected_uid or "firestore_admin_user"),
     )
+    # Keep this test hermetic: the real action rotates pool files on disk.
+    monkeypatch.setattr(
+        backend_app,
+        "_ai_ops_execute_action",
+        lambda action, payload, gpu=False, initiator="", approval_id=None: {
+            "ok": True,
+            "action": action,
+            "payload": payload,
+            "gpu": bool(gpu),
+            "initiator": initiator,
+            "approvalId": approval_id,
+        },
+    )
 
     client = TestClient(backend_app.app)
     response = client.post(

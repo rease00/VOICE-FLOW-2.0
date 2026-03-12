@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "dev:ui": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/prune-bundled-audio.mjs",
     "preview": "vite preview",
+    "verify:single-frontend": "node scripts/verify-single-frontend.mjs",
+    "clean:frontend-artifacts": "node scripts/clean-frontend-artifacts.mjs",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "lint": "eslint . --ext .ts,.tsx",
     "test:ci": "vitest run",
@@ -29,6 +31,7 @@
     "firebase": "^11.3.1",
     "kokoro-js": "^1.2.1",
     "lucide-react": "^0.554.0",
+    "onnxruntime-web": "^1.22.0-dev.20250409-89f8206ba4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

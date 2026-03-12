@@ -60,6 +60,36 @@ def _runtime_admin_client(runtime) -> TestClient:
     return TestClient(runtime.app, headers={"x-admin-token": token})
 
 
+def test_allocator_reset_rotation_clears_next_index() -> None:
+    allocator = GeminiRateAllocator(
+        AllocatorConfig(
+            version="test",
+            window_seconds=60,
+            default_wait_timeout_ms=5_000,
+            models={
+                "gemini-2.5-flash-preview-tts": ModelLimit(
+                    model_id="gemini-2.5-flash-preview-tts",
+                    rpm=10,
+                    tpm=50_000,
+                    enabled_for={"tts"},
+                )
+            },
+            routes={"tts": ["gemini-2.5-flash-preview-tts"]},
+        )
+    )
+    key_pool = [_make_key(1), _make_key(2)]
+
+    acquire = allocator.acquire_for_task(task="tts", key_pool=key_pool, requested_tokens=200)
+    assert acquire.lease is not None
+    allocator.release(acquire.lease, success=True, used_tokens=200)
+    assert int((allocator.snapshot(key_pool).get("pool") or {}).get("nextIndex") or 0) == 1
+
+    allocator.reset_rotation(next_index=0)
+    pool_snapshot = allocator.snapshot(key_pool).get("pool") or {}
+    assert int(pool_snapshot.get("nextIndex") or 0) == 0
+    assert str(pool_snapshot.get("activeBurstKey") or "") == "none"
+
+
 def test_parse_api_keys_dedupes_and_filters_invalid_tokens() -> None:
     runtime = _load_gemini_runtime_module()
     fake_valid_key = "AIza" + ("Z" * 35)
@@ -75,9 +105,7 @@ def test_parse_api_keys_dedupes_and_filters_invalid_tokens() -> None:
 def test_runtime_routes_follow_locked_policy() -> None:
     runtime = _load_gemini_runtime_module()
     tts_candidates = runtime.resolve_tts_model_candidates()
-    assert tts_candidates
-    assert tts_candidates[0] == "gemini-2.5-pro-tts"
-    assert "gemini-2.5-pro-tts" in tts_candidates
+    assert tts_candidates == ["gemini-2.5-flash-lite-preview-tts"]
     assert runtime.resolve_text_model_candidates() == [
         "gemini-2.5-flash",
         "gemini-3-flash",
@@ -98,20 +126,15 @@ def test_runtime_routes_follow_locked_policy() -> None:
 def test_tts_model_candidates_resolve_by_engine_and_provider() -> None:
     runtime = _load_gemini_runtime_module()
 
-    good_gemini_strict = runtime.resolve_tts_model_candidates(
-        engine="GOOD",
-        auth_mode="gemini_api",
-        source_policy={"provider": "gemini_api"},
-    )
-    good_gemini_fallback = runtime.resolve_tts_model_candidates(
-        engine="GOOD",
-        auth_mode="gemini_api",
-        source_policy={"provider": "gemini_api", "ttsModelFallbackEnabled": True},
-    )
-    neural2_gemini = runtime.resolve_tts_model_candidates(
+    neural2_gemini_strict = runtime.resolve_tts_model_candidates(
         engine="NEURAL2",
         auth_mode="gemini_api",
         source_policy={"provider": "gemini_api"},
+    )
+    neural2_gemini_fallback = runtime.resolve_tts_model_candidates(
+        engine="NEURAL2",
+        auth_mode="gemini_api",
+        source_policy={"provider": "gemini_api", "ttsModelFallbackEnabled": True},
     )
     gem_vertex_strict = runtime.resolve_tts_model_candidates(
         engine="GEM",
@@ -124,17 +147,12 @@ def test_tts_model_candidates_resolve_by_engine_and_provider() -> None:
         source_policy={"provider": "vertex", "ttsModelFallbackEnabled": True},
     )
 
-    assert good_gemini_strict == [
-        "gemini-2.5-flash-lite-preview-tts",
-    ]
-    assert good_gemini_fallback[:2] == [
-        "gemini-2.5-flash-lite-preview-tts",
-        "gemini-2.5-flash-preview-tts",
-    ]
-    assert neural2_gemini == ["gemini-2.5-flash-tts"]
-    assert gem_vertex_strict == ["gemini-2.5-pro-tts"]
+    assert neural2_gemini_strict == ["gemini-2.5-flash-preview-tts"]
+    assert neural2_gemini_fallback[0] == "gemini-2.5-flash-preview-tts"
+    assert "gemini-2.5-flash-tts" in neural2_gemini_fallback
+    assert gem_vertex_strict == ["gemini-2.5-flash-lite-preview-tts"]
     assert gem_vertex_fallback[:2] == [
-        "gemini-2.5-pro-tts",
+        "gemini-2.5-flash-lite-preview-tts",
         "gemini-2.5-flash-preview-tts",
     ]
 
@@ -143,14 +161,14 @@ def test_health_and_capabilities_report_tts_model_fallback_state() -> None:
     runtime = _load_gemini_runtime_module()
     client = TestClient(runtime.app)
 
-    health_default = client.get("/health?engine=GOOD")
+    health_default = client.get("/health?engine=NEURAL2")
     assert health_default.status_code == 200
     assert health_default.json()["ttsModelFallbackEnabled"] is False
     assert health_default.json()["provider"] == "gemini-api"
     assert health_default.json()["gpu_enabled"] is False
     assert health_default.json()["openvino_enabled"] is False
 
-    capabilities_default = client.get("/v1/capabilities?engine=GOOD")
+    capabilities_default = client.get("/v1/capabilities?engine=NEURAL2")
     assert capabilities_default.status_code == 200
     assert capabilities_default.json()["metadata"]["ttsModelFallbackEnabled"] is False
     assert capabilities_default.json()["metadata"]["provider"] == "gemini-api"
@@ -168,12 +186,12 @@ def test_health_and_capabilities_report_tts_model_fallback_state() -> None:
     runtime._API_POOLS_META = {}
     runtime._load_api_pool_config(force=True)
 
-    health_enabled = client.get("/health?engine=GOOD")
+    health_enabled = client.get("/health?engine=NEURAL2")
     assert health_enabled.status_code == 200
     assert health_enabled.json()["ttsModelFallbackEnabled"] is True
     assert health_enabled.json()["provider"] == "gemini-api"
 
-    capabilities_enabled = client.get("/v1/capabilities?engine=GOOD")
+    capabilities_enabled = client.get("/v1/capabilities?engine=NEURAL2")
     assert capabilities_enabled.status_code == 200
     assert capabilities_enabled.json()["metadata"]["ttsModelFallbackEnabled"] is True
     assert capabilities_enabled.json()["metadata"]["provider"] == "gemini-api"

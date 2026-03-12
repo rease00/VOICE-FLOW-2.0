@@ -2,6 +2,7 @@ param(
     [string]$ProjectId = $env:GOOGLE_CLOUD_PROJECT,
     [string]$Region = "",
     [string]$ConfigPath = "",
+    [string]$Profile = "",
     [string]$Tag = "",
     [string]$RedisUrl = $env:VF_REDIS_URL,
     [string]$VpcConnector = $env:VF_CLOUDRUN_VPC_CONNECTOR,
@@ -92,17 +93,6 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
-            "__VOICE_TRANSFER_RUNTIME_URL__" {
-                $runtimeUrl = [string]$RuntimeUrls["voiceflow-voice-transfer-runtime"]
-                if (-not $runtimeUrl) {
-                    if ($DryRun) {
-                        $resolved[$key] = "https://voiceflow-voice-transfer-runtime.a.run.app"
-                        break
-                    }
-                    throw "Voice Transfer runtime URL is not available yet."
-                }
-                $resolved[$key] = $runtimeUrl
-            }
             default {
                 $resolved[$key] = $value
             }
@@ -123,6 +113,25 @@ $config = Get-Content -Raw -Path $ConfigPath | ConvertFrom-Json
 if (-not $ProjectId) {
     throw "Project id is required. Pass -ProjectId or set GOOGLE_CLOUD_PROJECT."
 }
+if (-not $Profile) {
+    if ($config.PSObject.Properties.Name -contains "deploymentProfile") {
+        $Profile = [string]$config.deploymentProfile
+    }
+}
+if (-not $Profile) {
+    $Profile = "cloudrun-2vcpu"
+}
+if ($config.PSObject.Properties.Name -contains "profileContractPath") {
+    $profileContractPath = Join-Path $repoRoot ([string]$config.profileContractPath)
+    if (-not (Test-Path $profileContractPath)) {
+        throw "Profile contract not found: $profileContractPath"
+    }
+    $profileContract = Get-Content -Raw -Path $profileContractPath | ConvertFrom-Json
+    $profileName = [string]$profileContract.name
+    if ($profileName -and $profileName -ne $Profile) {
+        throw "Requested profile '$Profile' does not match contract '$profileName'."
+    }
+}
 if (-not $Region) {
     $Region = [string]$config.region
 }
@@ -140,6 +149,7 @@ if (-not $repoName) {
 
 Write-Host "Project: $ProjectId"
 Write-Host "Region: $Region"
+Write-Host "Deployment profile: $Profile"
 Write-Host "Artifact Registry repo: $repoName"
 Write-Host "Image tag: $Tag"
 
@@ -333,7 +343,7 @@ foreach ($svc in $deployOrder) {
 Write-Host ""
 Write-Host "Cloud Run deployment completed."
 Write-Host "Runtime URLs:"
-foreach ($key in @("voiceflow-gemini-runtime", "voiceflow-kokoro-runtime", "voiceflow-voice-transfer-runtime")) {
+foreach ($key in @("voiceflow-gemini-runtime", "voiceflow-kokoro-runtime")) {
     $value = [string]$runtimeUrls[$key]
     if ($value) {
         Write-Host "  $key = $value"

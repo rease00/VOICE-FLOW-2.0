@@ -177,27 +177,27 @@ TTS_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["tts"])
 TEXT_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["text"])
 OCR_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["ocr"])
 TTS_ENGINE_DEFAULT = "GEM"
-TTS_ENGINE_KEYS = frozenset({"GEM", "GOOD", "NEURAL2", "KOKORO"})
+TTS_ENGINE_KEYS = frozenset({"GEM", "NEURAL2", "KOKORO"})
 TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
     SOURCE_POLICY_PROVIDER_GEMINI_API: {
-        "GOOD": [
-            "gemini-2.5-flash-lite-preview-tts",
-        ],
         "NEURAL2": [
+            "gemini-2.5-flash-preview-tts",
             "gemini-2.5-flash-tts",
         ],
         "GEM": [
+            "gemini-2.5-flash-lite-preview-tts",
+            "gemini-2.5-flash-preview-tts",
             "gemini-2.5-pro-tts",
         ],
     },
     SOURCE_POLICY_PROVIDER_VERTEX: {
-        "GOOD": [
-            "gemini-2.5-flash-lite-preview-tts",
-        ],
         "NEURAL2": [
+            "gemini-2.5-flash-preview-tts",
             "gemini-2.5-flash-tts",
         ],
         "GEM": [
+            "gemini-2.5-flash-lite-preview-tts",
+            "gemini-2.5-flash-preview-tts",
             "gemini-2.5-pro-tts",
         ],
     },
@@ -663,8 +663,6 @@ def _normalize_runtime_engine(raw_engine: object, default: str = TTS_ENGINE_DEFA
     token = str(raw_engine or "").strip().upper()
     if token in {"GEM", "GEMINI"}:
         return "GEM"
-    if token in {"GOOD", "GOOD_RUNTIME", "GEMINI_2_5_LITE_TTS"}:
-        return "GOOD"
     if token in {"NEURAL2", "NEURAL_2", "NURAL2", "NURAL_2"}:
         return "NEURAL2"
     if token in {"KOKORO", "KOKORO_RUNTIME"}:
@@ -1228,6 +1226,7 @@ def _refresh_server_api_key_pool() -> tuple[str, ...]:
         _SERVER_API_KEY_POOL = next_pool
         _SERVER_API_KEY_SET = frozenset(next_pool)
         _SERVER_POOL_NEXT_INDEX = 0
+    _RUNTIME_ALLOCATOR.reset_rotation(next_index=0)
     if next_pool:
         _RUNTIME_ALLOCATOR.ensure_keys(list(next_pool))
     _load_api_pool_config(force=True)
@@ -3502,7 +3501,7 @@ def _normalize_error_payload(raw_error: str) -> Dict[str, Any] | None:
 def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     started_at_ms = int(time.time() * 1000)
     safe_engine = _normalize_runtime_engine(payload.engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine not in {"GEM", "GOOD", "NEURAL2"}:
+    if safe_engine not in {"GEM", "NEURAL2"}:
         safe_engine = TTS_ENGINE_DEFAULT
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(payload.authMode, source_policy=source_policy)
@@ -3578,43 +3577,11 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             },
         )
 
-    good_pair_fallback_used = False
-    good_pair_fallback_detail = ""
+    pair_group_fallback_used = False
+    pair_group_fallback_detail = ""
     fallback_windows: Optional[list[Dict[str, Any]]] = None
     if use_studio_pair_groups:
-        if safe_engine == "GOOD":
-            try:
-                return _synthesize_studio_pair_group_windows(
-                    engine=safe_engine,
-                    auth_mode=auth_mode,
-                    source_policy=source_policy,
-                    trace_id=trace_id,
-                    target_voice=target_voice,
-                    language_code=language_code,
-                    speaker_hint=speaker_hint,
-                    normalized_speaker_voices=normalized_speaker_voices,
-                    normalized_line_map=normalized_line_map,
-                    primary_key_pool=primary_key_pool,
-                    fallback_request_key=fallback_request_key,
-                    effective_key_pool=effective_key_pool,
-                    requested_concurrency=requested_pair_concurrency,
-                    retry_once=retry_group_once,
-                    started_at_ms=started_at_ms,
-                    include_line_chunks=return_line_chunks_requested,
-                    model_candidates_override=model_candidates_override,
-                )
-            except Exception as pair_exc:  # noqa: BLE001
-                fallback_windows = _build_line_map_single_speaker_windows(
-                    normalized_line_map=normalized_line_map,
-                    speaker_voices=normalized_speaker_voices,
-                    target_voice=target_voice,
-                )
-                if not fallback_windows:
-                    raise
-                good_pair_fallback_used = True
-                good_pair_fallback_detail = str(pair_exc).strip()[:220]
-                requested_speech_mode = "good_pair_split_fallback"
-        else:
+        try:
             return _synthesize_studio_pair_group_windows(
                 engine=safe_engine,
                 auth_mode=auth_mode,
@@ -3634,6 +3601,17 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 include_line_chunks=return_line_chunks_requested,
                 model_candidates_override=model_candidates_override,
             )
+        except Exception as pair_exc:  # noqa: BLE001
+            fallback_windows = _build_line_map_single_speaker_windows(
+                normalized_line_map=normalized_line_map,
+                speaker_voices=normalized_speaker_voices,
+                target_voice=target_voice,
+            )
+            if not fallback_windows:
+                raise
+            pair_group_fallback_used = True
+            pair_group_fallback_detail = str(pair_exc).strip()[:220]
+            requested_speech_mode = "pair_group_split_fallback"
 
     single_speaker_segmentation: Dict[str, Any] = {
         "enabled": False,
@@ -3789,8 +3767,8 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
         unique_models = [item for item in models_used if item]
         model_header = unique_models[0] if unique_models else _normalize_model_name(TTS_MODEL)
-        if good_pair_fallback_used:
-            speech_mode_used = "good_pair_split_fallback"
+        if pair_group_fallback_used:
+            speech_mode_used = "pair_group_split_fallback"
         elif use_windowed_multi:
             speech_mode_used = "text-order-two-speaker-windows"
         elif bool(single_speaker_segmentation.get("enabled")):
@@ -3809,15 +3787,15 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "traceId": trace_id,
             "chunkCount": len(windows),
             "strategies": (
-                ["good_pair_split_fallback", "single_speaker_line_windows"]
-                if good_pair_fallback_used
+                ["pair_group_split_fallback", "single_speaker_line_windows"]
+                if pair_group_fallback_used
                 else (
                     ["single_speaker_segmentation"]
                     if bool(single_speaker_segmentation.get("enabled"))
                     else ["legacy_windows" if not use_windowed_multi else "text_order_two_speaker_windows"]
                 )
             ),
-            "recoveryUsed": bool(good_pair_fallback_used),
+            "recoveryUsed": bool(pair_group_fallback_used),
             "keyPoolSize": len(effective_key_pool),
             "keySelectionIndex": key_selection_index,
             "initialKeySelectionIndex": initial_key_selection_index,
@@ -3838,8 +3816,8 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "speechModeUsed": speech_mode_used,
         }
         diagnostics_payload.update(key_selection_meta)
-        if good_pair_fallback_detail:
-            diagnostics_payload["recoveryReason"] = good_pair_fallback_detail
+        if pair_group_fallback_detail:
+            diagnostics_payload["recoveryReason"] = pair_group_fallback_detail
         diagnostics_payload.update(
             _build_realtime_metrics(
                 wav_bytes=wav_bytes,
@@ -3866,7 +3844,7 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "keyPoolSize": len(effective_key_pool),
                 "speakerHint": speaker_hint or None,
                 "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
-                "recoveryUsed": bool(good_pair_fallback_used),
+                "recoveryUsed": bool(pair_group_fallback_used),
             },
         )
         return {
@@ -3958,7 +3936,7 @@ def health(engine: Optional[str] = None) -> JSONResponse:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine not in {"GEM", "GOOD", "NEURAL2"}:
+    if safe_engine not in {"GEM", "NEURAL2"}:
         safe_engine = TTS_ENGINE_DEFAULT
     model_candidates = resolve_tts_model_candidates(
         engine=safe_engine,
@@ -4002,7 +3980,7 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine not in {"GEM", "GOOD", "NEURAL2"}:
+    if safe_engine not in {"GEM", "NEURAL2"}:
         safe_engine = TTS_ENGINE_DEFAULT
     model_candidates = resolve_tts_model_candidates(
         engine=safe_engine,

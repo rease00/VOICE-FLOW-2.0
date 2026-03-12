@@ -57,7 +57,12 @@ export const extractNovelTextFromFile = async (
   const payload = await response.json();
   const mode = payload?.diagnostics?.mode;
   const normalizedMode: NovelImportExtractDiagnostics['mode'] =
-    mode === 'txt' || mode === 'pdf_text' || mode === 'image_ai' || mode === 'pdf_ai_fallback'
+    mode === 'txt' ||
+    mode === 'pdf_text' ||
+    mode === 'image_ai' ||
+    mode === 'pdf_ai_fallback' ||
+    mode === 'generic_text' ||
+    mode === 'generic_ai'
       ? mode
       : 'txt';
 

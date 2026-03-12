@@ -13,6 +13,7 @@ interface StudioQueuePanelProps {
   isDarkUi?: boolean;
   visualVariant?: 'default' | 'embedded';
   isPhone?: boolean;
+  visualVariant?: 'default' | 'embedded';
   isOpen?: boolean;
   onToggleOpen?: () => void;
   onResumeQueue: () => void;
@@ -33,6 +34,7 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
   isDarkUi = false,
   visualVariant = 'default',
   isPhone = false,
+  visualVariant = 'default',
   isOpen = true,
   onToggleOpen,
   onResumeQueue,
@@ -53,6 +55,7 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
   const summaryLabel = queueState?.masterOrder || (draftPartCount > 0
     ? Array.from({ length: draftPartCount }, (_, index) => String(index + 1)).join('+')
     : '');
+  const isEmbedded = visualVariant === 'embedded';
   const panelToneClass = isDarkUi
     ? 'border-cyan-500/20 bg-slate-900/75'
     : 'border-cyan-100/70 bg-cyan-50/60';
@@ -66,8 +69,8 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
   const variantClass = visualVariant === 'embedded' ? '' : 'shadow-sm';
 
   return (
-    <div className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border ${panelToneClass} ${variantClass}`}>
-      {isPhone ? (
+    <div className={isEmbedded ? '' : `${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border ${panelToneClass}`}>
+      {isPhone && !isEmbedded ? (
         <button
           type="button"
           onClick={onToggleOpen}
@@ -84,7 +87,7 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
           {isOpen ? <ChevronUp size={16} className={headingToneClass} /> : <ChevronDown size={16} className={headingToneClass} />}
         </button>
       ) : (
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className={isEmbedded ? 'mb-4 flex items-center justify-between gap-3 border-b pb-3' : 'mb-3 flex items-center justify-between gap-3'}>
           <div>
             <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${headingToneClass}`}>
               <Waves size={14} /> Queue
@@ -106,7 +109,7 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
         </div>
       )}
 
-      {(!isPhone || isOpen) && (
+      {(!isPhone || isOpen || isEmbedded) && (
         <div className={isPhone ? 'space-y-3' : 'space-y-3'}>
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${queueModeBadgeClass}`}>

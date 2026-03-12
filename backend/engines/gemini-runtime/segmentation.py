@@ -4,19 +4,21 @@ from typing import Dict, List
 MAX_WORDS_PER_REQUEST = 5000
 SEGMENTATION_PROFILE = "latency-balanced"
 SENTENCE_OVERFLOW_RATIO = 1.35
-SENTENCE_OVERFLOW_CHAR_GRACE = 96
+# Preserve intact sentence prosody for moderately oversized single sentences
+# while still enforcing word-count limits for very long inputs.
+SENTENCE_OVERFLOW_CHAR_GRACE = 420
 SENTENCE_OVERFLOW_WORD_GRACE = 18
 
 CHUNKING_PROFILES: Dict[str, Dict[str, int]] = {
     "hi": {
-        "hard_char_cap": 620,
-        "target_char_cap": 420,
+        "hard_char_cap": 360,
+        "target_char_cap": 260,
         "max_words_per_chunk": 56,
         "join_crossfade_ms": 8,
     },
     "default": {
-        "hard_char_cap": 620,
-        "target_char_cap": 420,
+        "hard_char_cap": 360,
+        "target_char_cap": 260,
         "max_words_per_chunk": 56,
         "join_crossfade_ms": 8,
     },

@@ -5,7 +5,7 @@
 The UI is organized as a feature-oriented architecture under `src/`:
 
 - `src/app`: app root, providers, error boundary, screen router
-- `src/features`: feature modules (`auth`, `admin`, `billing`, `studio`, `dubbing`, `novel`, `workspace`)
+- `src/features`: feature modules (`auth`, `admin`, `billing`, `studio`, `novel`, `workspace`)
 - `src/entities`: shared cross-feature contracts
 - `src/shared`: shared API/client, auth policy, storage policy/utilities
 

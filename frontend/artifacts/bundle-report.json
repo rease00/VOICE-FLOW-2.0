@@ -1,0 +1,162 @@
+{
+  "generatedAt": "2026-03-10T10:09:21.940Z",
+  "distDir": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\frontend\\dist",
+  "files": [
+    {
+      "file": "assets/vendor-ml-CkgN6Qa5.js",
+      "bytes": 1803226,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-ort-wLd9B_hd.js",
+      "bytes": 416886,
+      "type": "js"
+    },
+    {
+      "file": "assets/ort.bundle.min-DDHaCBmI.js",
+      "bytes": 397528,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-genai-CGbcRobS.js",
+      "bytes": 260094,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-firebase-db-es7x6sve.js",
+      "bytes": 248203,
+      "type": "js"
+    },
+    {
+      "file": "assets/MainApp-CrSQ0Jph.js",
+      "bytes": 220892,
+      "type": "js"
+    },
+    {
+      "file": "assets/index-B1WhWpb2.js",
+      "bytes": 205002,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-react-C9BmP58X.js",
+      "bytes": 193814,
+      "type": "js"
+    },
+    {
+      "file": "assets/index-BWCh_cmw.css",
+      "bytes": 173999,
+      "type": "css"
+    },
+    {
+      "file": "assets/vendor-firebase-auth-DsQUBnI8.js",
+      "bytes": 144572,
+      "type": "js"
+    },
+    {
+      "file": "assets/ffmpeg-core-CI9Irx9p.js",
+      "bytes": 111804,
+      "type": "js"
+    },
+    {
+      "file": "assets/AdminTabContent-CaS68Cca.js",
+      "bytes": 87599,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-firebase-C_0ezeJ3.js",
+      "bytes": 81138,
+      "type": "js"
+    },
+    {
+      "file": "assets/ReaderTabContent-DayfbdZP.js",
+      "bytes": 63978,
+      "type": "js"
+    },
+    {
+      "file": "assets/NovelTabContent-CR--tGVr.js",
+      "bytes": 52929,
+      "type": "js"
+    },
+    {
+      "file": "assets/LabTabContent-B4ajkamm.js",
+      "bytes": 49904,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-icons-C621voqu.js",
+      "bytes": 44172,
+      "type": "js"
+    },
+    {
+      "file": "assets/Profile-4igEgRC-.js",
+      "bytes": 41946,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-firebase-core-DE8cND1I.js",
+      "bytes": 16422,
+      "type": "js"
+    },
+    {
+      "file": "assets/kokoroBrowserRuntime.impl-CZnq7LcE.js",
+      "bytes": 13177,
+      "type": "js"
+    },
+    {
+      "file": "assets/ReaderTabContent-CO0j_KkP.css",
+      "bytes": 12662,
+      "type": "css"
+    },
+    {
+      "file": "assets/Login-XbKnsqbT.js",
+      "bytes": 8980,
+      "type": "js"
+    },
+    {
+      "file": "assets/vendor-CLHYmOvY.js",
+      "bytes": 7402,
+      "type": "js"
+    },
+    {
+      "file": "assets/media.worker-gXfG1Yza.js",
+      "bytes": 4559,
+      "type": "js"
+    },
+    {
+      "file": "assets/UserIdSetup-Dp_8XryT.js",
+      "bytes": 4455,
+      "type": "js"
+    },
+    {
+      "file": "assets/Onboarding-Dosds7mA.js",
+      "bytes": 2844,
+      "type": "js"
+    },
+    {
+      "file": "assets/worker-DYSz7Krg.js",
+      "bytes": 2506,
+      "type": "js"
+    },
+    {
+      "file": "assets/UploadDropzone-RrQ7vrKu.js",
+      "bytes": 2187,
+      "type": "js"
+    },
+    {
+      "file": "assets/separation.worker-B7ZvVtnM.js",
+      "bytes": 1846,
+      "type": "js"
+    },
+    {
+      "file": "assets/EngineLogo-CzWOuIZp.js",
+      "bytes": 1093,
+      "type": "js"
+    }
+  ],
+  "summary": {
+    "totalBytes": 4675819,
+    "jsBytes": 4489158,
+    "cssBytes": 186661,
+    "fileCount": 30
+  }
+}

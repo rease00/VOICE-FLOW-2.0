@@ -2,15 +2,13 @@
 import { runCommand } from './lib/process-runner.mjs';
 
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const asBool = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
 const loadGateEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.VF_ENABLE_LOAD_GATE || '').trim().toLowerCase());
 const loadGate100Enabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_LOAD_GATE_100 || '').trim().toLowerCase(),
 );
 const liveAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_LIVE_AUDIT_GATE || '').trim().toLowerCase(),
-);
-const llvcMappingAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
-  String(process.env.VF_ENABLE_LLVC_MAPPING_AUDIT_GATE || '').trim().toLowerCase(),
 );
 const connectivityAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_CONNECTIVITY_AUDIT_GATE || '').trim().toLowerCase(),
@@ -72,14 +70,6 @@ if (liveAuditGateEnabled) {
   });
 }
 
-if (llvcMappingAuditGateEnabled) {
-  steps.push({
-    name: 'Voice-transfer mapping audit gate',
-    command: npmBin,
-    args: ['run', 'audit:voice-transfer:mapping'],
-  });
-}
-
 if (connectivityAuditGateEnabled) {
   steps.push({
     name: 'Frontend/backend connectivity audit gate',
@@ -87,6 +77,30 @@ if (connectivityAuditGateEnabled) {
     args: ['run', 'audit:connectivity'],
   });
 }
+
+const stabilizeServicesAfterFailure = async () => {
+  console.log('\n[ci:reliability] attempting post-failure service stabilization');
+  const precheck = await runCommand(npmBin, ['run', 'services:check'], { stdio: 'inherit' });
+  if (precheck.ok) {
+    console.log('[ci:reliability] services:check passed; no restart needed.');
+    return;
+  }
+
+  const restart = await runCommand(npmBin, ['run', 'services:restart'], { stdio: 'inherit' });
+  if (!restart.ok) {
+    const reason = restart.error ? ` (${restart.error})` : '';
+    console.warn(`[ci:reliability] services:restart failed${reason}`);
+    return;
+  }
+
+  const postcheck = await runCommand(npmBin, ['run', 'services:check'], { stdio: 'inherit' });
+  if (!postcheck.ok) {
+    const reason = postcheck.error ? ` (${postcheck.error})` : '';
+    console.warn(`[ci:reliability] services:check still failing after restart${reason}`);
+    return;
+  }
+  console.log('[ci:reliability] service stabilization succeeded.');
+};
 
 const main = async () => {
   for (const step of steps) {
@@ -98,6 +112,9 @@ const main = async () => {
     });
 
     if (!result.ok) {
+      if (step.name === 'TTS long-text 5000 smoke gate') {
+        await stabilizeServicesAfterFailure();
+      }
       if (result.error) {
         console.error(`[ci:reliability] ${step.name} spawn error: ${result.error}`);
       }

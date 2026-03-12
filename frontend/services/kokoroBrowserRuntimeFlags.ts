@@ -14,10 +14,18 @@ const hasBrowserKokoroRuntimeSupport = (): boolean => {
   return true;
 };
 
+const hasEligibleBrowserComputeBudget = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  const deviceMemory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 0);
+  const hardwareConcurrency = Number(navigator.hardwareConcurrency || 0);
+  return deviceMemory >= 8 && hardwareConcurrency >= 6;
+};
+
 export const isBrowserKokoroExecutionEnabled = (): boolean => {
   const envOverride = parseBooleanFlag(import.meta.env.VITE_ENABLE_BROWSER_KOKORO);
   if (envOverride === false) return false;
   if (!hasBrowserKokoroRuntimeSupport()) return false;
+  if (!hasEligibleBrowserComputeBudget()) return false;
   return envOverride ?? true;
 };
 

@@ -37,6 +37,15 @@ describe('ttsLongTextService', () => {
     expect(windows[0]?.wordCount).toBe(55);
   });
 
+  it('uses a 400-word default cap when building sentence-aligned word windows', () => {
+    const text = Array.from({ length: 850 }, (_, index) => `w${index}`).join(' ');
+    const windows = buildSentenceAlignedWordWindows(text);
+
+    expect(windows).toHaveLength(3);
+    expect(windows.map((item) => item.wordCount)).toEqual([400, 400, 50]);
+    expect(windows.every((item) => item.wordCount <= 400)).toBe(true);
+  });
+
   it('never slices a long single word in the middle', () => {
     const longWord = 'supercalifragilisticexpialidocious'.repeat(8);
     const chunks = buildLongTextChunks({

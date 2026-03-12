@@ -1,0 +1,64 @@
+- generic [ref=e6]:
+  - generic [ref=e8]:
+    - link [ref=e468] [cursor=pointer]:
+      - /url: https://clideo.com/
+      - img [ref=e470]
+    - generic [ref=e17]:
+      - button "Undo" [disabled] [ref=e473]:
+        - img [ref=e475]
+      - button "Redo" [disabled] [ref=e478]:
+        - img [ref=e480]
+    - button [disabled] [ref=e483]:
+      - img [ref=e485]
+  - generic [ref=e487]:
+    - generic [ref=e489]:
+      - generic [ref=e490]: 0:00
+      - generic [ref=e491]: /
+      - generic [ref=e492]: 0:00
+    - generic [ref=e494]:
+      - button [disabled]:
+        - generic:
+          - img
+    - button [disabled] [ref=e498]
+  - generic [ref=e501]:
+    - img [ref=e507] [cursor=pointer]
+    - generic [ref=e509]:
+      - button "Media" [ref=e510] [cursor=pointer]:
+        - img [ref=e512]
+        - generic [ref=e514]: Media
+      - button "Canvas" [ref=e515] [cursor=pointer]:
+        - img [ref=e517]
+        - generic [ref=e519]: Canvas
+      - button "Text" [ref=e520] [cursor=pointer]:
+        - img [ref=e522]
+        - generic [ref=e524]: Text
+      - button "Audio" [ref=e525] [cursor=pointer]:
+        - img [ref=e527]
+        - generic [ref=e529]: Audio
+      - button "Videos" [ref=e530] [cursor=pointer]:
+        - img [ref=e532]
+        - generic [ref=e534]: Videos
+      - button "Images" [ref=e535] [cursor=pointer]:
+        - img [ref=e537]
+        - generic [ref=e539]: Images
+      - button "Elements" [ref=e540] [cursor=pointer]:
+        - img [ref=e542]
+        - generic [ref=e544]: Elements
+      - button "Record" [ref=e545] [cursor=pointer]:
+        - img [ref=e547]
+        - generic [ref=e549]: Record
+      - button "TTS" [ref=e550] [cursor=pointer]:
+        - img [ref=e552]
+        - generic [ref=e554]: TTS
+  - generic [ref=e154]:
+    - generic [ref=e556]:
+      - button [ref=e561] [cursor=pointer]:
+        - img [ref=e563]
+      - generic [ref=e565]:
+        - button [disabled] [ref=e567]:
+          - img [ref=e569]
+        - button [disabled] [ref=e572]:
+          - img [ref=e574]
+        - button [disabled] [ref=e577]:
+          - img [ref=e579]
+    - generic [ref=e229]: Add media to timeline to start creating video!

@@ -10,13 +10,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 const ENV_FILES = [path.join(ROOT, ".env"), path.join(ROOT, "..", ".env")];
-const VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST = path.resolve(
-  ROOT,
-  String(
-    process.env.VF_VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST || path.join("config", "video_pipeline_asset_sources.json")
-  ).trim() || path.join("config", "video_pipeline_asset_sources.json")
-);
-const VIDEO_ASSET_CHECK_STRICT = toBoolEnv(process.env.VF_VIDEO_ASSET_CHECK_STRICT, false);
 
 function parseEnvValue(rawValue) {
   const trimmed = rawValue.trim();
@@ -252,7 +245,7 @@ const serviceInstallStatePath = (id) => path.join(STATE_DIR, `${id}.install.sha2
 const serviceLauncherPath = (id) => path.join(LAUNCHER_DIR, `${id}.ps1`);
 const serviceLauncherCmdPath = (id) => path.join(LAUNCHER_DIR, `${id}.cmd`);
 
-const SERVICES = [
+const BASE_SERVICES = [
   {
     id: "media-backend",
     name: "Media Backend",
@@ -261,18 +254,23 @@ const SERVICES = [
     pythonEnvVar: "VF_PYTHON_BIN_MEDIA_BACKEND",
     requirements: ["requirements.txt"],
     sourceFiles: ["app.py", "scripts/bootstrap-services.mjs"],
-    command: (pythonBin) => [pythonBin, "app.py"],
+    command: (pythonBin) => [
+      pythonBin,
+      "-m",
+      "uvicorn",
+      "app:app",
+      "--app-dir",
+      ".",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "7800",
+    ],
     env: (gpu) => ({
       VF_BACKEND_HOST: "127.0.0.1",
       VF_BACKEND_PORT: "7800",
       VF_WHISPER_DEVICE: "cpu",
       VF_WHISPER_COMPUTE: "int8",
-      VF_VOICE_TRANSFER_DEVICE: process.env.VF_VOICE_TRANSFER_DEVICE || "cpu:0",
-      VF_VOICE_TRANSFER_ONNX_PROVIDER: process.env.VF_VOICE_TRANSFER_ONNX_PROVIDER || "openvino",
-      VF_VOICE_TRANSFER_MODELS_DIR: process.env.VF_VOICE_TRANSFER_MODELS_DIR || path.join(ROOT, "models/voice-transfer"),
-      VF_VOICE_TRANSFER_RUNTIME_URL: process.env.VF_VOICE_TRANSFER_RUNTIME_URL || "http://127.0.0.1:7830",
-      VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE:
-        process.env.VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE || path.join(ROOT, "config/voice_transfer_model_registry.json"),
       CUDA_VISIBLE_DEVICES: "",
       ...RUNTIME_CONCURRENCY_ENV,
     }),
@@ -335,48 +333,13 @@ const SERVICES = [
       ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
-  {
-    id: "voice-transfer-runtime",
-    name: "Voice Transfer Runtime",
-    port: 7830,
-    venv: "voice-transfer-runtime",
-    pythonEnvVar: "VF_PYTHON_BIN_VOICE_TRANSFER_RUNTIME",
-    requiredPython: { major: 3, minor: 11 },
-    requirements: ["engines/voice-transfer-runtime/requirements.txt"],
-    sourceFiles: ["engines/voice-transfer-runtime/app.py", "scripts/bootstrap-services.mjs"],
-    postInstallHook: (pyPath) => applyVoiceTransferOrtPackage(pyPath, { id: "voice-transfer-runtime" }),
-    command: (pythonBin) => [
-      pythonBin,
-      "-m",
-      "uvicorn",
-      "app:app",
-      "--app-dir",
-      "engines/voice-transfer-runtime",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "7830",
-    ],
-    env: () => ({
-      VF_VOICE_TRANSFER_RUNTIME_HOST: "127.0.0.1",
-      VF_VOICE_TRANSFER_RUNTIME_PORT: "7830",
-      VF_VOICE_TRANSFER_DEVICE: process.env.VF_VOICE_TRANSFER_DEVICE || "cpu:0",
-      VF_VOICE_TRANSFER_ONNX_PROVIDER: process.env.VF_VOICE_TRANSFER_ONNX_PROVIDER || "openvino",
-      VF_VOICE_TRANSFER_MODELS_DIR: process.env.VF_VOICE_TRANSFER_MODELS_DIR || path.join(ROOT, "models/voice-transfer"),
-      VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE:
-        process.env.VF_VOICE_TRANSFER_MODEL_REGISTRY_FILE || path.join(ROOT, "config/voice_transfer_model_registry.json"),
-      CUDA_VISIBLE_DEVICES: "",
-      ...RUNTIME_CONCURRENCY_ENV,
-    }),
-  },
 ];
+
+const SERVICES = BASE_SERVICES;
 
 const ENGINE_TO_SERVICE_ID = {
   GEM: "gemini-runtime",
   GEMINI: "gemini-runtime",
-  GOOD: "gemini-runtime",
-  GOOD_RUNTIME: "gemini-runtime",
-  GEMINI_2_5_LITE_TTS: "gemini-runtime",
   NEURAL2: "gemini-runtime",
   NEURAL_2: "gemini-runtime",
   NURAL2: "gemini-runtime",
@@ -384,7 +347,7 @@ const ENGINE_TO_SERVICE_ID = {
   KOKORO: "kokoro-runtime",
 };
 
-const CHECKS = [
+const BASE_CHECKS = [
   {
     serviceId: "media-backend",
     name: "Media Backend",
@@ -406,14 +369,9 @@ const CHECKS = [
     timeoutMs: KOKORO_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
-  {
-    serviceId: "voice-transfer-runtime",
-    name: "Voice Transfer Runtime",
-    url: "http://127.0.0.1:7830/v1/health",
-    timeoutMs: FAST_TIMEOUT_MS,
-    validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
-  },
 ];
+
+const CHECKS = BASE_CHECKS;
 
 function ensureDirs() {
   fs.mkdirSync(VENV_DIR, { recursive: true });
@@ -498,10 +456,7 @@ function fileSha(service, pythonBin, options = {}) {
     })
     .join("\n\n");
   const pyVersion = getPythonVersionTuple(pythonBin).token;
-  const installFlavor = service.id === "voice-transfer-runtime"
-    ? `\nvoice-transfer-ort=${resolveVoiceTransferOrtPackageKind(service)}`
-    : "";
-  return sha256(`${pythonBin}\n${pyVersion}\n${requirementSource}${installFlavor}\n\n${sourceFileSource}`);
+  return sha256(`${pythonBin}\n${pyVersion}\n${requirementSource}\n\n${sourceFileSource}`);
 }
 
 function installSha(service, pythonBin) {
@@ -526,32 +481,6 @@ function resolveEffectiveGpuMode(service, requestedGpuMode) {
   void service;
   void requestedGpuMode;
   return false;
-}
-
-function resolveVoiceTransferProviderPreference() {
-  const requested = String(process.env.VF_VOICE_TRANSFER_ONNX_PROVIDER || "openvino").trim().toLowerCase();
-  if (requested === "openvino" || requested === "cpu" || requested === "cuda" || requested === "dml") {
-    return requested;
-  }
-  return "auto";
-}
-
-function resolveVoiceTransferOrtPackageKind(service) {
-  const requested = resolveVoiceTransferProviderPreference();
-  if (requested === "openvino") return "openvino";
-  if (requested === "cpu" || requested === "cuda" || requested === "dml") return "standard";
-  return resolveEffectiveGpuMode(service, GPU_MODE) ? "standard" : "openvino";
-}
-
-function applyVoiceTransferOrtPackage(pyPath, service) {
-  const packageKind = resolveVoiceTransferOrtPackageKind(service);
-  if (packageKind === "openvino") {
-    runCommand(pyPath, ["-m", "pip", "uninstall", "-y", "onnxruntime", "onnxruntime-directml", "onnxruntime-gpu"]);
-    runCommand(pyPath, ["-m", "pip", "install", "onnxruntime-openvino>=1.20,<2"]);
-    return;
-  }
-  runCommand(pyPath, ["-m", "pip", "uninstall", "-y", "onnxruntime-openvino"]);
-  runCommand(pyPath, ["-m", "pip", "install", "onnxruntime>=1.20,<2"]);
 }
 
 function ensureKokoroTorchRuntimeDlls() {
@@ -1074,7 +1003,7 @@ function resolveSwitchTarget(rawEngine) {
   const serviceId = ENGINE_TO_SERVICE_ID[normalized];
   if (!serviceId) {
     throw new Error(
-      `Invalid engine "${rawEngine}". Expected one of: GEM, GOOD, NEURAL2, KOKORO.`
+      `Invalid engine "${rawEngine}". Expected one of: GEM, NEURAL2, KOKORO.`
     );
   }
   const service = SERVICES.find((item) => item.id === serviceId);
@@ -1136,99 +1065,6 @@ async function getJson(url) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function normalizeRelativeAssetPath(relPath) {
-  const token = String(relPath || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!token) return "";
-  const cleaned = token
-    .split("/")
-    .filter((part) => part && part !== ".")
-    .join("/");
-  if (!cleaned || cleaned.startsWith("..")) return "";
-  return cleaned;
-}
-
-function runVideoPipelineAssetCheck() {
-  if (!fs.existsSync(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST)) {
-    return {
-      serviceId: "video-assets",
-      service: "Video Pipeline Assets",
-      status: "FAIL",
-      attempts: 1,
-      elapsedSec: "0.0",
-      detail:
-        `Asset manifest missing: ${VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST}. ` +
-        `Run: npm run download:video:pipeline:assets`,
-    };
-  }
-
-  let payload = null;
-  try {
-    const rawManifestText = fs.readFileSync(VIDEO_PIPELINE_ASSET_SOURCE_MANIFEST, "utf8");
-    const manifestText = rawManifestText.startsWith("\uFEFF") ? rawManifestText.slice(1) : rawManifestText;
-    payload = JSON.parse(manifestText);
-  } catch (error) {
-    return {
-      serviceId: "video-assets",
-      service: "Video Pipeline Assets",
-      status: "FAIL",
-      attempts: 1,
-      elapsedSec: "0.0",
-      detail:
-        `Asset manifest parse failed: ${error instanceof Error ? error.message : String(error)}. ` +
-        `Run: npm run download:video:pipeline:assets`,
-    };
-  }
-
-  const entries = Array.isArray(payload?.assets) ? payload.assets : [];
-  const requiredMissing = [];
-  const optionalMissing = [];
-  for (const rawEntry of entries) {
-    if (!rawEntry || typeof rawEntry !== "object") continue;
-    const id = String(rawEntry.id || "").trim();
-    const outputRel = normalizeRelativeAssetPath(rawEntry.outputPath);
-    const required = rawEntry.required !== false;
-    if (!id || !outputRel) continue;
-    const targetPath = path.resolve(ROOT, outputRel);
-    if (fs.existsSync(targetPath)) continue;
-    if (required) requiredMissing.push(id);
-    else optionalMissing.push(id);
-  }
-
-  if (requiredMissing.length > 0) {
-    return {
-      serviceId: "video-assets",
-      service: "Video Pipeline Assets",
-      status: VIDEO_ASSET_CHECK_STRICT ? "FAIL" : "WARN",
-      attempts: 1,
-      elapsedSec: "0.0",
-      detail:
-        `Missing required assets: ${requiredMissing.join(", ")}. ` +
-        `Run: npm run download:video:pipeline:assets` +
-        (VIDEO_ASSET_CHECK_STRICT ? "" : " (non-strict mode keeps services:check non-blocking)"),
-    };
-  }
-
-  if (optionalMissing.length > 0) {
-    return {
-      serviceId: "video-assets",
-      service: "Video Pipeline Assets",
-      status: "WARN",
-      attempts: 1,
-      elapsedSec: "0.0",
-      detail: `Optional assets missing: ${optionalMissing.join(", ")}.`,
-    };
-  }
-
-  return {
-    serviceId: "video-assets",
-    service: "Video Pipeline Assets",
-    status: "PASS",
-    attempts: 1,
-    elapsedSec: "0.0",
-    detail: "ok",
-  };
 }
 
 async function runCheck(check, options = {}) {
@@ -1354,17 +1190,6 @@ async function runChecks(options = {}) {
     })
   );
   const results = [...endpointResults];
-  if (!onlyServiceIds) {
-    const assetResult = runVideoPipelineAssetCheck();
-    if (assetResult.status === "FAIL") {
-      console.error(`[fail] ${assetResult.service}: ${assetResult.detail}`);
-    } else if (assetResult.status === "WARN") {
-      console.warn(`[warn] ${assetResult.service}: ${assetResult.detail}`);
-    } else {
-      console.log(`[ok] ${assetResult.service}`);
-    }
-    results.push(assetResult);
-  }
   console.table(results);
   if (failOnError && results.some((item) => item.status === "FAIL")) {
     throw new Error("One or more endpoint checks failed.");
@@ -1476,7 +1301,6 @@ function printServiceStatusSummary() {
 async function main() {
   ensureDirs();
   serviceStartStates.clear();
-
   if (AUTO_TUNE_WORKERS) {
     console.log(
       `Concurrency autotune enabled: profile=${CONCURRENCY_PROFILE} logicalCpu=${LOGICAL_CPU_COUNT} reserved=${HOST_RESERVED_CPUS} usable=${USABLE_CPU_COUNT}`
@@ -1493,7 +1317,7 @@ async function main() {
   }
 
   if (COMMAND === "down") {
-    for (const service of SERVICES.slice().reverse()) {
+    for (const service of BASE_SERVICES.slice().reverse()) {
       stopService(service);
     }
     console.log("\nAll local services stopped.");
@@ -1521,7 +1345,7 @@ async function main() {
     if (COMMAND_ARG) {
       const target = resolveServiceTarget(COMMAND_ARG);
       if (!target) {
-        throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (GEM/GOOD/NEURAL2/KOKORO).`);
+        throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (GEM/NEURAL2/KOKORO).`);
       }
       stopService(target);
       startService(target, GPU_MODE, { printLogTail: false });
@@ -1537,7 +1361,7 @@ async function main() {
         quietStartMs: POST_START_VERIFY_TIMEOUT_MS,
       });
     } else {
-      for (const service of SERVICES.slice().reverse()) {
+      for (const service of BASE_SERVICES.slice().reverse()) {
         stopService(service);
       }
       for (const service of SERVICES) {

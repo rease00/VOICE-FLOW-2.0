@@ -79,6 +79,7 @@ def test_kokoro_health_and_capabilities_report_cpu_only() -> None:
     assert health_payload["gpu_enabled"] is False
     assert health_payload["openvino_enabled"] is False
     assert health_payload["idle_unload_ms"] == 120000
+    assert health_payload["max_words_per_request"] == 80
 
     capabilities_response = client.get("/v1/capabilities")
     assert capabilities_response.status_code == 200
@@ -88,6 +89,7 @@ def test_kokoro_health_and_capabilities_report_cpu_only() -> None:
     assert capabilities_payload["metadata"]["gpuEnabled"] is False
     assert capabilities_payload["metadata"]["openvinoEnabled"] is False
     assert capabilities_payload["metadata"]["idleUnloadMs"] == 120000
+    assert capabilities_payload["metadata"]["maxWordsPerRequest"] == 80
 
 
 def test_kokoro_runtime_keeps_british_english_voice_when_language_hint_is_english() -> None:
@@ -235,3 +237,23 @@ def test_kokoro_batch_partial_failure_keeps_success_items(monkeypatch) -> None:
     assert payload["items"][0]["ok"] is True
     assert payload["items"][1]["ok"] is False
     assert payload["items"][1]["error"]["statusCode"] == 500
+
+
+def test_kokoro_synthesize_rejects_oversized_requests_before_runtime_work() -> None:
+    runtime = _load_kokoro_runtime_module()
+    client = TestClient(runtime.app)
+
+    response = client.post(
+        "/synthesize",
+        json={
+            "text": " ".join(["word"] * 81),
+            "voiceId": "hf_alpha",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    detail = payload["detail"]
+    assert detail["error"] == "word_limit_exceeded"
+    assert detail["maxWords"] == 80
+    assert detail["actualWords"] == 81

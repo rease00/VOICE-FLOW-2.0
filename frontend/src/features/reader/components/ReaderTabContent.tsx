@@ -1,58 +1,73 @@
 import React, { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import type { GenerationSettings, ReaderCatalogItem, ReaderLibrary, ReaderLegalAck, ReaderSession } from '../../../../types';
+import type {
+  GenerationSettings,
+  ReaderCatalogItem,
+  ReaderCommercialPolicy,
+  ReaderLibrary,
+  ReaderLegalAck,
+  ReaderOwnershipBasis,
+  ReaderSession,
+} from '../../../../types';
 import { LANGUAGES, MUSIC_TRACKS, VOICES } from '../../../../constants';
 import { parseMultiSpeakerScript } from '../../../../services/geminiService';
 import { readStorageJson, writeStorageJson } from '../../../shared/storage/localStore';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { resolveApiUrl } from '../../../shared/api/config';
+import { reportFrontendSignal } from '../../../shared/telemetry/frontendErrors';
+import { useWorkspaceViewport } from '../../../shared/ui/useWorkspaceViewport';
+import { resolveMusicTrackUrlById } from '../../../shared/media/audioCatalog';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../../../shared/media/safeMediaVolume';
 import { useUser } from '../../auth/context/UserContext';
 import { autoAssignSpeakerVoices } from '../../../shared/voices/castAssignment';
 import {
   acceptReaderLegalAck,
+  getReaderPreferences,
   createReaderSession,
   createReaderUpload,
   deleteReaderSession,
-  exportReaderSessionAudio,
   getReaderLegalAck,
   getReaderLibrary,
   getReaderSession,
   getReaderTtsJobAudio,
   saveReaderSession,
+  updateReaderPreferences,
   updateReaderProgress,
 } from '../api/readerApi';
 import {
   filterReaderLibraryItems,
   getReaderAutoAdvanceDelay,
-  getReaderPrimaryAction,
   isReaderAutoSwipeAvailable,
   type ReaderLibraryFilters,
-  type ReaderSortOption,
   type ReaderSurfaceFilter,
 } from '../model/library';
 import {
+  resolveReaderBootstrapState,
+  resolveReaderResumeSession,
+  type ReaderBootstrapState,
+} from '../model/bootstrap';
+import {
+  getReaderAudioSyncFallbackDelay,
   getReaderDeleteCountdownLabel,
   READER_BILLING_RULE,
+  shouldRunReaderBackgroundPolling,
   shouldTriggerReaderPanelPrefetch,
   shouldTriggerReaderWindowPrefetch,
 } from '../model/session';
-import { formatReaderMultiSpeakerMode, getReaderEffectiveMultiSpeakerMode } from '../model/multiSpeaker';
 import { ReaderBrowseHome } from './ReaderBrowseHome';
-import { ReaderControlPanel } from './ReaderControlPanel';
 import { ReaderPlaybackStage } from './ReaderPlaybackStage';
 import { ReaderPlayerDock } from './ReaderStickyDock';
-import { deriveReaderAuditModel } from './readerAudit';
+import { ReaderUtilityTray } from './ReaderUtilityTray';
 import { getReaderThemeClassName } from './readerTheme';
 import type {
   PlaylistItem,
   ReaderAutoAdvanceProfile,
-  ReaderContentFilter,
-  ReaderPanelSection,
-  ReaderProgressFilter,
+  ReaderAudioEngine,
+  ReaderUtilityPanel,
+  ReaderUtilityPanelScope,
   ReaderResolvedTheme,
-  ReaderViewMode,
   UploadContentType,
 } from './readerTypes';
+import { isReaderUtilityPanelAvailable } from './readerTypes';
 import './reader.css';
 interface ReaderTabContentProps {
   mediaBackendUrl: string;
@@ -64,45 +79,29 @@ interface ReaderTabContentProps {
 interface ReaderPreferences {
   surface: ReaderSurfaceFilter;
   regionId: string;
-  musicTrackId: string;
-  speechVolume: number;
-  musicVolume: number;
-  panelCollapsed: boolean;
   searchQuery: string;
   targetLanguage: string;
   pageViewMode: 'original' | 'translated';
   ttsLanguageMode: 'auto' | 'source' | 'target';
-  provider: string;
-  collection: string;
-  progress: ReaderProgressFilter;
-  contentKind: ReaderContentFilter;
-  sort: ReaderSortOption;
-  viewMode: ReaderViewMode;
   autoAdvanceProfile: ReaderAutoAdvanceProfile;
   multiSpeakerEnabled: boolean;
+  audioEngine: ReaderAudioEngine;
+  narratorVoiceId: string;
+  readingMode: string;
 }
-
-const READER_DESKTOP_MEDIA_QUERY = '(min-width: 1180px)';
 
 const DEFAULT_PREFS: ReaderPreferences = {
   surface: 'all',
   regionId: 'english',
-  musicTrackId: 'm_none',
-  speechVolume: 1,
-  musicVolume: 0.3,
-  panelCollapsed: false,
   searchQuery: '',
   targetLanguage: '',
   pageViewMode: 'original',
   ttsLanguageMode: 'auto',
-  provider: 'all',
-  collection: 'all',
-  progress: 'all',
-  contentKind: 'all',
-  sort: 'featured',
-  viewMode: 'grid',
   autoAdvanceProfile: 'off',
   multiSpeakerEnabled: true,
+  audioEngine: 'native_audio_dialog',
+  narratorVoiceId: String(VOICES[0]?.id || 'v22'),
+  readingMode: 'vertical_strip',
 };
 
 const normalizeReaderSpeechVolume = (value: unknown): number =>
@@ -126,27 +125,26 @@ const base64ToObjectUrl = (audioBase64: string, mediaType: string): string | nul
 
 const readPrefs = (settings?: GenerationSettings): ReaderPreferences => {
   const stored = readStorageJson<Partial<ReaderPreferences>>(STORAGE_KEYS.readerPreferences);
+  const storedAudioEngine = String(stored?.audioEngine || '').trim().toLowerCase();
+  const audioEngine: ReaderAudioEngine = storedAudioEngine === 'tts_hd' ? 'tts_hd' : 'native_audio_dialog';
   return {
-    surface: stored?.surface || DEFAULT_PREFS.surface,
+    surface: stored?.surface === 'uploads' ? 'all' : (stored?.surface || DEFAULT_PREFS.surface),
     regionId: typeof stored?.regionId === 'string' && stored.regionId.trim() ? stored.regionId : DEFAULT_PREFS.regionId,
-    musicTrackId: typeof stored?.musicTrackId === 'string' && stored.musicTrackId.trim() ? stored.musicTrackId : String(settings?.musicTrackId || DEFAULT_PREFS.musicTrackId),
-    speechVolume: normalizeReaderSpeechVolume(stored?.speechVolume ?? settings?.speechVolume ?? DEFAULT_PREFS.speechVolume),
-    musicVolume: normalizeReaderMusicVolume(stored?.musicVolume ?? settings?.musicVolume ?? DEFAULT_PREFS.musicVolume),
-    panelCollapsed: typeof stored?.panelCollapsed === 'boolean' ? stored.panelCollapsed : DEFAULT_PREFS.panelCollapsed,
     searchQuery: typeof stored?.searchQuery === 'string' ? stored.searchQuery : DEFAULT_PREFS.searchQuery,
     targetLanguage: typeof stored?.targetLanguage === 'string' ? stored.targetLanguage : DEFAULT_PREFS.targetLanguage,
     pageViewMode: stored?.pageViewMode || DEFAULT_PREFS.pageViewMode,
     ttsLanguageMode: stored?.ttsLanguageMode || DEFAULT_PREFS.ttsLanguageMode,
-    provider: typeof stored?.provider === 'string' ? stored.provider : DEFAULT_PREFS.provider,
-    collection: typeof stored?.collection === 'string' ? stored.collection : DEFAULT_PREFS.collection,
-    progress: stored?.progress || DEFAULT_PREFS.progress,
-    contentKind: stored?.contentKind || DEFAULT_PREFS.contentKind,
-    sort: stored?.sort || DEFAULT_PREFS.sort,
-    viewMode: stored?.viewMode || DEFAULT_PREFS.viewMode,
     autoAdvanceProfile: stored?.autoAdvanceProfile || DEFAULT_PREFS.autoAdvanceProfile,
     multiSpeakerEnabled: typeof stored?.multiSpeakerEnabled === 'boolean'
       ? stored.multiSpeakerEnabled
       : settings?.multiSpeakerEnabled !== false,
+    audioEngine,
+    narratorVoiceId: typeof stored?.narratorVoiceId === 'string' && stored.narratorVoiceId.trim()
+      ? stored.narratorVoiceId
+      : DEFAULT_PREFS.narratorVoiceId,
+    readingMode: typeof stored?.readingMode === 'string' && stored.readingMode.trim()
+      ? stored.readingMode
+      : DEFAULT_PREFS.readingMode,
   };
 };
 
@@ -185,6 +183,27 @@ const resolveReaderTargetLanguage = (selectedItem: ReaderCatalogItem | null, dra
 const resolveReaderPageViewDefault = (sourceLanguage: string | undefined, targetLanguage: string | undefined): 'original' | 'translated' =>
   String(sourceLanguage || '').trim().toLowerCase() === String(targetLanguage || '').trim().toLowerCase() ? 'original' : 'translated';
 
+const normalizeReaderComicDraftMode = (value: string | undefined): string => {
+  const safe = String(value || '').trim().toLowerCase();
+  if (safe === 'rtl_paged' || safe === 'ltr_paged') return safe;
+  return 'vertical_strip';
+};
+
+const READER_DOCK_DEFAULT_BASE_WIDTH_PX = 760;
+const READER_DOCK_HORIZONTAL_GUTTER_PX = (96 / 2.54) * 0.5;
+const READER_DOCK_PREFERRED_MIN_SCALE = 0.9;
+
+const resolveCssLengthPx = (value: string, rootFontPx: number): number => {
+  const safe = String(value || '').trim().toLowerCase();
+  if (!safe) return 0;
+  const numeric = Number.parseFloat(safe);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  if (safe.endsWith('rem')) return numeric * rootFontPx;
+  if (safe.endsWith('cm')) return (numeric * 96) / 2.54;
+  if (safe.endsWith('px')) return numeric;
+  return numeric;
+};
+
 const READER_PREP_TERMINAL_STATES = new Set(['ready', 'error', 'degraded']);
 
 const isReaderPrepTerminal = (readerSession: ReaderSession | null | undefined): boolean => {
@@ -199,41 +218,91 @@ const libraryHasSession = (readerLibrary: ReaderLibrary | null | undefined, sess
   return (readerLibrary?.items || []).some((item) => item.sessionId === safeSessionId);
 };
 
+const normalizeReaderCommercialStatus = (
+  value: unknown
+): 'allowed' | 'blocked' | 'review' | 'unknown' => {
+  const safe = String(value || '').trim().toLowerCase();
+  if (safe === 'allowed' || safe === 'blocked' || safe === 'review') return safe;
+  return 'unknown';
+};
+
+const formatReaderCommercialMessage = (params: {
+  status?: string | null | undefined;
+  reason?: string | null | undefined;
+  provider?: string | null | undefined;
+  fallback: string;
+}): string => {
+  const status = normalizeReaderCommercialStatus(params.status);
+  const reason = String(params.reason || '').trim();
+  if (reason) return reason;
+  const provider = String(params.provider || '').trim().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  if (status === 'review') {
+    return `This title needs commercial review before Reader can use it${provider ? ` from ${provider}` : ''}.`;
+  }
+  if (status === 'blocked') {
+    return `This title is blocked for commercial Reader use${provider ? ` from ${provider}` : ''}.`;
+  }
+  return params.fallback;
+};
+
+const describeReaderRequestError = (error: unknown, fallback: string): string => {
+  const typed = error as Error & {
+    code?: string;
+    status?: number;
+    detail?: unknown;
+  };
+  const detail = typed?.detail && typeof typed.detail === 'object'
+    ? typed.detail as Record<string, unknown>
+    : null;
+  const commercialStatus = normalizeReaderCommercialStatus(detail?.commercialUseStatus);
+  if (typed?.code === 'commercial_policy_blocked' || commercialStatus === 'blocked' || commercialStatus === 'review') {
+    return formatReaderCommercialMessage({
+      status: commercialStatus,
+      reason: String(typed?.message || ''),
+      provider: typeof detail?.provider === 'string' ? detail.provider : '',
+      fallback,
+    });
+  }
+  return String(typed?.message || '').trim() || fallback;
+};
+
 export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackendUrl, settings, resolvedTheme, onToast }) => {
-  const { characterLibrary, getVoiceForCharacter, updateCharacter } = useUser();
+  const { characterLibrary, getVoiceForCharacter, updateCharacter, user } = useUser();
+  const { mode: layoutMode } = useWorkspaceViewport();
   const initialPrefs = useMemo(() => readPrefs(settings), [settings]);
+  const speechVolume = normalizeMediaVolume(settings?.speechVolume, 1);
+  const musicVolume = normalizeMediaVolume(settings?.musicVolume, 0.3);
   const [surface, setSurface] = useState<ReaderSurfaceFilter>(initialPrefs.surface);
   const [regionId, setRegionId] = useState<string>(initialPrefs.regionId);
-  const [musicTrackId, setMusicTrackId] = useState<string>(initialPrefs.musicTrackId);
-  const [speechVolume, setSpeechVolume] = useState<number>(initialPrefs.speechVolume);
-  const [musicVolume, setMusicVolume] = useState<number>(initialPrefs.musicVolume);
-  const [panelCollapsed, setPanelCollapsed] = useState<boolean>(initialPrefs.panelCollapsed);
   const [searchQuery, setSearchQuery] = useState<string>(initialPrefs.searchQuery);
   const [targetLanguageDraft, setTargetLanguageDraft] = useState<string>(initialPrefs.targetLanguage);
   const [pageViewModeDraft, setPageViewModeDraft] = useState<'original' | 'translated'>(initialPrefs.pageViewMode);
   const [ttsLanguageModeDraft, setTtsLanguageModeDraft] = useState<'auto' | 'source' | 'target'>(initialPrefs.ttsLanguageMode);
-  const [provider, setProvider] = useState<string>(initialPrefs.provider);
-  const [collection, setCollection] = useState<string>(initialPrefs.collection);
-  const [progress, setProgress] = useState<ReaderProgressFilter>(initialPrefs.progress);
-  const [contentKind, setContentKind] = useState<ReaderContentFilter>(initialPrefs.contentKind);
-  const [sort, setSort] = useState<ReaderSortOption>(initialPrefs.sort);
-  const [viewMode, setViewMode] = useState<ReaderViewMode>(initialPrefs.viewMode);
   const [library, setLibrary] = useState<ReaderLibrary | null>(null);
   const [session, setSession] = useState<ReaderSession | null>(null);
   const [resumeSession, setResumeSession] = useState<ReaderSession | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<'browse' | 'playback'>('browse');
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [legalAck, setLegalAck] = useState<ReaderLegalAck | null>(null);
+  const [commercialPolicy, setCommercialPolicy] = useState<ReaderCommercialPolicy | null>(null);
   const [billingLabel, setBillingLabel] = useState<string>(`Reader pricing: ${READER_BILLING_RULE}`);
+  const [readerBootstrapState, setReaderBootstrapState] = useState<ReaderBootstrapState>('loading');
+  const [readerBootstrapMessage, setReaderBootstrapMessage] = useState<string>('');
+  const [bootstrapRetryNonce, setBootstrapRetryNonce] = useState<number>(0);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadTitle, setUploadTitle] = useState<string>('');
   const [uploadContentType, setUploadContentType] = useState<UploadContentType>('auto');
-  const [uploadOwnershipBasis, setUploadOwnershipBasis] = useState<string>('own_work');
+  const [uploadOwnershipBasis, setUploadOwnershipBasis] = useState<ReaderOwnershipBasis>('user_responsible');
   const [castDraft, setCastDraft] = useState<Record<string, string>>({});
-  const [readingModeDraft, setReadingModeDraft] = useState<string>('document');
+  const [narratorVoiceDraft, setNarratorVoiceDraft] = useState<string>(initialPrefs.narratorVoiceId);
+  const [unitOverridesDraft, setUnitOverridesDraft] = useState<Record<string, string>>({});
+  const [detectedTextEditorDraft, setDetectedTextEditorDraft] = useState<string>('');
+  const [readingModeDraft, setReadingModeDraft] = useState<string>(initialPrefs.readingMode);
   const [autoAdvanceDraft, setAutoAdvanceDraft] = useState<ReaderAutoAdvanceProfile>(initialPrefs.autoAdvanceProfile);
   const [multiSpeakerEnabledDraft, setMultiSpeakerEnabledDraft] = useState<boolean>(initialPrefs.multiSpeakerEnabled);
+  const [audioEngineDraft, setAudioEngineDraft] = useState<ReaderAudioEngine>(initialPrefs.audioEngine);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
+  const [resolvedMusicTrackUrl, setResolvedMusicTrackUrl] = useState<string>('');
   const [activeQueueIndex, setActiveQueueIndex] = useState<number>(0);
   const [speechProgressPct, setSpeechProgressPct] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -244,12 +313,17 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isAutoAssigningCast, setIsAutoAssigningCast] = useState<boolean>(false);
   const [autoSwipePausedUntil, setAutoSwipePausedUntil] = useState<number>(0);
-  const [activePanel, setActivePanel] = useState<ReaderPanelSection>('library');
+  const [activeUtilityPanel, setActiveUtilityPanel] = useState<ReaderUtilityPanel | null>(null);
+  const [activeUtilityPanelScope, setActiveUtilityPanelScope] = useState<ReaderUtilityPanelScope>('all');
+  const [readerDockScale, setReaderDockScale] = useState<number>(1);
+  const [pageVisibility, setPageVisibility] = useState<DocumentVisibilityState>(
+    typeof document === 'undefined' ? 'visible' : document.visibilityState
+  );
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const speechAudioRef = useRef<HTMLAudioElement | null>(null);
   const musicAudioRef = useRef<HTMLAudioElement | null>(null);
   const readerRootRef = useRef<HTMLDivElement | null>(null);
-  const controlPanelRef = useRef<HTMLDivElement | null>(null);
+  const playerDockRef = useRef<HTMLDivElement | null>(null);
   const fetchedAudioJobIdsRef = useRef<Set<string>>(new Set());
   const prefetchedWindowKeysRef = useRef<Set<string>>(new Set());
   const prefetchedPanelKeysRef = useRef<Set<string>>(new Set());
@@ -258,36 +332,38 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   const autoplayPendingRef = useRef<boolean>(false);
   const sessionIdRef = useRef<string>('');
   const workspaceModeRef = useRef<'browse' | 'playback'>('browse');
-  const lastAckLoadKeyRef = useRef<string>('');
-  const lastLibraryLoadKeyRef = useRef<string>('');
+  const lastBootstrapLoadKeyRef = useRef<string>('');
   const expiredSessionToastForRef = useRef<string>('');
+  const audioSyncFallbackTimerRef = useRef<number | null>(null);
+  const lastAudioSyncFallbackKeyRef = useRef<string>('');
+  const lastAutoSaveSignatureRef = useRef<string>('');
+  const lastLayoutTelemetryRef = useRef<string>('');
+  const lastPanelTelemetryRef = useRef<string>('');
+  const lastReaderPreferencesLoadKeyRef = useRef<string>('');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [isDesktopLayout, setIsDesktopLayout] = useState<boolean>(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return false;
-    return window.matchMedia(READER_DESKTOP_MEDIA_QUERY).matches;
-  });
-  const isDesktopPanelCollapsed = isDesktopLayout && panelCollapsed;
+  const readerIdentityKey = String(user.uid || user.email || '').trim() || 'guest';
+  const isReaderSaveStateActive = Boolean(
+    session?.id && (session?.contentKind === 'book' || session?.contentKind === 'comic')
+  );
 
   useEffect(() => {
     sessionIdRef.current = session?.id || '';
   }, [session?.id]);
 
   useEffect(() => {
+    lastAutoSaveSignatureRef.current = '';
+  }, [session?.id]);
+
+  useEffect(() => {
     workspaceModeRef.current = workspaceMode;
   }, [workspaceMode]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
-    const mediaQuery = window.matchMedia(READER_DESKTOP_MEDIA_QUERY);
-    const syncLayout = () => setIsDesktopLayout(mediaQuery.matches);
-    syncLayout();
-    if (typeof mediaQuery.addEventListener === 'function') {
-      mediaQuery.addEventListener('change', syncLayout);
-      return () => mediaQuery.removeEventListener('change', syncLayout);
+  useEffect(() => () => {
+    if (audioSyncFallbackTimerRef.current !== null) {
+      window.clearTimeout(audioSyncFallbackTimerRef.current);
+      audioSyncFallbackTimerRef.current = null;
     }
-    mediaQuery.addListener(syncLayout);
-    return () => mediaQuery.removeListener(syncLayout);
-  }, []);
+  }, [layoutMode]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -304,24 +380,80 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     writeStorageJson(STORAGE_KEYS.readerPreferences, {
       surface,
       regionId,
-      musicTrackId,
-      speechVolume,
-      musicVolume,
-      panelCollapsed,
       searchQuery,
       targetLanguage: targetLanguageDraft,
       pageViewMode: pageViewModeDraft,
       ttsLanguageMode: ttsLanguageModeDraft,
-      provider,
-      collection,
-      progress,
-      contentKind,
-      sort,
-      viewMode,
       autoAdvanceProfile: autoAdvanceDraft,
       multiSpeakerEnabled: multiSpeakerEnabledDraft,
+      audioEngine: audioEngineDraft,
+      narratorVoiceId: narratorVoiceDraft,
+      readingMode: normalizeReaderComicDraftMode(readingModeDraft),
     } satisfies ReaderPreferences);
-  }, [autoAdvanceDraft, collection, contentKind, multiSpeakerEnabledDraft, musicTrackId, musicVolume, pageViewModeDraft, panelCollapsed, progress, provider, regionId, searchQuery, sort, speechVolume, surface, targetLanguageDraft, ttsLanguageModeDraft, viewMode]);
+  }, [audioEngineDraft, autoAdvanceDraft, multiSpeakerEnabledDraft, narratorVoiceDraft, pageViewModeDraft, readingModeDraft, regionId, searchQuery, surface, targetLanguageDraft, ttsLanguageModeDraft]);
+
+  useEffect(() => {
+    const signature = `${layoutMode}|${workspaceMode}|${Boolean(session?.id)}`;
+    if (lastLayoutTelemetryRef.current === signature) return;
+    lastLayoutTelemetryRef.current = signature;
+    void reportFrontendSignal({
+      message: 'reader.layout_mode',
+      component: 'ReaderTabContent',
+      metadata: {
+        layoutMode,
+        workspaceMode,
+        hasSession: Boolean(session?.id),
+      },
+    });
+  }, [layoutMode, session?.id, workspaceMode]);
+
+  useEffect(() => {
+    if (!activeUtilityPanel) return;
+    const signature = `${layoutMode}|${workspaceMode}|${activeUtilityPanel}`;
+    if (lastPanelTelemetryRef.current === signature) return;
+    lastPanelTelemetryRef.current = signature;
+    void reportFrontendSignal({
+      message: 'reader.panel_open',
+      component: 'ReaderTabContent',
+      metadata: {
+        layoutMode,
+        workspaceMode,
+        panel: activeUtilityPanel,
+      },
+    });
+  }, [activeUtilityPanel, layoutMode, workspaceMode]);
+
+  useEffect(() => {
+    if (activeUtilityPanel) return;
+    if (activeUtilityPanelScope !== 'all') setActiveUtilityPanelScope('all');
+  }, [activeUtilityPanel, activeUtilityPanelScope]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const computeDockScale = () => {
+      const dockNode = playerDockRef.current;
+      const rootFontPx = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize || '16') || 16;
+      const baseWidthFromCss = resolveCssLengthPx(
+        dockNode ? window.getComputedStyle(dockNode).getPropertyValue('--reader-dock-base-width') : '',
+        rootFontPx
+      );
+      const baseWidthPx = baseWidthFromCss > 0
+        ? baseWidthFromCss
+        : dockNode?.offsetWidth || READER_DOCK_DEFAULT_BASE_WIDTH_PX;
+      const availableWidth = Math.max(0, window.innerWidth - (READER_DOCK_HORIZONTAL_GUTTER_PX * 2));
+      const ratio = baseWidthPx > 0 ? availableWidth / baseWidthPx : 1;
+      const clamped = ratio >= READER_DOCK_PREFERRED_MIN_SCALE
+        ? Math.max(READER_DOCK_PREFERRED_MIN_SCALE, Math.min(1, ratio || 1))
+        : Math.max(0, Math.min(1, ratio || 1));
+      const normalized = Number(clamped.toFixed(3));
+      setReaderDockScale((current) => (Math.abs(current - normalized) < 0.001 ? current : normalized));
+    };
+    computeDockScale();
+    window.addEventListener('resize', computeDockScale);
+    return () => {
+      window.removeEventListener('resize', computeDockScale);
+    };
+  }, []);
 
   useEffect(() => () => {
     Object.values(audioUrls).forEach((url) => {
@@ -343,17 +475,93 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     [mediaBackendUrl]
   );
 
-  const loadAck = useCallback(async () => {
+  const applyReaderPreferences = useCallback((preferences: {
+    regionId?: string;
+    targetLanguage?: string;
+    pageViewMode?: 'original' | 'translated';
+    ttsLanguageMode?: 'auto' | 'source' | 'target';
+    autoAdvanceProfile?: string;
+    multiSpeakerEnabled?: boolean;
+    audioEngine?: string;
+    narratorVoiceId?: string;
+    readingMode?: string;
+  }) => {
+    if (typeof preferences.regionId === 'string' && preferences.regionId.trim()) {
+      setRegionId(preferences.regionId);
+    }
+    if (typeof preferences.targetLanguage === 'string') {
+      setTargetLanguageDraft(preferences.targetLanguage);
+    }
+    if (preferences.pageViewMode === 'translated' || preferences.pageViewMode === 'original') {
+      setPageViewModeDraft(preferences.pageViewMode);
+    }
+    if (
+      preferences.ttsLanguageMode === 'auto'
+      || preferences.ttsLanguageMode === 'source'
+      || preferences.ttsLanguageMode === 'target'
+    ) {
+      setTtsLanguageModeDraft(preferences.ttsLanguageMode);
+    }
+    if (
+      preferences.autoAdvanceProfile === 'off'
+      || preferences.autoAdvanceProfile === 'audio_sync'
+      || preferences.autoAdvanceProfile === 'slow'
+      || preferences.autoAdvanceProfile === 'medium'
+      || preferences.autoAdvanceProfile === 'fast'
+    ) {
+      setAutoAdvanceDraft(preferences.autoAdvanceProfile);
+    }
+    if (typeof preferences.multiSpeakerEnabled === 'boolean') {
+      setMultiSpeakerEnabledDraft(preferences.multiSpeakerEnabled);
+    }
+    if (typeof preferences.audioEngine === 'string') {
+      setAudioEngineDraft(preferences.audioEngine === 'tts_hd' ? 'tts_hd' : 'native_audio_dialog');
+    }
+    if (typeof preferences.narratorVoiceId === 'string' && preferences.narratorVoiceId.trim()) {
+      setNarratorVoiceDraft(preferences.narratorVoiceId);
+    }
+    if (typeof preferences.readingMode === 'string' && preferences.readingMode.trim()) {
+      setReadingModeDraft(normalizeReaderComicDraftMode(preferences.readingMode));
+    }
+  }, []);
+
+  const loadReaderPreferences = useCallback(async (options?: { suppressToast?: boolean }) => {
+    try {
+      const preferences = await getReaderPreferences(mediaBackendUrl);
+      applyReaderPreferences(preferences);
+      return preferences;
+    } catch (error) {
+      if (!options?.suppressToast) {
+        onToast(String((error as Error)?.message || 'Could not load Reader defaults.'), 'error');
+      }
+      return null;
+    }
+  }, [applyReaderPreferences, mediaBackendUrl, onToast]);
+
+  const loadAck = useCallback(async (options?: { suppressToast?: boolean; throwOnError?: boolean }) => {
     try {
       const payload = await getReaderLegalAck(mediaBackendUrl);
       setLegalAck(payload.ack);
+      setCommercialPolicy(payload.commercial || null);
       setBillingLabel(payload.billing.label);
+      return payload;
     } catch (error) {
-      onToast(String((error as Error)?.message || 'Could not load Reader rights status.'), 'error');
+      if (!options?.suppressToast) {
+        onToast(describeReaderRequestError(error, 'Could not load Reader rights status.'), 'error');
+      }
+      if (options?.throwOnError) throw error;
+      return null;
     }
   }, [mediaBackendUrl, onToast]);
 
-  const loadLibrary = useCallback(async (options?: { background?: boolean }) => {
+  useEffect(() => {
+    const loadKey = `${mediaBackendUrl}|${readerIdentityKey}`;
+    if (lastReaderPreferencesLoadKeyRef.current === loadKey) return;
+    lastReaderPreferencesLoadKeyRef.current = loadKey;
+    void loadReaderPreferences({ suppressToast: true });
+  }, [loadReaderPreferences, mediaBackendUrl, readerIdentityKey]);
+
+  const loadLibrary = useCallback(async (options?: { background?: boolean; suppressToast?: boolean; throwOnError?: boolean }) => {
     if (!options?.background) setIsLoading(true);
     try {
       const nextLibrary = await getReaderLibrary(mediaBackendUrl, {
@@ -363,10 +571,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       });
       startTransition(() => {
         setLibrary(nextLibrary);
-        const matchingSession = sessionIdRef.current
-          ? (nextLibrary.activeSessions || []).find((item) => item.id === sessionIdRef.current) || null
-          : null;
-        setResumeSession(matchingSession || nextLibrary.activeSession || null);
+        setResumeSession(resolveReaderResumeSession(nextLibrary, sessionIdRef.current));
         setSelectedItemId((current) => {
           if (current && nextLibrary.items.some((item) => item.id === current)) return current;
           if (workspaceModeRef.current === 'playback' && sessionIdRef.current) return current;
@@ -375,7 +580,10 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       });
       return nextLibrary;
     } catch (error) {
-      onToast(String((error as Error)?.message || 'Could not load Reader library.'), 'error');
+      if (!options?.suppressToast) {
+        onToast(String((error as Error)?.message || 'Could not load Reader library.'), 'error');
+      }
+      if (options?.throwOnError) throw error;
       return null;
     } finally {
       if (!options?.background) setIsLoading(false);
@@ -383,18 +591,50 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   }, [deferredSearchQuery, mediaBackendUrl, onToast, regionId, surface]);
 
   useEffect(() => {
-    const loadKey = mediaBackendUrl;
-    if (lastAckLoadKeyRef.current === loadKey) return;
-    lastAckLoadKeyRef.current = loadKey;
-    void loadAck();
-  }, [loadAck, mediaBackendUrl]);
+    const loadKey = `${mediaBackendUrl}|${readerIdentityKey}|${surface}|${regionId}|${deferredSearchQuery.trim()}|${bootstrapRetryNonce}`;
+    if (lastBootstrapLoadKeyRef.current === loadKey) return;
+    lastBootstrapLoadKeyRef.current = loadKey;
+    let cancelled = false;
 
-  useEffect(() => {
-    const loadKey = `${mediaBackendUrl}|${surface}|${regionId}|${deferredSearchQuery.trim()}`;
-    if (lastLibraryLoadKeyRef.current === loadKey) return;
-    lastLibraryLoadKeyRef.current = loadKey;
-    void loadLibrary();
-  }, [deferredSearchQuery, loadLibrary, mediaBackendUrl, regionId, surface]);
+    startTransition(() => {
+      setReaderBootstrapState('loading');
+      setReaderBootstrapMessage('');
+    });
+
+    const bootstrap = async () => {
+      const [ackResult, libraryResult] = await Promise.allSettled([
+        loadAck({ suppressToast: true, throwOnError: true }),
+        loadLibrary({ suppressToast: true, throwOnError: true }),
+      ]);
+      if (cancelled) return;
+
+      const libraryError = libraryResult.status === 'rejected' ? libraryResult.reason : null;
+      const libraryPayload = libraryResult.status === 'fulfilled' ? libraryResult.value : null;
+      const nextBootstrapState = resolveReaderBootstrapState({
+        library: libraryPayload,
+        libraryError,
+      });
+      const fallbackError = libraryError || (ackResult.status === 'rejected' ? ackResult.reason : null);
+
+      startTransition(() => {
+        setReaderBootstrapState(nextBootstrapState);
+        if (nextBootstrapState === 'needs_auth') {
+          setReaderBootstrapMessage('Sign in to load your Reader library and active sessions.');
+          return;
+        }
+        if (nextBootstrapState === 'error') {
+          setReaderBootstrapMessage(String((fallbackError as Error)?.message || 'Could not load Reader.'));
+          return;
+        }
+        setReaderBootstrapMessage('');
+      });
+    };
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapRetryNonce, deferredSearchQuery, loadAck, loadLibrary, mediaBackendUrl, readerIdentityKey, regionId, surface]);
 
   useEffect(() => {
     if (workspaceMode !== 'playback' || !session?.id) return;
@@ -420,7 +660,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       }, delay);
     };
     const resolveMissingSession = async (sessionId: string) => {
-      const nextLibrary = await loadLibrary({ background: true });
+      const nextLibrary = await loadLibrary({ background: true, suppressToast: true });
       if (cancelled || sessionIdRef.current !== sessionId) return;
       if (libraryHasSession(nextLibrary, sessionId)) {
         timer = window.setTimeout(() => {
@@ -432,6 +672,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
         setSession(null);
         setResumeSession(null);
         setWorkspaceMode('browse');
+        setUnitOverridesDraft({});
       });
       if (expiredSessionToastForRef.current !== sessionId) {
         expiredSessionToastForRef.current = sessionId;
@@ -446,18 +687,23 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
           setSession(nextSession);
           setResumeSession(nextSession);
           setCastDraft(nextSession.castMemory || {});
+          setNarratorVoiceDraft(String(nextSession.narratorVoiceId || nextSession.castMemory?.Narrator || VOICES[0]?.id || 'v22'));
+          setUnitOverridesDraft(nextSession.unitOverrides || {});
           setReadingModeDraft(nextSession.readingMode || 'document');
           setAutoAdvanceDraft((nextSession.autoAdvanceProfile as ReaderAutoAdvanceProfile) || 'off');
           setTargetLanguageDraft(nextSession.targetLanguage || nextSession.sourceLanguage || '');
           setPageViewModeDraft(nextSession.pageViewMode || resolveReaderPageViewDefault(nextSession.sourceLanguage, nextSession.targetLanguage));
           setTtsLanguageModeDraft(nextSession.ttsLanguageMode || 'auto');
           setMultiSpeakerEnabledDraft(nextSession.multiSpeakerEnabled !== false);
-          if (typeof nextSession.activeItemIndex === 'number') {
+          setAudioEngineDraft(nextSession.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
+          if (typeof nextSession.restoreState?.activeItemIndex === 'number') {
+            setActiveQueueIndex(Math.max(0, nextSession.restoreState.activeItemIndex));
+          } else if (typeof nextSession.activeItemIndex === 'number') {
             setActiveQueueIndex(Math.max(0, nextSession.activeItemIndex));
           }
         });
         if (!isReaderPrepTerminal(nextSession)) {
-          void loadLibrary({ background: true });
+          void loadLibrary({ background: true, suppressToast: true });
         }
         scheduleNextTick(nextSession);
       } catch (error) {
@@ -478,19 +724,20 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     };
   }, [loadLibrary, mediaBackendUrl, onToast, session?.id, workspaceMode]);
 
-  const activeMusicTrack = useMemo(() => MUSIC_TRACKS.find((item) => item.id === musicTrackId), [musicTrackId]);
+  const effectiveMusicTrackId = session?.musicTrackId || String(settings?.musicTrackId || 'm_none');
+  const activeMusicTrack = useMemo(() => MUSIC_TRACKS.find((item) => item.id === effectiveMusicTrackId), [effectiveMusicTrackId]);
 
   const filters = useMemo<ReaderLibraryFilters>(
     () => ({
       surface,
       search: deferredSearchQuery,
-      provider,
-      contentKind,
-      progress,
-      collection,
-      sort,
+      provider: 'all',
+      contentKind: 'all',
+      progress: 'all',
+      collection: 'all',
+      sort: 'featured',
     }),
-    [collection, contentKind, deferredSearchQuery, progress, provider, sort, surface]
+    [deferredSearchQuery, surface]
   );
 
   const filteredItems = useMemo(() => filterReaderLibraryItems(library?.items || [], filters), [filters, library?.items]);
@@ -608,22 +855,28 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   useEffect(() => {
     if (session) {
       setCastDraft(session.castMemory || {});
+      setNarratorVoiceDraft(String(session.narratorVoiceId || session.castMemory?.Narrator || VOICES[0]?.id || 'v22'));
+      setUnitOverridesDraft(session.unitOverrides || {});
       setReadingModeDraft(session.readingMode || sessionItem?.readingModeDefault || selectedItem?.readingModeDefault || 'document');
       setAutoAdvanceDraft((session.autoAdvanceProfile as ReaderAutoAdvanceProfile) || 'off');
       setTargetLanguageDraft(session.targetLanguage || session.sourceLanguage || '');
       setPageViewModeDraft(session.pageViewMode || resolveReaderPageViewDefault(session.sourceLanguage, session.targetLanguage));
       setTtsLanguageModeDraft(session.ttsLanguageMode || 'auto');
       setMultiSpeakerEnabledDraft(session.multiSpeakerEnabled !== false);
+      setAudioEngineDraft(session.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
       return;
     }
     if (!selectedItem) return;
+    setNarratorVoiceDraft(String(VOICES[0]?.id || 'v22'));
+    setUnitOverridesDraft({});
     setReadingModeDraft(selectedItem.readingModeDefault || (selectedItem.contentKind === 'comic' ? 'vertical_strip' : 'document'));
     setAutoAdvanceDraft(selectedItem.contentKind === 'comic' ? initialPrefs.autoAdvanceProfile : 'off');
+    setAudioEngineDraft(initialPrefs.audioEngine);
     const nextTargetLanguage = resolveReaderTargetLanguage(selectedItem, initialPrefs.targetLanguage);
     setTargetLanguageDraft(nextTargetLanguage);
     setPageViewModeDraft(resolveReaderPageViewDefault(selectedItem.sourceLanguage, nextTargetLanguage));
     setTtsLanguageModeDraft(initialPrefs.ttsLanguageMode);
-  }, [initialPrefs.autoAdvanceProfile, initialPrefs.targetLanguage, initialPrefs.ttsLanguageMode, selectedItem, session, sessionItem]);
+  }, [initialPrefs.audioEngine, initialPrefs.autoAdvanceProfile, initialPrefs.targetLanguage, initialPrefs.ttsLanguageMode, selectedItem, session, sessionItem]);
 
   useEffect(() => {
     if (workspaceMode === 'playback') return;
@@ -676,22 +929,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     return [...names];
   }, [castDraft, previewScriptText]);
 
-  const multiSpeakerMode = useMemo(
-    () =>
-      getReaderEffectiveMultiSpeakerMode(
-        session,
-        {
-          multiSpeakerEnabled: multiSpeakerEnabledDraft,
-          previewText: previewScriptText,
-          castMemory: castDraft,
-        }
-      ),
-    [castDraft, multiSpeakerEnabledDraft, previewScriptText, session]
-  );
-
-  const multiSpeakerStatusLabel = useMemo(
-    () => formatReaderMultiSpeakerMode(multiSpeakerMode),
-    [multiSpeakerMode]
+  const voiceModeDraft = useMemo<'single' | 'multi'>(
+    () => (multiSpeakerEnabledDraft ? 'multi' : 'single'),
+    [multiSpeakerEnabledDraft]
   );
 
   const completedJobs = useMemo(() => {
@@ -709,12 +949,60 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   }, [session]);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const syncVisibility = () => setPageVisibility(document.visibilityState);
+    syncVisibility();
+    document.addEventListener('visibilitychange', syncVisibility);
+    return () => document.removeEventListener('visibilitychange', syncVisibility);
+  }, [layoutMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const rootElement = readerRootRef.current;
+    const dockElement = playerDockRef.current;
+    if (!rootElement || !dockElement) return undefined;
+
+    let rafId: number | null = null;
+    const applyDockHeight = () => {
+      const nextHeight = Math.ceil(dockElement.getBoundingClientRect().height);
+      if (!Number.isFinite(nextHeight) || nextHeight <= 0) return;
+      const cssValue = `${nextHeight}px`;
+      if (rootElement.style.getPropertyValue('--reader-dock-height') !== cssValue) {
+        rootElement.style.setProperty('--reader-dock-height', cssValue);
+      }
+    };
+
+    const scheduleDockHeight = () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        applyDockHeight();
+      });
+    };
+
+    scheduleDockHeight();
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleDockHeight) : null;
+    resizeObserver?.observe(dockElement);
+    window.addEventListener('resize', scheduleDockHeight);
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', scheduleDockHeight);
+      rootElement.style.removeProperty('--reader-dock-height');
+    };
+  }, [layoutMode]);
+
+  useEffect(() => {
     completedJobs.forEach((jobId) => {
       if (audioUrls[jobId] || fetchedAudioJobIdsRef.current.has(jobId)) return;
       fetchedAudioJobIdsRef.current.add(jobId);
       void getReaderTtsJobAudio(mediaBackendUrl, jobId)
         .then((payload) => {
-          const url = payload.audioBase64 ? base64ToObjectUrl(payload.audioBase64, payload.mediaType || 'audio/wav') : null;
+          const url = payload.blob
+            ? URL.createObjectURL(payload.blob)
+            : payload.audioBase64
+              ? base64ToObjectUrl(payload.audioBase64, payload.mediaType || 'audio/wav')
+              : null;
           if (!url) return;
           setAudioUrls((prev) => ({ ...prev, [jobId]: url }));
         })
@@ -770,14 +1058,54 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       setActiveQueueIndex(0);
       return;
     }
+    if (typeof session?.restoreState?.activeItemIndex === 'number') {
+      setActiveQueueIndex(Math.min(Math.max(0, session.restoreState.activeItemIndex), playlist.length - 1));
+      return;
+    }
     if (typeof session?.activeItemIndex === 'number') {
       setActiveQueueIndex(Math.min(Math.max(0, session.activeItemIndex), playlist.length - 1));
       return;
     }
     setActiveQueueIndex((current) => (current >= playlist.length ? playlist.length - 1 : current));
-  }, [playlist, session?.activeItemIndex]);
+  }, [playlist, session?.activeItemIndex, session?.restoreState?.activeItemIndex]);
 
   const activeItem = playlist[activeQueueIndex] || null;
+
+  const activeDetectedUnit = useMemo(() => {
+    if (!session || !activeItem) return null;
+    if (activeItem.kind === 'window') {
+      const indexToken = Number(activeItem.key.split(':')[1] || -1);
+      const unit = Number.isFinite(indexToken)
+        ? session.windows.find((item) => item.index === indexToken)
+        : null;
+      if (!unit) return null;
+      return {
+        unitId: `window_${unit.index}`,
+        text: String(unit.sourceText || unit.text || ''),
+      };
+    }
+    if (activeItem.kind === 'panel' && typeof activeItem.panelIndex === 'number') {
+      const unit = session.panels.find((item) => item.index === activeItem.panelIndex);
+      if (!unit) return null;
+      return {
+        unitId: String(unit.panelId || `panel_${unit.index}`),
+        text: String(unit.sourceText || unit.text || ''),
+      };
+    }
+    return null;
+  }, [activeItem, session]);
+
+  const activeDetectedUnitId = String(activeDetectedUnit?.unitId || '').trim();
+  const activeDetectedText = String(activeDetectedUnit?.text || '').trim();
+  const activeDetectedOverride = activeDetectedUnitId ? String(unitOverridesDraft[activeDetectedUnitId] || '') : '';
+  const detectedTextEditorValue = activeDetectedOverride || activeDetectedText;
+  const hasDetectedTextDirty = activeDetectedUnitId
+    ? detectedTextEditorDraft.trim() !== detectedTextEditorValue.trim()
+    : false;
+
+  useEffect(() => {
+    setDetectedTextEditorDraft(detectedTextEditorValue);
+  }, [activeDetectedUnitId, detectedTextEditorValue]);
 
   useEffect(() => {
     const audio = speechAudioRef.current;
@@ -805,47 +1133,187 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     const audio = speechAudioRef.current;
     if (!audio) return;
     applySafeMediaVolume(audio, speechVolume, {
-      fallback: DEFAULT_PREFS.speechVolume,
+      fallback: 1,
       context: 'reader_speech',
+      onError: (error, info) => {
+        void reportFrontendSignal({
+          message: 'reader.media_volume_assignment_failed',
+          component: 'ReaderTabContent',
+          severity: 'warning',
+          metadata: {
+            channel: 'speech',
+            attemptedVolume: info.attemptedVolume,
+            appliedFallback: info.appliedFallback,
+            context: info.context,
+            error: error instanceof Error ? error.message : String(error || 'unknown'),
+          },
+        });
+      },
     });
   }, [speechVolume]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const nextUrl = await resolveMusicTrackUrlById(String(activeMusicTrack?.id || ''), activeMusicTrack?.url || '');
+      if (!active) return;
+      setResolvedMusicTrackUrl(nextUrl);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [activeMusicTrack]);
 
   useEffect(() => {
     const audio = musicAudioRef.current;
     if (!audio || !activeMusicTrack) return;
     audio.loop = true;
-    audio.src = activeMusicTrack.url || '';
+    audio.src = resolvedMusicTrackUrl || '';
     applySafeMediaVolume(audio, isSpeechPlaying ? musicVolume * 0.45 : musicVolume, {
-      fallback: DEFAULT_PREFS.musicVolume,
+      fallback: musicVolume,
       context: 'reader_music',
+      onError: (error, info) => {
+        void reportFrontendSignal({
+          message: 'reader.media_volume_assignment_failed',
+          component: 'ReaderTabContent',
+          severity: 'warning',
+          metadata: {
+            channel: 'music',
+            attemptedVolume: info.attemptedVolume,
+            appliedFallback: info.appliedFallback,
+            context: info.context,
+            error: error instanceof Error ? error.message : String(error || 'unknown'),
+          },
+        });
+      },
     });
-    if (isMusicPlaying && activeMusicTrack.url) {
+    if (isMusicPlaying && resolvedMusicTrackUrl) {
       void audio.play().catch(() => setIsMusicPlaying(false));
     } else {
       audio.pause();
     }
-  }, [activeMusicTrack, isMusicPlaying, isSpeechPlaying, musicVolume]);
+  }, [activeMusicTrack, isMusicPlaying, isSpeechPlaying, musicVolume, resolvedMusicTrackUrl]);
+
+  const buildRestoreStatePayload = useCallback(
+    (overrides?: { activeItemIndex?: number; activeUnitId?: string; viewportAnchor?: string }) => {
+      if (!isReaderSaveStateActive) return null;
+      const fallbackKey = activeItem?.key || '';
+      return {
+        activeItemIndex: Math.max(0, Number(overrides?.activeItemIndex ?? activeQueueIndex ?? 0)),
+        activeUnitId: String(overrides?.activeUnitId || fallbackKey).trim(),
+        viewportAnchor: String(overrides?.viewportAnchor || fallbackKey).trim(),
+      };
+    },
+    [activeItem?.key, activeQueueIndex, isReaderSaveStateActive]
+  );
 
   const commitProgress = useCallback(
-    async (nextProgress: { consumedChars?: number; currentPanelIndex?: number }) => {
-      if (!session?.id) return;
+    async (
+      nextProgress: {
+        consumedChars?: number;
+        currentPanelIndex?: number;
+        audioEngine?: ReaderAudioEngine;
+        activeItemIndex?: number;
+        activeUnitId?: string;
+        viewportAnchor?: string;
+      }
+    ) => {
+      if (!session?.id || !isReaderSaveStateActive) return;
       try {
+        const restoreOverrides: { activeItemIndex?: number; activeUnitId?: string; viewportAnchor?: string } = {};
+        if (typeof nextProgress.activeItemIndex === 'number') restoreOverrides.activeItemIndex = nextProgress.activeItemIndex;
+        if (typeof nextProgress.activeUnitId === 'string') restoreOverrides.activeUnitId = nextProgress.activeUnitId;
+        if (typeof nextProgress.viewportAnchor === 'string') restoreOverrides.viewportAnchor = nextProgress.viewportAnchor;
+        const restoreState = buildRestoreStatePayload(restoreOverrides);
+        if (!restoreState) return;
         const nextSession = await updateReaderProgress(mediaBackendUrl, session.id, {
           ...nextProgress,
           targetLanguage: targetLanguageDraft,
           pageViewMode: pageViewModeDraft,
+          audioEngine: nextProgress.audioEngine || audioEngineDraft,
+          activeItemIndex: restoreState.activeItemIndex,
+          activeUnitId: restoreState.activeUnitId,
+          viewportAnchor: restoreState.viewportAnchor,
         });
         startTransition(() => setSession(nextSession));
       } catch {
         // keep playback responsive even if progress commit stalls
       }
     },
-    [mediaBackendUrl, pageViewModeDraft, session?.id, targetLanguageDraft]
+    [audioEngineDraft, buildRestoreStatePayload, isReaderSaveStateActive, mediaBackendUrl, pageViewModeDraft, session?.id, targetLanguageDraft]
   );
+
+  const buildLiveAutosavePayload = useCallback(() => {
+    if (!isReaderSaveStateActive || !session?.id || !activeItem) return null;
+    const payload: {
+      activeItemIndex: number;
+      activeUnitId: string;
+      viewportAnchor: string;
+      audioEngine: ReaderAudioEngine;
+      consumedChars?: number;
+      currentPanelIndex?: number;
+    } = {
+      activeItemIndex: Math.max(0, activeQueueIndex),
+      activeUnitId: activeItem.key,
+      viewportAnchor: activeItem.key,
+      audioEngine: audioEngineDraft,
+    };
+    if (activeItem.kind === 'window' && typeof activeItem.startChar === 'number') {
+      const startChar = activeItem.startChar;
+      const charSpan = typeof activeItem.charCount === 'number'
+        ? Math.max(0, activeItem.charCount)
+        : typeof activeItem.endChar === 'number'
+          ? Math.max(0, activeItem.endChar - startChar)
+          : 0;
+      const ratio = Math.min(1, Math.max(0, speechProgressPct / 100));
+      let consumedChars = startChar + Math.floor(charSpan * ratio);
+      if (typeof activeItem.endChar === 'number') consumedChars = Math.min(consumedChars, activeItem.endChar);
+      payload.consumedChars = Math.max(0, consumedChars);
+    } else if (activeItem.kind === 'panel' && typeof activeItem.panelIndex === 'number') {
+      payload.currentPanelIndex = Math.max(0, activeItem.panelIndex);
+    }
+    return payload;
+  }, [activeItem, activeQueueIndex, audioEngineDraft, isReaderSaveStateActive, session?.id, speechProgressPct]);
+
+  const flushLiveAutosave = useCallback((force: boolean = false) => {
+    const payload = buildLiveAutosavePayload();
+    if (!payload) return;
+    const signature = JSON.stringify(payload);
+    if (!force && signature === lastAutoSaveSignatureRef.current) return;
+    lastAutoSaveSignatureRef.current = signature;
+    void commitProgress(payload);
+  }, [buildLiveAutosavePayload, commitProgress]);
+
+  useEffect(() => {
+    if (!shouldRunReaderBackgroundPolling({ sessionId: session?.id, workspaceMode, visibilityState: pageVisibility })) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      flushLiveAutosave(false);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [flushLiveAutosave, pageVisibility, session?.id, workspaceMode]);
+
+  useEffect(() => {
+    if (!session?.id || workspaceMode !== 'playback') return undefined;
+    const handlePageHide = () => {
+      flushLiveAutosave(true);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') handlePageHide();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [flushLiveAutosave, session?.id, workspaceMode]);
 
   const goToQueueIndex = useCallback((nextIndex: number, autoplay: boolean) => {
     if (playlistRef.current.length <= 0) return;
     const bounded = Math.max(0, Math.min(nextIndex, playlistRef.current.length - 1));
+    const nextItem = playlistRef.current[bounded] || null;
     autoplayPendingRef.current = autoplay;
     setSpeechProgressPct(0);
     setIsSpeechBuffering(autoplay);
@@ -853,7 +1321,25 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     if (autoplay) {
       setIsSpeechPlaying(true);
     }
-  }, []);
+    const progressPayload: {
+      activeItemIndex: number;
+      activeUnitId?: string;
+      viewportAnchor?: string;
+      consumedChars?: number;
+      currentPanelIndex?: number;
+    } = {
+      activeItemIndex: bounded,
+      activeUnitId: nextItem?.key || '',
+      viewportAnchor: nextItem?.key || '',
+    };
+    if (nextItem?.kind === 'panel' && typeof nextItem.panelIndex === 'number') {
+      progressPayload.currentPanelIndex = nextItem.panelIndex;
+    }
+    if (nextItem?.kind === 'window' && typeof nextItem.startChar === 'number') {
+      progressPayload.consumedChars = nextItem.startChar;
+    }
+    void commitProgress(progressPayload);
+  }, [commitProgress]);
 
   const advanceComicPanel = useCallback(
     (trigger: 'audio' | 'timer') => {
@@ -971,18 +1457,73 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     return () => window.clearTimeout(timer);
   }, [activeItem, advanceComicPanel, autoAdvanceDelay, autoAdvanceDraft, autoSwipePausedUntil, session]);
 
+  useEffect(() => {
+    if (audioSyncFallbackTimerRef.current !== null) {
+      window.clearTimeout(audioSyncFallbackTimerRef.current);
+      audioSyncFallbackTimerRef.current = null;
+    }
+    if (!session || !isReaderAutoSwipeAvailable(session) || !activeItem || activeItem.kind !== 'panel') {
+      lastAudioSyncFallbackKeyRef.current = '';
+      return;
+    }
+    if (autoAdvanceDraft !== 'audio_sync') {
+      lastAudioSyncFallbackKeyRef.current = '';
+      return;
+    }
+    if (Date.now() < autoSwipePausedUntil) return;
+    if (typeof activeItem.panelIndex !== 'number') return;
+    if (isSpeechPlaying && !isSpeechBuffering) {
+      lastAudioSyncFallbackKeyRef.current = '';
+      return;
+    }
+    const activePanel = session.panels.find((item) => item.index === activeItem.panelIndex);
+    const fallbackDelayMs = getReaderAudioSyncFallbackDelay({
+      emotionAwareReadMs: activePanel?.pacing?.emotionAwareReadMs,
+      estimatedReadMs: activePanel?.estimatedReadMs,
+    });
+    const fallbackKey = `${session.id}:${activeItem.key}:${fallbackDelayMs}`;
+    if (lastAudioSyncFallbackKeyRef.current === fallbackKey) return;
+    lastAudioSyncFallbackKeyRef.current = fallbackKey;
+    audioSyncFallbackTimerRef.current = window.setTimeout(() => {
+      audioSyncFallbackTimerRef.current = null;
+      advanceComicPanel('timer');
+    }, fallbackDelayMs);
+    return () => {
+      if (audioSyncFallbackTimerRef.current !== null) {
+        window.clearTimeout(audioSyncFallbackTimerRef.current);
+        audioSyncFallbackTimerRef.current = null;
+      }
+    };
+  }, [activeItem, advanceComicPanel, autoAdvanceDraft, autoSwipePausedUntil, isSpeechBuffering, isSpeechPlaying, session]);
+
   const startSession = useCallback(
     async (item: ReaderCatalogItem, options?: { forceNew?: boolean; autoPlay?: boolean }) => {
+      const commercialStatus = normalizeReaderCommercialStatus(item.commercialUseStatus);
+      if (commercialStatus === 'blocked' || commercialStatus === 'review') {
+        onToast(
+          formatReaderCommercialMessage({
+            status: commercialStatus,
+            reason: item.commercialUseReason,
+            provider: item.provider,
+            fallback: 'This title is not available for commercial Reader use.',
+          }),
+          'error'
+        );
+        return;
+      }
       try {
         const resolvedTargetLanguage = resolveReaderTargetLanguage(item, targetLanguageDraft);
         const payload: Parameters<typeof createReaderSession>[1] = item.surface === 'uploads'
           ? { uploadId: item.id, forceNew: Boolean(options?.forceNew), autoAdvanceProfile: item.contentKind === 'comic' ? autoAdvanceDraft : 'off' }
           : { itemId: item.id, forceNew: Boolean(options?.forceNew), autoAdvanceProfile: item.contentKind === 'comic' ? autoAdvanceDraft : 'off' };
-        if (item.contentKind === 'comic' && readingModeDraft) payload.readingModeOverride = readingModeDraft;
+        if (item.contentKind === 'comic') payload.readingModeOverride = normalizeReaderComicDraftMode(readingModeDraft);
         payload.targetLanguage = resolvedTargetLanguage;
         payload.pageViewMode = pageViewModeDraft;
         payload.ttsLanguageMode = ttsLanguageModeDraft;
+        payload.audioEngine = audioEngineDraft;
         payload.multiSpeakerEnabled = multiSpeakerEnabledDraft;
+        payload.voiceMode = voiceModeDraft;
+        payload.narratorVoiceId = narratorVoiceDraft;
         const nextSession = await createReaderSession(mediaBackendUrl, payload);
         autoplayPendingRef.current = Boolean(options?.autoPlay);
         startTransition(() => {
@@ -990,20 +1531,28 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
           setSession(nextSession);
           setResumeSession(nextSession);
           setWorkspaceMode('playback');
+          setActiveUtilityPanel(null);
           setCastDraft(nextSession.castMemory || {});
+          setNarratorVoiceDraft(String(nextSession.narratorVoiceId || nextSession.castMemory?.Narrator || narratorVoiceDraft));
+          setUnitOverridesDraft(nextSession.unitOverrides || {});
           setReadingModeDraft(nextSession.readingMode || item.readingModeDefault || 'document');
           setAutoAdvanceDraft((nextSession.autoAdvanceProfile as ReaderAutoAdvanceProfile) || 'off');
           setTargetLanguageDraft(nextSession.targetLanguage || resolvedTargetLanguage);
           setPageViewModeDraft(nextSession.pageViewMode || resolveReaderPageViewDefault(nextSession.sourceLanguage, nextSession.targetLanguage));
           setTtsLanguageModeDraft(nextSession.ttsLanguageMode || 'auto');
           setMultiSpeakerEnabledDraft(nextSession.multiSpeakerEnabled !== false);
+          setAudioEngineDraft(nextSession.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
+          if (typeof nextSession.restoreState?.activeItemIndex === 'number') {
+            setActiveQueueIndex(Math.max(0, nextSession.restoreState.activeItemIndex));
+            return;
+          }
           if (typeof nextSession.activeItemIndex === 'number') {
             setActiveQueueIndex(Math.max(0, nextSession.activeItemIndex));
             return;
           }
           setActiveQueueIndex(0);
         });
-        void loadLibrary({ background: true });
+        void loadLibrary({ background: true, suppressToast: true });
         onToast(
           isReaderPrepTerminal(nextSession)
             ? `Reader session ready for ${item.title}.`
@@ -1011,10 +1560,10 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
           isReaderPrepTerminal(nextSession) ? 'success' : 'info'
         );
       } catch (error) {
-        onToast(String((error as Error)?.message || 'Could not start Reader session.'), 'error');
+        onToast(describeReaderRequestError(error, 'Could not start Reader session.'), 'error');
       }
     },
-    [autoAdvanceDraft, loadLibrary, mediaBackendUrl, multiSpeakerEnabledDraft, onToast, pageViewModeDraft, readingModeDraft, targetLanguageDraft, ttsLanguageModeDraft]
+    [audioEngineDraft, autoAdvanceDraft, loadLibrary, mediaBackendUrl, multiSpeakerEnabledDraft, narratorVoiceDraft, onToast, pageViewModeDraft, readingModeDraft, targetLanguageDraft, ttsLanguageModeDraft, voiceModeDraft]
   );
 
   const handleResumeSession = useCallback(async () => {
@@ -1023,7 +1572,24 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     if (resumeSession.id) {
       try {
         nextSession = await getReaderSession(mediaBackendUrl, resumeSession.id);
-      } catch {
+      } catch (error) {
+        if ((error as Error & { status?: number }).status === 404) {
+          const nextLibrary = await loadLibrary({ background: true, suppressToast: true });
+          if (!libraryHasSession(nextLibrary, resumeSession.id)) {
+            startTransition(() => {
+              setSession(null);
+              setResumeSession(resolveReaderResumeSession(nextLibrary, ''));
+              setWorkspaceMode('browse');
+              setActiveUtilityPanel(null);
+              setUnitOverridesDraft({});
+            });
+            if (expiredSessionToastForRef.current !== resumeSession.id) {
+              expiredSessionToastForRef.current = resumeSession.id;
+              onToast('Reader session expired after server restart.', 'info');
+            }
+            return;
+          }
+        }
         onToast('Using cached Reader session because refresh failed.', 'info');
       }
     }
@@ -1032,20 +1598,37 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       setSession(nextSession);
       setResumeSession(nextSession);
       setWorkspaceMode('playback');
+      setActiveUtilityPanel(null);
       setCastDraft(nextSession.castMemory || {});
+      setNarratorVoiceDraft(String(nextSession.narratorVoiceId || nextSession.castMemory?.Narrator || VOICES[0]?.id || 'v22'));
+      setUnitOverridesDraft(nextSession.unitOverrides || {});
       setReadingModeDraft(nextSession.readingMode || resumeSessionItem?.readingModeDefault || 'document');
       setAutoAdvanceDraft((nextSession.autoAdvanceProfile as ReaderAutoAdvanceProfile) || 'off');
       setTargetLanguageDraft(nextSession.targetLanguage || nextSession.sourceLanguage || '');
       setPageViewModeDraft(nextSession.pageViewMode || resolveReaderPageViewDefault(nextSession.sourceLanguage, nextSession.targetLanguage));
       setTtsLanguageModeDraft(nextSession.ttsLanguageMode || 'auto');
       setMultiSpeakerEnabledDraft(nextSession.multiSpeakerEnabled !== false);
+      setAudioEngineDraft(nextSession.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
+      if (typeof nextSession.restoreState?.activeItemIndex === 'number') {
+        setActiveQueueIndex(Math.max(0, nextSession.restoreState.activeItemIndex));
+        return;
+      }
       if (typeof nextSession.activeItemIndex === 'number') {
         setActiveQueueIndex(Math.max(0, nextSession.activeItemIndex));
         return;
       }
       setActiveQueueIndex(0);
     });
-  }, [mediaBackendUrl, onToast, resumeSession, resumeSessionItem]);
+    void reportFrontendSignal({
+      message: 'reader.playback_resume',
+      component: 'ReaderTabContent',
+      metadata: {
+        layoutMode,
+        sessionId: nextSession.id,
+        contentKind: nextSession.contentKind,
+      },
+    });
+  }, [layoutMode, loadLibrary, mediaBackendUrl, onToast, resumeSession, resumeSessionItem]);
 
   const handlePrimaryAction = useCallback(async () => {
     if (!activeCatalogItem) return;
@@ -1056,16 +1639,85 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     await startSession(activeCatalogItem, { autoPlay: true });
   }, [activeCatalogItem, handleResumeSession, shouldResumeActiveCatalogItem, startSession]);
 
-  const openPanel = useCallback((panel: ReaderPanelSection) => {
-    setActivePanel(panel);
-    if (isDesktopLayout) {
-      setPanelCollapsed(false);
+  const openUtilityPanel = useCallback((panel: ReaderUtilityPanel, options?: { toggle?: boolean; scope?: ReaderUtilityPanelScope }) => {
+    if (!isReaderUtilityPanelAvailable(panel, Boolean(session))) {
+      const label = panel === 'detected'
+        ? 'AI Text'
+        : panel === 'cast'
+          ? 'Cast'
+          : panel.charAt(0).toUpperCase() + panel.slice(1);
+      onToast(`Open or resume a Reader session to use ${label}.`, 'info');
       return;
     }
-    window.requestAnimationFrame(() => {
-      controlPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }, [isDesktopLayout]);
+    const nextScope = options?.scope || 'all';
+    if (options?.toggle && activeUtilityPanel === panel && activeUtilityPanelScope === nextScope) {
+      setActiveUtilityPanelScope('all');
+      setActiveUtilityPanel(null);
+      return;
+    }
+    setActiveUtilityPanelScope(nextScope);
+    setActiveUtilityPanel(panel);
+  }, [activeUtilityPanel, activeUtilityPanelScope, onToast, session]);
+
+  const toggleUtilityPanel = useCallback((panel: ReaderUtilityPanel) => {
+    openUtilityPanel(panel, { toggle: true });
+  }, [openUtilityPanel]);
+
+  const toggleTranslatePanel = useCallback(() => {
+    openUtilityPanel('translator', { toggle: true, scope: 'translator_only' });
+  }, [openUtilityPanel]);
+
+  const handleSelectUtilityPanel = useCallback((panel: ReaderUtilityPanel) => {
+    openUtilityPanel(panel, { scope: 'all' });
+  }, [openUtilityPanel]);
+
+  const handleOpenItem = useCallback(
+    (itemId: string) => {
+      const nextItem =
+        filteredItems.find((item) => item.id === itemId)
+        || (library?.items || []).find((item) => item.id === itemId)
+        || null;
+      if (!nextItem) return;
+      setSelectedItemId(nextItem.id);
+      setActiveUtilityPanel(null);
+      void (async () => {
+        const shouldResumeItem = Boolean(
+          !session
+          && resumeSession?.id
+          && resumeSessionItem?.id
+          && resumeSessionItem.id === nextItem.id
+        );
+        if (shouldResumeItem) {
+          await handleResumeSession();
+          return;
+        }
+        await startSession(nextItem, { autoPlay: true });
+      })();
+    },
+    [filteredItems, handleResumeSession, library?.items, resumeSession?.id, resumeSessionItem?.id, session, startSession]
+  );
+
+  const handleGoHome = useCallback(() => {
+    setWorkspaceMode('browse');
+    setActiveUtilityPanel(null);
+    autoplayPendingRef.current = false;
+  }, []);
+
+  const handleAudioEngineChange = useCallback(
+    (nextEngine: ReaderAudioEngine) => {
+      const resolved = nextEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd';
+      setAudioEngineDraft(resolved);
+      setSession((current) => (current ? { ...current, audioEngine: resolved } : current));
+      if (!session?.id) return;
+      void commitProgress({
+        activeItemIndex: activeQueueIndex,
+        activeUnitId: activeItem?.key || '',
+        viewportAnchor: activeItem?.key || '',
+        audioEngine: resolved,
+      });
+    },
+    [activeItem?.key, activeQueueIndex, commitProgress, session?.id]
+  );
 
   const handleAutoAssignCast = useCallback(() => {
     if (!multiSpeakerEnabledDraft) {
@@ -1134,55 +1786,50 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       setSelectedFiles([]);
       setUploadTitle('');
       setUploadContentType('auto');
-      setSurface('uploads');
+      setUploadOwnershipBasis('user_responsible');
+      setSurface('all');
       setSelectedItemId(created.id);
+      setActiveUtilityPanel(null);
       await loadLibrary();
-      onToast(`Imported as ${created.contentKind} with ${created.readingModeDefault || 'auto'} reading mode.`, 'success');
+      await startSession(created, { forceNew: true, autoPlay: true });
+      onToast(`Imported and opened in player as ${created.contentKind}.`, 'success');
     } catch (error) {
-      onToast(String((error as Error)?.message || 'Reader import failed.'), 'error');
+      onToast(describeReaderRequestError(error, 'Reader import failed.'), 'error');
     } finally {
       setIsUploading(false);
     }
-  }, [loadLibrary, mediaBackendUrl, onToast, regionId, selectedFiles, uploadContentType, uploadOwnershipBasis, uploadTitle]);
-
-  const handleExport = useCallback(async () => {
-    if (!session?.id) return;
-    try {
-      const blob = await exportReaderSessionAudio(mediaBackendUrl, session.id);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${session.title.replace(/[^a-z0-9]+/gi, '_').toLowerCase() || 'reader_audio'}.wav`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setSession(await getReaderSession(mediaBackendUrl, session.id));
-      await loadLibrary();
-      onToast('Reader audio exported.', 'success');
-    } catch (error) {
-      onToast(String((error as Error)?.message || 'Reader export is not ready yet.'), 'error');
-    }
-  }, [loadLibrary, mediaBackendUrl, onToast, session]);
+  }, [loadLibrary, mediaBackendUrl, onToast, regionId, selectedFiles, startSession, uploadContentType, uploadOwnershipBasis, uploadTitle]);
 
   const handleSavepoint = useCallback(async () => {
-    if (!session?.id) return;
+    if (!session?.id || !isReaderSaveStateActive) return;
     setIsSaving(true);
     try {
+      const restoreState = buildRestoreStatePayload();
+      if (!restoreState) return;
       const savePayload: Parameters<typeof saveReaderSession>[2] = {
         castOverrides: castDraft,
         autoAdvanceProfile: session.contentKind === 'comic' ? autoAdvanceDraft : 'off',
-        musicTrackId,
+        musicTrackId: effectiveMusicTrackId,
         targetLanguage: targetLanguageDraft,
         pageViewMode: pageViewModeDraft,
         ttsLanguageMode: ttsLanguageModeDraft,
+        audioEngine: audioEngineDraft,
         multiSpeakerEnabled: multiSpeakerEnabledDraft,
+        voiceMode: voiceModeDraft,
+        narratorVoiceId: narratorVoiceDraft,
+        unitOverrides: unitOverridesDraft,
+        restoreState,
       };
-      if (session.contentKind === 'comic' && readingModeDraft) savePayload.readingModeOverride = readingModeDraft;
+      if (session.contentKind === 'comic') savePayload.readingModeOverride = normalizeReaderComicDraftMode(readingModeDraft);
       const nextSession = await saveReaderSession(mediaBackendUrl, session.id, savePayload);
       setSession(nextSession);
       setTargetLanguageDraft(nextSession.targetLanguage || targetLanguageDraft);
       setPageViewModeDraft(nextSession.pageViewMode || pageViewModeDraft);
       setTtsLanguageModeDraft(nextSession.ttsLanguageMode || ttsLanguageModeDraft);
       setMultiSpeakerEnabledDraft(nextSession.multiSpeakerEnabled !== false);
+      setAudioEngineDraft(nextSession.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
+      setNarratorVoiceDraft(String(nextSession.narratorVoiceId || nextSession.castMemory?.Narrator || narratorVoiceDraft));
+      setUnitOverridesDraft(nextSession.unitOverrides || {});
       await loadLibrary();
       onToast('Reader savepoint updated.', 'success');
     } catch (error) {
@@ -1190,7 +1837,93 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     } finally {
       setIsSaving(false);
     }
-  }, [autoAdvanceDraft, castDraft, loadLibrary, mediaBackendUrl, multiSpeakerEnabledDraft, musicTrackId, onToast, pageViewModeDraft, readingModeDraft, session, targetLanguageDraft, ttsLanguageModeDraft]);
+  }, [audioEngineDraft, autoAdvanceDraft, buildRestoreStatePayload, castDraft, effectiveMusicTrackId, isReaderSaveStateActive, loadLibrary, mediaBackendUrl, multiSpeakerEnabledDraft, narratorVoiceDraft, onToast, pageViewModeDraft, readingModeDraft, session, targetLanguageDraft, ttsLanguageModeDraft, unitOverridesDraft, voiceModeDraft]);
+
+  const handleSavePreferences = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      const nextPreferences = await updateReaderPreferences(mediaBackendUrl, {
+        regionId,
+        targetLanguage: targetLanguageDraft,
+        pageViewMode: pageViewModeDraft,
+        ttsLanguageMode: ttsLanguageModeDraft,
+        autoAdvanceProfile: autoAdvanceDraft,
+        multiSpeakerEnabled: multiSpeakerEnabledDraft,
+        audioEngine: audioEngineDraft,
+        narratorVoiceId: narratorVoiceDraft,
+        readingMode: normalizeReaderComicDraftMode(readingModeDraft),
+      });
+      applyReaderPreferences(nextPreferences);
+      onToast('Reader defaults updated.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not save Reader defaults.'), 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [applyReaderPreferences, audioEngineDraft, autoAdvanceDraft, mediaBackendUrl, multiSpeakerEnabledDraft, narratorVoiceDraft, onToast, pageViewModeDraft, readingModeDraft, regionId, targetLanguageDraft, ttsLanguageModeDraft]);
+
+  const handleApplyDetectedTextOverride = useCallback(async () => {
+    if (!session?.id || !activeDetectedUnitId || !isReaderSaveStateActive) return;
+    setIsSaving(true);
+    try {
+      const normalizedText = detectedTextEditorDraft.trim();
+      const nextOverrides = { ...unitOverridesDraft };
+      if (normalizedText) {
+        nextOverrides[activeDetectedUnitId] = normalizedText;
+      } else {
+        delete nextOverrides[activeDetectedUnitId];
+      }
+      const restoreState = buildRestoreStatePayload();
+      if (!restoreState) return;
+      const nextSession = await saveReaderSession(mediaBackendUrl, session.id, {
+        unitOverrides: nextOverrides,
+        audioEngine: audioEngineDraft,
+        voiceMode: voiceModeDraft,
+        narratorVoiceId: narratorVoiceDraft,
+        restoreState,
+      });
+      startTransition(() => {
+        setSession(nextSession);
+        setUnitOverridesDraft(nextSession.unitOverrides || {});
+        setDetectedTextEditorDraft(normalizedText);
+        setAudioEngineDraft(nextSession.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
+      });
+      onToast('Detected text updated for this session.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not apply detected text edit.'), 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [activeDetectedUnitId, audioEngineDraft, buildRestoreStatePayload, detectedTextEditorDraft, isReaderSaveStateActive, mediaBackendUrl, narratorVoiceDraft, onToast, session?.id, unitOverridesDraft, voiceModeDraft]);
+
+  const handleResetDetectedTextOverride = useCallback(async () => {
+    if (!session?.id || !activeDetectedUnitId || !isReaderSaveStateActive) return;
+    setIsSaving(true);
+    try {
+      const nextOverrides = { ...unitOverridesDraft };
+      delete nextOverrides[activeDetectedUnitId];
+      const restoreState = buildRestoreStatePayload();
+      if (!restoreState) return;
+      const nextSession = await saveReaderSession(mediaBackendUrl, session.id, {
+        unitOverrides: nextOverrides,
+        audioEngine: audioEngineDraft,
+        voiceMode: voiceModeDraft,
+        narratorVoiceId: narratorVoiceDraft,
+        restoreState,
+      });
+      startTransition(() => {
+        setSession(nextSession);
+        setUnitOverridesDraft(nextSession.unitOverrides || {});
+        setDetectedTextEditorDraft(activeDetectedText);
+        setAudioEngineDraft(nextSession.audioEngine === 'native_audio_dialog' ? 'native_audio_dialog' : 'tts_hd');
+      });
+      onToast('Detected text reset for this session.', 'success');
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not reset detected text.'), 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [activeDetectedText, activeDetectedUnitId, audioEngineDraft, buildRestoreStatePayload, isReaderSaveStateActive, mediaBackendUrl, narratorVoiceDraft, onToast, session?.id, unitOverridesDraft, voiceModeDraft]);
 
   const handleCloseSession = useCallback(async () => {
     if (!session?.id) return;
@@ -1199,9 +1932,12 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       setWorkspaceMode('browse');
       setResumeSession(null);
       setSession(null);
+      setActiveUtilityPanel(null);
       setActiveQueueIndex(0);
       setSpeechProgressPct(0);
       setIsSpeechBuffering(false);
+      setUnitOverridesDraft({});
+      setDetectedTextEditorDraft('');
       await loadLibrary();
       onToast('Reader session closed.', 'success');
     } catch (error) {
@@ -1226,52 +1962,30 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     });
   }, [activeItem, isSpeechPlaying, onToast]);
 
-  const currentPrimaryAction = useMemo(
-    () => (activeCatalogItem ? getReaderPrimaryAction(activeCatalogItem) : null),
-    [activeCatalogItem]
-  );
   const warningCountdown = session?.deleteAtMs ? getReaderDeleteCountdownLabel(session.deleteAtMs) : '03:00';
-  const resultsCountLabel = `${filteredItems.length.toLocaleString()} title${filteredItems.length === 1 ? '' : 's'}`;
-
-  const toggleFullscreen = useCallback(async () => {
-    if (typeof document === 'undefined') return;
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-        return;
-      }
-      if (readerRootRef.current?.requestFullscreen) {
-        await readerRootRef.current.requestFullscreen();
-      }
-    } catch {
-      onToast('Fullscreen mode is not available in this browser context.', 'info');
-    }
-  }, [onToast]);
 
   const targetLanguageLabel = useMemo(
     () => findLanguageLabel(session?.targetLanguage || targetLanguageDraft || activeCatalogItem?.sourceLanguage),
     [activeCatalogItem?.sourceLanguage, session?.targetLanguage, targetLanguageDraft]
   );
+  const activeAudioEngine = audioEngineDraft === 'native_audio_dialog'
+    ? 'native_audio_dialog'
+    : 'tts_hd';
+  const audioEngineLabel = activeAudioEngine === 'native_audio_dialog'
+    ? 'Native Audio Dialog'
+    : 'TTS HD';
+  const audioEngineStatusLabel = String(
+    session?.audioEngineStatus
+      || (activeAudioEngine === 'native_audio_dialog' ? 'active' : 'active')
+  ).trim().toLowerCase() || 'active';
   const pageViewModeLabel = pageViewModeDraft === 'translated' ? 'Translated Page View' : 'Original Page View';
-  const ttsLanguageModeLabel =
-    ttsLanguageModeDraft === 'target' ? `Target (${targetLanguageLabel})` : ttsLanguageModeDraft === 'source' ? 'Source' : 'Auto';
   const isPlaybackMode = workspaceMode === 'playback' && Boolean(session);
-  const rootClassName = `${getReaderThemeClassName(resolvedTheme)}${isFullscreen ? ' vf-reader--fullscreen' : ''}`;
-  const workspaceClassName = `vf-reader__workspace ${isPlaybackMode ? 'vf-reader__workspace--playback' : 'vf-reader__workspace--browse'}${isDesktopPanelCollapsed ? ' vf-reader__workspace--panel-collapsed' : ''}`;
-  const auditModel = useMemo(
-    () =>
-      deriveReaderAuditModel({
-        selectedItem: activeCatalogItem,
-        session,
-        billingLabel,
-        warningCountdown,
-        targetLanguageLabel,
-        pageViewModeLabel,
-        ttsLanguageModeLabel,
-        multiSpeakerLabel: multiSpeakerStatusLabel,
-      }),
-    [activeCatalogItem, billingLabel, multiSpeakerStatusLabel, pageViewModeLabel, session, targetLanguageLabel, ttsLanguageModeLabel, warningCountdown]
-  );
+  const isCompactImportPanel = layoutMode === 'desktop' && activeUtilityPanel === 'import';
+  const showReaderAuthState = !isPlaybackMode && readerBootstrapState === 'needs_auth';
+  const showReaderErrorState = !isPlaybackMode && readerBootstrapState === 'error' && !library;
+  const shouldShowRightsNotice = readerBootstrapState === 'ready' && legalAck !== null && !legalAck.accepted;
+  const rootClassName = `${getReaderThemeClassName(resolvedTheme)} vf-reader--layout-${layoutMode}${isFullscreen ? ' vf-reader--fullscreen' : ''}${activeUtilityPanel && !isCompactImportPanel ? ' vf-reader--tray-open' : ''}`;
+  const workspaceClassName = `vf-reader__workspace vf-reader__workspace--${layoutMode} ${isPlaybackMode ? 'vf-reader__workspace--playback' : 'vf-reader__workspace--browse'}${activeUtilityPanel && !isCompactImportPanel ? ' vf-reader__workspace--has-tray' : ''}`;
   const selectQueueIndexFromWindow = useCallback(
     (startChar: number | undefined) => {
       const nextIndex = playlist.findIndex((entry) => entry.kind === 'window' && entry.startChar === startChar);
@@ -1293,13 +2007,18 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
       <div className="vf-reader__shell">
         <div className="vf-reader__backdrop">
           <div className="vf-reader__content">
-            {!legalAck?.accepted && (
+            {shouldShowRightsNotice && (
               <section className="vf-reader__section">
                 <div className="vf-reader__notice-card">
                   <div className="vf-reader__section-eyebrow">Rights Notice</div>
                   <h3>{legalAck?.title || 'Acknowledge Reader rights once before importing content.'}</h3>
                   <p>{legalAck?.message || 'Upload only work you created, have permission to use, or that is openly licensed.'}</p>
                   <div className="vf-reader__notice-meta">{billingLabel}. Reader warns before unsaved cache expires.</div>
+                  {commercialPolicy?.enabled ? (
+                    <div className="vf-reader__notice-meta">
+                      Commercial checks are active. Prefer uploads you own or license, and catalog items marked commercial-ready.
+                    </div>
+                  ) : null}
                   <button
                     type="button"
                     className="vf-reader__btn vf-reader__btn--primary"
@@ -1325,8 +2044,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
                     session={session}
                     sessionItem={sessionItem}
                     activeItem={activeItem}
-                    isFullscreen={isFullscreen}
-                    onToggleFullscreen={() => void toggleFullscreen()}
                     onSelectWindow={selectQueueIndexFromWindow}
                     onSelectPanel={selectQueueIndexFromPanel}
                     resolveMediaUrl={resolveMediaUrl}
@@ -1334,28 +2051,56 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
                     pauseAutoSwipe={pauseAutoSwipe}
                     targetLanguageLabel={targetLanguageLabel}
                     pageViewModeLabel={pageViewModeLabel}
+                    audioEngineLabel={audioEngineLabel}
+                    audioEngineStatus={audioEngineStatusLabel}
                   />
+                ) : showReaderAuthState ? (
+                  <section className="vf-reader__section" data-testid="reader-auth-required">
+                    <div className="vf-reader__notice-card">
+                      <div className="vf-reader__section-eyebrow">Reader Access</div>
+                      <h3>Sign in to load your Reader shelf.</h3>
+                      <p>{readerBootstrapMessage || 'Reader can show active sessions, synced imports, and region shelves once you sign in.'}</p>
+                      <button
+                        type="button"
+                        className="vf-reader__btn"
+                        onClick={() => setBootstrapRetryNonce((current) => current + 1)}
+                      >
+                        Retry Reader Load
+                      </button>
+                    </div>
+                  </section>
+                ) : showReaderErrorState ? (
+                  <section className="vf-reader__section" data-testid="reader-load-error">
+                    <div className="vf-reader__notice-card">
+                      <div className="vf-reader__section-eyebrow">Reader Status</div>
+                      <h3>Reader could not load right now.</h3>
+                      <p>{readerBootstrapMessage || 'Retry after checking backend availability and your Reader configuration.'}</p>
+                      <button
+                        type="button"
+                        className="vf-reader__btn"
+                        onClick={() => setBootstrapRetryNonce((current) => current + 1)}
+                      >
+                        Retry Reader Load
+                      </button>
+                    </div>
+                  </section>
                 ) : (
                   <ReaderBrowseHome
                     library={library}
                     filteredItems={filteredItems}
-                    selectedItem={selectedItem}
+                    selectedItemId={selectedItemId}
                     resumeSession={resumeSession}
                     resumeItem={resumeSessionItem}
                     surface={surface}
                     regionId={regionId}
-                    resultsCountLabel={resultsCountLabel}
-                    viewMode={viewMode}
+                    searchQuery={searchQuery}
                     isLoading={isLoading}
-                    currentPrimaryAction={currentPrimaryAction}
                     onSelectSurface={setSurface}
                     onSelectRegion={setRegionId}
+                    onSetSearchQuery={setSearchQuery}
                     onSelectItem={setSelectedItemId}
-                    onPrimaryAction={() => void handlePrimaryAction()}
+                    onOpenItem={handleOpenItem}
                     onResumeSession={() => void handleResumeSession()}
-                    onOpenTools={() => openPanel('tools')}
-                    onOpenAudit={() => openPanel('audit')}
-                    onSetViewMode={setViewMode}
                     resolveMediaUrl={resolveMediaUrl}
                     formatCompactStat={formatCompactStat}
                     formatProgressLabel={formatProgressLabel}
@@ -1363,124 +2108,98 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
                 )}
               </div>
 
-              <div
-                ref={controlPanelRef}
-                className={`vf-reader__workspace-side${isDesktopPanelCollapsed ? ' vf-reader__workspace-side--collapsed' : ''}`}
-              >
-                <ReaderControlPanel
-                  activePanel={activePanel}
-                  isCollapsed={isDesktopPanelCollapsed}
-                  isCollapsible={isDesktopLayout}
-                  session={session}
-                  selectedItem={selectedBrowseItem}
-                  sessionItem={sessionItem}
-                  currentPrimaryAction={currentPrimaryAction}
-                  library={library}
-                  filteredItems={filteredItems}
-                  selectedItemId={selectedItemId}
-                  resultsCountLabel={resultsCountLabel}
-                  viewMode={viewMode}
-                  legalAck={legalAck}
-                  surface={surface}
-                  regionId={regionId}
-                  searchQuery={searchQuery}
-                  provider={provider}
-                  collection={collection}
-                  contentKind={contentKind}
-                  progress={progress}
-                  sort={sort}
-                  uploadTitle={uploadTitle}
-                  uploadContentType={uploadContentType}
-                  uploadOwnershipBasis={uploadOwnershipBasis}
-                  selectedFiles={selectedFiles}
-                  targetLanguageDraft={targetLanguageDraft}
-                  pageViewModeDraft={pageViewModeDraft}
-                  ttsLanguageModeDraft={ttsLanguageModeDraft}
-                  readingModeDraft={readingModeDraft}
-                  autoAdvanceDraft={autoAdvanceDraft}
-                  castDraft={castDraft}
-                  castSpeakers={castSpeakers}
-                  multiSpeakerEnabled={multiSpeakerEnabledDraft}
-                  multiSpeakerStatusLabel={multiSpeakerStatusLabel}
-                  isAutoAssigningCast={isAutoAssigningCast}
-                  isSaving={isSaving}
-                  isUploading={isUploading}
-                  auditModel={auditModel}
-                  onPanelChange={setActivePanel}
-                  onToggleCollapsed={() => setPanelCollapsed((current) => !current)}
-                  onPrimaryAction={() => void handlePrimaryAction()}
-                  onExport={() => void handleExport()}
-                  onRefreshLibrary={() => void loadLibrary()}
-                  onSavepoint={() => void handleSavepoint()}
-                  onCloseSession={() => void handleCloseSession()}
-                  onRefreshSession={() => {
-                    const refreshTarget = activeCatalogItem;
-                    if (!refreshTarget) return;
-                    void startSession(refreshTarget, { forceNew: true, autoPlay: true });
-                  }}
-                  onSelectItem={setSelectedItemId}
-                  onSetViewMode={setViewMode}
-                  onSetSurface={setSurface}
-                  onSetRegionId={setRegionId}
-                  onSetSearchQuery={setSearchQuery}
-                  onSetProvider={setProvider}
-                  onSetCollection={setCollection}
-                  onSetContentKind={setContentKind}
-                  onSetProgress={setProgress}
-                  onSetSort={setSort}
-                  onSetUploadTitle={setUploadTitle}
-                  onSetUploadContentType={setUploadContentType}
-                  onSetUploadOwnershipBasis={setUploadOwnershipBasis}
-                  onFileSelection={setSelectedFiles}
-                  onUpload={() => void handleUpload()}
-                  onSetTargetLanguageDraft={setTargetLanguageDraft}
-                  onSetPageViewModeDraft={setPageViewModeDraft}
-                  onSetTtsLanguageModeDraft={setTtsLanguageModeDraft}
-                  onSetReadingModeDraft={setReadingModeDraft}
-                  onSetAutoAdvanceDraft={setAutoAdvanceDraft}
-                  onCastDraftChange={setCastDraft}
-                  onSetMultiSpeakerEnabled={setMultiSpeakerEnabledDraft}
-                  onAutoAssignCast={handleAutoAssignCast}
-                  resolveMediaUrl={resolveMediaUrl}
-                  formatCompactStat={formatCompactStat}
-                  formatProgressLabel={formatProgressLabel}
-                />
-              </div>
+              <ReaderUtilityTray
+                layoutMode={layoutMode}
+                panel={activeUtilityPanel}
+                panelScope={activeUtilityPanelScope}
+                isOpen={Boolean(activeUtilityPanel)}
+                session={session}
+                legalAckAccepted={Boolean(legalAck?.accepted)}
+                commercialPolicy={commercialPolicy}
+                regions={library?.regions || []}
+                regionId={regionId}
+                uploadTitle={uploadTitle}
+                uploadContentType={uploadContentType}
+                uploadOwnershipBasis={uploadOwnershipBasis}
+                selectedFiles={selectedFiles}
+                targetLanguageDraft={targetLanguageDraft}
+                pageViewModeDraft={pageViewModeDraft}
+                ttsLanguageModeDraft={ttsLanguageModeDraft}
+                audioEngineDraft={audioEngineDraft}
+                audioEngineStatusLabel={audioEngineStatusLabel}
+                readingModeDraft={readingModeDraft}
+                autoAdvanceDraft={autoAdvanceDraft}
+                narratorVoiceId={narratorVoiceDraft}
+                multiSpeakerEnabled={multiSpeakerEnabledDraft}
+                castDraft={castDraft}
+                castSpeakers={castSpeakers}
+                activeDetectedUnitId={activeDetectedUnitId}
+                editedDetectedText={detectedTextEditorDraft}
+                activeDetectedText={activeDetectedText}
+                hasEditedTextDirty={hasDetectedTextDirty}
+                isSaving={isSaving}
+                isUploading={isUploading}
+                isAutoAssigningCast={isAutoAssigningCast}
+                onClose={() => {
+                  setActiveUtilityPanelScope('all');
+                  setActiveUtilityPanel(null);
+                }}
+                onSelectPanel={handleSelectUtilityPanel}
+                onSavepoint={() => void handleSavepoint()}
+                onSavePreferences={() => void handleSavePreferences()}
+                onCloseSession={() => void handleCloseSession()}
+                onSetRegionId={setRegionId}
+                onSetUploadTitle={setUploadTitle}
+                onSetUploadContentType={setUploadContentType}
+                onSetUploadOwnershipBasis={setUploadOwnershipBasis}
+                onFileSelection={setSelectedFiles}
+                onUpload={() => void handleUpload()}
+                onSetTargetLanguageDraft={setTargetLanguageDraft}
+                onSetPageViewModeDraft={setPageViewModeDraft}
+                onSetTtsLanguageModeDraft={setTtsLanguageModeDraft}
+                onSetAudioEngineDraft={handleAudioEngineChange}
+                onSetReadingModeDraft={setReadingModeDraft}
+                onSetAutoAdvanceDraft={setAutoAdvanceDraft}
+                onSetNarratorVoiceId={setNarratorVoiceDraft}
+                onSetMultiSpeakerEnabled={setMultiSpeakerEnabledDraft}
+                onCastDraftChange={setCastDraft}
+                onAutoAssignCast={handleAutoAssignCast}
+                onEditedDetectedTextChange={setDetectedTextEditorDraft}
+                onApplyDetectedTextOverride={() => void handleApplyDetectedTextOverride()}
+                onResetDetectedTextOverride={() => void handleResetDetectedTextOverride()}
+              />
             </div>
           </div>
         </div>
 
-        {isPlaybackMode && session && (
-          <ReaderPlayerDock
-            session={session}
-            selectedItem={sessionItem || selectedItem}
-            activeItem={activeItem}
-            speechProgressPct={speechProgressPct}
-            isSpeechPlaying={isSpeechPlaying}
-            isSpeechBuffering={isSpeechBuffering}
-            activeQueueIndex={activeQueueIndex}
-            playlistLength={playlist.length}
-            warningCountdown={warningCountdown}
-            billingLabel={billingLabel}
-            isMusicPlaying={isMusicPlaying}
-            musicTrackId={musicTrackId}
-            onTransportToggle={transportToggle}
-            onPrev={() => goToQueueIndex(activeQueueIndex - 1, isSpeechPlaying || isSpeechBuffering)}
-            onNext={() => goToQueueIndex(activeQueueIndex + 1, isSpeechPlaying || isSpeechBuffering)}
-            onToggleMusic={() => setIsMusicPlaying((value) => !value)}
-            onMusicTrackChange={setMusicTrackId}
-            onExport={() => void handleExport()}
-            onRefresh={() => {
-              const refreshTarget = selectedItem || sessionItem;
-              if (!refreshTarget) return;
-              void startSession(refreshTarget, { forceNew: true, autoPlay: true });
-            }}
-            onClose={() => void handleCloseSession()}
-            onAutoAssignCast={handleAutoAssignCast}
-            canAutoAssignCast={multiSpeakerEnabledDraft && castSpeakers.length > 0}
-            isAutoAssigningCast={isAutoAssigningCast}
-          />
-        )}
+        <ReaderPlayerDock
+          dockRef={playerDockRef}
+          session={session}
+          selectedItem={sessionItem || selectedItem}
+          activeItem={activeItem}
+          speechProgressPct={speechProgressPct}
+          isSpeechPlaying={isSpeechPlaying}
+          isSpeechBuffering={isSpeechBuffering}
+          activeQueueIndex={activeQueueIndex}
+          playlistLength={playlist.length}
+          warningCountdown={warningCountdown}
+          billingLabel={billingLabel}
+          audioEngine={activeAudioEngine}
+          audioEngineStatus={audioEngineStatusLabel}
+          narratorVoiceId={narratorVoiceDraft}
+          multiSpeakerEnabled={multiSpeakerEnabledDraft}
+          voiceOptions={VOICES}
+          onTransportToggle={transportToggle}
+          onPrev={() => goToQueueIndex(activeQueueIndex - 1, isSpeechPlaying || isSpeechBuffering)}
+          onNext={() => goToQueueIndex(activeQueueIndex + 1, isSpeechPlaying || isSpeechBuffering)}
+          onGoHome={handleGoHome}
+          dockScale={readerDockScale}
+          onOpenImport={() => toggleUtilityPanel('import')}
+          onOpenTranslate={toggleTranslatePanel}
+          onToggleNativeAudio={() => handleAudioEngineChange(activeAudioEngine === 'native_audio_dialog' ? 'tts_hd' : 'native_audio_dialog')}
+          onNarratorVoiceChange={setNarratorVoiceDraft}
+          onToggleMultiSpeaker={() => setMultiSpeakerEnabledDraft((value) => !value)}
+        />
         <audio ref={speechAudioRef} preload="auto" />
         <audio ref={musicAudioRef} preload="auto" />
       </div>

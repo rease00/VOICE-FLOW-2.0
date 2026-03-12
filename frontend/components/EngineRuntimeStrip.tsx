@@ -1,6 +1,6 @@
 import React from 'react';
 import { GenerationSettings } from '../types';
-import { getEngineDisplayName } from '../services/engineDisplay';
+import { getEngineCompactLabel, getEngineDisplayName } from '../services/engineDisplay';
 import { EngineLogo } from './EngineLogo';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 
@@ -70,11 +70,7 @@ const getDotClasses = (tone: 'green' | 'orange' | 'red', resolvedTheme: 'light' 
     : 'bg-red-500 shadow-[0_0_0_2px_rgba(255,255,255,0.9)]';
 };
 
-const getEngineAbbrev = (engine: GenerationSettings['engine']): string => {
-  if (engine === 'GEM') return 'PR';
-  if (engine === 'NEURAL2') return 'HD';
-  return 'BS';
-};
+const getEngineAbbrev = (engine: GenerationSettings['engine']): string => getEngineCompactLabel(engine);
 
 export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
   engineOrder,

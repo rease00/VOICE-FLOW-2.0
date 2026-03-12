@@ -1,0 +1,201 @@
+- generic [ref=e6]:
+  - complementary [ref=e450]:
+    - generic [ref=e452]:
+      - generic [ref=e453]:
+        - img [ref=e457]
+        - img [ref=e461]
+        - img [ref=e465]
+      - generic [ref=e467]:
+        - generic [ref=e468]: VoiceFlow
+        - generic [ref=e469]: AI Studio
+    - navigation [ref=e470]:
+      - button "Studio" [ref=e471]:
+        - img [ref=e473]
+        - generic [ref=e476]: Studio
+      - button "Podcast" [ref=e477]:
+        - img [ref=e479]
+        - generic [ref=e485]: Podcast
+      - button "Reader" [ref=e486]:
+        - img [ref=e488]
+        - generic [ref=e492]: Reader
+      - button "Novel" [ref=e493]:
+        - img [ref=e495]
+        - generic [ref=e497]: Novel
+      - button "Character" [ref=e498]:
+        - img [ref=e500]
+        - generic [ref=e503]: Character
+      - button "History" [ref=e504]:
+        - img [ref=e506]
+        - generic [ref=e510]: History
+    - generic [ref=e512]:
+      - generic [ref=e513]:
+        - button "Login" [ref=e514]:
+          - img [ref=e515]
+          - text: Login
+        - button "Sign Up" [ref=e518]:
+          - img [ref=e519]
+          - text: Sign Up
+      - button "Open profile" [ref=e522]:
+        - img [ref=e524]
+  - main [ref=e84]:
+    - generic [ref=e86]:
+      - button "Compact sidebar" [ref=e527]:
+        - img [ref=e528]
+      - generic [ref=e89]:
+        - generic [ref=e92]:
+          - img [ref=e96]
+          - img [ref=e100]
+          - img [ref=e104]
+        - generic [ref=e106]:
+          - generic [ref=e107]: Workspace
+          - generic [ref=e108]: Reader
+        - generic [ref=e533]: Playback, import, and listening tools
+      - generic [ref=e110]:
+        - 'button "Basic runtime: Offline" [ref=e111]':
+          - img [ref=e115]
+          - generic [ref=e118]: Basic
+        - 'button "Vector runtime: Standby" [ref=e119]':
+          - img [ref=e123]
+          - generic [ref=e125]: Vector
+        - 'button "Prime runtime: Standby" [ref=e126]':
+          - img [ref=e130]
+          - generic [ref=e132]: Prime
+      - generic [ref=e133]:
+        - button "Open plan and credits" [ref=e134]:
+          - img [ref=e135]
+          - generic [ref=e138]: 0 VF
+          - generic [ref=e139]: "|"
+          - generic [ref=e140]: 5 left
+          - generic [ref=e141]: Upgrade
+        - button "Open notifications" [ref=e142]:
+          - img [ref=e143]
+        - button "Open configuration" [ref=e146]:
+          - img [ref=e147]
+    - generic [ref=e153]:
+      - generic [ref=e158]:
+        - generic [ref=e160]:
+          - generic [ref=e161]:
+            - img [ref=e162]
+            - text: Reader Home
+          - heading "Resume first, import fast, and keep discovery below the fold until you need it." [level=2] [ref=e165]
+          - paragraph [ref=e166]: 0 titles. Continue active sessions, keep your reading library current, or jump into discovery only after your production work is in motion.
+          - generic [ref=e167]:
+            - generic [ref=e168]:
+              - button "novels" [ref=e169] [cursor=pointer]
+              - button "books" [ref=e170] [cursor=pointer]
+              - button "manga/comics" [ref=e171] [cursor=pointer]
+            - generic [ref=e172]:
+              - generic [ref=e173]:
+                - img [ref=e174]
+                - textbox "Search reader titles" [ref=e177]:
+                  - /placeholder: search
+              - generic "Reader region" [ref=e178]:
+                - combobox "Reader region" [disabled] [ref=e179] [cursor=pointer]:
+                  - option "All regions" [selected]
+        - generic [ref=e180]:
+          - generic [ref=e181]:
+            - generic [ref=e182]:
+              - generic [ref=e183]:
+                - text: Creator Queue
+                - heading "Continue Reading" [level=3] [ref=e184]
+              - generic [ref=e185]: 0 titles
+            - generic [ref=e186]: No surfaced titles yet for this section.
+          - generic [ref=e187]:
+            - generic [ref=e188]:
+              - generic [ref=e189]:
+                - text: Your Library
+                - heading "Reading Library" [level=3] [ref=e190]
+              - generic [ref=e191]: 0 titles
+            - generic [ref=e192]: No surfaced titles yet for this section.
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - generic [ref=e195]:
+                - text: Discovery Rail
+                - heading "Top Trending" [level=3] [ref=e196]
+              - generic [ref=e197]: 0 titles
+            - generic [ref=e198]: No surfaced titles yet for this section.
+          - generic [ref=e199]:
+            - generic [ref=e200]:
+              - generic [ref=e201]:
+                - text: Discovery Rail
+                - heading "New Arrivals" [level=3] [ref=e202]
+              - generic [ref=e203]: 0 titles
+            - generic [ref=e204]: No surfaced titles yet for this section.
+        - generic [ref=e370]: No titles match the current search or surface filter.
+      - generic [ref=e206]:
+        - generic [ref=e207]:
+          - button "Open Reader home" [ref=e208] [cursor=pointer]:
+            - img [ref=e209]
+          - button "Play reader audio" [disabled] [ref=e212]:
+            - img [ref=e213]
+          - button "Previous reader item" [disabled] [ref=e215]:
+            - img [ref=e216]
+          - button "Next reader item" [disabled] [ref=e218]:
+            - img [ref=e219]
+        - generic [ref=e221]:
+          - generic [ref=e222]:
+            - img [ref=e223]
+            - text: Reader Dock
+          - strong [ref=e227]: Reader Dock
+          - generic [ref=e228]:
+            - generic [ref=e229]: Idle
+            - generic [ref=e230]: "Reader pricing: 1 char = 1.5 VF"
+            - generic [ref=e231]: "Status: active"
+        - generic [ref=e232]:
+          - button "Import" [ref=e233] [cursor=pointer]:
+            - img [ref=e234]
+            - text: Import
+          - button "Translate" [ref=e237] [cursor=pointer]:
+            - img [ref=e238]
+            - text: Translate
+          - button "Multi On" [ref=e242] [cursor=pointer]:
+            - img [ref=e243]
+            - text: Multi On
+          - button "Native On" [ref=e248] [cursor=pointer]:
+            - img [ref=e249]
+            - text: Native On
+          - combobox "Voice narrator" [ref=e449]:
+            - option "Arjun India Male" [selected]
+            - option "Meera India Female"
+            - option "Ethan US Male"
+            - option "Ava US Female"
+            - option "Oliver UK Male"
+            - option "Emily UK Female"
+            - option "Liam Canada Male"
+            - option "Sophie Canada Female"
+            - option "Noah Australia Male"
+            - option "Isla Australia Female"
+            - option "Kenji Japan Male"
+            - option "Yui Japan Female"
+            - option "Lucas Brazil Male"
+            - option "Camila Brazil Female"
+            - option "Mateo Spain Male"
+            - option "Valentina Spain Female"
+            - option "Adi India Boy"
+            - option "Tara India Girl"
+            - option "Raghu India Elder"
+            - option "Grace UK Elder"
+            - option "Noir Novel Artist"
+            - option "Lyris Novel Artist"
+            - option "Hans Germany Male"
+            - option "Anna Germany Female"
+            - option "Pierre France Male"
+            - option "Claire France Female"
+            - option "Omar UAE Male"
+            - option "Leila UAE Female"
+            - option "Ivan Russia Male"
+            - option "Alina Russia Female"
+  - button "Open assistant" [ref=e535]:
+    - img [ref=e539]
+  - generic:
+    - generic "Browser CPU signal (long tasks, event-loop lag, and heap trend)":
+      - img
+      - generic: CPU 7%
+      - img "Browser CPU pressure trend"
+    - generic "JS heap usage":
+      - img
+      - generic: RAM 27M
+      - img "RAM trend"
+    - generic "Active GPU Renderer":
+      - img
+      - generic: AMD, AMD Radeon Graphics (0x

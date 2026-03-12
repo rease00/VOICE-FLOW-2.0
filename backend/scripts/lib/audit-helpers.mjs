@@ -19,40 +19,58 @@ export const normalizeBaseUrl = (value, fallback = 'http://127.0.0.1:7800') => {
 export const resolveAuditAuthContext = (options = {}) => {
   const scriptName = String(options.scriptName || 'audit-script');
   const requireAuth = parseBool(process.env.AUDIT_REQUIRE_AUTH, true);
+  const authEnforced = parseBool(process.env.VF_AUTH_ENFORCE, true);
   const allowDevUid = parseBool(process.env.AUDIT_ALLOW_DEV_UID, false);
   const tokenRaw = String(process.env.AUDIT_BEARER_TOKEN || '').trim();
   const devUid = String(process.env.AUDIT_DEV_UID || options.defaultDevUid || 'local_admin').trim() || 'local_admin';
+  const devUidApplied = Boolean(!tokenRaw && allowDevUid && !authEnforced);
 
   const headers = {};
   if (tokenRaw) {
     headers.Authorization = tokenRaw.toLowerCase().startsWith('bearer ') ? tokenRaw : `Bearer ${tokenRaw}`;
-  } else if (allowDevUid) {
+  } else if (devUidApplied) {
     headers['x-dev-uid'] = devUid;
   }
 
-  const mode = tokenRaw ? 'bearer' : (allowDevUid ? 'dev_uid' : 'none');
-  const hasAuth = mode !== 'none';
+  const mode = tokenRaw
+    ? 'bearer'
+    : allowDevUid
+      ? (devUidApplied ? 'dev_uid' : 'dev_uid_blocked')
+      : 'none';
+  const hasAuth = Boolean(tokenRaw) || devUidApplied;
+  const failureReason = !hasAuth && requireAuth
+    ? (authEnforced ? 'bearer_required_auth_enforced' : 'missing_auth')
+    : '';
   const missingAuthMessage =
-    `[${scriptName}] missing auth for audit calls. Set AUDIT_BEARER_TOKEN, ` +
-    `or explicitly opt into dev fallback with AUDIT_ALLOW_DEV_UID=1 and optional AUDIT_DEV_UID=<uid>.`;
+    authEnforced
+      ? `[${scriptName}] bearer token required because VF_AUTH_ENFORCE=1. Set AUDIT_BEARER_TOKEN (recommended: npm run audit:auth:bootstrap). AUDIT_ALLOW_DEV_UID does not bypass enforced auth.`
+      : `[${scriptName}] missing auth for audit calls. Set AUDIT_BEARER_TOKEN, ` +
+        `or explicitly opt into dev fallback with AUDIT_ALLOW_DEV_UID=1 and optional AUDIT_DEV_UID=<uid>.`;
 
   return {
     scriptName,
     requireAuth,
+    authEnforced,
     allowDevUid,
+    devUidApplied,
     tokenPresent: Boolean(tokenRaw),
     devUid,
     hasAuth,
     mode,
     headers,
+    failureReason,
     missingAuthMessage,
   };
 };
 
 export const buildAuditHeaders = (baseHeaders = {}, options = {}) => {
   const auth = resolveAuditAuthContext(options);
-  if (!auth.hasAuth && auth.requireAuth) {
-    throw new Error(auth.missingAuthMessage);
+  const throwOnMissingAuth = options.throwOnMissingAuth !== false;
+  const authError = !auth.hasAuth && auth.requireAuth ? auth.missingAuthMessage : '';
+  if (authError && throwOnMissingAuth) {
+    const error = new Error(authError);
+    Object.assign(error, { auditAuth: auth });
+    throw error;
   }
   return {
     headers: {
@@ -60,6 +78,7 @@ export const buildAuditHeaders = (baseHeaders = {}, options = {}) => {
       ...auth.headers,
     },
     auth,
+    authError,
   };
 };
 

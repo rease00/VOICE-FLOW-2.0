@@ -241,7 +241,49 @@ def test_tts_synthesize_blocks_gem_for_free_plan(monkeypatch) -> None:
     assert detail.get("errorCode") == "VF_TTS_ENGINE_PLAN_FORBIDDEN"
     assert detail.get("plan") == "Free"
     assert detail.get("engine") == "GEM"
-    assert set(detail.get("allowedEngines") or []) == {"KOKORO", "GOOD", "NEURAL2"}
+    assert set(detail.get("allowedEngines") or []) == {"KOKORO", "NEURAL2"}
+
+
+def test_default_entitlement_uses_free_wallet_policy() -> None:
+    _reset_inmemory_state()
+    entitlement = backend_app._default_entitlement("free_wallet_defaults")
+
+    assert entitlement["monthlyVfLimit"] == backend_app.PLAN_LIMITS["free"]["monthlyVfLimit"] == 1000
+    assert float(entitlement["vffBalance"] or 0) == float(backend_app.VF_FREE_MONTHLY_VFF_GRANT)
+    assert str(entitlement.get("vffGrantMonthKey") or "") == backend_app._wallet_month_key()
+
+
+def test_normalize_entitlement_wallet_migrates_free_vff_grant_and_cap() -> None:
+    _reset_inmemory_state()
+    month_key = backend_app._wallet_month_key()
+    normalized = backend_app._normalize_entitlement_wallet(
+        {
+            "plan": "Free",
+            "monthlyVfLimit": 10000,
+            "dailyGenerationLimit": backend_app.VF_DAILY_GENERATION_LIMIT,
+            "paidVfBalance": 0,
+            "vffBalance": 0,
+            "vffMonthKey": month_key,
+        }
+    )
+    assert normalized["monthlyVfLimit"] == backend_app.PLAN_LIMITS["free"]["monthlyVfLimit"] == 1000
+    assert float(normalized.get("vffBalance") or 0) == float(backend_app.VF_FREE_MONTHLY_VFF_GRANT)
+    assert str(normalized.get("vffGrantMonthKey") or "") == month_key
+
+    rollover = backend_app._normalize_entitlement_wallet(
+        {
+            "plan": "Free",
+            "monthlyVfLimit": 5000,
+            "dailyGenerationLimit": backend_app.VF_DAILY_GENERATION_LIMIT,
+            "paidVfBalance": 0,
+            "vffBalance": backend_app.VF_FREE_MONTHLY_VFF_CAP + 2500,
+            "vffMonthKey": "2000-01",
+            "vffGrantMonthKey": "2000-01",
+        }
+    )
+    assert rollover["monthlyVfLimit"] == backend_app.PLAN_LIMITS["free"]["monthlyVfLimit"]
+    assert float(rollover.get("vffBalance") or 0) == float(backend_app.VF_FREE_MONTHLY_VFF_GRANT)
+    assert str(rollover.get("vffMonthKey") or "") == month_key
 
 
 def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
@@ -263,7 +305,7 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     headers = {"x-dev-uid": uid}
     failed_code, _ = _submit_tts_and_wait_status(
         client,
-        payload={"engine": "GOOD", "text": "runtime fail"},
+        payload={"engine": "NEURAL2", "text": "runtime fail"},
         headers=headers,
     )
     assert failed_code == 500
@@ -541,6 +583,16 @@ def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     uid = "ad_reward_user"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Pro",
+        "status": "active",
+        "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
+        "dailyGenerationLimit": backend_app.PLAN_LIMITS["pro"]["dailyGenerationLimit"],
+        "vffBalance": 0.0,
+        "vffMonthKey": backend_app._wallet_month_key(),
+        "vffGrantMonthKey": backend_app._wallet_month_key(),
+    }
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
     for _ in range(3):
@@ -551,10 +603,31 @@ def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:
     assert "Daily ad reward limit reached" in blocked.json()["detail"]
 
 
+def test_free_wallet_ad_reward_respects_monthly_vff_cap(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "free_vff_cap_user"
+    client = TestClient(backend_app.app)
+    response = client.post("/wallet/ad-reward/claim", headers={"x-dev-uid": uid})
+
+    assert response.status_code == 429
+    assert "Monthly free VFF cap reached" in str(response.json().get("detail") or "")
+
+
 def test_admin_wallet_ad_reward_bypasses_daily_cap(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     uid = "local_admin_rewards"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Pro",
+        "status": "active",
+        "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
+        "dailyGenerationLimit": backend_app.PLAN_LIMITS["pro"]["dailyGenerationLimit"],
+        "vffBalance": 0.0,
+        "vffMonthKey": backend_app._wallet_month_key(),
+        "vffGrantMonthKey": backend_app._wallet_month_key(),
+    }
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": uid}
     claims = backend_app.VF_AD_REWARD_CLAIM_LIMIT_PER_DAY + 3
@@ -564,7 +637,8 @@ def test_admin_wallet_ad_reward_bypasses_daily_cap(monkeypatch) -> None:
         assert ok.status_code == 200
         latest_wallet = ((ok.json() or {}).get("entitlements") or {}).get("wallet") or {}
     assert int(latest_wallet.get("adClaimsToday") or 0) == claims
-    assert float(latest_wallet.get("vffBalance") or 0) == claims * backend_app.VF_AD_REWARD_VFF_AMOUNT
+    expected_vff = claims * backend_app.VF_AD_REWARD_VFF_AMOUNT
+    assert float(latest_wallet.get("vffBalance") or 0) == expected_vff
 
 
 def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:

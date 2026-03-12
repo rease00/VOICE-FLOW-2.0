@@ -1,6 +1,34 @@
 import type { GenerationSettings, StudioQueueItem, StudioQueueState } from '../../../../types';
 import { buildSentenceAlignedCharWindows } from '../../../../services/ttsLongTextService';
 
+const normalizeQueueEngineToken = (
+  value: unknown,
+  fallback: GenerationSettings['engine'] = 'GEM'
+): GenerationSettings['engine'] => {
+  const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!token) return fallback;
+  if (token === 'KOKORO' || token === 'KOKORO_RUNTIME' || token === 'BASIC' || token === 'BAS' || token === 'BS') return 'KOKORO';
+  if (
+    token === 'NEURAL2' ||
+    token === 'NEURAL_2' ||
+    token === 'NURAL2' ||
+    token === 'NURAL_2' ||
+    token === 'VECTOR' ||
+    token === 'VEC' ||
+    token === 'HD'
+  ) return 'NEURAL2';
+  if (
+    token === 'GEM' ||
+    token === 'GEMINI' ||
+    token === 'GOOD' ||
+    token === 'GOOD_LITE' ||
+    token === 'PRIME' ||
+    token === 'PRI' ||
+    token === 'PR'
+  ) return 'GEM';
+  return fallback;
+};
+
 export const canUseStudioQueue = (text: string, maxCharsPerGeneration: number): boolean => (
   String(text || '').trim().length > Math.max(1, Number(maxCharsPerGeneration) || 1)
 );
@@ -28,6 +56,10 @@ export const buildStudioQueueItems = (
   maxCharsPerGeneration: number,
   settings: GenerationSettings
 ): StudioQueueItem[] => {
+  const normalizedSettings = {
+    ...settings,
+    engine: normalizeQueueEngineToken(settings.engine, 'GEM'),
+  } as GenerationSettings;
   const chunks = buildSentenceAlignedCharWindows(text, maxCharsPerGeneration);
   return chunks.map((chunk, index) => ({
     id: crypto.randomUUID(),
@@ -37,7 +69,7 @@ export const buildStudioQueueItems = (
     sourceText: chunk.text,
     charCount: chunk.charCount,
     audioCacheKey: '',
-    settingsSnapshot: JSON.parse(JSON.stringify(settings)) as GenerationSettings,
+    settingsSnapshot: JSON.parse(JSON.stringify(normalizedSettings)) as GenerationSettings,
     createdAt: Date.now(),
   }));
 };
@@ -81,14 +113,20 @@ export const normalizeStoredStudioQueueState = (value: unknown): StudioQueueStat
       sourceText: String(item.sourceText || ''),
       charCount: Number.isFinite(item.charCount) ? Number(item.charCount) : String(item.sourceText || '').length,
       audioCacheKey: typeof item.audioCacheKey === 'string' ? item.audioCacheKey : '',
-      settingsSnapshot: item.settingsSnapshot || {
-        voiceId: '',
-        speed: 1,
-        pitch: 'Medium',
-        language: 'Auto',
-        engine: 'GEM',
-        helperProvider: 'GEMINI',
-      },
+      settingsSnapshot: (() => {
+        const base = (item.settingsSnapshot || {
+          voiceId: '',
+          speed: 1,
+          pitch: 'Medium',
+          language: 'Auto',
+          engine: 'GEM',
+          helperProvider: 'GEMINI',
+        }) as GenerationSettings;
+        return {
+          ...base,
+          engine: normalizeQueueEngineToken(base.engine, 'GEM'),
+        } as GenerationSettings;
+      })(),
       createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),
       completedAt: Number.isFinite(item.completedAt) ? Number(item.completedAt) : undefined,
     }));

@@ -25,7 +25,7 @@
     "freePoolMode": "config_managed",
     "freePoolFilePath": "",
     "freePoolLocked": false,
-    "ttsModelFallbackEnabled": false,
+    "ttsModelFallbackEnabled": true,
     "failureMode": "keep_last_good",
     "lastSyncAt": "",
     "lastSyncStatus": "uninitialized",

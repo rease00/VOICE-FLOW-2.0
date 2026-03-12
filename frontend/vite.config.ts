@@ -157,15 +157,10 @@ export default defineConfig(({ mode }) => {
             if (id.includes('firebase')) return 'vendor-firebase';
             if (id.includes('@google/genai')) return 'vendor-genai';
             if (id.includes('onnxruntime-common') || id.includes('onnxruntime') || id.includes('onnxruntime-web')) return 'vendor-ort';
-            if (
-              id.includes('kokoro-js')
-              || id.includes('phonemizer')
-              || id.includes('@huggingface')
-              || id.includes('idb')
-              || id.includes('p-retry')
-            ) {
-              return 'vendor-ml';
-            }
+            if (id.includes('kokoro-js')) return 'vendor-kokoro';
+            if (id.includes('@huggingface')) return 'vendor-hf';
+            if (id.includes('phonemizer')) return 'vendor-phonemizer';
+            if (id.includes('idb') || id.includes('p-retry')) return 'vendor-ml-utils';
             return 'vendor';
           },
         },

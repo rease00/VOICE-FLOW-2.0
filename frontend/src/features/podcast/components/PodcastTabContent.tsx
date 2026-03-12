@@ -234,7 +234,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
   const [mode, setMode] = useState<PodcastMode>('live');
   const [topic, setTopic] = useState(PODCAST_DEFAULT_TOPIC);
   const [script, setScript] = useState('');
-  const [liveDurationSec, setLiveDurationSec] = useState(600);
+  const [liveDurationSec, setLiveDurationSec] = useState(180);
   const [standardDurationSec, setStandardDurationSec] = useState(1800);
   const [liveSpeakerCount, setLiveSpeakerCount] = useState<2 | 3 | 4>(4);
   const [standardSpeakerCount, setStandardSpeakerCount] = useState<2 | 3 | 4 | 5 | 6>(4);
@@ -862,67 +862,36 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
             </div>
 
             <div className="vf-podcast-cast-header" data-testid="podcast-cast-header">
-              <div>ROLE</div>
-              <div>SPEAKER NAME</div>
-              <div>VOICE PROFILE</div>
+              <div>CHARACTER</div>
+              <div>NAME</div>
+              <div>VOICES</div>
             </div>
 
             <div className="vf-podcast-cast-rows" data-testid="podcast-cast-rows">
               {visibleCast.map((member, index) => (
                 <div key={`${member.id || 'cast'}-${index}`} className="vf-podcast-cast-row" data-testid={`podcast-cast-row-${index}`}>
-                  <div className="vf-podcast-cast-row__title">Speaker {index + 1}</div>
-
-                  <div className="vf-podcast-cast-field vf-podcast-cast-field--role">
-                    <label
-                      className="vf-podcast-cast-field__label"
-                      htmlFor={`podcast-cast-role-${index}`}
-                    >
-                      Role
-                    </label>
-                    <input
-                      id={`podcast-cast-role-${index}`}
-                      value={member.role}
-                      onChange={(event) => updateCastMember(index, 'role', event.target.value)}
-                      className="vf-podcast-cast-input vf-podcast-cast-input--character"
-                      placeholder="Role"
-                    />
-                  </div>
-
-                  <div className="vf-podcast-cast-field vf-podcast-cast-field--name">
-                    <label
-                      className="vf-podcast-cast-field__label"
-                      htmlFor={`podcast-cast-name-${index}`}
-                    >
-                      Speaker Name
-                    </label>
-                    <input
-                      id={`podcast-cast-name-${index}`}
-                      value={member.name}
-                      onChange={(event) => updateCastMember(index, 'name', event.target.value)}
-                      className="vf-podcast-cast-input vf-podcast-cast-input--name"
-                      placeholder="Name"
-                    />
-                  </div>
-
-                  <div className="vf-podcast-cast-field vf-podcast-cast-field--voice">
-                    <label
-                      className="vf-podcast-cast-field__label"
-                      htmlFor={`podcast-cast-voice-${index}`}
-                    >
-                      Voice Profile
-                    </label>
-                    <select
-                      id={`podcast-cast-voice-${index}`}
-                      value={member.voice}
-                      onChange={(event) => updateCastMember(index, 'voice', event.target.value)}
-                      className="vf-podcast-cast-input vf-podcast-cast-input--speaker"
-                    >
-                      {voiceSelectOptions.map((voice) => {
-                        const safeId = resolvePrimeVoiceToken(voice);
-                        return <option key={`${member.id || 'voice'}-${safeId}`} value={safeId}>{buildVoiceLabel(voice)}</option>;
-                      })}
-                    </select>
-                  </div>
+                  <input
+                    value={member.role}
+                    onChange={(event) => updateCastMember(index, 'role', event.target.value)}
+                    className="vf-podcast-cast-input vf-podcast-cast-input--character"
+                    placeholder="Character"
+                  />
+                  <input
+                    value={member.name}
+                    onChange={(event) => updateCastMember(index, 'name', event.target.value)}
+                    className="vf-podcast-cast-input vf-podcast-cast-input--name"
+                    placeholder="Name"
+                  />
+                  <select
+                    value={member.voice}
+                    onChange={(event) => updateCastMember(index, 'voice', event.target.value)}
+                    className="vf-podcast-cast-input vf-podcast-cast-input--speaker"
+                  >
+                    {voiceSelectOptions.map((voice) => {
+                      const safeId = resolvePrimeVoiceToken(voice);
+                      return <option key={`${member.id || 'voice'}-${safeId}`} value={safeId}>{buildVoiceLabel(voice)}</option>;
+                    })}
+                  </select>
                 </div>
               ))}
             </div>
