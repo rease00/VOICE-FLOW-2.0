@@ -10,6 +10,7 @@ import type { RuntimeVoiceItem, TtsJobStatusResponse } from '../../../shared/api
 import { fetchTtsEngineVoices } from '../../../shared/api/gatewayClient';
 import { useManagedTabs } from '../../../shared/ui/tabs';
 import { autoAssignSpeakerVoices } from '../../../shared/voices/castAssignment';
+import { resolvePublicVoiceLabel } from '../../../shared/voices/voicePublicName';
 import {
   cancelLivePodcastJob,
   createLivePodcastJob,
@@ -142,6 +143,13 @@ const normalizeVoiceAliasToken = (raw: unknown): string => (
 const resolvePrimeVoiceToken = (voice: Partial<RuntimeVoiceItem>): string => (
   String(voice.voice || voice.voice_id || voice.name || '').trim()
 );
+const resolveVisibleVoiceName = (voice: Partial<RuntimeVoiceItem>): string => {
+  const safeId = resolvePrimeVoiceToken(voice);
+  return (
+    resolvePublicVoiceLabel(voice.name, voice.mapped_name, safeId) ||
+    'Voice'
+  );
+};
 const resolvePrimeVoiceByAlias = (candidate: string, catalog: RuntimeVoiceItem[], fallback = 'Puck'): string => {
   const token = String(candidate || '').trim();
   const fallbackToken = String(fallback || '').trim() || 'Puck';
@@ -172,11 +180,7 @@ const applyLiveNativeStrictCast = (castRows: PodcastCastMember[]): PodcastCastMe
   })
 );
 const buildVoiceLabel = (voice: RuntimeVoiceItem): string => {
-  const primeName = resolvePrimeVoiceToken(voice);
-  const friendlyName = String(voice.name || voice.mapped_name || '').trim();
-  const safeName = friendlyName && normalizeVoiceAliasToken(friendlyName) !== normalizeVoiceAliasToken(primeName)
-    ? `${primeName} (${friendlyName})`
-    : (primeName || friendlyName || 'Puck');
+  const safeName = resolveVisibleVoiceName(voice);
   const meta = [voice.style_tag, voice.accent || voice.language, voice.source]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
@@ -192,10 +196,7 @@ const normalizeVoiceGender = (raw: unknown): VoiceOption['gender'] => {
 };
 const runtimeVoiceToVoiceOption = (voice: RuntimeVoiceItem): VoiceOption => {
   const safeId = resolvePrimeVoiceToken(voice) || 'Puck';
-  const friendlyName = String(voice.name || voice.mapped_name || '').trim();
-  const safeName = friendlyName && normalizeVoiceAliasToken(friendlyName) !== normalizeVoiceAliasToken(safeId)
-    ? `${safeId} (${friendlyName})`
-    : (safeId || friendlyName || 'Puck');
+  const safeName = resolveVisibleVoiceName(voice);
   const output: VoiceOption = {
     id: safeId,
     name: safeName,
@@ -335,7 +336,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
         defaults.forEach((voiceId) => {
           const safeId = String(voiceId || '').trim();
           if (!safeId || deduped.has(safeId)) return;
-          deduped.set(safeId, { voice_id: safeId, voice: safeId, name: safeId });
+          deduped.set(safeId, { voice_id: safeId, voice: safeId, name: resolvePublicVoiceLabel(safeId) || safeId });
         });
         const sortedVoices = Array.from(deduped.values()).sort((left, right) => buildVoiceLabel(left).localeCompare(buildVoiceLabel(right)));
         setVoiceOptions(sortedVoices);
@@ -349,7 +350,10 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
         })));
       } catch {
         if (cancelled) return;
-        setVoiceOptions(PODCAST_DEFAULT_CAST.map((member) => ({ voice_id: member.voice, voice: member.voice, name: member.voice })));
+        setVoiceOptions(PODCAST_DEFAULT_CAST.map((member) => {
+          const safeId = String(member.voice || '').trim();
+          return { voice_id: safeId, voice: safeId, name: resolvePublicVoiceLabel(safeId) || safeId };
+        }));
       }
     };
     void loadVoices();
@@ -546,7 +550,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     visibleCast.forEach((member) => {
       const safeId = String(member.voice || '').trim();
       if (!safeId || deduped.has(safeId)) return;
-      deduped.set(safeId, { voice_id: safeId, voice: safeId, name: safeId });
+      deduped.set(safeId, { voice_id: safeId, voice: safeId, name: resolvePublicVoiceLabel(safeId) || safeId });
     });
     return Array.from(deduped.values()).sort((left, right) => buildVoiceLabel(left).localeCompare(buildVoiceLabel(right)));
   }, [visibleCast, voiceOptions]);

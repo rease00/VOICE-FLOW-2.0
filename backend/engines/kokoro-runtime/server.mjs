@@ -66,8 +66,14 @@ const PORT = Number(process.env.VF_KOKORO_RUNTIME_PORT || process.env.PORT || 78
 const MODEL_ID = String(process.env.VF_KOKORO_MODEL_REPO_ID || 'onnx-community/Kokoro-82M-v1.0-ONNX').trim() || 'onnx-community/Kokoro-82M-v1.0-ONNX';
 const MODEL_REVISION = String(process.env.VF_KOKORO_MODEL_REVISION || 'main').trim() || 'main';
 const KOKORO_DEVICE = 'cpu';
-const KOKORO_DTYPE = String(process.env.KOKORO_MODEL_DTYPE || 'q8').trim().toLowerCase() || 'q8';
-const KOKORO_MODEL_FILE = KOKORO_DTYPE === 'q8' ? 'onnx/model_quantized.onnx' : 'onnx/model.onnx';
+const REQUESTED_KOKORO_DTYPE = String(process.env.KOKORO_MODEL_DTYPE || 'q8').trim().toLowerCase() || 'q8';
+if (REQUESTED_KOKORO_DTYPE !== 'q8') {
+  console.warn(
+    `[kokoro-runtime] KOKORO_MODEL_DTYPE="${REQUESTED_KOKORO_DTYPE}" is unsupported in this workspace; forcing "q8".`,
+  );
+}
+const KOKORO_DTYPE = 'q8';
+const KOKORO_MODEL_FILE = 'onnx/model_quantized.onnx';
 const KOKORO_SAMPLE_RATE = Math.max(8000, Number(process.env.KOKORO_SAMPLE_RATE || 24000));
 const KOKORO_SYNTH_MAX_MS = Math.max(10_000, Number(process.env.KOKORO_SYNTH_MAX_MS || 180000));
 const KOKORO_BATCH_MAX_ITEMS = Math.max(1, Number(process.env.KOKORO_BATCH_MAX_ITEMS || 64));

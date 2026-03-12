@@ -104,12 +104,6 @@ const DEFAULT_PREFS: ReaderPreferences = {
   readingMode: 'vertical_strip',
 };
 
-const normalizeReaderSpeechVolume = (value: unknown): number =>
-  normalizeMediaVolume(value, DEFAULT_PREFS.speechVolume);
-
-const normalizeReaderMusicVolume = (value: unknown): number =>
-  normalizeMediaVolume(value, DEFAULT_PREFS.musicVolume);
-
 const base64ToObjectUrl = (audioBase64: string, mediaType: string): string | null => {
   const safe = String(audioBase64 || '').trim();
   if (!safe) return null;

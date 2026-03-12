@@ -312,7 +312,6 @@ export const SFX_LIBRARY: SoundEffect[] = [
 
 export const INITIAL_STATS: UserStats = {
   generationsUsed: 0,
-  generationsLimit: 5,
   isPremium: false,
   planName: 'Free',
   vfUsage: createEmptyVfUsageStats(),

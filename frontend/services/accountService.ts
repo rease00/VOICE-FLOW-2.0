@@ -28,9 +28,7 @@ export interface AccountEntitlements {
     byEngine: Record<string, { chars: number; vf: number }>;
   };
   daily: {
-    generationLimit: number;
     generationUsed: number;
-    generationRemaining: number;
     vfUsed: number;
     periodKey: string;
     windowStartUtc: string;
@@ -69,7 +67,6 @@ export interface AccountBillingPlanSummary {
   name: BillingPlanName;
   status: string;
   monthlyVfLimit: number;
-  dailyGenerationLimit: number;
   ttsSuccessRpm: number;
   maxCharsPerGeneration: number;
   allowedEngines: TtsEngineKey[];

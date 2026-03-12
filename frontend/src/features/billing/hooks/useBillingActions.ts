@@ -11,11 +11,34 @@ interface UseBillingActionsArgs {
   baseUrl: string;
 }
 
+type BillingRouteState = 'success' | 'cancel' | 'none';
+type BillingLocationLike = Pick<Location, 'origin' | 'pathname'>;
+
+const resolveBillingLocation = (): BillingLocationLike => ({
+  origin: window.location.origin,
+  pathname: window.location.pathname,
+});
+
+export const buildBillingReturnUrl = (
+  state: BillingRouteState,
+  location: BillingLocationLike = resolveBillingLocation()
+): string => {
+  const url = new URL(`${location.origin}${location.pathname}`);
+  url.searchParams.set('vf-screen', 'profile');
+  url.searchParams.set('vf-tab', 'billing');
+  if (state === 'success' || state === 'cancel') {
+    url.searchParams.set('billing', state);
+  } else {
+    url.searchParams.delete('billing');
+  }
+  return url.toString();
+};
+
 export const useBillingActions = ({ baseUrl }: UseBillingActionsArgs) => {
   const startPlanCheckout = useCallback(async (plan: BillingPlanKey, couponCode?: string) => {
     const options: { successUrl: string; cancelUrl: string; couponCode?: string } = {
-      successUrl: `${window.location.origin}${window.location.pathname}?billing=success`,
-      cancelUrl: `${window.location.origin}${window.location.pathname}?billing=cancel`,
+      successUrl: buildBillingReturnUrl('success'),
+      cancelUrl: buildBillingReturnUrl('cancel'),
     };
     const normalizedCoupon = couponCode ? String(couponCode).trim() : '';
     if (normalizedCoupon) {
@@ -25,13 +48,13 @@ export const useBillingActions = ({ baseUrl }: UseBillingActionsArgs) => {
   }, [baseUrl]);
 
   const openBillingPortal = useCallback(async () => {
-    return createPortalSession(baseUrl, window.location.href);
+    return createPortalSession(baseUrl, buildBillingReturnUrl('none'));
   }, [baseUrl]);
 
   const startTokenPackCheckout = useCallback(async (pack: TokenPackKey) => {
     return createTokenPackCheckoutSession(pack, baseUrl, {
-      successUrl: `${window.location.origin}${window.location.pathname}?billing=success`,
-      cancelUrl: `${window.location.origin}${window.location.pathname}?billing=cancel`,
+      successUrl: buildBillingReturnUrl('success'),
+      cancelUrl: buildBillingReturnUrl('cancel'),
     });
   }, [baseUrl]);
 

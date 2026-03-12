@@ -42,6 +42,7 @@ import {
   shouldLazyLoadAccountTab,
   type AccountTabKey,
 } from './accountCenterTabs';
+import { consumeBillingReturnState } from './billingReturnState';
 import {
   ACCOUNT_TAB_ICONS,
   InfoRow,
@@ -144,6 +145,7 @@ const setScreenSearchState = (screen: 'main' | 'profile' | 'login', tab?: Accoun
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   url.searchParams.set('vf-screen', screen);
+  url.searchParams.delete('billing');
   if (screen === 'profile') {
     url.searchParams.set('vf-tab', tab || DEFAULT_ACCOUNT_TAB);
     const nextConversationId = String(conversationId || '').trim();
@@ -183,7 +185,6 @@ const buildFallbackBillingSummary = (
       name: planName,
       status: isPaidPlan ? 'unavailable' : 'free_active',
       monthlyVfLimit: Math.max(0, Number(accountEntitlements?.monthly?.vfLimit || 0)),
-      dailyGenerationLimit: Math.max(0, Number(accountEntitlements?.daily?.generationLimit || stats.generationsLimit || 0)),
       ttsSuccessRpm: planKey === 'scale' ? 10 : 5,
       maxCharsPerGeneration: Math.max(
         0,
@@ -461,6 +462,46 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, handleDeepLink as EventListener);
     return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, handleDeepLink as EventListener);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      await consumeBillingReturnState({
+        href: window.location.href,
+        search: window.location.search,
+        refreshBillingData: async () => {
+          if (cancelled) return;
+          await syncCoreAccountData(true);
+        },
+        replaceUrl: (nextUrl) => {
+          if (cancelled) return;
+          window.history.replaceState({}, '', nextUrl);
+        },
+        notify: (state, refreshed) => {
+          if (cancelled) return;
+          if (state === 'success') {
+            emit('billing.checkout.success', {
+              title: 'Billing',
+              message: refreshed ? 'Billing updated successfully.' : 'Billing update received. Refresh failed.',
+              category: 'activity',
+              channel: 'toast',
+            });
+            return;
+          }
+          emit('billing.checkout.cancel', {
+            title: 'Billing',
+            message: 'Billing checkout canceled.',
+            category: 'activity',
+            channel: 'toast',
+          });
+        },
+      });
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [emit, syncCoreAccountData]);
 
   useEffect(() => {
     setScreenSearchState('profile', activeTab, shouldKeepConversationSelection(activeTab) ? highlightedConversationId : '');
@@ -861,10 +902,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
   const renderUsageSection = () => (
     <div className="space-y-3 sm:space-y-4">
-      <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
+      <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-3">
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.balance} eyebrow="Monthly used" title={`${formatNumber(monthlyUsed)} VF`} detail={hasUnlimitedAccess ? 'Unlimited access is active.' : `${formatNumber(monthlyLimit)} VF monthly cap.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.spendable} eyebrow="Spendable now" title={formatVfValue(availableBalance)} detail={`${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF available right now.`} />
-        <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.account} eyebrow="Daily generations" title={`${formatNumber(stats.generationsUsed)} / ${formatNumber(summary.plan.dailyGenerationLimit || stats.generationsLimit || 0)}`} detail="Tracked from the current entitlement window." />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.currentPlan} eyebrow="Max chars" title={formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} detail="Maximum characters allowed per generation request." />
       </div>
 
@@ -874,7 +914,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         <WindowCard title="Lifetime" data={stats.vfUsage.lifetime} isDarkUi={isDarkUi} />
       </div>
 
-      <div className="grid gap-2.5 sm:gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+      <div className="grid gap-2.5 sm:gap-4">
         <div className={`rounded-[1.2rem] border p-2.5 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
@@ -934,29 +974,6 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 </div>
               </div>
             ))}
-          </div>
-        </div>
-
-        <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
-          <div className={labelClass(isDarkUi)}>Billing logic</div>
-          <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>How VF is calculated</div>
-          <div className={`mt-1 text-xs leading-5 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>
-            Every generation charges `characters x engine VF rate`. Lower-cost engines stretch free balance further, while higher tiers trade more VF for better output quality or capability.
-          </div>
-
-          <div className="mt-3 space-y-2.5 sm:mt-4 sm:space-y-3">
-            <div className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
-              <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Lowest-cost engine</div>
-              <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Kokoro currently has the lowest VF burn, so it is the best default for free-plan coverage.</div>
-            </div>
-            <div className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
-              <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Plan effect</div>
-              <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Your plan controls which engines are unlocked and how quickly jobs move through the queue. The per-character rate itself stays consistent.</div>
-            </div>
-            <div className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
-              <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Current access</div>
-              <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>{allowedEngineSummary}</div>
-            </div>
           </div>
         </div>
       </div>
@@ -1236,9 +1253,8 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     <StatusBadge isDarkUi={isDarkUi} tone={usageTone} label={hasUnlimitedAccess ? 'Unlimited access' : accountStatus} />
                     {summary.plan.earlyAccess ? <StatusBadge isDarkUi={isDarkUi} tone="warning" label="Early access" /> : null}
                   </div>
-                  <div className={`mt-1 grid grid-cols-2 gap-x-2.5 gap-y-0.5 text-[10px] sm:mt-1.5 sm:gap-x-3 sm:text-[11px] ${subduedClass(isDarkUi)}`}>
+                  <div className={`mt-1 text-[10px] sm:mt-1.5 sm:text-[11px] ${subduedClass(isDarkUi)}`}>
                     <span>{hasUnlimitedAccess ? 'Monthly: Unlimited' : `Monthly: ${formatNumber(monthlyUsed)}/${formatNumber(monthlyLimit)}`}</span>
-                    <span>{`Daily: ${formatNumber(stats.generationsUsed)}/${formatNumber(summary.plan.dailyGenerationLimit || stats.generationsLimit || 0)}`}</span>
                   </div>
                 </div>
               </div>

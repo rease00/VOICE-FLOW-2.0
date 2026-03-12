@@ -19,15 +19,26 @@ const Onboarding = lazy(loadOnboarding);
 const Profile = lazy(loadProfile);
 const UserIdSetup = lazy(loadUserIdSetup);
 
+export const requiresAuthenticatedScreen = (screen: AppScreen): boolean =>
+  screen === AppScreen.MAIN || screen === AppScreen.PROFILE || screen === AppScreen.USER_ID_SETUP;
+
+const resolveScreenToken = (token: string): AppScreen | null => {
+  const normalized = String(token || '').trim().toLowerCase();
+  if (normalized === 'login') return AppScreen.LOGIN;
+  if (normalized === 'uid' || normalized === 'userid' || normalized === 'user-id') return AppScreen.USER_ID_SETUP;
+  if (normalized === 'main') return AppScreen.MAIN;
+  if (normalized === 'profile') return AppScreen.PROFILE;
+  return null;
+};
+
+export const resolveScreenFromSearch = (search: string): AppScreen | null => {
+  const forced = String(new URLSearchParams(search).get('vf-screen') || '').trim();
+  return resolveScreenToken(forced);
+};
+
 const resolveInitialScreen = (): AppScreen => {
   if (typeof window === 'undefined') return AppScreen.ONBOARDING;
-  if (!import.meta.env.DEV) return AppScreen.ONBOARDING;
-  const forced = String(new URLSearchParams(window.location.search).get('vf-screen') || '').trim().toLowerCase();
-  if (forced === 'login') return AppScreen.LOGIN;
-  if (forced === 'uid' || forced === 'userid' || forced === 'user-id') return AppScreen.USER_ID_SETUP;
-  if (forced === 'main') return AppScreen.MAIN;
-  if (forced === 'profile') return AppScreen.PROFILE;
-  return AppScreen.ONBOARDING;
+  return resolveScreenFromSearch(window.location.search) || AppScreen.ONBOARDING;
 };
 
 export const ScreenRouter: React.FC = () => {
@@ -52,14 +63,10 @@ export const ScreenRouter: React.FC = () => {
   useEffect(() => {
     const syncFromDeepLink = (): void => {
       const target = readNotificationDeepLink();
-      const screenToken = String(target.screen || '').trim().toLowerCase();
-      if (screenToken === 'main') setCurrentScreen(AppScreen.MAIN);
-      else if (screenToken === 'profile') setCurrentScreen(AppScreen.PROFILE);
-      else if (screenToken === 'login') setCurrentScreen(AppScreen.LOGIN);
-      else if (screenToken === 'uid' || screenToken === 'userid' || screenToken === 'user-id') {
-        setCurrentScreen(AppScreen.USER_ID_SETUP);
-      }
+      const nextScreen = resolveScreenToken(String(target.screen || ''));
+      if (nextScreen) setCurrentScreen(nextScreen);
     };
+    syncFromDeepLink();
     window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncFromDeepLink as EventListener);
     return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncFromDeepLink as EventListener);
   }, []);
@@ -67,7 +74,7 @@ export const ScreenRouter: React.FC = () => {
   useEffect(() => {
     const hasSession = Boolean(user.email);
     if (!hasSession) {
-      if (currentScreen === AppScreen.USER_ID_SETUP) {
+      if (requiresAuthenticatedScreen(currentScreen)) {
         setCurrentScreen(AppScreen.LOGIN);
       }
       return;

@@ -13,7 +13,6 @@ interface StudioQueuePanelProps {
   isDarkUi?: boolean;
   visualVariant?: 'default' | 'embedded';
   isPhone?: boolean;
-  visualVariant?: 'default' | 'embedded';
   isOpen?: boolean;
   onToggleOpen?: () => void;
   onResumeQueue: () => void;
@@ -34,7 +33,6 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
   isDarkUi = false,
   visualVariant = 'default',
   isPhone = false,
-  visualVariant = 'default',
   isOpen = true,
   onToggleOpen,
   onResumeQueue,

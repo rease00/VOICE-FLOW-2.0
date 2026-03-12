@@ -6,6 +6,11 @@ describe('resolveHistoryVoiceLabel', () => {
     expect(resolveHistoryVoiceLabel({ voiceName: 'Fenrir Prime', voiceId: 'Fenrir' })).toBe('Fenrir Prime');
   });
 
+  it('maps internal runtime voiceName aliases to public labels', () => {
+    expect(resolveHistoryVoiceLabel({ voiceName: 'Fenrir', voiceId: 'Fenrir' })).toBe('Arjun India Male');
+    expect(resolveHistoryVoiceLabel({ voiceName: 'am_fenrir' })).toBe('Rian US');
+  });
+
   it('resolves legacy AI Voice labels from voiceId when possible', () => {
     expect(resolveHistoryVoiceLabel({ voiceName: 'AI Voice', voiceId: 'af_heart' })).toBe('Lyra US');
   });

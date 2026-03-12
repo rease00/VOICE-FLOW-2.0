@@ -693,7 +693,6 @@ VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED = (
     (os.getenv("VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
     in {"1", "true", "yes", "on"}
 )
-VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
 VF_TOKEN_PACK_VALIDITY_MONTHS = max(
     1,
     int((os.getenv("VF_TOKEN_PACK_VALIDITY_MONTHS") or "6").strip() or "6"),
@@ -732,11 +731,11 @@ FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
     ),
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
-    "free": {"plan": "Free", "monthlyVfLimit": 1000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
-    "starter": {"plan": "Starter", "monthlyVfLimit": 50000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
-    "creator": {"plan": "Creator", "monthlyVfLimit": 150000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
-    "pro": {"plan": "Pro", "monthlyVfLimit": 300000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
-    "scale": {"plan": "Scale", "monthlyVfLimit": 600000, "dailyGenerationLimit": VF_DAILY_GENERATION_LIMIT},
+    "free": {"plan": "Free", "monthlyVfLimit": 1000},
+    "starter": {"plan": "Starter", "monthlyVfLimit": 50000},
+    "creator": {"plan": "Creator", "monthlyVfLimit": 150000},
+    "pro": {"plan": "Pro", "monthlyVfLimit": 300000},
+    "scale": {"plan": "Scale", "monthlyVfLimit": 600000},
 }
 PAID_PLAN_KEYS: tuple[str, ...] = ("starter", "creator", "pro", "scale")
 PLAN_PRICE_POLICY: dict[str, dict[str, int]] = {
@@ -1212,6 +1211,20 @@ VF_ADMIN_APPROVER_UIDS = frozenset(
     {
         token
         for token in [item.strip() for item in (os.getenv("VF_ADMIN_APPROVER_UIDS") or "").split(",")]
+        if token
+    }
+)
+VF_ADMIN_APPROVER_EMAILS = frozenset(
+    {
+        token.lower()
+        for token in [
+            item.strip()
+            for item in (
+                os.getenv("VF_ADMIN_APPROVER_EMAILS")
+                or os.getenv("VITE_ADMIN_EMAIL_ALLOWLIST")
+                or ""
+            ).split(",")
+        ]
         if token
     }
 )
@@ -4098,13 +4111,13 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "plan": defaults["plan"],
         "status": "free_active",
         "monthlyVfLimit": defaults["monthlyVfLimit"],
-        "dailyGenerationLimit": defaults["dailyGenerationLimit"],
         "stripeCustomerId": None,
         "subscriptionId": None,
         "latestInvoiceId": None,
         "currencyMode": "INR_BASE_AUTO_FX",
         "billingCountry": None,
         "paidVfBalance": 0.0,
+        "paidVfLots": [],
         "vffBalance": free_vff_grant,
         "vffMonthKey": month_key,
         "vffGrantMonthKey": month_key,
@@ -4497,7 +4510,11 @@ async def _firebase_auth_middleware(request: Request, call_next: Any) -> Respons
 
     if VF_REQUIRE_EMAIL_VERIFIED:
         email = str(claims.get("email") or "").strip()
-        if email and not _as_bool(claims.get("email_verified")):
+        if (
+            email
+            and not _as_bool(claims.get("email_verified"))
+            and not _claims_is_admin_for_email_verification(uid, claims)
+        ):
             return _cors_json_response(
                 request,
                 status_code=403,
@@ -5086,6 +5103,20 @@ def _request_claim_is_admin(request: Request) -> bool:
     if not isinstance(claims, dict):
         return False
     return _as_bool(claims.get("admin"))
+
+
+def _claims_is_admin_for_email_verification(uid: str, claims: dict[str, Any]) -> bool:
+    if _as_bool(claims.get("admin")):
+        return True
+    safe_uid = str(uid or "").strip()
+    if safe_uid and safe_uid in VF_ADMIN_APPROVER_UIDS:
+        return True
+    email = str(claims.get("email") or "").strip().lower()
+    if email and email in VF_ADMIN_APPROVER_EMAILS:
+        return True
+    if safe_uid and _firestore_user_is_admin(safe_uid):
+        return True
+    return False
 
 
 def _request_is_admin(request: Request, uid: Optional[str] = None) -> bool:
@@ -6543,6 +6574,243 @@ def _notification_emit_tts_job_terminal(job: dict[str, Any], *, status: str, det
     )
 
 
+def _paid_vf_credit_source(reason: str, metadata: Optional[dict[str, Any]] = None) -> str:
+    safe_reason = str(reason or "").strip().lower()
+    safe_metadata = metadata if isinstance(metadata, dict) else {}
+    kind = str(safe_metadata.get("kind") or "").strip().lower()
+    if kind == "token_pack" or safe_reason.startswith("stripe_token_pack"):
+        return "token_pack"
+    if safe_reason.startswith("wallet_coupon"):
+        return "coupon"
+    if safe_reason.startswith("stripe_"):
+        return "stripe"
+    if safe_reason.startswith("legacy"):
+        return "legacy"
+    if kind:
+        return re.sub(r"[^a-z0-9_]", "_", kind).strip("_") or "manual"
+    return "manual"
+
+
+def _paid_vf_lot_expiry(source: str, now: datetime) -> Optional[str]:
+    if str(source or "").strip().lower() == "token_pack":
+        return _add_months_utc(now, VF_TOKEN_PACK_VALIDITY_MONTHS).isoformat()
+    return None
+
+
+def _paid_vf_lot_sort_key(lot: dict[str, Any]) -> tuple[float, float, str]:
+    expires_dt = _parse_optional_datetime(str(lot.get("expiresAt") or ""))
+    created_dt = _parse_optional_datetime(str(lot.get("createdAt") or ""))
+    expires_key = expires_dt.timestamp() if expires_dt is not None else float("inf")
+    created_key = created_dt.timestamp() if created_dt is not None else 0.0
+    return (expires_key, created_key, str(lot.get("id") or ""))
+
+
+def _normalize_paid_vf_lot(raw_lot: Any, now: datetime) -> Optional[dict[str, Any]]:
+    if not isinstance(raw_lot, dict):
+        return None
+    lot_id = str(raw_lot.get("id") or raw_lot.get("lotId") or "").strip() or f"paid_lot_{uuid.uuid4().hex}"
+    amount_total = _as_positive_number(raw_lot.get("amountTotal"))
+    if amount_total <= 0:
+        amount_total = _as_positive_number(raw_lot.get("amount") or raw_lot.get("amountRemaining"))
+    amount_remaining = _as_positive_number(raw_lot.get("amountRemaining"))
+    if amount_remaining <= 0:
+        amount_remaining = _as_positive_number(raw_lot.get("amount") or amount_total)
+    if amount_remaining <= 0:
+        return None
+    amount_total = max(_as_positive_number(amount_total), amount_remaining)
+    created_at_dt = _parse_optional_datetime(str(raw_lot.get("createdAt") or "")) or now
+    expires_at_dt = _parse_optional_datetime(str(raw_lot.get("expiresAt") or ""))
+    if expires_at_dt is not None and expires_at_dt <= now:
+        return None
+    source = str(raw_lot.get("source") or "").strip().lower() or "manual"
+    reason = str(raw_lot.get("reason") or "").strip()
+    metadata = raw_lot.get("metadata") if isinstance(raw_lot.get("metadata"), dict) else {}
+    return {
+        "id": lot_id,
+        "amountTotal": amount_total,
+        "amountRemaining": amount_remaining,
+        "createdAt": created_at_dt.isoformat(),
+        "expiresAt": expires_at_dt.isoformat() if expires_at_dt is not None else None,
+        "source": source,
+        "reason": reason,
+        "metadata": metadata,
+    }
+
+
+def _normalize_paid_vf_lots(raw_lots: Any, now: datetime) -> tuple[list[dict[str, Any]], float]:
+    if not isinstance(raw_lots, list):
+        return [], 0.0
+    normalized: list[dict[str, Any]] = []
+    for entry in raw_lots:
+        lot = _normalize_paid_vf_lot(entry, now)
+        if lot is None:
+            continue
+        normalized.append(lot)
+    normalized.sort(key=_paid_vf_lot_sort_key)
+    total = _as_positive_number(sum(_as_positive_number(item.get("amountRemaining")) for item in normalized))
+    return normalized, total
+
+
+def _append_paid_vf_credit_lot(
+    entitlement: dict[str, Any],
+    *,
+    amount: float,
+    reason: str,
+    transaction_id: str,
+    metadata: Optional[dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    current = now or _utc_now()
+    credit_amount = _as_positive_number(amount)
+    normalized = dict(_normalize_entitlement_wallet(dict(entitlement or {}), current))
+    if credit_amount <= 0:
+        return normalized
+    lots, _ = _normalize_paid_vf_lots(normalized.get("paidVfLots"), current)
+    lot_id = str(transaction_id or "").strip() or f"paid_lot_{uuid.uuid4().hex}"
+    safe_metadata = metadata if isinstance(metadata, dict) else {}
+    source = _paid_vf_credit_source(reason, safe_metadata)
+    expires_at = _paid_vf_lot_expiry(source, current)
+    existing = next((item for item in lots if str(item.get("id") or "") == lot_id), None)
+    if existing is None:
+        lots.append(
+            {
+                "id": lot_id,
+                "amountTotal": credit_amount,
+                "amountRemaining": credit_amount,
+                "createdAt": current.isoformat(),
+                "expiresAt": expires_at,
+                "source": source,
+                "reason": str(reason or "").strip(),
+                "metadata": safe_metadata,
+            }
+        )
+    else:
+        existing["amountTotal"] = _as_positive_number(_as_positive_number(existing.get("amountTotal")) + credit_amount)
+        existing["amountRemaining"] = _as_positive_number(_as_positive_number(existing.get("amountRemaining")) + credit_amount)
+        if not str(existing.get("source") or "").strip():
+            existing["source"] = source
+        if str(reason or "").strip():
+            existing["reason"] = str(reason or "").strip()
+        if expires_at and not existing.get("expiresAt"):
+            existing["expiresAt"] = expires_at
+        if safe_metadata:
+            merged_metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+            existing["metadata"] = {**merged_metadata, **safe_metadata}
+    normalized_lots, total = _normalize_paid_vf_lots(lots, current)
+    normalized["paidVfLots"] = normalized_lots
+    normalized["paidVfBalance"] = total
+    return normalized
+
+
+def _consume_paid_vf_lots(
+    entitlement: dict[str, Any],
+    amount: float,
+    now: Optional[datetime] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float, float]:
+    current = now or _utc_now()
+    target = _as_positive_number(amount)
+    normalized = _normalize_entitlement_wallet(dict(entitlement or {}), current)
+    lots, _ = _normalize_paid_vf_lots(normalized.get("paidVfLots"), current)
+    if target <= 0 or not lots:
+        total = _as_positive_number(sum(_as_positive_number(item.get("amountRemaining")) for item in lots))
+        return lots, [], 0.0, total
+
+    remaining = target
+    spent = 0.0
+    debits: list[dict[str, Any]] = []
+    next_lots: list[dict[str, Any]] = []
+
+    for lot in lots:
+        lot_copy = dict(lot)
+        available = _as_positive_number(lot_copy.get("amountRemaining"))
+        if available <= 0:
+            continue
+        if remaining > 0:
+            debit_amount = min(available, remaining)
+            if debit_amount > 0:
+                lot_copy["amountRemaining"] = _as_positive_number(available - debit_amount)
+                remaining = _as_positive_number(remaining - debit_amount)
+                spent = _as_positive_number(spent + debit_amount)
+                debits.append(
+                    {
+                        "lotId": str(lot_copy.get("id") or ""),
+                        "amount": _as_positive_number(debit_amount),
+                        "source": str(lot_copy.get("source") or ""),
+                        "expiresAt": lot_copy.get("expiresAt"),
+                    }
+                )
+        if _as_positive_number(lot_copy.get("amountRemaining")) > 0:
+            next_lots.append(lot_copy)
+
+    normalized_next_lots, total = _normalize_paid_vf_lots(next_lots, current)
+    return normalized_next_lots, debits, spent, total
+
+
+def _restore_paid_vf_lots(
+    entitlement: dict[str, Any],
+    debits: Any,
+    *,
+    fallback_amount: float = 0.0,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    current = now or _utc_now()
+    normalized = dict(_normalize_entitlement_wallet(dict(entitlement or {}), current))
+    lots, _ = _normalize_paid_vf_lots(normalized.get("paidVfLots"), current)
+    by_id = {str(item.get("id") or ""): item for item in lots}
+    restored_amount = 0.0
+
+    if isinstance(debits, list):
+        for item in debits:
+            if not isinstance(item, dict):
+                continue
+            amount_value = _as_positive_number(item.get("amount"))
+            if amount_value <= 0:
+                continue
+            lot_id = str(item.get("lotId") or "").strip() or f"restored_lot_{uuid.uuid4().hex}"
+            lot = by_id.get(lot_id)
+            if lot is None:
+                expires_at_dt = _parse_optional_datetime(str(item.get("expiresAt") or ""))
+                if expires_at_dt is not None and expires_at_dt <= current:
+                    expires_at_dt = None
+                lot = {
+                    "id": lot_id,
+                    "amountTotal": amount_value,
+                    "amountRemaining": amount_value,
+                    "createdAt": current.isoformat(),
+                    "expiresAt": expires_at_dt.isoformat() if expires_at_dt is not None else None,
+                    "source": str(item.get("source") or "").strip().lower() or "restored",
+                    "reason": "usage_revert",
+                    "metadata": {},
+                }
+                lots.append(lot)
+                by_id[lot_id] = lot
+            else:
+                lot["amountRemaining"] = _as_positive_number(_as_positive_number(lot.get("amountRemaining")) + amount_value)
+                lot["amountTotal"] = max(_as_positive_number(lot.get("amountTotal")), _as_positive_number(lot.get("amountRemaining")))
+            restored_amount = _as_positive_number(restored_amount + amount_value)
+
+    if restored_amount <= 0:
+        fallback_value = _as_positive_number(fallback_amount)
+        if fallback_value > 0:
+            lots.append(
+                {
+                    "id": f"restored_lot_{uuid.uuid4().hex}",
+                    "amountTotal": fallback_value,
+                    "amountRemaining": fallback_value,
+                    "createdAt": current.isoformat(),
+                    "expiresAt": None,
+                    "source": "restored",
+                    "reason": "usage_revert_fallback",
+                    "metadata": {},
+                }
+            )
+
+    normalized_lots, total = _normalize_paid_vf_lots(lots, current)
+    normalized["paidVfLots"] = normalized_lots
+    normalized["paidVfBalance"] = total
+    return normalized
+
+
 def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
     current = now or _utc_now()
     month_key = _wallet_month_key(current)
@@ -6556,10 +6824,29 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
         normalized["monthlyVfLimit"] = _as_positive_int(normalized.get("monthlyVfLimit") or plan_cfg["monthlyVfLimit"])
         if normalized["monthlyVfLimit"] <= 0:
             normalized["monthlyVfLimit"] = plan_cfg["monthlyVfLimit"]
-    normalized["dailyGenerationLimit"] = _as_positive_int(
-        normalized.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"]
-    ) or plan_cfg["dailyGenerationLimit"]
-    normalized["paidVfBalance"] = _as_positive_number(normalized.get("paidVfBalance"))
+    normalized.pop("dailyGenerationLimit", None)
+
+    legacy_paid_balance = _as_positive_number(normalized.get("paidVfBalance"))
+    paid_lots, paid_lots_total = _normalize_paid_vf_lots(normalized.get("paidVfLots"), current)
+    if legacy_paid_balance > paid_lots_total + VF_EPSILON:
+        legacy_delta = _as_positive_number(legacy_paid_balance - paid_lots_total)
+        if legacy_delta > 0:
+            paid_lots.append(
+                {
+                    "id": f"legacy_paid_vf_{uuid.uuid4().hex}",
+                    "amountTotal": legacy_delta,
+                    "amountRemaining": legacy_delta,
+                    "createdAt": current.isoformat(),
+                    "expiresAt": None,
+                    "source": "legacy",
+                    "reason": "legacy_balance_migration",
+                    "metadata": {},
+                }
+            )
+            paid_lots, paid_lots_total = _normalize_paid_vf_lots(paid_lots, current)
+    normalized["paidVfLots"] = paid_lots
+    normalized["paidVfBalance"] = paid_lots_total
+
     vff_grant = float(VF_FREE_MONTHLY_VFF_GRANT) if plan_key == "free" else 0.0
     vff_cap: Optional[float] = float(VF_FREE_MONTHLY_VFF_CAP) if plan_key == "free" else None
     saved_month = str(normalized.get("vffMonthKey") or "").strip()
@@ -6667,9 +6954,7 @@ def _load_entitlement(uid: str) -> dict[str, Any]:
     merged["monthlyVfLimit"] = _as_positive_int(merged.get("monthlyVfLimit") or plan_cfg["monthlyVfLimit"])
     if merged["monthlyVfLimit"] <= 0:
         merged["monthlyVfLimit"] = plan_cfg["monthlyVfLimit"]
-    merged["dailyGenerationLimit"] = _as_positive_int(
-        merged.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"]
-    ) or plan_cfg["dailyGenerationLimit"]
+    merged.pop("dailyGenerationLimit", None)
     merged = _normalize_entitlement_wallet(merged)
     return merged
 
@@ -6678,8 +6963,7 @@ def _write_entitlement(uid: str, payload: dict[str, Any]) -> None:
     patch = {**payload, "updatedAt": _safe_now_iso()}
     if "monthlyVfLimit" in patch:
         patch["monthlyVfLimit"] = _as_positive_int(patch.get("monthlyVfLimit"))
-    if "dailyGenerationLimit" in patch:
-        patch["dailyGenerationLimit"] = _as_positive_int(patch.get("dailyGenerationLimit"))
+    patch.pop("dailyGenerationLimit", None)
     if "paidVfBalance" in patch:
         patch["paidVfBalance"] = _as_positive_number(patch.get("paidVfBalance"))
     if "paidVfLots" in patch and not isinstance(patch.get("paidVfLots"), list):
@@ -7151,7 +7435,6 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
     monthly_limit = _as_positive_int(entitlement.get("monthlyVfLimit"))
     monthly_free_used = _as_positive_number(monthly.get("monthlyFreeVfUsed"))
     daily_used = _as_positive_int(daily.get("generationCount"))
-    daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit"))
     plan_name = _normalize_plan_name(str(entitlement.get("plan") or "Free"))
     month_key = _wallet_month_key()
     if str(entitlement.get("vffMonthKey") or "") != month_key:
@@ -7182,9 +7465,7 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             "byEngine": monthly.get("byEngine") or {},
         },
         "daily": {
-            "generationLimit": daily_limit,
             "generationUsed": daily_used,
-            "generationRemaining": max(0, daily_limit - daily_used),
             "vfUsed": _as_positive_number(daily.get("vfUsed")),
             "periodKey": str(daily.get("periodKey") or _usage_day_period_label()),
             "windowStartUtc": day_start,
@@ -10527,12 +10808,10 @@ def _entitlement_from_price_id(price_id: str) -> dict[str, Any]:
             return {
                 "plan": PLAN_LIMITS[plan_key]["plan"],
                 "monthlyVfLimit": PLAN_LIMITS[plan_key]["monthlyVfLimit"],
-                "dailyGenerationLimit": PLAN_LIMITS[plan_key]["dailyGenerationLimit"],
             }
     return {
         "plan": PLAN_LIMITS["free"]["plan"],
         "monthlyVfLimit": PLAN_LIMITS["free"]["monthlyVfLimit"],
-        "dailyGenerationLimit": PLAN_LIMITS["free"]["dailyGenerationLimit"],
     }
 
 
@@ -19802,7 +20081,6 @@ def _resolve_subscription_plan_transition_policy(
 ) -> dict[str, Any]:
     current_monthly_limit = _as_positive_int(current_entitlement.get("monthlyVfLimit"))
     next_monthly_limit = _as_positive_int(next_plan_payload.get("monthlyVfLimit"))
-    next_daily_limit = _as_positive_int(next_plan_payload.get("dailyGenerationLimit"))
     transition = "unchanged"
     if next_monthly_limit > current_monthly_limit:
         transition = "upgrade"
@@ -19816,7 +20094,6 @@ def _resolve_subscription_plan_transition_policy(
     return {
         "transition": transition,
         "monthlyVfLimit": next_monthly_limit,
-        "dailyGenerationLimit": next_daily_limit,
     }
 
 
@@ -19840,7 +20117,6 @@ def _sync_entitlement_from_subscription(
         "plan": plan_payload["plan"],
         "status": status,
         "monthlyVfLimit": transition_policy["monthlyVfLimit"],
-        "dailyGenerationLimit": transition_policy["dailyGenerationLimit"],
         "stripeCustomerId": str(customer_id or "") or None,
         "subscriptionId": str(subscription_id or "") or None,
         "currencyMode": "INR_BASE_AUTO_FX",
@@ -20095,7 +20371,6 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             "name": plan_name,
             "status": str(entitlement.get("status") or "").strip() or "inactive",
             "monthlyVfLimit": _as_positive_int(entitlement.get("monthlyVfLimit")),
-            "dailyGenerationLimit": _as_positive_int(entitlement.get("dailyGenerationLimit")),
             "ttsSuccessRpm": max(1, int(tts_success_rpm)),
             "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 8000)),
             "allowedEngines": list(feature_flags.get("allowedEngines") or ()),
@@ -21257,7 +21532,6 @@ def _support_ai_build_limited_account_context(uid: str, user_id: str) -> dict[st
             "monthlyVfUsed": _as_positive_number(monthly.get("vfUsed")),
             "monthlyVfLimit": _as_positive_int(entitlement.get("monthlyVfLimit")),
             "dailyGenerationUsed": _as_positive_int(daily.get("generationCount")),
-            "dailyGenerationLimit": _as_positive_int(entitlement.get("dailyGenerationLimit")),
         },
     }
 
@@ -21281,13 +21555,12 @@ def _support_ai_reply_text(*, user_text: str, account_context: dict[str, Any]) -
     monthly_used = _support_ai_format_number(usage.get("monthlyVfUsed"))
     monthly_limit = _as_positive_int(usage.get("monthlyVfLimit"))
     daily_used = _as_positive_int(usage.get("dailyGenerationUsed"))
-    daily_limit = _as_positive_int(usage.get("dailyGenerationLimit"))
     free_balance = _support_ai_format_number(wallet.get("vffBalance"))
     paid_balance = _support_ai_format_number(wallet.get("paidVfBalance"))
     return (
         f"Auto support response for {identity}: "
         f"plan {plan} ({account_status}), wallet free {free_balance} VF and paid {paid_balance} VF, "
-        f"usage monthly {monthly_used}/{monthly_limit} VF and daily {daily_used}/{daily_limit}. "
+        f"usage monthly {monthly_used}/{monthly_limit} VF and daily generations {daily_used}. "
         "Please refresh the workspace and retry once. If the issue continues, reply \"still unresolved\" and a human agent will take over."
     )
 
@@ -22305,6 +22578,71 @@ def _reset_daily_usage_all(*, dry_run: bool, requested_by: str) -> dict[str, Any
     return summary
 
 
+def _cleanup_entitlements_daily_generation_limit(*, dry_run: bool, requested_by: str) -> dict[str, Any]:
+    now_iso = _safe_now_iso()
+    mode = "in_memory"
+    docs_scanned = 0
+    docs_with_legacy_field = 0
+    docs_cleaned = 0
+    users: set[str] = set()
+
+    entitlements = _firestore_collection("entitlements")
+    if entitlements is None:
+        with _INMEMORY_LOCK:
+            docs_scanned = len(_INMEMORY_ENTITLEMENTS)
+            for uid, row in list(_INMEMORY_ENTITLEMENTS.items()):
+                current = dict(row or {})
+                if "dailyGenerationLimit" not in current:
+                    continue
+                docs_with_legacy_field += 1
+                safe_uid = str(uid or "").strip()
+                if safe_uid:
+                    users.add(safe_uid)
+                if dry_run:
+                    continue
+                current.pop("dailyGenerationLimit", None)
+                current["updatedAt"] = now_iso
+                _INMEMORY_ENTITLEMENTS[uid] = current
+                docs_cleaned += 1
+    else:
+        mode = "firestore"
+        try:
+            docs = list(entitlements.stream())
+        except Exception:
+            docs = []
+        docs_scanned = len(docs)
+        for doc in docs:
+            row = doc.to_dict() or {}
+            if "dailyGenerationLimit" not in row:
+                continue
+            docs_with_legacy_field += 1
+            uid = str(row.get("uid") or doc.id).strip()
+            if uid:
+                users.add(uid)
+            if dry_run:
+                continue
+            clean_row = dict(row)
+            clean_row.pop("dailyGenerationLimit", None)
+            clean_row["updatedAt"] = now_iso
+            try:
+                doc.reference.set(clean_row, merge=False)
+                docs_cleaned += 1
+            except Exception:
+                continue
+
+    return {
+        "ok": True,
+        "dryRun": bool(dry_run),
+        "mode": mode,
+        "docsScanned": docs_scanned,
+        "docsWithLegacyField": docs_with_legacy_field,
+        "docsCleared": docs_cleaned if not dry_run else 0,
+        "usersAffected": len(users),
+        "requestedBy": str(requested_by or "").strip(),
+        "ranAt": now_iso,
+    }
+
+
 @app.post("/admin/session-unlock/issue")
 def admin_session_unlock_issue(request: Request) -> JSONResponse:
     uid = _require_admin_uid(request)
@@ -22411,6 +22749,24 @@ def admin_reset_daily_usage_all(request: Request, dryRun: bool = False) -> JSONR
     return JSONResponse(summary)
 
 
+@app.post("/admin/entitlements/cleanup-daily-generation-limit")
+def admin_cleanup_entitlements_daily_generation_limit(request: Request, dryRun: bool = False) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    summary = _cleanup_entitlements_daily_generation_limit(dry_run=bool(dryRun), requested_by=admin_uid)
+    _audit_append_event(
+        action="entitlements_cleanup_daily_generation_limit",
+        resource_type="entitlements",
+        resource_id="all",
+        after=summary if isinstance(summary, dict) else {},
+        meta={"dryRun": bool(dryRun)},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(summary)
+
+
 @app.get("/admin/tts/gateway/status")
 def admin_tts_gateway_status(request: Request) -> JSONResponse:
     _require_permission(request, PERM_OPS_READ)
@@ -22499,7 +22855,6 @@ def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: R
         plan_cfg = _plan_config(normalized_plan)
         patch["plan"] = normalized_plan
         patch["monthlyVfLimit"] = plan_cfg["monthlyVfLimit"]
-        patch["dailyGenerationLimit"] = plan_cfg["dailyGenerationLimit"]
 
     if payload.paidVfDelta is not None:
         delta = _as_float(payload.paidVfDelta, 0.0)

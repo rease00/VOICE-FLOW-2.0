@@ -101,7 +101,6 @@ def test_support_ai_non_critical_reply_uses_deterministic_limited_context(monkey
             "paidVfBalance": 125.0,
             "vffBalance": 40.0,
             "monthlyVfLimit": 300000,
-            "dailyGenerationLimit": 5,
         },
     )
     monthly, daily = backend_app._usage_defaults(uid)
@@ -127,7 +126,7 @@ def test_support_ai_non_critical_reply_uses_deterministic_limited_context(monkey
     reply_text = str(payload["messages"][1]["text"] or "")
     assert "plan Pro (active)" in reply_text
     assert "wallet free 40 VF and paid 125 VF" in reply_text
-    assert "usage monthly 321/300000 VF and daily 2/5" in reply_text
+    assert "usage monthly 321/300000 VF and daily generations 2" in reply_text
 
 
 def test_support_ai_context_scope_is_limited_to_allowed_account_fields() -> None:
@@ -141,7 +140,6 @@ def test_support_ai_context_scope_is_limited_to_allowed_account_fields() -> None
             "paidVfBalance": 77.0,
             "vffBalance": 11.0,
             "monthlyVfLimit": 50000,
-            "dailyGenerationLimit": 9,
             "stripeCustomerId": "cus_sensitive",
             "subscriptionId": "sub_sensitive",
             "latestInvoiceId": "in_sensitive",
@@ -160,7 +158,6 @@ def test_support_ai_context_scope_is_limited_to_allowed_account_fields() -> None
         "monthlyVfUsed",
         "monthlyVfLimit",
         "dailyGenerationUsed",
-        "dailyGenerationLimit",
     }
     serialized = json.dumps(context, sort_keys=True)
     assert "stripeCustomerId" not in serialized

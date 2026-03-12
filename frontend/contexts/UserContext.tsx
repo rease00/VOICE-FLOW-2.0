@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
+  ActionCodeSettings,
   ConfirmationResult,
   GoogleAuthProvider,
   RecaptchaVerifier,
@@ -147,6 +148,7 @@ const localAdminBackendAuthMismatchMessage =
   'Local admin login is enabled in frontend, but backend auth enforcement is ON. ' +
   'Set VF_AUTH_ENFORCE=0 for local admin mode, or disable local admin login and sign in with Firebase.';
 const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
+const DEFAULT_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/?vf-screen=login';
 
 interface PendingSignupProfile {
   uid: string;
@@ -188,18 +190,71 @@ const clearPendingSignupProfile = (): void => {
   removeStorageKey(STORAGE_KEYS.pendingSignupProfile);
 };
 
-const requiresEmailVerificationForUser = (user: { email?: string | null; emailVerified?: boolean | null }): boolean => {
-  const email = String(user.email || '').trim();
-  if (!email) return false;
-  return user.emailVerified !== true;
+const resolveEmailVerificationContinueUrl = (): string => {
+  const configured = String(import.meta.env.VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL || '').trim();
+  if (configured) return configured;
+  if (typeof window === 'undefined' || !window.location) return DEFAULT_EMAIL_VERIFY_CONTINUE_URL;
+  const url = new URL(window.location.href);
+  url.searchParams.set('vf-screen', 'login');
+  url.searchParams.delete('vf-tab');
+  url.searchParams.delete('billing');
+  return url.toString();
 };
 
-const syncUserIdSetupRequirement = (required: boolean): void => {
-  if (required) {
-    writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
+export const buildEmailVerificationActionSettings = (): ActionCodeSettings | undefined => {
+  const candidate = resolveEmailVerificationContinueUrl();
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return {
+      url: parsed.toString(),
+      handleCodeInApp: false,
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+export const buildUnverifiedEmailSignInResult = (message: string = unverifiedEmailAuthMessage) => ({
+  ok: false,
+  error: message,
+  requiresEmailVerification: true,
+  canResendVerification: true,
+});
+
+const isContinueUrlVerificationError = (error: any): boolean => {
+  const code = String(error?.code || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim().toLowerCase();
+  return (
+    code === 'auth/unauthorized-continue-uri' ||
+    code === 'auth/invalid-continue-uri' ||
+    message.includes('continue uri') ||
+    message.includes('continue_url')
+  );
+};
+
+const sendVerificationEmailWithFallback = async (
+  targetUser: Parameters<typeof sendEmailVerification>[0]
+): Promise<void> => {
+  const actionSettings = buildEmailVerificationActionSettings();
+  if (!actionSettings) {
+    await sendEmailVerification(targetUser);
     return;
   }
-  removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+  try {
+    await sendEmailVerification(targetUser, actionSettings);
+  } catch (error) {
+    if (!isContinueUrlVerificationError(error)) throw error;
+    // Retry without continue URL override so Firebase can still send verification mail.
+    await sendEmailVerification(targetUser);
+  }
+};
+
+const requiresEmailVerificationForUser = (user: { uid?: string | null; email?: string | null; emailVerified?: boolean | null }): boolean => {
+  const email = String(user.email || '').trim();
+  if (!email) return false;
+  if (isAdminIdentity(user.uid, user.email, false)) return false;
+  return user.emailVerified !== true;
 };
 
 const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
@@ -238,7 +293,6 @@ const normalizeStoredStats = (stored: any): UserStats => {
     ...INITIAL_STATS,
     ...stored,
     generationsUsed: Number.isFinite(stored?.generationsUsed) ? Math.max(0, Math.floor(stored.generationsUsed)) : INITIAL_STATS.generationsUsed,
-    generationsLimit: Number.isFinite(stored?.generationsLimit) ? Math.max(0, Math.floor(stored.generationsLimit)) : INITIAL_STATS.generationsLimit,
     isPremium: Boolean(stored?.isPremium) || isPaidPlanName(planName),
     planName,
     lastResetDate: typeof stored?.lastResetDate === 'string' ? stored.lastResetDate : undefined,
@@ -316,7 +370,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   return ensureStatsUsageWindows({
     ...prev,
     generationsUsed: Math.max(0, Number(entitlements.daily?.generationUsed || 0)),
-    generationsLimit: Math.max(1, Number(entitlements.daily?.generationLimit || 30)),
     isPremium: isPaidPlanName(planName),
     planName,
     lastResetDate: entitlements.daily?.periodKey,
@@ -518,6 +571,9 @@ const mapFirebaseAuthError = (error: any): string => {
   }
   if (code === 'auth/too-many-requests') {
     return 'Too many attempts. Wait a minute and retry.';
+  }
+  if (code === 'auth/unauthorized-continue-uri' || code === 'auth/invalid-continue-uri') {
+    return 'Verification link domain is not authorized. In Firebase Auth settings, add your app domain (for local dev: localhost and 127.0.0.1), then retry.';
   }
   if (
     loweredMessage.includes('service_disabled') ||
@@ -764,6 +820,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setHistory([]);
         return;
       }
+      await applyPendingSignupProfile(firebaseUser.uid, firebaseUser.email || '');
       const profile = await mapFirebaseUserToProfile();
       setUser(profile);
       bootstrapCharacterSync(firebaseUser.uid);
@@ -845,7 +902,14 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       }
       try {
-        await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
+        const credential = await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
+        await credential.user.reload().catch(() => undefined);
+        if (requiresEmailVerificationForUser(credential.user)) {
+          await signOut(firebaseAuth).catch(() => undefined);
+          return buildUnverifiedEmailSignInResult(
+            `Local admin login is disabled: ${configIssue}. ${unverifiedEmailAuthMessage}`
+          );
+        }
         return { ok: true };
       } catch (error: any) {
         return {
@@ -868,7 +932,12 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: 'Use a full email address to sign in. If needed, map an admin username or admin UID using VITE_ADMIN_LOGIN_EMAIL in .env.',
         };
       }
-      await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+      const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+      await credential.user.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(credential.user)) {
+        await signOut(firebaseAuth).catch(() => undefined);
+        return buildUnverifiedEmailSignInResult();
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -911,7 +980,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (displayName?.trim()) {
         await updateProfile(credential.user, { displayName: displayName.trim() });
       }
-      await sendEmailVerification(credential.user);
+      await sendVerificationEmailWithFallback(credential.user);
       writePendingSignupProfile({
         uid: String(credential.user.uid || '').trim(),
         email: normalizedEmail.toLowerCase(),
@@ -968,7 +1037,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return { ok: true };
       }
 
-      await sendEmailVerification(currentUser);
+      await sendVerificationEmailWithFallback(currentUser);
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };

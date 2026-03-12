@@ -132,6 +132,30 @@ def test_auth_enforcement_blocks_unverified_email_token(monkeypatch) -> None:
     assert payload.get("errorCode") == "VF_EMAIL_NOT_VERIFIED"
 
 
+def test_auth_enforcement_allows_unverified_admin_email_allowlist(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_REQUIRE_EMAIL_VERIFIED", True)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_EMAILS", frozenset({"admin1@voiceflow.local"}))
+    monkeypatch.setattr(
+        backend_app,
+        "_verify_firebase_id_token",
+        lambda token: {
+            "uid": "firebase_admin_user_unverified",
+            "email": "admin1@voiceflow.local",
+            "email_verified": False,
+            "admin": False,
+        },
+    )
+    client = TestClient(backend_app.app)
+    response = client.get("/account/entitlements", headers={"Authorization": "Bearer valid_token"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["entitlements"]["uid"] == "firebase_admin_user_unverified"
+
+
 def test_auth_enforcement_allows_phone_only_token_without_email_claim(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
@@ -193,7 +217,6 @@ def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
         **backend_app._default_entitlement(uid),
         "plan": "Plus",
-        "dailyGenerationLimit": 2,
         "monthlyVfLimit": 100000,
     }
 
@@ -222,7 +245,10 @@ def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     ent = client.get("/account/entitlements", headers=headers)
     assert ent.status_code == 200
     payload = ent.json()["entitlements"]
-    assert int((payload.get("daily") or {}).get("generationUsed") or 0) == 3
+    daily_payload = payload.get("daily") or {}
+    assert int(daily_payload.get("generationUsed") or 0) == 3
+    assert "generationLimit" not in daily_payload
+    assert "generationRemaining" not in daily_payload
 
 
 def test_tts_synthesize_blocks_gem_for_free_plan(monkeypatch) -> None:
@@ -260,7 +286,6 @@ def test_normalize_entitlement_wallet_migrates_free_vff_grant_and_cap() -> None:
         {
             "plan": "Free",
             "monthlyVfLimit": 10000,
-            "dailyGenerationLimit": backend_app.VF_DAILY_GENERATION_LIMIT,
             "paidVfBalance": 0,
             "vffBalance": 0,
             "vffMonthKey": month_key,
@@ -274,7 +299,6 @@ def test_normalize_entitlement_wallet_migrates_free_vff_grant_and_cap() -> None:
         {
             "plan": "Free",
             "monthlyVfLimit": 5000,
-            "dailyGenerationLimit": backend_app.VF_DAILY_GENERATION_LIMIT,
             "paidVfBalance": 0,
             "vffBalance": backend_app.VF_FREE_MONTHLY_VFF_CAP + 2500,
             "vffMonthKey": "2000-01",
@@ -292,7 +316,6 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     uid = "quota_user_revert"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
         **backend_app._default_entitlement(uid),
-        "dailyGenerationLimit": 30,
         "monthlyVfLimit": 8000,
     }
     monkeypatch.setattr(
@@ -362,7 +385,6 @@ def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> 
     uid = "local_admin_unlimited"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
         **backend_app._default_entitlement(uid),
-        "dailyGenerationLimit": 1,
         "monthlyVfLimit": 0,
         "vffBalance": 0,
         "paidVfBalance": 0,
@@ -552,7 +574,6 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
         "plan": "Pro",
         "status": "active",
         "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
-        "dailyGenerationLimit": backend_app.PLAN_LIMITS["pro"]["dailyGenerationLimit"],
         "stripeCustomerId": "cus_test_123",
         "subscriptionId": "sub_test_123",
         "billingCountry": "IN",
@@ -570,6 +591,7 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     assert response.status_code == 200
     payload = response.json()["summary"]
     assert payload["plan"]["key"] == "pro"
+    assert "dailyGenerationLimit" not in payload["plan"]
     assert payload["plan"]["pricing"]["discountPercent"] == 10
     assert int(payload["plan"]["ttsSuccessRpm"]) == int(
         backend_app._TTS_SUCCESS_LIMITER.quota_for_plan(backend_app._tts_success_bucket_for_plan("pro"))
@@ -591,7 +613,6 @@ def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:
         "plan": "Pro",
         "status": "active",
         "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
-        "dailyGenerationLimit": backend_app.PLAN_LIMITS["pro"]["dailyGenerationLimit"],
         "vffBalance": 0.0,
         "vffMonthKey": backend_app._wallet_month_key(),
         "vffGrantMonthKey": backend_app._wallet_month_key(),
@@ -626,7 +647,6 @@ def test_admin_wallet_ad_reward_bypasses_daily_cap(monkeypatch) -> None:
         "plan": "Pro",
         "status": "active",
         "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
-        "dailyGenerationLimit": backend_app.PLAN_LIMITS["pro"]["dailyGenerationLimit"],
         "vffBalance": 0.0,
         "vffMonthKey": backend_app._wallet_month_key(),
         "vffGrantMonthKey": backend_app._wallet_month_key(),
@@ -841,6 +861,62 @@ def test_paid_vf_lot_spend_and_restore_is_lossless() -> None:
     assert float(restored.get("paidVfBalance") or 0) == 160
     assert float((restored_by_id["lot_early"] or {}).get("amountRemaining") or 0) == 100
     assert float((restored_by_id["lot_later"] or {}).get("amountRemaining") or 0) == 60
+
+
+def test_usage_reserve_revert_restores_paid_vf_lot_debits() -> None:
+    _reset_inmemory_state()
+    uid = "usage_revert_paid_lot_user"
+    request_id = "usage_revert_paid_lot_request"
+    engine = "GEM"
+    char_count = 10
+    now = backend_app._utc_now()
+    month_doc_id = backend_app._inmemory_usage_month_doc_id(uid, now)
+
+    entitlement = backend_app._default_entitlement(uid)
+    entitlement["vffBalance"] = 0.0
+    entitlement = backend_app._append_paid_vf_credit_lot(
+        entitlement,
+        amount=500,
+        reason="stripe_token_pack",
+        transaction_id="usage_lot_primary",
+        metadata={"kind": "token_pack"},
+        now=now,
+    )
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = entitlement
+
+    monthly_usage, _ = backend_app._usage_defaults(uid, now)
+    monthly_usage["monthlyFreeVfUsed"] = float(entitlement.get("monthlyVfLimit") or 0)
+    backend_app._INMEMORY_USAGE_MONTHLY[month_doc_id] = monthly_usage
+
+    initial_paid_balance = float(entitlement.get("paidVfBalance") or 0)
+    reservation = backend_app._reserve_usage(uid, request_id, engine, char_count)
+    assert reservation["ok"] is True
+    assert reservation["alreadyReserved"] is False
+
+    reserved_event = reservation["event"]
+    charge_breakdown = reserved_event.get("chargeBreakdown") or {}
+    assert float(charge_breakdown.get("paidVf") or 0) > 0
+    assert isinstance(charge_breakdown.get("paidVfLots"), list)
+    assert charge_breakdown.get("paidVfLots")
+
+    reserved_entitlement = backend_app._load_entitlement(uid)
+    assert float(reserved_entitlement.get("paidVfBalance") or 0) < initial_paid_balance
+
+    backend_app._finalize_usage(uid, request_id, success=False, error_detail="forced failure")
+
+    reverted_event = backend_app._INMEMORY_USAGE_EVENTS[f"{uid}_{request_id}"]
+    assert str(reverted_event.get("status") or "") == "reverted"
+
+    reverted_entitlement = backend_app._load_entitlement(uid)
+    reverted_lots = reverted_entitlement.get("paidVfLots") or []
+    reverted_by_id = {str(lot.get("id") or ""): lot for lot in reverted_lots}
+    assert abs(float(reverted_entitlement.get("paidVfBalance") or 0) - initial_paid_balance) < 1e-6
+    assert abs(float((reverted_by_id["usage_lot_primary"] or {}).get("amountRemaining") or 0) - initial_paid_balance) < 1e-6
+
+    reverted_monthly = backend_app._INMEMORY_USAGE_MONTHLY[str(reserved_event.get("monthDocId") or "")]
+    reverted_daily = backend_app._INMEMORY_USAGE_DAILY[str(reserved_event.get("dayDocId") or "")]
+    assert int(reverted_monthly.get("generationCount") or 0) == 0
+    assert int(reverted_daily.get("generationCount") or 0) == 0
 
 
 def test_legacy_paid_vf_balance_is_preserved_as_non_expiring_lot() -> None:

@@ -1322,6 +1322,10 @@ def test_tts_synthesize_enforces_pro_and_scale_success_limits(monkeypatch) -> No
     payload = {"engine": "GEM", "text": "burst plan test", "voice_id": "Fenrir"}
     pro_limit = max(1, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_PRO", 5) or 5))
     scale_limit = max(1, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_SCALE", 10) or 10))
+    assert int((backend_app.TTS_PLAN_GUARDRAILS.get("pro") or {}).get("rpm") or 0) == 5
+    assert int((backend_app.TTS_PLAN_GUARDRAILS.get("scale") or {}).get("rpm") or 0) == 10
+    assert int((backend_app.TTS_PLAN_GUARDRAILS.get("starter") or {}).get("rpm") or 0) == 5
+    assert int((backend_app.TTS_PLAN_GUARDRAILS.get("creator") or {}).get("rpm") or 0) == 5
 
     pro_responses = [client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload) for _ in range(pro_limit)]
     pro_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload)
@@ -1485,3 +1489,48 @@ def test_admin_reset_daily_usage_all_dryrun_then_execute(monkeypatch) -> None:
     status_payload = status.json()
     assert status_payload["status"] == "available"
     assert status_payload["lastRun"]["docsCleared"] == 2
+
+
+def test_admin_cleanup_entitlements_daily_generation_limit_requires_admin(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    client = TestClient(backend_app.app)
+    denied = client.post("/admin/entitlements/cleanup-daily-generation-limit", headers={"x-dev-uid": "plain_user"})
+    assert denied.status_code == 403
+
+
+def test_admin_cleanup_entitlements_daily_generation_limit_dryrun_then_execute(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "local_admin"}
+
+    backend_app._INMEMORY_ENTITLEMENTS["legacy_a"] = {
+        **backend_app._default_entitlement("legacy_a"),
+        "dailyGenerationLimit": 30,
+    }
+    backend_app._INMEMORY_ENTITLEMENTS["legacy_b"] = {
+        **backend_app._default_entitlement("legacy_b"),
+        "dailyGenerationLimit": 15,
+    }
+    backend_app._INMEMORY_ENTITLEMENTS["clean_user"] = {
+        **backend_app._default_entitlement("clean_user"),
+    }
+
+    dry = client.post("/admin/entitlements/cleanup-daily-generation-limit?dryRun=1", headers=headers)
+    assert dry.status_code == 200
+    dry_payload = dry.json()
+    assert dry_payload["dryRun"] is True
+    assert dry_payload["docsWithLegacyField"] == 2
+    assert dry_payload["docsCleared"] == 0
+    assert "dailyGenerationLimit" in backend_app._INMEMORY_ENTITLEMENTS["legacy_a"]
+    assert "dailyGenerationLimit" in backend_app._INMEMORY_ENTITLEMENTS["legacy_b"]
+
+    run = client.post("/admin/entitlements/cleanup-daily-generation-limit", headers=headers)
+    assert run.status_code == 200
+    run_payload = run.json()
+    assert run_payload["dryRun"] is False
+    assert run_payload["docsWithLegacyField"] == 2
+    assert run_payload["docsCleared"] == 2
+    assert "dailyGenerationLimit" not in backend_app._INMEMORY_ENTITLEMENTS["legacy_a"]
+    assert "dailyGenerationLimit" not in backend_app._INMEMORY_ENTITLEMENTS["legacy_b"]

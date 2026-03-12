@@ -371,7 +371,6 @@ export interface UserWalletStats {
 
 export interface UserStats {
   generationsUsed: number;
-  generationsLimit: number;
   isPremium: boolean;
   planName: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | 'Plus' | 'Enterprise';
   lastResetDate?: string | undefined;
@@ -976,8 +975,6 @@ export interface ReaderCommercialPolicy {
 }
 
 export interface ReaderUpload extends ReaderCatalogItem {}
-
-export type WorkspaceLayoutMode = 'phone' | 'tablet' | 'desktop';
 
 export type LabAssetKind = 'audio' | 'video' | 'text' | 'image' | 'element' | 'recording' | 'tts';
 export type LabLayerKind = LabAssetKind;

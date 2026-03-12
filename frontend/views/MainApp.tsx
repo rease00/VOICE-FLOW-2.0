@@ -173,8 +173,6 @@ type CreditsSurfaceTab = 'tokens' | 'subscriptions';
 
 const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
 
-const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
-
 interface EngineRuntimeStatus {
   state: EngineRuntimeState;
   detail: string;
@@ -372,6 +370,7 @@ const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; stand
   mega: { label: 'Mega', vf: 300000, standardInr: 2900, scaleInr: 2320 },
   ultra: { label: 'Ultra', vf: 600000, standardInr: 5200, scaleInr: 4160 },
 };
+const LOW_TOKEN_PROMPT_THRESHOLD = 600;
 
 const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
   [Tab.STUDIO]: 'Script, cast, and render audio',
@@ -868,6 +867,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     resolveSidebarMode(readStorageString(STORAGE_KEYS.studioSidebarMode))
   ));
   const [isCreditsSurfaceOpen, setIsCreditsSurfaceOpen] = useState(false);
+  const [, setCreditsSurfaceTab] = useState<CreditsSurfaceTab>('tokens');
   const [studioRailTab, setStudioRailTab] = useState<StudioRailTab>(() => resolveStudioRailTab('voice'));
   
   // Studio Text State
@@ -1252,14 +1252,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     Number(stats.wallet?.spendableNowByEngine?.[settings.engine] || 0)
   );
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
+  const isLimitReached = isWalletBlocked;
   const hasAdClaimsRemaining =
     Math.max(0, Number(stats.wallet?.adClaimsToday || 0)) < Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3));
   const canClaimAdReward = hasUnlimitedAccess || hasAdClaimsRemaining;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
-  const dailyGenerationRemaining = hasUnlimitedAccess
-    ? Number.POSITIVE_INFINITY
-    : Math.max(0, Number(stats.generationsLimit || 0) - Number(stats.generationsUsed || 0));
   const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
@@ -2367,7 +2365,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
                   const browserState = kokoroBrowserRuntime.getState();
                   if (isLimitReached) {
-                      nextStatuses[engine] = { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' };
+                      nextStatuses[engine] = { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' };
                       continue;
                   }
                   if (browserState === 'ready') {
@@ -2637,17 +2635,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           setTtsRuntimeStatus((prev) => ({
               ...prev,
-              KOKORO: { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' },
+              KOKORO: { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' },
           }));
-          throw new Error('Daily generation limit reached. Kokoro local runtime is disabled for today.');
+          throw new Error('Usage balance exhausted. Add VF or switch engine to continue.');
       }
-  ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
-      const signal = options?.signal;
-      const preferBrowserExecution = options?.preferBrowserExecution;
-      const normalizedWarmupVoiceId = getValidVoiceIdForEngine(
-          'KOKORO',
-          String(voiceId || DEFAULT_KOKORO_VOICE_ID)
-      );
       const access = await refreshTtsAccessState(true);
       if (!access.ok) {
           throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
@@ -6080,13 +6071,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 {getEngineDisplayName(settings.engine)}
               </div>
             </div>
-            <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Daily Left</div>
+              <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Generations today</div>
               <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                {hasUnlimitedAccess ? 'Unlimited' : dailyGenerationRemaining.toLocaleString()}
+                {Math.max(0, Number(stats.generationsUsed || 0)).toLocaleString()}
               </div>
               <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                {hasUnlimitedAccess ? 'No daily cap' : `${stats.generationsUsed}/${stats.generationsLimit} used`}
+                Current daily usage window
               </div>
             </div>
           </div>
@@ -6340,12 +6331,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 </div>
               </div>
               <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Daily Left</div>
+                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Generations today</div>
                 <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {hasUnlimitedAccess ? 'Unlimited' : dailyGenerationRemaining.toLocaleString()}
+                  {Math.max(0, Number(stats.generationsUsed || 0)).toLocaleString()}
                 </div>
                 <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                  {hasUnlimitedAccess ? 'No daily cap' : `${stats.generationsUsed}/${stats.generationsLimit} used`}
+                  Current daily usage window
                 </div>
               </div>
                 </div>
@@ -6992,7 +6983,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         <span className="sm:hidden">{hasUnlimitedAccess ? 'Credits' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
                         <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
                         <span className={`hidden sm:inline ${resolvedTheme === 'dark' ? 'text-slate-500' : 'text-gray-500'}`}>|</span>
-                        <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Daily Unlimited' : `${dailyGenerationRemaining.toLocaleString()} left`}</span>
+                        <span className="hidden sm:inline">{`Today ${Math.max(0, Number(stats.generationsUsed || 0)).toLocaleString()} gens`}</span>
                         <span className={`hidden sm:inline rounded-full px-2 py-0.5 text-[9px] ${
                           isPaidBillingPlan
                             ? (resolvedTheme === 'dark' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-50 text-cyan-700')

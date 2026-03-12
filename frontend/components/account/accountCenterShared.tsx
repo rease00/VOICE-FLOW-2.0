@@ -17,7 +17,7 @@ export const surfaceClass = (isDarkUi: boolean): string =>
 export const mutedClass = (isDarkUi: boolean): string => (isDarkUi ? 'text-slate-300' : 'text-slate-600');
 export const subduedClass = (isDarkUi: boolean): string => (isDarkUi ? 'text-slate-400' : 'text-slate-500');
 export const labelClass = (isDarkUi: boolean): string =>
-  isDarkUi ? 'text-[11px] font-black uppercase tracking-[0.22em] text-slate-500' : 'text-[11px] font-black uppercase tracking-[0.22em] text-slate-400';
+  isDarkUi ? 'text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 sm:text-[11px] sm:tracking-[0.22em]' : 'text-[10px] font-black uppercase tracking-[0.18em] text-slate-400 sm:text-[11px] sm:tracking-[0.22em]';
 export const cardInsetClass = (isDarkUi: boolean): string =>
   isDarkUi ? 'border-white/10 bg-white/[0.04]' : 'border-slate-200/90 bg-slate-50/90';
 
@@ -98,13 +98,13 @@ export const StatusBadge: React.FC<{ isDarkUi: boolean; tone: 'success' | 'warni
     : tone === 'warning'
       ? (isDarkUi ? 'border-amber-400/25 bg-amber-400/12 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800')
       : (isDarkUi ? 'border-white/10 bg-white/[0.06] text-slate-200' : 'border-slate-200 bg-slate-100 text-slate-700');
-  return <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${toneClass}`}>{label}</span>;
+  return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold sm:px-3 sm:py-1 sm:text-xs ${toneClass}`}>{label}</span>;
 };
 
 export const InfoRow: React.FC<{ isDarkUi: boolean; label: string; value: string }> = ({ isDarkUi, label, value }) => (
-  <div className={`rounded-[0.9rem] border px-3 py-2.5 ${cardInsetClass(isDarkUi)}`}>
+  <div className={`rounded-[0.9rem] border px-2.5 py-2 sm:px-3 sm:py-2.5 ${cardInsetClass(isDarkUi)}`}>
     <div className={labelClass(isDarkUi)}>{label}</div>
-    <div className={`mt-1.5 break-words text-sm font-medium ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{value}</div>
+    <div className={`mt-1 break-words text-[13px] font-medium sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{value}</div>
   </div>
 );
 
@@ -146,47 +146,47 @@ export const AccountSummaryStrip: React.FC<{ isDarkUi: boolean; items: Array<{ i
 );
 
 export const ThemeButton: React.FC<{ active: boolean; isDarkUi: boolean; icon: React.ReactNode; title: string; onClick: () => void }> = ({ active, isDarkUi, icon, title, onClick }) => (
-  <button type="button" onClick={onClick} className={`flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${active ? (isDarkUi ? 'border-cyan-300/45 bg-cyan-400/15 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900') : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}`}>{icon}{title}</button>
+  <button type="button" onClick={onClick} className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-semibold transition sm:gap-2 sm:px-4 sm:py-2.5 sm:text-sm ${active ? (isDarkUi ? 'border-cyan-300/45 bg-cyan-400/15 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900') : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}`}>{icon}{title}</button>
 );
 
 export const PreferenceToggle: React.FC<{ isDarkUi: boolean; title: string; detail: string; checked: boolean; onToggle: () => void }> = ({ isDarkUi, title, detail, checked, onToggle }) => (
-  <button type="button" onClick={onToggle} className={`flex w-full items-center justify-between rounded-[0.95rem] border px-3 py-2.5 text-left transition ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'hover:bg-white/[0.06]' : 'hover:bg-white'}`}>
+  <button type="button" onClick={onToggle} className={`flex w-full items-center justify-between rounded-[0.95rem] border px-2 py-1.5 text-left transition sm:px-3 sm:py-2.5 ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'hover:bg-white/[0.06]' : 'hover:bg-white'}`}>
     <div className="pr-4">
-      <div className={`text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>{title}</div>
-      <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>{detail}</div>
+      <div className={`text-[12px] font-semibold sm:text-sm ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>{title}</div>
+      <div className={`mt-0.5 text-[10px] sm:mt-1 sm:text-xs ${subduedClass(isDarkUi)}`}>{detail}</div>
     </div>
-    <div className={`relative h-7 w-12 rounded-full transition ${checked ? (isDarkUi ? 'bg-cyan-400' : 'bg-cyan-500') : (isDarkUi ? 'bg-slate-700' : 'bg-slate-300')}`}>
-      <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${checked ? 'left-6' : 'left-1'}`} />
+    <div className={`relative h-6 w-10 rounded-full transition sm:h-7 sm:w-12 ${checked ? (isDarkUi ? 'bg-cyan-400' : 'bg-cyan-500') : (isDarkUi ? 'bg-slate-700' : 'bg-slate-300')}`}>
+      <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition sm:h-5 sm:w-5 ${checked ? 'left-5 sm:left-6' : 'left-1'}`} />
     </div>
   </button>
 );
 
 export const MetricCard: React.FC<{ isDarkUi: boolean; icon: React.ReactNode; eyebrow: string; title: string; detail: string }> = ({ isDarkUi, icon, eyebrow, title, detail }) => (
-  <div className={`rounded-[1.05rem] border p-3 ${cardInsetClass(isDarkUi)}`}>
-    <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{icon}</div>
+  <div className={`rounded-[1.05rem] border p-2 sm:p-3 ${cardInsetClass(isDarkUi)}`}>
+    <div className={`mb-1.5 inline-flex h-7 w-7 items-center justify-center rounded-xl border sm:h-9 sm:w-9 ${cardInsetClass(isDarkUi)} ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{icon}</div>
     <p className={labelClass(isDarkUi)}>{eyebrow}</p>
-    <div className={`mt-1.5 text-base font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{title}</div>
-    <div className={`mt-1 text-xs leading-5 ${subduedClass(isDarkUi)}`}>{detail}</div>
+    <div className={`mt-0.5 text-[13px] font-semibold sm:mt-1.5 sm:text-base ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{title}</div>
+    <div className={`mt-0.5 text-[10px] leading-4 sm:mt-1 sm:text-xs sm:leading-5 ${subduedClass(isDarkUi)}`}>{detail}</div>
   </div>
 );
 
 export const WindowCard: React.FC<{ title: string; data: VfUsageWindow; isDarkUi: boolean }> = ({ title, data, isDarkUi }) => (
-  <div className={`rounded-[1.05rem] border p-3 ${cardInsetClass(isDarkUi)}`}>
-    <div className="mb-3 flex items-center justify-between gap-3">
+  <div className={`rounded-[1.05rem] border p-2 sm:p-3 ${cardInsetClass(isDarkUi)}`}>
+    <div className="mb-2.5 flex items-center justify-between gap-3 sm:mb-3">
       <div>
         <p className={labelClass(isDarkUi)}>{title}</p>
-        <h3 className={`mt-1.5 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{formatNumber(data.totalVf)} VF</h3>
+        <h3 className={`mt-0.5 text-[13px] font-semibold sm:mt-1.5 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{formatNumber(data.totalVf)} VF</h3>
       </div>
-      <div className={`rounded-full border px-3 py-1 text-[11px] font-semibold ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>{formatCompactNumber(data.totalChars)} chars</div>
+      <div className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold sm:px-3 sm:py-1 sm:text-[11px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>{formatCompactNumber(data.totalChars)} chars</div>
     </div>
     <div className="space-y-2">
       {ENGINE_ORDER.map((engine) => (
-        <div key={engine} className={`flex items-center justify-between rounded-xl border px-3 py-1.5 ${cardInsetClass(isDarkUi)}`}>
+        <div key={engine} className={`flex items-center justify-between rounded-xl border px-2 py-1 sm:px-3 sm:py-1.5 ${cardInsetClass(isDarkUi)}`}>
           <div className={`flex items-center gap-2 ${mutedClass(isDarkUi)}`}>
             <EngineLogo engine={engine} size="sm" variant="ringed" />
-            <span className="text-xs font-medium">{getEngineDisplayName(engine)}</span>
+            <span className="text-[11px] font-medium sm:text-xs">{getEngineDisplayName(engine)}</span>
           </div>
-          <span className={`text-xs font-semibold ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{formatNumber(data.byEngine[engine]?.vf || 0)} VF</span>
+          <span className={`text-[11px] font-semibold sm:text-xs ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`}>{formatNumber(data.byEngine[engine]?.vf || 0)} VF</span>
         </div>
       ))}
     </div>
@@ -194,12 +194,12 @@ export const WindowCard: React.FC<{ title: string; data: VfUsageWindow; isDarkUi
 );
 
 export const ACCOUNT_TAB_ICONS: Record<AccountTabKey, React.ReactNode> = {
-  account: <ShieldCheck size={18} />,
-  billing: <CreditCard size={18} />,
-  usage: <History size={18} />,
-  preferences: <MonitorSmartphone size={18} />,
-  support: <MessageSquareText size={18} />,
-  activity: <Bell size={18} />,
+  account: <ShieldCheck size={14} />,
+  billing: <CreditCard size={14} />,
+  usage: <History size={14} />,
+  preferences: <MonitorSmartphone size={14} />,
+  support: <MessageSquareText size={14} />,
+  activity: <Bell size={14} />,
 };
 
 export const SUMMARY_ICONS = {

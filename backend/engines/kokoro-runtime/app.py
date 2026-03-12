@@ -52,18 +52,13 @@ os.environ["KOKORO_DEVICE"] = KOKORO_DEVICE
 KOKORO_IMPL = "kokoro-onnx-python"
 MODEL_ID = str(os.getenv("VF_KOKORO_MODEL_REPO_ID", "onnx-community/Kokoro-82M-v1.0-ONNX")).strip() or "onnx-community/Kokoro-82M-v1.0-ONNX"
 MODEL_REVISION = str(os.getenv("VF_KOKORO_MODEL_REVISION", "main")).strip() or "main"
-KOKORO_DTYPE = str(os.getenv("KOKORO_MODEL_DTYPE", "q8")).strip().lower() or "q8"
-KOKORO_MODEL_FILES = {
-    "fp32": "onnx/model.onnx",
-    "fp16": "onnx/model_fp16.onnx",
-    "q8": "onnx/model_quantized.onnx",
-    "q8f16": "onnx/model_q8f16.onnx",
-    "q4": "onnx/model_q4.onnx",
-    "q4f16": "onnx/model_q4f16.onnx",
-    "uint8": "onnx/model_uint8.onnx",
-    "uint8f16": "onnx/model_uint8f16.onnx",
-}
-KOKORO_MODEL_FILE = KOKORO_MODEL_FILES.get(KOKORO_DTYPE, KOKORO_MODEL_FILES["q8"])
+KOKORO_DTYPE_REQUESTED = str(os.getenv("KOKORO_MODEL_DTYPE", "q8")).strip().lower() or "q8"
+if KOKORO_DTYPE_REQUESTED != "q8":
+    print(
+        f'[kokoro-runtime] KOKORO_MODEL_DTYPE="{KOKORO_DTYPE_REQUESTED}" is unsupported in this workspace; forcing "q8".'
+    )
+KOKORO_DTYPE = "q8"
+KOKORO_MODEL_FILE = "onnx/model_quantized.onnx"
 LOCAL_MODEL_MIRROR_ROOT = Path(
     str(os.getenv("VF_LOCAL_MODEL_MIRROR_DIR", str(RUNTIME_ROOT / "models"))).strip() or str(RUNTIME_ROOT / "models")
 )

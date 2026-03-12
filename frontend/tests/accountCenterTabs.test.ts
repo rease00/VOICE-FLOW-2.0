@@ -13,7 +13,7 @@ describe('accountCenterTabs', () => {
   it('normalizes aliases into supported account tabs', () => {
     expect(normalizeAccountTab('overview')).toBe('account');
     expect(normalizeAccountTab('plan')).toBe('billing');
-    expect(normalizeAccountTab('history')).toBe('activity');
+    expect(normalizeAccountTab('history')).toBe('account');
     expect(normalizeAccountTab('unknown')).toBe('account');
   });
 
@@ -23,16 +23,15 @@ describe('accountCenterTabs', () => {
     expect(resolveAccountTabFromSearch('?vf-screen=profile&vf-tab=weird')).toBe('account');
   });
 
-  it('marks support and activity as lazy tabs', () => {
+  it('marks support as the only lazy tab', () => {
     expect(shouldLazyLoadAccountTab('support')).toBe(true);
-    expect(shouldLazyLoadAccountTab('activity')).toBe(true);
     expect(shouldLazyLoadAccountTab('billing')).toBe(false);
     expect(shouldKeepConversationSelection('support')).toBe(true);
     expect(shouldKeepConversationSelection('activity')).toBe(false);
   });
 
   it('keeps the account section tab order and default tab contract', () => {
-    expect(ACCOUNT_TAB_ORDER).toEqual(['account', 'billing', 'usage', 'preferences', 'support', 'activity']);
+    expect(ACCOUNT_TAB_ORDER).toEqual(['account', 'billing', 'usage', 'preferences', 'support']);
     expect(DEFAULT_ACCOUNT_TAB).toBe('account');
     expect(ACCOUNT_TAB_ORDER[0]).toBe(DEFAULT_ACCOUNT_TAB);
   });
@@ -41,9 +40,9 @@ describe('accountCenterTabs', () => {
     const items = ACCOUNT_TAB_ORDER.map((id) => ({ id }));
 
     expect(getManagedTabNavigationTarget(items, 'account', 'ArrowRight')).toBe('billing');
-    expect(getManagedTabNavigationTarget(items, 'activity', 'ArrowRight')).toBe('account');
+    expect(getManagedTabNavigationTarget(items, 'support', 'ArrowRight')).toBe('account');
     expect(getManagedTabNavigationTarget(items, 'usage', 'ArrowLeft')).toBe('billing');
     expect(getManagedTabNavigationTarget(items, 'usage', 'Home')).toBe('account');
-    expect(getManagedTabNavigationTarget(items, 'usage', 'End')).toBe('activity');
+    expect(getManagedTabNavigationTarget(items, 'usage', 'End')).toBe('support');
   });
 });

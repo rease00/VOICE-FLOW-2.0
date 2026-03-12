@@ -76,6 +76,7 @@ import { readStorageJson } from '../../../shared/storage/localStore';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { reportFrontendSignal } from '../../../shared/telemetry/frontendErrors';
 import { useWorkspaceViewport } from '../../../shared/ui/useWorkspaceViewport';
+import { resolvePublicVoiceLabel } from '../../../shared/voices/voicePublicName';
 import { getLabCapabilityProfile } from '../model/capabilities';
 import {
   LAB_CANVAS_DIMENSION_LIMITS,
@@ -331,10 +332,11 @@ const dedupeVoiceOptions = (voices: VoiceOption[]): VoiceOption[] => {
   voices.forEach((voice) => {
     const voiceId = String(voice?.id || '').trim();
     if (!voiceId) return;
+    const publicName = resolvePublicVoiceLabel(voice?.name, voiceId);
     const normalized: VoiceOption = {
       ...voice,
       id: voiceId,
-      name: String(voice?.name || voiceId).trim() || voiceId,
+      name: String(publicName || voice?.name || voiceId).trim() || voiceId,
     };
     byId.set(voiceId, normalized);
   });
@@ -4018,12 +4020,12 @@ const LabTabContent: React.FC<LabTabContentProps> = ({ resolvedTheme, onToast })
               <option value="">No voices available</option>
             ) : ttsVoiceOptions.map((voice) => (
               <option key={voice.id} value={voice.id}>
-                {voice.name || voice.id}
+                {resolvePublicVoiceLabel(voice.name, voice.id) || voice.id}
               </option>
             ))}
           </select>
           <div className={`text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-            Using {selectedTtsVoice?.name || 'default'} ({ttsVoiceId || LAB_DEFAULT_TTS_VOICE_ID}) on {ttsEngineLabel}. Kokoro is disabled in Lab.
+            Using {resolvePublicVoiceLabel(selectedTtsVoice?.name, selectedTtsVoice?.id) || 'default voice'} on {ttsEngineLabel}. Basic engine is disabled in Lab.
           </div>
           <textarea value={ttsText} onChange={(event) => setTtsText(event.target.value)} rows={6} className={`w-full rounded-2xl border px-3 py-2 text-sm ${isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-gray-200 bg-white text-gray-800'}`} />
           <Button size="sm" variant="secondary" icon={<Sparkles size={14} />} onClick={() => { void handleCreateTtsClip(); }}>

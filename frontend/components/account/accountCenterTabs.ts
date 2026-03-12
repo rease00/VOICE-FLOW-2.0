@@ -6,7 +6,6 @@ export const ACCOUNT_TAB_ORDER: AccountTabKey[] = [
   'usage',
   'preferences',
   'support',
-  'activity',
 ];
 
 export const DEFAULT_ACCOUNT_TAB: AccountTabKey = 'account';
@@ -21,7 +20,7 @@ export const normalizeAccountTab = (
   if (token === 'usage') return 'usage';
   if (token === 'preferences' || token === 'settings') return 'preferences';
   if (token === 'support' || token === 'help') return 'support';
-  if (token === 'activity' || token === 'history') return 'activity';
+  if (token === 'activity' || token === 'history') return fallback;
   return fallback;
 };
 
@@ -33,6 +32,6 @@ export const resolveAccountTabFromSearch = (
   return normalizeAccountTab(params.get('vf-tab'), fallback);
 };
 
-export const shouldLazyLoadAccountTab = (tab: AccountTabKey): boolean => tab === 'support' || tab === 'activity';
+export const shouldLazyLoadAccountTab = (tab: AccountTabKey): boolean => tab === 'support';
 
 export const shouldKeepConversationSelection = (tab: AccountTabKey): boolean => tab === 'support';

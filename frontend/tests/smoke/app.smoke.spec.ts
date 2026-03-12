@@ -1049,9 +1049,7 @@ const buildStudioSmokeEntitlements = () => {
         },
       },
       daily: {
-        generationLimit: 30,
         generationUsed: 0,
-        generationRemaining: 30,
         vfUsed: 0,
         periodKey: '2026-03-12',
         windowStartUtc: currentIso,
