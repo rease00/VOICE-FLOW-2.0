@@ -70,6 +70,7 @@ export interface AccountBillingPlanSummary {
   status: string;
   monthlyVfLimit: number;
   dailyGenerationLimit: number;
+  ttsSuccessRpm: number;
   maxCharsPerGeneration: number;
   allowedEngines: TtsEngineKey[];
   earlyAccess: boolean;

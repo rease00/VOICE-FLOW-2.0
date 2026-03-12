@@ -764,16 +764,16 @@ PLAN_KEY_ALIASES: dict[str, str] = {
     "proplus": "scale",
 }
 TTS_PLAN_GUARDRAILS: dict[str, dict[str, int]] = {
-    "free": {"rpm": 2, "maxChars": 8000},
+    "free": {"rpm": 5, "maxChars": 8000},
     "starter": {"rpm": 5, "maxChars": 10000},
     "creator": {"rpm": 5, "maxChars": 10000},
-    "pro": {"rpm": 10, "maxChars": 10000},
+    "pro": {"rpm": 5, "maxChars": 10000},
     "scale": {"rpm": 10, "maxChars": 15000},
 }
 TTS_PLAN_BURST_WINDOW_SECONDS = 60
 VF_TTS_SUCCESS_LIMIT_FREE = max(
     1,
-    int((os.getenv("VF_TTS_SUCCESS_LIMIT_FREE") or str(TTS_PLAN_GUARDRAILS["free"]["rpm"])).strip() or "2"),
+    int((os.getenv("VF_TTS_SUCCESS_LIMIT_FREE") or str(TTS_PLAN_GUARDRAILS["free"]["rpm"])).strip() or "5"),
 )
 VF_TTS_SUCCESS_LIMIT_STARTER = max(
     1,
@@ -19965,6 +19965,8 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
     entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
     profile = _user_profile_read(uid) or {"uid": uid}
     plan_key = _plan_key_from_name(str(entitlement.get("plan") or "free"))
+    success_bucket = _tts_success_bucket_for_plan(plan_key)
+    tts_success_rpm = _TTS_SUCCESS_LIMITER.quota_for_plan(success_bucket)
     plan_name = _normalize_plan_name(plan_key)
     pricing = _plan_pricing_summary(plan_key)
     feature_flags = PLAN_FEATURE_FLAGS.get(plan_key) or PLAN_FEATURE_FLAGS["free"]
@@ -20094,6 +20096,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             "status": str(entitlement.get("status") or "").strip() or "inactive",
             "monthlyVfLimit": _as_positive_int(entitlement.get("monthlyVfLimit")),
             "dailyGenerationLimit": _as_positive_int(entitlement.get("dailyGenerationLimit")),
+            "ttsSuccessRpm": max(1, int(tts_success_rpm)),
             "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 8000)),
             "allowedEngines": list(feature_flags.get("allowedEngines") or ()),
             "earlyAccess": bool(feature_flags.get("earlyAccess")),

@@ -1320,20 +1320,30 @@ def test_tts_synthesize_enforces_pro_and_scale_success_limits(monkeypatch) -> No
     backend_app._write_entitlement(plus_uid, {"plan": "Plus"})
 
     payload = {"engine": "GEM", "text": "burst plan test", "voice_id": "Fenrir"}
+    pro_limit = max(1, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_PRO", 5) or 5))
+    scale_limit = max(1, int(getattr(backend_app, "VF_TTS_SUCCESS_LIMIT_SCALE", 10) or 10))
 
-    for _ in range(10):
-        assert client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload).status_code == 200
+    pro_responses = [client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload) for _ in range(pro_limit)]
     pro_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": pro_uid}, json=payload)
+    assert all(resp.status_code == 200 for resp in pro_responses)
     assert pro_blocked.status_code == 429
-    assert (pro_blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
-    assert (pro_blocked.json().get("detail") or {}).get("plan") == "Pro"
+    pro_detail = pro_blocked.json().get("detail") or {}
+    assert pro_detail.get("errorCode") == "RATE_LIMIT_USER"
+    assert pro_detail.get("plan") == "Pro"
+    assert pro_responses[0].headers.get("x-ratelimit-success-limit") == str(pro_limit)
+    assert pro_responses[0].headers.get("x-ratelimit-success-remaining") == str(max(0, pro_limit - 1))
+    assert pro_responses[-1].headers.get("x-ratelimit-success-remaining") == "0"
 
-    for _ in range(10):
-        assert client.post("/tts/synthesize", headers={"x-dev-uid": plus_uid}, json=payload).status_code == 200
+    scale_responses = [client.post("/tts/synthesize", headers={"x-dev-uid": plus_uid}, json=payload) for _ in range(scale_limit)]
     plus_blocked = client.post("/tts/synthesize", headers={"x-dev-uid": plus_uid}, json=payload)
+    assert all(resp.status_code == 200 for resp in scale_responses)
     assert plus_blocked.status_code == 429
-    assert (plus_blocked.json().get("detail") or {}).get("errorCode") == "RATE_LIMIT_USER"
-    assert (plus_blocked.json().get("detail") or {}).get("plan") == "Scale"
+    plus_detail = plus_blocked.json().get("detail") or {}
+    assert plus_detail.get("errorCode") == "RATE_LIMIT_USER"
+    assert plus_detail.get("plan") == "Scale"
+    assert scale_responses[0].headers.get("x-ratelimit-success-limit") == str(scale_limit)
+    assert scale_responses[0].headers.get("x-ratelimit-success-remaining") == str(max(0, scale_limit - 1))
+    assert scale_responses[-1].headers.get("x-ratelimit-success-remaining") == "0"
 
 
 def test_tts_success_limit_does_not_count_failed_generation(monkeypatch) -> None:

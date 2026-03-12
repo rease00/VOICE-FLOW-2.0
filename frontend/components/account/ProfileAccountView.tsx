@@ -44,7 +44,6 @@ import {
 } from './accountCenterTabs';
 import {
   ACCOUNT_TAB_ICONS,
-  AccountSummaryStrip,
   InfoRow,
   MetricCard,
   PreferenceToggle,
@@ -72,7 +71,6 @@ import {
 } from './accountCenterShared';
 import {
   ACCOUNT_DETAIL_LABELS,
-  ACCOUNT_SUMMARY_LABELS,
   getBillingActionVisibility,
 } from './accountCenterLayout';
 
@@ -186,6 +184,7 @@ const buildFallbackBillingSummary = (
       status: isPaidPlan ? 'unavailable' : 'free_active',
       monthlyVfLimit: Math.max(0, Number(accountEntitlements?.monthly?.vfLimit || 0)),
       dailyGenerationLimit: Math.max(0, Number(accountEntitlements?.daily?.generationLimit || stats.generationsLimit || 0)),
+      ttsSuccessRpm: planKey === 'scale' ? 10 : 5,
       maxCharsPerGeneration: Math.max(
         0,
         Number(accountEntitlements?.limits?.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)
@@ -594,6 +593,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const userEmail = accountProfile?.email || user.email || 'Email unavailable';
   const accountStatus = humanizeToken(accountProfile?.status || summary.profile.status || '', 'Active');
   const recurringBenefit = Math.max(0, Number(summary.plan.pricing.discountPercent || 0));
+  const ttsSuccessRpm = Math.max(1, Number(summary.plan.ttsSuccessRpm || (summary.plan.key === 'scale' ? 10 : 5)));
   const statsAllowedEngines = stats.limits?.allowedEngines;
   const allowedEngines = useMemo(
     () => (summary.plan.allowedEngines.length > 0
@@ -650,24 +650,14 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           ? `${activeSupportConversationCount} active conversation${activeSupportConversationCount === 1 ? '' : 's'}`
           : 'All conversations currently resolved.'
         : 'No support conversations yet.';
-  const activitySummaryText = !loadedTabs.has('activity')
-    ? 'Open Activity to load recent generation history.'
-    : isLoadingActivity
-      ? 'Loading recent generation history...'
-      : recentActivity.length > 0
-        ? `${recentActivity.length} recent generation${recentActivity.length === 1 ? '' : 's'} ready`
-        : 'No generation history yet.';
-
   const navItems = useMemo(() => ([
     { key: 'account' as AccountTabKey, label: 'Account', summary: `${planName} plan | Member since ${memberSinceLabel}` },
     { key: 'billing' as AccountTabKey, label: 'Billing', summary: canManageBilling ? `${paymentMethodLabel} | ${renewalHeadline}` : 'Portal and invoice management stay here.' },
     { key: 'usage' as AccountTabKey, label: 'Usage', summary: hasUnlimitedAccess ? `Unlimited access | ${formatNumber(monthlyUsed)} VF used this month` : `${formatNumber(monthlyUsed)} of ${formatNumber(monthlyLimit)} VF used this month` },
     { key: 'preferences' as AccountTabKey, label: 'Preferences', summary: `${activeThemeLabel} theme | ${enabledPreferenceCount}/${totalPreferenceCount} toggles enabled` },
     { key: 'support' as AccountTabKey, label: 'Support', summary: supportSummaryText },
-    { key: 'activity' as AccountTabKey, label: 'Activity', summary: activitySummaryText },
   ]), [
     activeThemeLabel,
-    activitySummaryText,
     canManageBilling,
     enabledPreferenceCount,
     hasUnlimitedAccess,
@@ -679,57 +669,6 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     renewalHeadline,
     supportSummaryText,
     totalPreferenceCount,
-  ]);
-
-  const summaryItems = useMemo(() => ([
-    {
-      id: 'plan',
-      label: ACCOUNT_SUMMARY_LABELS.plan,
-      value: planName,
-      detail: `${allowedEngineSummary} | ${formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} chars / generation`,
-    },
-    {
-      id: 'usage',
-      label: ACCOUNT_SUMMARY_LABELS.usage,
-      value: hasUnlimitedAccess
-        ? `Unlimited | ${formatNumber(monthlyUsed)} used`
-        : `${formatNumber(monthlyUsed)} / ${formatNumber(monthlyLimit)} VF`,
-      detail: `Daily generations: ${formatNumber(stats.generationsUsed)} / ${formatNumber(summary.plan.dailyGenerationLimit || stats.generationsLimit || 0)}`,
-    },
-    {
-      id: 'balance',
-      label: ACCOUNT_SUMMARY_LABELS.balance,
-      value: formatVfValue(availableBalance),
-      detail: hasUnlimitedAccess
-        ? 'Unlimited access removes current spend limits.'
-        : `${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF and ${formatNumber(stats.wallet?.paidVfBalance || 0)} paid VF available.`,
-    },
-    {
-      id: 'ops',
-      label: ACCOUNT_SUMMARY_LABELS.ops,
-      value: supportConversations.length > 0 ? `${activeSupportConversationCount} support active` : 'No support queue',
-      detail: loadedTabs.has('activity')
-        ? `${recentActivity.length} recent generation${recentActivity.length === 1 ? '' : 's'} loaded`
-        : 'Open Activity to load recent generation history.',
-    },
-  ]), [
-    allowedEngineSummary,
-    availableBalance,
-    activeSupportConversationCount,
-    hasUnlimitedAccess,
-    loadedTabs,
-    monthlyLimit,
-    monthlyUsed,
-    planName,
-    recentActivity.length,
-    stats.generationsUsed,
-    stats.limits?.maxCharsPerGeneration,
-    summary.plan.dailyGenerationLimit,
-    summary.plan.maxCharsPerGeneration,
-    supportConversations.length,
-    stats.generationsLimit,
-    stats.wallet?.monthlyFreeRemaining,
-    stats.wallet?.paidVfBalance,
   ]);
 
   const setTab = (tab: AccountTabKey): void => {
@@ -750,9 +689,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const renderTabRail = () => (
     <div
       {...accountSectionTabs.listProps}
-      className={`shrink-0 overflow-x-auto rounded-[0.95rem] border p-1 ${surfaceClass(isDarkUi)}`}
+      className={`shrink-0 rounded-[0.95rem] border p-0.5 sm:p-1 ${surfaceClass(isDarkUi)}`}
     >
-      <div className="flex min-w-max gap-2">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 sm:gap-2 xl:grid-cols-5">
         {navItems.map((item) => {
           const isActive = item.key === activeTab;
           return (
@@ -760,7 +699,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
               key={item.key}
               type="button"
               {...accountSectionTabs.getTabProps(item.key)}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-xs font-semibold transition ${
+              className={`inline-flex w-full items-center justify-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition sm:gap-1.5 sm:px-2.5 sm:py-1.5 sm:text-xs ${
                 isActive
                   ? (isDarkUi ? 'border-cyan-300/40 bg-cyan-400/14 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900')
                   : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`
@@ -776,26 +715,27 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderAccountSection = () => (
-    <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
         <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.displayName} value={userDisplayName} />
         <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.email} value={userEmail} />
         <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.userId} value={accountProfile?.userId || user.userId || 'Pending'} />
         <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.accountStatus} value={accountStatus} />
         <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.authProviders} value={providerSummary} />
         <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.memberSince} value={memberSinceLabel} />
+        <InfoRow isDarkUi={isDarkUi} label="TTS success limit" value={`${formatNumber(ttsSuccessRpm)} RPM`} />
       </div>
     </div>
   );
 
   const renderBillingSection = () => (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-3">
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-wrap gap-2 sm:gap-3">
         {billingActionVisibility.showChangePlan ? (
           <button
             type="button"
             onClick={() => setShowSubscriptionModal(true)}
-            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
               isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
             }`}
           >
@@ -807,11 +747,11 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             type="button"
             onClick={() => void handleOpenPortal('manage')}
             disabled={portalIntent !== null}
-            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
               isDarkUi ? 'border-white/10 bg-white/[0.06] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
             }`}
           >
-            {portalIntent === 'manage' ? <Loader2 size={16} className="animate-spin" /> : <ExternalLink size={16} />}
+            {portalIntent === 'manage' ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : <ExternalLink className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
             Open billing portal
           </button>
         ) : null}
@@ -819,7 +759,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           <button
             type="button"
             onClick={() => setIsCancelDialogOpen(true)}
-            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
               isDarkUi ? 'border-rose-300/20 bg-rose-400/10 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
             }`}
           >
@@ -827,9 +767,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           </button>
         ) : null}
       </div>
-      <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
-        <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
-          <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+        <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+          <div className="grid gap-2.5 sm:grid-cols-2 sm:gap-3">
             <InfoRow isDarkUi={isDarkUi} label="Plan" value={planName} />
             <InfoRow isDarkUi={isDarkUi} label="Plan status" value={humanizeToken(summary.subscription.status || summary.plan.status || 'inactive')} />
             <InfoRow isDarkUi={isDarkUi} label="Renewal" value={renewalHeadline} />
@@ -839,31 +779,31 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           </div>
         </div>
 
-        <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
           <div className={labelClass(isDarkUi)}>Payment method</div>
-          <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{paymentMethodLabel}</div>
-          <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>
+          <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{paymentMethodLabel}</div>
+          <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>
             {summary.paymentMethod?.expMonth && summary.paymentMethod?.expYear
               ? `Expires ${String(summary.paymentMethod.expMonth).padStart(2, '0')}/${summary.paymentMethod.expYear}`
               : canManageBilling
                 ? 'Manage the default payment method from the billing portal.'
                 : 'No live billing portal session is available yet.'}
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid gap-2.5 sm:mt-4 sm:grid-cols-2 sm:gap-3">
             <InfoRow isDarkUi={isDarkUi} label="Billing country" value={summary.billing.billingCountry || 'Unavailable'} />
             <InfoRow isDarkUi={isDarkUi} label="Currency mode" value={summary.billing.currencyMode || 'Unavailable'} />
           </div>
-          <div className={`mt-4 rounded-[1rem] border px-4 py-3 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+          <div className={`mt-3 rounded-[1rem] border px-3 py-2.5 text-xs sm:mt-4 sm:px-4 sm:py-3 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             {recurringBenefit > 0 ? `${recurringBenefit}% recurring benefit is locked in on ${planName}.` : 'Recurring discounts are not currently available for this plan.'}
           </div>
         </div>
       </div>
 
-      <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className={labelClass(isDarkUi)}>Invoices</div>
-            <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Invoices and receipts</div>
+            <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Invoices and receipts</div>
           </div>
           {invoices.length > 4 ? (
             <button
@@ -876,16 +816,16 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           ) : null}
         </div>
         {visibleInvoices.length === 0 ? (
-          <div className={`mt-4 rounded-[1rem] border px-4 py-4 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-xs sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             No invoices are synced yet. Stripe receipts appear here after billing activity posts.
           </div>
         ) : (
-          <div className="mt-4 space-y-2">
+          <div className="mt-3 space-y-2 sm:mt-4">
             {visibleInvoices.map((invoice) => (
-              <div key={invoice.id} className={`rounded-[1rem] border px-4 py-3 ${cardInsetClass(isDarkUi)}`}>
+              <div key={invoice.id} className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <div className={`truncate text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+                    <div className={`truncate text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
                       {sanitizeUiText(invoice.description || invoice.number || invoice.id)}
                     </div>
                     <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>
@@ -895,7 +835,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge isDarkUi={isDarkUi} tone={invoice.status === 'paid' ? 'success' : invoice.status === 'open' ? 'warning' : 'neutral'} label={humanizeToken(invoice.status)} />
-                    <span className={`text-sm font-semibold ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                    <span className={`text-xs font-semibold sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                       {formatCurrencyMinor(invoice.amountPaidMinor || invoice.amountDueMinor, invoice.currency)}
                     </span>
                     {invoice.hostedInvoiceUrl ? (
@@ -920,70 +860,72 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderUsageSection = () => (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="space-y-3 sm:space-y-4">
+      <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.balance} eyebrow="Monthly used" title={`${formatNumber(monthlyUsed)} VF`} detail={hasUnlimitedAccess ? 'Unlimited access is active.' : `${formatNumber(monthlyLimit)} VF monthly cap.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.spendable} eyebrow="Spendable now" title={formatVfValue(availableBalance)} detail={`${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF available right now.`} />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.account} eyebrow="Daily generations" title={`${formatNumber(stats.generationsUsed)} / ${formatNumber(summary.plan.dailyGenerationLimit || stats.generationsLimit || 0)}`} detail="Tracked from the current entitlement window." />
         <MetricCard isDarkUi={isDarkUi} icon={SUMMARY_ICONS.currentPlan} eyebrow="Max chars" title={formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} detail="Maximum characters allowed per generation request." />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid gap-3 sm:gap-4 xl:grid-cols-3">
         <WindowCard title="Daily" data={stats.vfUsage.daily} isDarkUi={isDarkUi} />
         <WindowCard title="Monthly" data={stats.vfUsage.monthly} isDarkUi={isDarkUi} />
         <WindowCard title="Lifetime" data={stats.vfUsage.lifetime} isDarkUi={isDarkUi} />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-        <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
-          <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="grid gap-2.5 sm:gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <div className={`rounded-[1.2rem] border p-2.5 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <div className={labelClass(isDarkUi)}>Engine pricing</div>
-              <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>VF rate per character</div>
-              <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>
+              <div className={`mt-1 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>VF rate per character</div>
+              <div className={`mt-0.5 text-[11px] leading-5 sm:mt-1 sm:text-sm ${subduedClass(isDarkUi)}`}>
                 Characters are billed by engine rate. Your plan changes engine access and queue priority, not the base VF pricing.
               </div>
             </div>
-            <div className={`rounded-full border px-3 py-1 text-[11px] font-semibold ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+            <div className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold sm:px-3 sm:py-1 sm:text-[11px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
               {allowedEngines.length > 0 ? `${allowedEngines.length}/${engineRateRows.length} engines unlocked` : 'Waiting for plan sync'}
             </div>
           </div>
 
-          <div className="mt-4 space-y-3">
+          <div className="mt-2.5 space-y-2 sm:mt-4 sm:space-y-3">
             {engineRateRows.map((row) => (
-              <div key={row.engine} className={`rounded-[1rem] border px-4 py-3 ${cardInsetClass(isDarkUi)}`}>
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div key={row.engine} className={`rounded-[1rem] border px-2.5 py-2 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
+                <div className="flex flex-col gap-2 sm:gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-3">
-                      <EngineLogo engine={row.engine} size="sm" variant="ringed" />
+                    <div className="flex items-center gap-2">
+                      <div className="origin-left scale-90 sm:scale-100">
+                        <EngineLogo engine={row.engine} size="sm" variant="ringed" />
+                      </div>
                       <div className="min-w-0">
-                        <div className={`text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+                        <div className={`text-[12px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
                           {getEngineDisplayName(row.engine)}
                         </div>
-                        <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>
+                        <div className={`mt-0.5 text-[10px] sm:mt-1 sm:text-xs ${subduedClass(isDarkUi)}`}>
                           {row.usageLabel}
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[360px]">
-                    <div className={`rounded-[0.9rem] border px-3 py-2 ${cardInsetClass(isDarkUi)}`}>
+                  <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:min-w-[300px]">
+                    <div className={`rounded-[0.9rem] border px-2.5 py-1.5 sm:px-3 sm:py-2 ${cardInsetClass(isDarkUi)}`}>
                       <div className={labelClass(isDarkUi)}>Exact rate</div>
-                      <div className={`mt-1.5 text-sm font-semibold ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                      <div className={`mt-0.5 text-[12px] font-semibold sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                         {formatVfRatePerCharacter(row.rate)}
                       </div>
                     </div>
-                    <div className={`rounded-[0.9rem] border px-3 py-2 ${cardInsetClass(isDarkUi)}`}>
+                    <div className={`rounded-[0.9rem] border px-2.5 py-1.5 sm:px-3 sm:py-2 ${cardInsetClass(isDarkUi)}`}>
                       <div className={labelClass(isDarkUi)}>Inverse view</div>
-                      <div className={`mt-1.5 text-sm font-semibold ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                      <div className={`mt-0.5 text-[12px] font-semibold sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                         {formatCharsPerVf(row.rate)}
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-3 flex flex-wrap items-center gap-2">
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 sm:mt-3 sm:gap-2">
                   <StatusBadge
                     isDarkUi={isDarkUi}
                     tone={row.isAllowed ? 'success' : 'warning'}
@@ -995,25 +937,25 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           </div>
         </div>
 
-        <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
           <div className={labelClass(isDarkUi)}>Billing logic</div>
-          <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>How VF is calculated</div>
-          <div className={`mt-1 text-sm leading-6 ${mutedClass(isDarkUi)}`}>
+          <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>How VF is calculated</div>
+          <div className={`mt-1 text-xs leading-5 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>
             Every generation charges `characters x engine VF rate`. Lower-cost engines stretch free balance further, while higher tiers trade more VF for better output quality or capability.
           </div>
 
-          <div className="mt-4 space-y-3">
-            <div className={`rounded-[1rem] border px-4 py-3 ${cardInsetClass(isDarkUi)}`}>
-              <div className={`text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Lowest-cost engine</div>
-              <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>Kokoro currently has the lowest VF burn, so it is the best default for free-plan coverage.</div>
+          <div className="mt-3 space-y-2.5 sm:mt-4 sm:space-y-3">
+            <div className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
+              <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Lowest-cost engine</div>
+              <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Kokoro currently has the lowest VF burn, so it is the best default for free-plan coverage.</div>
             </div>
-            <div className={`rounded-[1rem] border px-4 py-3 ${cardInsetClass(isDarkUi)}`}>
-              <div className={`text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Plan effect</div>
-              <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>Your plan controls which engines are unlocked and how quickly jobs move through the queue. The per-character rate itself stays consistent.</div>
+            <div className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
+              <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Plan effect</div>
+              <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Your plan controls which engines are unlocked and how quickly jobs move through the queue. The per-character rate itself stays consistent.</div>
             </div>
-            <div className={`rounded-[1rem] border px-4 py-3 ${cardInsetClass(isDarkUi)}`}>
-              <div className={`text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Current access</div>
-              <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>{allowedEngineSummary}</div>
+            <div className={`rounded-[1rem] border px-3 py-2.5 sm:px-4 sm:py-3 ${cardInsetClass(isDarkUi)}`}>
+              <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Current access</div>
+              <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>{allowedEngineSummary}</div>
             </div>
           </div>
         </div>
@@ -1022,23 +964,23 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderPreferencesSection = () => (
-    <div className="grid gap-4 xl:grid-cols-[0.78fr_1.22fr]">
-      <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+    <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.78fr_1.22fr]">
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Theme</div>
-        <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Appearance mode</div>
-        <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>Choose how the account center should render in light and dark environments.</div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+        <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Appearance mode</div>
+        <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Choose how the account center should render in light and dark environments.</div>
+        <div className="mt-3 grid gap-2.5 sm:mt-4 sm:grid-cols-3 sm:gap-3 xl:grid-cols-1">
           <ThemeButton active={themeChoice === 'light'} isDarkUi={isDarkUi} icon={SUMMARY_ICONS.light} title="Light" onClick={() => setThemeChoice('light')} />
           <ThemeButton active={themeChoice === 'dark'} isDarkUi={isDarkUi} icon={SUMMARY_ICONS.dark} title="Dark" onClick={() => setThemeChoice('dark')} />
           <ThemeButton active={themeChoice === 'system'} isDarkUi={isDarkUi} icon={SUMMARY_ICONS.preferences} title="System" onClick={() => setThemeChoice('system')} />
         </div>
       </div>
 
-      <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Notifications</div>
-        <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Inbox and email preferences</div>
-        <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>Critical warnings remain enabled. These toggles control helpful prompts and email delivery.</div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Inbox and email preferences</div>
+        <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Critical warnings remain enabled. These toggles control helpful prompts and email delivery.</div>
+        <div className="mt-3 grid gap-2.5 sm:mt-4 sm:gap-3 lg:grid-cols-2">
           <PreferenceToggle isDarkUi={isDarkUi} title="Tips" detail="Allow helpful prompts and educational hints." checked={prefs.allowTips} onToggle={() => setPrefs((prev) => ({ ...prev, allowTips: !prev.allowTips }))} />
           <PreferenceToggle isDarkUi={isDarkUi} title="System info" detail="Show runtime and backend notices." checked={prefs.allowSystemInfo} onToggle={() => setPrefs((prev) => ({ ...prev, allowSystemInfo: !prev.allowSystemInfo }))} />
           <PreferenceToggle isDarkUi={isDarkUi} title="Notification sound" detail="Play a tone for warning, error, and critical alerts." checked={prefs.playSound} onToggle={() => setPrefs((prev) => ({ ...prev, playSound: !prev.playSound }))} />
@@ -1052,55 +994,55 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderSupportSection = () => (
-    <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
-      <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+    <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Compose request</div>
-        <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Send a support message</div>
-        <div className={`mt-1 text-sm ${subduedClass(isDarkUi)}`}>Use this for billing questions, account issues, or anything that needs a human follow-up.</div>
+        <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Send a support message</div>
+        <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Use this for billing questions, account issues, or anything that needs a human follow-up.</div>
         <textarea
           value={supportText}
           onChange={(event) => setSupportText(event.target.value)}
           placeholder="Describe the issue, expected outcome, and anything already tried."
-          className={`mt-4 min-h-[148px] w-full rounded-[1.1rem] border px-4 py-3 text-sm outline-none transition ${
+          className={`mt-3 min-h-[120px] w-full rounded-[1rem] border px-3 py-2.5 text-[13px] outline-none transition sm:mt-4 sm:min-h-[148px] sm:rounded-[1.1rem] sm:px-4 sm:py-3 sm:text-sm ${
             isDarkUi
               ? 'border-white/10 bg-slate-950/40 text-white placeholder:text-slate-500 focus:border-cyan-300/45'
               : 'border-slate-200 bg-white text-slate-950 placeholder:text-slate-400 focus:border-cyan-300'
           }`}
         />
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 sm:mt-4 sm:gap-3">
           <div className={`text-xs ${subduedClass(isDarkUi)}`}>Recent conversations refresh after each message.</div>
           <button
             type="button"
             onClick={() => void handleSendSupport()}
             disabled={isSendingSupport || supportText.trim().length === 0}
-            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
               isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
             }`}
           >
-            {isSendingSupport ? <Loader2 size={16} className="animate-spin" /> : SUMMARY_ICONS.support}
+            {isSendingSupport ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : SUMMARY_ICONS.support}
             Send request
           </button>
         </div>
       </div>
 
-      <div className={`rounded-[1.2rem] border p-4 ${cardInsetClass(isDarkUi)}`}>
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className={labelClass(isDarkUi)}>Recent conversations</div>
-            <div className={`mt-2 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Support timeline</div>
+            <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Support timeline</div>
           </div>
-          {isLoadingSupport ? <Loader2 size={18} className={`animate-spin ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`} /> : null}
+          {isLoadingSupport ? <Loader2 className={`h-4 w-4 animate-spin sm:h-[18px] sm:w-[18px] ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`} /> : null}
         </div>
         {isLoadingSupport && supportConversations.length === 0 ? (
-          <div className={`mt-4 rounded-[1rem] border px-4 py-4 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-xs sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             Syncing support conversations...
           </div>
         ) : supportConversations.length === 0 ? (
-          <div className={`mt-4 rounded-[1rem] border px-4 py-4 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-xs sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             No support conversations yet.
           </div>
         ) : (
-          <div className="mt-4 space-y-3">
+          <div className="mt-3 space-y-2.5 sm:mt-4 sm:space-y-3">
             {supportConversations.map((conversation) => {
               const isHighlighted = highlightedConversationId === conversation.conversationId;
               const canReopen = !['open', 'needs_human'].includes(String(conversation.status || '').trim().toLowerCase());
@@ -1111,7 +1053,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   ref={(node) => {
                     conversationRefs.current[conversation.conversationId] = node;
                   }}
-                  className={`rounded-[1rem] border px-4 py-4 transition ${
+                  className={`rounded-[1rem] border px-3 py-3 sm:px-4 sm:py-4 transition ${
                     isHighlighted
                       ? (isDarkUi ? 'border-cyan-300/40 bg-cyan-400/10' : 'border-cyan-300 bg-cyan-50/70')
                       : cardInsetClass(isDarkUi)
@@ -1122,7 +1064,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                       <button
                         type="button"
                         onClick={() => setHighlightedConversationId(conversation.conversationId)}
-                        className={`text-left text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}
+                        className={`text-left text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}
                       >
                         Conversation {conversation.conversationId.slice(0, 8)}
                       </button>
@@ -1140,7 +1082,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     <button
                       type="button"
                       onClick={() => void handleMarkUnresolved(conversation.conversationId)}
-                      className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
+                      className={`mt-2.5 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold sm:mt-3 sm:px-3 sm:py-1.5 sm:text-xs ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
                     >
                       Reopen with support
                     </button>
@@ -1155,13 +1097,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderActivitySection = () => (
-    <div className="space-y-3">
+    <div className="space-y-2.5 sm:space-y-3">
       {isLoadingActivity && recentActivity.length === 0 ? (
-        <div className={`rounded-[1rem] border px-4 py-4 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+        <div className={`rounded-[1rem] border px-3 py-3 text-xs sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
           Syncing recent generation history...
         </div>
       ) : recentActivity.length === 0 ? (
-        <div className={`rounded-[1rem] border px-4 py-4 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+        <div className={`rounded-[1rem] border px-3 py-3 text-xs sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
           No generation history yet.
         </div>
       ) : (
@@ -1171,10 +1113,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           const charCount = Math.max(0, Number(item.chars || (item.text || '').length || 0));
           const preview = sanitizeUiText(String(item.text || '').replace(/\s+/g, ' ').trim()) || 'No preview available.';
           return (
-            <div key={item.id} className={`rounded-[1rem] border px-4 py-4 ${cardInsetClass(isDarkUi)}`}>
+            <div key={item.id} className={`rounded-[1rem] border px-3 py-3 sm:px-4 sm:py-4 ${cardInsetClass(isDarkUi)}`}>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
-                  <div className={`text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{voiceLabel}</div>
+                  <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{voiceLabel}</div>
                   <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>
                     {renderHistoryTimestamp(Number(item.timestamp || Date.now()))}
                     {' | '}
@@ -1185,7 +1127,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 </div>
                 <StatusBadge isDarkUi={isDarkUi} tone={item.status === 'failed' ? 'warning' : 'success'} label={humanizeToken(item.status || 'completed')} />
               </div>
-              <div className={`mt-3 line-clamp-3 text-sm leading-6 ${mutedClass(isDarkUi)}`}>{preview}</div>
+              <div className={`mt-2.5 line-clamp-3 text-[13px] leading-5 sm:mt-3 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{preview}</div>
             </div>
           );
         })
@@ -1196,7 +1138,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const renderActiveSection = () => {
     if (isLoadingCore && EAGER_ACCOUNT_TABS.includes(activeTab)) {
       return (
-        <div className={`rounded-[1.2rem] border px-4 py-6 text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+        <div className={`rounded-[1.2rem] border px-3 py-4 text-xs sm:px-4 sm:py-6 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
           Syncing account details...
         </div>
       );
@@ -1211,7 +1153,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   };
 
   return (
-    <div className="h-[100dvh] w-full overflow-hidden bg-transparent px-3 py-4 sm:px-6 sm:py-6">
+    <div className="h-[100dvh] w-full overflow-hidden bg-transparent px-2.5 py-3 sm:px-6 sm:py-6">
       <div
         className={`pointer-events-none fixed inset-0 ${
           isDarkUi
@@ -1220,34 +1162,34 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         }`}
       />
 
-      <div className="relative mx-auto flex h-full w-full max-w-7xl min-h-0 flex-col gap-3 sm:gap-4">
-        <section className={`shrink-0 rounded-[1.45rem] border p-4 ${surfaceClass(isDarkUi)}`}>
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="relative mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col gap-2.5 sm:gap-4">
+        <section className={`shrink-0 rounded-[1.45rem] border p-2.5 sm:p-4 ${surfaceClass(isDarkUi)}`}>
+          <div className="flex flex-col gap-2.5 sm:gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
               <button
                 type="button"
                 onClick={() => {
                   setScreenSearchState('main');
                   setScreen(AppScreen.MAIN);
                 }}
-                className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-xs font-semibold transition sm:px-3 sm:py-2 sm:text-sm ${
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition sm:gap-2 sm:px-3 sm:py-2 sm:text-sm ${
                   isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white/80 text-slate-800 hover:bg-white'
                 }`}
               >
-                <ArrowLeft size={16} />
+                <ArrowLeft className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                 Back to workspace
               </button>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
                 <button
                   type="button"
                   onClick={() => void handleRefresh()}
                   disabled={isRefreshing}
-                  className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-60 sm:px-3 sm:py-2 sm:text-sm ${
+                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition disabled:opacity-60 sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-sm ${
                     isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white/80 text-slate-800 hover:bg-white'
                   }`}
                 >
-                  {isRefreshing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCcw size={16} />}
+                  {isRefreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : <RefreshCcw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
                   {refreshLabel}
                 </button>
                 <button
@@ -1262,48 +1204,39 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     setScreenSearchState('login');
                     setScreen(AppScreen.LOGIN);
                   }}
-                  className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-xs font-semibold transition sm:px-3 sm:py-2 sm:text-sm ${
+                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-sm ${
                     isDarkUi ? 'border-rose-300/25 bg-rose-400/12 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
                   }`}
                 >
-                  <LogOut size={16} />
+                  <LogOut className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                   Sign out
                 </button>
               </div>
             </div>
 
-            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
-              <div className="space-y-3">
-                <div className={`inline-flex items-center gap-3 rounded-full border px-3 py-1.5 ${cardInsetClass(isDarkUi)}`}>
+            <div className="grid gap-2.5 sm:gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-start">
+              <div className="flex items-center lg:min-h-[56px]">
+                <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${cardInsetClass(isDarkUi)}`}>
                   <BrandLogo size="sm" tone={isDarkUi ? 'light' : 'dark'} />
-                  <span className={`text-[11px] font-black uppercase tracking-[0.24em] ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                  <span className={`text-[10px] font-black uppercase tracking-[0.2em] sm:text-[11px] sm:tracking-[0.24em] ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                     Account Center
                   </span>
                 </div>
-                <div>
-                  <h1 className={`text-[1.6rem] font-semibold leading-tight tracking-tight sm:text-2xl ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
-                    Account controls without the clutter.
-                  </h1>
-                  <p className={`mt-1 hidden max-w-3xl text-sm leading-6 sm:block ${mutedClass(isDarkUi)}`}>
-                    Billing, usage, support, and preferences stay in focused sections so common tasks are faster to reach.
-                  </p>
-                </div>
-                <AccountSummaryStrip isDarkUi={isDarkUi} items={summaryItems} />
               </div>
 
-              <div className={`flex min-w-0 items-center gap-2.5 rounded-[1rem] border px-3 py-2.5 ${cardInsetClass(isDarkUi)}`}>
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border text-base font-black ${isDarkUi ? 'border-white/10 bg-white/[0.06] text-white' : 'border-slate-200 bg-white text-slate-900'}`}>
+              <div className={`flex min-w-0 items-center gap-2 rounded-[1rem] border px-2.5 py-2 sm:px-3 sm:py-2.5 lg:justify-self-end ${cardInsetClass(isDarkUi)}`}>
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border text-sm font-black sm:h-10 sm:w-10 sm:text-base ${isDarkUi ? 'border-white/10 bg-white/[0.06] text-white' : 'border-slate-200 bg-white text-slate-900'}`}>
                   {user.avatarUrl ? <img src={user.avatarUrl} alt={`${userDisplayName} avatar`} className="h-full w-full rounded-xl object-cover" /> : userDisplayName.slice(0, 1).toUpperCase()}
                 </div>
                 <div className="min-w-0">
-                  <div className={`truncate text-sm font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{userDisplayName}</div>
-                  <div className={`truncate text-xs ${subduedClass(isDarkUi)}`}>{userEmail}</div>
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <div className={`truncate text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{userDisplayName}</div>
+                  <div className={`truncate text-[11px] sm:text-xs ${subduedClass(isDarkUi)}`}>{userEmail}</div>
+                  <div className="mt-1 flex flex-wrap gap-1.5 sm:mt-1.5">
                     <StatusBadge isDarkUi={isDarkUi} tone={summary.subscription.active ? 'success' : 'neutral'} label={planName} />
                     <StatusBadge isDarkUi={isDarkUi} tone={usageTone} label={hasUnlimitedAccess ? 'Unlimited access' : accountStatus} />
                     {summary.plan.earlyAccess ? <StatusBadge isDarkUi={isDarkUi} tone="warning" label="Early access" /> : null}
                   </div>
-                  <div className={`mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] ${subduedClass(isDarkUi)}`}>
+                  <div className={`mt-1 grid grid-cols-2 gap-x-2.5 gap-y-0.5 text-[10px] sm:mt-1.5 sm:gap-x-3 sm:text-[11px] ${subduedClass(isDarkUi)}`}>
                     <span>{hasUnlimitedAccess ? 'Monthly: Unlimited' : `Monthly: ${formatNumber(monthlyUsed)}/${formatNumber(monthlyLimit)}`}</span>
                     <span>{`Daily: ${formatNumber(stats.generationsUsed)}/${formatNumber(summary.plan.dailyGenerationLimit || stats.generationsLimit || 0)}`}</span>
                   </div>
@@ -1313,22 +1246,22 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           </div>
         </section>
 
-        {summary.warnings.length > 0 ? <div className={`shrink-0 rounded-[1.15rem] border px-4 py-3 text-sm ${isDarkUi ? 'border-amber-300/20 bg-amber-400/10 text-amber-50' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>{sanitizeUiText(summary.warnings[0] || '')}</div> : null}
+        {summary.warnings.length > 0 ? <div className={`shrink-0 rounded-[1.15rem] border px-3 py-2.5 text-xs sm:px-4 sm:py-3 sm:text-sm ${isDarkUi ? 'border-amber-300/20 bg-amber-400/10 text-amber-50' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>{sanitizeUiText(summary.warnings[0] || '')}</div> : null}
 
         {renderTabRail()}
 
         <div className="min-h-0 flex flex-1">
           <section
             {...accountSectionTabs.getPanelProps(activeTab)}
-            className={`min-h-0 flex-1 overflow-hidden rounded-[1.35rem] border p-3 sm:p-4 ${surfaceClass(isDarkUi)}`}
+            className={`min-h-0 flex-1 overflow-hidden rounded-[1.35rem] border p-2.5 sm:p-4 ${surfaceClass(isDarkUi)}`}
           >
-            <div className="flex h-full min-h-0 flex-col gap-4">
-              <div className={`shrink-0 border-b pb-3 ${isDarkUi ? 'border-white/10' : 'border-slate-200/80'}`}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4">
+              <div className={`shrink-0 border-b pb-2.5 sm:pb-3 ${isDarkUi ? 'border-white/10' : 'border-slate-200/80'}`}>
+                <div className="flex flex-wrap items-start justify-between gap-2.5 sm:gap-3">
                   <div>
                     <div className={labelClass(isDarkUi)}>{sectionHeader.title} section</div>
-                    <h2 className={`mt-1 text-lg font-semibold ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{sectionHeader.title}</h2>
-                    <p className={`mt-1 text-xs leading-5 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{sectionHeader.detail}</p>
+                    <h2 className={`mt-1 text-base font-semibold sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{sectionHeader.title}</h2>
+                    <p className={`mt-1 text-[11px] leading-5 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{sectionHeader.detail}</p>
                   </div>
                   {activeTab === 'billing' ? (
                     <StatusBadge isDarkUi={isDarkUi} tone={canManageBilling ? 'success' : 'neutral'} label={canManageBilling ? 'Portal ready' : 'Portal unavailable'} />

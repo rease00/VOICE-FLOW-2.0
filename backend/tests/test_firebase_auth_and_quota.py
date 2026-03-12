@@ -571,6 +571,9 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     payload = response.json()["summary"]
     assert payload["plan"]["key"] == "pro"
     assert payload["plan"]["pricing"]["discountPercent"] == 10
+    assert int(payload["plan"]["ttsSuccessRpm"]) == int(
+        backend_app._TTS_SUCCESS_LIMITER.quota_for_plan(backend_app._tts_success_bucket_for_plan("pro"))
+    )
     assert payload["billing"]["hasPortalAccess"] is True
     assert payload["subscription"]["active"] is True
     assert payload["subscription"]["latestInvoiceId"] == "in_test_001"
