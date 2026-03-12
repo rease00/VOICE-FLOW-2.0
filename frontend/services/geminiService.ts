@@ -61,6 +61,7 @@ interface KokoroLiveChunk {
 export interface GenerateSpeechOptions {
   context?: 'studio' | 'preview' | 'dubbing';
   preferLiveChunks?: boolean;
+  preferBrowserKokoro?: boolean;
 }
 
 const resolveGeminiApiKey = (settings: Pick<GenerationSettings, 'geminiApiKey'>): string => {
@@ -248,11 +249,7 @@ const STUDIO_CAST_TEXT_MODELS = [
   "gemini-2.5-flash",
 ];
 
-const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'GOOD' | 'NEURAL2', string[]> = {
-  GOOD: [
-    "gemini-2.5-flash-lite-preview-tts",
-    "gemini-2.5-flash-preview-tts",
-  ],
+const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'NEURAL2', string[]> = {
   NEURAL2: [
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-flash-lite-preview-tts",
@@ -265,7 +262,6 @@ const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'GOOD' | 'NEURAL2', string[]
 
 const resolveDirectTtsFallbackModels = (engine: string): string[] => {
   const normalized = String(engine || '').trim().toUpperCase();
-  if (normalized === 'GOOD') return [...TTS_MODELS_FALLBACK_BY_ENGINE.GOOD];
   if (normalized === 'NEURAL2') return [...TTS_MODELS_FALLBACK_BY_ENGINE.NEURAL2];
   return [...TTS_MODELS_FALLBACK_BY_ENGINE.GEM];
 };
@@ -1843,6 +1839,9 @@ Output ONLY the corrected text. Do not add "Here is the corrected version".`;
 export interface DirectorOptions {
   style: 'lip_sync' | 'natural' | 'summary';
   tone: 'neutral' | 'dramatic' | 'funny' | 'professional' | 'hype';
+  model?: string;
+  preferredModels?: string[];
+  temperature?: number;
 }
 
 const suggestMusicTrackFromMood = (rawMood: unknown): string | undefined => {
@@ -1926,7 +1925,15 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
   const userPrompt = `Direct this text (preserve its original language/script exactly):\n"${text.substring(0, 50000)}"`;
   
   try {
-    const resultText = await generateText(systemPrompt, userPrompt, settings, true);
+    const generationOptions: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {};
+    if (options?.model) generationOptions.model = options.model;
+    if (Array.isArray(options?.preferredModels) && options.preferredModels.length > 0) {
+      generationOptions.preferredModels = options.preferredModels;
+    }
+    if (Number.isFinite(Number(options?.temperature))) {
+      generationOptions.temperature = Number(options?.temperature);
+    }
+    const resultText = await generateText(systemPrompt, userPrompt, settings, true, generationOptions);
     const json = extractJSON(resultText);
     
     if (!json || !json.script) {
@@ -2171,10 +2178,15 @@ export const detectLanguage = async (text: string, _settings: GenerationSettings
   return 'en';
 };
 
-export const generateTextContent = async (prompt: string, currentText: string | undefined, settings: GenerationSettings): Promise<string> => {
+export const generateTextContent = async (
+  prompt: string,
+  currentText: string | undefined,
+  settings: GenerationSettings,
+  options: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {}
+): Promise<string> => {
   const systemPrompt = "You are a creative writing assistant. Output ONLY the requested text with NO additional commentary.";
   const userPrompt = currentText ? `Original Text: "${currentText}"\n\nTask: ${prompt}` : `Task: ${prompt}`;
-  return await generateText(systemPrompt, userPrompt, settings, false);
+  return await generateText(systemPrompt, userPrompt, settings, false, options);
 };
 
 export const translateText = async (text: string, targetLanguage: string, settings: GenerationSettings): Promise<string> => {
@@ -2379,19 +2391,17 @@ export const generateSpeech = async (
   const activeEngine =
     rawEngine === 'GEMINI'
       ? 'GEM'
-      : rawEngine === 'GOOD_RUNTIME' || rawEngine === 'GEMINI_2_5_LITE_TTS'
-        ? 'GOOD'
+    : rawEngine === 'GOOD_RUNTIME' || rawEngine === 'GEMINI_2_5_LITE_TTS'
+      ? 'GEM'
       : rawEngine === 'NEURAL_2' || rawEngine === 'NURAL2' || rawEngine === 'NURAL_2'
         ? 'NEURAL2'
       : rawEngine === 'KOKORO_RUNTIME'
         ? 'KOKORO'
         : rawEngine;
-  const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'GOOD' || activeEngine === 'NEURAL2';
+  const usesGemRuntime = activeEngine === 'GEM' || activeEngine === 'NEURAL2';
   const runtimeEngine: GenerationSettings['engine'] =
     activeEngine === 'KOKORO'
       ? 'KOKORO'
-      : activeEngine === 'GOOD'
-        ? 'GOOD'
       : activeEngine === 'NEURAL2'
         ? 'NEURAL2'
         : 'GEM';
@@ -2557,7 +2567,7 @@ export const generateSpeech = async (
   };
 
   const synthesizeViaBackendGateway = async (
-    engine: 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO',
+    engine: 'GEM' | 'NEURAL2' | 'KOKORO',
     runtimeUrl: string,
     endpointPath: string,
     payload: Record<string, unknown>,
@@ -2726,7 +2736,7 @@ export const generateSpeech = async (
   };
 
   const maybeSynthesizePrimaryLongText = async (
-    engine: 'GEM' | 'GOOD' | 'NEURAL2' | 'KOKORO',
+    engine: 'GEM' | 'NEURAL2' | 'KOKORO',
     candidateText: string,
     synthesizeChunk: (
       chunkText: string,

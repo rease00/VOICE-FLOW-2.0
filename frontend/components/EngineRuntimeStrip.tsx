@@ -72,7 +72,6 @@ const getDotClasses = (tone: 'green' | 'orange' | 'red', resolvedTheme: 'light' 
 
 const getEngineAbbrev = (engine: GenerationSettings['engine']): string => {
   if (engine === 'GEM') return 'PR';
-  if (engine === 'GOOD') return 'GD';
   if (engine === 'NEURAL2') return 'HD';
   return 'BS';
 };

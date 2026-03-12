@@ -5,6 +5,7 @@ interface TelemetrySparklineProps {
   colorClassName?: string;
   glow?: boolean;
   title?: string;
+  compact?: boolean;
 }
 
 const clamp = (value: number, min: number, max: number): number => (
@@ -16,6 +17,7 @@ export const TelemetrySparkline: React.FC<TelemetrySparklineProps> = ({
   colorClassName = 'text-indigo-400',
   glow = false,
   title,
+  compact = false,
 }) => {
   const { points, baseline } = useMemo(() => {
     const source = Array.isArray(values) && values.length > 1 ? values : [0, 0];
@@ -39,7 +41,7 @@ export const TelemetrySparkline: React.FC<TelemetrySparklineProps> = ({
   return (
     <svg
       viewBox="0 0 80 24"
-      className={`h-6 w-20 ${colorClassName} ${glow ? 'vf-telemetry-glow' : ''}`}
+      className={`${compact ? 'h-5 w-16' : 'h-6 w-20'} ${colorClassName} ${glow ? 'vf-telemetry-glow' : ''}`}
       role="img"
       aria-label={title || 'Telemetry sparkline'}
     >

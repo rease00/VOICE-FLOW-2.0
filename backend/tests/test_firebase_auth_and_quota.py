@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import time
 
 from fastapi.testclient import TestClient
@@ -90,14 +91,63 @@ def test_auth_enforcement_blocks_missing_token(monkeypatch) -> None:
 def test_auth_enforcement_accepts_valid_token(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_REQUIRE_EMAIL_VERIFIED", True)
     monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
-    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", lambda token: {"uid": "firebase_user_1"})
+    monkeypatch.setattr(
+        backend_app,
+        "_verify_firebase_id_token",
+        lambda token: {
+            "uid": "firebase_user_1",
+            "email": "verified@example.com",
+            "email_verified": True,
+        },
+    )
     client = TestClient(backend_app.app)
     response = client.get("/account/entitlements", headers={"Authorization": "Bearer valid_token"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
     assert payload["entitlements"]["uid"] == "firebase_user_1"
+
+
+def test_auth_enforcement_blocks_unverified_email_token(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_REQUIRE_EMAIL_VERIFIED", True)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    monkeypatch.setattr(
+        backend_app,
+        "_verify_firebase_id_token",
+        lambda token: {
+            "uid": "firebase_user_unverified",
+            "email": "pending@example.com",
+            "email_verified": False,
+        },
+    )
+    client = TestClient(backend_app.app)
+    response = client.get("/account/entitlements", headers={"Authorization": "Bearer valid_token"})
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload.get("detail") == "Email verification required."
+    assert payload.get("errorCode") == "VF_EMAIL_NOT_VERIFIED"
+
+
+def test_auth_enforcement_allows_phone_only_token_without_email_claim(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "VF_REQUIRE_EMAIL_VERIFIED", True)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    monkeypatch.setattr(
+        backend_app,
+        "_verify_firebase_id_token",
+        lambda token: {"uid": "firebase_phone_user"},
+    )
+    client = TestClient(backend_app.app)
+    response = client.get("/account/entitlements", headers={"Authorization": "Bearer valid_token"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["entitlements"]["uid"] == "firebase_phone_user"
 
 
 def test_runtime_status_endpoint_is_auth_exempt(monkeypatch) -> None:
@@ -135,7 +185,7 @@ def test_auth_401_response_includes_cors_headers(monkeypatch) -> None:
     assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
 
 
-def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
+def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
@@ -159,12 +209,20 @@ def test_tts_synthesize_enforces_daily_limit(monkeypatch) -> None:
         payload={"engine": "GEM", "text": "again"},
         headers=headers,
     )
-    third = client.post("/tts/synthesize", json={"engine": "GEM", "text": "blocked"}, headers=headers)
+    third_code, _ = _submit_tts_and_wait_status(
+        client,
+        payload={"engine": "GEM", "text": "third run should pass"},
+        headers=headers,
+    )
 
     assert first_code == 200
     assert second_code == 200
-    assert third.status_code == 429
-    assert "Daily generation limit reached" in str(third.json()["detail"])
+    assert third_code == 200
+
+    ent = client.get("/account/entitlements", headers=headers)
+    assert ent.status_code == 200
+    payload = ent.json()["entitlements"]
+    assert int((payload.get("daily") or {}).get("generationUsed") or 0) == 3
 
 
 def test_tts_synthesize_blocks_gem_for_free_plan(monkeypatch) -> None:
@@ -596,3 +654,203 @@ def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     assert second.status_code == 200
     entitlement = backend_app._load_entitlement("wallet_user_1")
     assert entitlement["paidVfBalance"] == 50000
+    lots = entitlement.get("paidVfLots") or []
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.get("source") == "token_pack"
+    assert str(lot.get("expiresAt") or "").strip()
+
+
+def test_token_pack_lot_has_6_month_expiry_window() -> None:
+    _reset_inmemory_state()
+    uid = "token_lot_expiry_user"
+    now = datetime(2026, 1, 12, 9, 30, tzinfo=timezone.utc)
+    entitlement = backend_app._default_entitlement(uid)
+
+    entitlement = backend_app._append_paid_vf_credit_lot(
+        entitlement,
+        amount=25000,
+        reason="stripe_token_pack",
+        transaction_id="token_pack_tx_1",
+        metadata={"kind": "token_pack"},
+        now=now,
+    )
+
+    lots = entitlement.get("paidVfLots") or []
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.get("source") == "token_pack"
+    assert float(entitlement.get("paidVfBalance") or 0) == 25000
+    assert lot.get("expiresAt") == backend_app._add_months_utc(
+        now,
+        backend_app.VF_TOKEN_PACK_VALIDITY_MONTHS,
+    ).isoformat()
+
+
+def test_token_pack_lots_expire_independently_per_purchase() -> None:
+    _reset_inmemory_state()
+    uid = "token_lot_independent_user"
+    first_purchase = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    second_purchase = datetime(2026, 2, 20, 14, 45, tzinfo=timezone.utc)
+    entitlement = backend_app._default_entitlement(uid)
+
+    entitlement = backend_app._append_paid_vf_credit_lot(
+        entitlement,
+        amount=10000,
+        reason="stripe_token_pack",
+        transaction_id="token_pack_tx_a",
+        metadata={"kind": "token_pack"},
+        now=first_purchase,
+    )
+    entitlement = backend_app._append_paid_vf_credit_lot(
+        entitlement,
+        amount=20000,
+        reason="stripe_token_pack",
+        transaction_id="token_pack_tx_b",
+        metadata={"kind": "token_pack"},
+        now=second_purchase,
+    )
+
+    lots = entitlement.get("paidVfLots") or []
+    assert len(lots) == 2
+    by_id = {str(lot.get("id") or ""): lot for lot in lots}
+    assert by_id["token_pack_tx_a"]["expiresAt"] == backend_app._add_months_utc(
+        first_purchase,
+        backend_app.VF_TOKEN_PACK_VALIDITY_MONTHS,
+    ).isoformat()
+    assert by_id["token_pack_tx_b"]["expiresAt"] == backend_app._add_months_utc(
+        second_purchase,
+        backend_app.VF_TOKEN_PACK_VALIDITY_MONTHS,
+    ).isoformat()
+
+
+def test_paid_vf_lot_spend_and_restore_is_lossless() -> None:
+    _reset_inmemory_state()
+    uid = "token_lot_restore_user"
+    now = datetime(2026, 3, 1, 8, 0, tzinfo=timezone.utc)
+    entitlement = backend_app._default_entitlement(uid)
+    entitlement = backend_app._append_paid_vf_credit_lot(
+        entitlement,
+        amount=100,
+        reason="stripe_token_pack",
+        transaction_id="lot_early",
+        metadata={"kind": "token_pack"},
+        now=now,
+    )
+    entitlement = backend_app._append_paid_vf_credit_lot(
+        entitlement,
+        amount=60,
+        reason="stripe_token_pack",
+        transaction_id="lot_later",
+        metadata={"kind": "token_pack"},
+        now=datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc),
+    )
+    original = backend_app._normalize_entitlement_wallet(entitlement, now)
+
+    consumed_lots, debits, spent, remaining_total = backend_app._consume_paid_vf_lots(
+        original,
+        130,
+        now,
+    )
+    assert spent == 130
+    assert remaining_total == 30
+    assert [entry.get("lotId") for entry in debits] == ["lot_early", "lot_later"]
+    assert [entry.get("amount") for entry in debits] == [100, 30]
+
+    post_reservation = {**original, "paidVfLots": consumed_lots, "paidVfBalance": remaining_total}
+    restored = backend_app._restore_paid_vf_lots(post_reservation, debits, now=now)
+    restored_lots = restored.get("paidVfLots") or []
+    restored_by_id = {str(lot.get("id") or ""): lot for lot in restored_lots}
+    assert float(restored.get("paidVfBalance") or 0) == 160
+    assert float((restored_by_id["lot_early"] or {}).get("amountRemaining") or 0) == 100
+    assert float((restored_by_id["lot_later"] or {}).get("amountRemaining") or 0) == 60
+
+
+def test_legacy_paid_vf_balance_is_preserved_as_non_expiring_lot() -> None:
+    _reset_inmemory_state()
+    uid = "legacy_paid_balance_user"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "paidVfBalance": 777,
+        "paidVfLots": [],
+    }
+    normalized = backend_app._normalize_entitlement_wallet(backend_app._load_entitlement(uid))
+    lots = normalized.get("paidVfLots") or []
+    assert len(lots) == 1
+    assert float(normalized.get("paidVfBalance") or 0) == 777
+    assert lots[0].get("source") == "legacy"
+    assert lots[0].get("expiresAt") is None
+
+
+def test_subscription_upgrade_applies_monthly_limit_immediately_and_preserves_paid_balances(monkeypatch) -> None:
+    _reset_inmemory_state()
+    uid = "plan_upgrade_user"
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Starter",
+        "monthlyVfLimit": backend_app.PLAN_LIMITS["starter"]["monthlyVfLimit"],
+        "vffBalance": 900,
+        "paidVfBalance": 1200,
+    }
+    month_key = backend_app._usage_month_key()
+    backend_app._INMEMORY_USAGE_MONTHLY[f"{uid}_{month_key}"] = {
+        "uid": uid,
+        "periodKey": backend_app._usage_month_period_label(),
+        "vfUsed": 20000,
+        "monthlyFreeVfUsed": 20000,
+    }
+
+    backend_app._sync_entitlement_from_subscription(
+        uid=uid,
+        customer_id="cus_upgrade_1",
+        subscription_id="sub_upgrade_1",
+        subscription_status="active",
+        price_id="price_pro_recurring_test",
+    )
+    ent = backend_app._load_entitlement(uid)
+    usage_payload = backend_app._entitlement_usage_payload(uid)
+    wallet = usage_payload.get("wallet") or {}
+
+    assert ent["plan"] == "Pro"
+    assert int(ent["monthlyVfLimit"]) == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"]
+    assert int(wallet.get("monthlyFreeRemaining") or 0) == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"] - 20000
+    assert float(ent.get("paidVfBalance") or 0) == 1200
+    assert float(ent.get("vffBalance") or 0) == 900
+
+
+def test_subscription_downgrade_removes_old_plan_surplus_and_preserves_paid_balances(monkeypatch) -> None:
+    _reset_inmemory_state()
+    uid = "plan_downgrade_user"
+    monkeypatch.setattr(backend_app, "STRIPE_PRICE_STARTER_RECURRING_INR", "price_starter_recurring_test")
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Pro",
+        "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
+        "vffBalance": 450,
+        "paidVfBalance": 6400,
+    }
+    month_key = backend_app._usage_month_key()
+    backend_app._INMEMORY_USAGE_MONTHLY[f"{uid}_{month_key}"] = {
+        "uid": uid,
+        "periodKey": backend_app._usage_month_period_label(),
+        "vfUsed": 120000,
+        "monthlyFreeVfUsed": 120000,
+    }
+
+    backend_app._sync_entitlement_from_subscription(
+        uid=uid,
+        customer_id="cus_downgrade_1",
+        subscription_id="sub_downgrade_1",
+        subscription_status="active",
+        price_id="price_starter_recurring_test",
+    )
+    ent = backend_app._load_entitlement(uid)
+    usage_payload = backend_app._entitlement_usage_payload(uid)
+    wallet = usage_payload.get("wallet") or {}
+
+    assert ent["plan"] == "Starter"
+    assert int(ent["monthlyVfLimit"]) == backend_app.PLAN_LIMITS["starter"]["monthlyVfLimit"]
+    assert int(wallet.get("monthlyFreeRemaining") or 0) == 0
+    assert float(ent.get("paidVfBalance") or 0) == 6400
+    assert float(ent.get("vffBalance") or 0) == 450

@@ -5,6 +5,7 @@ import {
   RecaptchaVerifier,
   createUserWithEmailAndPassword,
   onAuthStateChanged,
+  sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPhoneNumber,
@@ -145,6 +146,15 @@ const isBearerTokenAuthMismatch = (error: unknown): boolean => {
 const localAdminBackendAuthMismatchMessage =
   'Local admin login is enabled in frontend, but backend auth enforcement is ON. ' +
   'Set VF_AUTH_ENFORCE=0 for local admin mode, or disable local admin login and sign in with Firebase.';
+const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
+
+interface PendingSignupProfile {
+  uid: string;
+  email: string;
+  userId: string;
+  displayName?: string;
+  createdAt: number;
+}
 
 const syncUserIdSetupRequirement = (required: boolean): void => {
   if (required) {
@@ -152,6 +162,36 @@ const syncUserIdSetupRequirement = (required: boolean): void => {
     return;
   }
   removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+};
+
+const readPendingSignupProfile = (): PendingSignupProfile | null => {
+  const payload = readStorageJson<PendingSignupProfile>(STORAGE_KEYS.pendingSignupProfile);
+  if (!payload || typeof payload !== 'object') return null;
+  const uid = String(payload.uid || '').trim();
+  const email = String(payload.email || '').trim().toLowerCase();
+  const userId = String(payload.userId || '').trim().toLowerCase();
+  if (!uid || !email || !userId) return null;
+  return {
+    uid,
+    email,
+    userId,
+    ...(payload.displayName ? { displayName: String(payload.displayName).trim() } : {}),
+    createdAt: Number.isFinite(payload.createdAt) ? Number(payload.createdAt) : Date.now(),
+  };
+};
+
+const writePendingSignupProfile = (payload: PendingSignupProfile): void => {
+  writeStorageJson(STORAGE_KEYS.pendingSignupProfile, payload);
+};
+
+const clearPendingSignupProfile = (): void => {
+  removeStorageKey(STORAGE_KEYS.pendingSignupProfile);
+};
+
+const requiresEmailVerificationForUser = (user: { email?: string | null; emailVerified?: boolean | null }): boolean => {
+  const email = String(user.email || '').trim();
+  if (!email) return false;
+  return user.emailVerified !== true;
 };
 
 const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
@@ -174,6 +214,10 @@ const normalizeAllowedEngines = (input: unknown): Array<'KOKORO' | 'NEURAL2' | '
     const token = String(value || '').trim().toUpperCase();
     if (token === 'KOKORO' || token === 'NEURAL2' || token === 'GEM') {
       allowed.add(token);
+      return;
+    }
+    if (token === 'GOOD') {
+      allowed.add('GEM');
     }
   });
   return allowed.size > 0 ? Array.from(allowed) : ['KOKORO', 'NEURAL2'];
@@ -197,7 +241,14 @@ const normalizeStoredStats = (stored: any): UserStats => {
       spendableNowByEngine: {
         KOKORO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.KOKORO ?? walletFallback.spendableNowByEngine.KOKORO)),
         NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
-        GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
+        GEM: Math.max(
+          0,
+          Number(
+            stored?.wallet?.spendableNowByEngine?.GEM
+            ?? stored?.wallet?.spendableNowByEngine?.GOOD
+            ?? walletFallback.spendableNowByEngine.GEM
+          )
+        ),
       },
     },
     limits: {
@@ -215,11 +266,28 @@ const mapEntitlementRatesToUsage = (
   entitlements: AccountEntitlements,
   fallback: UserStats['vfUsage']['rates']
 ): UserStats['vfUsage']['rates'] => {
-  const vfRates = entitlements?.limits?.vfRates || {};
+  const vfRates = (entitlements?.limits?.vfRates || {}) as Record<string, unknown>;
   return {
     KOKORO: Number.isFinite(vfRates.KOKORO) ? Math.max(0, Number(vfRates.KOKORO)) : fallback.KOKORO,
     NEURAL2: Number.isFinite(vfRates.NEURAL2) ? Math.max(0, Number(vfRates.NEURAL2)) : fallback.NEURAL2,
-    GEM: Number.isFinite(vfRates.GEM) ? Math.max(0, Number(vfRates.GEM)) : fallback.GEM,
+    GEM: Number.isFinite(vfRates.GEM)
+      ? Math.max(0, Number(vfRates.GEM))
+      : Number.isFinite(vfRates.GOOD)
+        ? Math.max(0, Number(vfRates.GOOD))
+        : fallback.GEM,
+  };
+};
+
+const readLegacyGemUsage = (
+  bucket: Record<string, { chars: number; vf: number }>,
+  primaryKey: 'GEM',
+  legacyKey: 'GOOD'
+): { chars: number; vf: number } => {
+  const primary = bucket?.[primaryKey];
+  const legacy = bucket?.[legacyKey];
+  return {
+    chars: Math.max(0, Number(primary?.chars || 0)) + Math.max(0, Number(legacy?.chars || 0)),
+    vf: Math.max(0, Number(primary?.vf || 0)) + Math.max(0, Number(legacy?.vf || 0)),
   };
 };
 
@@ -230,6 +298,9 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   const walletFallback = createEmptyWalletStats();
   const wallet = entitlements.wallet || walletFallback;
   const planName = normalizePlanNameForStats(entitlements.plan);
+
+  const dailyGemUsage = readLegacyGemUsage(dailyByEngine, 'GEM', 'GOOD');
+  const monthlyGemUsage = readLegacyGemUsage(monthlyByEngine, 'GEM', 'GOOD');
 
   const dailyTotalChars = Object.values(dailyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
   const monthlyTotalChars = Object.values(monthlyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
@@ -260,8 +331,8 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
             vf: Math.max(0, Number(dailyByEngine?.NEURAL2?.vf || 0)),
           },
           GEM: {
-            chars: Math.max(0, Number(dailyByEngine?.GEM?.chars || 0)),
-            vf: Math.max(0, Number(dailyByEngine?.GEM?.vf || 0)),
+            chars: dailyGemUsage.chars,
+            vf: dailyGemUsage.vf,
           },
         },
       },
@@ -281,8 +352,8 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
             vf: Math.max(0, Number(monthlyByEngine?.NEURAL2?.vf || 0)),
           },
           GEM: {
-            chars: Math.max(0, Number(monthlyByEngine?.GEM?.chars || 0)),
-            vf: Math.max(0, Number(monthlyByEngine?.GEM?.vf || 0)),
+            chars: monthlyGemUsage.chars,
+            vf: monthlyGemUsage.vf,
           },
         },
       },
@@ -295,7 +366,10 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       spendableNowByEngine: {
         KOKORO: Math.max(0, Number(wallet.spendableNowByEngine?.KOKORO || 0)),
         NEURAL2: Math.max(0, Number(wallet.spendableNowByEngine?.NEURAL2 || 0)),
-        GEM: Math.max(0, Number(wallet.spendableNowByEngine?.GEM || 0)),
+        GEM: Math.max(
+          0,
+          Number(wallet.spendableNowByEngine?.GEM || 0) + Number((wallet as any).spendableNowByEngine?.GOOD || 0)
+        ),
       },
       adClaimsToday: Math.max(0, Number(wallet.adClaimsToday || 0)),
       adClaimsDailyLimit: Math.max(1, Number(wallet.adClaimsDailyLimit || walletFallback.adClaimsDailyLimit)),
@@ -554,6 +628,35 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const applyPendingSignupProfile = async (uid: string, email: string): Promise<void> => {
+    const pending = readPendingSignupProfile();
+    if (!pending) return;
+    const safeUid = String(uid || '').trim();
+    const safeEmail = String(email || '').trim().toLowerCase();
+    if (!safeUid || pending.uid !== safeUid) return;
+    if (safeEmail && pending.email !== safeEmail) return;
+    try {
+      await upsertAccountProfile(
+        {
+          userId: pending.userId,
+          ...(pending.displayName ? { displayName: pending.displayName } : {}),
+        },
+        readSettingsBackendUrl()
+      );
+      setUser((prev) => {
+        if (String(prev.uid || '').trim() !== safeUid) return prev;
+        return {
+          ...prev,
+          userId: pending.userId,
+        };
+      });
+      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+      clearPendingSignupProfile();
+    } catch {
+      // Keep pending payload to retry after the next successful verified sign-in.
+    }
+  };
+
   const loadHistory = async (limit = 30) => {
     const firebaseUser = firebaseAuth.currentUser;
     const localAdminSession = firebaseUser ? null : await readLocalAdminSession();
@@ -639,9 +742,24 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
       }
       clearLocalAdminSession();
+      await firebaseUser.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(firebaseUser)) {
+        if (charactersUnsubscribeRef.current) {
+          charactersUnsubscribeRef.current();
+          charactersUnsubscribeRef.current = null;
+        }
+        await signOut(firebaseAuth).catch(() => undefined);
+        removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+        setUser(BLANK_USER);
+        setCharacterLibrary(DEFAULT_CHARACTERS);
+        setStats(INITIAL_STATS);
+        setHistory([]);
+        return;
+      }
       const profile = await mapFirebaseUserToProfile();
       setUser(profile);
       bootstrapCharacterSync(firebaseUser.uid);
+      await applyPendingSignupProfile(firebaseUser.uid, String(firebaseUser.email || ''));
       await Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
     });
     return () => {
@@ -720,7 +838,17 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       }
       try {
-        await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
+        const credential = await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
+        await credential.user.reload().catch(() => undefined);
+        if (requiresEmailVerificationForUser(credential.user)) {
+          await signOut(firebaseAuth).catch(() => undefined);
+          return {
+            ok: false,
+            error: unverifiedEmailAuthMessage,
+            requiresEmailVerification: true,
+            canResendVerification: true,
+          };
+        }
         return { ok: true };
       } catch (error: any) {
         return {
@@ -743,7 +871,17 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           error: 'Use a full email address to sign in. If needed, map an admin username or admin UID using VITE_ADMIN_LOGIN_EMAIL in .env.',
         };
       }
-      await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+      const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+      await credential.user.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(credential.user)) {
+        await signOut(firebaseAuth).catch(() => undefined);
+        return {
+          ok: false,
+          error: unverifiedEmailAuthMessage,
+          requiresEmailVerification: true,
+          canResendVerification: true,
+        };
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -786,19 +924,71 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (displayName?.trim()) {
         await updateProfile(credential.user, { displayName: displayName.trim() });
       }
-      await upsertAccountProfile(
-        {
-          userId: normalizedUserId,
-          ...(displayName?.trim() ? { displayName: displayName.trim() } : {}),
-        },
-        readSettingsBackendUrl()
-      );
-      setUser((prev) => ({ ...prev, userId: normalizedUserId }));
-      removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-      await refreshEntitlements();
+      await sendEmailVerification(credential.user);
+      writePendingSignupProfile({
+        uid: String(credential.user.uid || '').trim(),
+        email: normalizedEmail.toLowerCase(),
+        userId: normalizedUserId,
+        ...(displayName?.trim() ? { displayName: displayName.trim() } : {}),
+        createdAt: Date.now(),
+      });
+      syncUserIdSetupRequirement(true);
+      await signOut(firebaseAuth).catch(() => undefined);
+      setUser(BLANK_USER);
+      return { ok: true, requiresEmailVerification: true };
+    } catch (error: any) {
+      return { ok: false, error: mapFirebaseAuthError(error) };
+    }
+  };
+
+  const resendEmailVerification: UserContextType['resendEmailVerification'] = async (email, password) => {
+    const rawEmail = String(email || '').trim();
+    if (!rawEmail) {
+      return { ok: false, error: 'Enter your email first.' };
+    }
+    if (isLocalAdminUsername(rawEmail)) {
+      return {
+        ok: false,
+        error: 'Local admin login does not use Firebase email verification.',
+      };
+    }
+
+    const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
+    if (firebaseAuthConfigIssue) {
+      return { ok: false, error: firebaseAuthConfigIssue };
+    }
+
+    const normalizedEmail = resolveFirebaseLoginEmail(rawEmail);
+    if (!normalizedEmail.includes('@')) {
+      return { ok: false, error: 'Use a valid email address.' };
+    }
+
+    let signedInTemporarily = false;
+    try {
+      let currentUser = firebaseAuth.currentUser;
+      const currentEmail = String(currentUser?.email || '').trim().toLowerCase();
+      if (!currentUser || currentEmail !== normalizedEmail.toLowerCase()) {
+        if (!String(password || '').trim()) {
+          return { ok: false, error: 'Enter your password to resend verification email.' };
+        }
+        const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+        currentUser = credential.user;
+        signedInTemporarily = true;
+      }
+
+      await currentUser.reload().catch(() => undefined);
+      if (!requiresEmailVerificationForUser(currentUser)) {
+        return { ok: true };
+      }
+
+      await sendEmailVerification(currentUser);
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
+    } finally {
+      if (signedInTemporarily) {
+        await signOut(firebaseAuth).catch(() => undefined);
+      }
     }
   };
 
@@ -841,6 +1031,15 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const result = await signInWithPopup(firebaseAuth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
+      await result.user.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(result.user)) {
+        await signOut(firebaseAuth).catch(() => undefined);
+        return {
+          ok: false,
+          error: unverifiedEmailAuthMessage,
+          requiresEmailVerification: true,
+        };
+      }
       warmDriveTokenFromGoogleSignIn(credential);
       return { ok: true };
     } catch (error: any) {
@@ -855,7 +1054,16 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     try {
-      await signInWithPopup(firebaseAuth, facebookProvider);
+      const result = await signInWithPopup(firebaseAuth, facebookProvider);
+      await result.user.reload().catch(() => undefined);
+      if (requiresEmailVerificationForUser(result.user)) {
+        await signOut(firebaseAuth).catch(() => undefined);
+        return {
+          ok: false,
+          error: unverifiedEmailAuthMessage,
+          requiresEmailVerification: true,
+        };
+      }
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1035,6 +1243,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     getVoiceForCharacter: (name) => characterLibrary.find((char) => char.name.toLowerCase() === name.toLowerCase())?.voiceId,
     signInWithEmail,
     signUpWithEmail,
+    resendEmailVerification,
     requestPasswordReset,
     signOutUser,
     signInWithGoogle,

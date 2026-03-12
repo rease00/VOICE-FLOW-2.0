@@ -21,6 +21,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     firebaseConfigIssue,
     signInWithEmail,
     signUpWithEmail,
+    resendEmailVerification,
     requestPasswordReset,
     signInWithGoogle,
   } = useAuthSession();
@@ -33,6 +34,10 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isResendingVerification, setIsResendingVerification] = useState(false);
+  const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
+  const [verificationCooldownUntil, setVerificationCooldownUntil] = useState(0);
+  const [verificationCooldownRemainingSec, setVerificationCooldownRemainingSec] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const firebaseIssue = !isFirebaseConfigured
@@ -52,19 +57,62 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
 
   useEffect(() => {
     setInfoMsg(null);
+    setNeedsEmailVerification(false);
+    setVerificationCooldownUntil(0);
   }, [mode]);
+
+  useEffect(() => {
+    if (verificationCooldownUntil <= 0) {
+      setVerificationCooldownRemainingSec(0);
+      return;
+    }
+    const updateRemaining = () => {
+      const remaining = Math.max(0, Math.ceil((verificationCooldownUntil - Date.now()) / 1000));
+      setVerificationCooldownRemainingSec(remaining);
+    };
+    updateRemaining();
+    const timer = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(timer);
+  }, [verificationCooldownUntil]);
 
   const handleEmailSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg(null);
     setInfoMsg(null);
+    setNeedsEmailVerification(false);
     setIsLoading(true);
     try {
       const result = mode === 'signup'
         ? await signUpWithEmail(email, password, displayName, userId)
         : await signInWithEmail(email, password);
+      if (result.ok && mode === 'signup' && result.requiresEmailVerification) {
+        const message = 'Account created. Verify your email before signing in.';
+        setMode('login');
+        setNeedsEmailVerification(true);
+        setPassword('');
+        setInfoMsg(message);
+        setVerificationCooldownUntil(Date.now() + 30_000);
+        emit('auth.signup.success', {
+          title: 'Sign Up Success',
+          message,
+          category: 'security',
+          dedupeKey: 'auth-signup-email-verification-required',
+        });
+        return;
+      }
       if (!result.ok) {
         const message = sanitizeUiText(result.error || 'Authentication failed.');
+        if ('requiresEmailVerification' in result && result.requiresEmailVerification) {
+          setNeedsEmailVerification(true);
+          setInfoMsg(message);
+          emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
+            title: mode === 'signup' ? 'Email Verification Required' : 'Email Verification Required',
+            message,
+            category: 'security',
+            dedupeKey: mode === 'signup' ? 'auth-signup-email-verification-required' : 'auth-signin-email-verification-required',
+          });
+          return;
+        }
         setErrorMsg(message);
         emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
           title: mode === 'signup' ? 'Sign Up Failed' : 'Sign In Failed',
@@ -88,6 +136,39 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
       setScreen(AppScreen.MAIN);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (verificationCooldownRemainingSec > 0 || isResendingVerification) return;
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setIsResendingVerification(true);
+    try {
+      const result = await resendEmailVerification(email, password);
+      if (!result.ok) {
+        const message = sanitizeUiText(result.error || 'Could not resend verification email.');
+        setErrorMsg(message);
+        emit('auth.signin.failed', {
+          title: 'Verification Email Failed',
+          message,
+          category: 'security',
+          dedupeKey: 'auth-resend-email-verification-failed',
+        });
+        return;
+      }
+      const message = 'Verification email sent. Please check inbox/spam.';
+      setNeedsEmailVerification(true);
+      setInfoMsg(message);
+      setVerificationCooldownUntil(Date.now() + 30_000);
+      emit('auth.signin.success', {
+        title: 'Verification Email Sent',
+        message,
+        category: 'security',
+        dedupeKey: 'auth-resend-email-verification-success',
+      });
+    } finally {
+      setIsResendingVerification(false);
     }
   };
 
@@ -294,6 +375,25 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
             {isLoading ? 'Please wait...' : mode === 'signup' ? 'Create Account' : 'Sign In'} {!isLoading && <ArrowRight size={16} />}
           </button>
         </form>
+
+        {needsEmailVerification && mode === 'login' && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <p className="font-semibold">Verify your email first</p>
+            <p className="mt-1">You must verify this account before accessing the app.</p>
+            <button
+              type="button"
+              onClick={handleResendVerification}
+              disabled={isResendingVerification || verificationCooldownRemainingSec > 0}
+              className="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isResendingVerification
+                ? 'Sending...'
+                : verificationCooldownRemainingSec > 0
+                  ? `Resend in ${verificationCooldownRemainingSec}s`
+                  : 'Resend verification email'}
+            </button>
+          </div>
+        )}
 
         <div className="my-5 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
           <span className="h-px flex-1 bg-gray-200" />

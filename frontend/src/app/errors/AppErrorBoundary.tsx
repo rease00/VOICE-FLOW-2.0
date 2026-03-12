@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { reportFrontendError } from '../../shared/telemetry/frontendErrors';
 import { sanitizeUiText } from '../../shared/ui/terminology';
 import { useNotifications } from '../../shared/notifications/NotificationProvider';
+import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { BrandLogo } from '../../../components/BrandLogo';
 
 interface AppErrorBoundaryState {
@@ -26,6 +27,51 @@ const isRecoverableAllowlistError = (message: string): boolean => {
     lowered.includes('admin authorization failed: uid_not_allowlisted')
     || lowered.includes('uid_not_allowlisted')
   );
+};
+
+const isMediaVolumeAssignmentError = (message: string): boolean => {
+  const lowered = String(message || '').trim().toLowerCase();
+  if (!lowered) return false;
+  return lowered.includes("failed to set the 'volume' property")
+    && lowered.includes('htmlmediaelement');
+};
+
+const clampUnitVolume = (value: unknown, fallback: number): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(1, parsed));
+};
+
+const sanitizeStoredVolumeSettings = (): void => {
+  if (typeof window === 'undefined') return;
+  const storage = window.localStorage;
+
+  const sanitizeRecord = (key: string, defaults: { speechVolume: number; musicVolume: number }) => {
+    const raw = storage.getItem(key);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      const current = parsed as Record<string, unknown>;
+      const nextSpeechVolume = clampUnitVolume(current.speechVolume, defaults.speechVolume);
+      const nextMusicVolume = clampUnitVolume(current.musicVolume, defaults.musicVolume);
+      const speechChanged = !Object.is(current.speechVolume, nextSpeechVolume);
+      const musicChanged = !Object.is(current.musicVolume, nextMusicVolume);
+      if (!speechChanged && !musicChanged) return;
+      const nextPayload = {
+        ...current,
+        speechVolume: nextSpeechVolume,
+        musicVolume: nextMusicVolume,
+      };
+      storage.setItem(key, JSON.stringify(nextPayload));
+    } catch {
+      // If the payload is corrupt, remove it so the app can fall back to defaults.
+      storage.removeItem(key);
+    }
+  };
+
+  sanitizeRecord(STORAGE_KEYS.readerPreferences, { speechVolume: 1, musicVolume: 0.3 });
+  sanitizeRecord(STORAGE_KEYS.settings, { speechVolume: 1, musicVolume: 0.3 });
 };
 
 const AppErrorFallback: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
@@ -89,6 +135,9 @@ class ReactAppErrorBoundary extends React.Component<ReactAppErrorBoundaryProps, 
   }
 
   private handleRetry = (): void => {
+    if (isMediaVolumeAssignmentError(this.state.message)) {
+      sanitizeStoredVolumeSettings();
+    }
     this.setState({ message: '' });
   };
 
@@ -204,8 +253,15 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
     };
   }, [emit, reportCapturedError]);
 
+  const handleFallbackRetry = useCallback(() => {
+    if (isMediaVolumeAssignmentError(uiError.message)) {
+      sanitizeStoredVolumeSettings();
+    }
+    setUiError({ message: '' });
+  }, [uiError.message]);
+
   if (uiError.message) {
-    return <AppErrorFallback message={uiError.message} onRetry={() => setUiError({ message: '' })} />;
+    return <AppErrorFallback message={uiError.message} onRetry={handleFallbackRetry} />;
   }
 
   return (

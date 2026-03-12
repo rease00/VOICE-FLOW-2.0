@@ -55,10 +55,6 @@ const QUALITY_CHUNK_PROFILES: Record<
     hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
     default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
   },
-  GOOD: {
-    hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
-    default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
-  },
   NEURAL2: {
     hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
     default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
@@ -129,7 +125,7 @@ export const preflightWordLimit = (text: string, maxWords = MAX_WORDS_PER_REQUES
 
 export const isPrimaryTtsEngine = (value: string): value is PrimaryTtsEngine => {
   const normalized = String(value || '').trim().toUpperCase();
-  return normalized === 'GEM' || normalized === 'GOOD' || normalized === 'NEURAL2' || normalized === 'KOKORO';
+  return normalized === 'GEM' || normalized === 'NEURAL2' || normalized === 'KOKORO';
 };
 
 export const getChunkProfile = (engine: PrimaryTtsEngine, language?: string): ChunkingProfile => {

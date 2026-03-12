@@ -14,7 +14,7 @@ export interface VoiceOption {
   geminiVoiceName: string;
   country?: string;
   ageGroup?: string;
-  engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD';
+  engine?: 'GEM' | 'NEURAL2' | 'KOKORO';
   source?: string;
   isDownloaded?: boolean;
   isCloned?: boolean;
@@ -87,7 +87,7 @@ export interface GenerationSettings {
   emotionStrength?: number | undefined;
 
   // TTS engine
-  engine: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD';
+  engine: 'GEM' | 'NEURAL2' | 'KOKORO';
 
   // Assistant provider
   helperProvider: 'GEMINI' | 'PERPLEXITY' | 'LOCAL';
@@ -126,6 +126,7 @@ export interface GenerationSettings {
 
 export type ScriptBlockType = 'dialogue' | 'sfx' | 'direction';
 export type StudioEditorMode = 'blocks' | 'raw';
+export type WorkspaceLayoutMode = 'phone' | 'tablet' | 'desktop';
 
 export interface ScriptBlockEmotionMeta {
   primaryEmotion: string;
@@ -415,11 +416,26 @@ export interface HistoryItem {
   voiceId?: string | undefined;
   timestamp: number;
   duration?: string | undefined;
-  engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD' | undefined;
+  engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | undefined;
   chars?: number | undefined;
   requestId?: string | undefined;
   traceId?: string | undefined;
   status?: 'completed' | 'failed' | 'cancelled' | string | undefined;
+}
+
+export interface AuthActionResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface SignInActionResult extends AuthActionResult {
+  requiresUserIdSetup?: boolean;
+  requiresEmailVerification?: boolean;
+  canResendVerification?: boolean;
+}
+
+export interface SignUpActionResult extends AuthActionResult {
+  requiresEmailVerification?: boolean;
 }
 
 export interface UserContextType {
@@ -447,17 +463,18 @@ export interface UserContextType {
   deleteCharacter: (id: string) => void;
   getVoiceForCharacter: (name: string) => string | undefined;
 
-  signInWithEmail: (email: string, password: string) => Promise<{ ok: boolean; error?: string; requiresUserIdSetup?: boolean }>;
-  signUpWithEmail: (email: string, password: string, displayName?: string, userId?: string) => Promise<{ ok: boolean; error?: string }>;
-  requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
+  signInWithEmail: (email: string, password: string) => Promise<SignInActionResult>;
+  signUpWithEmail: (email: string, password: string, displayName?: string, userId?: string) => Promise<SignUpActionResult>;
+  resendEmailVerification: (email: string, password: string) => Promise<AuthActionResult>;
+  requestPasswordReset: (email: string) => Promise<AuthActionResult>;
   signOutUser: () => Promise<void>;
-  signInWithGoogle: () => Promise<{ ok: boolean; error?: string; requiresUserIdSetup?: boolean }>;
-  signInWithFacebook: () => Promise<{ ok: boolean; error?: string }>;
+  signInWithGoogle: () => Promise<SignInActionResult>;
+  signInWithFacebook: () => Promise<AuthActionResult>;
   startPhoneSignIn: (
     phoneNumber: string,
     recaptchaContainerId: string
-  ) => Promise<{ ok: boolean; error?: string }>;
-  confirmPhoneSignIn: (code: string) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<AuthActionResult>;
+  confirmPhoneSignIn: (code: string) => Promise<AuthActionResult>;
   loginAsGuest: () => void;
   isAuthenticated: boolean;
   isAdmin: boolean;

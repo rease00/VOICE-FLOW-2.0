@@ -319,7 +319,7 @@ export const INITIAL_STATS: UserStats = {
   wallet: createEmptyWalletStats(),
   limits: {
     maxCharsPerGeneration: 8000,
-    allowedEngines: ['KOKORO', 'GOOD', 'NEURAL2'],
+    allowedEngines: ['KOKORO', 'GEM', 'NEURAL2'],
   },
   features: {
     earlyAccess: false,

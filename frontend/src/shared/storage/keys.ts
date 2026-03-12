@@ -3,6 +3,7 @@ export const STORAGE_KEYS = {
   stats: 'vf_stats',
   characterLibrary: 'vf_character_lib',
   authIntent: 'vf_auth_intent',
+  pendingSignupProfile: 'vf_pending_signup_profile',
   uidSetupRequired: 'vf_uid_setup_required',
   uiTheme: 'vf_ui_theme',
   uiDensity: 'vf_ui_density',

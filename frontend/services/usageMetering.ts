@@ -3,7 +3,6 @@ import { GenerationSettings, UserStats, UserWalletStats, VfEngineUsage, VfUsageS
 export const VF_UNIT = 'VF' as const;
 export const VF_ENGINE_RATES: Record<GenerationSettings['engine'], number> = {
   KOKORO: 0.7,
-  GOOD: 1.0,
   NEURAL2: 1.2,
   GEM: 1.5,
 };
@@ -14,9 +13,11 @@ const sanitizeEngineRate = (value: unknown, fallback: number): number => {
 
 const sanitizeRateMap = (value: any): Record<GenerationSettings['engine'], number> => ({
   KOKORO: sanitizeEngineRate(value?.KOKORO, VF_ENGINE_RATES.KOKORO),
-  GOOD: sanitizeEngineRate(value?.GOOD, VF_ENGINE_RATES.GOOD),
   NEURAL2: sanitizeEngineRate(value?.NEURAL2, VF_ENGINE_RATES.NEURAL2),
-  GEM: sanitizeEngineRate(value?.GEM, VF_ENGINE_RATES.GEM),
+  GEM: sanitizeEngineRate(
+    value?.GEM ?? value?.GOOD,
+    VF_ENGINE_RATES.GEM
+  ),
 });
 
 const createEngineUsage = (): VfEngineUsage => ({ chars: 0, vf: 0 });
@@ -27,7 +28,6 @@ const createWindow = (key: string): VfUsageWindow => ({
   totalVf: 0,
   byEngine: {
     KOKORO: createEngineUsage(),
-    GOOD: createEngineUsage(),
     NEURAL2: createEngineUsage(),
     GEM: createEngineUsage(),
   },
@@ -62,13 +62,17 @@ export const createEmptyWalletStats = (): UserWalletStats => ({
   paidVfBalance: 0,
   spendableNowByEngine: {
     KOKORO: 0,
-    GOOD: 0,
     NEURAL2: 0,
     GEM: 0,
   },
   adClaimsToday: 0,
   adClaimsDailyLimit: 3,
   vffMonthKey: undefined,
+});
+
+const addEngineUsage = (left: VfEngineUsage, right: VfEngineUsage): VfEngineUsage => ({
+  chars: Math.max(0, Math.floor(Number(left.chars || 0) + Number(right.chars || 0))),
+  vf: Math.max(0, Number(left.vf || 0) + Number(right.vf || 0)),
 });
 
 const sanitizeEngineUsage = (value: any): VfEngineUsage => ({
@@ -82,9 +86,11 @@ const sanitizeWindow = (value: any, key: string): VfUsageWindow => ({
   totalVf: Number.isFinite(value?.totalVf) ? Math.max(0, Number(value.totalVf)) : 0,
   byEngine: {
     KOKORO: sanitizeEngineUsage(value?.byEngine?.KOKORO),
-    GOOD: sanitizeEngineUsage(value?.byEngine?.GOOD),
     NEURAL2: sanitizeEngineUsage(value?.byEngine?.NEURAL2),
-    GEM: sanitizeEngineUsage(value?.byEngine?.GEM),
+    GEM: addEngineUsage(
+      sanitizeEngineUsage(value?.byEngine?.GEM),
+      sanitizeEngineUsage(value?.byEngine?.GOOD),
+    ),
   },
 });
 

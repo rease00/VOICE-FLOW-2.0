@@ -143,20 +143,17 @@ import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel
 
 const loadAdminTabContent = () => import('../src/features/admin/components/AdminTabContent');
 const loadNovelTabContent = () => import('../src/features/novel/components/NovelTabContent');
-const loadLabTabContent = () => import('../src/features/lab/components/LabTabContent');
 const loadPodcastTabContent = () => import('../src/features/podcast/components/PodcastTabContent');
 const loadReaderTabContent = () => import('../src/features/reader/components/ReaderTabContent');
 
 const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
 const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
-const LabTabContent = lazy(async () => loadLabTabContent().then((module) => ({ default: module.default })));
 const PodcastTabContent = lazy(async () => loadPodcastTabContent().then((module) => ({ default: module.PodcastTabContent })));
 const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
 
 const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   [Tab.ADMIN]: loadAdminTabContent,
   [Tab.NOVEL]: loadNovelTabContent,
-  [Tab.LAB]: loadLabTabContent,
   [Tab.PODCAST]: loadPodcastTabContent,
   [Tab.READER]: loadReaderTabContent,
 };
@@ -169,6 +166,7 @@ type UiTheme = 'light' | 'dark' | 'system';
 type UiDensity = 'comfortable' | 'compact';
 type UiMotionLevel = 'off' | 'balanced' | 'rich';
 type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
+type CreditsSurfaceTab = 'tokens' | 'subscriptions';
 
 const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
 
@@ -370,10 +368,43 @@ const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; stand
   ultra: { label: 'Ultra', vf: 600000, standardInr: 5200, scaleInr: 4160 },
 };
 
+const SUBSCRIPTION_SWITCH_OPTIONS = [
+  {
+    id: 'starter',
+    title: 'Starter',
+    monthlyLabel: '50,000 VF monthly cap',
+    detail: 'All engines, 10k chars per generation.',
+    rank: 1,
+  },
+  {
+    id: 'creator',
+    title: 'Creator',
+    monthlyLabel: '150,000 VF monthly cap',
+    detail: 'For regular publishing and faster workflows.',
+    rank: 2,
+  },
+  {
+    id: 'pro',
+    title: 'Pro',
+    monthlyLabel: '300,000 VF monthly cap',
+    detail: 'For high-volume production workloads.',
+    rank: 3,
+  },
+  {
+    id: 'scale',
+    title: 'Scale',
+    monthlyLabel: '600,000 VF monthly cap',
+    detail: 'Highest monthly limits and early-access features.',
+    rank: 4,
+  },
+] as const;
+
+const LOW_TOKEN_PROMPT_THRESHOLD = 600;
+
 const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
   [Tab.STUDIO]: 'Script, cast, and render audio',
   [Tab.PODCAST]: 'Live native podcast orchestration and runtime',
-  [Tab.LAB]: 'Experimental audio and video tools',
+  [Tab.LAB]: 'Lab is parked for maintenance',
   [Tab.CHARACTERS]: 'Voice roster and cast management',
   [Tab.NOVEL]: 'Long-form drafting and chapter flow',
   [Tab.READER]: 'Playback, import, and listening tools',
@@ -865,6 +896,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     resolveSidebarMode(readStorageString(STORAGE_KEYS.studioSidebarMode))
   ));
   const [isCreditsSurfaceOpen, setIsCreditsSurfaceOpen] = useState(false);
+  const [creditsSurfaceTab, setCreditsSurfaceTab] = useState<CreditsSurfaceTab>('tokens');
   const [studioRailTab, setStudioRailTab] = useState<StudioRailTab>(() => resolveStudioRailTab('voice'));
   
   // Studio Text State
@@ -916,6 +948,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   });
   const lastBackendHealthyRef = useRef<boolean | null>(null);
   const quotaNoticeRef = useRef<Record<string, boolean>>({});
+  const lowTokenPromptNoticeRef = useRef<Record<string, boolean>>({});
   const ttsAccessProbeRef = useRef<RuntimeAccessProbe | null>(null);
   const lastTtsAccessBlockedRef = useRef<boolean | null>(null);
   const ttsAccessClockRetryAtRef = useRef<number>(0);
@@ -923,6 +956,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // Modals & Overlays
   const [showSettings, setShowSettings] = useState(false);
   const [showAdModal, setShowAdModal] = useState(false);
+  const [showLowTokenPrompt, setShowLowTokenPrompt] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [isRedeemingCoupon, setIsRedeemingCoupon] = useState(false);
   const [isBuyingTokenPack, setIsBuyingTokenPack] = useState(false);
@@ -1233,7 +1267,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     ? selectedTokenPackMeta.scaleInr
     : selectedTokenPackMeta.standardInr;
 
-  const isLimitReached = stats.generationsUsed >= stats.generationsLimit && !hasUnlimitedAccess;
+  const currentPlanRank = normalizedPlanToken === 'scale'
+    ? 4
+    : normalizedPlanToken === 'pro'
+      ? 3
+      : normalizedPlanToken === 'creator'
+        ? 2
+        : normalizedPlanToken === 'starter'
+          ? 1
+          : 0;
   const currentEngineSpendable = Math.max(
     0,
     Number(stats.wallet?.spendableNowByEngine?.[settings.engine] || 0)
@@ -1244,9 +1286,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const canClaimAdReward = hasUnlimitedAccess || hasAdClaimsRemaining;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
-  const dailyGenerationRemaining = hasUnlimitedAccess
-    ? Number.POSITIVE_INFINITY
-    : Math.max(0, Number(stats.generationsLimit || 0) - Number(stats.generationsUsed || 0));
   const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
@@ -2353,10 +2392,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               if (engine === 'KOKORO' && browserKokoroEnabled) {
                   const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
                   const browserState = kokoroBrowserRuntime.getState();
-                  if (isLimitReached) {
-                      nextStatuses[engine] = { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' };
-                      continue;
-                  }
                   if (browserState === 'ready') {
                       nextStatuses[engine] = { state: 'online', detail: 'Local ONNX CPU runtime ready' };
                       continue;
@@ -2393,7 +2428,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         });
       runtimePollRefreshInFlightRef.current = inFlight;
       return inFlight;
-  }, [applyRuntimeStatusMap, isLimitReached, managedActiveEngine, mediaBackendUrl, toRuntimeStatus]);
+  }, [applyRuntimeStatusMap, managedActiveEngine, mediaBackendUrl, toRuntimeStatus]);
 
   const waitForRuntimeOnline = async (engine: GenerationSettings['engine'], timeoutMs: number): Promise<boolean> => {
       const started = Date.now();
@@ -2617,17 +2652,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           'KOKORO',
           String(voiceId || DEFAULT_KOKORO_VOICE_ID)
       );
-      if (isLimitReached && !hasUnlimitedAccess) {
-          if (isBrowserKokoroExecutionEnabled()) {
-              const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-              await kokoroBrowserRuntime.suspend();
-          }
-          setTtsRuntimeStatus((prev) => ({
-              ...prev,
-              KOKORO: { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' },
-          }));
-          throw new Error('Daily generation limit reached. Kokoro local runtime is disabled for today.');
-      }
       const access = await refreshTtsAccessState(true);
       if (!access.ok) {
           throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
@@ -2693,8 +2717,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   }, [
       getEngineVoiceCatalog,
-      hasUnlimitedAccess,
-      isLimitReached,
       mediaBackendUrl,
       refreshTtsAccessState,
       settings.kokoroTtsServiceUrl,
@@ -2868,68 +2890,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       if (hasUnlimitedAccess) return;
       const dayKey = String(stats.vfUsage?.daily?.key || new Date().toISOString().slice(0, 10));
-      const dailyLimit = Math.max(1, Number(stats.generationsLimit || 30));
-      const dailyUsed = Math.max(0, Number(stats.generationsUsed || 0));
-      const usageRatio = dailyUsed / dailyLimit;
-      const lowBalanceThreshold = 600;
-
-      const issueNotice = (
-        key: string,
-        send: () => void
-      ) => {
-          if (quotaNoticeRef.current[key]) return;
-          quotaNoticeRef.current[key] = true;
-          send();
-      };
-
-      if (usageRatio >= 0.8) {
-          issueNotice(`${dayKey}-quota-80`, () => {
-              emit('quota.daily.80', {
-                  title: 'Usage Notice',
-                  message: `Daily generation usage is above 80% (${dailyUsed}/${dailyLimit}).`,
-                  dedupeKey: `${dayKey}-daily-80`,
-                  channel: 'inbox',
-              });
-          });
-      }
-      if (usageRatio >= 0.95) {
-          issueNotice(`${dayKey}-quota-95`, () => {
-              emit('quota.daily.95', {
-                  title: 'Usage Warning',
-                  message: `Daily generation usage is above 95% (${dailyUsed}/${dailyLimit}).`,
-                  dedupeKey: `${dayKey}-daily-95`,
-                  channel: 'inbox',
-              });
-          });
-      }
-      if (dailyUsed >= dailyLimit) {
-          issueNotice(`${dayKey}-quota-limit`, () => {
-              emit('quota.daily.reached', {
-                  title: 'Daily Limit Reached',
-                  message: `Daily generation limit reached (${dailyUsed}/${dailyLimit}).`,
-                  sticky: true,
-                  dedupeKey: `${dayKey}-daily-limit`,
-              });
-          });
-      }
-
-      if (currentEngineSpendable <= lowBalanceThreshold && currentEngineSpendable > 0) {
-          issueNotice(`${dayKey}-low-balance-${settings.engine}`, () => {
+      if (currentEngineSpendable <= LOW_TOKEN_PROMPT_THRESHOLD && currentEngineSpendable > 0) {
+          const noticeKey = `${dayKey}-low-balance-${settings.engine}`;
+          if (!quotaNoticeRef.current[noticeKey]) {
+              quotaNoticeRef.current[noticeKey] = true;
               emit('wallet.low_balance', {
                 title: 'Low Balance',
                 message: `Low ${getEngineDisplayName(settings.engine)} balance: ${currentEngineSpendable.toLocaleString()} VF remaining.`,
-                dedupeKey: `${dayKey}-low-balance-${settings.engine}`,
+                dedupeKey: noticeKey,
                 channel: 'inbox',
               });
-          });
+          }
+          if (!lowTokenPromptNoticeRef.current[noticeKey]) {
+              lowTokenPromptNoticeRef.current[noticeKey] = true;
+              setShowLowTokenPrompt(true);
+          }
       }
   }, [
       currentEngineSpendable,
       emit,
       hasUnlimitedAccess,
       settings.engine,
-      stats.generationsLimit,
-      stats.generationsUsed,
       stats.vfUsage?.daily?.key,
   ]);
   useEffect(() => {
@@ -3209,7 +3190,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   useEffect(() => {
       if (settings.engine !== 'KOKORO') return;
-      if (isLimitReached && !hasUnlimitedAccess) return;
       let cancelled = false;
       void (async () => {
           try {
@@ -3229,13 +3209,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return () => {
           cancelled = true;
       };
-  }, [hasUnlimitedAccess, isLimitReached, prepareKokoroExecution, settings.engine, settings.voiceId]);
+  }, [prepareKokoroExecution, settings.engine, settings.voiceId]);
 
   useEffect(() => {
       if (!isStudioWorkspaceTab) return;
       if (!hasSessionIdentity) return;
       if (!isBrowserKokoroExecutionEnabled()) return;
-      if (isLimitReached && !hasUnlimitedAccess) return;
       let cancelled = false;
       const timer = setTimeout(() => {
           void (async () => {
@@ -3281,23 +3260,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [
       isStudioWorkspaceTab,
       hasSessionIdentity,
-      hasUnlimitedAccess,
-      isLimitReached,
       mediaBackendUrl,
       settings.voiceId,
       getValidVoiceIdForEngine,
   ]);
-
-  useEffect(() => {
-      if (!isLimitReached || hasUnlimitedAccess) return;
-      if (isBrowserKokoroExecutionEnabled()) {
-          void loadKokoroBrowserRuntimeModule().then(({ kokoroBrowserRuntime }) => kokoroBrowserRuntime.suspend());
-      }
-      setTtsRuntimeStatus((prev) => ({
-          ...prev,
-          KOKORO: { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' },
-      }));
-  }, [hasUnlimitedAccess, isLimitReached]);
 
   useEffect(() => {
       const validVoiceId = getValidVoiceIdForEngine(settings.engine, settings.voiceId);
@@ -4529,13 +4495,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await startStudioQueuedGeneration();
       return;
     }
-    if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
     if (isWalletBlocked) {
-      if (hasAdClaimsRemaining) {
-        setShowAdModal(true);
-        return;
-      }
-      return showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`, 'error');
+      promptLowTokenShop(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`);
+      return;
     }
     
     // Setup Abort Controller
@@ -5080,13 +5042,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerateDub = async () => {
       if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
-      if (isLimitReached) return showToast('Daily generation limit reached (30/day).', 'error');
       if (isWalletBlocked) {
-          if (hasAdClaimsRemaining) {
-              setShowAdModal(true);
-              return;
-          }
-          return showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`, 'error');
+          promptLowTokenShop(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`);
+          return;
       }
 
       if (generationAbortController.current) generationAbortController.current.abort();
@@ -5867,7 +5825,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (engineSwitchInProgress) return;
       if (!isEnginePlanAllowed(engine)) {
           if (!hasUnlimitedAccess && !isPaidBillingPlan) {
-              setShowSubscriptionModal(true);
+              openCreditsSurface('subscriptions');
               showToast('Prime engine is available on paid plans. Upgrade to continue.', 'info');
           } else {
               showToast(`${getEngineLabel(engine)} is not enabled for this plan.`, 'info');
@@ -5907,8 +5865,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     ? 'Studio'
     : activeTab === Tab.PODCAST
       ? 'Podcast'
-    : activeTab === Tab.LAB
-      ? 'Lab'
       : activeTab === Tab.CHARACTERS
         ? 'Character'
         : activeTab === Tab.NOVEL
@@ -5925,8 +5881,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     ? 'max-w-[1320px]'
     : activeTab === Tab.PODCAST
       ? 'max-w-[1380px]'
-    : activeTab === Tab.LAB
-      ? 'max-w-[1480px]'
     : activeTab === Tab.READER
       ? 'max-w-[1360px]'
       : 'max-w-5xl';
@@ -5979,6 +5933,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       writeStorageString(STORAGE_KEYS.authIntent, mode);
       setIsMobileMenuOpen(false);
       setScreen(AppScreen.LOGIN);
+  };
+
+  const openCreditsSurface = (
+    tab: CreditsSurfaceTab = 'tokens',
+    options?: { promptLowToken?: boolean }
+  ) => {
+    if (isGuestSession) {
+      openAuthScreen('signup');
+      return;
+    }
+    setCreditsSurfaceTab(tab);
+    setIsCreditsSurfaceOpen(true);
+    setIsMobileMenuOpen(false);
+    if (options?.promptLowToken) {
+      setShowLowTokenPrompt(true);
+    }
+  };
+
+  const promptLowTokenShop = (message: string) => {
+    openCreditsSurface('tokens', { promptLowToken: true });
+    showToast(message, 'info');
   };
 
   const handleSignOut = async () => {
@@ -6074,26 +6049,50 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             {activePlanLabel} workspace
           </div>
           <div className={`mt-1 text-[11px] leading-5 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-            {hasUnlimitedAccess
-              ? 'Unlimited access is active for this account.'
-              : isPaidBillingPlan
-                ? 'Recurring billing and larger monthly caps are enabled.'
-                : 'Upgrade only when you need bigger caps or more engines.'}
+            {creditsSurfaceTab === 'tokens'
+              ? 'Top up token balance, redeem coupons, or claim ad rewards.'
+              : 'Switch plans with immediate policy updates on monthly free allowance.'}
           </div>
         </div>
         <button
-          onClick={() => setShowSubscriptionModal(true)}
-          className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-colors ${
-            isPaidBillingPlan
-              ? (isDarkUi ? 'bg-cyan-500/14 text-cyan-100 hover:bg-cyan-500/24' : 'bg-cyan-50 text-cyan-700 hover:bg-cyan-100')
-              : (isDarkUi ? 'bg-amber-400 text-slate-950 hover:bg-amber-300' : 'bg-amber-500 text-white hover:bg-amber-400')
+          onClick={() => setIsCreditsSurfaceOpen(false)}
+          className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${
+            isDarkUi
+              ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+              : 'border-gray-200 text-gray-500 hover:bg-gray-100'
           }`}
+          aria-label="Close credits surface"
         >
-          {isPaidBillingPlan ? 'Manage' : 'Upgrade'}
+          <X size={14} />
         </button>
       </div>
 
-      {!hasUnlimitedAccess && (
+      <div className={`mt-3 grid grid-cols-2 gap-1 rounded-xl border p-1 ${isDarkUi ? 'border-slate-700 bg-slate-900/55' : 'border-gray-200 bg-gray-50'}`}>
+        <button
+          type="button"
+          onClick={() => setCreditsSurfaceTab('tokens')}
+          className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+            creditsSurfaceTab === 'tokens'
+              ? (isDarkUi ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-100 text-cyan-700')
+              : (isDarkUi ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-600 hover:bg-white')
+          }`}
+        >
+          Tokens
+        </button>
+        <button
+          type="button"
+          onClick={() => setCreditsSurfaceTab('subscriptions')}
+          className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+            creditsSurfaceTab === 'subscriptions'
+              ? (isDarkUi ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-100 text-cyan-700')
+              : (isDarkUi ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-600 hover:bg-white')
+          }`}
+        >
+          Subscriptions
+        </button>
+      </div>
+
+      {creditsSurfaceTab === 'tokens' ? (
         <>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
@@ -6106,12 +6105,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               </div>
             </div>
             <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Daily Left</div>
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Paid VF</div>
               <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                {hasUnlimitedAccess ? 'Unlimited' : dailyGenerationRemaining.toLocaleString()}
+                {walletPaid.toLocaleString()}
               </div>
               <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                {hasUnlimitedAccess ? 'No daily cap' : `${stats.generationsUsed}/${stats.generationsLimit} used`}
+                Wallet balance
               </div>
             </div>
           </div>
@@ -6120,10 +6119,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <div className="flex items-center justify-between gap-2">
               <span>Monthly free pool</span>
               <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{balanceRemainingLabel}</strong>
-            </div>
-            <div className="mt-1 flex items-center justify-between gap-2">
-              <span>Paid VF</span>
-              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{walletPaid.toLocaleString()}</strong>
             </div>
             <div className="mt-1 flex items-center justify-between gap-2">
               <span>Per-generation cap</span>
@@ -6163,6 +6158,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               Buy {selectedTokenPackMeta.label}
             </button>
           </div>
+
           <div className="mt-2">
             <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
               Token Pack
@@ -6189,7 +6185,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
               Checkout price: {formatInr(selectedTokenPackPriceInr)} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
             </div>
+            <div className={`mt-1 rounded-lg border px-2 py-1.5 text-[10px] leading-4 ${isDarkUi ? 'border-slate-700 bg-slate-900/70 text-slate-400' : 'border-gray-200 bg-gray-50 text-gray-600'}`}>
+              Token-pack credits are valid for 6 months from each purchase date. Every new purchase starts its own 6-month timer.
+            </div>
           </div>
+
           <div className="mt-2 flex items-center gap-1">
             <input
               value={couponCode}
@@ -6214,6 +6214,74 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             </button>
           </div>
         </>
+      ) : (
+        <>
+          <div className={`mt-3 rounded-xl border px-3 py-3 text-[11px] ${isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-300' : 'border-gray-200 bg-white/90 text-gray-600'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span>Current plan</span>
+              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{activePlanLabel}</strong>
+            </div>
+            <div className="mt-1">Upgrade changes monthly free limits immediately.</div>
+            <div className="mt-1">Downgrade removes old-plan surplus from monthly free allowance immediately.</div>
+            <div className="mt-1">Paid token balances are preserved during plan switches.</div>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {SUBSCRIPTION_SWITCH_OPTIONS.map((option) => {
+              const isCurrent = option.id === normalizedPlanToken;
+              const actionLabel = isCurrent
+                ? 'Current'
+                : option.rank > currentPlanRank
+                  ? 'Upgrade'
+                  : 'Downgrade';
+              return (
+                <div
+                  key={option.id}
+                  className={`rounded-xl border px-3 py-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className={`text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>{option.title}</div>
+                      <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{option.monthlyLabel}</div>
+                      <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>{option.detail}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isCurrent) return;
+                        setIsCreditsSurfaceOpen(false);
+                        setShowSubscriptionModal(true);
+                      }}
+                      disabled={isCurrent}
+                      className={`shrink-0 rounded-lg border px-2 py-1 text-[10px] font-semibold disabled:opacity-60 ${
+                        isDarkUi
+                          ? 'border-cyan-400/35 text-cyan-200 hover:bg-cyan-500/10'
+                          : 'border-cyan-200 text-cyan-700 hover:bg-cyan-50'
+                      }`}
+                    >
+                      {actionLabel}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsCreditsSurfaceOpen(false);
+              setShowSubscriptionModal(true);
+            }}
+            className={`mt-3 inline-flex w-full items-center justify-center gap-1 rounded-lg border px-3 py-2 text-[11px] font-semibold ${
+              isDarkUi
+                ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+                : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+            }`}
+          >
+            Open Subscription Checkout
+          </button>
+        </>
       )}
     </div>
   );
@@ -6233,14 +6301,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'text-slate-300 hover:bg-slate-900 hover:text-slate-100'
           : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
     } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2`;
-    const handleShopClick = () => {
-      if (isGuestSession) {
-        openAuthScreen('signup');
-        return;
-      }
-      setIsMobileMenuOpen(false);
-      setIsCreditsSurfaceOpen(true);
-    };
 
     return (
     <aside
@@ -6280,22 +6340,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             )}
           </button>
         ))}
-        <button
-          type="button"
-          onClick={handleShopClick}
-          aria-current={isCreditsSurfaceOpen ? 'page' : undefined}
-          aria-label="Shop"
-          title="Shop"
-          className={getSidebarButtonClassName(isCreditsSurfaceOpen)}
-        >
-          <span className="shrink-0"><Coins size={18} /></span>
-          {!isDesktopCompact && <span className="truncate">Shop</span>}
-          {isDesktopCompact && (
-            <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-              Shop
-            </span>
-          )}
-        </button>
         {adminWorkspaceTab ? (
           <button
             key={adminWorkspaceTab.id}
@@ -6365,12 +6409,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 </div>
               </div>
               <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Daily Left</div>
+                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Paid VF</div>
                 <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {hasUnlimitedAccess ? 'Unlimited' : dailyGenerationRemaining.toLocaleString()}
+                  {walletPaid.toLocaleString()}
                 </div>
                 <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                  {hasUnlimitedAccess ? 'No daily cap' : `${stats.generationsUsed}/${stats.generationsLimit} used`}
+                  Wallet balance
                 </div>
               </div>
                 </div>
@@ -6838,9 +6882,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const usesPhoneStudioDock = isStudioWorkspaceTab && isPhone;
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
-  const usesFullBleedLabContent = activeTab === Tab.LAB;
-  const shouldLockLabScroll = usesFullBleedLabContent && !isPhone;
-  const shouldHideAssistantForLab = activeTab === Tab.LAB;
   const isDesktopCompactSidebar = isDesktop && sidebarMode === 'compact';
   const mainDesktopPaddingClass = isDesktopCompactSidebar ? 'xl:pl-[4.5rem]' : 'xl:pl-64';
   const topbarDesktopOffsetClass = isDesktopCompactSidebar
@@ -6869,7 +6910,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
-  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForLab && !isStudioWorkspaceTab;
+  const showTopbarAssistantButton = isPhone && !isStudioWorkspaceTab;
   const showFloatingAssistantFab = !isPhone;
   const assistantFabSizeClass = isPhone ? 'w-14 h-14' : 'w-16 h-16';
   const assistantPanelSizeClass = isPhone
@@ -6883,7 +6924,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = !shouldHideAssistantForLab && (showFloatingAssistantFab || isChatOpen);
+  const shouldRenderFloatingAssistant = showFloatingAssistantFab || isChatOpen;
 
   return (
     <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
@@ -7003,7 +7044,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <button
                         type="button"
                         ref={creditsSurfaceTriggerRef}
-                        onClick={() => setIsCreditsSurfaceOpen((open) => !open)}
+                        onClick={() => {
+                          if (isCreditsSurfaceOpen) {
+                            setIsCreditsSurfaceOpen(false);
+                            return;
+                          }
+                          openCreditsSurface('tokens');
+                        }}
                         aria-expanded={isCreditsSurfaceOpen}
                         aria-label="Open plan and credits"
                         className={`inline-flex items-center gap-1 sm:gap-2 rounded-full border px-2 py-1 sm:px-2.5 text-[10px] font-bold ${
@@ -7016,8 +7063,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         <Coins size={12} className="sm:hidden" />
                         <span className="sm:hidden">{hasUnlimitedAccess ? 'Credits' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
                         <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
-                        <span className={`hidden sm:inline ${resolvedTheme === 'dark' ? 'text-slate-500' : 'text-gray-500'}`}>|</span>
-                        <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Daily Unlimited' : `${dailyGenerationRemaining.toLocaleString()} left`}</span>
                         <span className={`hidden sm:inline rounded-full px-2 py-0.5 text-[9px] ${
                           isPaidBillingPlan
                             ? (resolvedTheme === 'dark' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-50 text-cyan-700')
@@ -7097,13 +7142,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`vf-main-scroll flex-1 custom-scrollbar relative ${
-            usesFullBleedLabContent
-              ? `${shouldLockLabScroll ? 'overflow-hidden' : 'overflow-y-auto'} px-0 md:px-0 pt-16 md:pt-20 pb-0`
-              : `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`
-          }`}
+          className={`vf-main-scroll flex-1 custom-scrollbar relative overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`}
         >
-            <div className={usesFullBleedLabContent ? 'mx-auto w-full h-full max-w-none space-y-0' : `mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
+            <div className={`mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
                 
                 {isStudioWorkspaceTab && (
                     <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
@@ -8223,15 +8264,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
 
-                {activeTab === Tab.LAB && (
-                    <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading Lab...</SectionCard>}>
-                      <LabTabContent
-                        resolvedTheme={resolvedTheme}
-                        onToast={showToast}
-                      />
-                    </Suspense>
-                )}
-
                 {activeTab === Tab.READER && (
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader...</SectionCard>}>
                       <ReaderTabContent
@@ -8296,7 +8328,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
-      {!shouldHideAssistantForLab && isChatOpen && (
+      {isChatOpen && (
         <button
           type="button"
           className="fixed inset-0 z-40 bg-transparent"
@@ -8484,6 +8516,59 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       {/* Modals & Overlays */}
       {showSettings && renderSettingsPanel()}
+      {showLowTokenPrompt && !isGuestSession && (
+        <div className="fixed inset-0 z-[58] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Low token alert"
+            className={`w-full max-w-sm rounded-2xl border p-4 shadow-xl ${
+              isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-gray-200 bg-white text-slate-900'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div className={`rounded-xl p-2 ${isDarkUi ? 'bg-amber-500/15 text-amber-200' : 'bg-amber-100 text-amber-700'}`}>
+                <Coins size={16} />
+              </div>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">Token balance alert</div>
+                <div className={`mt-1 text-xs leading-5 ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
+                  {isWalletBlocked
+                    ? `You are out of spendable ${getEngineDisplayName(settings.engine)} VF. Open Token Shop to continue generation.`
+                    : `Spendable ${getEngineDisplayName(settings.engine)} VF is low (${currentEngineSpendable.toLocaleString()} remaining).`}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setShowLowTokenPrompt(false)}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  isDarkUi
+                    ? 'border-slate-700 text-slate-300 hover:bg-slate-900'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                Not now
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLowTokenPrompt(false);
+                  openCreditsSurface('tokens');
+                }}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  isDarkUi
+                    ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+                    : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+                }`}
+              >
+                Open Token Shop
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <AdModal
         isOpen={showAdModal}
         onClose={() => setShowAdModal(false)}

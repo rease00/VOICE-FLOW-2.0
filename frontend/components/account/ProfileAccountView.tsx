@@ -44,7 +44,6 @@ import {
 } from './accountCenterTabs';
 import {
   ACCOUNT_TAB_ICONS,
-  AccountSummaryStrip,
   InfoRow,
   MetricCard,
   PreferenceToggle,
@@ -72,7 +71,6 @@ import {
 } from './accountCenterShared';
 import {
   ACCOUNT_DETAIL_LABELS,
-  ACCOUNT_SUMMARY_LABELS,
   getBillingActionVisibility,
 } from './accountCenterLayout';
 
@@ -681,57 +679,6 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     totalPreferenceCount,
   ]);
 
-  const summaryItems = useMemo(() => ([
-    {
-      id: 'plan',
-      label: ACCOUNT_SUMMARY_LABELS.plan,
-      value: planName,
-      detail: `${allowedEngineSummary} | ${formatCompactNumber(summary.plan.maxCharsPerGeneration || stats.limits?.maxCharsPerGeneration || 0)} chars / generation`,
-    },
-    {
-      id: 'usage',
-      label: ACCOUNT_SUMMARY_LABELS.usage,
-      value: hasUnlimitedAccess
-        ? `Unlimited | ${formatNumber(monthlyUsed)} used`
-        : `${formatNumber(monthlyUsed)} / ${formatNumber(monthlyLimit)} VF`,
-      detail: `Daily generations: ${formatNumber(stats.generationsUsed)} / ${formatNumber(summary.plan.dailyGenerationLimit || stats.generationsLimit || 0)}`,
-    },
-    {
-      id: 'balance',
-      label: ACCOUNT_SUMMARY_LABELS.balance,
-      value: formatVfValue(availableBalance),
-      detail: hasUnlimitedAccess
-        ? 'Unlimited access removes current spend limits.'
-        : `${formatNumber(stats.wallet?.monthlyFreeRemaining || 0)} free VF and ${formatNumber(stats.wallet?.paidVfBalance || 0)} paid VF available.`,
-    },
-    {
-      id: 'ops',
-      label: ACCOUNT_SUMMARY_LABELS.ops,
-      value: supportConversations.length > 0 ? `${activeSupportConversationCount} support active` : 'No support queue',
-      detail: loadedTabs.has('activity')
-        ? `${recentActivity.length} recent generation${recentActivity.length === 1 ? '' : 's'} loaded`
-        : 'Open Activity to load recent generation history.',
-    },
-  ]), [
-    allowedEngineSummary,
-    availableBalance,
-    activeSupportConversationCount,
-    hasUnlimitedAccess,
-    loadedTabs,
-    monthlyLimit,
-    monthlyUsed,
-    planName,
-    recentActivity.length,
-    stats.generationsUsed,
-    stats.limits?.maxCharsPerGeneration,
-    summary.plan.dailyGenerationLimit,
-    summary.plan.maxCharsPerGeneration,
-    supportConversations.length,
-    stats.generationsLimit,
-    stats.wallet?.monthlyFreeRemaining,
-    stats.wallet?.paidVfBalance,
-  ]);
-
   const setTab = (tab: AccountTabKey): void => {
     setActiveTab(tab);
     if (!shouldKeepConversationSelection(tab)) setHighlightedConversationId('');
@@ -1280,15 +1227,6 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     Account Center
                   </span>
                 </div>
-                <div>
-                  <h1 className={`text-[1.6rem] font-semibold leading-tight tracking-tight sm:text-2xl ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
-                    Account controls without the clutter.
-                  </h1>
-                  <p className={`mt-1 hidden max-w-3xl text-sm leading-6 sm:block ${mutedClass(isDarkUi)}`}>
-                    Billing, usage, support, and preferences stay in focused sections so common tasks are faster to reach.
-                  </p>
-                </div>
-                <AccountSummaryStrip isDarkUi={isDarkUi} items={summaryItems} />
               </div>
 
               <div className={`flex min-w-0 items-center gap-2.5 rounded-[1rem] border px-3 py-2.5 ${cardInsetClass(isDarkUi)}`}>

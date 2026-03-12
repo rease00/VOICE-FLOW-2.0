@@ -11,6 +11,7 @@ interface StudioQueuePanelProps {
   isGenerating: boolean;
   audioUrls: Record<string, string>;
   isDarkUi?: boolean;
+  visualVariant?: 'default' | 'embedded';
   isPhone?: boolean;
   isOpen?: boolean;
   onToggleOpen?: () => void;
@@ -30,6 +31,7 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
   isGenerating,
   audioUrls,
   isDarkUi = false,
+  visualVariant = 'default',
   isPhone = false,
   isOpen = true,
   onToggleOpen,
@@ -61,9 +63,10 @@ export const StudioQueuePanel: React.FC<StudioQueuePanelProps> = ({
   const queueModeBadgeClass = isQueueModeEnabled
     ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
     : (isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-400' : 'border-gray-200 bg-white text-gray-500');
+  const variantClass = visualVariant === 'embedded' ? '' : 'shadow-sm';
 
   return (
-    <div className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border ${panelToneClass}`}>
+    <div className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border ${panelToneClass} ${variantClass}`}>
       {isPhone ? (
         <button
           type="button"

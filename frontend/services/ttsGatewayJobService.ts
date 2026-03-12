@@ -40,6 +40,15 @@ interface PollTtsGatewayJobOptions {
   timeoutMs?: number | undefined;
   pollMs?: number | undefined;
   pollMaxMs?: number | undefined;
+  client?: {
+    getJob?: typeof getTtsJob;
+    cancelJob?: typeof cancelTtsJob;
+    fetchChunkAudio?: typeof fetchTtsJobChunkAudio;
+    fetchResult?: (
+      jobId: string,
+      options?: { baseUrl?: string }
+    ) => Promise<{ audioBytes: ArrayBuffer; headers?: Record<string, string>; responseHeaders?: Record<string, string> }>;
+  } | undefined;
 }
 
 const DEFAULT_TTS_GATEWAY_JOB_POLL_MS = 500;
@@ -111,7 +120,12 @@ export const pollTtsGatewayJobForAudio = async (
     timeoutMs = DEFAULT_TTS_GATEWAY_JOB_TIMEOUT_MS,
     pollMs = DEFAULT_TTS_GATEWAY_JOB_POLL_MS,
     pollMaxMs = DEFAULT_TTS_GATEWAY_JOB_POLL_MAX_MS,
+    client,
   } = options;
+  const getJobClient = client?.getJob || getTtsJob;
+  const cancelJobClient = client?.cancelJob || cancelTtsJob;
+  const fetchChunkAudioClient = client?.fetchChunkAudio || fetchTtsJobChunkAudio;
+  const fetchResultClient = client?.fetchResult || fetchTtsJobResult;
   const startedAt = Date.now();
   let cancelled = false;
   let chunkCursor = 0;
@@ -127,7 +141,7 @@ export const pollTtsGatewayJobForAudio = async (
       if (!cancelled) {
         cancelled = true;
         try {
-          await cancelTtsJob(jobId, baseUrl ? { baseUrl } : undefined);
+          await cancelJobClient(jobId, baseUrl ? { baseUrl } : undefined);
         } catch {
           // Best-effort cancellation.
         }
@@ -137,7 +151,7 @@ export const pollTtsGatewayJobForAudio = async (
 
     let payload;
     try {
-      payload = await getTtsJob(jobId, {
+      payload = await getJobClient(jobId, {
         includeResult: true,
         includeChunks: chunkSupportEnabled,
         chunkCursor,
@@ -201,7 +215,7 @@ export const pollTtsGatewayJobForAudio = async (
           let audioBase64 = String(rawChunk.audioBase64 || '').trim();
           if (!audioBase64 && chunkDownloadEnabled) {
             try {
-              const chunkBytes = await fetchTtsJobChunkAudio(jobId, safeIndex, baseUrl);
+              const chunkBytes = await fetchChunkAudioClient(jobId, safeIndex, baseUrl);
               audioBase64 = await arrayBufferToBase64(chunkBytes);
             } catch {
               chunkDownloadEnabled = false;
@@ -247,10 +261,13 @@ export const pollTtsGatewayJobForAudio = async (
         stage: 'Synthesis completed. Preparing playback...',
         progressPct: 98,
       });
-      const result = await fetchTtsJobResult(jobId, baseUrl ? { baseUrl } : undefined);
+      const result = await fetchResultClient(jobId, baseUrl ? { baseUrl } : undefined);
+      const responseHeaders = 'responseHeaders' in result
+        ? result.responseHeaders
+        : result.headers;
       return {
         audioBytes: result.audioBytes,
-        responseHeaders: toResponseHeadersRecord(result.headers),
+        responseHeaders: toResponseHeadersRecord(responseHeaders),
       };
     }
 

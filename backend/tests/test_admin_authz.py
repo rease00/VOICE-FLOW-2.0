@@ -318,7 +318,11 @@ def test_account_profile_routes_allow_userid_when_firestore_service_disabled(mon
     monkeypatch.setattr(
         backend_app,
         "_verify_firebase_id_token",
-        lambda _token: {"uid": "uid_service_disabled_route", "email": "admin1@voiceflow-000f.firebaseapp.com"},
+        lambda _token: {
+            "uid": "uid_service_disabled_route",
+            "email": "admin1@voiceflow-000f.firebaseapp.com",
+            "email_verified": True,
+        },
     )
     client = TestClient(backend_app.app)
 

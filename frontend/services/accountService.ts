@@ -10,7 +10,7 @@ const toBaseUrl = (input?: string): string => {
 export type BillingPlanName = 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
 export type BillingPlanKey = 'starter' | 'creator' | 'pro' | 'scale';
 export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
-export type TtsEngineKey = 'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM';
+export type TtsEngineKey = 'KOKORO' | 'NEURAL2' | 'GEM';
 
 export interface AccountEntitlements {
   uid: string;
@@ -57,7 +57,7 @@ export interface AccountEntitlements {
     monthlyFreeLimit: number;
     vffBalance: number;
     paidVfBalance: number;
-    spendableNowByEngine: Record<'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM', number>;
+    spendableNowByEngine: Record<'KOKORO' | 'NEURAL2' | 'GEM', number>;
     adClaimsToday: number;
     adClaimsDailyLimit: number;
     vffMonthKey?: string;

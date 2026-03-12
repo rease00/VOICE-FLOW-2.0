@@ -5,6 +5,7 @@ import { parseMultiSpeakerScript } from '../../../../services/geminiService';
 import { readStorageJson, writeStorageJson } from '../../../shared/storage/localStore';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { resolveApiUrl } from '../../../shared/api/config';
+import { applySafeMediaVolume, normalizeMediaVolume } from '../../../shared/media/safeMediaVolume';
 import { useUser } from '../../auth/context/UserContext';
 import { autoAssignSpeakerVoices } from '../../../shared/voices/castAssignment';
 import {
@@ -104,6 +105,12 @@ const DEFAULT_PREFS: ReaderPreferences = {
   multiSpeakerEnabled: true,
 };
 
+const normalizeReaderSpeechVolume = (value: unknown): number =>
+  normalizeMediaVolume(value, DEFAULT_PREFS.speechVolume);
+
+const normalizeReaderMusicVolume = (value: unknown): number =>
+  normalizeMediaVolume(value, DEFAULT_PREFS.musicVolume);
+
 const base64ToObjectUrl = (audioBase64: string, mediaType: string): string | null => {
   const safe = String(audioBase64 || '').trim();
   if (!safe) return null;
@@ -123,8 +130,8 @@ const readPrefs = (settings?: GenerationSettings): ReaderPreferences => {
     surface: stored?.surface || DEFAULT_PREFS.surface,
     regionId: typeof stored?.regionId === 'string' && stored.regionId.trim() ? stored.regionId : DEFAULT_PREFS.regionId,
     musicTrackId: typeof stored?.musicTrackId === 'string' && stored.musicTrackId.trim() ? stored.musicTrackId : String(settings?.musicTrackId || DEFAULT_PREFS.musicTrackId),
-    speechVolume: typeof stored?.speechVolume === 'number' ? stored.speechVolume : Number(settings?.speechVolume ?? DEFAULT_PREFS.speechVolume),
-    musicVolume: typeof stored?.musicVolume === 'number' ? stored.musicVolume : Number(settings?.musicVolume ?? DEFAULT_PREFS.musicVolume),
+    speechVolume: normalizeReaderSpeechVolume(stored?.speechVolume ?? settings?.speechVolume ?? DEFAULT_PREFS.speechVolume),
+    musicVolume: normalizeReaderMusicVolume(stored?.musicVolume ?? settings?.musicVolume ?? DEFAULT_PREFS.musicVolume),
     panelCollapsed: typeof stored?.panelCollapsed === 'boolean' ? stored.panelCollapsed : DEFAULT_PREFS.panelCollapsed,
     searchQuery: typeof stored?.searchQuery === 'string' ? stored.searchQuery : DEFAULT_PREFS.searchQuery,
     targetLanguage: typeof stored?.targetLanguage === 'string' ? stored.targetLanguage : DEFAULT_PREFS.targetLanguage,
@@ -797,7 +804,10 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   useEffect(() => {
     const audio = speechAudioRef.current;
     if (!audio) return;
-    audio.volume = Math.max(0, Math.min(1.5, speechVolume));
+    applySafeMediaVolume(audio, speechVolume, {
+      fallback: DEFAULT_PREFS.speechVolume,
+      context: 'reader_speech',
+    });
   }, [speechVolume]);
 
   useEffect(() => {
@@ -805,7 +815,10 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     if (!audio || !activeMusicTrack) return;
     audio.loop = true;
     audio.src = activeMusicTrack.url || '';
-    audio.volume = Math.max(0, Math.min(1, isSpeechPlaying ? musicVolume * 0.45 : musicVolume));
+    applySafeMediaVolume(audio, isSpeechPlaying ? musicVolume * 0.45 : musicVolume, {
+      fallback: DEFAULT_PREFS.musicVolume,
+      context: 'reader_music',
+    });
     if (isMusicPlaying && activeMusicTrack.url) {
       void audio.play().catch(() => setIsMusicPlaying(false));
     } else {

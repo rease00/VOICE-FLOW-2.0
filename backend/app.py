@@ -628,6 +628,10 @@ VF_AUTH_ENFORCE = (
     (os.getenv("VF_AUTH_ENFORCE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+VF_REQUIRE_EMAIL_VERIFIED = (
+    (os.getenv("VF_REQUIRE_EMAIL_VERIFIED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 VF_ENV = str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower()
 VF_IS_PRODUCTION = VF_ENV in {"prod", "production"}
 VF_DOCS_ENABLE = (
@@ -690,6 +694,10 @@ VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED = (
     in {"1", "true", "yes", "on"}
 )
 VF_DAILY_GENERATION_LIMIT = max(1, int((os.getenv("VF_DAILY_GENERATION_LIMIT") or "30").strip() or "30"))
+VF_TOKEN_PACK_VALIDITY_MONTHS = max(
+    1,
+    int((os.getenv("VF_TOKEN_PACK_VALIDITY_MONTHS") or "6").strip() or "6"),
+)
 ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
     "KOKORO": {"label": "BASIC", "rate": 0.7},
     "NEURAL2": {"label": "HD", "rate": 1.2},
@@ -4097,6 +4105,7 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "currencyMode": "INR_BASE_AUTO_FX",
         "billingCountry": None,
         "paidVfBalance": 0.0,
+        "paidVfLots": [],
         "vffBalance": free_vff_grant,
         "vffMonthKey": month_key,
         "vffGrantMonthKey": month_key,
@@ -4486,6 +4495,18 @@ async def _firebase_auth_middleware(request: Request, call_next: Any) -> Respons
     uid = str(claims.get("uid") or "")
     if not uid:
         return _cors_json_response(request, status_code=401, content={"detail": "Auth token did not include uid."})
+
+    if VF_REQUIRE_EMAIL_VERIFIED:
+        email = str(claims.get("email") or "").strip()
+        if email and not _as_bool(claims.get("email_verified")):
+            return _cors_json_response(
+                request,
+                status_code=403,
+                content={
+                    "detail": "Email verification required.",
+                    "errorCode": "VF_EMAIL_NOT_VERIFIED",
+                },
+            )
 
     request.state.uid = uid
     request.state.auth_claims = claims
@@ -6448,39 +6469,7 @@ def _notification_sync_account_usage(uid: str, entitlements: dict[str, Any]) -> 
         return
     daily = entitlements.get("daily") if isinstance(entitlements.get("daily"), dict) else {}
     wallet = entitlements.get("wallet") if isinstance(entitlements.get("wallet"), dict) else {}
-    generation_used = max(0, int(daily.get("generationUsed") or 0))
-    generation_limit = max(1, int(daily.get("generationLimit") or 1))
-    usage_ratio = float(generation_used) / float(generation_limit or 1)
     period_key = str(daily.get("periodKey") or "").strip() or _usage_day_period_label(_utc_now())
-    if generation_used >= generation_limit:
-        _notification_emit_persisted(
-            safe_uid,
-            event_code="quota.daily.reached",
-            title="Daily Limit Reached",
-            message="You have reached your daily generation limit.",
-            severity="error",
-            category="activity",
-            entity_key=period_key,
-            sticky=True,
-            action_label="Open Studio",
-            action_target={"screen": "main", "tab": "STUDIO"},
-            email_eligible=True,
-            email_pref_key="emailBilling",
-        )
-    elif usage_ratio >= 0.95:
-        _notification_emit_persisted(
-            safe_uid,
-            event_code="quota.daily.95",
-            title="Daily Usage Warning",
-            message="You have used at least 95% of your daily generation limit.",
-            severity="warning",
-            category="activity",
-            entity_key=period_key,
-            action_label="Open Studio",
-            action_target={"screen": "main", "tab": "STUDIO"},
-            email_eligible=False,
-            email_pref_key="emailBilling",
-        )
     spendable = wallet.get("spendableNowByEngine") if isinstance(wallet.get("spendableNowByEngine"), dict) else {}
     spendable_values = [max(0.0, float(value or 0.0)) for value in spendable.values()]
     max_spendable = max(spendable_values) if spendable_values else 0.0
@@ -6555,6 +6544,281 @@ def _notification_emit_tts_job_terminal(job: dict[str, Any], *, status: str, det
     )
 
 
+def _paid_vf_lot_sort_key(lot: dict[str, Any]) -> tuple[int, float, float, str]:
+    expires_dt = _parse_optional_datetime(str(lot.get("expiresAt") or ""))
+    created_dt = _parse_optional_datetime(str(lot.get("createdAt") or ""))
+    expires_rank = 0 if expires_dt else 1
+    expires_value = expires_dt.timestamp() if expires_dt else float("inf")
+    created_value = created_dt.timestamp() if created_dt else 0.0
+    return (
+        expires_rank,
+        expires_value,
+        created_value,
+        str(lot.get("id") or ""),
+    )
+
+
+def _sum_paid_vf_lots(lots: list[dict[str, Any]]) -> float:
+    return _as_positive_number(sum(_as_positive_number((lot or {}).get("amountRemaining")) for lot in lots))
+
+
+def _normalize_paid_vf_lots(entitlement: dict[str, Any], now: Optional[datetime] = None) -> list[dict[str, Any]]:
+    current = now or _utc_now()
+    now_ts = current.timestamp()
+    current_iso = current.isoformat()
+    raw_lots = entitlement.get("paidVfLots")
+    has_raw_lots = isinstance(raw_lots, list) and len(raw_lots) > 0
+    raw_total_all = 0.0
+    normalized_lots: list[dict[str, Any]] = []
+
+    if isinstance(raw_lots, list):
+        for index, raw in enumerate(raw_lots):
+            if not isinstance(raw, dict):
+                continue
+            amount_remaining = _as_positive_number(raw.get("amountRemaining"))
+            if amount_remaining <= 0:
+                continue
+            raw_total_all = _as_positive_number(raw_total_all + amount_remaining)
+            raw_expires_at = str(raw.get("expiresAt") or "").strip()
+            expires_dt = _parse_optional_datetime(raw_expires_at) if raw_expires_at else None
+            if expires_dt is not None and expires_dt.timestamp() <= now_ts:
+                continue
+
+            raw_created_at = str(raw.get("createdAt") or "").strip()
+            created_dt = _parse_optional_datetime(raw_created_at)
+            lot = {
+                "id": str(raw.get("id") or "").strip() or f"paidvf_lot_{index}_{uuid.uuid4().hex}",
+                "source": str(raw.get("source") or "legacy").strip() or "legacy",
+                "amountRemaining": amount_remaining,
+                "createdAt": created_dt.isoformat() if created_dt else current_iso,
+                "expiresAt": expires_dt.isoformat() if expires_dt else None,
+            }
+            normalized_lots.append(lot)
+
+    current_balance = _as_positive_number(entitlement.get("paidVfBalance"))
+
+    if not has_raw_lots and current_balance > 0:
+        normalized_lots.append(
+            {
+                "id": f"paidvf_legacy_{uuid.uuid4().hex}",
+                "source": "legacy",
+                "amountRemaining": current_balance,
+                "createdAt": current_iso,
+                "expiresAt": None,
+            }
+        )
+    elif has_raw_lots and current_balance > raw_total_all + VF_EPSILON:
+        normalized_lots.append(
+            {
+                "id": f"paidvf_adjustment_{uuid.uuid4().hex}",
+                "source": "manual_adjustment",
+                "amountRemaining": _as_positive_number(current_balance - raw_total_all),
+                "createdAt": current_iso,
+                "expiresAt": None,
+            }
+        )
+
+    normalized_lots.sort(key=_paid_vf_lot_sort_key)
+    return normalized_lots
+
+
+def _sync_paid_vf_wallet(entitlement: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
+    lots = _normalize_paid_vf_lots(entitlement, now)
+    entitlement["paidVfLots"] = lots
+    entitlement["paidVfBalance"] = _sum_paid_vf_lots(lots)
+    return entitlement
+
+
+def _consume_paid_vf_lots(
+    entitlement: dict[str, Any],
+    amount: float,
+    now: Optional[datetime] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float, float]:
+    remaining = _as_positive_number(amount)
+    if remaining <= 0:
+        lots = _normalize_paid_vf_lots(entitlement, now)
+        total = _sum_paid_vf_lots(lots)
+        return lots, [], 0.0, total
+
+    source_lots = _normalize_paid_vf_lots(entitlement, now)
+    next_lots: list[dict[str, Any]] = []
+    debits: list[dict[str, Any]] = []
+    spent = 0.0
+
+    for lot in source_lots:
+        available = _as_positive_number(lot.get("amountRemaining"))
+        if remaining > 0 and available > 0:
+            debit_amount = min(available, remaining)
+            if debit_amount > 0:
+                debits.append(
+                    {
+                        "lotId": str(lot.get("id") or ""),
+                        "amount": _as_positive_number(debit_amount),
+                        "source": str(lot.get("source") or "legacy"),
+                        "expiresAt": lot.get("expiresAt"),
+                    }
+                )
+                available = _as_positive_number(available - debit_amount)
+                remaining = _as_positive_number(remaining - debit_amount)
+                spent = _as_positive_number(spent + debit_amount)
+        if available > 0:
+            next_lots.append({**lot, "amountRemaining": available})
+
+    next_lots.sort(key=_paid_vf_lot_sort_key)
+    next_total = _sum_paid_vf_lots(next_lots)
+    return next_lots, debits, spent, next_total
+
+
+def _restore_paid_vf_lots(
+    entitlement: dict[str, Any],
+    debits: Any,
+    *,
+    fallback_amount: float = 0.0,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    current = now or _utc_now()
+    current_iso = current.isoformat()
+    now_ts = current.timestamp()
+    lots = _normalize_paid_vf_lots(entitlement, current)
+    by_id: dict[str, dict[str, Any]] = {
+        str(row.get("id") or ""): {**row}
+        for row in lots
+        if str(row.get("id") or "")
+    }
+
+    restored_total = 0.0
+    if isinstance(debits, list):
+        for raw in debits:
+            if not isinstance(raw, dict):
+                continue
+            lot_id = str(raw.get("lotId") or raw.get("id") or "").strip()
+            amount = _as_positive_number(raw.get("amount"))
+            if amount <= 0:
+                continue
+            raw_expires_at = str(raw.get("expiresAt") or "").strip()
+            expires_dt = _parse_optional_datetime(raw_expires_at) if raw_expires_at else None
+            if expires_dt is not None and expires_dt.timestamp() <= now_ts:
+                continue
+            if lot_id and lot_id in by_id:
+                by_id[lot_id]["amountRemaining"] = _as_positive_number(by_id[lot_id].get("amountRemaining")) + amount
+            else:
+                entry_id = lot_id or f"paidvf_restore_{uuid.uuid4().hex}"
+                by_id[entry_id] = {
+                    "id": entry_id,
+                    "source": str(raw.get("source") or "restored").strip() or "restored",
+                    "amountRemaining": amount,
+                    "createdAt": current_iso,
+                    "expiresAt": expires_dt.isoformat() if expires_dt else None,
+                }
+            restored_total = _as_positive_number(restored_total + amount)
+
+    fallback = _as_positive_number(fallback_amount)
+    if restored_total <= 0 and fallback > 0:
+        fallback_id = f"paidvf_restore_legacy_{uuid.uuid4().hex}"
+        by_id[fallback_id] = {
+            "id": fallback_id,
+            "source": "restored_legacy",
+            "amountRemaining": fallback,
+            "createdAt": current_iso,
+            "expiresAt": None,
+        }
+
+    merged_lots = [row for row in by_id.values() if _as_positive_number(row.get("amountRemaining")) > 0]
+    merged_lots.sort(key=_paid_vf_lot_sort_key)
+    entitlement["paidVfLots"] = merged_lots
+    entitlement["paidVfBalance"] = _sum_paid_vf_lots(merged_lots)
+    return entitlement
+
+
+def _is_token_pack_paid_vf_credit(reason: str, metadata: Optional[dict[str, Any]] = None) -> bool:
+    reason_token = str(reason or "").strip().lower()
+    if reason_token in {"stripe_token_pack", "token_pack"}:
+        return True
+    if isinstance(metadata, dict):
+        kind_token = str(metadata.get("kind") or "").strip().lower()
+        if kind_token in {"token_pack", "stripe_token_pack"}:
+            return True
+    return False
+
+
+def _build_paid_vf_credit_lot(
+    *,
+    amount: float,
+    reason: str,
+    transaction_id: str,
+    metadata: Optional[dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    current = now or _utc_now()
+    source = str(reason or "credit").strip().lower() or "credit"
+    is_token_pack = _is_token_pack_paid_vf_credit(reason, metadata)
+    expires_at: Optional[str] = None
+    if is_token_pack:
+        expires_at = _add_months_utc(current, VF_TOKEN_PACK_VALIDITY_MONTHS).isoformat()
+        source = "token_pack"
+    lot_id = transaction_id or f"paidvf_credit_{uuid.uuid4().hex}"
+    return {
+        "id": lot_id,
+        "source": source,
+        "amountRemaining": _as_positive_number(amount),
+        "createdAt": current.isoformat(),
+        "expiresAt": expires_at,
+    }
+
+
+def _append_paid_vf_credit_lot(
+    entitlement: dict[str, Any],
+    *,
+    amount: float,
+    reason: str,
+    transaction_id: str,
+    metadata: Optional[dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    current = now or _utc_now()
+    lots = _normalize_paid_vf_lots(entitlement, current)
+    lots.append(
+        _build_paid_vf_credit_lot(
+            amount=amount,
+            reason=reason,
+            transaction_id=transaction_id,
+            metadata=metadata,
+            now=current,
+        )
+    )
+    lots.sort(key=_paid_vf_lot_sort_key)
+    entitlement["paidVfLots"] = lots
+    entitlement["paidVfBalance"] = _sum_paid_vf_lots(lots)
+    return entitlement
+
+
+def _apply_paid_vf_balance_delta(
+    entitlement: dict[str, Any],
+    delta: float,
+    *,
+    reason: str,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    current = now or _utc_now()
+    safe_delta = _as_float(delta, 0.0)
+    if safe_delta > VF_EPSILON:
+        return _append_paid_vf_credit_lot(
+            entitlement,
+            amount=_as_positive_number(safe_delta),
+            reason=reason,
+            transaction_id=f"{reason}_{uuid.uuid4().hex}",
+            metadata={"channel": "manual_adjustment"},
+            now=current,
+        )
+    if safe_delta < (-VF_EPSILON):
+        consume_amount = _as_positive_number(abs(safe_delta))
+        next_lots, _, _, next_total = _consume_paid_vf_lots(entitlement, consume_amount, current)
+        entitlement["paidVfLots"] = next_lots
+        entitlement["paidVfBalance"] = next_total
+        return entitlement
+    return _sync_paid_vf_wallet(entitlement, current)
+
+
 def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
     current = now or _utc_now()
     month_key = _wallet_month_key(current)
@@ -6572,6 +6836,7 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
         normalized.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"]
     ) or plan_cfg["dailyGenerationLimit"]
     normalized["paidVfBalance"] = _as_positive_number(normalized.get("paidVfBalance"))
+    normalized["paidVfLots"] = list(normalized.get("paidVfLots") or [])
     vff_grant = float(VF_FREE_MONTHLY_VFF_GRANT) if plan_key == "free" else 0.0
     vff_cap: Optional[float] = float(VF_FREE_MONTHLY_VFF_CAP) if plan_key == "free" else None
     saved_month = str(normalized.get("vffMonthKey") or "").strip()
@@ -6588,6 +6853,7 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
     normalized["vffBalance"] = _as_positive_number(current_vff)
     normalized["vffMonthKey"] = saved_month or month_key
     normalized["vffGrantMonthKey"] = grant_month or month_key
+    normalized = _sync_paid_vf_wallet(normalized, current)
     return normalized
 
 
@@ -6694,6 +6960,8 @@ def _write_entitlement(uid: str, payload: dict[str, Any]) -> None:
         patch["dailyGenerationLimit"] = _as_positive_int(patch.get("dailyGenerationLimit"))
     if "paidVfBalance" in patch:
         patch["paidVfBalance"] = _as_positive_number(patch.get("paidVfBalance"))
+    if "paidVfLots" in patch and not isinstance(patch.get("paidVfLots"), list):
+        patch["paidVfLots"] = []
     if "vffBalance" in patch:
         patch["vffBalance"] = _as_positive_number(patch.get("vffBalance"))
     if "vffMonthKey" in patch:
@@ -6824,13 +7092,8 @@ def _reserve_usage(
 
             monthly.setdefault("monthlyFreeVfUsed", _as_positive_number(monthly.get("monthlyFreeVfUsed")))
 
-            plan_cfg = _plan_config(_normalize_plan_name(str(entitlement.get("plan") or "Free")))
-            daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"])
             rate = _engine_rate(safe_engine)
             vf_cost = _as_positive_number(float(safe_chars) * float(rate))
-
-            if not bypass_limits and _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
-                raise HTTPException(status_code=429, detail="Daily generation limit reached.")
 
             charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
             covered = (
@@ -6844,9 +7107,18 @@ def _reserve_usage(
             entitlement["vffBalance"] = _as_positive_number(
                 _as_positive_number(entitlement.get("vffBalance")) - _as_positive_number(charge_breakdown.get("vff"))
             )
-            entitlement["paidVfBalance"] = _as_positive_number(
-                _as_positive_number(entitlement.get("paidVfBalance")) - _as_positive_number(charge_breakdown.get("paidVf"))
-            )
+            paid_vf_lot_debits: list[dict[str, Any]] = []
+            paid_vf_charge = _as_positive_number(charge_breakdown.get("paidVf"))
+            if paid_vf_charge > 0:
+                next_paid_lots, paid_vf_lot_debits, paid_vf_spent, next_paid_total = _consume_paid_vf_lots(
+                    entitlement,
+                    paid_vf_charge,
+                    now,
+                )
+                if paid_vf_spent + VF_EPSILON < paid_vf_charge:
+                    raise HTTPException(status_code=429, detail="Insufficient VF balance for this generation.")
+                entitlement["paidVfLots"] = next_paid_lots
+                entitlement["paidVfBalance"] = next_paid_total
             entitlement["updatedAt"] = now.isoformat()
 
             monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) + vf_cost)
@@ -6882,6 +7154,7 @@ def _reserve_usage(
                     "vff": _as_positive_number(charge_breakdown.get("vff")),
                     "monthlyVf": _as_positive_number(charge_breakdown.get("monthlyVf")),
                     "paidVf": _as_positive_number(charge_breakdown.get("paidVf")),
+                    "paidVfLots": paid_vf_lot_debits,
                 },
                 "limitBypass": {
                     "enabled": bool(bypass_limits),
@@ -6912,8 +7185,6 @@ def _reserve_usage(
         entitlement_doc = entitlements_ref.get(transaction=transaction_obj)
         entitlement = entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
         entitlement = _normalize_entitlement_wallet(entitlement, now)
-        plan_cfg = _plan_config(_normalize_plan_name(str(entitlement.get("plan") or "Free")))
-        daily_limit = _as_positive_int(entitlement.get("dailyGenerationLimit") or plan_cfg["dailyGenerationLimit"])
         rate = _engine_rate(safe_engine)
         vf_cost = _as_positive_number(float(safe_chars) * float(rate))
 
@@ -6929,8 +7200,6 @@ def _reserve_usage(
             existing_event = event_doc.to_dict() or {}
             if str(existing_event.get("status")) in {"reserved", "committed"}:
                 return {"ok": True, "alreadyReserved": True, "event": existing_event, "monthly": monthly, "daily": daily, "entitlement": entitlement}
-        if not bypass_limits and _as_positive_int(daily.get("generationCount")) + 1 > daily_limit:
-            raise RuntimeError("Daily generation limit reached.")
 
         charge_breakdown = _wallet_charge_breakdown(entitlement, monthly, safe_engine, vf_cost)
         covered = (
@@ -6944,9 +7213,18 @@ def _reserve_usage(
         entitlement["vffBalance"] = _as_positive_number(
             _as_positive_number(entitlement.get("vffBalance")) - _as_positive_number(charge_breakdown.get("vff"))
         )
-        entitlement["paidVfBalance"] = _as_positive_number(
-            _as_positive_number(entitlement.get("paidVfBalance")) - _as_positive_number(charge_breakdown.get("paidVf"))
-        )
+        paid_vf_lot_debits: list[dict[str, Any]] = []
+        paid_vf_charge = _as_positive_number(charge_breakdown.get("paidVf"))
+        if paid_vf_charge > 0:
+            next_paid_lots, paid_vf_lot_debits, paid_vf_spent, next_paid_total = _consume_paid_vf_lots(
+                entitlement,
+                paid_vf_charge,
+                now,
+            )
+            if paid_vf_spent + VF_EPSILON < paid_vf_charge:
+                raise RuntimeError("Insufficient VF balance for this generation.")
+            entitlement["paidVfLots"] = next_paid_lots
+            entitlement["paidVfBalance"] = next_paid_total
         entitlement["updatedAt"] = now.isoformat()
 
         monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) + vf_cost)
@@ -6982,6 +7260,7 @@ def _reserve_usage(
                 "vff": _as_positive_number(charge_breakdown.get("vff")),
                 "monthlyVf": _as_positive_number(charge_breakdown.get("monthlyVf")),
                 "paidVf": _as_positive_number(charge_breakdown.get("paidVf")),
+                "paidVfLots": paid_vf_lot_debits,
             },
             "limitBypass": {
                 "enabled": bool(bypass_limits),
@@ -7005,7 +7284,8 @@ def _reserve_usage(
 
 def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str = "") -> None:
     event_doc_id = f"{uid}_{request_id}"
-    now = _utc_now().isoformat()
+    now_dt = _utc_now()
+    now = now_dt.isoformat()
 
     if _firestore_collection("usage_events") is None:
         with _INMEMORY_LOCK:
@@ -7030,6 +7310,7 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
                 charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
                 refund_vff = _as_positive_number(charge_breakdown.get("vff"))
                 refund_paid = _as_positive_number(charge_breakdown.get("paidVf"))
+                paid_vf_lot_debits = charge_breakdown.get("paidVfLots") if isinstance(charge_breakdown.get("paidVfLots"), list) else []
                 refund_monthly = _as_positive_number(charge_breakdown.get("monthlyVf"))
                 if monthly is not None:
                     monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - vf_cost)
@@ -7052,8 +7333,11 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
                     daily["updatedAt"] = now
                 if refund_vff > 0 or refund_paid > 0:
                     entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refund_vff)
-                    entitlement["paidVfBalance"] = _as_positive_number(
-                        _as_positive_number(entitlement.get("paidVfBalance")) + refund_paid
+                    entitlement = _restore_paid_vf_lots(
+                        entitlement,
+                        paid_vf_lot_debits,
+                        fallback_amount=refund_paid,
+                        now=now_dt,
                     )
                     entitlement["updatedAt"] = now
                     _INMEMORY_ENTITLEMENTS[uid] = entitlement
@@ -7098,6 +7382,7 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
         charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
         refund_vff = _as_positive_number(charge_breakdown.get("vff"))
         refund_paid = _as_positive_number(charge_breakdown.get("paidVf"))
+        paid_vf_lot_debits = charge_breakdown.get("paidVfLots") if isinstance(charge_breakdown.get("paidVfLots"), list) else []
         refund_monthly = _as_positive_number(charge_breakdown.get("monthlyVf"))
         if monthly_doc.exists:
             monthly = monthly_doc.to_dict() or {}
@@ -7124,8 +7409,11 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
             transaction_obj.set(daily_ref, daily, merge=True)
         if refund_vff > 0 or refund_paid > 0:
             entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refund_vff)
-            entitlement["paidVfBalance"] = _as_positive_number(
-                _as_positive_number(entitlement.get("paidVfBalance")) + refund_paid
+            entitlement = _restore_paid_vf_lots(
+                entitlement,
+                paid_vf_lot_debits,
+                fallback_amount=refund_paid,
+                now=now_dt,
             )
             entitlement["updatedAt"] = now
             transaction_obj.set(entitlements_ref, entitlement, merge=True)
@@ -11816,8 +12104,14 @@ def _credit_paid_vf(
             if tx_id and tx_id in _INMEMORY_WALLET_TRANSACTIONS:
                 return False, _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid))
             entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid), now)
-            entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance")) + credit_amount
-            entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
+            entitlement = _append_paid_vf_credit_lot(
+                entitlement,
+                amount=credit_amount,
+                reason=str(reason or "credit"),
+                transaction_id=tx_id or tx_payload["reason"] + "_" + uuid.uuid4().hex,
+                metadata=metadata or {},
+                now=now,
+            )
             entitlement["updatedAt"] = now.isoformat()
             _INMEMORY_ENTITLEMENTS[safe_uid] = entitlement
             if tx_id:
@@ -11842,8 +12136,14 @@ def _credit_paid_vf(
 
         ent_doc = ent_ref.get(transaction=transaction_obj)
         entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(safe_uid), now)
-        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance")) + credit_amount
-        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
+        entitlement = _append_paid_vf_credit_lot(
+            entitlement,
+            amount=credit_amount,
+            reason=str(reason or "credit"),
+            transaction_id=tx_id or tx_ref.id,
+            metadata=metadata or {},
+            now=now,
+        )
         entitlement["updatedAt"] = now.isoformat()
         transaction_obj.set(ent_ref, entitlement, merge=True)
         transaction_obj.set(tx_ref, {**tx_payload, "id": tx_ref.id}, merge=True)
@@ -19774,6 +20074,30 @@ def _ensure_subscription_schedule_for_loyalty(
         return {"ok": False, "reason": f"schedule_create_failed:{exc}"}
 
 
+def _resolve_subscription_plan_transition_policy(
+    current_entitlement: dict[str, Any],
+    next_plan_payload: dict[str, Any],
+) -> dict[str, Any]:
+    current_monthly_limit = _as_positive_int(current_entitlement.get("monthlyVfLimit"))
+    next_monthly_limit = _as_positive_int(next_plan_payload.get("monthlyVfLimit"))
+    next_daily_limit = _as_positive_int(next_plan_payload.get("dailyGenerationLimit"))
+    transition = "unchanged"
+    if next_monthly_limit > current_monthly_limit:
+        transition = "upgrade"
+    elif next_monthly_limit < current_monthly_limit:
+        transition = "downgrade"
+
+    # Policy contract:
+    # - Upgrades apply immediately for plan-free monthly allowance.
+    # - Downgrades remove old-plan monthly surplus immediately.
+    # - Paid VF / VFF balances remain untouched by this policy helper.
+    return {
+        "transition": transition,
+        "monthlyVfLimit": next_monthly_limit,
+        "dailyGenerationLimit": next_daily_limit,
+    }
+
+
 def _sync_entitlement_from_subscription(
     *,
     uid: str,
@@ -19786,13 +20110,15 @@ def _sync_entitlement_from_subscription(
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         raise HTTPException(status_code=400, detail="Missing uid for entitlement sync.")
+    current_entitlement = _normalize_entitlement_wallet(_load_entitlement(safe_uid))
     plan_payload = _entitlement_from_price_id(price_id)
     status = _billing_status_from_subscription(subscription_status)
+    transition_policy = _resolve_subscription_plan_transition_policy(current_entitlement, plan_payload)
     payload = {
         "plan": plan_payload["plan"],
         "status": status,
-        "monthlyVfLimit": plan_payload["monthlyVfLimit"],
-        "dailyGenerationLimit": plan_payload["dailyGenerationLimit"],
+        "monthlyVfLimit": transition_policy["monthlyVfLimit"],
+        "dailyGenerationLimit": transition_policy["dailyGenerationLimit"],
         "stripeCustomerId": str(customer_id or "") or None,
         "subscriptionId": str(subscription_id or "") or None,
         "currencyMode": "INR_BASE_AUTO_FX",
@@ -22076,8 +22402,20 @@ def wallet_coupon_redeem(payload: CouponRedeemRequest, request: Request) -> JSON
 
         ent_doc = entitlement_ref.get(transaction=transaction_obj)
         entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
-        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance")) + _as_positive_number(credit_vf)
-        entitlement["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
+        entitlement = _append_paid_vf_credit_lot(
+            entitlement,
+            amount=_as_positive_number(credit_vf),
+            reason="coupon_redeem",
+            transaction_id=tx_doc_id,
+            metadata={
+                "couponId": coupon_id,
+                "code": code,
+                "channel": "wallet",
+                "usagePolicy": policy,
+                "adminLimitBypass": bool(admin_limit_bypass),
+            },
+            now=now,
+        )
         entitlement["updatedAt"] = now.isoformat()
         coupon["redeemedCount"] = _as_positive_int(coupon.get("redeemedCount")) + 1
         coupon["updatedAt"] = now.isoformat()
@@ -22440,7 +22778,9 @@ def admin_patch_user(target_uid: str, payload: AdminUserPatchRequest, request: R
 
     if payload.paidVfDelta is not None:
         delta = _as_float(payload.paidVfDelta, 0.0)
-        patch["paidVfBalance"] = _as_positive_number(_as_positive_number(entitlement.get("paidVfBalance")) + delta)
+        entitlement = _apply_paid_vf_balance_delta(entitlement, delta, reason="admin_adjustment")
+        patch["paidVfLots"] = entitlement.get("paidVfLots") or []
+        patch["paidVfBalance"] = _as_positive_number(entitlement.get("paidVfBalance"))
     if payload.vffDelta is not None:
         delta = _as_float(payload.vffDelta, 0.0)
         patch["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + delta)

@@ -6,14 +6,12 @@ export type RuntimeVoiceCatalogMap = Record<GenerationSettings['engine'], VoiceO
 
 const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
   GEM: [],
-  GOOD: [],
   NEURAL2: [],
   KOKORO: [],
 };
 
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
   GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   KOKORO: [
     'af_heart',
@@ -114,7 +112,7 @@ const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption)
 };
 
 export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => {
-  if (engine === 'GEM' || engine === 'GOOD' || engine === 'NEURAL2') {
+  if (engine === 'GEM' || engine === 'NEURAL2') {
     return VOICES.map((voice) => asEngineVoice(engine, voice));
   }
   return KOKORO_VOICES.map((voice) => asEngineVoice('KOKORO', voice));
@@ -200,7 +198,6 @@ export const fetchRuntimeVoiceRegistry = async (
   const entries: RuntimeVoiceCatalogMap = {
     ...EMPTY_CATALOG,
     GEM: [],
-    GOOD: [],
     NEURAL2: [],
   };
 
@@ -209,7 +206,6 @@ export const fetchRuntimeVoiceRegistry = async (
   } catch {
     entries.GEM = getStaticVoiceFallback('GEM');
   }
-  entries.GOOD = entries.GEM.map((voice) => ({ ...voice, engine: 'GOOD' }));
   entries.NEURAL2 = entries.GEM.map((voice) => ({ ...voice, engine: 'NEURAL2' }));
 
   try {
