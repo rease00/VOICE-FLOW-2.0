@@ -4,11 +4,11 @@ import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, us
 import { 
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
     Music, Video, 
-    Save, FileText, Fingerprint, UploadCloud, FileAudio, Loader2, 
+    Save, Fingerprint, UploadCloud, FileAudio, Loader2, 
     Download, Menu, Box,
     Plus, Bot, Volume2, Clock, Send, 
     Film, Mic2, Sliders,
-    Key, Lock, Terminal, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Gift, Bell
+    Lock, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Gift, Bell
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
@@ -56,14 +56,11 @@ import {
 import {
   cancelDubbingJob,
   checkMediaBackendHealth,
-  convertVoiceTransferCover,
   createDubbingJobV2,
   downloadDubbingChunk,
   downloadDubbingReport,
   downloadDubbingResult,
   getDubbingJob,
-  listVoiceTransferModels,
-  loadVoiceTransferModel,
   resolveMediaBackendUrl,
   switchTtsEngineRuntime,
   transcribeVideoWithBackend,
@@ -79,7 +76,6 @@ import {
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
-import { DubbingTranslateBar } from '../components/DubbingTranslateBar';
 import { SectionCard } from '../components/SectionCard';
 import { BrandLogo } from '../components/BrandLogo';
 import { BlockScriptEditor } from '../components/studio/BlockScriptEditor';
@@ -90,21 +86,34 @@ import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, readStorageString, removeStorageKey, writeStorageJson, writeStorageString } from '../src/shared/storage/localStore';
 import { buildWorkspaceTabs, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
-import { fetchTtsEnginesStatus } from '../src/shared/api/gatewayClient';
+import { createTtsJob, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
+import { applySafeMediaVolume, normalizeMediaVolume } from '../src/shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
+import { useManagedTabs } from '../src/shared/ui/tabs';
+import {
+  createRuntimePollTabId,
+  isRuntimePollCoordinationAvailable,
+  readRuntimePollSnapshot,
+  releaseRuntimePollLeadership,
+  renewRuntimePollLeadership,
+  RUNTIME_POLL_LEADER_KEY,
+  RUNTIME_POLL_SNAPSHOT_KEY,
+  writeRuntimePollSnapshot,
+} from '../src/shared/runtime/runtimePollCoordinator';
+import { resolveRuntimePollMode } from '../src/shared/runtime/runtimePollScheduler';
 import {
   normalizeAssistantProviderControlsEnabled,
   normalizePreferUserGeminiKey,
-  resolveAssistantProviderRouting,
 } from '../src/shared/settings/assistantProvider';
 import { hasAdminConsoleAccess as canUseAdminConsole } from '../src/shared/auth/adminAccess';
-import { ASSISTANT_PROVIDER_UI_LABELS, sanitizeUiText } from '../src/shared/ui/terminology';
+import { joinUiFragments, sanitizeUiText } from '../src/shared/ui/terminology';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../src/shared/notifications/deepLink';
+import { reportFrontendSignal } from '../src/shared/telemetry/frontendErrors';
 import { fetchAccountProfile, type TokenPackKey } from '../services/accountService';
 import { firebaseAuth } from '../services/firebaseClient';
-import { SimplifiedDubbingTab } from '../src/features/dubbing/components/SimplifiedDubbingTab';
+import { extractNovelTextFromFile } from '../services/novelImportService';
 import {
   canUseStudioQueue,
   computeStudioQueueMasterOrder,
@@ -113,39 +122,77 @@ import {
   normalizeStoredStudioQueueState,
 } from '../src/features/studio/model/queue';
 import {
+  STUDIO_RAIL_TAB_ITEMS,
+  getStudioCreditsActionState,
+  resolveSidebarMode,
+  resolveStudioRailTab,
+  type SidebarMode,
+  type StudioRailTab,
+} from '../src/features/studio/model/layout';
+import {
   clearStudioQueueAudioCache,
   deleteStudioQueueAudioBlob,
   readStudioQueueAudioBlob,
   storeStudioQueueAudioBlob,
 } from '../services/studioQueueCacheService';
 import { buildStudioQueueBlobUrl, mergeStudioQueueAudioBlobs } from '../services/studioQueueAudioService';
+import { createStudioObjectUrlRegistry } from '../services/studioObjectUrlRegistry';
 import { buildSentenceAlignedCharWindows } from '../services/ttsLongTextService';
 import { pollTtsGatewayJobForAudio } from '../services/ttsGatewayJobService';
+import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
 
-const AdminTabContent = lazy(async () =>
-  import('../src/features/admin/components/AdminTabContent').then((module) => ({ default: module.AdminTabContent }))
-);
-const NovelTabContent = lazy(async () =>
-  import('../src/features/novel/components/NovelTabContent').then((module) => ({ default: module.NovelTabContent }))
-);
-const ReaderTabContent = lazy(async () =>
-  import('../src/features/reader/components/ReaderTabContent').then((module) => ({ default: module.ReaderTabContent }))
-);
+const loadAdminTabContent = () => import('../src/features/admin/components/AdminTabContent');
+const loadNovelTabContent = () => import('../src/features/novel/components/NovelTabContent');
+const loadLabTabContent = () => import('../src/features/lab/components/LabTabContent');
+const loadPodcastTabContent = () => import('../src/features/podcast/components/PodcastTabContent');
+const loadReaderTabContent = () => import('../src/features/reader/components/ReaderTabContent');
+
+const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
+const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
+const LabTabContent = lazy(async () => loadLabTabContent().then((module) => ({ default: module.default })));
+const PodcastTabContent = lazy(async () => loadPodcastTabContent().then((module) => ({ default: module.PodcastTabContent })));
+const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
+
+const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
+  [Tab.ADMIN]: loadAdminTabContent,
+  [Tab.NOVEL]: loadNovelTabContent,
+  [Tab.LAB]: loadLabTabContent,
+  [Tab.PODCAST]: loadPodcastTabContent,
+  [Tab.READER]: loadReaderTabContent,
+};
 
 interface MainAppProps {
   setScreen: (screen: AppScreen) => void;
 }
 
-type LabMode = 'CLONING' | 'COVERS';
 type UiTheme = 'light' | 'dark' | 'system';
 type UiDensity = 'comfortable' | 'compact';
 type UiMotionLevel = 'off' | 'balanced' | 'rich';
 type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
 
+const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
+
 interface EngineRuntimeStatus {
   state: EngineRuntimeState;
   detail: string;
 }
+
+const ENGINE_RUNTIME_STATE_SET: ReadonlySet<EngineRuntimeState> = new Set([
+  'checking',
+  'starting',
+  'online',
+  'offline',
+  'not_configured',
+  'standby',
+]);
+
+const normalizeEngineRuntimeState = (
+  rawState: unknown,
+  fallback: EngineRuntimeState = 'offline'
+): EngineRuntimeState => {
+  const token = String(rawState || '').trim().toLowerCase() as EngineRuntimeState;
+  return ENGINE_RUNTIME_STATE_SET.has(token) ? token : fallback;
+};
 
 interface RuntimeAccessProbe {
   ok: boolean;
@@ -187,6 +234,11 @@ interface GatewayAudioChunkEventDetail {
   durationMs?: number;
   textChars?: number;
   traceId?: string;
+  speakerId?: string;
+  turnIndex?: number;
+  sessionEpoch?: number;
+  resumeAttempt?: number;
+  fallbackUsed?: boolean;
   audioBase64?: string;
 }
 
@@ -198,6 +250,11 @@ interface LiveAudioChunkItem {
   durationMs: number;
   textChars: number;
   traceId: string;
+  speakerId?: string;
+  turnIndex?: number;
+  sessionEpoch?: number;
+  resumeAttempt?: number;
+  fallbackUsed?: boolean;
   audioBase64: string;
 }
 
@@ -208,6 +265,23 @@ interface CachedDubbingStems {
   speechObjectUrl: string;
   backgroundObjectUrl: string;
   duration: number;
+}
+
+type AssistantApplyMode = 'replace' | 'append';
+
+interface AssistantRequestOptions {
+  applyToEditor?: boolean;
+  applyMode?: AssistantApplyMode;
+  historyText?: string;
+}
+
+interface AssistantQuickAction {
+  id: string;
+  label: string;
+  prompt: string;
+  applyToEditor: boolean;
+  applyMode: AssistantApplyMode;
+  requiresContext?: boolean;
 }
 
 type HealthSeverity = 'ok' | 'warn' | 'error';
@@ -228,18 +302,27 @@ interface DubbingUiState {
   updatedAt: number;
 }
 
-const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'GOOD', 'NEURAL2', 'GEM'];
+const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM'];
 const FALLBACK_RUNTIME_URLS: Record<GenerationSettings['engine'], string> = {
   GEM: 'http://127.0.0.1:7810',
-  GOOD: 'http://127.0.0.1:7810',
   NEURAL2: 'http://127.0.0.1:7810',
   KOKORO: 'http://127.0.0.1:7820',
 };
 const DEFAULT_MEDIA_BACKEND_URL = getDefaultApiBaseUrl();
+const readPositiveIntEnv = (value: unknown, fallback: number): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+};
+const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 3000);
+const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_COOLDOWN_POLL_MS, 30000);
+const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
+const RUNTIME_STATUS_ACCESS_KEEPALIVE_MS = 10 * 60 * 1000;
+const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 5000;
+const RUNTIME_STATUS_LEADER_LEASE_MS = 20000;
 
 const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]> = {
   GEM: [],
-  GOOD: [],
   NEURAL2: [],
   KOKORO: [],
 };
@@ -248,7 +331,6 @@ const DEFAULT_KOKORO_VOICE_ID = KOKORO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
 const BUILT_IN_VOICE_IDS = new Set([...VOICES.map((voice) => voice.id), ...KOKORO_VOICES.map((voice) => voice.id)]);
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
   GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  GOOD: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   KOKORO: [
       'af_heart',
@@ -287,9 +369,26 @@ const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; stand
   mega: { label: 'Mega', vf: 300000, standardInr: 2900, scaleInr: 2320 },
   ultra: { label: 'Ultra', vf: 600000, standardInr: 5200, scaleInr: 4160 },
 };
-type AdminOpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
-const LEGACY_DUBBING_UI_ENABLED = false;
 
+const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
+  [Tab.STUDIO]: 'Script, cast, and render audio',
+  [Tab.PODCAST]: 'Live native podcast orchestration and runtime',
+  [Tab.LAB]: 'Experimental audio and video tools',
+  [Tab.CHARACTERS]: 'Voice roster and cast management',
+  [Tab.NOVEL]: 'Long-form drafting and chapter flow',
+  [Tab.READER]: 'Playback, import, and listening tools',
+  [Tab.HISTORY]: 'Recent generations and exports',
+  [Tab.ADMIN]: 'Operational controls and audits',
+};
+
+const formatInr = (amount: number): string =>
+  new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0,
+  }).format(Math.max(0, Number(amount || 0)));
+
+type AdminOpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
 const resolveWorkspaceTabFromUrl = (): Tab => {
   if (typeof window === 'undefined') return Tab.STUDIO;
   const token = String(new URLSearchParams(window.location.search).get('vf-tab') || '').trim().toUpperCase();
@@ -317,12 +416,37 @@ const normalizeAllowedEngines = (value: unknown): GenerationSettings['engine'][]
   if (!Array.isArray(value)) return [];
   const out = new Set<GenerationSettings['engine']>();
   value.forEach((item) => {
-    const token = String(item || '').trim().toUpperCase();
-    if (token === 'KOKORO' || token === 'GOOD' || token === 'NEURAL2' || token === 'GEM') {
-      out.add(token as GenerationSettings['engine']);
-    }
+    out.add(normalizeEngineToken(item));
   });
   return Array.from(out);
+};
+
+const normalizeEngineToken = (
+  value: unknown,
+  fallback: GenerationSettings['engine'] = 'GEM'
+): GenerationSettings['engine'] => {
+  const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!token) return fallback;
+  if (token === 'KOKORO' || token === 'KOKORO_RUNTIME' || token === 'BASIC' || token === 'BAS' || token === 'BS') return 'KOKORO';
+  if (
+    token === 'NEURAL2' ||
+    token === 'NEURAL_2' ||
+    token === 'NURAL2' ||
+    token === 'NURAL_2' ||
+    token === 'VECTOR' ||
+    token === 'VEC' ||
+    token === 'HD'
+  ) return 'NEURAL2';
+  if (
+    token === 'GEM' ||
+    token === 'GEMINI' ||
+    token === 'GOOD' ||
+    token === 'GOOD_LITE' ||
+    token === 'PRIME' ||
+    token === 'PRI' ||
+    token === 'PR'
+  ) return 'GEM';
+  return fallback;
 };
 
 const DEFAULT_SETTINGS: GenerationSettings = {
@@ -367,8 +491,7 @@ const normalizeServiceSetting = (value: unknown, fallback: string): string => (
 
 const normalizeSettings = (input: unknown): GenerationSettings => {
   const value = (input && typeof input === 'object') ? input as Record<string, any> : {};
-  const legacyEngine = typeof value.engine === 'string' ? value.engine : DEFAULT_SETTINGS.engine;
-  const engine = (legacyEngine === 'GEM' || legacyEngine === 'GOOD' || legacyEngine === 'NEURAL2' || legacyEngine === 'KOKORO') ? legacyEngine : 'GEM';
+  const engine = normalizeEngineToken(value.engine, DEFAULT_SETTINGS.engine);
   const defaultVoice = engine === 'KOKORO'
     ? DEFAULT_KOKORO_VOICE_ID
     : DEFAULT_GEM_VOICE_ID;
@@ -421,12 +544,7 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
       : DEFAULT_SETTINGS.multiSpeakerEnabled,
     mediaBackendUrl: mediaBackendSanitized.value,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
-    voiceModel:
-      typeof value.voiceModel === 'string'
-        ? value.voiceModel
-        : typeof value.llvcModel === 'string'
-          ? value.llvcModel
-          : DEFAULT_SETTINGS.voiceModel,
+    voiceModel: typeof value.voiceModel === 'string' ? value.voiceModel : DEFAULT_SETTINGS.voiceModel,
     geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.GEM),
     kokoroTtsServiceUrl: normalizeServiceSetting(value.kokoroTtsServiceUrl, DEFAULT_SETTINGS.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO),
     kokoroStandbyIdleMs: typeof value.kokoroStandbyIdleMs === 'number' && Number.isFinite(value.kokoroStandbyIdleMs)
@@ -450,82 +568,6 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
 
   return normalized;
 };
-
-const DUBBING_SOURCE_LANGUAGE_OPTIONS: Array<{ code: string; label: string }> = [
-  { code: 'auto', label: 'Auto Detect' },
-  { code: 'en', label: 'English' },
-  { code: 'hi', label: 'Hindi' },
-  { code: 'bn', label: 'Bengali' },
-  { code: 'zh', label: 'Chinese' },
-  { code: 'ja', label: 'Japanese' },
-  { code: 'ru', label: 'Russian' },
-];
-
-const VIDEO_PIPELINE_2026_PHASES: Array<{ title: string; body: string }> = [
-  {
-    title: 'Phase 1: Deep Acoustic Deconstruction (Acoustic Isolation)',
-    body: 'Isolate dialogue from M&E, then dereverb to produce a dry vocal stem for clean remixing. Default stack: UVR5-compatible BS-Roformer-Viperx-1297 with UVR DeEcho/DeReverb.',
-  },
-  {
-    title: 'Phase 2: Multimodal Analysis (Director Layer)',
-    body: 'Gemini 3 Flash builds Director JSON with speaker diarization, affective tags (whisper, grit, sarcasm), and exact start_ms/end_ms timing markers.',
-  },
-  {
-    title: 'Phase 3: Isochrony-Aware Translation (Sync Script)',
-    body: 'Translation is iteratively rewritten until syllable ratio stays within configured tolerance (default +-10%) so timing remains aligned.',
-  },
-  {
-    title: 'Phase 4: Base Performance Generation (Gemini TTS)',
-    body: 'Gemini 2.5 Flash TTS generates the acting base with director tags injected and segment-level dynamic speaking_rate fitted to duration windows.',
-  },
-  {
-    title: 'Phase 5: CPU-Optimized Voice Transfer',
-    body: 'W-Okada voice transfer applies the target timbre onto translated performance while preserving rhythm and expressive cues, with per-segment RTF tracking.',
-  },
-  {
-    title: 'Phase 6: Visual Lip-Sync (Final Assembly)',
-    body: 'Wav2Lip-ONNX re-animates mouth movement to match target phonemes. LPIPS validation runs when available, otherwise warns and continues.',
-  },
-];
-
-const VIDEO_PIPELINE_2026_SUMMARY_ROWS: Array<{ step: string; tool: string; modality: string; benefit: string }> = [
-  {
-    step: 'Isolation',
-    tool: 'UVR5 (RoFormer)',
-    modality: 'Audio',
-    benefit: 'Removes music bleed and original room reverb.',
-  },
-  {
-    step: 'Logic',
-    tool: 'Gemini 3 Flash',
-    modality: 'Multimodal',
-    benefit: 'Precise emotional and temporal mapping.',
-  },
-  {
-    step: 'Translation',
-    tool: 'IAMT Prompting',
-    modality: 'Text',
-    benefit: 'Syllable-matched for duration alignment.',
-  },
-  {
-    step: 'Base Vocal',
-    tool: 'Gemini 2.5 TTS',
-    modality: 'Audio',
-    benefit: 'High-fidelity emotional performance.',
-  },
-  {
-    step: 'Cloning',
-    tool: 'Voice Transfer',
-    modality: 'Audio',
-    benefit: 'CPU-friendly timbre transfer with acting preserved.',
-  },
-  {
-    step: 'Lip-Sync',
-    tool: 'Wav2Lip-ONNX',
-    modality: 'Video',
-    benefit: 'Aligns mouth movement at 256x256 output path.',
-  },
-];
 
 const cleanDubbingLine = (line: string): string => (
   String(line || '')
@@ -621,81 +663,159 @@ const ResourceMonitor = ({ isWorking }: { isWorking: boolean }) => {
     cpu: 0,
     ram: 0,
     gpu: 'Unknown GPU',
-    cpuHistory: Array(20).fill(5) as number[],
+    cpuHistory: Array(20).fill(4) as number[],
     ramHistory: Array(20).fill(0) as number[],
   });
 
   useEffect(() => {
     // 1. Get GPU Renderer Name (Once)
     try {
-        const canvas = document.createElement('canvas');
-        const gl = canvas.getContext('webgl');
-        if (gl) {
-            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-            if (debugInfo) {
-                const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
-                // Clean up renderer string
-                const cleanName = renderer.replace(/ANGLE \((.*)\)/, '$1').replace(/Direct3D11 vs_.* ps_.*/, '').substring(0, 20);
-                setStats(s => ({ ...s, gpu: cleanName }));
-            }
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+      if (gl) {
+        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+        if (debugInfo) {
+          const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+          const cleanName = String(renderer || '')
+            .replace(/ANGLE \((.*)\)/, '$1')
+            .replace(/Direct3D11 vs_.* ps_.*/, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim()
+            .slice(0, 32);
+          if (cleanName) {
+            setStats((state) => ({ ...state, gpu: cleanName }));
+          }
         }
-    } catch(e) {}
+      }
+    } catch {
+      // GPU renderer data can be unavailable in hardened browser contexts.
+    }
 
-    const interval = setInterval(() => {
-        // 2. RAM Usage (Chrome only)
-        const mem = (performance as any).memory;
-        const ramUsage = mem ? Math.round(mem.usedJSHeapSize / 1024 / 1024) : 0;
+    let intervalId: number | null = null;
+    let longTaskDurationSinceTick = 0;
+    let previousTickAt = performance.now();
+    let previousRamUsageMb = 0;
+    let longTaskObserver: PerformanceObserver | null = null;
 
-        // 3. CPU Simulation
-        // We can't get real CPU load in JS, so we simulate based on "isWorking" + randomness
-        let targetCpu = isWorking ? 65 : 5; 
-        const fluctuation = Math.random() * 10 - 5;
-        
-        setStats(prev => {
-            const currentCpu = prev.cpu;
-            const drift = (targetCpu + fluctuation) - currentCpu;
-            const nextCpu = Math.max(1, Math.min(100, Math.round(currentCpu + (drift * 0.1))));
-            const nextRam = ramUsage;
-            return {
-                ...prev,
-                ram: nextRam,
-                cpu: nextCpu,
-                cpuHistory: [...prev.cpuHistory.slice(-19), nextCpu],
-                ramHistory: [...prev.ramHistory.slice(-19), nextRam],
-            };
+    if (typeof window !== 'undefined' && typeof PerformanceObserver !== 'undefined') {
+      try {
+        longTaskObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            longTaskDurationSinceTick += Math.max(0, Number(entry.duration) || 0);
+          }
         });
+        longTaskObserver.observe({ type: 'longtask', buffered: true } as PerformanceObserverInit);
+      } catch {
+        longTaskObserver = null;
+      }
+    }
 
-    }, 1000);
+    const runTick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const now = performance.now();
+      const expectedCadenceMs = isWorking ? 1000 : 4000;
+      const elapsedMs = Math.max(1, now - previousTickAt);
+      const eventLoopLagMs = Math.max(0, elapsedMs - expectedCadenceMs);
 
-    return () => clearInterval(interval);
+      const perfWithMemory = performance as Performance & {
+        memory?: { usedJSHeapSize?: number };
+      };
+      const heapBytes = Number(perfWithMemory.memory?.usedJSHeapSize || 0);
+      const ramUsage = heapBytes > 0 ? Math.round(heapBytes / 1024 / 1024) : 0;
+      const heapDeltaMb = previousRamUsageMb > 0 ? Math.max(0, ramUsage - previousRamUsageMb) : 0;
+      if (ramUsage > 0) {
+        previousRamUsageMb = ramUsage;
+      }
+
+      const longTaskRatio = Math.min(1, longTaskDurationSinceTick / elapsedMs);
+      const lagRatio = Math.min(1, eventLoopLagMs / Math.max(24, expectedCadenceMs * 0.4));
+      const heapTrendRatio = Math.min(1, heapDeltaMb / 24);
+      const workloadBias = isWorking ? 0.22 : 0.06;
+      const cpuSignalPct = (
+        (longTaskRatio * 0.52)
+        + (lagRatio * 0.30)
+        + (heapTrendRatio * 0.18)
+        + workloadBias
+      ) * 100;
+      longTaskDurationSinceTick = 0;
+      previousTickAt = now;
+
+      setStats((previous) => {
+        const smoothedCpu = Math.max(1, Math.min(100, Math.round((previous.cpu * 0.62) + (cpuSignalPct * 0.38))));
+        return {
+          ...previous,
+          ram: ramUsage,
+          cpu: smoothedCpu,
+          cpuHistory: [...previous.cpuHistory.slice(-19), smoothedCpu],
+          ramHistory: [...previous.ramHistory.slice(-19), ramUsage],
+        };
+      });
+    };
+
+    const startPolling = () => {
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
+      previousTickAt = performance.now();
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      const cadenceMs = isWorking ? 1000 : 4000;
+      intervalId = window.setInterval(runTick, cadenceMs);
+      runTick();
+    };
+
+    const onVisibilityChange = () => {
+      startPolling();
+    };
+
+    startPolling();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
+      longTaskObserver?.disconnect();
+    };
   }, [isWorking]);
 
+  const gpuLabel = stats.gpu === 'Unknown GPU'
+    ? 'GPU N/A'
+    : String(stats.gpu || '')
+      .replace(/\(TM\)/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
   return (
-    <div className="fixed bottom-4 left-[calc(16rem+1rem)] z-40 hidden xl:flex items-center gap-4 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full border border-gray-200 shadow-sm text-[10px] font-mono text-gray-500">
-        <div className="flex items-center gap-2" title="Estimated CPU load from UI activity">
-            <Activity size={12} className={isWorking ? "text-amber-500 animate-pulse" : "text-gray-400"} />
-            <span>CPU est: {stats.cpu}%</span>
+    <div className="pointer-events-none fixed bottom-3 left-[calc(16rem+0.75rem)] z-40 hidden select-none xl:flex items-center gap-2 rounded-full border border-slate-300/70 bg-slate-950/82 px-2.5 py-1.5 text-[9px] font-mono text-slate-200 shadow-sm backdrop-blur-md">
+        <div className="flex items-center gap-1.5" title="Browser CPU signal (long tasks, event-loop lag, and heap trend)">
+            <Activity size={10} className={isWorking ? "text-amber-400 animate-pulse" : "text-slate-400"} />
+            <span>CPU {stats.cpu}%</span>
             <TelemetrySparkline
               values={stats.cpuHistory}
-              colorClassName={isWorking ? 'text-amber-400' : 'text-slate-400'}
+              compact
+              colorClassName={isWorking ? 'text-amber-300' : 'text-slate-400'}
               glow={isWorking}
-              title="Estimated CPU trend"
+              title="Browser CPU pressure trend"
             />
         </div>
-        <div className="w-px h-3 bg-gray-300"></div>
-        <div className="flex items-center gap-2" title="JS heap usage">
-            <Cpu size={12} className="text-gray-400" />
-            <span>RAM: {stats.ram > 0 ? `${stats.ram} MB` : 'N/A'}</span>
+        <div className="h-2.5 w-px bg-slate-600"></div>
+        <div className="flex items-center gap-1.5" title="JS heap usage">
+            <Cpu size={10} className="text-slate-400" />
+            <span>RAM {stats.ram > 0 ? `${stats.ram}M` : '--'}</span>
             <TelemetrySparkline
               values={stats.ramHistory}
-              colorClassName="text-cyan-400"
+              compact
+              colorClassName="text-cyan-300"
               title="RAM trend"
             />
         </div>
-        <div className="w-px h-3 bg-gray-300"></div>
+        <div className="h-2.5 w-px bg-slate-600"></div>
         <div className="flex items-center gap-1.5" title="Active GPU Renderer">
-            <Zap size={12} className={isWorking ? "text-violet-500" : "text-gray-400"} />
-            <span className="truncate max-w-[120px]">{stats.gpu}</span>
+            <Zap size={10} className={isWorking ? "text-violet-300" : "text-slate-400"} />
+            <span className="max-w-[90px] truncate">{gpuLabel}</span>
         </div>
     </div>
   );
@@ -738,9 +858,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   
   // --- State ---
   const [activeTab, setActiveTab] = useState<Tab>(resolveWorkspaceTabFromUrl);
+  const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
-  const [labMode, setLabMode] = useState<LabMode>('CLONING');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (
+    resolveSidebarMode(readStorageString(STORAGE_KEYS.studioSidebarMode))
+  ));
+  const [isCreditsSurfaceOpen, setIsCreditsSurfaceOpen] = useState(false);
+  const [studioRailTab, setStudioRailTab] = useState<StudioRailTab>(() => resolveStudioRailTab('voice'));
   
   // Studio Text State
   const [text, setText] = useState('');
@@ -781,9 +906,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const queueRunnerLockRef = useRef(false);
   const studioQueueAutoResumeAttemptedRef = useRef(false);
   const generationFailureBurstRef = useRef(0);
+  const studioObjectUrlRegistryRef = useRef(
+    createStudioObjectUrlRegistry({ maxTracked: STUDIO_OBJECT_URL_REGISTRY_MAX })
+  );
   const lastRuntimeStatesRef = useRef<Record<GenerationSettings['engine'], EngineRuntimeState>>({
     GEM: 'checking',
-    GOOD: 'checking',
     NEURAL2: 'checking',
     KOKORO: 'checking',
   });
@@ -819,6 +946,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = parseFloat(readStorageString(STORAGE_KEYS.uiFontScale) || '1');
     return Number.isFinite(saved) ? Math.min(1.15, Math.max(0.9, saved)) : 1;
   });
+
+  const setGeneratedAudioUrlManaged = useCallback((nextUrl: string | null) => {
+    setGeneratedAudioUrl((previousUrl) => {
+      studioObjectUrlRegistryRef.current.replace(previousUrl, nextUrl);
+      return nextUrl;
+    });
+  }, []);
   const [uiMotionLevel, setUiMotionLevel] = useState<UiMotionLevel>(() => {
     const saved = readStorageString(STORAGE_KEYS.uiMotionLevel);
     if (saved === 'off' || saved === 'rich' || saved === 'balanced') return saved;
@@ -831,6 +965,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // Editor Tools
   const [isAiWriting, setIsAiWriting] = useState(false);
+  const [isStudioImporting, setIsStudioImporting] = useState(false);
   const [isAutoAssigningCast, setIsAutoAssigningCast] = useState(false);
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
   const [detectedSpeakers, setDetectedSpeakers] = useState<string[]>([]);
@@ -840,6 +975,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     multiSpeaker: false,
     cast: false,
     queue: false,
+    live: false,
   });
   const [studioEditorMode, setStudioEditorMode] = useState<StudioEditorMode>(() => {
       const saved = readStorageString(STORAGE_KEYS.studioEditorMode);
@@ -847,6 +983,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   });
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const studioImportInputRef = useRef<HTMLInputElement>(null);
 
   const toggleStudioMobilePanel = useCallback((panel: keyof typeof studioMobilePanels) => {
     setStudioMobilePanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
@@ -860,6 +997,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       { role: 'ai', text: "Hello! I'm your creative assistant. I can help you write, edit, or direct your video." }
   ]);
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [assistantAutoApply, setAssistantAutoApply] = useState(true);
+  const [assistantApplyMode, setAssistantApplyMode] = useState<AssistantApplyMode>('append');
+  const [lastAssistantDraft, setLastAssistantDraft] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Lab & Dubbing State
@@ -897,20 +1037,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- Real Media Backend State (Voice Transfer + Video Tools) ---
   const [backendHealth, setBackendHealth] = useState<BackendHealthState | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
-  const [voiceTransferModels, setVoiceTransferModels] = useState<string[]>([]);
-  const [isLoadingLlvcModels, setIsLoadingLlvcModels] = useState(false);
-  const [llvcSourceFile, setLlvcSourceFile] = useState<File | null>(null);
-  const [llvcSourcePreviewUrl, setLlvcSourcePreviewUrl] = useState<string | null>(null);
-  const [isLlvcSourcePlaying, setIsLlvcSourcePlaying] = useState(false);
-  const [llvcPitchShift, setLlvcPitchShift] = useState(0);
-  const [llvcPreset, setLlvcPreset] = useState<'tts_realtime'>('tts_realtime');
-  const [llvcF0Method, setLlvcF0Method] = useState<'rmvpe' | 'harvest' | 'crepe' | 'pm'>('rmvpe');
-  const [llvcIndexRate, setLlvcIndexRate] = useState(0.5);
-  const [llvcFilterRadius, setLlvcFilterRadius] = useState(3);
-  const [llvcRmsMixRate, setLlvcRmsMixRate] = useState(1.0);
-  const [llvcProtect, setLlvcProtect] = useState(0.33);
-  const [isGeneratingLlvcCover, setIsGeneratingLlvcCover] = useState(false);
-  const [llvcCoverUrl, setLlvcCoverUrl] = useState<string | null>(null);
   const [dubbingUiState, setDubbingUiState] = useState<DubbingUiState>({
       phase: 'idle',
       progress: 0,
@@ -934,7 +1060,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const dubAudioRef = useRef<HTMLAudioElement>(null);
-  const llvcSourceMediaRef = useRef<HTMLMediaElement | null>(null);
   const dubbingStemsRef = useRef<CachedDubbingStems | null>(null);
   const activeDubbingJobIdRef = useRef<string>('');
   const dubbingLiveAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -945,6 +1070,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const progressTimerRef = useRef<any>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const studioMainRef = useRef<HTMLDivElement>(null);
+  const creditsSurfaceRef = useRef<HTMLDivElement>(null);
+  const creditsSurfaceTriggerRef = useRef<HTMLButtonElement>(null);
   const selectedDubbingClip = useMemo(
     () => dubbingClips.find((clip) => clip.id === selectedDubbingClipId) || null,
     [dubbingClips, selectedDubbingClipId]
@@ -1044,7 +1171,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [managedActiveEngine, setManagedActiveEngine] = useState<GenerationSettings['engine'] | null>(null);
   const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<GenerationSettings['engine'], EngineRuntimeStatus>>({
     GEM: { state: 'checking', detail: 'Checking...' },
-    GOOD: { state: 'checking', detail: 'Checking...' },
     NEURAL2: { state: 'checking', detail: 'Checking...' },
     KOKORO: { state: 'checking', detail: 'Checking...' },
 
@@ -1054,6 +1180,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     detail: 'Checking authentication...',
     checkedAt: 0,
   });
+  const [runtimePollLeaderVersion, setRuntimePollLeaderVersion] = useState(0);
+  const runtimePollTabIdRef = useRef<string>(createRuntimePollTabId());
+  const runtimePollIsLeaderRef = useRef(false);
+  const runtimePollActiveUntilRef = useRef(0);
+  const runtimePollCooldownUntilRef = useRef(0);
+  const runtimePollRefreshInFlightRef = useRef<Promise<void> | null>(null);
+  const runtimePollWasBusyRef = useRef(false);
   const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<GenerationSettings['engine'], VoiceOption[]>>(
     EMPTY_RUNTIME_CATALOG
   );
@@ -1073,7 +1206,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? entitlementAllowedEngines
           : isPaidBillingPlan
             ? [...ENGINE_ORDER]
-            : ['KOKORO', 'GOOD', 'NEURAL2']
+            : ['KOKORO', 'NEURAL2']
     ),
     [entitlementAllowedEngines, hasUnlimitedAccess, isPaidBillingPlan]
   );
@@ -1110,10 +1243,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     Math.max(0, Number(stats.wallet?.adClaimsToday || 0)) < Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3));
   const canClaimAdReward = hasUnlimitedAccess || hasAdClaimsRemaining;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
-  const walletVff = Math.max(0, Number(stats.wallet?.vffBalance || 0));
   const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
-  const walletMonthlyLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
-  const balanceTotalLabel = hasUnlimitedAccess ? 'Unlimited' : `${walletMonthlyLimit.toLocaleString()} credits`;
+  const dailyGenerationRemaining = hasUnlimitedAccess
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Number(stats.generationsLimit || 0) - Number(stats.generationsUsed || 0));
+  const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
     const source = sanitizeUiText(String(raw || '').trim());
@@ -1134,6 +1268,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       lowered.includes('failed to fetch')
     ) {
       return 'Cannot connect to backend service. Verify backend health and CORS configuration, then retry.';
+    }
+    if (
+      lowered.includes('x-admin-unlock') ||
+      lowered.includes('admin-unlock') ||
+      lowered.includes('admin session unlock')
+    ) {
+      return 'Runtime start is admin-locked. Open Settings > Admin and verify session unlock, then retry.';
     }
     if (lowered.includes('did not become online') || lowered.includes('timeout')) {
       return 'Runtime is taking too long to start. Retry or check service health.';
@@ -1407,7 +1548,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [pumpDubbingLivePlayback]);
   const billingActions = useBillingActions({ baseUrl: mediaBackendUrl });
   const isGemRuntimeEngine = useCallback(
-    (engine: GenerationSettings['engine']) => engine === 'GEM' || engine === 'GOOD' || engine === 'NEURAL2',
+    (engine: GenerationSettings['engine']) => engine === 'GEM' || engine === 'NEURAL2',
     []
   );
   const normalizeRuntimeUrl = (url?: string): string => (url || '').trim().replace(/\/+$/, '');
@@ -1902,7 +2043,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
 
   const activeScriptLanguageCode =
-      activeTab === Tab.DUBBING ? dubbingTextLanguageCode : studioTextLanguageCode;
+      false ? dubbingTextLanguageCode : studioTextLanguageCode;
 
   const studioParsedScript = useMemo(() => parseMultiSpeakerScript(text), [text]);
   const studioCrewTags = useMemo(
@@ -1912,9 +2053,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const castSpeakers = useMemo(() => {
       const names = new Set<string>();
-      const script = activeTab === Tab.DUBBING ? dubScript : text;
+      const script = false ? dubScript : text;
       if (script.trim()) {
-          const parsed = activeTab === Tab.STUDIO ? studioParsedScript : parseMultiSpeakerScript(script);
+          const parsed = isStudioWorkspaceTab ? studioParsedScript : parseMultiSpeakerScript(script);
           parsed.speakersList
               .map((speaker) => speaker.trim())
               .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX')
@@ -1926,9 +2067,32 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           .forEach((speaker) => names.add(speaker));
       if (!names.size) names.add('Narrator');
       return [...names];
-  }, [activeTab, detectedSpeakers, dubScript, studioParsedScript, text]);
+  }, [detectedSpeakers, dubScript, isStudioWorkspaceTab, studioParsedScript, text]);
   const isStudioMultiSpeakerEnabled = settings.multiSpeakerEnabled !== false;
   const shouldShowStudioQueuePanel = isStudioQueueModeEnabled;
+  const studioRailTabItems = useMemo(
+    () => STUDIO_RAIL_TAB_ITEMS.map((item) => ({
+      ...item,
+      disabled: item.id === 'voice' && isStudioMultiSpeakerEnabled,
+    })),
+    [isStudioMultiSpeakerEnabled]
+  );
+  const studioRailTabs = useManagedTabs({
+    items: studioRailTabItems,
+    activeId: studioRailTab,
+    onChange: setStudioRailTab,
+    label: 'Studio controls',
+    idBase: 'studio-controls',
+  });
+  const creditsActionState = useMemo(
+    () => getStudioCreditsActionState({
+      canClaimAdReward,
+      isBuyingTokenPack,
+      isRedeemingCoupon,
+      couponCode,
+    }),
+    [canClaimAdReward, couponCode, isBuyingTokenPack, isRedeemingCoupon]
+  );
 
   const autoAssignCastVoices = useCallback(async () => {
       if (!isStudioMultiSpeakerEnabled) {
@@ -1946,7 +2110,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return;
       }
 
-      const sourceScript = activeTab === Tab.DUBBING ? dubScript : text;
+      const sourceScript = false ? dubScript : text;
       if (!sourceScript.trim()) {
           showToast('Write or paste a script first.', 'info');
           return;
@@ -2131,69 +2295,105 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       [getStaticVoicesForEngine, mediaBackendUrl, mergeVoiceCatalogs, withVoiceMeta]
   );
 
+  const toRuntimeStatus = useCallback((
+      engine: GenerationSettings['engine'],
+      engineItem: any
+  ): EngineRuntimeStatus => {
+      if (!engineItem || typeof engineItem !== 'object') {
+          return { state: 'offline', detail: sanitizeUiText('Gateway did not return runtime status.') };
+      }
+      const stateToken = normalizeEngineRuntimeState(engineItem.state, 'offline');
+      const runtimeReady = typeof engineItem.ready === 'boolean' ? engineItem.ready : stateToken === 'online';
+      const detail = sanitizeUiText(String(engineItem.detail || 'Runtime status updated.')) || 'Runtime status updated.';
+      if (stateToken === 'not_configured') {
+          return { state: 'not_configured', detail };
+      }
+      if (stateToken === 'starting' || (stateToken === 'online' && !runtimeReady)) {
+          return { state: 'starting', detail };
+      }
+      if (stateToken === 'online') {
+          return { state: 'online', detail };
+      }
+      if (stateToken === 'standby') {
+          return { state: 'standby', detail };
+      }
+      return { state: 'offline', detail };
+  }, []);
+
+  const applyRuntimeStatusMap = useCallback((
+      nextStatuses: Record<GenerationSettings['engine'], EngineRuntimeStatus>,
+      options?: { broadcast?: boolean }
+  ) => {
+      setTtsRuntimeStatus(nextStatuses);
+      if (options?.broadcast === false) return;
+      void writeRuntimePollSnapshot(runtimePollTabIdRef.current, nextStatuses);
+  }, []);
+
   const probeRuntimeStatus = useCallback(async (_engine: GenerationSettings['engine']): Promise<EngineRuntimeStatus> => {
       try {
           const payload = await fetchTtsEnginesStatus(_engine, mediaBackendUrl);
           const engineItem = payload.engines?.[_engine];
-          if (!engineItem) {
-              return { state: 'offline', detail: sanitizeUiText('Gateway did not return runtime status.') };
-          }
-          if (engineItem.state === 'online' || engineItem.state === 'starting' || engineItem.state === 'offline') {
-              const runtimeReady = typeof engineItem.ready === 'boolean' ? engineItem.ready : engineItem.state === 'online';
-              const runtimeState: EngineRuntimeState =
-                  engineItem.state === 'online' && !runtimeReady ? 'starting' : engineItem.state;
-              const runtimeDetail = sanitizeUiText(engineItem.detail || 'Runtime status updated.');
-              return { state: runtimeState, detail: runtimeDetail };
-          }
-          return { state: 'offline', detail: sanitizeUiText(engineItem.detail || 'Runtime status unavailable.') };
+          return toRuntimeStatus(_engine, engineItem);
       } catch (error: unknown) {
           const rawDetail = error instanceof Error ? error.message : 'Runtime offline';
           const detail = sanitizeUiText(rawDetail || 'Runtime offline');
           return { state: 'offline', detail };
       }
-  }, [mediaBackendUrl]);
+  }, [mediaBackendUrl, toRuntimeStatus]);
 
-  const refreshTtsRuntimeStatus = async () => {
-      const browserKokoroEnabled = isBrowserKokoroExecutionEnabled();
-      const statuses = await Promise.all(
-          ENGINE_ORDER.map(async (engine) => {
+  const refreshTtsRuntimeStatus = useCallback(async (options?: { broadcast?: boolean }): Promise<void> => {
+      if (runtimePollRefreshInFlightRef.current) {
+          return runtimePollRefreshInFlightRef.current;
+      }
+      const inFlight = (async () => {
+          const payload = await fetchTtsEnginesStatus(undefined, mediaBackendUrl);
+          const browserKokoroEnabled = isBrowserKokoroExecutionEnabled();
+          const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
+          for (const engine of ENGINE_ORDER) {
               if (engine === 'KOKORO' && browserKokoroEnabled) {
                   const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
                   const browserState = kokoroBrowserRuntime.getState();
                   if (isLimitReached) {
-                      return [engine, { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' }] as const;
+                      nextStatuses[engine] = { state: 'standby', detail: 'Daily limit reached. Local ONNX CPU runtime disabled.' };
+                      continue;
                   }
                   if (browserState === 'ready') {
-                      return [engine, { state: 'online', detail: 'Local ONNX CPU runtime ready' }] as const;
+                      nextStatuses[engine] = { state: 'online', detail: 'Local ONNX CPU runtime ready' };
+                      continue;
                   }
                   if (browserState === 'warming') {
-                      return [engine, { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' }] as const;
+                      nextStatuses[engine] = { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' };
+                      continue;
                   }
                   if (browserState === 'suspended') {
-                      return [engine, { state: 'standby', detail: 'Local ONNX CPU runtime suspended (auto-resume on generate)' }] as const;
+                      nextStatuses[engine] = { state: 'standby', detail: 'Local ONNX CPU runtime suspended (auto-resume on generate)' };
+                      continue;
                   }
-                  return [engine, { state: 'standby', detail: 'Local ONNX CPU runtime idle' }] as const;
+                  nextStatuses[engine] = { state: 'standby', detail: 'Local ONNX CPU runtime idle' };
+                  continue;
               }
-              const status = await probeRuntimeStatus(engine);
-              if (
-                  managedActiveEngine &&
-                  engine !== managedActiveEngine &&
-                  status.state === 'offline'
-              ) {
-                  return [engine, { state: 'standby', detail: 'Standby (auto-start on switch)' }] as const;
+              const status = toRuntimeStatus(engine, payload.engines?.[engine]);
+              if (managedActiveEngine && engine !== managedActiveEngine && status.state === 'offline') {
+                  nextStatuses[engine] = { state: 'standby', detail: 'Standby (auto-start on switch)' };
+                  continue;
               }
-              return [engine, status] as const;
-          })
-      );
-
-      setTtsRuntimeStatus(
-          ENGINE_ORDER.reduce((acc, engine) => {
-              acc[engine] = statuses.find(([name]) => name === engine)?.[1] || { state: 'offline', detail: 'Unknown' };
-              return acc;
-          }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>)
-      );
-
-  };
+              nextStatuses[engine] = status;
+          }
+          applyRuntimeStatusMap(nextStatuses, { broadcast: options?.broadcast !== false });
+      })()
+        .catch((error) => {
+            runtimePollActiveUntilRef.current = Math.max(
+              runtimePollActiveUntilRef.current,
+              Date.now() + Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS * 3, 15000)
+            );
+            throw error;
+        })
+        .finally(() => {
+            runtimePollRefreshInFlightRef.current = null;
+        });
+      runtimePollRefreshInFlightRef.current = inFlight;
+      return inFlight;
+  }, [applyRuntimeStatusMap, isLimitReached, managedActiveEngine, mediaBackendUrl, toRuntimeStatus]);
 
   const waitForRuntimeOnline = async (engine: GenerationSettings['engine'], timeoutMs: number): Promise<boolean> => {
       const started = Date.now();
@@ -2296,6 +2496,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           } catch (switchError: any) {
               const detail = String(switchError?.message || switchError || '').toLowerCase();
               if (
+                  detail.includes('x-admin-unlock') ||
+                  detail.includes('admin-unlock') ||
+                  detail.includes('admin session unlock')
+              ) {
+                  throw new Error(`${engineLabel} runtime start is admin-locked. Open Settings > Admin and unlock the session, then retry.`);
+              }
+              if (
                   detail.includes('unreachable') ||
                   detail.includes('fetch failed') ||
                   detail.includes('failed to fetch') ||
@@ -2369,26 +2576,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       try {
           const health = await checkMediaBackendHealth(mediaBackendUrl);
           const ffmpegMissing = !health.ffmpeg?.available;
-          const llvcError = Boolean(health.voiceTransfer?.error);
           const whisperError = Boolean(health.whisper?.error);
-          const separationError = Boolean(health.sourceSeparation?.enabled && !health.sourceSeparation?.available);
-          const hasSubsystemError = ffmpegMissing || llvcError || whisperError || separationError;
+          const hasSubsystemError = ffmpegMissing || whisperError;
           const severity: HealthSeverity = ffmpegMissing || !health.ok
             ? 'error'
             : hasSubsystemError
               ? 'warn'
               : 'ok';
-          const separationState = health.sourceSeparation?.enabled
-            ? (health.sourceSeparation?.available ? 'Separation Model Ready' : 'Separation Model Error')
-            : 'Separation Disabled';
           const languageHint = Array.isArray(health.whisper?.supportedLanguages)
             ? health.whisper?.supportedLanguages.join('/')
             : 'n/a';
           const summary = [
               health.ffmpeg?.available ? 'FFmpeg OK' : 'FFmpeg Missing',
-              health.voiceTransfer?.error ? 'Voice Transfer Error' : 'Voice Transfer Ready',
               health.whisper?.error ? 'Whisper Error' : `Whisper ${health.whisper?.loaded ? 'Loaded' : 'Idle'} (${languageHint})`,
-              separationState,
           ].join(' | ');
           setBackendHealth({ ok: Boolean(health.ok) && !ffmpegMissing, summary: sanitizeUiText(summary), severity });
       } catch (e: any) {
@@ -2402,32 +2602,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
-  const refreshLlvcModels = async (silent: boolean = false) => {
-      setIsLoadingLlvcModels(true);
-      try {
-          const payload = await listVoiceTransferModels(mediaBackendUrl);
-          setVoiceTransferModels(payload.models);
-          setSettings(prev => {
-              const preferred = prev.voiceModel && payload.models.includes(prev.voiceModel) ? prev.voiceModel : '';
-              const nextModel = preferred || payload.currentModel || payload.models[0] || '';
-              return { ...prev, voiceModel: nextModel };
-          });
-      } catch (e: any) {
-          setVoiceTransferModels([]);
-          if (!silent) {
-              showToast(e?.message || 'Failed to load voice transfer models', 'error');
-          }
-      } finally {
-          setIsLoadingLlvcModels(false);
-      }
-  };
-
   const prepareKokoroExecution = useCallback(async (
       context: 'studio' | 'preview',
       voiceId: string,
       speed: number,
-      signal?: AbortSignal
+      options?: {
+          signal?: AbortSignal;
+          preferBrowserExecution?: boolean;
+      }
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
+      const signal = options?.signal;
+      const preferBrowserExecution = options?.preferBrowserExecution;
+      const normalizedWarmupVoiceId = getValidVoiceIdForEngine(
+          'KOKORO',
+          String(voiceId || DEFAULT_KOKORO_VOICE_ID)
+      );
       if (isLimitReached && !hasUnlimitedAccess) {
           if (isBrowserKokoroExecutionEnabled()) {
               const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
@@ -2444,7 +2633,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
       }
 
-      const useBrowserKokoro = shouldUseBrowserKokoroExecution('KOKORO', context);
+      const useBrowserKokoro = shouldUseBrowserKokoroExecution('KOKORO', context) && preferBrowserExecution !== false;
       if (!useBrowserKokoro) {
           if (isBrowserKokoroExecutionEnabled()) {
               const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
@@ -2458,7 +2647,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       KOKORO: { state: 'checking', detail: 'Checking Kokoro runtime...' },
                   }
           ));
-          return await ensureEngineOnlineRef.current('KOKORO', { silent: true, syncVoiceId: voiceId });
+          return await ensureEngineOnlineRef.current('KOKORO', {
+              silent: true,
+              syncVoiceId: normalizedWarmupVoiceId,
+          });
       }
 
       setManagedActiveEngine('KOKORO');
@@ -2471,7 +2663,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
           await kokoroBrowserRuntime.ensureReady({
               backendBaseUrl: mediaBackendUrl,
-              voiceId,
+              voiceId: normalizedWarmupVoiceId,
               speed,
               ...(signal ? { signal } : {}),
           });
@@ -2482,7 +2674,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return {
               runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
               catalog: getEngineVoiceCatalog('KOKORO'),
-              syncedVoiceId: voiceId,
+              syncedVoiceId: normalizedWarmupVoiceId,
           };
       } catch (error: any) {
           if (error?.name === 'AbortError') {
@@ -2506,19 +2698,60 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       mediaBackendUrl,
       refreshTtsAccessState,
       settings.kokoroTtsServiceUrl,
+      getValidVoiceIdForEngine,
   ]);
 
   // --- Effects ---
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiTheme, uiTheme); }, [uiTheme]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiDensity, uiDensity); }, [uiDensity]);
+  useEffect(() => { writeStorageString(STORAGE_KEYS.studioSidebarMode, sidebarMode); }, [sidebarMode]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiFontScale, String(uiFontScale)); }, [uiFontScale]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiMotionLevel, uiMotionLevel); }, [uiMotionLevel]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.studioEditorMode, studioEditorMode); }, [studioEditorMode]);
   useEffect(() => {
+      if (activeTab !== Tab.STUDIO) {
+          setStudioRailTab('voice');
+          return;
+      }
+  }, [activeTab, studioRailTab]);
+  useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
+      if (!isStudioMultiSpeakerEnabled) return;
+      if (studioRailTab === 'voice') {
+          setStudioRailTab('cast');
+      }
+  }, [isStudioWorkspaceTab, isStudioMultiSpeakerEnabled, studioRailTab]);
+  useEffect(() => {
+      const handlePointerDown = (event: MouseEvent) => {
+          const target = event.target;
+          if (!(target instanceof Node)) return;
+
+          if (
+              isCreditsSurfaceOpen &&
+              !creditsSurfaceRef.current?.contains(target) &&
+              !creditsSurfaceTriggerRef.current?.contains(target)
+          ) {
+              setIsCreditsSurfaceOpen(false);
+          }
+      };
+
+      const handleEscape = (event: KeyboardEvent) => {
+          if (event.key !== 'Escape') return;
+          if (isCreditsSurfaceOpen) setIsCreditsSurfaceOpen(false);
+      };
+
+      window.addEventListener('mousedown', handlePointerDown);
+      window.addEventListener('keydown', handleEscape);
+      return () => {
+          window.removeEventListener('mousedown', handlePointerDown);
+          window.removeEventListener('keydown', handleEscape);
+      };
+  }, [isCreditsSurfaceOpen]);
+  useEffect(() => {
       if (typeof document === 'undefined') return;
       const root = document.documentElement;
       const mobileSafeBottom =
-        activeTab === Tab.STUDIO
+        isStudioWorkspaceTab
           ? (isChatOpen
               ? 'calc(env(safe-area-inset-bottom) + 20.5rem)'
               : 'calc(env(safe-area-inset-bottom) + 11.5rem)')
@@ -2527,7 +2760,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return () => {
           root.style.removeProperty('--vf-toast-mobile-safe-bottom');
       };
-  }, [activeTab, isChatOpen]);
+  }, [isChatOpen, isStudioWorkspaceTab]);
   useEffect(() => {
       if (typeof document === 'undefined') return;
       document.documentElement.setAttribute('data-vf-settings-open', showSettings ? 'true' : 'false');
@@ -2790,45 +3023,189 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [hasSessionIdentity, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
 
   useEffect(() => {
-      if (activeTab === Tab.LAB && labMode === 'COVERS') {
-          void refreshBackendHealth(true);
-          void refreshLlvcModels(true);
+      const busy = isGenerating || Boolean(engineSwitchInProgress);
+      const now = Date.now();
+      if (busy) {
+          runtimePollActiveUntilRef.current = Math.max(
+            runtimePollActiveUntilRef.current,
+            now + RUNTIME_STATUS_ACTIVE_POLL_MS
+          );
+      } else if (runtimePollWasBusyRef.current) {
+          runtimePollCooldownUntilRef.current = Math.max(
+            runtimePollCooldownUntilRef.current,
+            now + RUNTIME_STATUS_COOLDOWN_WINDOW_MS
+          );
       }
-  }, [activeTab, labMode, mediaBackendUrl]);
+      runtimePollWasBusyRef.current = busy;
+  }, [engineSwitchInProgress, isGenerating]);
 
   useEffect(() => {
-      const tick = async () => {
-          if (isGenerating || Boolean(engineSwitchInProgress)) return;
-          if (!hasSessionIdentity) {
-              setTtsRuntimeStatus((prev) =>
-                  ENGINE_ORDER.reduce((acc, engine) => {
-                      acc[engine] =
-                          prev[engine]?.state === 'standby' && prev[engine]?.detail === 'Sign in to check runtime status.'
-                              ? prev[engine]
-                              : { state: 'standby', detail: 'Sign in to check runtime status.' };
-                      return acc;
-                  }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>)
-              );
+      const tabId = runtimePollTabIdRef.current;
+      const coordinationAvailable = isRuntimePollCoordinationAvailable();
+      const applySnapshot = () => {
+          if (!coordinationAvailable) return;
+          if (!hasSessionIdentity) return;
+          const snapshot = readRuntimePollSnapshot<Record<GenerationSettings['engine'], EngineRuntimeStatus>>();
+          if (!snapshot || snapshot.tabId === tabId) return;
+          const payload = snapshot.payload;
+          if (!payload || typeof payload !== 'object') return;
+          const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
+          for (const engine of ENGINE_ORDER) {
+              const row = payload[engine];
+              nextStatuses[engine] = row && typeof row === 'object'
+                ? {
+                    state: normalizeEngineRuntimeState((row as any).state, 'offline'),
+                    detail: sanitizeUiText(String((row as any).detail || 'Runtime status unavailable.')) || 'Runtime status unavailable.',
+                  }
+                : { state: 'offline', detail: 'Runtime status unavailable.' };
+          }
+          setTtsRuntimeStatus(nextStatuses);
+      };
+      const refreshLeadership = () => {
+          const previous = runtimePollIsLeaderRef.current;
+          if (!hasSessionIdentity || typeof document === 'undefined' || document.visibilityState !== 'visible') {
+              runtimePollIsLeaderRef.current = false;
+              if (previous) setRuntimePollLeaderVersion((value) => value + 1);
               return;
           }
-          await Promise.all([refreshTtsRuntimeStatus(), refreshTtsAccessState()]);
+          const nextLeader = coordinationAvailable
+            ? renewRuntimePollLeadership(
+                tabId,
+                Date.now(),
+                RUNTIME_STATUS_LEADER_LEASE_MS
+              )
+            : true;
+          runtimePollIsLeaderRef.current = nextLeader;
+          if (previous !== nextLeader) {
+              setRuntimePollLeaderVersion((value) => value + 1);
+          }
       };
-      void tick();
-      const interval = setInterval(() => {
-          void tick();
-      }, 90000);
-      return () => clearInterval(interval);
+
+      refreshLeadership();
+      applySnapshot();
+      const heartbeatId = coordinationAvailable
+        ? window.setInterval(refreshLeadership, RUNTIME_STATUS_LEADER_HEARTBEAT_MS)
+        : null;
+      const onStorage = (event: StorageEvent) => {
+          if (!coordinationAvailable) return;
+          if (event.key === RUNTIME_POLL_LEADER_KEY) {
+              refreshLeadership();
+              return;
+          }
+          if (event.key === RUNTIME_POLL_SNAPSHOT_KEY) {
+              applySnapshot();
+          }
+      };
+      const onVisibility = () => {
+          refreshLeadership();
+          if (!hasSessionIdentity || typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+          if (!runtimePollIsLeaderRef.current) {
+              applySnapshot();
+              return;
+          }
+          runtimePollCooldownUntilRef.current = Math.max(
+            runtimePollCooldownUntilRef.current,
+            Date.now() + RUNTIME_STATUS_COOLDOWN_POLL_MS
+          );
+          void refreshTtsRuntimeStatus();
+      };
+      if (coordinationAvailable) {
+          window.addEventListener('storage', onStorage);
+      }
+      document.addEventListener('visibilitychange', onVisibility);
+      window.addEventListener('focus', onVisibility);
+      onVisibility();
+      return () => {
+          if (heartbeatId !== null) {
+              window.clearInterval(heartbeatId);
+          }
+          if (coordinationAvailable) {
+              window.removeEventListener('storage', onStorage);
+          }
+          document.removeEventListener('visibilitychange', onVisibility);
+          window.removeEventListener('focus', onVisibility);
+          if (coordinationAvailable) {
+              releaseRuntimePollLeadership(tabId);
+          }
+      };
+  }, [hasSessionIdentity, refreshTtsRuntimeStatus]);
+
+  useEffect(() => {
+      if (!hasSessionIdentity) {
+          setTtsRuntimeStatus((prev) =>
+            ENGINE_ORDER.reduce((acc, engine) => {
+                acc[engine] =
+                  prev[engine]?.state === 'standby' && prev[engine]?.detail === 'Sign in to check runtime status.'
+                    ? prev[engine]
+                    : { state: 'standby', detail: 'Sign in to check runtime status.' };
+                return acc;
+            }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>)
+          );
+          return () => {};
+      }
+
+      let cancelled = false;
+      let timerId: number | null = null;
+
+      const scheduleNext = (delayMs: number) => {
+          if (cancelled) return;
+          if (timerId !== null) {
+              window.clearTimeout(timerId);
+              timerId = null;
+          }
+          if (delayMs <= 0) return;
+          timerId = window.setTimeout(() => {
+              void runTick();
+          }, delayMs);
+      };
+
+      const runTick = async () => {
+          if (cancelled) return;
+          const now = Date.now();
+          const isVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
+          const mode = resolveRuntimePollMode({
+              nowMs: now,
+              isBusy: isGenerating || Boolean(engineSwitchInProgress),
+              activeUntilMs: runtimePollActiveUntilRef.current,
+              cooldownUntilMs: runtimePollCooldownUntilRef.current,
+              hasSessionIdentity,
+              isVisible,
+              isLeader: runtimePollIsLeaderRef.current,
+          });
+          if (mode === 'none') return;
+          try {
+              await refreshTtsRuntimeStatus();
+          } catch {
+              // Keep polling to preserve runtime indicator continuity during transient failures.
+          }
+          const nextDelay = mode === 'active' ? RUNTIME_STATUS_ACTIVE_POLL_MS : RUNTIME_STATUS_COOLDOWN_POLL_MS;
+          scheduleNext(nextDelay);
+      };
+
+      void runTick();
+      return () => {
+          cancelled = true;
+          if (timerId !== null) {
+              window.clearTimeout(timerId);
+          }
+      };
   }, [
-      hasUnlimitedAccess,
-      isLimitReached,
-      settings.geminiTtsServiceUrl,
-      settings.kokoroTtsServiceUrl,
-      managedActiveEngine,
-      isGenerating,
-      hasSessionIdentity,
       engineSwitchInProgress,
-      refreshTtsAccessState,
+      hasSessionIdentity,
+      isGenerating,
+      runtimePollLeaderVersion,
+      refreshTtsRuntimeStatus,
   ]);
+
+  useEffect(() => {
+      if (!hasSessionIdentity) return () => {};
+      const keepAliveId = window.setInterval(() => {
+          if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+          if (!runtimePollIsLeaderRef.current) return;
+          void refreshTtsAccessState();
+      }, RUNTIME_STATUS_ACCESS_KEEPALIVE_MS);
+      return () => window.clearInterval(keepAliveId);
+  }, [hasSessionIdentity, refreshTtsAccessState]);
 
   useEffect(() => {
       if (settings.engine !== 'KOKORO') return;
@@ -2855,7 +3232,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [hasUnlimitedAccess, isLimitReached, prepareKokoroExecution, settings.engine, settings.voiceId]);
 
   useEffect(() => {
-      if (activeTab !== Tab.STUDIO) return;
+      if (!isStudioWorkspaceTab) return;
       if (!hasSessionIdentity) return;
       if (!isBrowserKokoroExecutionEnabled()) return;
       if (isLimitReached && !hasUnlimitedAccess) return;
@@ -2870,9 +3247,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       ...prev,
                       KOKORO: { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' },
                   }));
+                  const warmupVoiceId = getValidVoiceIdForEngine(
+                      'KOKORO',
+                      settings.voiceId || DEFAULT_KOKORO_VOICE_ID
+                  );
                   await kokoroBrowserRuntime.ensureReady({
                       backendBaseUrl: mediaBackendUrl,
-                      voiceId: settings.voiceId || DEFAULT_KOKORO_VOICE_ID,
+                      voiceId: warmupVoiceId,
                       speed: 1.0,
                   });
                   if (cancelled) return;
@@ -2880,8 +3261,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       ...prev,
                       KOKORO: { state: 'online', detail: 'Local ONNX CPU runtime ready' },
                   }));
-              } catch {
-                  // Best-effort Studio warmup. Generation flow still falls back to normal runtime prep.
+              } catch (error: any) {
+                  if (cancelled) return;
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      KOKORO: {
+                          state: 'standby',
+                          detail: error?.message || 'Local ONNX CPU runtime warmup failed. Auto-resume on generate.',
+                      },
+                  }));
               }
           })();
       }, 1200);
@@ -2891,12 +3279,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           clearTimeout(timer);
       };
   }, [
-      activeTab,
+      isStudioWorkspaceTab,
       hasSessionIdentity,
       hasUnlimitedAccess,
       isLimitReached,
       mediaBackendUrl,
       settings.voiceId,
+      getValidVoiceIdForEngine,
   ]);
 
   useEffect(() => {
@@ -3015,7 +3404,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }
           }
 
-          const engineLabel = String(detail.engine || detail.runtimeLabel || 'TTS Runtime').trim();
+          const engineLabel = String(detail.engine || '').trim()
+            ? getEngineDisplayName(normalizeEngineToken(detail.engine, 'GEM'))
+            : sanitizeUiText(String(detail.runtimeLabel || 'TTS Runtime').trim());
           emit('runtime.recovered', {
             title: 'Runtime Recovery',
             message: `${engineLabel} auto-recovered and continued generation.`,
@@ -3036,8 +3427,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const activeQueueItem = activeQueueItemId
               ? queueState?.items.find((item) => item.id === activeQueueItemId) || null
               : null;
-          const expectedEngine = String(activeQueueItem?.settingsSnapshot.engine || settings.engine || '').trim().toUpperCase();
-          const detailEngine = String(detail.engine || '').trim().toUpperCase();
+          const expectedEngine = normalizeEngineToken(activeQueueItem?.settingsSnapshot.engine || settings.engine || 'GEM');
+          const detailEngine = String(detail.engine || '').trim()
+            ? normalizeEngineToken(detail.engine, expectedEngine)
+            : '';
           if (detailEngine && expectedEngine && detailEngine !== expectedEngine) return;
           const detailJobId = String(detail.jobId || '').trim();
           const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
@@ -3101,8 +3494,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const activeQueueItem = activeQueueItemId
               ? queueState?.items.find((item) => item.id === activeQueueItemId) || null
               : null;
-          const expectedEngine = String(activeQueueItem?.settingsSnapshot.engine || settings.engine || '').trim().toUpperCase();
-          const detailEngine = String(detail.engine || '').trim().toUpperCase();
+          const expectedEngine = normalizeEngineToken(activeQueueItem?.settingsSnapshot.engine || settings.engine || 'GEM');
+          const detailEngine = String(detail.engine || '').trim()
+            ? normalizeEngineToken(detail.engine, expectedEngine)
+            : '';
           if (detailEngine && expectedEngine && detailEngine !== expectedEngine) return;
           const index = Number(detail.index);
           const audioBase64 = String(detail.audioBase64 || '').trim();
@@ -3114,22 +3509,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const key = `${detailJobId}:${Math.round(index)}`;
           if (seenLiveChunkKeysRef.current.has(key)) return;
           seenLiveChunkKeysRef.current.add(key);
-          setLiveAudioChunks((prev) => {
-              const next = [
-                  ...prev,
-                  {
-                      jobId: detailJobId,
-                      index: Math.round(index),
-                      engine: detailEngine || String(settings.engine || 'GEM'),
-                      contentType: String(detail.contentType || 'audio/wav'),
-                      durationMs: Number(detail.durationMs || 0),
-                      textChars: Number(detail.textChars || 0),
-                      traceId: String(detail.traceId || ''),
-                      audioBase64,
-                  },
-              ];
-              next.sort((a, b) => a.index - b.index);
-              return next;
+          const nextChunk: LiveAudioChunkItem = {
+              jobId: detailJobId,
+              index: Math.round(index),
+              engine: (detailEngine || normalizeEngineToken(settings.engine, 'GEM')),
+              contentType: String(detail.contentType || 'audio/wav'),
+              durationMs: Number(detail.durationMs || 0),
+              textChars: Number(detail.textChars || 0),
+              traceId: String(detail.traceId || ''),
+              speakerId: String(detail.speakerId || ''),
+              turnIndex: Number(detail.turnIndex || Math.round(index)),
+              sessionEpoch: Number(detail.sessionEpoch || 0),
+              resumeAttempt: Number(detail.resumeAttempt || 0),
+              fallbackUsed: Boolean(detail.fallbackUsed),
+              audioBase64,
+          };
+          startTransition(() => {
+              setLiveAudioChunks((prev) => [...prev, nextChunk]);
           });
       };
       window.addEventListener(TTS_GATEWAY_AUDIO_CHUNK_EVENT, handleGatewayAudioChunk as EventListener);
@@ -3198,7 +3594,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   useEffect(() => {
       return () => {
-          if (llvcCoverUrl) URL.revokeObjectURL(llvcCoverUrl);
           if (renderedDubVideoUrl) URL.revokeObjectURL(renderedDubVideoUrl);
           if (dubbingJobResultUrl) URL.revokeObjectURL(dubbingJobResultUrl);
           if (dubbingReportUrl) URL.revokeObjectURL(dubbingReportUrl);
@@ -3209,7 +3604,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               dubbingStemsRef.current = null;
           }
       };
-  }, [llvcCoverUrl, renderedDubVideoUrl, dubbingJobResultUrl, dubbingReportUrl, resetDubbingLivePlayback]);
+  }, [renderedDubVideoUrl, dubbingJobResultUrl, dubbingReportUrl, resetDubbingLivePlayback]);
 
   useEffect(() => {
       document.body.classList.toggle('theme-dark', resolvedTheme === 'dark');
@@ -3305,30 +3700,56 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [studioQueueState]);
 
   useEffect(() => {
-      if (activeTab !== Tab.STUDIO) return;
+      if (!isStudioWorkspaceTab) return;
       let frameId = 0;
       const applyDockCenter = () => {
-          if (frameId) window.cancelAnimationFrame(frameId);
-          frameId = window.requestAnimationFrame(() => {
           const studioMainRect = studioMainRef.current?.getBoundingClientRect();
           const fallback = Math.round(window.innerWidth / 2);
           const centerX = studioMainRect ? Math.round(studioMainRect.left + (studioMainRect.width / 2)) : fallback;
           document.documentElement.style.setProperty('--vf-studio-dock-center-x', `${centerX}px`);
+      };
+      const scheduleDockCenter = () => {
+          if (frameId) window.cancelAnimationFrame(frameId);
+          frameId = window.requestAnimationFrame(() => {
+              applyDockCenter();
           });
       };
-      applyDockCenter();
-      window.addEventListener('resize', applyDockCenter, { passive: true });
+
+      const observer = typeof ResizeObserver !== 'undefined'
+          ? new ResizeObserver(() => {
+              scheduleDockCenter();
+          })
+          : null;
+      if (observer && studioMainRef.current) {
+          observer.observe(studioMainRef.current);
+      }
+
+      scheduleDockCenter();
+      window.addEventListener('resize', scheduleDockCenter, { passive: true });
+      window.addEventListener('orientationchange', scheduleDockCenter, { passive: true });
       return () => {
           if (frameId) window.cancelAnimationFrame(frameId);
-          window.removeEventListener('resize', applyDockCenter);
+          window.removeEventListener('resize', scheduleDockCenter);
+          window.removeEventListener('orientationchange', scheduleDockCenter);
+          if (observer) observer.disconnect();
       };
-  }, [activeTab, uiDensity, uiFontScale]);
+  }, [isStudioWorkspaceTab, uiDensity, uiFontScale, sidebarMode]);
 
   useEffect(() => {
       if (isChatOpen && chatEndRef.current) {
           chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
       }
   }, [chatHistory, isChatOpen]);
+
+  useEffect(() => {
+      const visibleHistoryAudioUrls = history.map((item) => item.audioUrl);
+      const pinnedUrls = [
+          generatedAudioUrl,
+          masterQueueAudioUrlRef.current,
+          ...Object.values(studioQueueAudioUrls),
+      ];
+      studioObjectUrlRegistryRef.current.reconcile(visibleHistoryAudioUrls, pinnedUrls);
+  }, [generatedAudioUrl, history, studioQueueAudioUrls]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -3337,16 +3758,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if(previewAudioRef.current) previewAudioRef.current.pause();
           if(generationAbortController.current) generationAbortController.current.abort();
           if (queueMasterRebuildTimerRef.current) window.clearTimeout(queueMasterRebuildTimerRef.current);
-          Object.values(studioQueueAudioUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+          Object.values(studioQueueAudioUrlsRef.current).forEach((url) => studioObjectUrlRegistryRef.current.revoke(url));
           if (masterQueueAudioUrlRef.current) {
-              URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+              studioObjectUrlRegistryRef.current.revoke(masterQueueAudioUrlRef.current);
               masterQueueAudioUrlRef.current = null;
           }
+          studioObjectUrlRegistryRef.current.clear();
       }
   }, []);
 
   const deferredAnalysisText = useDeferredValue(
-    activeTab === Tab.STUDIO ? text : (activeTab === Tab.DUBBING ? dubScript : '')
+    isStudioWorkspaceTab ? text : (false ? dubScript : '')
   );
 
   // Auto-detect language and speakers in text (Studio Mode AND Dubbing Mode)
@@ -3426,8 +3848,46 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [dubAudioUrl, videoUrl]);
 
   useEffect(() => {
-      if (videoRef.current) videoRef.current.volume = videoVolume;
-      if (dubAudioRef.current) dubAudioRef.current.volume = dubVolume;
+      if (videoRef.current) {
+          applySafeMediaVolume(videoRef.current, videoVolume, {
+              fallback: 1,
+              context: 'studio_video',
+              onError: (error, info) => {
+                  void reportFrontendSignal({
+                      message: 'studio.media_volume_assignment_failed',
+                      component: 'MainApp',
+                      severity: 'warning',
+                      metadata: {
+                          channel: 'video',
+                          attemptedVolume: info.attemptedVolume,
+                          appliedFallback: info.appliedFallback,
+                          context: info.context,
+                          error: error instanceof Error ? error.message : String(error || 'unknown'),
+                      },
+                  });
+              },
+          });
+      }
+      if (dubAudioRef.current) {
+          applySafeMediaVolume(dubAudioRef.current, dubVolume, {
+              fallback: 1,
+              context: 'studio_dub',
+              onError: (error, info) => {
+                  void reportFrontendSignal({
+                      message: 'studio.media_volume_assignment_failed',
+                      component: 'MainApp',
+                      severity: 'warning',
+                      metadata: {
+                          channel: 'dub',
+                          attemptedVolume: info.attemptedVolume,
+                          appliedFallback: info.appliedFallback,
+                          context: info.context,
+                          error: error instanceof Error ? error.message : String(error || 'unknown'),
+                      },
+                  });
+              },
+          });
+      }
   }, [videoVolume, dubVolume]);
 
 
@@ -3514,7 +3974,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const replaceStudioQueueItemAudioUrl = useCallback((itemId: string, nextUrl: string | null) => {
       setStudioQueueAudioUrls((prev) => {
           const current = prev[itemId];
-          if (current && current !== nextUrl) URL.revokeObjectURL(current);
+          studioObjectUrlRegistryRef.current.replace(current, nextUrl);
           const next = { ...prev };
           if (nextUrl) next[itemId] = nextUrl;
           else delete next[itemId];
@@ -3527,18 +3987,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           window.clearTimeout(queueMasterRebuildTimerRef.current);
           queueMasterRebuildTimerRef.current = null;
       }
-      Object.values(studioQueueAudioUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+      Object.values(studioQueueAudioUrlsRef.current).forEach((url) => studioObjectUrlRegistryRef.current.revoke(url));
       studioQueueAudioUrlsRef.current = {};
       setStudioQueueAudioUrls({});
       if (masterQueueAudioUrlRef.current) {
-          URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+          studioObjectUrlRegistryRef.current.revoke(masterQueueAudioUrlRef.current);
           masterQueueAudioUrlRef.current = null;
       }
-      setGeneratedAudioUrl(null);
+      setGeneratedAudioUrlManaged(null);
       if (clearCache) {
           await clearStudioQueueAudioCache().catch(() => undefined);
       }
-  }, []);
+  }, [setGeneratedAudioUrlManaged]);
 
   const rebuildStudioQueueMasterAudio = useCallback(async (
       stateOverride?: StudioQueueState | null
@@ -3549,10 +4009,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           .filter((item) => item.status === 'completed' && item.audioCacheKey);
       if (completedItems.length === 0) {
           if (masterQueueAudioUrlRef.current) {
-              URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+              studioObjectUrlRegistryRef.current.revoke(masterQueueAudioUrlRef.current);
               masterQueueAudioUrlRef.current = null;
           }
-          setGeneratedAudioUrl(null);
+          setGeneratedAudioUrlManaged(null);
           updateStudioQueueState((prev) => prev ? { ...prev, masterStatus: 'idle' } : prev);
           return null;
       }
@@ -3571,13 +4031,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const mergedBlob = await mergeStudioQueueAudioBlobs(blobs);
       const nextUrl = buildStudioQueueBlobUrl(mergedBlob);
       if (masterQueueAudioUrlRef.current) {
-          URL.revokeObjectURL(masterQueueAudioUrlRef.current);
+          studioObjectUrlRegistryRef.current.revoke(masterQueueAudioUrlRef.current);
       }
       masterQueueAudioUrlRef.current = nextUrl;
-      setGeneratedAudioUrl(nextUrl);
+      studioObjectUrlRegistryRef.current.register(nextUrl);
+      setGeneratedAudioUrlManaged(nextUrl);
       updateStudioQueueState((prev) => prev ? { ...prev, masterStatus: nextUrl ? 'ready' : 'idle' } : prev);
       return nextUrl;
-  }, [updateStudioQueueState]);
+  }, [setGeneratedAudioUrlManaged, updateStudioQueueState]);
 
   const scheduleStudioQueueMasterRebuild = useCallback((stateOverride?: StudioQueueState | null) => {
       if (queueMasterRebuildTimerRef.current) window.clearTimeout(queueMasterRebuildTimerRef.current);
@@ -3673,13 +4134,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
 
       try {
+          const normalizedQueueEngine = normalizeEngineToken(item.settingsSnapshot.engine, 'GEM');
           let wavBlob: Blob;
           if (String(item.jobId || '').trim()) {
               const queuedResult = await pollTtsGatewayJobForAudio({
                   baseUrl: resolveMediaBackendUrl(item.settingsSnapshot),
                   jobId: item.jobId || '',
-                  runtimeLabel: getEngineDisplayName(item.settingsSnapshot.engine),
-                  engine: item.settingsSnapshot.engine,
+                  runtimeLabel: getEngineDisplayName(normalizedQueueEngine),
+                  engine: normalizedQueueEngine,
                   signal: controller.signal,
               });
               const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
@@ -3850,16 +4312,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           syncRuntimeBlockedStateFromError(settings.engine, error);
           generationFailureBurstRef.current += 1;
+          const queueFailureMessage = toUserFriendlySystemMessage(
+              error?.message || 'Queue generation failed. Check runtime health and retry.',
+              'Queue generation failed. Check runtime health and retry.'
+          );
           emit('generation.failed', {
               title: 'Generation Failure',
-              message: error?.message || 'Queue generation failed. Check runtime health and retry.',
+              message: queueFailureMessage,
               dedupeKey: 'generation-failed-main',
               action: {
                   label: 'Open Settings',
                   onClick: () => setShowSettings(true),
               },
           });
-          showToast(error?.message || 'Queue generation failed.', 'error');
+          showToast(queueFailureMessage || 'Queue generation failed.', 'error');
       }
   }, [
       emit,
@@ -3869,6 +4335,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       settings,
       showToast,
       text,
+      toUserFriendlySystemMessage,
   ]);
 
   const retryStudioQueueItem = useCallback((itemId: string) => {
@@ -3981,10 +4448,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const studioSettings = normalizeSettings(settingsOverride || settings);
       const multiSpeakerEnabled = studioSettings.multiSpeakerEnabled !== false;
       const preferBrowserKokoro = shouldUseBrowserKokoro(studioSettings.engine, 'studio');
-      setLiveProgress(14, preferBrowserKokoro ? 'Preparing local ONNX CPU runtime...' : `Checking ${studioSettings.engine} runtime...`);
+      const runtimePrepStage = studioSettings.engine === 'KOKORO'
+          ? (
+              preferBrowserKokoro
+                ? 'Preparing local ONNX CPU runtime...'
+                : 'Using Basic backend runtime to keep UI responsive...'
+            )
+          : `Checking ${studioSettings.engine} runtime...`;
+      setLiveProgress(14, runtimePrepStage);
       let engineState: { runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string };
       if (studioSettings.engine === 'KOKORO') {
-          engineState = await prepareKokoroExecution('studio', studioSettings.voiceId, studioSettings.speed, signal);
+          engineState = await prepareKokoroExecution('studio', studioSettings.voiceId, studioSettings.speed, {
+              preferBrowserExecution: preferBrowserKokoro,
+              ...(signal ? { signal } : {}),
+          });
       } else {
           engineState = await ensureEngineOnline(studioSettings.engine, { silent: true, syncVoiceId: studioSettings.voiceId, requireAccess: true });
       }
@@ -4028,7 +4505,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           generationSettings,
           'speech',
           signal,
-          { context: 'studio', preferLiveChunks: true }
+          { context: 'studio', preferLiveChunks: true, preferBrowserKokoro: preferBrowserKokoro }
       );
       if (browserKokoro) {
           const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
@@ -4066,7 +4543,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const controller = new AbortController();
     generationAbortController.current = controller;
     
-    setGeneratedAudioUrl(null);
+    setGeneratedAudioUrlManaged(null);
     setLiveAudioChunks([]);
     seenLiveChunkKeysRef.current.clear();
     activeGatewayJobIdRef.current = '';
@@ -4086,7 +4563,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const { url, voiceNameDisplay } = await performGeneration(text, controller.signal);
       if (!url) throw new Error('Generated audio URL missing.');
       setLiveProgress(96, 'Finalizing output and updating history...');
-      setGeneratedAudioUrl(url);
+      setGeneratedAudioUrlManaged(url);
 
       addToHistory({
         id: Date.now().toString(),
@@ -4107,9 +4584,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } else {
           syncRuntimeBlockedStateFromError(settings.engine, e);
           generationFailureBurstRef.current += 1;
+          const failureMessage = toUserFriendlySystemMessage(
+              e?.message || 'Generation failed. Check runtime health and retry.',
+              'Generation failed. Check runtime health and retry.'
+          );
           emit('generation.failed', {
               title: 'Generation Failure',
-              message: e.message || 'Generation failed. Check runtime health and retry.',
+              message: failureMessage,
               dedupeKey: 'generation-failed-main',
               action: {
                   label: 'Open Settings',
@@ -4202,7 +4683,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const audio = new Audio(sourceUrl);
           audio.crossOrigin = 'anonymous';
           previewAudioRef.current = audio;
-          audio.volume = 1.0;
+          applySafeMediaVolume(audio, 1.0, {
+              fallback: 1,
+              context: 'voice_preview',
+              onError: (error, info) => {
+                  void reportFrontendSignal({
+                      message: 'studio.media_volume_assignment_failed',
+                      component: 'MainApp',
+                      severity: 'warning',
+                      metadata: {
+                          channel: 'voice_preview',
+                          attemptedVolume: info.attemptedVolume,
+                          appliedFallback: info.appliedFallback,
+                          context: info.context,
+                          error: error instanceof Error ? error.message : String(error || 'unknown'),
+                      },
+                  });
+              },
+          });
           audio.onended = () => {
               setPreviewState(null);
               previewAudioRef.current = null;
@@ -4616,7 +5114,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           acoustic_isolation: 'Phase 1/6: Acoustic isolation',
           speaker_segmentation: 'Phase 2/6: Speaker segmentation',
           translation: 'Phase 3/6: Segment translation',
-          tts: 'Phase 4/6: Gemini TTS',
+          tts: 'Phase 4/6: Prime TTS',
           voice_transfer: 'Phase 5/6: Voice transfer',
           video_lipsync: 'Phase 6/6: Video lip-sync',
           preflight: 'Preflight checks',
@@ -4811,7 +5309,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           patchDubbingUiState({
                               phase: 'running',
                               progress: safeProgress,
-                              stage: `${stageLabel} (${index + 1}/${queue.length}) • ${speakerToken} • ${qosToken}`,
+                              stage: joinUiFragments([`${stageLabel} (${index + 1}/${queue.length})`, speakerToken, qosToken]),
                               error: '',
                           });
                       }
@@ -4934,8 +5432,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // --- PROOFREADER ---
   const handleProofread = async (mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow') => {
-      const currentText = activeTab === Tab.DUBBING ? dubScript : text;
-      const setFn = activeTab === Tab.DUBBING ? setDubScript : setText;
+      const currentText = false ? dubScript : text;
+      const setFn = false ? setDubScript : setText;
       
       if (!currentText || !currentText.trim()) return showToast("Enter text to proofread", "info");
       
@@ -4977,9 +5475,78 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setIsAiWriting(false);
       }
   };
+
+  const handleStudioImportFiles = useCallback(async (incoming: FileList | File[] | null | undefined) => {
+      const files = Array.from(incoming || []).filter((file): file is File => Boolean(file));
+      if (files.length <= 0) return;
+      setIsStudioImporting(true);
+      try {
+          const settled = await Promise.allSettled(
+              files.map(async (file) => {
+                  const extracted = await extractNovelTextFromFile(mediaBackendUrl, file, 'auto');
+                  return { file, extracted };
+              })
+          );
+
+          const importedChunks: string[] = [];
+          const failures: string[] = [];
+          let aiFallbackCount = 0;
+
+          for (const item of settled) {
+              if (item.status === 'fulfilled') {
+                  const fileName = String(item.value.file.name || 'Imported File').trim() || 'Imported File';
+                  const rawText = String(item.value.extracted.rawText || '').trim();
+                  if (!rawText) {
+                      failures.push(`${fileName}: empty text`);
+                      continue;
+                  }
+                  if (item.value.extracted.diagnostics?.usedAiFallback) {
+                      aiFallbackCount += 1;
+                  }
+                  importedChunks.push(`===== ${fileName} =====\n${rawText}`);
+              } else {
+                  const reason = item.reason as { message?: string } | undefined;
+                  const message = toUserFriendlySystemMessage(reason?.message || 'Import failed', 'Import failed');
+                  failures.push(message);
+              }
+          }
+
+          if (importedChunks.length <= 0) {
+              throw new Error(failures[0] || 'No readable text was extracted from the selected files.');
+          }
+
+          const mergedImport = importedChunks.join('\n\n');
+          setText((previous) => {
+              const current = String(previous || '').trim();
+              return current ? `${current}\n\n${mergedImport}` : mergedImport;
+          });
+          setStudioEditorMode('raw');
+
+          showToast(
+              `Imported ${importedChunks.length}/${files.length} file(s)${aiFallbackCount > 0 ? `, AI extracted ${aiFallbackCount}` : ''}.`,
+              'success'
+          );
+
+          if (failures.length > 0) {
+              showToast(`Skipped ${failures.length} file(s): ${failures[0]}`, 'info');
+          }
+      } catch (error: any) {
+          showToast(toUserFriendlySystemMessage(error?.message || 'Import failed.', 'Import failed.'), 'error');
+      } finally {
+          setIsStudioImporting(false);
+      }
+  }, [mediaBackendUrl, showToast, toUserFriendlySystemMessage]);
+
+  const handleStudioImportInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (files && files.length > 0) {
+          void handleStudioImportFiles(files);
+      }
+      event.target.value = '';
+  }, [handleStudioImportFiles]);
   
   const handleTranslate = async () => {
-      const isDubbing = activeTab === Tab.DUBBING;
+      const isDubbing = false;
       const currentText = isDubbing ? dubScript : text;
       const setFn = isDubbing ? setDubScript : setText;
       
@@ -4998,28 +5565,165 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
-  const handleChatSubmit = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!chatInput.trim()) return;
-      
-      const userText = chatInput;
-      setChatHistory(prev => [...prev, { role: 'user', text: userText }]);
-      setChatInput('');
+  const normalizeAssistantEditorDraft = useCallback((raw: string): string => {
+      const normalized = String(raw || '').replace(/\r\n/g, '\n').trim();
+      if (!normalized) return '';
+
+      const fenced = normalized.match(/^```(?:[a-z0-9_-]+)?\s*([\s\S]*?)```$/i);
+      const content = fenced ? String(fenced[1] || '') : normalized;
+      return content.trim();
+  }, []);
+
+  const applyAssistantDraftToEditor = useCallback((rawDraft: string, mode: AssistantApplyMode): boolean => {
+      const nextDraft = normalizeAssistantEditorDraft(rawDraft);
+      if (!nextDraft) return false;
+
+      setText((previous) => {
+          const current = String(previous || '');
+          if (mode === 'replace' || !current.trim()) return nextDraft;
+          const joiner = current.endsWith('\n') ? '\n' : '\n\n';
+          return `${current}${joiner}${nextDraft}`;
+      });
+      setStudioEditorMode('raw');
+      return true;
+  }, [normalizeAssistantEditorDraft]);
+
+  const handleAssistantRequest = useCallback(async (
+      requestText: string,
+      options: AssistantRequestOptions = {}
+  ) => {
+      const userText = String(requestText || '').trim();
+      if (!userText) return;
+
+      const applyToEditor = options.applyToEditor ?? assistantAutoApply;
+      const applyMode = options.applyMode ?? assistantApplyMode;
+      const historyText = String(options.historyText || userText);
+
+      setChatHistory((prev) => [...prev, { role: 'user', text: historyText }]);
       setIsChatLoading(true);
-      
-      const context = activeTab === Tab.DUBBING ? dubScript : text;
-      
+
+      const context = false ? dubScript : text;
+
       try {
           const response = await generateTextContent(userText, context, settings);
-          setChatHistory(prev => [...prev, { role: 'ai', text: sanitizeUiText(response) }]);
+          const sanitizedResponse = sanitizeUiText(response);
+          setLastAssistantDraft(sanitizedResponse);
+          setChatHistory((prev) => [...prev, { role: 'ai', text: sanitizedResponse }]);
+
+          if (applyToEditor) {
+              const applied = applyAssistantDraftToEditor(sanitizedResponse, applyMode);
+              if (applied) {
+                  showToast(
+                      applyMode === 'append'
+                          ? 'Assistant appended content to the editor.'
+                          : 'Assistant replaced editor content.',
+                      'success'
+                  );
+              }
+          }
       } catch (e: any) {
           syncRuntimeBlockedStateFromError(settings.engine, e);
           const message = sanitizeUiText(e?.message || 'Assistant request failed.');
-          setChatHistory(prev => [...prev, { role: 'ai', text: `[Assistant error] ${message}` }]);
+          setChatHistory((prev) => [...prev, { role: 'ai', text: `[Assistant error] ${message}` }]);
           showToast(message, 'error');
       } finally {
           setIsChatLoading(false);
       }
+  }, [
+      assistantApplyMode,
+      assistantAutoApply,
+      applyAssistantDraftToEditor,
+      settings,
+      showToast,
+      text,
+      dubScript,
+  ]);
+
+  const assistantQuickActions = useMemo<AssistantQuickAction[]>(() => ([
+      {
+          id: 'continue',
+          label: 'Continue',
+          prompt: 'Continue the current script from the exact ending. Keep the same language, tone, and speaker format. Output only the new lines.',
+          applyToEditor: true,
+          applyMode: 'append',
+          requiresContext: true,
+      },
+      {
+          id: 'rewrite',
+          label: 'Rewrite',
+          prompt: 'Rewrite the full script to sound more cinematic and emotionally engaging while preserving intent. Keep it production-ready. Output script only.',
+          applyToEditor: true,
+          applyMode: 'replace',
+          requiresContext: true,
+      },
+      {
+          id: 'tighten',
+          label: 'Tighten',
+          prompt: 'Condense the script by around 25% while keeping the core meaning and emotional beat. Output script only.',
+          applyToEditor: true,
+          applyMode: 'replace',
+          requiresContext: true,
+      },
+      {
+          id: 'dialogue',
+          label: 'Add Dialogue',
+          prompt: 'Add a short dialogue beat (4-6 lines) that increases conflict and clarity. Keep speaker names consistent. Output only the new lines.',
+          applyToEditor: true,
+          applyMode: 'append',
+          requiresContext: true,
+      },
+      {
+          id: 'hook',
+          label: 'Hook',
+          prompt: 'Write a strong opening hook for a voice-over script in 3-5 lines. Make it instantly attention-grabbing and narratable.',
+          applyToEditor: true,
+          applyMode: 'replace',
+      },
+      {
+          id: 'guide',
+          label: 'Guide Me',
+          prompt: 'Review the current script and provide concise writing guidance with sections: Hook, Pacing, Emotion, Voice, and Next Revision Step. Include one improved sample paragraph.',
+          applyToEditor: false,
+          applyMode: 'append',
+          requiresContext: true,
+      },
+  ]), []);
+
+  const handleAssistantQuickAction = useCallback((action: AssistantQuickAction) => {
+      if (action.requiresContext && !text.trim()) {
+          showToast('Write or import script text first so the assistant has context.', 'info');
+          return;
+      }
+
+      void handleAssistantRequest(action.prompt, {
+          applyToEditor: action.applyToEditor,
+          applyMode: action.applyMode,
+          historyText: `Quick action: ${action.label}`,
+      });
+  }, [handleAssistantRequest, showToast, text]);
+
+  const handleApplyLastAssistantDraft = useCallback(() => {
+      if (!lastAssistantDraft.trim()) {
+          showToast('No assistant draft available yet.', 'info');
+          return;
+      }
+      const applied = applyAssistantDraftToEditor(lastAssistantDraft, assistantApplyMode);
+      if (applied) {
+          showToast(
+              assistantApplyMode === 'append'
+                  ? 'Last assistant draft appended to the editor.'
+                  : 'Editor replaced with the last assistant draft.',
+              'success'
+          );
+      }
+  }, [applyAssistantDraftToEditor, assistantApplyMode, lastAssistantDraft, showToast]);
+
+  const handleChatSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      const userText = String(chatInput || '').trim();
+      if (!userText) return;
+      setChatInput('');
+      await handleAssistantRequest(userText);
   };
 
   const handleVoiceClone = async () => {
@@ -5060,81 +5764,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           showToast(e.message, "error");
       } finally {
           stopSimulation();
-      }
-  };
-
-  useEffect(() => {
-      if (!llvcSourceFile) {
-          setLlvcSourcePreviewUrl((previous) => {
-              if (previous) URL.revokeObjectURL(previous);
-              return null;
-          });
-          setIsLlvcSourcePlaying(false);
-          llvcSourceMediaRef.current = null;
-          return;
-      }
-      const nextUrl = URL.createObjectURL(llvcSourceFile);
-      setLlvcSourcePreviewUrl((previous) => {
-          if (previous) URL.revokeObjectURL(previous);
-          return nextUrl;
-      });
-      setIsLlvcSourcePlaying(false);
-      return () => {
-          URL.revokeObjectURL(nextUrl);
-      };
-  }, [llvcSourceFile]);
-
-  const isLlvcSourceVideo = useMemo(() => {
-      if (!llvcSourceFile) return false;
-      const mime = String(llvcSourceFile.type || '').toLowerCase();
-      if (mime.startsWith('video/')) return true;
-      return /\.(mp4|mov|m4v|webm|mkv|avi|flv|wmv)$/i.test(llvcSourceFile.name);
-  }, [llvcSourceFile]);
-
-  const handleToggleLlvcSourcePlayback = useCallback(() => {
-      const media = llvcSourceMediaRef.current;
-      if (!media) return;
-      if (media.paused) {
-          media.play().catch(() => {
-              showToast('Cannot play selected source file.', 'error');
-          });
-      } else {
-          media.pause();
-      }
-  }, [showToast]);
-
-  const handleClearLlvcSourceFile = useCallback(() => {
-      const media = llvcSourceMediaRef.current;
-      if (media && !media.paused) media.pause();
-      setIsLlvcSourcePlaying(false);
-      setLlvcSourceFile(null);
-  }, []);
-
-  const handleGenerateLlvcCover = async () => {
-      if (!llvcSourceFile) return showToast('Upload a source audio/video file first.', 'info');
-      if (!settings.voiceModel) return showToast('Select a voice transfer model.', 'info');
-
-      setIsGeneratingLlvcCover(true);
-      try {
-          await loadVoiceTransferModel(mediaBackendUrl, settings.voiceModel);
-          const coverBlob = await convertVoiceTransferCover(mediaBackendUrl, llvcSourceFile, settings.voiceModel, {
-              preset: llvcPreset,
-              pitchShift: llvcPitchShift,
-              f0Method: llvcF0Method,
-              indexRate: llvcIndexRate,
-              filterRadius: llvcFilterRadius,
-              rmsMixRate: llvcRmsMixRate,
-              protect: llvcProtect,
-          });
-
-          if (llvcCoverUrl) URL.revokeObjectURL(llvcCoverUrl);
-          const nextUrl = URL.createObjectURL(coverBlob);
-          setLlvcCoverUrl(nextUrl);
-          showToast('Voice transfer generated.', 'success');
-      } catch (e: any) {
-          showToast(e?.message || 'Voice transfer failed.', 'error');
-      } finally {
-          setIsGeneratingLlvcCover(false);
       }
   };
 
@@ -5276,21 +5905,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
   const activeTabLabel = activeTab === Tab.STUDIO
     ? 'Studio'
-    : activeTab === Tab.DUBBING
-      ? 'Video Dub'
+    : activeTab === Tab.PODCAST
+      ? 'Podcast'
+    : activeTab === Tab.LAB
+      ? 'Lab'
       : activeTab === Tab.CHARACTERS
-        ? 'Characters'
+        ? 'Character'
         : activeTab === Tab.NOVEL
-          ? 'Novel Workspace'
+          ? 'Novel'
           : activeTab === Tab.READER
             ? 'Reader'
           : activeTab === Tab.HISTORY
             ? 'History'
             : activeTab === Tab.ADMIN
               ? 'Admin'
-              : 'Voice Lab';
-  const contentMaxWidthClass = activeTab === Tab.STUDIO
-    ? 'max-w-[1140px]'
+              : 'Studio';
+  const activeTabDetail = WORKSPACE_TAB_DETAILS[activeTab] || 'Workspace controls';
+  const contentMaxWidthClass = isStudioWorkspaceTab
+    ? 'max-w-[1320px]'
+    : activeTab === Tab.PODCAST
+      ? 'max-w-[1380px]'
+    : activeTab === Tab.LAB
+      ? 'max-w-[1480px]'
     : activeTab === Tab.READER
       ? 'max-w-[1360px]'
       : 'max-w-5xl';
@@ -5301,6 +5937,39 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setActiveTab(Tab.STUDIO);
       }
   }, [activeTab, hasAdminConsoleAccess]);
+  useEffect(() => {
+      const activeTabExists = workspaceTabs.some((item) => item.id === activeTab);
+      if (!activeTabExists) {
+          setActiveTab(Tab.STUDIO);
+      }
+  }, [activeTab, workspaceTabs]);
+  useEffect(() => {
+      if (typeof window === 'undefined') return;
+      const url = new URL(window.location.href);
+      const currentToken = String(url.searchParams.get('vf-tab') || '').trim().toUpperCase();
+      if (currentToken === activeTab) return;
+      url.searchParams.set('vf-tab', activeTab);
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [activeTab]);
+  useEffect(() => {
+      const preloadActive = TAB_PRELOADERS[activeTab];
+      if (preloadActive) {
+          void preloadActive();
+      }
+      const activeIndex = workspaceTabs.findIndex((item) => item.id === activeTab);
+      const nextTab = activeIndex >= 0 ? workspaceTabs[activeIndex + 1]?.id : undefined;
+      const preloadNext = nextTab ? TAB_PRELOADERS[nextTab] : undefined;
+      if (!preloadNext) return undefined;
+      const win = typeof window !== 'undefined'
+        ? window as Window & { requestIdleCallback?: (callback: IdleRequestCallback) => number; cancelIdleCallback?: (id: number) => void }
+        : undefined;
+      if (win?.requestIdleCallback) {
+          const idleId = win.requestIdleCallback(() => { void preloadNext(); });
+          return () => win.cancelIdleCallback?.(idleId);
+      }
+      const timeoutId = window.setTimeout(() => { void preloadNext(); }, 300);
+      return () => window.clearTimeout(timeoutId);
+  }, [activeTab, workspaceTabs]);
   const isGuestSession =
     !user.email ||
     user.email.toLowerCase() === 'guest@voiceflow.ai' ||
@@ -5346,7 +6015,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (!result.url) throw new Error('Checkout URL is missing.');
           if (Number.isFinite(result.packVf) && Number.isFinite(result.finalAmountInr)) {
               showToast(
-                  `Checkout: ${(result.packVf || 0).toLocaleString()} VF for ₹${(result.finalAmountInr || 0).toLocaleString()}.`,
+                  `Checkout: ${(result.packVf || 0).toLocaleString()} VF for ${formatInr(result.finalAmountInr || 0)}.`,
                   'info'
               );
           }
@@ -5390,130 +6059,341 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- UI Components ---
 
   const isDarkUi = resolvedTheme === 'dark';
+  const renderCreditsSurfaceContent = (isSheet = false) => (
+    <div
+      className={`rounded-2xl border p-3 shadow-xl ${isSheet ? 'max-h-[78dvh] overflow-y-auto' : ''} ${
+        isDarkUi ? 'border-slate-700 bg-slate-950/96' : 'border-gray-200 bg-white'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className={`text-[10px] font-black uppercase tracking-[0.2em] ${isDarkUi ? 'text-cyan-200/80' : 'text-cyan-700/70'}`}>
+            Plan & Credits
+          </div>
+          <div className={`mt-2 text-base font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+            {activePlanLabel} workspace
+          </div>
+          <div className={`mt-1 text-[11px] leading-5 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+            {hasUnlimitedAccess
+              ? 'Unlimited access is active for this account.'
+              : isPaidBillingPlan
+                ? 'Recurring billing and larger monthly caps are enabled.'
+                : 'Upgrade only when you need bigger caps or more engines.'}
+          </div>
+        </div>
+        <button
+          onClick={() => setShowSubscriptionModal(true)}
+          className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-colors ${
+            isPaidBillingPlan
+              ? (isDarkUi ? 'bg-cyan-500/14 text-cyan-100 hover:bg-cyan-500/24' : 'bg-cyan-50 text-cyan-700 hover:bg-cyan-100')
+              : (isDarkUi ? 'bg-amber-400 text-slate-950 hover:bg-amber-300' : 'bg-amber-500 text-white hover:bg-amber-400')
+          }`}
+        >
+          {isPaidBillingPlan ? 'Manage' : 'Upgrade'}
+        </button>
+      </div>
 
-  const Sidebar = () => (
+      {!hasUnlimitedAccess && (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Spendable</div>
+              <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
+              </div>
+              <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+                {getEngineDisplayName(settings.engine)}
+              </div>
+            </div>
+            <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
+              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Daily Left</div>
+              <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                {hasUnlimitedAccess ? 'Unlimited' : dailyGenerationRemaining.toLocaleString()}
+              </div>
+              <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+                {hasUnlimitedAccess ? 'No daily cap' : `${stats.generationsUsed}/${stats.generationsLimit} used`}
+              </div>
+            </div>
+          </div>
+
+          <div className={`mt-3 rounded-xl border px-3 py-3 text-[11px] ${isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-300' : 'border-gray-200 bg-white/90 text-gray-600'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span>Monthly free pool</span>
+              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{balanceRemainingLabel}</strong>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span>Paid VF</span>
+              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{walletPaid.toLocaleString()}</strong>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span>Per-generation cap</span>
+              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{maxCharsPerGeneration.toLocaleString()} chars</strong>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span>Allowed engines</span>
+              <strong className={`max-w-[9rem] truncate text-right ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+              </strong>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setShowAdModal(true)}
+              disabled={creditsActionState.watchAdDisabled}
+              className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+                isDarkUi
+                  ? 'border-amber-400/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                  : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+              }`}
+            >
+              <Gift size={12} />
+              Watch Ad
+            </button>
+            <button
+              onClick={() => { void handleBuyTokenPack(); }}
+              disabled={creditsActionState.buyTokenPackDisabled}
+              className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+                isDarkUi
+                  ? 'border-emerald-400/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                  : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              }`}
+            >
+              {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
+              Buy {selectedTokenPackMeta.label}
+            </button>
+          </div>
+          <div className="mt-2">
+            <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+              Token Pack
+            </label>
+            <select
+              value={selectedTokenPack}
+              onChange={(event) => setSelectedTokenPack(event.target.value as TokenPackKey)}
+              className={`h-8 w-full rounded-lg border px-2 text-[11px] font-semibold outline-none transition-colors ${
+                isDarkUi
+                  ? 'border-slate-700 bg-slate-950/70 text-slate-100 focus:border-cyan-400'
+                  : 'border-gray-200 bg-white text-gray-900 focus:border-cyan-300'
+              }`}
+            >
+              {(Object.keys(TOKEN_PACK_MATRIX) as TokenPackKey[]).map((packKey) => {
+                const item = TOKEN_PACK_MATRIX[packKey];
+                const displayPrice = normalizedPlanToken === 'scale' ? item.scaleInr : item.standardInr;
+                return (
+                  <option key={packKey} value={packKey}>
+                    {joinUiFragments([item.label, `${item.vf.toLocaleString()} VF`, formatInr(displayPrice)])}
+                  </option>
+                );
+              })}
+            </select>
+            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+              Checkout price: {formatInr(selectedTokenPackPriceInr)} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
+            </div>
+          </div>
+          <div className="mt-2 flex items-center gap-1">
+            <input
+              value={couponCode}
+              onChange={(event) => setCouponCode(event.target.value)}
+              placeholder="Wallet coupon"
+              className={`h-8 min-w-0 flex-1 rounded-lg border px-2 text-[11px] outline-none transition-colors ${
+                isDarkUi
+                  ? 'border-slate-700 bg-slate-950/70 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400'
+                  : 'border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-cyan-300'
+              }`}
+            />
+            <button
+              onClick={() => { void handleRedeemCoupon(); }}
+              disabled={creditsActionState.redeemCouponDisabled}
+              className={`h-8 rounded-lg border px-2 text-[11px] font-semibold disabled:opacity-50 ${
+                isDarkUi
+                  ? 'border-cyan-400/35 text-cyan-200 hover:bg-cyan-500/10'
+                  : 'border-cyan-200 text-cyan-700 hover:bg-cyan-50'
+              }`}
+            >
+              {isRedeemingCoupon ? <Loader2 size={12} className="animate-spin" /> : 'Redeem'}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  const Sidebar = () => {
+    const isDesktopCompact = isDesktop && sidebarMode === 'compact';
+    const primaryWorkspaceTabs = workspaceTabs.filter((item) => item.id !== Tab.ADMIN);
+    const adminWorkspaceTab = workspaceTabs.find((item) => item.id === Tab.ADMIN);
+    const getSidebarButtonClassName = (isActive: boolean) => `flex w-full items-center rounded-xl text-sm font-semibold transition-all ${
+      isDesktopCompact ? 'flex-col justify-center gap-0.5 px-1.5 py-2' : 'gap-3 px-3.5 py-2.5'
+    } ${
+      isActive
+        ? isDarkUi
+          ? 'border border-cyan-500/35 bg-cyan-500/15 text-cyan-100 shadow-[0_6px_18px_rgba(6,182,212,0.16)]'
+          : 'border border-cyan-100 bg-cyan-50 text-cyan-700 shadow-sm'
+        : isDarkUi
+          ? 'text-slate-300 hover:bg-slate-900 hover:text-slate-100'
+          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+    } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2`;
+    const handleShopClick = () => {
+      if (isGuestSession) {
+        openAuthScreen('signup');
+        return;
+      }
+      setIsMobileMenuOpen(false);
+      setIsCreditsSurfaceOpen(true);
+    };
+
+    return (
     <aside
-      className={`vf-sidebar-shell fixed inset-y-0 left-0 z-[56] xl:z-40 w-72 max-w-[90vw] xl:w-64 transform transition-transform duration-300 xl:translate-x-0 ${
+      className={`vf-sidebar-shell fixed inset-y-0 left-0 z-[56] xl:z-40 w-72 max-w-[90vw] ${
+        isDesktopCompact ? 'xl:w-[4.5rem]' : 'xl:w-64'
+      } transform transition-all duration-300 xl:translate-x-0 ${
         isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
       } ${
         isDarkUi
           ? 'border-r border-slate-800 bg-slate-950/92 shadow-[0_24px_56px_rgba(2,6,23,0.72)]'
           : 'border-r border-gray-200 bg-white/95 shadow-2xl md:shadow-xl'
-      } flex h-full flex-col overflow-hidden backdrop-blur-xl`}
+      } flex h-full flex-col overflow-visible backdrop-blur-xl`}
     >
-      <div className={`vf-sidebar-brand flex items-center gap-3 border-b px-5 py-5 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
-        <BrandLogo size="md" tone={isDarkUi ? 'light' : 'dark'} />
+      <div
+        className={`vf-sidebar-brand flex items-center border-b ${isDesktopCompact ? 'justify-center px-2 py-4' : 'gap-3 px-5 py-5'} ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}
+      >
+        <BrandLogo size={isDesktopCompact ? 'sm' : 'md'} tone={isDarkUi ? 'light' : 'dark'} showWordmark={!isDesktopCompact} />
       </div>
 
-      <nav className={`vf-sidebar-nav space-y-1 border-b px-3 py-3 ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
-        {workspaceTabs.map(item => (
+      <nav className={`vf-sidebar-nav space-y-1 border-b ${isDesktopCompact ? 'px-2 py-3' : 'px-3 py-3'} ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
+        {primaryWorkspaceTabs.map(item => (
           <button
             key={item.id}
+            type="button"
             onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
-            className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition-all ${
-              activeTab === item.id
-                ? isDarkUi
-                  ? 'border border-cyan-500/35 bg-cyan-500/15 text-cyan-100 shadow-[0_6px_18px_rgba(6,182,212,0.16)]'
-                  : 'border border-cyan-100 bg-cyan-50 text-cyan-700 shadow-sm'
-                : isDarkUi
-                  ? 'text-slate-300 hover:bg-slate-900 hover:text-slate-100'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-            }`}
+            aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
+            aria-label={item.label}
+            title={item.label}
+            className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
           >
-            {item.icon} {item.label}
+            <span className="shrink-0">{item.icon}</span>
+            {!isDesktopCompact && <span className="truncate">{item.label}</span>}
+            {isDesktopCompact && (
+              <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                {item.label}
+              </span>
+            )}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={handleShopClick}
+          aria-current={isCreditsSurfaceOpen ? 'page' : undefined}
+          aria-label="Shop"
+          title="Shop"
+          className={getSidebarButtonClassName(isCreditsSurfaceOpen)}
+        >
+          <span className="shrink-0"><Coins size={18} /></span>
+          {!isDesktopCompact && <span className="truncate">Shop</span>}
+          {isDesktopCompact && (
+            <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+              Shop
+            </span>
+          )}
+        </button>
+        {adminWorkspaceTab ? (
+          <button
+            key={adminWorkspaceTab.id}
+            type="button"
+            onClick={() => { setActiveTab(adminWorkspaceTab.id); setIsMobileMenuOpen(false); }}
+            aria-current={!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id ? 'page' : undefined}
+            aria-label={adminWorkspaceTab.label}
+            title={adminWorkspaceTab.label}
+            className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id)}
+          >
+            <span className="shrink-0">{adminWorkspaceTab.icon}</span>
+            {!isDesktopCompact && <span className="truncate">{adminWorkspaceTab.label}</span>}
+            {isDesktopCompact && (
+              <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                {adminWorkspaceTab.label}
+              </span>
+            )}
+          </button>
+        ) : null}
       </nav>
 
       <div className="vf-sidebar-scroll custom-scrollbar flex-1 min-h-0 overflow-y-auto">
-        {activeTab === Tab.STUDIO && (
-          <div className="animate-in fade-in space-y-5 px-4 pb-3 pt-4">
-            <div>
-              <div className={`mb-2.5 flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-[0.14em] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                <span className="whitespace-nowrap">Recent Drafts</span>
-                <button
-                  onClick={() => { setText(''); setSettings(s => ({ ...s, speakerMapping: {} })); }}
-                  className={`text-[11px] font-semibold normal-case tracking-normal ${isDarkUi ? 'text-cyan-300 hover:text-cyan-200' : 'text-cyan-700 hover:text-cyan-800'}`}
-                >
-                  New
-                </button>
-              </div>
-              <div className="custom-scrollbar max-h-44 space-y-1.5 overflow-y-auto pr-1">
-                {drafts.length === 0 && <div className={`text-xs italic ${isDarkUi ? 'text-slate-500' : 'text-gray-400'}`}>No drafts yet</div>}
-                {drafts.map(d => (
-                  <div key={d.id} className={`group flex items-center justify-between rounded-lg border px-2 py-2 transition-colors ${
-                    isDarkUi ? 'border-slate-800 bg-slate-900/60 hover:bg-slate-900' : 'border-gray-200 bg-white hover:bg-gray-50'
-                  }`}>
-                    <button
-                      type="button"
-                      onClick={() => { setText(d.text); setSettings(normalizeSettings(d.settings)); setIsMobileMenuOpen(false); }}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    >
-                      <FileText size={14} className={`flex-shrink-0 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />
-                      <span className={`truncate text-sm ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>{d.name}</span>
-                    </button>
-                    <button
-                      onClick={() => { deleteDraft(d.id); }}
-                      className={`opacity-0 transition-opacity group-hover:opacity-100 ${isDarkUi ? 'text-rose-300 hover:text-rose-200' : 'text-rose-500 hover:text-rose-700'}`}
-                      aria-label={`Delete draft ${d.name}`}
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
 
-          </div>
-        )}
-
+        {false && (
         <div className="px-4 pb-4">
           <div className={`vf-sidebar-balance rounded-2xl border p-3 shadow-sm ${
             isDarkUi ? 'border-slate-800 bg-slate-900/75 shadow-black/20' : 'border-gray-200 bg-white'
           }`}>
-            <div className={`rounded-xl border px-3 py-2.5 ${
-              isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'
-            }`}>
-              <div className="flex items-center justify-between gap-2">
-                <div className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${isDarkUi ? 'text-slate-200' : 'text-gray-800'}`}>
-                  <span className={`h-2.5 w-2.5 rounded-full border ${isDarkUi ? 'border-slate-500 bg-cyan-400' : 'border-gray-300 bg-white'}`} />
-                  <span>Balance</span>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className={`text-[10px] font-black uppercase tracking-[0.2em] ${isDarkUi ? 'text-cyan-200/80' : 'text-cyan-700/70'}`}>
+                  Plan & Credits
                 </div>
-                <button
-                  onClick={() => setShowSubscriptionModal(true)}
-                  className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
-                    isDarkUi ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400' : 'bg-cyan-600 text-white hover:bg-cyan-500'
-                  }`}
-                >
-                  Upgrade
-                </button>
-              </div>
-              <div className={`mt-2.5 space-y-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                <div className="flex items-center justify-between">
-                  <span>Total</span>
-                  <strong className={isDarkUi ? 'text-slate-100' : 'text-gray-900'}>{balanceTotalLabel}</strong>
+                <div className={`mt-2 text-base font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                  {activePlanLabel} workspace
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>Remaining</span>
-                  <strong className={isDarkUi ? 'text-slate-100' : 'text-gray-900'}>{balanceRemainingLabel}</strong>
+                <div className={`mt-1 text-[11px] leading-5 ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                  {hasUnlimitedAccess
+                    ? 'Unlimited access is active for this account.'
+                    : isPaidBillingPlan
+                      ? 'Recurring billing and larger monthly caps are enabled.'
+                      : 'Upgrade only when you need bigger caps or more engines.'}
                 </div>
               </div>
+              <button
+                onClick={() => setShowSubscriptionModal(true)}
+                className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-colors ${
+                  isPaidBillingPlan
+                    ? (isDarkUi ? 'bg-cyan-500/14 text-cyan-100 hover:bg-cyan-500/24' : 'bg-cyan-50 text-cyan-700 hover:bg-cyan-100')
+                    : (isDarkUi ? 'bg-amber-400 text-slate-950 hover:bg-amber-300' : 'bg-amber-500 text-white hover:bg-amber-400')
+                }`}
+              >
+                {isPaidBillingPlan ? 'Manage' : 'Upgrade'}
+              </button>
             </div>
 
-            <div className={`mt-2 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-              Spendable now ({getEngineDisplayName(settings.engine)}): {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
-            </div>
-            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-              VFF Free: {walletVff.toLocaleString()} | Paid VF: {walletPaid.toLocaleString()}
-            </div>
-            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-              Ads today: {Math.max(0, Number(stats.wallet?.adClaimsToday || 0))}/{Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3))}
-            </div>
-            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-              Per-generation cap: {maxCharsPerGeneration.toLocaleString()} chars
-            </div>
-            <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-              Engines: {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+            {!hasUnlimitedAccess && (
+              <>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+              <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
+                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Spendable</div>
+                <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                  {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
+                </div>
+                <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+                  {getEngineDisplayName(settings.engine)}
+                </div>
+              </div>
+              <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
+                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Daily Left</div>
+                <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                  {hasUnlimitedAccess ? 'Unlimited' : dailyGenerationRemaining.toLocaleString()}
+                </div>
+                <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+                  {hasUnlimitedAccess ? 'No daily cap' : `${stats.generationsUsed}/${stats.generationsLimit} used`}
+                </div>
+              </div>
+                </div>
+
+            <div className={`mt-3 rounded-xl border px-3 py-3 text-[11px] ${isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-300' : 'border-gray-200 bg-white/90 text-gray-600'}`}>
+              <div className="flex items-center justify-between gap-2">
+                <span>Monthly free pool</span>
+                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{balanceRemainingLabel}</strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span>Paid VF</span>
+                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{walletPaid.toLocaleString()}</strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span>Per-generation cap</span>
+                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{maxCharsPerGeneration.toLocaleString()} chars</strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span>Allowed engines</span>
+                <strong className={`max-w-[9rem] truncate text-right ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+                  {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+                </strong>
+              </div>
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -5539,7 +6419,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 }`}
               >
                 {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-                {`${selectedTokenPackMeta.label} ${Math.round(selectedTokenPackMeta.vf / 1000)}k`}
+                Buy {selectedTokenPackMeta.label}
               </button>
             </div>
             <div className="mt-2">
@@ -5560,20 +6440,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   const displayPrice = normalizedPlanToken === 'scale' ? item.scaleInr : item.standardInr;
                   return (
                     <option key={packKey} value={packKey}>
-                      {`${item.label} • ${item.vf.toLocaleString()} VF • ₹${displayPrice.toLocaleString()}`}
+                      {joinUiFragments([item.label, `${item.vf.toLocaleString()} VF`, formatInr(displayPrice)])}
                     </option>
                   );
                 })}
               </select>
               <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                Checkout price: ₹{selectedTokenPackPriceInr.toLocaleString()} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
+                Checkout price: {formatInr(selectedTokenPackPriceInr)} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
               </div>
             </div>
             <div className="mt-2 flex items-center gap-1">
               <input
                 value={couponCode}
                 onChange={(event) => setCouponCode(event.target.value)}
-                placeholder="Coupon code"
+                placeholder="Wallet coupon"
                 className={`h-8 min-w-0 flex-1 rounded-lg border px-2 text-[11px] outline-none transition-colors ${
                   isDarkUi
                     ? 'border-slate-700 bg-slate-950/70 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400'
@@ -5592,87 +6472,140 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 {isRedeemingCoupon ? <Loader2 size={12} className="animate-spin" /> : 'Redeem'}
               </button>
             </div>
+              </>
+            )}
           </div>
         </div>
+        )}
       </div>
 
-      <div className={`vf-sidebar-footer shrink-0 border-t p-4 backdrop-blur-md ${isDarkUi ? 'border-slate-800 bg-slate-950/88' : 'border-gray-200 bg-white/90'}`}>
-        {isGuestSession && (
-          <div className="mb-3 grid grid-cols-2 gap-2">
+      <div className={`vf-sidebar-footer shrink-0 border-t p-3 backdrop-blur-md ${isDarkUi ? 'border-slate-800 bg-slate-950/88' : 'border-gray-200 bg-white/90'}`}>
+        {isDesktopCompact ? (
+          <div className="space-y-2">
+            {isGuestSession ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={() => openAuthScreen('login')}
+                  className={`inline-flex items-center justify-center rounded-lg border py-2 ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-200' : 'border-gray-200 bg-white text-gray-700'}`}
+                  title="Login"
+                  aria-label="Login"
+                >
+                  <LogIn size={13} />
+                </button>
+                <button
+                  onClick={() => openAuthScreen('signup')}
+                  className={`inline-flex items-center justify-center rounded-lg border py-2 ${isDarkUi ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700'}`}
+                  title="Sign up"
+                  aria-label="Sign up"
+                >
+                  <UserPlus size={13} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { void handleSignOut(); }}
+                className={`mb-1 inline-flex w-full items-center justify-center rounded-lg border py-2 ${isDarkUi ? 'border-rose-400/40 bg-rose-500/10 text-rose-200' : 'border-rose-200 bg-rose-50 text-rose-700'}`}
+                title="Sign out"
+                aria-label="Sign out"
+              >
+                <LogOut size={13} />
+              </button>
+            )}
             <button
-              onClick={() => openAuthScreen('login')}
-              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+              type="button"
+              className={`vf-sidebar-profile flex w-full items-center justify-center rounded-xl border p-2 text-left transition-colors ${
                 isDarkUi
-                  ? 'border-slate-600 bg-slate-900 text-slate-200 hover:bg-slate-800'
-                  : 'border-cyan-200 bg-white text-cyan-700 hover:bg-cyan-50'
+                  ? 'border-slate-700 bg-slate-900/70 hover:bg-slate-900'
+                  : 'border-gray-200 bg-white hover:bg-gray-50'
               }`}
+              onClick={() => setScreen(AppScreen.PROFILE)}
+              aria-label="Open profile"
+              title={user.name}
             >
-              <LogIn size={12} /> Login
+              <div className={`flex h-8 w-8 items-center justify-center rounded-full font-bold shadow-sm ${
+                isDarkUi
+                  ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
+                  : 'border border-white bg-cyan-100 text-cyan-700'
+              }`}>
+                {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+              </div>
             </button>
+          </div>
+        ) : (
+          <>
+            {isGuestSession && (
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => openAuthScreen('login')}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                    isDarkUi
+                      ? 'border-slate-600 bg-slate-900 text-slate-200 hover:bg-slate-800'
+                      : 'border-cyan-200 bg-white text-cyan-700 hover:bg-cyan-50'
+                  }`}
+                >
+                  <LogIn size={12} /> Login
+                </button>
+                <button
+                  onClick={() => openAuthScreen('signup')}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                    isDarkUi
+                      ? 'border-cyan-400/40 bg-cyan-500 text-slate-950 hover:bg-cyan-400'
+                      : 'border-cyan-600 bg-cyan-600 text-white hover:bg-cyan-700'
+                  }`}
+                >
+                  <UserPlus size={12} /> Sign Up
+                </button>
+              </div>
+            )}
+            {!isGuestSession && (
+              <button
+                onClick={() => { void handleSignOut(); }}
+                className={`mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+                  isDarkUi
+                    ? 'border-rose-400/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                    : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                }`}
+              >
+                <LogOut size={12} /> Sign Out
+              </button>
+            )}
             <button
-              onClick={() => openAuthScreen('signup')}
-              className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
+              type="button"
+              className={`vf-sidebar-profile flex w-full items-center gap-3 rounded-xl border p-2 text-left transition-colors ${
                 isDarkUi
-                  ? 'border-cyan-400/40 bg-cyan-500 text-slate-950 hover:bg-cyan-400'
-                  : 'border-cyan-600 bg-cyan-600 text-white hover:bg-cyan-700'
+                  ? 'border-slate-700 bg-slate-900/70 hover:bg-slate-900'
+                  : 'border-gray-200 bg-white hover:bg-gray-50'
               }`}
+              onClick={() => setScreen(AppScreen.PROFILE)}
+              aria-label="Open profile"
             >
-              <UserPlus size={12} /> Sign Up
+              <div className={`flex h-9 w-9 items-center justify-center rounded-full font-bold shadow-sm ${
+                isDarkUi
+                  ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
+                  : 'border border-white bg-cyan-100 text-cyan-700'
+              }`}>
+                {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <div className={`truncate text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>{user.name}</div>
+                <div className={`truncate text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{user.email}</div>
+              </div>
+              <Settings size={16} className={isDarkUi ? 'text-slate-400' : 'text-gray-400'} />
             </button>
-          </div>
+          </>
         )}
-        {!isGuestSession && (
-          <button
-            onClick={() => { void handleSignOut(); }}
-            className={`mb-3 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-bold transition-colors ${
-              isDarkUi
-                ? 'border-rose-400/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-                : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-            }`}
-          >
-            <LogOut size={12} /> Sign Out
-          </button>
-        )}
-        <button
-          type="button"
-          className={`vf-sidebar-profile flex w-full items-center gap-3 rounded-xl border p-2 text-left transition-colors ${
-            isDarkUi
-              ? 'border-slate-700 bg-slate-900/70 hover:bg-slate-900'
-              : 'border-gray-200 bg-white hover:bg-gray-50'
-          }`}
-          onClick={() => setScreen(AppScreen.PROFILE)}
-          aria-label="Open profile"
-        >
-          <div className={`flex h-9 w-9 items-center justify-center rounded-full font-bold shadow-sm ${
-            isDarkUi
-              ? 'border border-slate-600 bg-cyan-500/20 text-cyan-100'
-              : 'border border-white bg-cyan-100 text-cyan-700'
-          }`}>
-            {user.avatarUrl ? <img src={user.avatarUrl} className="h-full w-full rounded-full object-cover" alt={`${user.name} avatar`} /> : user.name[0]}
-          </div>
-          <div className="flex-1 overflow-hidden">
-            <div className={`truncate text-sm font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>{user.name}</div>
-            <div className={`truncate text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{user.email}</div>
-          </div>
-          <Settings size={16} className={isDarkUi ? 'text-slate-400' : 'text-gray-400'} />
-        </button>
       </div>
     </aside>
-  );
+    );
+  };
 
   const renderSettingsPanel = () => {
-      const assistantRouting = resolveAssistantProviderRouting(settings);
-      const providerControlsEnabled = assistantRouting.controlsEnabled;
-      const activeAssistantProvider = assistantRouting.provider;
       const settingsCardClass = isDarkUi
         ? 'space-y-3 rounded-xl border border-slate-700 bg-slate-900/70 p-3.5'
         : 'space-y-3 rounded-xl border border-slate-200 bg-white p-3.5';
       const settingsLabelClass = isDarkUi
         ? 'mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400'
         : 'mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500';
-      const settingsInputClass = isDarkUi
-        ? 'w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs font-mono text-slate-100 outline-none transition-colors placeholder:text-slate-500 focus:border-indigo-400'
-        : 'w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs font-mono text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-500 focus:bg-white';
 
       return (
       <div
@@ -5701,9 +6634,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               <Settings size={16} className="text-indigo-500" />
                               Workspace Settings
                           </h2>
-                          <p className={`mt-1 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-slate-500'}`}>
-                              Compact controls for UI, engines, assistant, and backend.
-                          </p>
                       </div>
                       <button
                         onClick={() => setShowSettings(false)}
@@ -5712,17 +6642,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       >
                         <X size={18}/>
                       </button>
-                  </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2">
-                      <div className={`rounded-lg border px-2 py-1 text-[10px] ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-slate-200 bg-white text-slate-600'}`}>
-                          Theme: <span className="font-semibold">{resolvedTheme === 'dark' ? 'Dark' : 'Light'}</span>
-                      </div>
-                      <div className={`rounded-lg border px-2 py-1 text-[10px] ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-slate-200 bg-white text-slate-600'}`}>
-                          Density: <span className="font-semibold capitalize">{uiDensity}</span>
-                      </div>
-                      <div className={`rounded-lg border px-2 py-1 text-[10px] ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-slate-200 bg-white text-slate-600'}`}>
-                          Engine: <span className="font-semibold">{getEngineLabel(settings.engine)}</span>
-                      </div>
                   </div>
               </div>
 
@@ -5881,7 +6800,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       } ${(switchLocked || pending || planLockedEngine) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
                                   >
                                       {engine === 'GEM' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
-                                      {engine === 'GOOD' && <Wand2 size={18} className={`shrink-0 ${isActive ? 'text-blue-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       {engine === 'NEURAL2' && <Zap size={18} className={`shrink-0 ${isActive ? 'text-amber-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       {engine === 'KOKORO' && <Cpu size={18} className={`shrink-0 ${isActive ? 'text-cyan-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       <div className="flex-1 min-w-0">
@@ -5908,156 +6826,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       </div>
                   </section>
 
-                  {/* AI Helper */}
-                  <section>
-                      <label className={settingsLabelClass}>AI Assistant Provider</label>
-                      <div className={settingsCardClass}>
-                          <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${isDarkUi ? 'border-slate-700 bg-slate-950/75' : 'border-gray-200 bg-gray-50'}`}>
-                              <div className="min-w-0">
-                                  <p className={`text-[11px] font-semibold ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>Provider Controls</p>
-                                  <p className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                      {providerControlsEnabled
-                                          ? 'Use Primary AI / Perplexity / Local selector.'
-                                          : 'Forced to Primary AI runtime path.'}
-                                  </p>
-                              </div>
-                              <button
-                                  type="button"
-                                  onClick={() => setSettings((s) => ({ ...s, assistantProviderControlsEnabled: s.assistantProviderControlsEnabled === false }))}
-                                  className={`relative h-5 w-9 rounded-full transition-colors ${providerControlsEnabled ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                  aria-label="Toggle assistant provider controls"
-                                  aria-pressed={providerControlsEnabled}
-                              >
-                                  <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${providerControlsEnabled ? 'translate-x-4' : ''}`} />
-                              </button>
-                          </div>
-
-                          <div className={`p-1 rounded-lg border flex ${isDarkUi ? 'border-slate-700 bg-slate-950/75' : 'border-gray-200 bg-white'}`}>
-                              {(['GEMINI', 'PERPLEXITY', 'LOCAL'] as const).map((p) => {
-                                  const isDisabled = !providerControlsEnabled && p !== 'GEMINI';
-                                  const isActive = activeAssistantProvider === p;
-                                  return (
-                                      <button
-                                          key={p}
-                                          type="button"
-                                          disabled={isDisabled}
-                                          onClick={() => {
-                                              if (isDisabled) return;
-                                              setSettings((s) => ({ ...s, helperProvider: p }));
-                                          }}
-                                          className={`flex-1 py-1.5 text-[10px] font-semibold rounded-md transition-all ${
-                                              isActive
-                                                  ? isDarkUi
-                                                    ? 'bg-slate-800 text-slate-100'
-                                                    : 'bg-slate-100 text-slate-900 shadow-sm'
-                                                  : isDisabled
-                                                      ? isDarkUi
-                                                        ? 'text-slate-600 cursor-not-allowed'
-                                                        : 'text-gray-300 cursor-not-allowed'
-                                                      : isDarkUi
-                                                        ? 'text-slate-400 hover:text-slate-200'
-                                                        : 'text-gray-500 hover:text-gray-700'
-                                          }`}
-                                      >
-                                          {ASSISTANT_PROVIDER_UI_LABELS[p]}
-                                      </button>
-                                  );
-                              })}
-                          </div>
-
-                          {!providerControlsEnabled && (
-                              <p className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                  Perplexity and Local routes are currently disabled until provider controls are turned back on.
-                              </p>
-                          )}
-
-                          <div className={`space-y-2 animate-in fade-in rounded-lg border p-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-950/75' : 'border-gray-100 bg-white'}`}>
-                              {activeAssistantProvider === 'GEMINI' && (
-                                  <div>
-                                      <div className="flex items-center justify-between gap-2 mb-1">
-                                          <label className={`${settingsLabelClass} mb-0 flex items-center gap-1`}><Key size={10}/> Primary AI API Key</label>
-                                          <button
-                                              type="button"
-                                              onClick={async () => {
-                                                  try {
-                                                      const clip = await navigator.clipboard.readText();
-                                                      const nextKey = String(clip || '').trim();
-                                                      if (!nextKey) {
-                                                          showToast('Clipboard is empty.', 'info');
-                                                          return;
-                                                      }
-                                                      setSettings((s) => ({ ...s, geminiApiKey: nextKey }));
-                                                      showToast('Primary AI API key pasted.', 'success');
-                                                  } catch {
-                                                      showToast('Clipboard access failed. Paste manually.', 'error');
-                                                  }
-                                              }}
-                                              className={`px-2 py-1 text-[10px] font-semibold rounded-md border transition-colors ${
-                                                  isDarkUi
-                                                    ? 'border-slate-600 text-slate-300 hover:border-slate-500 hover:text-slate-100'
-                                                    : 'border-gray-200 text-gray-600 hover:text-gray-800 hover:border-gray-300'
-                                              }`}
-                                          >
-                                              Paste
-                                          </button>
-                                      </div>
-                                      <input
-                                          type="password"
-                                          value={settings.geminiApiKey || ''}
-                                          onChange={(e) => setSettings(s => ({ ...s, geminiApiKey: e.target.value }))}
-                                          placeholder="AIza..."
-                                          className={settingsInputClass}
-                                      />
-                                      <div className={`mt-2 flex items-center justify-between rounded-lg border p-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-900/80' : 'border-gray-200 bg-gray-50'}`}>
-                                          <div className="pr-2">
-                                              <p className={`text-[10px] font-bold uppercase ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>Use Personal API Key</p>
-                                              <p className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>When OFF, requests use backend runtime key-pool.</p>
-                                          </div>
-                                          <button
-                                              type="button"
-                                              onClick={() => setSettings((s) => ({ ...s, preferUserGeminiKey: !(s.preferUserGeminiKey === true) }))}
-                                              className={`relative h-5 w-9 rounded-full transition-colors ${settings.preferUserGeminiKey === true ? 'bg-indigo-500' : isDarkUi ? 'bg-slate-600' : 'bg-gray-300'}`}
-                                              aria-label="Toggle personal API key preference"
-                                              aria-pressed={settings.preferUserGeminiKey === true}
-                                          >
-                                              <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${settings.preferUserGeminiKey === true ? 'translate-x-4' : ''}`} />
-                                          </button>
-                                      </div>
-                                      <p className={`text-[10px] mt-1 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>Used by AI Assistant and cloud fallback tasks.</p>
-                                  </div>
-                              )}
-
-                              {activeAssistantProvider === 'PERPLEXITY' && (
-                                  <div>
-                                      <label className={`${settingsLabelClass} mb-1 flex items-center gap-1`}><Lock size={10}/> Perplexity API Key</label>
-                                      <input
-                                          type="password"
-                                          value={settings.perplexityApiKey || ''}
-                                          onChange={(e) => setSettings(s => ({...s, perplexityApiKey: e.target.value}))}
-                                          placeholder="pplx-..."
-                                          className={settingsInputClass}
-                                      />
-                                      <p className={`text-[10px] mt-1 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>Required for advanced web-search translation.</p>
-                                  </div>
-                              )}
-
-                              {activeAssistantProvider === 'LOCAL' && (
-                                  <div>
-                                      <label className={`${settingsLabelClass} mb-1 flex items-center gap-1`}><Terminal size={10}/> Local LLM URL</label>
-                                      <input
-                                          type="text"
-                                          value={settings.localLlmUrl || ''}
-                                          onChange={(e) => setSettings(s => ({...s, localLlmUrl: e.target.value}))}
-                                          placeholder="http://localhost:1234/v1"
-                                          className={settingsInputClass}
-                                      />
-                                      <p className={`text-[10px] mt-1 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>Compatible with LM Studio, Ollama, etc.</p>
-                                  </div>
-                              )}
-                          </div>
-                      </div>
-                  </section>
-
               </div>
 
               <div className={`p-4 border-t ${isDarkUi ? 'border-slate-800 bg-slate-950/90' : 'border-slate-200 bg-slate-50/95'}`}>
@@ -6068,10 +6836,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   };
 
-  const usesPhoneStudioDock = activeTab === Tab.STUDIO && isPhone;
-  const usesCompactFloatingStudioDock = activeTab === Tab.STUDIO && (isTablet || isDesktop);
+  const usesPhoneStudioDock = isStudioWorkspaceTab && isPhone;
+  const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
+  const usesFullBleedLabContent = activeTab === Tab.LAB;
+  const shouldLockLabScroll = usesFullBleedLabContent && !isPhone;
+  const shouldHideAssistantForLab = activeTab === Tab.LAB;
+  const isDesktopCompactSidebar = isDesktop && sidebarMode === 'compact';
+  const mainDesktopPaddingClass = isDesktopCompactSidebar ? 'xl:pl-[4.5rem]' : 'xl:pl-64';
+  const topbarDesktopOffsetClass = isDesktopCompactSidebar
+    ? 'xl:left-[calc(4.5rem+0.75rem)]'
+    : 'xl:left-[calc(16rem+0.75rem)]';
+  const studioMainSpacingClass = isPhone ? 'space-y-3' : 'space-y-4';
+  const studioEditorHeightClass = isPhone
+    ? 'min-h-[20.5rem] h-[min(34.5rem,calc(100dvh-13rem))]'
+    : isTablet
+      ? 'min-h-[22rem] h-[min(39.5rem,calc(100dvh-11.5rem))]'
+      : 'min-h-[23rem] h-[min(42rem,calc(100dvh-11rem))]';
   const studioScrollPaddingClass =
-    activeTab === Tab.STUDIO
+    isStudioWorkspaceTab
       ? isPhone
         ? 'pb-[calc(env(safe-area-inset-bottom)+11rem)]'
         : isTablet
@@ -6084,14 +6866,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioFloatingDockVariantClass = isDesktop
     ? 'vf-studio-generate-anchor--desktop'
     : 'vf-studio-generate-anchor--tablet';
+  const studioAssistantPositionClass = isPhone
+    ? 'right-3 items-end'
+    : 'right-4 xl:right-6 items-end';
+  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForLab && !isStudioWorkspaceTab;
+  const showFloatingAssistantFab = !isPhone;
+  const assistantFabSizeClass = isPhone ? 'w-14 h-14' : 'w-16 h-16';
+  const assistantPanelSizeClass = isPhone
+    ? 'w-[min(23rem,calc(100vw-0.75rem))] h-[min(30rem,calc(100vh-10.5rem))]'
+    : 'w-[min(23rem,calc(100vw-1.5rem))] h-[min(30rem,calc(100vh-8rem))]';
   const studioAssistantBottomClass =
-    activeTab === Tab.STUDIO
+    isStudioWorkspaceTab
       ? isPhone
-        ? 'bottom-[calc(env(safe-area-inset-bottom)+8.25rem)]'
+        ? 'bottom-[calc(env(safe-area-inset-bottom)+6.9rem)]'
         : isDesktop
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
+  const shouldRenderFloatingAssistant = !shouldHideAssistantForLab && (showFloatingAssistantFab || isChatOpen);
 
   return (
     <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
@@ -6111,10 +6903,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       <Sidebar />
       
       {/* Main Content */}
-      <main className="flex-1 flex flex-col xl:pl-64 relative h-screen overflow-hidden transition-all">
+      <main className={`flex-1 flex flex-col relative h-screen overflow-hidden transition-all ${mainDesktopPaddingClass}`}>
         
         {/* Floating Top Bar */}
-        <header className={`vf-topbar vf-topbar-shell fixed top-2 left-2 right-2 xl:left-[calc(16rem+0.75rem)] xl:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
+        <header className={`vf-topbar vf-topbar-shell fixed top-2 left-2 right-2 ${topbarDesktopOffsetClass} xl:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
           resolvedTheme === 'dark'
             ? 'border-slate-700/80 bg-slate-950/82 shadow-[0_18px_38px_rgba(2,6,23,0.72)]'
             : 'border-white/70 bg-white/85 shadow-[0_18px_38px_rgba(15,23,42,0.14)]'
@@ -6132,22 +6924,40 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                  >
                     <Menu />
                  </button>
+                 <button
+                    type="button"
+                    className={`hidden xl:inline-flex p-2 shrink-0 rounded-full transition-colors ${resolvedTheme === 'dark' ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-600 hover:bg-gray-100'}`}
+                    onClick={() => setSidebarMode((current) => (current === 'compact' ? 'expanded' : 'compact'))}
+                    aria-label={sidebarMode === 'compact' ? 'Expand sidebar' : 'Compact sidebar'}
+                    title={sidebarMode === 'compact' ? 'Expand sidebar' : 'Compact sidebar'}
+                  >
+                    {sidebarMode === 'compact' ? <Maximize2 size={18} /> : <Minimize2 size={18} />}
+                  </button>
                  <div className="sm:hidden flex shrink-0 items-center">
                    <BrandLogo size="sm" showWordmark={false} />
                  </div>
 
-                 <div className={`vf-topbar-title-shell hidden sm:flex h-9 shrink-0 items-center gap-2 rounded-lg border px-2.5 ${
+                  <div className={`vf-topbar-title-shell hidden md:flex min-w-[14rem] max-w-[20rem] shrink-0 items-center gap-3 rounded-xl border-x-0 border-y px-3 py-2 ${
                    resolvedTheme === 'dark'
                     ? 'border-slate-700 bg-slate-900/85 text-slate-200'
                     : 'border-slate-200 bg-white/90 text-slate-700'
-                 }`}>
-                    <span className={`vf-topbar-product-pill inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black uppercase tracking-wider ${
-                      resolvedTheme === 'dark' ? 'bg-slate-800 text-slate-300 border border-slate-700' : 'bg-slate-100 text-slate-500 border border-slate-200'
-                    }`}>
-                      <Mic size={11} className="text-indigo-500" />
-                      Audio Studio
+                  }`}>
+                    <span className="shrink-0 origin-left scale-[0.82]">
+                      <BrandLogo size="sm" showWordmark={false} />
                     </span>
-                    <span className="vf-topbar-tab-label text-sm font-semibold">{activeTabLabel}</span>
+                     <div className="min-w-0">
+                       <div className={`text-[9px] font-black uppercase tracking-[0.22em] ${
+                         resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500'
+                       }`}>
+                        Workspace
+                      </div>
+                      <div className="vf-topbar-tab-label truncate text-sm font-semibold">{activeTabLabel}</div>
+                    </div>
+                    <div className={`hidden xl:block max-w-[9rem] text-right text-[10px] leading-4 ${
+                      resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500'
+                    }`}>
+                      {activeTabDetail}
+                    </div>
                  </div>
 
                  <div className="vf-topbar-runtime-wrap hidden sm:block min-w-0 flex-1 overflow-x-auto no-scrollbar">
@@ -6190,36 +7000,48 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   </div>
 
                   <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
-                      <div className={`hidden xl:flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
-                         resolvedTheme === 'dark'
-                           ? 'bg-slate-900/85 border-slate-700 text-slate-300'
-                           : 'bg-gray-100 border-gray-200 text-gray-600'
-                       }`}>
-                           <Box size={14} />
-                           {`${currentEngineSpendable.toLocaleString()} VF (${getEngineDisplayName(settings.engine).toUpperCase()})`}
-                       </div>
-                     <div className={`hidden sm:flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
-                        resolvedTheme === 'dark'
-                          ? 'bg-slate-900/85 border-slate-700 text-slate-300'
-                          : 'bg-gray-100 border-gray-200 text-gray-600'
-                      }`}>
-                        <Timer size={12} />
-                        {`Daily ${Math.max(0, Number(stats.generationsUsed || 0))}/${Math.max(1, Number(stats.generationsLimit || 30))}`}
-                      </div>
-                     <div className={`hidden md:flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-full text-[9px] sm:text-[10px] font-bold border ${
-                        resolvedTheme === 'dark'
-                          ? 'bg-slate-900/85 border-slate-700 text-slate-300'
-                          : 'bg-gray-100 border-gray-200 text-gray-600'
-                      }`}>
-                        <Gift size={12} />
-                        {`VFF Left ${walletVff.toLocaleString()}`}
-                      </div>
+                      <button
+                        type="button"
+                        ref={creditsSurfaceTriggerRef}
+                        onClick={() => setIsCreditsSurfaceOpen((open) => !open)}
+                        aria-expanded={isCreditsSurfaceOpen}
+                        aria-label="Open plan and credits"
+                        className={`inline-flex items-center gap-1 sm:gap-2 rounded-full border px-2 py-1 sm:px-2.5 text-[10px] font-bold ${
+                          resolvedTheme === 'dark'
+                            ? 'border-slate-700 bg-slate-900/85 text-slate-200 hover:bg-slate-800'
+                            : 'border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        <Box size={13} className="hidden sm:inline" />
+                        <Coins size={12} className="sm:hidden" />
+                        <span className="sm:hidden">{hasUnlimitedAccess ? 'Credits' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
+                        <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
+                        <span className={`hidden sm:inline ${resolvedTheme === 'dark' ? 'text-slate-500' : 'text-gray-500'}`}>|</span>
+                        <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Daily Unlimited' : `${dailyGenerationRemaining.toLocaleString()} left`}</span>
+                        <span className={`hidden sm:inline rounded-full px-2 py-0.5 text-[9px] ${
+                          isPaidBillingPlan
+                            ? (resolvedTheme === 'dark' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-50 text-cyan-700')
+                            : (resolvedTheme === 'dark' ? 'bg-amber-400 text-slate-950' : 'bg-amber-500 text-white')
+                        }`}>
+                          {isPaidBillingPlan ? 'Manage' : 'Upgrade'}
+                        </span>
+                      </button>
 
-                      {!stats.isPremium && (
-                          <button onClick={() => setShowSubscriptionModal(true)} className="hidden sm:inline-flex px-2.5 py-1 bg-gradient-to-r from-amber-400 to-orange-500 text-white text-[11px] font-bold rounded-full shadow-md shadow-orange-200 transition-transform hover:scale-105">
-                              Upgrade
-                          </button>
-                      )}
+                     {showTopbarAssistantButton ? (
+                       <button
+                          type="button"
+                          onClick={() => setIsChatOpen((open) => !open)}
+                          aria-label={isChatOpen ? 'Close assistant' : 'Open assistant'}
+                          className={`relative p-2 rounded-full transition-colors ${
+                          resolvedTheme === 'dark'
+                           ? 'hover:bg-slate-800 text-slate-300'
+                           : 'hover:bg-gray-100 text-gray-500'
+                       }`}
+                        >
+                            <Sparkles size={18} />
+                            {isChatOpen && <span className="absolute inset-0 rounded-full ring-1 ring-indigo-400/70" />}
+                       </button>
+                     ) : null}
 
                      <button
                         onClick={() => setCenterOpen((open) => !open)}
@@ -6253,53 +7075,101 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                  </div>
              </div>
         </header>
+        {isCreditsSurfaceOpen && (
+          <>
+            {isPhone && (
+              <button
+                type="button"
+                className="fixed inset-0 z-[48] bg-black/45 backdrop-blur-[2px]"
+                onClick={() => setIsCreditsSurfaceOpen(false)}
+                aria-label="Close plan and credits panel"
+              />
+            )}
+            <div
+              ref={creditsSurfaceRef}
+              className={`fixed z-[49] ${isPhone ? 'inset-x-3 bottom-3' : 'right-3 top-[4.2rem] w-[23rem]'}`}
+            >
+              {renderCreditsSurfaceContent(isPhone)}
+            </div>
+          </>
+        )}
 
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`vf-main-scroll flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 pt-20 md:pt-24 relative ${studioScrollPaddingClass}`}
+          className={`vf-main-scroll flex-1 custom-scrollbar relative ${
+            usesFullBleedLabContent
+              ? `${shouldLockLabScroll ? 'overflow-hidden' : 'overflow-y-auto'} px-0 md:px-0 pt-16 md:pt-20 pb-0`
+              : `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`
+          }`}
         >
-            <div className={`mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
+            <div className={usesFullBleedLabContent ? 'mx-auto w-full h-full max-w-none space-y-0' : `mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
                 
-                {activeTab === Tab.STUDIO && (
-                    <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-center justify-center">
-                    <div className="vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_22rem] gap-5 xl:gap-6 animate-in fade-in duration-300">
+                {isStudioWorkspaceTab && (
+                    <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
+                    <div className="vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] gap-4 xl:gap-5 animate-in fade-in duration-300">
                         {/* Editor Section */}
-                        <div ref={studioMainRef} className="vf-studio-main min-w-0 space-y-4">
+                        <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
                             {/* Reduced Height Editor */}
-                            <SectionCard className="vf-editor-shell rounded-3xl overflow-hidden flex flex-col min-h-[23rem] h-[min(42rem,calc(100dvh-11rem))] relative group transition-all hover:shadow-md">
+                            <SectionCard className={`vf-editor-shell rounded-3xl overflow-hidden flex flex-col ${studioEditorHeightClass} relative group transition-all hover:shadow-md`}>
                                 {/* Toolbar */}
-                                <div className={`vf-studio-toolbar px-4 py-3 border-b gap-2 ${isPhone ? 'flex flex-col items-stretch' : 'flex flex-wrap items-start justify-between'}`}>
-                                    <div className="flex flex-wrap items-center gap-1">
-                                        <button onClick={() => setText(t => t + ' [pause] ')} className="vf-toolbar-action p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
-                                        <button onClick={() => setText(t => t + ' (Whisper): ')} className="vf-toolbar-action p-1.5 text-xs font-bold rounded-lg flex items-center gap-1 transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
-                                        
-                                        <div className="vf-toolbar-divider"></div>
-                                        
+                                <div className={`vf-studio-toolbar border-b ${isPhone ? 'flex flex-col items-stretch gap-1.5 px-2.5 py-2' : 'flex items-center justify-between gap-2.5 px-3 py-2.5'}`}>
+                                    <div className={`${isPhone ? 'vf-toolbar-primary vf-toolbar-primary--phone flex min-w-0 items-center gap-1.5 overflow-x-auto pb-0.5 pr-0.5' : 'vf-toolbar-primary flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2'}`}>
+                                        <button onClick={() => setText(t => t + ' [pause] ')} className="vf-toolbar-action text-xs font-bold transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
+                                        <button onClick={() => setText(t => t + ' (Whisper): ')} className="vf-toolbar-action text-xs font-bold transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
+
+                                        {!isPhone && <div className="vf-toolbar-divider"></div>}
+
                                         <ProofreadCluster
                                             isBusy={isAiWriting}
                                             onProofread={(mode) => { void handleProofread(mode); }}
                                             novelLabel="Audio Novel"
                                         />
-                                        
-                                        <div className="vf-toolbar-divider"></div>
+
+                                        {!isPhone && <div className="vf-toolbar-divider"></div>}
 
                                         <button
-                                            onClick={() => { setText(''); setGeneratedAudioUrl(null); }}
-                                            className="vf-toolbar-action vf-toolbar-action--danger p-1.5 text-xs font-bold rounded-lg transition-colors"
+                                            onClick={() => { setText(''); setGeneratedAudioUrlManaged(null); }}
+                                            className="vf-toolbar-action vf-toolbar-action--danger text-xs font-bold transition-colors"
                                             title="Clear"
                                             aria-label="Clear studio script"
                                         >
                                             <Trash2 size={14}/>
                                         </button>
                                     </div>
-                                    
-                                    <div className={`flex items-center gap-2 ${isPhone ? 'w-full justify-between' : 'ml-auto shrink-0'}`}>
+
+                                    <div className={`vf-toolbar-secondary ${isPhone ? 'w-full justify-start flex-wrap' : 'ml-2 shrink-0'}`}>
                                          {!isPhone && detectedLang && <span className="vf-toolbar-tag text-[10px] font-bold border px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
-                                         <button onClick={() => handleDirectorAI(text, 'audio_drama')} disabled={isAiWriting} className="vf-toolbar-ai text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm">
+                                         <button
+                                            type="button"
+                                            onClick={() => studioImportInputRef.current?.click()}
+                                            disabled={isStudioImporting || isAiWriting}
+                                            className="vf-toolbar-action text-xs font-bold disabled:opacity-50 transition-colors"
+                                            title="Import local files (URL import is not supported)"
+                                         >
+                                            {isStudioImporting ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
+                                            <span>{isStudioImporting ? 'Importing...' : 'Import'}</span>
+                                         </button>
+                                         <button
+                                            type="button"
+                                            onClick={() => setIsChatOpen(true)}
+                                            className="vf-toolbar-action text-xs font-bold transition-colors"
+                                            title="Open creative assistant"
+                                         >
+                                            <Sparkles size={13}/>
+                                            <span>{isPhone ? 'Assist' : 'Assistant'}</span>
+                                         </button>
+                                         <button onClick={() => handleDirectorAI(text, 'audio_drama')} disabled={isAiWriting} className="vf-toolbar-ai text-xs font-bold disabled:opacity-50 transition-colors shadow-sm">
                                             {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>} 
                                             <span>AI Director</span>
                                          </button>
+                                         <input
+                                            ref={studioImportInputRef}
+                                            type="file"
+                                            className="hidden"
+                                            multiple
+                                            onChange={handleStudioImportInputChange}
+                                         />
                                     </div>
                                 </div>
                                 
@@ -6325,7 +7195,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     onTranslate={() => { void handleTranslate(); }}
                                 />
 
-                                <div className="vf-editor-footer px-4 sm:px-6 py-3 border-t text-xs flex flex-wrap items-center justify-between gap-3">
+                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-3 py-2 gap-2' : 'px-4 sm:px-6 py-3 gap-3'}`}>
                                     <div className="flex flex-wrap items-center gap-2">
                                         <span className="vf-editor-count">{text.length} chars</span>
                                         {studioQueueEligible && (
@@ -6357,7 +7227,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </button>
                                         <button
                                             type="button"
-                                            onClick={() => setSettings((prev) => ({ ...prev, multiSpeakerEnabled: !(prev.multiSpeakerEnabled !== false) }))}
+                                            onClick={() => {
+                                                const nextEnabled = !isStudioMultiSpeakerEnabled;
+                                                if (nextEnabled) setStudioRailTab('cast');
+                                                setSettings((prev) => ({ ...prev, multiSpeakerEnabled: nextEnabled }));
+                                            }}
                                             className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
                                                 isStudioMultiSpeakerEnabled
                                                     ? isDarkUi
@@ -6386,7 +7260,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       isLiveStreaming={isGenerating}
                                       autoPlayOnFirstChunk={settings.autoPlayGeneratedAudio !== false}
                                       onReset={() => {
-                                        setGeneratedAudioUrl(null);
+                                        setGeneratedAudioUrlManaged(null);
                                         setLiveAudioChunks([]);
                                         seenLiveChunkKeysRef.current.clear();
                                         activeGatewayJobIdRef.current = '';
@@ -6397,10 +7271,42 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         </div>
 
 	                        {/* Controls Sidebar */}
-		                        <div className={`vf-studio-rail h-fit xl:self-center ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
-		                            {!isStudioMultiSpeakerEnabled && (
-                                    <>
-		                            {/* Voice Selector Card */}
+		                        <div className={`vf-studio-rail h-fit xl:sticky xl:top-24 xl:self-start ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
+                              <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-3 rounded-3xl'}>
+                                <div className="flex flex-wrap gap-2" {...studioRailTabs.listProps}>
+                                  {studioRailTabItems.map((tabItem) => {
+                                    const isActive = studioRailTab === tabItem.id;
+                                    const isDisabled = Boolean(tabItem.disabled);
+                                    return (
+                                      <button
+                                        key={tabItem.id}
+                                        type="button"
+                                        {...studioRailTabs.getTabProps(tabItem.id, isDisabled)}
+                                        title={isDisabled ? 'Voice controls are disabled while Multi-Speaker mode is on. Use Cast.' : undefined}
+                                        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                          isActive
+                                            ? (isDarkUi ? 'border-cyan-500/45 bg-cyan-500/14 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700')
+                                            : isDisabled
+                                              ? (isDarkUi ? 'cursor-not-allowed border-slate-800 bg-slate-950 text-slate-500 opacity-65' : 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400')
+                                            : (isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200' : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700')
+                                        }`}
+                                      >
+                                        {tabItem.id === 'voice'
+                                          ? <Mic2 size={12} />
+                                          : tabItem.id === 'mix'
+                                            ? <Sliders size={12} />
+                                            : tabItem.id === 'cast'
+                                              ? <Bot size={12} />
+                                              : tabItem.id === 'queue'
+                                                ? <Clock size={12} />
+                                                : <Activity size={12} />}
+                                        {tabItem.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </SectionCard>
+		                            {studioRailTab === 'voice' && (
 	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -6414,8 +7320,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     <span className={`text-xs font-bold ${
                                                         settings.engine === 'KOKORO'
                                                           ? 'text-cyan-600'
-                                                          : settings.engine === 'GOOD'
-                                                            ? 'text-blue-600'
                                                           : settings.engine === 'NEURAL2'
                                                             ? 'text-amber-600'
                                                             : 'text-indigo-600'
@@ -6434,8 +7338,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                            <span className={`text-xs font-bold ${
                                                         settings.engine === 'KOKORO'
                                                           ? 'text-cyan-600'
-                                                          : settings.engine === 'GOOD'
-                                                            ? 'text-blue-600'
                                                           : settings.engine === 'NEURAL2'
                                                             ? 'text-amber-600'
                                                             : 'text-indigo-600'
@@ -6547,8 +7449,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </>
                                     )}
 		                            </SectionCard>
+                                  )}
 
 	                            {/* Studio Audio Mix */}
+                                  {studioRailTab === 'mix' && (
 		                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -6646,10 +7550,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </div>
                                     )}
 			                            </SectionCard>
-                                    </>
-                                    )}
+                                  )}
 
-                                    {isStudioMultiSpeakerEnabled && (
+                                    {studioRailTab === 'cast' && (
+                                      isStudioMultiSpeakerEnabled ? (
 		                            <>
 		                            {/* Cast & Crew */}
 	                            <SectionCard className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
@@ -6842,9 +7746,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     )}
 	                                </SectionCard>
                                     </>
+                                      ) : (
+                                        <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+                                          <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Cast &amp; Crew</h3>
+                                          <p className={`mt-2 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
+                                            Enable Multi-Speaker Mode from the editor toolbar to configure cast mappings.
+                                          </p>
+                                        </SectionCard>
+                                      )
                                     )}
 
-                                    {shouldShowStudioQueuePanel && (
+                                    {studioRailTab === 'queue' && shouldShowStudioQueuePanel && (
                                         <StudioQueuePanel
                                             queueState={studioQueueState}
                                             draftPartCount={studioQueueDraftPartCount}
@@ -6854,6 +7766,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             isGenerating={isGenerating}
                                             audioUrls={studioQueueAudioUrls}
                                             isDarkUi={isDarkUi}
+                                            visualVariant="embedded"
                                             isPhone={isPhone}
                                             isOpen={studioMobilePanels.queue}
                                             onToggleOpen={() => toggleStudioMobilePanel('queue')}
@@ -6864,10 +7777,30 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             onReorderItems={reorderStudioQueueItems}
                                         />
                                     )}
+                                    {studioRailTab === 'queue' && !shouldShowStudioQueuePanel && (
+                                      <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+                                        <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
+                                          <Clock size={13} /> Queue
+                                        </h3>
+                                        <p className={`mt-2 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
+                                          Queue panel appears after you turn Queue mode on in the Studio editor footer.
+                                        </p>
+                                      </SectionCard>
+                                    )}
 
                         </div>
                     </div>
                     </div>
+                )}
+
+                {activeTab === Tab.PODCAST && (
+                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading podcast workspace...</SectionCard>}>
+                      <PodcastTabContent
+                        mediaBackendUrl={mediaBackendUrl}
+                        resolvedTheme={resolvedTheme}
+                        onToast={showToast}
+                      />
+                    </Suspense>
                 )}
                 
                 {/* --- REDESIGNED CHARACTER TAB --- */}
@@ -6923,7 +7856,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                      <div className="flex-1">
                                                          <h3 className="font-bold text-lg text-gray-900 leading-tight">{char.name}</h3>
                                                          <span className="inline-block mt-1 px-2 py-0.5 rounded-md bg-gray-100 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
-                                                             {char.age || 'Adult'} • {char.gender || 'Unknown'}
+                                                             {joinUiFragments([char.age || 'Adult', char.gender || 'Unknown'])}
                                                          </span>
                                                      </div>
                                                      
@@ -7194,12 +8127,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               const isExpanded = expandedHistoryItemKey === itemKey;
                               const historyEngine: GenerationSettings['engine'] = item.engine === 'KOKORO'
                                 ? 'KOKORO'
-                                : item.engine === 'GOOD'
-                                  ? 'GOOD'
                                 : item.engine === 'NEURAL2'
                                   ? 'NEURAL2'
                                   : 'GEM';
-                              const voiceLabel = item.voiceName || 'AI Voice';
+                              const voiceLabel = resolveHistoryVoiceLabel(item);
                               const normalizedPreview = String(item.text || '').replace(/\s+/g, ' ').trim();
                               const previewText = normalizedPreview || 'No text preview.';
                               const charCount = Math.max(0, Number(item.chars || (item.text || '').length || 0));
@@ -7223,10 +8154,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         ? isDarkUi
                                           ? 'bg-emerald-500/20 text-emerald-200'
                                           : 'bg-emerald-100 text-emerald-700'
-                                        : historyEngine === 'GOOD'
-                                          ? isDarkUi
-                                            ? 'bg-blue-500/20 text-blue-100'
-                                            : 'bg-blue-100 text-blue-700'
                                         : historyEngine === 'NEURAL2'
                                           ? isDarkUi
                                             ? 'bg-amber-500/20 text-amber-100'
@@ -7296,6 +8223,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
 
+                {activeTab === Tab.LAB && (
+                    <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading Lab...</SectionCard>}>
+                      <LabTabContent
+                        resolvedTheme={resolvedTheme}
+                        onToast={showToast}
+                      />
+                    </Suspense>
+                )}
+
                 {activeTab === Tab.READER && (
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader...</SectionCard>}>
                       <ReaderTabContent
@@ -7318,720 +8254,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
                 
-                {activeTab === Tab.LAB && (
-                     <div className="max-w-2xl mx-auto bg-white p-4 sm:p-6 md:p-8 rounded-3xl shadow-sm border border-gray-200 animate-in fade-in">
-                         {/* ... Lab Content ... */}
-                         <div className="mb-8 flex justify-center">
-                             <div className="flex w-full flex-col rounded-xl bg-gray-100 p-1 sm:w-auto sm:flex-row">
-                                 <button onClick={() => setLabMode('CLONING')} className={`rounded-lg px-6 py-2 text-sm font-bold transition-all ${labMode === 'CLONING' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>Voice Cloning</button>
-                                 <button onClick={() => setLabMode('COVERS')} className={`rounded-lg px-6 py-2 text-sm font-bold transition-all ${labMode === 'COVERS' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}>AI Covers (Voice Transfer)</button>
-                             </div>
-                         </div>
-                         {labMode === 'CLONING' && (
-                             <div className="space-y-6">
-                                 <div className="text-center">
-                                     <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl mx-auto flex items-center justify-center mb-4"><Fingerprint size={32}/></div>
-                                     <h2 className="text-xl font-bold">Create a Voice Clone</h2>
-                                     <p className="text-sm text-gray-500 mt-1">Upload a sample to create a digital replica.</p>
-                                 </div>
-                                 
-                                 <div className="grid grid-cols-1 gap-4">
-                                     <div>
-                                         <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Voice Name</label>
-                                         <input 
-                                            value={cloneName} 
-                                            onChange={e => setCloneName(e.target.value)} 
-                                            className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
-                                            placeholder="e.g. My Custom Voice"
-                                         />
-                                     </div>
-                                     <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:bg-gray-50 transition-colors relative cursor-pointer">
-                                         <input type="file" accept="audio/*" onChange={(e) => setUploadVoiceFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                         {uploadVoiceFile ? (
-                                             <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
-                                                 <FileAudio size={20} /> {uploadVoiceFile.name}
-                                             </div>
-                                         ) : (
-                                             <div className="text-gray-400">
-                                                 <UploadCloud size={24} className="mx-auto mb-2"/>
-                                                 <p className="text-xs font-bold">Click to Upload Sample</p>
-                                                 <p className="text-[10px]">WAV or MP3, max 10MB</p>
-                                             </div>
-                                         )}
-                                     </div>
-                                 </div>
-
-                                 <Button fullWidth onClick={handleVoiceClone} disabled={isGenerating}>{isGenerating ? 'Cloning...' : 'Create Clone'}</Button>
-                                 
-                                 <div className="bg-blue-50 p-3 rounded-xl text-xs text-blue-800 flex items-start gap-2">
-                                     <Sparkles size={14} className="shrink-0 mt-0.5"/>
-                                     <span>
-	                                         <strong>Pro Tip:</strong> Voice samples help AI analysis and cast consistency, while playback uses {getEngineDisplayName('GEM')} or {getEngineDisplayName('KOKORO')} voices.
-	                                     </span>
-	                                 </div>
-                             </div>
-                         )}
-                         {labMode === 'COVERS' && (
-                             <div className="space-y-5">
-                                 <div className="text-center">
-                                     <div className="w-16 h-16 bg-purple-100 text-purple-600 rounded-2xl mx-auto flex items-center justify-center mb-4"><Music size={32}/></div>
-                                     <h2 className="text-xl font-bold">AI Covers (Voice Transfer)</h2>
-                                     <p className="text-sm text-gray-500 mt-2">Real voice transfer inference via local media backend.</p>
-                                 </div>
-
-                                 <div className="space-y-2">
-                                     <label className="text-xs font-bold text-gray-500 uppercase">Voice Model</label>
-                                     <select
-                                         value={settings.voiceModel || ''}
-                                         onChange={(e) => setSettings(s => ({ ...s, voiceModel: e.target.value }))}
-                                         className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                                     >
-                                         <option value="">Select model...</option>
-                                         {voiceTransferModels.map(modelName => (
-                                             <option key={modelName} value={modelName}>{modelName}</option>
-                                         ))}
-                                     </select>
-                                     <div>
-                                         <label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Pitch Shift ({llvcPitchShift})</label>
-                                         <input
-                                            type="range"
-                                            min={-12}
-                                            max={12}
-                                            step={1}
-                                            value={llvcPitchShift}
-                                            onChange={(e) => setLlvcPitchShift(parseInt(e.target.value, 10))}
-                                            className="w-full accent-purple-600"
-                                         />
-                                     </div>
-                                 </div>
-
-                                 <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center">
-                                     <input
-                                         id="voice-transfer-source-file-input"
-                                         type="file"
-                                         accept="audio/*,video/*"
-                                         onChange={(e) => setLlvcSourceFile(e.target.files?.[0] || null)}
-                                         className="hidden"
-                                     />
-                                     {!llvcSourceFile && (
-                                         <label htmlFor="voice-transfer-source-file-input" className="block cursor-pointer text-gray-400 hover:text-gray-500 transition-colors">
-                                             <UploadCloud size={24} className="mx-auto mb-2"/>
-                                             <p className="text-xs font-bold">Upload source audio or video</p>
-                                             <p className="text-[10px]">WAV/MP3/M4A/MP4/MOV/WebM</p>
-                                         </label>
-                                     )}
-                                     {llvcSourceFile && (
-                                         <div className="space-y-3">
-                                             <div className="flex items-center justify-center gap-2 text-purple-700 font-bold text-sm break-all">
-                                                 <FileAudio size={20} /> {llvcSourceFile.name}
-                                             </div>
-                                             <div className="flex flex-wrap items-center justify-center gap-2">
-                                                 <button
-                                                     type="button"
-                                                     onClick={handleToggleLlvcSourcePlayback}
-                                                     className="inline-flex items-center gap-1 rounded border border-purple-200 bg-purple-50 px-2.5 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-100"
-                                                 >
-                                                     {isLlvcSourcePlaying ? <Pause size={14} /> : <Play size={14} />}
-                                                     {isLlvcSourcePlaying ? 'Pause' : 'Play'}
-                                                 </button>
-                                                 <label
-                                                     htmlFor="voice-transfer-source-file-input"
-                                                     className="inline-flex cursor-pointer items-center gap-1 rounded border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                                                 >
-                                                     <UploadCloud size={14} />
-                                                     Replace
-                                                 </label>
-                                                 <button
-                                                     type="button"
-                                                     onClick={handleClearLlvcSourceFile}
-                                                     className="inline-flex items-center gap-1 rounded border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
-                                                 >
-                                                     <X size={14} />
-                                                     Clear
-                                                 </button>
-                                             </div>
-                                             {llvcSourcePreviewUrl && !isLlvcSourceVideo && (
-                                                 <audio
-                                                     ref={(node) => { llvcSourceMediaRef.current = node; }}
-                                                     src={llvcSourcePreviewUrl}
-                                                     controls
-                                                     onPlay={() => setIsLlvcSourcePlaying(true)}
-                                                     onPause={() => setIsLlvcSourcePlaying(false)}
-                                                     onEnded={() => setIsLlvcSourcePlaying(false)}
-                                                     className="w-full"
-                                                 />
-                                             )}
-                                             {llvcSourcePreviewUrl && isLlvcSourceVideo && (
-                                                 <video
-                                                     ref={(node) => { llvcSourceMediaRef.current = node; }}
-                                                     src={llvcSourcePreviewUrl}
-                                                     controls
-                                                     onPlay={() => setIsLlvcSourcePlaying(true)}
-                                                     onPause={() => setIsLlvcSourcePlaying(false)}
-                                                     onEnded={() => setIsLlvcSourcePlaying(false)}
-                                                     className="mx-auto max-h-44 w-full rounded-lg bg-black"
-                                                 />
-                                             )}
-                                         </div>
-                                     )}
-                                 </div>
-
-                                 <div className="space-y-2 rounded-xl border border-gray-200 bg-gray-50 p-3">
-                                     <div className="text-xs font-bold text-gray-500 uppercase">Advanced Voice Transfer Options</div>
-                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                         <label className="space-y-1 text-left">
-                                             <span className="text-[10px] font-semibold uppercase text-gray-500">Preset</span>
-                                             <select
-                                                 value={llvcPreset}
-                                                 onChange={(e) => setLlvcPreset(e.target.value as 'tts_realtime')}
-                                                 className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-xs"
-                                             >
-                                                 <option value="tts_realtime">tts_realtime</option>
-                                             </select>
-                                         </label>
-                                         <label className="space-y-1 text-left">
-                                             <span className="text-[10px] font-semibold uppercase text-gray-500">F0 Method</span>
-                                             <select
-                                                 value={llvcF0Method}
-                                                 onChange={(e) => setLlvcF0Method(e.target.value as 'rmvpe' | 'harvest' | 'crepe' | 'pm')}
-                                                 className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-xs"
-                                             >
-                                                 <option value="rmvpe">rmvpe</option>
-                                                 <option value="harvest">harvest</option>
-                                                 <option value="crepe">crepe</option>
-                                                 <option value="pm">pm</option>
-                                             </select>
-                                         </label>
-                                     </div>
-                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                         <label className="space-y-1 text-left">
-                                             <span className="text-[10px] font-semibold uppercase text-gray-500">Index Rate ({llvcIndexRate.toFixed(2)})</span>
-                                             <input
-                                                 type="range"
-                                                 min={0}
-                                                 max={1}
-                                                 step={0.01}
-                                                 value={llvcIndexRate}
-                                                 onChange={(e) => setLlvcIndexRate(Number(e.target.value))}
-                                                 className="w-full accent-indigo-600"
-                                             />
-                                         </label>
-                                         <label className="space-y-1 text-left">
-                                             <span className="text-[10px] font-semibold uppercase text-gray-500">Protect ({llvcProtect.toFixed(2)})</span>
-                                             <input
-                                                 type="range"
-                                                 min={0}
-                                                 max={0.5}
-                                                 step={0.01}
-                                                 value={llvcProtect}
-                                                 onChange={(e) => setLlvcProtect(Number(e.target.value))}
-                                                 className="w-full accent-indigo-600"
-                                             />
-                                         </label>
-                                         <label className="space-y-1 text-left">
-                                             <span className="text-[10px] font-semibold uppercase text-gray-500">RMS Mix ({llvcRmsMixRate.toFixed(2)})</span>
-                                             <input
-                                                 type="range"
-                                                 min={0}
-                                                 max={1}
-                                                 step={0.01}
-                                                 value={llvcRmsMixRate}
-                                                 onChange={(e) => setLlvcRmsMixRate(Number(e.target.value))}
-                                                 className="w-full accent-indigo-600"
-                                             />
-                                         </label>
-                                         <label className="space-y-1 text-left">
-                                             <span className="text-[10px] font-semibold uppercase text-gray-500">Filter Radius ({llvcFilterRadius})</span>
-                                             <input
-                                                 type="range"
-                                                 min={0}
-                                                 max={7}
-                                                 step={1}
-                                                 value={llvcFilterRadius}
-                                                 onChange={(e) => setLlvcFilterRadius(Number.parseInt(e.target.value, 10))}
-                                                 className="w-full accent-indigo-600"
-                                             />
-                                         </label>
-                                     </div>
-                                 </div>
-
-                                 <Button fullWidth onClick={handleGenerateLlvcCover} disabled={isGeneratingLlvcCover || !llvcSourceFile || !settings.voiceModel}>
-                                     {isGeneratingLlvcCover ? <><Loader2 className="animate-spin mr-2" /> Converting...</> : 'Generate Voice Transfer'}
-                                 </Button>
-
-                                 {llvcCoverUrl && (
-                                     <div className="p-4 rounded-xl border border-purple-200 bg-purple-50 space-y-3">
-                                         <audio controls src={llvcCoverUrl} className="w-full" />
-                                         <a
-                                            href={llvcCoverUrl}
-                                            download={`voice_transfer_${settings.voiceModel || 'output'}.wav`}
-                                            className="inline-flex items-center gap-2 text-xs font-bold text-purple-700 hover:text-purple-900"
-                                         >
-                                            <Download size={14} /> Download cover WAV
-                                         </a>
-                                     </div>
-                                 )}
-                             </div>
-                         )}
-                     </div>
-                )}
-
-                {activeTab === Tab.DUBBING && (
-                    <SimplifiedDubbingTab
-                      isDarkUi={isDarkUi}
-                      mediaBackendUrl={mediaBackendUrl}
-                      voiceOptions={runtimeVoiceCatalogs.GEM.length > 0 ? runtimeVoiceCatalogs.GEM : getStaticVoicesForEngine('GEM')}
-                      initialTargetLanguage={targetLang}
-                      onToast={showToast}
-                    />
-                )}
-
-                {LEGACY_DUBBING_UI_ENABLED && activeTab === Tab.DUBBING && (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 xl:gap-6 animate-in fade-in">
-                        {/* ... Dubbing UI ... */}
-                        <div className="space-y-4">
-                             {/* ... Video Player ... */}
-                             <div className={`rounded-3xl overflow-hidden flex flex-col h-[clamp(14rem,32vh,26rem)] sm:h-[420px] xl:h-[500px] relative group ${
-                               isDarkUi
-                                 ? 'bg-slate-950 border border-slate-700/80 shadow-sm'
-                                 : 'bg-white border border-slate-200/90 shadow-[0_12px_34px_rgba(15,23,42,0.08)]'
-                             }`}>
-                                {videoUrl ? (
-                                    <div className={`relative w-full h-full flex flex-col justify-center ${
-                                      isDarkUi
-                                        ? 'bg-gradient-to-br from-slate-950 via-indigo-950/35 to-slate-900'
-                                        : 'bg-gradient-to-br from-slate-100 via-indigo-100/30 to-slate-50'
-                                    }`}>
-                                        <video ref={videoRef} src={videoUrl} className="max-h-full max-w-full mx-auto object-contain" controls={false} />
-                                        <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col gap-3 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 opacity-100 transition-opacity xl:opacity-0 xl:group-hover:opacity-100">
-                                            <div className="flex justify-center items-center gap-6">
-                                                <button onClick={toggleDubPlayback} className={`p-4 rounded-full text-white transition-all transform hover:scale-110 bg-indigo-600 shadow-lg shadow-indigo-500/50`}>
-                                                    {isPlayingDub ? <Pause size={28} fill="currentColor"/> : <Play size={28} fill="currentColor" className="ml-1"/>}
-                                                </button>
-                                            </div>
-                                            {dubAudioUrl && (
-                                                <div className="bg-gray-900/80 rounded-xl p-3 flex items-center gap-4 backdrop-blur-md border border-white/10">
-                                                     <div className="flex-1">
-                                                         <div className="text-[10px] text-gray-300 font-bold mb-1">Dub Track</div>
-                                                         <input
-                                                             type="range"
-                                                             min={0}
-                                                             max={1}
-                                                             step={0.01}
-                                                             value={dubVolume}
-                                                             onChange={(e) => setDubVolume(parseFloat(e.target.value))}
-                                                             className="w-full accent-indigo-500"
-                                                         />
-                                                     </div>
-                                                     <div className="flex-1">
-                                                         <div className="text-[10px] text-gray-300 font-bold mb-1">Original Audio</div>
-                                                         <input
-                                                             type="range"
-                                                             min={0}
-                                                             max={1}
-                                                             step={0.01}
-                                                             value={videoVolume}
-                                                             onChange={(e) => setVideoVolume(parseFloat(e.target.value))}
-                                                             className="w-full accent-cyan-500"
-                                                         />
-                                                     </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                        {dubAudioUrl && <audio ref={dubAudioRef} src={dubAudioUrl} className="hidden" />}
-                                    </div>
-                                ) : (
-                                    <div className={`w-full h-full flex flex-col items-center justify-center p-8 ${
-                                      isDarkUi
-                                        ? 'text-slate-300 bg-slate-900'
-                                        : 'text-slate-500 bg-gradient-to-br from-slate-50 to-indigo-50/60'
-                                    }`}>
-                                        <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-4 ${
-                                          isDarkUi ? 'bg-slate-800' : 'bg-slate-200/70'
-                                        }`}><UploadCloud size={32} className={isDarkUi ? 'text-indigo-400' : 'text-indigo-500'}/></div>
-                                        <p className={`font-bold ${isDarkUi ? 'text-slate-200' : 'text-slate-700'}`}>Upload Video Source</p>
-                                        <div className="relative group/btn mt-6"><input type="file" accept="video/*" multiple onChange={handleVideoUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10" /><Button variant="secondary">Select Files</Button></div>
-                                    </div>
-                                )}
-                            </div>
-                            {dubbingJobResultUrl && dubbingUiState.phase === 'done' && (
-                                <div className={`rounded-2xl p-4 flex flex-wrap items-center gap-3 ${
-                                  isDarkUi
-                                    ? 'bg-slate-900/75 border border-slate-700 text-slate-200'
-                                    : 'bg-white border border-gray-200 text-slate-700'
-                                }`}>
-                                    <a
-                                        href={dubbingJobResultUrl}
-                                        download={renderedDubVideoUrl ? 'dubbed_video_final.mp4' : 'dubbed_audio_final.wav'}
-                                        className={`text-xs font-bold inline-flex items-center gap-1.5 ${
-                                          isDarkUi ? 'text-indigo-300 hover:text-indigo-200' : 'text-indigo-600 hover:text-indigo-800'
-                                        }`}
-                                    >
-                                        <Download size={12} /> Download Output
-                                    </a>
-                                    {dubbingReportUrl && (
-                                        <a
-                                            href={dubbingReportUrl}
-                                            download="dubbing_report.json"
-                                            className={`text-xs font-bold inline-flex items-center gap-1.5 ${
-                                              isDarkUi ? 'text-emerald-300 hover:text-emerald-200' : 'text-emerald-600 hover:text-emerald-800'
-                                            }`}
-                                        >
-                                            <Download size={12} /> Download Report
-                                        </a>
-                                    )}
-                                </div>
-                            )}
-                            {/* ... Detected Cast Dubbing ... */}
-                        </div>
-
-                        {/* Right Column: Scripting & Generation */}
-                        <div className="space-y-4 h-full flex flex-col">
-                                 <SectionCard className={`vf-dub-status rounded-2xl border p-4 ${dubbingStatusAppearance.tone}`}>
-                                     <div className="flex items-start justify-between gap-2">
-                                         <div className="min-w-0 flex items-start gap-2.5">
-                                             <span className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-full border ${
-                                               isDarkUi ? 'border-indigo-400/40 bg-indigo-500/15' : 'border-indigo-200 bg-indigo-100/70'
-                                             }`}>
-                                               {dubbingUiState.phase === 'running'
-                                                 ? <Loader2 size={13} className="animate-spin" />
-                                                 : <Activity size={13} />}
-                                             </span>
-                                             <div className="min-w-0">
-                                                 <p className="text-[11px] font-black uppercase tracking-widest opacity-80">Dubbing</p>
-                                                 <p className="text-sm font-semibold leading-tight">{dubbingStatusAppearance.title}</p>
-                                                 <p className={`mt-1 text-[11px] leading-tight ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>{dubbingStatusAppearance.subtitle}</p>
-                                             </div>
-                                         </div>
-                                         <span className="shrink-0 rounded-full border border-current/20 px-2 py-0.5 text-[10px] font-bold uppercase">
-                                           {dubbingStatusAppearance.badge}
-                                         </span>
-                                     </div>
-                                     <div className={`mt-3 h-1.5 w-full rounded-full ${isDarkUi ? 'bg-white/10' : 'bg-black/10'}`}>
-                                       <div
-                                         className={`vf-dub-status__fill h-full rounded-full transition-all duration-300 ${dubbingStatusAppearance.bar} ${dubbingUiState.phase === 'running' ? 'vf-dub-status__fill--running' : ''}`}
-                                         style={{ width: `${dubbingStatusAppearance.progressPct}%` }}
-                                       />
-                                     </div>
-                                     {dubbingUiState.phase === 'error' && dubbingUiState.error && (
-                                       <p className={`mt-2 rounded-lg border px-2 py-1 text-[10px] font-semibold ${
-                                         isDarkUi ? 'border-rose-400/40 bg-rose-500/15 text-rose-100' : 'border-red-200/70 bg-red-100/70 text-red-800'
-                                       }`}>
-                                         {dubbingUiState.error}
-                                       </p>
-                                      )}
-                                  </SectionCard>
-                                 <SectionCard className={`rounded-2xl border ${isDarkUi ? 'border-slate-700 bg-slate-900/70 text-slate-200' : 'border-slate-200 bg-white text-slate-700'}`}>
-                                     <button
-                                       type="button"
-                                       onClick={() => setIsVideoPipelineGuideOpen((prev) => !prev)}
-                                       className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left"
-                                     >
-                                       <div>
-                                         <p className="text-xs font-black uppercase tracking-wide opacity-80">Guide</p>
-                                         <p className="text-sm font-semibold">Video Pipeline (2026)</p>
-                                       </div>
-                                       {isVideoPipelineGuideOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                     </button>
-                                     {isVideoPipelineGuideOpen && (
-                                       <div className={`border-t px-4 py-3 space-y-3 text-xs leading-relaxed ${isDarkUi ? 'border-slate-700 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
-                                         <p>
-                                           The 2026 dubbing stack uses a hybrid architecture: Gemini orchestrates content, timing, and emotion while W-Okada voice transfer applies voice identity with CPU-first conversion.
-                                         </p>
-                                         <div className="space-y-2">
-                                           {VIDEO_PIPELINE_2026_PHASES.map((phase) => (
-                                             <div key={phase.title} className={`rounded-xl border p-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-950/40' : 'border-slate-200 bg-slate-50'}`}>
-                                               <p className={`font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{phase.title}</p>
-                                               <p className="mt-1">{phase.body}</p>
-                                             </div>
-                                           ))}
-                                         </div>
-                                         <div className="overflow-x-auto rounded-xl border border-current/20">
-                                           <table className="min-w-full text-left text-[11px]">
-                                             <thead className={isDarkUi ? 'bg-slate-800/80 text-slate-200' : 'bg-slate-100 text-slate-700'}>
-                                               <tr>
-                                                 <th className="px-2.5 py-2 font-semibold">Step</th>
-                                                 <th className="px-2.5 py-2 font-semibold">Tool/Model</th>
-                                                 <th className="px-2.5 py-2 font-semibold">Modality</th>
-                                                 <th className="px-2.5 py-2 font-semibold">Accuracy Benefit</th>
-                                               </tr>
-                                             </thead>
-                                             <tbody>
-                                               {VIDEO_PIPELINE_2026_SUMMARY_ROWS.map((row) => (
-                                                 <tr key={row.step} className={isDarkUi ? 'border-t border-slate-800' : 'border-t border-slate-200'}>
-                                                   <td className="px-2.5 py-2">{row.step}</td>
-                                                   <td className="px-2.5 py-2">{row.tool}</td>
-                                                   <td className="px-2.5 py-2">{row.modality}</td>
-                                                   <td className="px-2.5 py-2">{row.benefit}</td>
-                                                 </tr>
-                                               ))}
-                                             </tbody>
-                                           </table>
-                                         </div>
-                                         <div className={`rounded-lg border px-3 py-2 ${isDarkUi ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-800'}`}>
-                                           Pro-tip: use thinking level low for straightforward single-speaker segments, and switch to high for complex multi-speaker overlap scenes.
-                                         </div>
-                                       </div>
-                                     )}
-                                 </SectionCard>
-                                 <SectionCard className={`rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[420px] ${isDarkUi ? 'bg-slate-950/70 border-slate-700' : ''}`}>
-                                 <div className={`px-4 py-3 border-b space-y-2.5 ${isDarkUi ? 'border-slate-700 bg-slate-900/70' : 'border-gray-100 bg-gray-50/70'}`}>
-                                      <div className="flex flex-wrap items-center gap-2">
-                                          <div className="relative">
-                                              <input
-                                                type="file"
-                                                accept="video/*"
-                                                multiple
-                                                onChange={handleVideoUpload}
-                                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                                                title="Add one or more videos to queue"
-                                              />
-                                              <button
-                                                type="button"
-                                                className={`h-8 px-3 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors ${
-                                                  isDarkUi
-                                                    ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                    : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                                }`}
-                                              >
-                                                <Plus size={14} />
-                                                <span>Add Videos</span>
-                                              </button>
-                                          </div>
-                                          <div className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 ${
-                                            isDarkUi ? 'border-slate-600 bg-slate-800' : 'border-gray-200 bg-white'
-                                          }`}>
-                                              <Film size={12} className={isDarkUi ? 'text-slate-400' : 'text-gray-500'} />
-                                              <select
-                                                  value={selectedDubbingClipId}
-                                                  onChange={(e) => setSelectedDubbingClipId(e.target.value)}
-                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-0 w-full sm:min-w-[11rem] sm:w-auto vf-theme-select ${
-                                                    isDarkUi ? 'text-slate-200' : 'text-gray-700'
-                                                  }`}
-                                                  title="Active clip"
-                                              >
-                                                  <option value="">Select active clip</option>
-                                                  {dubbingClips.map((clip, index) => (
-                                                      <option key={clip.id} value={clip.id}>
-                                                          {index + 1}. {clip.file.name} ({formatClipDuration(clip.trimOutMs - clip.trimInMs)})
-                                                      </option>
-                                                  ))}
-                                              </select>
-                                          </div>
-                                          <div className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 ${
-                                            isDarkUi ? 'border-slate-600 bg-slate-800' : 'border-gray-200 bg-white'
-                                          }`}>
-                                              <Type size={12} className={isDarkUi ? 'text-slate-400' : 'text-gray-500'} />
-                                              <select
-                                                  value={settings.dubbingSourceLanguage || 'auto'}
-                                                  onChange={(e) => setSettings((s) => ({ ...s, dubbingSourceLanguage: e.target.value }))}
-                                                  className={`h-7 bg-transparent text-[11px] font-semibold outline-none min-w-0 w-full sm:min-w-[8.25rem] sm:w-auto vf-theme-select ${
-                                                    isDarkUi ? 'text-slate-200' : 'text-gray-700'
-                                                  }`}
-                                                  title="Source language hint for transcription"
-                                              >
-                                                  {DUBBING_SOURCE_LANGUAGE_OPTIONS.map((langOption) => (
-                                                      <option key={langOption.code} value={langOption.code}>{langOption.label}</option>
-                                                  ))}
-                                              </select>
-                                          </div>
-                                          <button
-                                            onClick={handleGenerateDub}
-                                            disabled={isGenerating || dubbingClips.length === 0}
-                                            className={`h-8 text-[11px] font-bold px-3 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition-colors ${
-                                              isDarkUi
-                                                ? 'bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30 border border-indigo-400/40'
-                                                : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 shadow-sm shadow-indigo-200/50'
-                                            }`}
-                                            title="One-click AI dubbing for queue"
-                                          >
-                                            {isGenerating ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
-                                            <span>AI Dub</span>
-                                          </button>
-                                          <button
-                                            onClick={() => handleTranslateVideo('transcribe')}
-                                            disabled={!selectedDubbingClip || isProcessingVideo}
-                                            className={`h-8 px-3 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors disabled:opacity-60 ${
-                                              isDarkUi
-                                                ? 'text-slate-200 hover:text-cyan-200 hover:bg-cyan-500/10 border-slate-600 bg-slate-800'
-                                                : 'text-gray-700 hover:text-indigo-700 hover:bg-indigo-50 border-gray-200 bg-white'
-                                            }`}
-                                            title="Transcribe active clip"
-                                          >
-                                              {isProcessingVideo ? <Loader2 size={14} className="animate-spin"/> : <FileText size={14}/>}
-                                              <span>Transcribe</span>
-                                          </button>
-                                          <button
-                                            onClick={() => { void handleRemoveSelectedClip(); }}
-                                            disabled={!selectedDubbingClip}
-                                            className={`h-8 px-2.5 text-[11px] font-bold rounded-lg border inline-flex items-center gap-1.5 transition-colors disabled:opacity-60 ${
-                                              isDarkUi
-                                                ? 'text-rose-200 hover:text-rose-100 hover:bg-rose-500/10 border-rose-400/35 bg-rose-500/5'
-                                                : 'text-rose-700 hover:text-rose-800 hover:bg-rose-50 border-rose-200 bg-white'
-                                            }`}
-                                            title="Remove active clip from queue"
-                                          >
-                                            <Trash2 size={14} />
-                                            <span>Remove</span>
-                                          </button>
-                                      </div>
-
-                                      <button
-                                        type="button"
-                                        onClick={() => setIsDubbingAdvancedOpen((prev) => !prev)}
-                                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-[11px] font-bold ${
-                                          isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-200' : 'border-slate-200 bg-white text-slate-700'
-                                        }`}
-                                      >
-                                        <span>Advanced</span>
-                                        {isDubbingAdvancedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                                      </button>
-
-                                      {isDubbingAdvancedOpen && (
-                                        <div className={`space-y-2 rounded-xl border p-2.5 ${
-                                          isDarkUi ? 'border-slate-700 bg-slate-950/40' : 'border-slate-200 bg-slate-50'
-                                        }`}>
-                                          <div className="flex flex-wrap items-center gap-1.5">
-                                            <span className={`text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Script</span>
-                                            <button onClick={() => handleDubbingEditorTool('clean')} className="h-7 px-2 text-[10px] font-semibold rounded border">Clean</button>
-                                            <button onClick={() => handleDubbingEditorTool('speakerize')} className="h-7 px-2 text-[10px] font-semibold rounded border">Speakerize</button>
-                                            <button onClick={() => handleDubbingEditorTool('dedupe')} className="h-7 px-2 text-[10px] font-semibold rounded border">Dedupe</button>
-                                            <button onClick={() => handleDubbingEditorTool('compact')} className="h-7 px-2 text-[10px] font-semibold rounded border">Compact</button>
-                                          </div>
-                                          <div className="flex flex-wrap items-center gap-1.5">
-                                            <span className={`text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Timeline</span>
-                                            <button onClick={() => handleDubbingTimelineTool('cut')} className="h-7 px-2 text-[10px] font-semibold rounded border">Cut</button>
-                                            <button onClick={() => handleDubbingTimelineTool('copy')} className="h-7 px-2 text-[10px] font-semibold rounded border">Copy</button>
-                                            <button onClick={() => handleDubbingTimelineTool('paste')} className="h-7 px-2 text-[10px] font-semibold rounded border">Paste</button>
-                                            <button onClick={() => handleDubbingTimelineTool('split')} className="h-7 px-2 text-[10px] font-semibold rounded border">Split</button>
-                                            <button onClick={() => handleDubbingTimelineTool('trim_in')} className="h-7 px-2 text-[10px] font-semibold rounded border">Trim In</button>
-                                            <button onClick={() => handleDubbingTimelineTool('trim_out')} className="h-7 px-2 text-[10px] font-semibold rounded border">Trim Out</button>
-                                            <button onClick={() => handleDubbingTimelineTool('layer')} className="h-7 px-2 text-[10px] font-semibold rounded border">Move Layer</button>
-                                            <button onClick={() => handleDubbingTimelineTool('remove')} className="h-7 px-2 text-[10px] font-semibold rounded border">Remove</button>
-                                            <button onClick={handleTimelineUndo} className="h-7 px-2 text-[10px] font-semibold rounded border">Undo</button>
-                                            <button onClick={handleTimelineRedo} className="h-7 px-2 text-[10px] font-semibold rounded border">Redo</button>
-                                          </div>
-                                          <div className="flex flex-wrap items-center gap-1.5">
-                                            <span className={`text-[10px] font-black uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Queue</span>
-                                            <button onClick={() => handleRetryClip(selectedDubbingClipId)} className="h-7 px-2 text-[10px] font-semibold rounded border" disabled={!selectedDubbingClipId}>Retry</button>
-                                            <button onClick={() => { void handleRemoveSelectedClip(); }} className="h-7 px-2 text-[10px] font-semibold rounded border" disabled={!selectedDubbingClipId}>Remove Selected</button>
-                                            <button onClick={handleRemoveCompletedQueue} className="h-7 px-2 text-[10px] font-semibold rounded border">Remove Completed</button>
-                                            <button onClick={() => { void handleClearDubbingQueue(); }} className="h-7 px-2 text-[10px] font-semibold rounded border">Remove All</button>
-                                            <div className={`flex items-center gap-1 rounded border px-1.5 ${isDarkUi ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'}`}>
-                                              <span className="text-[10px] font-semibold">CPU</span>
-                                              <select
-                                                value={dubbingCpuProfile}
-                                                onChange={(e) => setDubbingCpuProfile(e.target.value as CpuDubbingProfile)}
-                                                className="h-6 bg-transparent text-[10px] font-semibold outline-none"
-                                              >
-                                                {Object.entries(DUBBING_CPU_PROFILE_LABELS).map(([value, label]) => (
-                                                  <option key={value} value={value}>{label}</option>
-                                                ))}
-                                              </select>
-                                            </div>
-                                          </div>
-                                          {selectedDubbingClip && (
-                                            <div className="space-y-1">
-                                              <div className="text-[10px] font-semibold opacity-80">Playhead / Trim</div>
-                                              <input
-                                                type="range"
-                                                min={selectedDubbingClip.trimInMs}
-                                                max={selectedDubbingClip.trimOutMs}
-                                                value={Math.max(selectedDubbingClip.trimInMs, Math.min(dubbingPlayheadMs, selectedDubbingClip.trimOutMs))}
-                                                onChange={(e) => setDubbingPlayheadMs(Number(e.target.value))}
-                                                className="w-full accent-indigo-500"
-                                              />
-                                            </div>
-                                          )}
-                                          <div className="space-y-1">
-                                            <div className="text-[10px] font-semibold opacity-80">Mini Timeline</div>
-                                            {DUBBING_TIMELINE_LAYERS.map((layer) => (
-                                              <div key={layer} className="flex flex-wrap items-center gap-1">
-                                                <span className="text-[10px] font-bold">{layer}</span>
-                                                {dubbingClips.filter((clip) => clip.layer === layer).map((clip, index) => (
-                                                  <div key={clip.id} className="inline-flex items-center gap-1">
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => setSelectedDubbingClipId(clip.id)}
-                                                      className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
-                                                        clip.id === selectedDubbingClipId
-                                                          ? 'border-indigo-400 bg-indigo-500/20 text-indigo-100'
-                                                          : isDarkUi
-                                                            ? 'border-slate-700 bg-slate-900 text-slate-200'
-                                                            : 'border-slate-200 bg-white text-slate-700'
-                                                      }`}
-                                                    >
-                                                      {index + 1}. {clip.file.name}
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => { void handleRemoveClipFromQueue(clip.id); }}
-                                                      className={`h-5 w-5 rounded border text-[10px] font-bold ${
-                                                        isDarkUi
-                                                          ? 'border-rose-400/35 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-                                                          : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-                                                      }`}
-                                                      title="Remove clip"
-                                                    >
-                                                      x
-                                                    </button>
-                                                  </div>
-                                                ))}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      )}
-                                 </div>
-                                 
-                                 <DubbingTranslateBar
-                                     targetLang={targetLang}
-                                     isBusy={isAiWriting || isProcessingVideo}
-                                     hasDubScript={Boolean(dubScript.trim())}
-                                     hasVideoFile={Boolean(videoFile)}
-                                     isDarkUi={isDarkUi}
-                                     languages={LANGUAGES}
-                                     onTargetLang={setTargetLang}
-                                     onTranslateText={() => { void handleTranslate(); }}
-                                     onTranslateAudio={() => { void handleTranslateVideo('translate'); }}
-                                  />
-
-                                  <textarea 
-                                    value={dubScript} 
-                                    onChange={(e) => setDubScript(e.target.value)} 
-                                    placeholder="Enter script or transcribe video..." 
-                                    className={`flex-1 p-5 sm:p-6 resize-none outline-none text-sm sm:text-base leading-relaxed font-mono bg-transparent custom-scrollbar ${
-                                      isDarkUi ? 'text-slate-200 placeholder:text-slate-400' : 'text-gray-700'
-                                    }`} 
-                                 />
-                                  
-                                  <div className={`px-4 py-3 border-t text-[11px] font-semibold flex flex-wrap items-center justify-between gap-2 ${
-                                    isDarkUi ? 'bg-slate-900/75 border-slate-700 text-slate-300' : 'bg-gray-50 border-gray-100 text-gray-600'
-                                  }`}>
-                                      <span>
-                                        Queue: {dubbingClips.length} clip{dubbingClips.length === 1 ? '' : 's'}
-                                      </span>
-                                      <span>
-                                        Completed: {dubbingClips.filter((clip) => clip.status === 'completed').length}
-                                      </span>
-                                  </div>
-                              </SectionCard>
-                        </div>
-                    </div>
-                )}
-
                 {usesPhoneStudioDock && (
-                    <div className="sticky bottom-0 z-[47] mx-auto w-full max-w-[1140px] px-1 pt-4">
-                        <div className="mx-auto w-full max-w-xl pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
-                            <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
-                                <MorphingGenerateButton
-                                  onClick={handleGenerate}
-                                  onCancel={handleCancelGeneration}
-                                  disabled={!text.trim()}
-                                  isGenerating={isGenerating}
-                                  progress={progress}
-                                  stage=""
-                                />
+                    <div
+                        className="fixed inset-x-0 bottom-0 z-[47] px-2 pointer-events-none"
+                        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.55rem)' }}
+                    >
+                        <div className="mx-auto w-full max-w-[1140px]">
+                            <div className="mx-auto w-full max-w-xl pointer-events-auto">
+                                <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-xl">
+                                    <MorphingGenerateButton
+                                      onClick={handleGenerate}
+                                      onCancel={handleCancelGeneration}
+                                      disabled={!text.trim()}
+                                      isGenerating={isGenerating}
+                                      progress={progress}
+                                      stage=""
+                                    />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -8057,15 +8296,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
+      {!shouldHideAssistantForLab && isChatOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-transparent"
+          aria-label="Close assistant by clicking outside"
+          onClick={() => setIsChatOpen(false)}
+        />
+      )}
+
       {/* Floating AI Assistant */}
+      {shouldRenderFloatingAssistant ? (
       <div
-        className={`fixed right-4 xl:right-6 z-50 flex flex-col items-end gap-4 ${studioAssistantBottomClass}`}
+        className={`fixed z-50 flex flex-col gap-3 ${studioAssistantPositionClass} ${studioAssistantBottomClass}`}
       >
           {isChatOpen && (
-              <div className="w-[min(20rem,calc(100vw-1.5rem))] h-[min(28rem,calc(100vh-8rem))] bg-white rounded-2xl shadow-2xl border border-white/50 backdrop-blur-xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300 relative z-50 ring-1 ring-gray-100">
-                  {/* ... Chat UI ... */}
+              <div className={`${assistantPanelSizeClass} rounded-2xl border backdrop-blur-xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300 relative z-50 ring-1 ${
+                  isDarkUi
+                      ? 'bg-slate-950/95 border-slate-700/80 ring-slate-700/45 shadow-2xl shadow-black/60'
+                      : 'bg-white/95 border-white/70 ring-gray-200/80 shadow-2xl shadow-indigo-200/65'
+              }`}>
                   <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-3 flex items-center justify-between text-white relative overflow-hidden">
-                      <div className="flex items-center gap-2 font-bold text-sm relative z-10"><Sparkles size={16} className="text-yellow-300"/> Creative Assistant</div>
+                      <div className="flex items-center gap-2 font-bold text-sm relative z-10">
+                        <Sparkles size={16} className="text-yellow-300"/>
+                        Creative Assistant
+                      </div>
                       <button
                         onClick={() => setIsChatOpen(false)}
                         className="hover:bg-white/20 p-1 rounded-full relative z-10"
@@ -8074,31 +8329,155 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         <X size={14}/>
                       </button>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/80 custom-scrollbar">
+
+                  <div className={`px-3 py-2 border-b ${isDarkUi ? 'border-slate-700/70 bg-slate-900/60' : 'border-gray-200 bg-slate-50/70'}`}>
+                      <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setAssistantAutoApply((prev) => !prev)}
+                            className={`rounded-lg border px-2 py-1 text-[10px] font-bold transition-colors ${
+                                assistantAutoApply
+                                    ? isDarkUi
+                                        ? 'border-cyan-500/45 bg-cyan-500/12 text-cyan-200'
+                                        : 'border-cyan-300 bg-cyan-50 text-cyan-700'
+                                    : isDarkUi
+                                        ? 'border-slate-700 bg-slate-900 text-slate-300'
+                                        : 'border-gray-200 bg-white text-gray-600'
+                            }`}
+                          >
+                            {assistantAutoApply ? 'Auto Apply On' : 'Auto Apply Off'}
+                          </button>
+                          <div className={`inline-flex rounded-lg border p-0.5 ${
+                              isDarkUi ? 'border-slate-700 bg-slate-900' : 'border-gray-200 bg-white'
+                          }`}>
+                              <button
+                                type="button"
+                                onClick={() => setAssistantApplyMode('append')}
+                                className={`rounded-md px-2 py-1 text-[10px] font-bold ${
+                                    assistantApplyMode === 'append'
+                                        ? 'bg-indigo-600 text-white'
+                                        : isDarkUi
+                                            ? 'text-slate-300'
+                                            : 'text-gray-600'
+                                }`}
+                              >
+                                Append
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setAssistantApplyMode('replace')}
+                                className={`rounded-md px-2 py-1 text-[10px] font-bold ${
+                                    assistantApplyMode === 'replace'
+                                        ? 'bg-indigo-600 text-white'
+                                        : isDarkUi
+                                            ? 'text-slate-300'
+                                            : 'text-gray-600'
+                                }`}
+                              >
+                                Replace
+                              </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleApplyLastAssistantDraft}
+                            className={`rounded-lg border px-2 py-1 text-[10px] font-bold transition-colors ${
+                                isDarkUi
+                                    ? 'border-slate-700 bg-slate-900 text-slate-200 hover:border-indigo-500/45 hover:text-indigo-200'
+                                    : 'border-gray-200 bg-white text-gray-700 hover:border-indigo-200 hover:text-indigo-700'
+                            }`}
+                          >
+                            Paste Last
+                          </button>
+                      </div>
+                  </div>
+
+                  <div className={`px-3 py-2 border-b ${isDarkUi ? 'border-slate-700/70 bg-slate-900/55' : 'border-gray-200 bg-white/70'}`}>
+                      <div className="flex flex-wrap gap-1.5">
+                          {assistantQuickActions.map((action) => (
+                              <button
+                                key={action.id}
+                                type="button"
+                                onClick={() => handleAssistantQuickAction(action)}
+                                disabled={isChatLoading}
+                                className={`rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors disabled:opacity-55 ${
+                                    isDarkUi
+                                        ? 'border-slate-700 bg-slate-900/80 text-slate-200 hover:border-indigo-500/50 hover:text-indigo-200'
+                                        : 'border-gray-200 bg-white text-gray-700 hover:border-indigo-200 hover:text-indigo-700'
+                                }`}
+                              >
+                                {action.label}
+                              </button>
+                          ))}
+                      </div>
+                  </div>
+
+                  <div className={`flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar ${
+                      isDarkUi ? 'bg-slate-950/70' : 'bg-slate-50/80'
+                  }`}>
                       {chatHistory.map((msg, i) => (
                           <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                              <div className={`max-w-[90%] p-3 rounded-2xl text-xs leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white border border-gray-200 text-gray-700 rounded-bl-none'}`}>{msg.text}</div>
+                              <div className={`max-w-[92%] p-2.5 rounded-2xl text-xs leading-relaxed shadow-sm ${
+                                  msg.role === 'user'
+                                      ? 'bg-indigo-600 text-white rounded-br-none'
+                                      : isDarkUi
+                                          ? 'bg-slate-900 border border-slate-700 text-slate-100 rounded-bl-none'
+                                          : 'bg-white border border-gray-200 text-gray-700 rounded-bl-none'
+                              }`}>
+                                {msg.text}
+                              </div>
                           </div>
                       ))}
+                      {isChatLoading && (
+                          <div className="flex items-start">
+                              <div className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-[11px] ${
+                                  isDarkUi
+                                      ? 'border-slate-700 bg-slate-900 text-slate-300'
+                                      : 'border-gray-200 bg-white text-gray-500'
+                              }`}>
+                                  <Loader2 size={12} className="animate-spin" />
+                                  Thinking...
+                              </div>
+                          </div>
+                      )}
                       <div ref={chatEndRef} />
                   </div>
-                  <form onSubmit={handleChatSubmit} className="p-3 bg-white border-t border-gray-100 flex gap-2">
-                      <input className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none" placeholder="Message..." value={chatInput} onChange={e => setChatInput(e.target.value)} />
-                      <button disabled={isChatLoading} type="submit" className="p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"><Send size={14}/></button>
+                  <form onSubmit={handleChatSubmit} className={`p-3 border-t flex gap-2 ${
+                      isDarkUi ? 'bg-slate-950 border-slate-700/80' : 'bg-white border-gray-100'
+                  }`}>
+                      <input
+                        className={`flex-1 rounded-lg px-3 py-2 text-xs outline-none border ${
+                            isDarkUi
+                                ? 'bg-slate-900 border-slate-700 text-slate-100 placeholder:text-slate-500'
+                                : 'bg-gray-50 border-gray-200 text-gray-800 placeholder:text-gray-400'
+                        }`}
+                        placeholder="Ask to write, rewrite, guide, or edit..."
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                      />
+                      <button
+                        disabled={isChatLoading}
+                        type="submit"
+                        className="p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {isChatLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14}/>}
+                      </button>
                   </form>
               </div>
           )}
           
-          <button
-            onClick={() => setIsChatOpen(!isChatOpen)}
-            className="group relative w-16 h-16 rounded-full flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow-2xl shadow-indigo-400/50"
-            aria-label={isChatOpen ? 'Close assistant' : 'Open assistant'}
-          >
-              <span className="absolute inset-0 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 animate-ping opacity-20 duration-1000"></span>
-              <span className="absolute inset-0 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 ring-4 ring-white/30"></span>
-              <div className="relative z-10 text-white transform transition-transform group-hover:rotate-12">{isChatOpen ? <X size={28} strokeWidth={3}/> : <Sparkles size={28} fill="currentColor" className="animate-pulse"/>}</div>
-          </button>
+          {showFloatingAssistantFab ? (
+            <button
+              onClick={() => setIsChatOpen(!isChatOpen)}
+              className={`group relative ${assistantFabSizeClass} rounded-full flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow-2xl shadow-indigo-400/50`}
+              aria-label={isChatOpen ? 'Close assistant' : 'Open assistant'}
+            >
+                <span className="absolute inset-0 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 animate-ping opacity-20 duration-1000"></span>
+                <span className="absolute inset-0 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 ring-4 ring-white/30"></span>
+                <div className="relative z-10 text-white transform transition-transform group-hover:rotate-12">{isChatOpen ? <X size={isPhone ? 24 : 28} strokeWidth={3}/> : <Sparkles size={isPhone ? 24 : 28} fill="currentColor" className="animate-pulse"/>}</div>
+            </button>
+          ) : null}
       </div>
+      ) : null}
 
       {/* Resource Monitor */}
       <ResourceMonitor isWorking={isGenerating || isProcessingVideo || isAiWriting || isChatLoading} />
@@ -8145,4 +8524,5 @@ const StoreIcon = ({ size, className }: { size?: number, className?: string }) =
       <path d="M22 7v3a2 2 0 0 1-2 2v0a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7" />
     </svg>
 );
+
 

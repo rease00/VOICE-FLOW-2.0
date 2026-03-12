@@ -11,6 +11,8 @@ VoiceFlow scaling is queue-first and asynchronous:
 
 This supports high user volume by horizontal scaling, rather than single-process synchronous rendering.
 
+Current production profile: `cloudrun-2vcpu`
+
 ## Services
 
 1. `voiceflow-api`
@@ -33,14 +35,29 @@ This supports high user volume by horizontal scaling, rather than single-process
    - `VF_TTS_QUEUE_JOB_TTL_MS=300000`
    - `VF_TTS_QUEUE_SYNC_WAIT_MS=3000`
 2. Engine concurrency:
-   - `VF_TTS_ENGINE_CONCURRENCY_GEM=12`
-   - `VF_TTS_ENGINE_CONCURRENCY_KOKORO=8`
+   - `VF_TTS_ENGINE_CONCURRENCY_GEM=2`
+   - `VF_TTS_ENGINE_CONCURRENCY_KOKORO=1`
 3. Admission safeguards:
    - Queue depth limit (`VF_TTS_QUEUE_MAX_DEPTH`).
    - Projected queue-timeout rejection:
      - `503`
      - `errorCode=ENGINE_OVERLOADED`
      - `reason=estimated_queue_timeout`
+
+## 2 vCPU Defaults
+
+1. API:
+   - Concurrency `16`
+   - `VF_TTS_GATEWAY_MAX_ACTIVE=20`
+   - `VF_TTS_GATEWAY_QUEUE_MAX=80`
+   - `VF_AI_OPS_CONCURRENCY_SOFT_LIMIT=8`
+   - `VF_AI_OPS_CONCURRENCY_HARD_LIMIT=12`
+2. Worker:
+   - `VF_TTS_QUEUE_WORKER_COUNT=2`
+   - Live TTS pipeline concurrency pinned to `1` on 2 vCPU baseline
+3. Runtimes:
+   - Gemini runtime concurrency `2`
+   - Kokoro runtime concurrency `1`
 
 ## Autoscaling Signals
 
@@ -79,4 +96,3 @@ Before production promotion:
    - `GET /admin/tts/queue/metrics`
 3. Job diagnostics:
    - `GET /tts/jobs/{job_id}`
-

@@ -46,6 +46,45 @@ def test_gateway_live_chunker_never_slices_a_single_long_word() -> None:
     assert chunks[0]["wordCount"] == 1
 
 
+def test_gateway_live_chunker_targets_sentence_safe_100_150_window() -> None:
+    text = " ".join(
+        [
+            _build_sentence(8, "chunka"),
+            _build_sentence(8, "chunkb"),
+            _build_sentence(8, "chunkc"),
+            _build_sentence(8, "chunkd"),
+        ]
+    )
+
+    chunks = backend_app._split_plain_text_live_chunks(text, max_chars=150, max_words=26)
+
+    assert len(chunks) == 2
+    assert [chunk["wordCount"] for chunk in chunks] == [16, 16]
+    assert all(100 <= int(chunk["textChars"]) <= 150 for chunk in chunks)
+    assert all(int(chunk["wordCount"]) <= 26 for chunk in chunks)
+
+
+def test_gateway_live_chunker_splits_oversized_sentence_by_word_fallback() -> None:
+    oversized_sentence = _build_sentence(24, "oversized")
+
+    chunks = backend_app._split_plain_text_live_chunks(oversized_sentence, max_chars=150, max_words=26)
+
+    assert len(chunks) >= 2
+    assert sum(int(chunk["wordCount"]) for chunk in chunks) == 24
+    assert all(100 <= int(chunk["textChars"]) <= 150 for chunk in chunks)
+    assert all(int(chunk["wordCount"]) <= 26 for chunk in chunks)
+
+
+def test_gateway_live_chunker_word_fallback_preserves_single_token_boundaries() -> None:
+    long_word = "ultralongcompoundtoken" * 20
+
+    chunks = backend_app._split_plain_text_live_chunks(long_word, max_chars=150, max_words=26)
+
+    assert len(chunks) == 1
+    assert chunks[0]["text"] == long_word
+    assert chunks[0]["wordCount"] == 1
+
+
 def test_reader_text_windows_keep_slightly_oversized_sentence_together() -> None:
     sentence = _build_sentence(45, "bhaag", punctuation="\u0964")
     assert len(sentence) > 220

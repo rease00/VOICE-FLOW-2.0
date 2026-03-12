@@ -66,7 +66,8 @@ import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageJson, writeStorageJson, removeStorageKey } from '../src/shared/storage/localStore';
+import { readStorageJson, writeStorageJson, removeStorageKey, writeStorageString } from '../src/shared/storage/localStore';
+import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
 
 interface ExtendedUserContextType extends UserContextType {
   syncCast: (cast: string[] | CharacterProfile[]) => void;
@@ -145,6 +146,14 @@ const localAdminBackendAuthMismatchMessage =
   'Local admin login is enabled in frontend, but backend auth enforcement is ON. ' +
   'Set VF_AUTH_ENFORCE=0 for local admin mode, or disable local admin login and sign in with Firebase.';
 
+const syncUserIdSetupRequirement = (required: boolean): void => {
+  if (required) {
+    writeStorageString(STORAGE_KEYS.uidSetupRequired, '1');
+    return;
+  }
+  removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+};
+
 const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
   const token = String(value || '').trim().toLowerCase();
   if (token === 'starter') return 'Starter';
@@ -158,16 +167,16 @@ const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
 const isPaidPlanName = (planName: UserStats['planName']): boolean =>
   planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
 
-const normalizeAllowedEngines = (input: unknown): Array<'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM'> => {
-  if (!Array.isArray(input)) return ['KOKORO', 'GOOD', 'NEURAL2'];
-  const allowed = new Set<'KOKORO' | 'GOOD' | 'NEURAL2' | 'GEM'>();
+const normalizeAllowedEngines = (input: unknown): Array<'KOKORO' | 'NEURAL2' | 'GEM'> => {
+  if (!Array.isArray(input)) return ['KOKORO', 'NEURAL2'];
+  const allowed = new Set<'KOKORO' | 'NEURAL2' | 'GEM'>();
   input.forEach((value) => {
     const token = String(value || '').trim().toUpperCase();
-    if (token === 'KOKORO' || token === 'GOOD' || token === 'NEURAL2' || token === 'GEM') {
+    if (token === 'KOKORO' || token === 'NEURAL2' || token === 'GEM') {
       allowed.add(token);
     }
   });
-  return allowed.size > 0 ? Array.from(allowed) : ['KOKORO', 'GOOD', 'NEURAL2'];
+  return allowed.size > 0 ? Array.from(allowed) : ['KOKORO', 'NEURAL2'];
 };
 
 const normalizeStoredStats = (stored: any): UserStats => {
@@ -187,7 +196,6 @@ const normalizeStoredStats = (stored: any): UserStats => {
       ...(stored?.wallet || {}),
       spendableNowByEngine: {
         KOKORO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.KOKORO ?? walletFallback.spendableNowByEngine.KOKORO)),
-        GOOD: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GOOD ?? walletFallback.spendableNowByEngine.GOOD)),
         NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
         GEM: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.GEM ?? walletFallback.spendableNowByEngine.GEM)),
       },
@@ -210,7 +218,6 @@ const mapEntitlementRatesToUsage = (
   const vfRates = entitlements?.limits?.vfRates || {};
   return {
     KOKORO: Number.isFinite(vfRates.KOKORO) ? Math.max(0, Number(vfRates.KOKORO)) : fallback.KOKORO,
-    GOOD: Number.isFinite(vfRates.GOOD) ? Math.max(0, Number(vfRates.GOOD)) : fallback.GOOD,
     NEURAL2: Number.isFinite(vfRates.NEURAL2) ? Math.max(0, Number(vfRates.NEURAL2)) : fallback.NEURAL2,
     GEM: Number.isFinite(vfRates.GEM) ? Math.max(0, Number(vfRates.GEM)) : fallback.GEM,
   };
@@ -248,10 +255,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
             chars: Math.max(0, Number(dailyByEngine?.KOKORO?.chars || 0)),
             vf: Math.max(0, Number(dailyByEngine?.KOKORO?.vf || 0)),
           },
-          GOOD: {
-            chars: Math.max(0, Number(dailyByEngine?.GOOD?.chars || 0)),
-            vf: Math.max(0, Number(dailyByEngine?.GOOD?.vf || 0)),
-          },
           NEURAL2: {
             chars: Math.max(0, Number(dailyByEngine?.NEURAL2?.chars || 0)),
             vf: Math.max(0, Number(dailyByEngine?.NEURAL2?.vf || 0)),
@@ -273,10 +276,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
             chars: Math.max(0, Number(monthlyByEngine?.KOKORO?.chars || 0)),
             vf: Math.max(0, Number(monthlyByEngine?.KOKORO?.vf || 0)),
           },
-          GOOD: {
-            chars: Math.max(0, Number(monthlyByEngine?.GOOD?.chars || 0)),
-            vf: Math.max(0, Number(monthlyByEngine?.GOOD?.vf || 0)),
-          },
           NEURAL2: {
             chars: Math.max(0, Number(monthlyByEngine?.NEURAL2?.chars || 0)),
             vf: Math.max(0, Number(monthlyByEngine?.NEURAL2?.vf || 0)),
@@ -295,7 +294,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
       spendableNowByEngine: {
         KOKORO: Math.max(0, Number(wallet.spendableNowByEngine?.KOKORO || 0)),
-        GOOD: Math.max(0, Number(wallet.spendableNowByEngine?.GOOD || 0)),
         NEURAL2: Math.max(0, Number(wallet.spendableNowByEngine?.NEURAL2 || 0)),
         GEM: Math.max(0, Number(wallet.spendableNowByEngine?.GEM || 0)),
       },
@@ -349,7 +347,7 @@ const readFirestoreAdminStatus = async (uid: string): Promise<boolean> => {
 const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   const current = firebaseAuth.currentUser;
   if (!current) return BLANK_USER;
-  const tokenResult = await current.getIdTokenResult(true).catch(() => null);
+  const tokenResult = await current.getIdTokenResult().catch(() => null);
   const hasAdminClaim = Boolean(tokenResult?.claims?.admin);
   const envOrClaimAdmin = isAdminIdentity(current.uid, current.email, hasAdminClaim);
   const firestoreAdmin = envOrClaimAdmin ? false : await readFirestoreAdminStatus(current.uid);
@@ -360,6 +358,7 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   let userId = '';
   try {
     const accountProfile = await fetchAccountProfile(readSettingsBackendUrl());
+    syncUserIdSetupRequirement(Boolean(accountProfile?.requiredUserId));
     userId = String(accountProfile?.profile?.userId || '').trim().toLowerCase();
   } catch {
     // Profile setup can be completed later; auth should remain usable.
@@ -455,15 +454,23 @@ const mapFirebaseAuthError = (error: any): string => {
 
 const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
   const textPreview = String((item as any).textPreview || item.text || '').trim();
+  const voiceId = String((item as any).voiceId || (item as any).voice_id || '').trim();
+  const voiceName = resolveHistoryVoiceLabel({
+    voiceName: (item as any).voiceName,
+    voiceId,
+  });
   return {
     ...item,
     text: textPreview,
     audioUrl: typeof item.audioUrl === 'string' ? item.audioUrl : undefined,
-    voiceName: String(item.voiceName || 'AI Voice').trim() || 'AI Voice',
+    voiceName,
+    voiceId: voiceId || undefined,
     timestamp: Number.isFinite(item.timestamp) ? item.timestamp : Date.now(),
     chars: Number.isFinite((item as any).chars) ? Math.max(0, Number((item as any).chars)) : undefined,
   };
 };
+
+const MAX_IN_MEMORY_HISTORY_ITEMS = 30;
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [stats, setStats] = useState<UserStats>(() => {
@@ -621,11 +628,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (localAdminSession) {
           setUser(mapLocalAdminSessionToProfile(localAdminSession));
           setCharacterLibrary(readStoredCharacterLibrary());
-          await refreshAdminActor();
-          await refreshEntitlements();
-          await loadHistory();
+          await Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
           return;
         }
+        removeStorageKey(STORAGE_KEYS.uidSetupRequired);
         setUser(BLANK_USER);
         setCharacterLibrary(DEFAULT_CHARACTERS);
         setStats(INITIAL_STATS);
@@ -636,9 +642,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const profile = await mapFirebaseUserToProfile();
       setUser(profile);
       bootstrapCharacterSync(firebaseUser.uid);
-      await refreshAdminActor();
-      await refreshEntitlements();
-      await loadHistory();
+      await Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
     });
     return () => {
       unsubscribe();
@@ -658,19 +662,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // user.adminActor intentionally excluded to avoid a fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.uid]);
-
-  const resolvePostSignInUserIdRequirement = async (): Promise<boolean> => {
-    try {
-      const accountProfile = await fetchAccountProfile(readSettingsBackendUrl());
-      const requiredUserId = Boolean(accountProfile?.requiredUserId);
-      const resolvedUserId = String(accountProfile?.profile?.userId || '').trim().toLowerCase();
-      setUser((prev) => ({ ...prev, userId: resolvedUserId || undefined }));
-      return requiredUserId;
-    } catch {
-      // Keep authentication usable even if profile service is temporarily unavailable.
-      return false;
-    }
-  };
 
   const signInWithEmail: UserContextType['signInWithEmail'] = async (email, password) => {
     const rawEmail = String(email || '').trim();
@@ -708,9 +699,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             };
           }
         }
-        await refreshEntitlements();
-        await loadHistory();
         removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+        void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
         return { ok: true };
       }
 
@@ -731,9 +721,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       try {
         await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
-        await refreshEntitlements();
-        const requiresUserIdSetup = await resolvePostSignInUserIdRequirement();
-        return { ok: true, ...(requiresUserIdSetup ? { requiresUserIdSetup: true } : {}) };
+        return { ok: true };
       } catch (error: any) {
         return {
           ok: false,
@@ -756,9 +744,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       }
       await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
-      await refreshEntitlements();
-      const requiresUserIdSetup = await resolvePostSignInUserIdRequirement();
-      return { ok: true, ...(requiresUserIdSetup ? { requiresUserIdSetup: true } : {}) };
+      return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
     }
@@ -856,9 +842,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const result = await signInWithPopup(firebaseAuth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       warmDriveTokenFromGoogleSignIn(credential);
-      await refreshEntitlements();
-      const requiresUserIdSetup = await resolvePostSignInUserIdRequirement();
-      return { ok: true, ...(requiresUserIdSetup ? { requiresUserIdSetup: true } : {}) };
+      return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
     }
@@ -872,7 +856,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     try {
       await signInWithPopup(firebaseAuth, facebookProvider);
-      await refreshEntitlements();
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -909,7 +892,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       await confirmationRef.current.confirm(code);
       confirmationRef.current = null;
-      await refreshEntitlements();
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: mapFirebaseAuthError(error) };
@@ -1014,7 +996,14 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       ),
     history,
     loadHistory,
-    addToHistory: (item) => setHistory((prev) => [normalizeHistoryItem(item), ...prev]),
+    addToHistory: (item) => setHistory((prev) => {
+      const normalizedItem = normalizeHistoryItem(item);
+      const normalizedId = String(normalizedItem.id || '');
+      const withoutDuplicate = normalizedId
+        ? prev.filter((entry) => String(entry.id || '') !== normalizedId)
+        : prev;
+      return [normalizedItem, ...withoutDuplicate].slice(0, MAX_IN_MEMORY_HISTORY_ITEMS);
+    }),
     clearHistory: async () => {
       await clearHistoryRemote();
     },

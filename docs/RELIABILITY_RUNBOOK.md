@@ -88,17 +88,14 @@
 4. Optional live TTS performance gate:
    - `VF_ENABLE_LIVE_AUDIT_GATE=1 npm run ci:reliability`
    - Runs `audit:tts:live` with balanced hard-fail checks.
-5. Optional LLVC mapping audit gate:
-   - `VF_ENABLE_LLVC_MAPPING_AUDIT_GATE=1 npm run ci:reliability`
-   - Runs `audit:llvc:mapping` (gender and profile-map integrity).
-6. Optional frontend/backend connectivity gate:
+5. Optional frontend/backend connectivity gate:
    - `VF_ENABLE_CONNECTIVITY_AUDIT_GATE=1 npm run ci:reliability`
    - Runs `audit:connectivity` (CORS preflight + auth boundary checks).
-7. Run 50-concurrency load tests directly:
+6. Run 50-concurrency load tests directly:
    - `npm run test:load:50:node`
    - `npm run test:load:50:k6`
    - `npm run test:load:50:all`
-8. Load artifacts:
+7. Load artifacts:
    - `backend/artifacts/load/*.json`
    - `backend/artifacts/frontend_backend_connectivity_audit.json`
 
@@ -134,8 +131,6 @@
 3. POST `/tts/synthesize` and queued `/tts/jobs` flow:
    - Request enters `_submit_tts_job`, reserves quota/gateway capacity, and enqueues work.
    - Worker `_process_tts_job` calls runtime `/synthesize`, optionally emits live chunks, and persists chunk/result artifacts.
-   - Post-TTS LLVC conversion runs in `_convert_tts_audio_with_llvc_runtime`.
-   - Strict policy (`VF_TTS_POST_LLVC_REQUIRED=1`) fails job on conversion failure with `reason=post_tts_conversion_failed`.
    - Retrieval:
    - Job status and chunk metadata: `GET /tts/jobs/{job_id}`.
    - Chunk bytes: `GET /tts/jobs/{job_id}/chunks/{chunk_index}`.
@@ -171,31 +166,13 @@
    - `VF_LIVE_AUDIT_JOB_TIMEOUT_MS` / `--job-timeout-ms`
    - `VF_LIVE_AUDIT_POLL_MS` / `--poll-ms`
    - `VF_LIVE_AUDIT_SEED` / `--seed`
-   - `VF_LIVE_AUDIT_STRICT_LLVC` / `--strict-llvc`
 3. Output artifact:
    - `backend/artifacts/load/live_tts_performance_audit.json`
 4. Balanced gate rules:
-   - Hard-fail: completion rate, first-chunk observed rate, timeout rate, failed/cancelled rate, strict LLVC coverage, or preflight failure.
+   - Hard-fail: completion rate, first-chunk observed rate, timeout rate, failed/cancelled rate, or preflight failure.
    - Warning-only: p95 first-chunk latency, p95 completion latency, p95 queue age, and admin telemetry p95 first-chunk latency.
 5. Baseline comparison:
-   - Keep prior artifact snapshots and compare `latencyMs`, `chunkMetrics`, `llvcMetrics`, and `queueSignals` across runs.
-
-## LLVC Voice Mapping Audit
-
-1. Run mapping audit:
-   - `npm run audit:llvc:mapping`
-2. Output artifact:
-   - `backend/artifacts/load/llvc_voice_mapping_audit.json`
-3. What it verifies:
-   - Every runtime voice resolves to exactly one profile.
-   - Mapped profile exists in profile bank.
-   - Gender compatibility:
-     - GEM uses runtime voice gender.
-     - KOKORO uses prefix rule (`af/bf/hf=female`, `am/bm/hm=male`).
-   - Designated child/elder slots remain correctly mapped.
-4. Fix mode:
-   - Enabled by default for deterministic mismatches.
-   - Disable auto-fix with `VF_LLVC_MAPPING_AUDIT_FIX=0`.
+   - Keep prior artifact snapshots and compare `latencyMs`, `chunkMetrics`, and `queueSignals` across runs.
 
 ## Runtime Capabilities
 
@@ -229,18 +206,10 @@
 7. If live audio is not playing while generating:
    - Confirm gateway submission is async (`/tts/jobs` or `wait_ms=0` fallback).
    - Confirm job status returns `chunks` and increasing `chunkCursorNext`.
-   - Confirm `x-vf-post-tts-conversion=llvc` in terminal headers.
-8. If strict LLVC fails during live chunks:
-   - Check LLVC runtime health and model load.
-   - Verify `VF_TTS_POST_LLVC_ENABLED=1` and `VF_TTS_POST_LLVC_REQUIRED=1`.
-   - Run `npm run audit:llvc:mapping` and resolve mapping failures.
-9. If male/female voices sound swapped:
-   - Inspect `backend/config/voice_id_map.v1.json`.
-   - Re-run `npm run audit:llvc:mapping` and review mismatch list in artifact.
-10. If frontend reports backend unreachable:
-    - Run `npm run audit:connectivity`.
-    - Confirm protected preflight checks are not returning `401`.
-    - Ensure `VF_CORS_ORIGINS` includes the exact frontend origin.
+8. If frontend reports backend unreachable:
+   - Run `npm run audit:connectivity`.
+   - Confirm protected preflight checks are not returning `401`.
+   - Ensure `VF_CORS_ORIGINS` includes the exact frontend origin.
 
 ## Quick Troubleshooting Map
 
@@ -263,12 +232,12 @@
    - Runtime `GET /v1/admin/api-pools`.
    - Key source files (`API.txt`, local `backend/config/gemini_api_pools.json`) and fallback chains.
    - Use tracked template `backend/config/gemini_api_pools.example.json` for schema only; never commit live pool state.
-4. Post-TTS conversion failure:
-   - Symptom: failed job with `reason=post_tts_conversion_failed`.
+4. Post-TTS status and naming normalization checks:
+   - Symptom: unexpected `x-vf-post-tts-conversion` value or stale history voice labels.
    - Check first:
-   - Job payload from `GET /tts/jobs/{job_id}` (`error.reason`, `error.errorCode`, `error.trace_id`).
-   - LLVC runtime health.
-   - `VF_TTS_POST_LLVC_ENABLED` and `VF_TTS_POST_LLVC_REQUIRED`.
+   - Job payload from `GET /tts/jobs/{job_id}` and response headers.
+   - Expected header values: `disabled` (GEM/NEURAL2) or `disabled_for_kokoro` (KOKORO).
+   - `GET /account/generation-history` returns canonical `voiceId` and human `voiceName`.
 
 ## Recovery Procedure
 

@@ -601,8 +601,18 @@ export const resolveLiveChunkRequest = (
   language?: string,
 ): LiveChunkRequestProfile => {
   const profile = getChunkProfile(engine, language);
+  const LIVE_CHUNK_CHARS_MIN = 100;
+  const LIVE_CHUNK_CHARS_TARGET = 150;
+  const LIVE_CHUNK_WORDS_MIN = 16;
+  const LIVE_CHUNK_WORDS_TARGET = 26;
   return {
-    liveChunkChars: Math.max(72, Math.min(profile.targetCharCap, 96)),
-    liveChunkWords: Math.max(12, Math.min(profile.maxWordsPerChunk, 18)),
+    liveChunkChars: Math.max(
+      LIVE_CHUNK_CHARS_MIN,
+      Math.min(profile.hardCharCap, LIVE_CHUNK_CHARS_TARGET),
+    ),
+    liveChunkWords: Math.max(
+      LIVE_CHUNK_WORDS_MIN,
+      Math.min(profile.maxWordsPerChunk, LIVE_CHUNK_WORDS_TARGET),
+    ),
   };
 };

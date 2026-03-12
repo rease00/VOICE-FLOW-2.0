@@ -454,7 +454,7 @@ def test_tts_job_silent_post_tts_output_bypasses_to_original_audio_when_not_requ
     assert backend_app._wav_has_nonzero_signal(audio_bytes) is True
 
 
-def test_tts_job_post_tts_disable_bypasses_llvc_and_sets_response_header(monkeypatch) -> None:
+def test_tts_job_post_tts_disable_flag_is_ignored_and_response_stays_disabled(monkeypatch) -> None:
     _reset_tts_metrics_state(monkeypatch)
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_TTS_QUEUE_ENABLED", True)
@@ -510,7 +510,7 @@ def test_tts_job_post_tts_disable_bypasses_llvc_and_sets_response_header(monkeyp
     assert str(completed.get("status") or "") == "completed"
     result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
     headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
-    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled_by_request"
+    assert str(headers.get("x-vf-post-tts-conversion") or "") == "disabled"
     assert llvc_calls["count"] == 0
 
 

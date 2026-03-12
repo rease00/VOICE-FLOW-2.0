@@ -228,6 +228,8 @@ def test_tts_synthesize_writes_compressed_history_blob(monkeypatch) -> None:
     assert item.get("traceId") == "trace_test_123"
     assert item.get("engine") == "GEM"
     assert item.get("status") == "completed"
+    assert item.get("voiceId") == "Fenrir"
+    assert item.get("voiceName") == "Arjun India Male"
     assert "audioUrl" not in item
 
 
@@ -296,6 +298,48 @@ def test_generation_history_default_retention_prunes_items_older_than_one_year(m
     row = backend_app._INMEMORY_GENERATION_HISTORY.get(uid) or {}
     decoded_items = backend_app._history_decode_items_gzip_b64(str(row.get("itemsGzipB64") or ""))
     assert [item.get("id") for item in decoded_items] == ["fresh"]
+
+
+def test_generation_history_fetch_rewrites_legacy_rows_when_sanitized_content_changes(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    uid = "history_user_legacy_rewrite"
+    now_ms = int(time.time() * 1000)
+    legacy_item = {
+        "id": "legacy_row_1",
+        "timestamp": now_ms - 1_000,
+        "status": "completed",
+        "engine": "GEM",
+        "voiceName": "AI Voice",
+        "voiceId": "fenir",
+        "chars": 11,
+        "textPreview": "legacy text",
+        "requestId": "legacy_req_1",
+        "traceId": "legacy_trace_1",
+    }
+    backend_app._history_write_row(
+        uid,
+        {
+            "uid": uid,
+            "updatedAt": backend_app._safe_now_iso(),
+            "itemCount": 1,
+            "latestAtMs": now_ms - 1_000,
+            "codec": backend_app.VF_GENERATION_HISTORY_CODEC,
+            "itemsGzipB64": backend_app._history_encode_items_gzip_b64([legacy_item]),
+        },
+    )
+
+    items = backend_app._history_get_items(uid, limit=10)
+    assert len(items) == 1
+    assert items[0]["id"] == "legacy_row_1"
+    assert items[0]["voiceId"] == "Fenrir"
+    assert items[0]["voiceName"] == "Arjun India Male"
+
+    stored_row = backend_app._INMEMORY_GENERATION_HISTORY.get(uid) or {}
+    stored_items = backend_app._history_decode_items_gzip_b64(str(stored_row.get("itemsGzipB64") or ""))
+    assert len(stored_items) == 1
+    assert stored_items[0]["voiceId"] == "Fenrir"
+    assert stored_items[0]["voiceName"] == "Arjun India Male"
 
 
 def test_tts_synthesize_writes_audio_metadata_record_on_success(monkeypatch) -> None:

@@ -412,6 +412,7 @@ export interface HistoryItem {
   text: string;
   audioUrl?: string | undefined;
   voiceName: string;
+  voiceId?: string | undefined;
   timestamp: number;
   duration?: string | undefined;
   engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | 'GOOD' | undefined;

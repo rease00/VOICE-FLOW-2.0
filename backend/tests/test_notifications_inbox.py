@@ -89,7 +89,7 @@ def _notification_event_codes(uid: str) -> list[str]:
 def _enable_notification_email(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_NOTIFICATIONS_EMAIL_ENABLED", True)
     monkeypatch.setattr(backend_app, "RESEND_API_KEY", "re_test_notifications")
-    monkeypatch.setattr(backend_app, "VF_NOTIFICATIONS_EMAIL_FROM", "Voice Flow <notifications@voiceflow.local>")
+    monkeypatch.setattr(backend_app, "VF_NOTIFICATIONS_EMAIL_FROM", "VoiceFlow <notifications@voiceflow.local>")
     monkeypatch.setattr(backend_app, "threading", type("_ThreadModule", (), {"Thread": _InlineThread}))
     monkeypatch.setattr(backend_app, "_notification_email_for_uid", lambda _uid: "user@example.com")
 
@@ -220,7 +220,7 @@ def test_notification_email_delivery_marks_retry_pending_without_raising(monkeyp
             "notificationId": "notif_retry_1",
             "eventCode": "support.reply.received",
             "to": "retry@example.com",
-            "subject": "Voice Flow: Retry",
+            "subject": "VoiceFlow: Retry",
             "text": "Retry body",
             "status": "pending",
             "attempts": 0,

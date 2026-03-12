@@ -64,12 +64,14 @@ describe('ttsLongTextService', () => {
     expect(windows.every((item) => item.charCount <= 90)).toBe(true);
   });
 
-  it('requests tighter live chunk sizes so playback starts earlier', () => {
+  it('requests sentence-safe live chunk sizes in the 100-150 range', () => {
     expect(resolveLiveChunkRequest('GEM', 'en')).toEqual({
-      liveChunkChars: 96,
-      liveChunkWords: 18,
+      liveChunkChars: 150,
+      liveChunkWords: 26,
     });
-    expect(resolveLiveChunkRequest('GEM', 'en').liveChunkChars).toBeLessThanOrEqual(96);
-    expect(resolveLiveChunkRequest('GEM', 'en').liveChunkWords).toBeLessThanOrEqual(18);
+    expect(resolveLiveChunkRequest('GEM', 'en').liveChunkChars).toBeGreaterThanOrEqual(100);
+    expect(resolveLiveChunkRequest('GEM', 'en').liveChunkChars).toBeLessThanOrEqual(150);
+    expect(resolveLiveChunkRequest('GEM', 'en').liveChunkWords).toBeGreaterThanOrEqual(16);
+    expect(resolveLiveChunkRequest('GEM', 'en').liveChunkWords).toBeLessThanOrEqual(26);
   });
 });

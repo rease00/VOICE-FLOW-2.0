@@ -1,15 +1,12 @@
-# TTS + LLVC + Multi-Speaker Processing Flow
+# TTS + Voice-Transfer Mapping + Multi-Speaker Processing Flow
 
-This diagram documents the current production pathway with isolated runtimes and stable frontend API contracts.
+This diagram documents the active production path with queue-based synthesis and canonical voice naming.
 
 ```mermaid
 flowchart LR
     FE["Frontend UI"] -->|POST /tts/synthesize| MB["media-backend :7800"]
     FE -->|GET /tts/engines/voices| MB
     FE -->|GET /tts/voice-mapping/catalog| MB
-    FE -->|GET /llvc/models| MB
-    FE -->|POST /llvc/load-model| MB
-    FE -->|POST /llvc/convert| MB
 
     MB -->|"engine=GEM"| GEM["gemini-runtime :7810"]
     MB -->|"engine=KOKORO"| KOK["kokoro-runtime :7820"]
@@ -17,14 +14,13 @@ flowchart LR
     GEM -->|"WAV bytes"| MB
     KOK -->|"WAV bytes"| MB
 
-    MB -->|"resolve voice -> profile -> model"| MAP["30-Speaker Mapping Catalog"]
-    MAP -->|"model_name + profile_id"| MB
+    MB -->|"resolve canonical voiceId + profile displayName"| MAP["Voice Mapping Catalog"]
+    MAP -->|"profile metadata + displayName"| MB
 
-    MB -->|"POST /v1/convert (preset=tts_realtime)"| LLVC["llvc-runtime :7830"]
-    LLVC -->|"Converted WAV + headers"| MB
-
-    MB -->|"audio/wav (converted only in strict mode)"| FE
+    MB -->|"audio/wav + x-vf-post-tts-conversion=disabled* "| FE
 ```
+
+\* For Kokoro responses, `x-vf-post-tts-conversion=disabled_for_kokoro`.
 
 ## Multi-Speaker (GEM) Internal Flow
 
@@ -34,10 +30,8 @@ flowchart LR
     B --> C["media-backend queue + runtime routing"]
     C --> D["gemini-runtime studio_pair_groups batching"]
     D --> E["Single WAV output"]
-    E --> F["media-backend post-TTS mapping resolve"]
-    F --> G["llvc-runtime /v1/convert"]
-    G --> H["Converted multi-speaker WAV"]
-    H --> I["Final response to frontend"]
+    E --> F["media-backend history/audit normalization (voiceId + voiceName)"]
+    F --> G["Final response to frontend"]
 ```
 
 ## Sequence: API Pathways
@@ -47,29 +41,22 @@ sequenceDiagram
     participant U as Frontend
     participant M as media-backend
     participant T as GEM/KOK runtime
-    participant R as llvc-runtime
 
     U->>M: POST /tts/synthesize
     M->>T: POST /synthesize
     T-->>M: WAV + diagnostics
-    M->>M: resolve mapped profile/model (1:1 voice ID mapping)
-    M->>R: POST /v1/convert
-    R-->>M: converted WAV + x-vf-llvc-*
-    M-->>U: 200 audio/wav + x-vf-post-tts-*
+    M->>M: normalize history/audit voice fields
+    M-->>U: 200 audio/wav + x-vf-post-tts-conversion
 ```
 
 ## Notes
 
-- Frontend-facing endpoints remain stable:
+- Frontend-facing endpoints:
   - `/tts/synthesize`
-  - `/llvc/models`
-  - `/llvc/load-model`
-  - `/llvc/convert`
-- Internal LLVC runtime API:
-  - `GET /v1/health`
-  - `GET /v1/models`
-  - `POST /v1/load-model`
-  - `POST /v1/convert`
-- Shared mapping source:
+  - `/tts/engines/voices`
+  - `/tts/voice-mapping/catalog`
+- Voice-transfer profile mapping remains active for canonicalization and profile metadata.
+- Post-TTS conversion branches are disabled in the active runtime flow.
+- Shared mapping sources:
   - `backend/config/voice_profile_bank.v1.json`
   - `backend/config/voice_id_map.v1.json`
