@@ -1,4 +1,9 @@
-import type { GenerationSettings, RuntimeCapabilities } from '../../../types';
+import type {
+  GenerationSettings,
+  LabCatalogImportResult,
+  LabCatalogSearchResult,
+  RuntimeCapabilities,
+} from '../../../types';
 
 export interface EngineStatusItem {
   engine: GenerationSettings['engine'];
@@ -90,6 +95,11 @@ export interface TtsJobChunkResponse {
   textChars?: number;
   engine?: string;
   traceId?: string;
+  speakerId?: string;
+  turnIndex?: number;
+  sessionEpoch?: number;
+  resumeAttempt?: number;
+  fallbackUsed?: boolean;
   downloadUrl?: string;
   audioBase64?: string;
 }
@@ -100,6 +110,7 @@ export interface TtsJobStatusResponse {
   jobId: string;
   requestId?: string;
   traceId?: string;
+  mode?: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   engine?: string;
   lane?: string;
@@ -118,8 +129,35 @@ export interface TtsJobStatusResponse {
   queue?: Record<string, unknown>;
   live?: {
     enabled?: boolean;
+    mode?: string;
     playableChunks?: number;
     playableDurationMs?: number;
+  };
+  liveOrchestration?: {
+    mode?: string;
+    status?: string;
+    topic?: string;
+    targetDurationSec?: number;
+    speakerCount?: number;
+    activeSpeakerId?: string;
+    activeSpeakerName?: string;
+    turnIndex?: number;
+    elapsedMs?: number;
+    sessionEpoch?: number;
+    resumeCount?: number;
+    fallbackCount?: number;
+    chunkGapCount?: number;
+    chunkCount?: number;
+    playableDurationMs?: number;
+    updatedAtMs?: number;
+  };
+  liveSummary?: Record<string, unknown>;
+  artifacts?: {
+    audio?: Record<string, unknown>;
+    transcriptJson?: Record<string, unknown>;
+    transcriptTxt?: Record<string, unknown>;
+    summaryJson?: Record<string, unknown>;
+    [key: string]: Record<string, unknown> | undefined;
   };
   chunkCursor?: number;
   chunkCursorNext?: number;
@@ -260,7 +298,69 @@ export interface DubbingJobStatusResponse {
   };
 }
 
+export interface LabCatalogSearchResponse {
+  ok: boolean;
+  result: LabCatalogSearchResult;
+}
+
+export interface LabCatalogImportResponse {
+  ok: boolean;
+  imported: LabCatalogImportResult;
+}
+
 export interface CreateDubbingJobV2Response {
   ok: boolean;
   job_id: string;
+}
+
+export interface LabRuntimeDefaultsResponse {
+  ok: boolean;
+  defaults: {
+    browserAccelerationDefault: 'webgpu_preferred' | 'cpu_only';
+    backendHardwareDefault: 'gpu_preferred' | 'cpu_only';
+    separatorBackendDefault: 'gpu_preferred' | 'cpu_only';
+    labPerformanceMode: 'conservative' | 'balanced';
+    exportStrategyDefault: 'browser_first';
+    allowUserOverride: boolean;
+    updatedAt?: string;
+    updatedBy?: string;
+  };
+}
+
+export interface LabSeparationJobStatusResponse {
+  ok: boolean;
+  job: {
+    id: string;
+    status: 'queued' | 'running' | 'completed' | 'failed';
+    progress: number;
+    message: string;
+    error?: string | null;
+    queueDepthAtSubmit?: number;
+    backendMode?: 'gpu_preferred' | 'cpu_only' | null;
+    modelName?: string | null;
+    createdAt?: string;
+    updatedAt?: string;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    artifacts?: Record<string, { stemKind: string; ready: boolean; downloadUrl: string }>;
+  };
+}
+
+export interface LabExportJobStatusResponse {
+  ok: boolean;
+  job: {
+    id: string;
+    status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+    progress: number;
+    message: string;
+    format: 'webm' | 'mp4' | 'wav';
+    queueDepthAtSubmit?: number;
+    backendMode?: 'gpu_preferred' | 'cpu_only' | null;
+    createdAt?: string;
+    updatedAt?: string;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    artifactUrl?: string | null;
+    error?: string | null;
+  };
 }

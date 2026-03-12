@@ -488,36 +488,6 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
     false,
     8_000
   ),
-  'dubbing.job.completed': entry(
-    'dubbing.job.completed',
-    'Dubbing Job Complete',
-    'Your dubbing job completed successfully.',
-    'success',
-    'activity',
-    'inbox',
-    false,
-    10_000
-  ),
-  'dubbing.job.failed': entry(
-    'dubbing.job.failed',
-    'Dubbing Job Failed',
-    'Your dubbing job failed.',
-    'error',
-    'activity',
-    'inbox',
-    true,
-    10_000
-  ),
-  'dubbing.job.cancelled': entry(
-    'dubbing.job.cancelled',
-    'Dubbing Job Cancelled',
-    'Your dubbing job was cancelled.',
-    'info',
-    'activity',
-    'inbox',
-    false,
-    8_000
-  ),
   'admin.alert.opened': entry(
     'admin.alert.opened',
     'Admin Alert Opened',

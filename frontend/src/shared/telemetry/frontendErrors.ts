@@ -1,6 +1,6 @@
 import { requestJson } from '../api/httpClient';
 
-type FrontendErrorSeverity = 'error' | 'warn' | 'fatal';
+type FrontendErrorSeverity = 'info' | 'warning' | 'error' | 'critical' | 'warn' | 'fatal';
 
 interface FrontendErrorPayload {
   message: string;
@@ -29,6 +29,13 @@ const shouldSample = (): boolean => {
   return Math.random() < rate;
 };
 
+const normalizeSeverity = (severity: FrontendErrorSeverity | undefined): 'info' | 'warning' | 'error' | 'critical' => {
+  if (severity === 'warn') return 'warning';
+  if (severity === 'fatal') return 'critical';
+  if (severity === 'info' || severity === 'warning' || severity === 'critical') return severity;
+  return 'error';
+};
+
 export const reportFrontendError = async (payload: FrontendErrorPayload): Promise<void> => {
   if (!isTelemetryEnabled() || !shouldSample()) return;
   const route = typeof window !== 'undefined' ? window.location.pathname : '';
@@ -36,7 +43,7 @@ export const reportFrontendError = async (payload: FrontendErrorPayload): Promis
     message: String(payload.message || 'Unknown frontend error'),
     ...(payload.route || route ? { route: payload.route || route } : {}),
     ...(payload.component ? { component: payload.component } : {}),
-    severity: payload.severity || 'error',
+    severity: normalizeSeverity(payload.severity),
     ...(payload.stack ? { stack: payload.stack } : {}),
     ...(payload.metadata ? { metadata: payload.metadata } : {}),
   };
@@ -53,4 +60,11 @@ export const reportFrontendError = async (payload: FrontendErrorPayload): Promis
   } catch {
     // Intentionally swallow telemetry transport failures.
   }
+};
+
+export const reportFrontendSignal = async (payload: Omit<FrontendErrorPayload, 'severity'> & { severity?: FrontendErrorSeverity }): Promise<void> => {
+  await reportFrontendError({
+    ...payload,
+    severity: payload.severity || 'info',
+  });
 };

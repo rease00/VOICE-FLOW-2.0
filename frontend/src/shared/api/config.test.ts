@@ -54,4 +54,12 @@ describe('api config', () => {
 
     expect(resolveApiBaseUrl('https://api.voiceflow.example')).toBe('https://api.voiceflow.example');
   });
+
+  it('heals stale localhost overrides to the configured remote backend when one is set', () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://api.voiceflow.example');
+    setWindowLocation('https://voiceflow-demo.pages.dev');
+
+    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('https://api.voiceflow.example');
+    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'https://api.voiceflow.example').value).toBe('https://api.voiceflow.example');
+  });
 });

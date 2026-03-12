@@ -75,7 +75,7 @@ describe('notification provider helpers', () => {
     const prepared = prepareNotificationsForStorage(rows);
 
     expect(prepared).toHaveLength(2);
-    expect(prepared[0]?.message).toBe('Cloud runtime offline');
+    expect(prepared[0]?.message).toBe('Prime Runtime offline');
     expect(prepared[0]?.action?.label).toBe('Open Primary AI Diagnostics');
     expect(prepared[0]?.action && 'onClick' in prepared[0].action).toBe(false);
     expect(prepared[1]?.action).toBeUndefined();

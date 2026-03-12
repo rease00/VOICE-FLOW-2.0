@@ -135,6 +135,7 @@ export default defineConfig(({ mode }) => {
     envDir: path.resolve(__dirname, '..'),
     server: {
       port: 3000,
+      strictPort: true,
       host: exposeDevServer ? '0.0.0.0' : '127.0.0.1',
       watch: {
         ignored: ['**/playwright-report/**', '**/test-results/**', '**/tmp_dir/**'],
@@ -170,10 +171,14 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    worker: {
+      format: 'es',
+    },
     plugins: [react(), localBootstrapPlugin(env)],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src'),
+        phonemizer: path.resolve(__dirname, 'src/shared/browserMl/phonemizerProxy.ts'),
       },
     },
   };

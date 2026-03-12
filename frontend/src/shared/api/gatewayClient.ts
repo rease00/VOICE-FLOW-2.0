@@ -11,11 +11,13 @@ import type {
   CreateDubbingJobV2Response,
   DubbingJobStatusResponse,
 } from './contracts';
-import { requestBlob, requestJson } from './httpClient';
+import { requestBlob, requestJson, requestPublicJson } from './httpClient';
 
-export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime' | 'voice-transfer-runtime';
+export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime';
 
 const withBaseUrl = (baseUrl?: string): { baseUrl?: string } => (baseUrl ? { baseUrl } : {});
+const removedGatewayFeature = (feature: string): Error =>
+  new Error(`${feature} endpoint was removed from this project.`);
 
 const decodeBase64ToArrayBuffer = (value: string): ArrayBuffer => {
   const safe = String(value || '').trim();
@@ -35,7 +37,7 @@ export const fetchTtsEnginesStatus = async (
   const params = new URLSearchParams();
   if (engine) params.set('engine', engine);
   const path = `/tts/engines/status${params.toString() ? `?${params.toString()}` : ''}`;
-  return requestJson<TtsEngineStatusResponse>(path, undefined, withBaseUrl(baseUrl));
+  return requestPublicJson<TtsEngineStatusResponse>(path, undefined, withBaseUrl(baseUrl));
 };
 
 export const fetchTtsEngineVoices = async (
@@ -68,7 +70,7 @@ export const switchTtsEngine = async (
 };
 
 export const fetchTtsEngineCapabilities = async (baseUrl?: string): Promise<TtsEngineCapabilitiesResponse> => {
-  return requestJson<TtsEngineCapabilitiesResponse>('/tts/engines/capabilities', undefined, withBaseUrl(baseUrl));
+  return requestPublicJson<TtsEngineCapabilitiesResponse>('/tts/engines/capabilities', undefined, withBaseUrl(baseUrl));
 };
 
 export const tailRuntimeLogs = async (
@@ -103,59 +105,27 @@ export const transcribeVideo = async (
     baseUrl?: string;
   }
 ): Promise<VideoTranscriptionResponse> => {
-  const form = new FormData();
-  form.append('file', file);
-  form.append('language', options?.language || 'auto');
-  form.append('task', options?.task || 'transcribe');
-  form.append('include_emotion', String(options?.includeEmotion ?? true));
-  form.append('return_words', String(options?.returnWords ?? true));
-  if (options?.speakerLabel) {
-    form.append('speaker_label', options.speakerLabel);
-  }
-  return requestJson<VideoTranscriptionResponse>(
-    '/video/transcribe',
-    {
-      method: 'POST',
-      body: form,
-    },
-    withBaseUrl(options?.baseUrl)
-  );
+  void file;
+  void options;
+  throw removedGatewayFeature('Video transcription');
 };
 
 export const extractAudioFromVideo = async (
   file: File,
   options?: { baseUrl?: string }
 ): Promise<Blob> => {
-  const form = new FormData();
-  form.append('file', file);
-  return requestBlob(
-    '/audio/extract-from-video',
-    {
-      method: 'POST',
-      body: form,
-    },
-    withBaseUrl(options?.baseUrl)
-  );
+  void file;
+  void options;
+  throw removedGatewayFeature('Audio extraction');
 };
 
 export const separateStem = async (
   file: File,
   options?: { stem?: 'speech' | 'background'; modelName?: string; baseUrl?: string }
 ): Promise<Blob> => {
-  const form = new FormData();
-  form.append('file', file);
-  form.append('stem', options?.stem || 'speech');
-  if (options?.modelName) {
-    form.append('model_name', options.modelName);
-  }
-  return requestBlob(
-    '/video/separate-stem',
-    {
-      method: 'POST',
-      body: form,
-    },
-    withBaseUrl(options?.baseUrl)
-  );
+  void file;
+  void options;
+  throw removedGatewayFeature('Stem separation');
 };
 
 export const muxDubbedVideo = async (
@@ -169,23 +139,10 @@ export const muxDubbedVideo = async (
     baseUrl?: string;
   }
 ): Promise<Blob> => {
-  const form = new FormData();
-  form.append('video', videoFile);
-  form.append('dub_audio', dubAudioFile);
-  form.append('speech_gain', String(options?.speechGain ?? 1.0));
-  form.append('background_gain', String(options?.backgroundGain ?? 0.3));
-  form.append('normalize', String(options?.normalize ?? true));
-  if (options?.backgroundAudio) {
-    form.append('background_audio', options.backgroundAudio);
-  }
-  return requestBlob(
-    '/video/mux-dub',
-    {
-      method: 'POST',
-      body: form,
-    },
-    withBaseUrl(options?.baseUrl)
-  );
+  void videoFile;
+  void dubAudioFile;
+  void options;
+  throw removedGatewayFeature('Video dubbing mux');
 };
 
 export const fetchTtsJobChunkAudio = async (
@@ -293,29 +250,15 @@ export const createDubbingJobV2 = async (
     baseUrl?: string;
   }
 ): Promise<CreateDubbingJobV2Response> => {
-  const form = new FormData();
-  form.append('source_file', sourceFile);
-  form.append('target_language', options?.targetLanguage || 'auto');
-  form.append('mode', options?.mode || 'strict_full');
-  form.append('output', options?.output || 'audio+video');
-  form.append('advanced', JSON.stringify(options?.advanced || {}));
-  return requestJson<CreateDubbingJobV2Response>(
-    '/dubbing/jobs/v2',
-    {
-      method: 'POST',
-      body: form,
-    },
-    withBaseUrl(options?.baseUrl)
-  );
+  void sourceFile;
+  void options;
+  throw removedGatewayFeature('Dubbing jobs');
 };
 
 export const getDubbingJob = async (jobId: string, baseUrl?: string): Promise<DubbingJobStatusResponse> => {
-  const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  return requestJson<DubbingJobStatusResponse>(
-    `/dubbing/jobs/${safeJobId}`,
-    undefined,
-    withBaseUrl(baseUrl)
-  );
+  void jobId;
+  void baseUrl;
+  throw removedGatewayFeature('Dubbing jobs');
 };
 
 export const getDubbingJobWithOptions = async (
@@ -328,45 +271,27 @@ export const getDubbingJobWithOptions = async (
     baseUrl?: string;
   }
 ): Promise<DubbingJobStatusResponse> => {
-  const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  const searchParams = new URLSearchParams();
-  if (options?.includeChunks) searchParams.set('includeChunks', '1');
-  if (typeof options?.chunkCursor === 'number' && Number.isFinite(options.chunkCursor)) {
-    searchParams.set('chunkCursor', String(Math.max(0, Math.floor(options.chunkCursor))));
-  }
-  if (typeof options?.chunkLimit === 'number' && Number.isFinite(options.chunkLimit)) {
-    searchParams.set('chunkLimit', String(Math.max(1, Math.floor(options.chunkLimit))));
-  }
-  if (typeof options?.includeChunkAudio === 'boolean') {
-    searchParams.set('includeChunkAudio', options.includeChunkAudio ? '1' : '0');
-  }
-  const path = searchParams.toString()
-    ? `/dubbing/jobs/${safeJobId}?${searchParams.toString()}`
-    : `/dubbing/jobs/${safeJobId}`;
-  return requestJson<DubbingJobStatusResponse>(
-    path,
-    undefined,
-    withBaseUrl(options?.baseUrl)
-  );
+  void jobId;
+  void options;
+  throw removedGatewayFeature('Dubbing jobs');
 };
 
 export const cancelDubbingJob = async (jobId: string, baseUrl?: string): Promise<{ ok: boolean; job_id: string }> => {
-  const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  return requestJson<{ ok: boolean; job_id: string }>(
-    `/dubbing/jobs/${safeJobId}/cancel`,
-    { method: 'POST' },
-    withBaseUrl(baseUrl)
-  );
+  void jobId;
+  void baseUrl;
+  throw removedGatewayFeature('Dubbing jobs');
 };
 
 export const downloadDubbingReport = async (jobId: string, baseUrl?: string): Promise<Blob> => {
-  const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  return requestBlob(`/dubbing/jobs/${safeJobId}/report`, undefined, withBaseUrl(baseUrl));
+  void jobId;
+  void baseUrl;
+  throw removedGatewayFeature('Dubbing reports');
 };
 
 export const downloadDubbingResult = async (jobId: string, baseUrl?: string): Promise<Blob> => {
-  const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  return requestBlob(`/dubbing/jobs/${safeJobId}/result`, undefined, withBaseUrl(baseUrl));
+  void jobId;
+  void baseUrl;
+  throw removedGatewayFeature('Dubbing results');
 };
 
 export const downloadDubbingChunk = async (
@@ -374,11 +299,8 @@ export const downloadDubbingChunk = async (
   chunkIndex: number,
   baseUrl?: string
 ): Promise<Blob> => {
-  const safeJobId = encodeURIComponent(String(jobId || '').trim());
-  const safeChunkIndex = Math.max(0, Math.floor(Number(chunkIndex || 0)));
-  return requestBlob(
-    `/dubbing/jobs/${safeJobId}/chunks/${safeChunkIndex}`,
-    undefined,
-    withBaseUrl(baseUrl)
-  );
+  void jobId;
+  void chunkIndex;
+  void baseUrl;
+  throw removedGatewayFeature('Dubbing chunks');
 };

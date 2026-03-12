@@ -1,18 +1,23 @@
 import { useEffect, useState } from 'react';
 
-export type WorkspaceViewportMode = 'phone' | 'tablet' | 'desktop';
+import type { WorkspaceLayoutMode } from '../../../types';
 
-const PHONE_MAX_WIDTH = 639;
-const TABLET_MAX_WIDTH = 1279;
+export type WorkspaceViewportMode = WorkspaceLayoutMode;
+
+export const WORKSPACE_LAYOUT_BREAKPOINTS = {
+  phoneMax: 767,
+  tabletMax: 1279,
+} as const;
 
 const resolveViewportMode = (width: number): WorkspaceViewportMode => {
-  if (width <= PHONE_MAX_WIDTH) return 'phone';
-  if (width <= TABLET_MAX_WIDTH) return 'tablet';
+  const { phoneMax, tabletMax } = WORKSPACE_LAYOUT_BREAKPOINTS;
+  if (width <= phoneMax) return 'phone';
+  if (width <= tabletMax) return 'tablet';
   return 'desktop';
 };
 
 const readWindowWidth = (): number => {
-  if (typeof window === 'undefined') return TABLET_MAX_WIDTH;
+  if (typeof window === 'undefined') return WORKSPACE_LAYOUT_BREAKPOINTS.tabletMax;
   return Math.max(0, Math.round(window.innerWidth || 0));
 };
 

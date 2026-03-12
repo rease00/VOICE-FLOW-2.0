@@ -75,12 +75,30 @@ const request = async (
   return authFetch(url, init, { requireAuth: Boolean(options?.requireAuth) });
 };
 
+const requestPublic = async (
+  pathOrUrl: string,
+  init: RequestInit | undefined,
+  options: ApiRequestOptions | undefined
+): Promise<Response> => {
+  const url = resolveApiUrl(pathOrUrl, options?.baseUrl);
+  return fetch(url, init);
+};
+
 export const requestJson = async <T>(
   pathOrUrl: string,
   init?: RequestInit,
   options?: ApiRequestOptions
 ): Promise<T> => {
   const response = await request(pathOrUrl, init, options);
+  return readJsonOrThrow<T>(response);
+};
+
+export const requestPublicJson = async <T>(
+  pathOrUrl: string,
+  init?: RequestInit,
+  options?: ApiRequestOptions
+): Promise<T> => {
+  const response = await requestPublic(pathOrUrl, init, options);
   return readJsonOrThrow<T>(response);
 };
 

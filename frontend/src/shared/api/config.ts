@@ -26,6 +26,18 @@ const isLocalHttpUrl = (input: string): boolean => {
   }
 };
 
+const resolveHostedReplacementBaseUrl = (fallbackValue?: string): string => {
+  const normalizedFallback = trimTrailingSlashes(String(fallbackValue || '').trim());
+  if (normalizedFallback && !isLocalHttpUrl(normalizedFallback)) {
+    return normalizedFallback;
+  }
+
+  const browserOrigin = resolveBrowserOriginBaseUrl();
+  if (browserOrigin) return browserOrigin;
+
+  return normalizedFallback;
+};
+
 export interface SanitizedApiBaseUrlResult {
   input: string;
   value: string;
@@ -47,18 +59,19 @@ const resolveBrowserOriginBaseUrl = (): string => {
   return trimTrailingSlashes(origin);
 };
 
-const healHostedRuntimeLocalUrl = (candidate: string): string => {
-  const browserOrigin = resolveBrowserOriginBaseUrl();
-  if (!browserOrigin) return candidate;
+const healHostedRuntimeLocalUrl = (candidate: string, fallbackValue?: string): string => {
+  const replacement = resolveHostedReplacementBaseUrl(fallbackValue);
+  if (!replacement || isLocalHttpUrl(replacement)) return candidate;
   if (!isLocalHttpUrl(candidate)) return candidate;
-  return browserOrigin;
+  return replacement;
 };
 
 const sanitizeConfiguredApiBaseUrlInternal = (input: string | undefined, fallbackValue: string): SanitizedApiBaseUrlResult => {
   const raw = String(input || '').trim();
-  const fallback = healHostedRuntimeLocalUrl(
-    trimTrailingSlashes(String(fallbackValue || FALLBACK_MEDIA_BACKEND_URL).trim() || FALLBACK_MEDIA_BACKEND_URL)
+  const normalizedFallback = trimTrailingSlashes(
+    String(fallbackValue || FALLBACK_MEDIA_BACKEND_URL).trim() || FALLBACK_MEDIA_BACKEND_URL
   );
+  const fallback = healHostedRuntimeLocalUrl(normalizedFallback, normalizedFallback);
 
   if (!raw) {
     return {
@@ -75,7 +88,7 @@ const sanitizeConfiguredApiBaseUrlInternal = (input: string | undefined, fallbac
   const typoHealed = normalizeTypoPrefix(raw);
 
   try {
-    const normalized = healHostedRuntimeLocalUrl(toNormalizedHttpUrl(typoHealed));
+    const normalized = healHostedRuntimeLocalUrl(toNormalizedHttpUrl(typoHealed), fallback);
     return {
       input: raw,
       value: normalized,

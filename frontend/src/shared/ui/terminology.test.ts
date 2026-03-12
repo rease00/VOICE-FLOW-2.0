@@ -1,20 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { ASSISTANT_PROVIDER_UI_LABELS, sanitizeUiText } from './terminology';
+import { ASSISTANT_PROVIDER_UI_LABELS, joinUiFragments, sanitizeUiText } from './terminology';
 
 describe('sanitizeUiText', () => {
-  it('replaces direct provider names', () => {
+  it('keeps assistant-provider copy neutral while productizing engine names', () => {
     expect(sanitizeUiText('Gemini failed; Kokoro offline.')).toBe('Primary AI failed; Basic offline.');
+    expect(sanitizeUiText('NEURAL2 fallback engaged.')).toBe('Vector fallback engaged.');
+    expect(sanitizeUiText('GEM ready.')).toBe('Prime ready.');
   });
 
-  it('replaces runtime and key pool phrases', () => {
-    expect(sanitizeUiText('Gemini runtime key pool is empty.')).toBe('Cloud runtime key pool is empty.');
+  it('replaces runtime and key-pool phrases', () => {
+    expect(sanitizeUiText('Gemini runtime key pool is empty.')).toBe('Prime Runtime key pool is empty.');
     expect(sanitizeUiText('Loading Gemini pool status...')).toBe('Loading Primary AI pool status...');
-    expect(sanitizeUiText('Kokoro Runtime ready')).toBe('Basic runtime ready');
+    expect(sanitizeUiText('Kokoro Runtime ready')).toBe('Basic Runtime ready');
+    expect(sanitizeUiText('Neural2 runtime online')).toBe('Vector Runtime online');
   });
 
-  it('is case-insensitive', () => {
+  it('is case-insensitive for supported provider phrases', () => {
     expect(sanitizeUiText('GEMINI API KEY missing')).toBe('Primary AI API key missing');
-    expect(sanitizeUiText('KOKORO RUNTIME')).toBe('Basic runtime');
+    expect(sanitizeUiText('KOKORO RUNTIME')).toBe('Basic Runtime');
   });
 
   it('keeps unrelated text unchanged', () => {
@@ -27,5 +30,12 @@ describe('ASSISTANT_PROVIDER_UI_LABELS', () => {
     expect(ASSISTANT_PROVIDER_UI_LABELS.GEMINI).toBe('Primary AI');
     expect(ASSISTANT_PROVIDER_UI_LABELS.PERPLEXITY).toBe('Perplexity');
     expect(ASSISTANT_PROVIDER_UI_LABELS.LOCAL).toBe('Local');
+  });
+});
+
+describe('joinUiFragments', () => {
+  it('joins truthy fragments with a normalized separator', () => {
+    expect(joinUiFragments(['Ready', '', '32% complete'])).toBe('Ready | 32% complete');
+    expect(joinUiFragments(['Gemini ready', null, 'Kokoro offline'])).toBe('Primary AI ready | Basic offline');
   });
 });
