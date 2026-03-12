@@ -6,20 +6,13 @@ import {
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
-const DEFAULT_DEPLOY_FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyBaokAMP6Cvc4zO2sWbKQZbh1OCLo9p-yo',
-  authDomain: 'voiceflow-000f.firebaseapp.com',
-  projectId: 'voiceflow-000f',
-  appId: '1:529675856553:web:e76d19c0eef7c5280417b8',
-};
-
 const firebaseConfig = {
-  apiKey: String(import.meta.env.VITE_FIREBASE_API_KEY || DEFAULT_DEPLOY_FIREBASE_CONFIG.apiKey),
-  authDomain: String(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || DEFAULT_DEPLOY_FIREBASE_CONFIG.authDomain),
-  projectId: String(import.meta.env.VITE_FIREBASE_PROJECT_ID || DEFAULT_DEPLOY_FIREBASE_CONFIG.projectId),
+  apiKey: String(import.meta.env.VITE_FIREBASE_API_KEY || ''),
+  authDomain: String(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || ''),
+  projectId: String(import.meta.env.VITE_FIREBASE_PROJECT_ID || ''),
   storageBucket: String(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || ''),
   messagingSenderId: String(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || ''),
-  appId: String(import.meta.env.VITE_FIREBASE_APP_ID || DEFAULT_DEPLOY_FIREBASE_CONFIG.appId),
+  appId: String(import.meta.env.VITE_FIREBASE_APP_ID || ''),
 };
 
 const hasRequiredFirebaseConfig =
