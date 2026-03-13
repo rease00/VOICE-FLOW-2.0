@@ -1,11 +1,22 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+except Exception:  # pragma: no cover - optional dependency at runtime
+    AESGCM = None  # type: ignore[assignment]
+    PBKDF2HMAC = None  # type: ignore[assignment]
+    hashes = None  # type: ignore[assignment]
 
 # Legacy canonical pool names retained for backward compatibility and migration defaults.
 POOL_NAMES: tuple[str, ...] = ("free", "pro", "pro_plus")
@@ -30,6 +41,140 @@ SOURCE_POLICY_PROVIDER_VERTEX = "vertex"
 _POOL_ID_INVALID_RE = re.compile(r"[^a-z0-9_-]+")
 _MAX_POOL_ID_LENGTH = 48
 _MASKED_KEY_TOKEN_RE = re.compile(r"^__vf_masked_key__:(?P<fp>[0-9a-f]{12})(?::(?P<hint>[a-z0-9]{0,8}))?$")
+_ENCRYPTED_KEY_FILE_FORMAT = "vf_gemini_keys_enc_v1"
+_ENCRYPTED_KEY_FILE_AAD = b"vf-gemini-keys-v1"
+_ENCRYPTED_KEY_FILE_KDF_ITERATIONS = 390_000
+_ENCRYPTED_KEY_FILE_ENV_NAMES: tuple[str, ...] = (
+    "GEMINI_KEYS_ENCRYPTION_PASSPHRASE",
+    "GEMINI_KEYS_PASSPHRASE",
+)
+
+
+def _derive_encrypted_key_file_key(*, passphrase: str, salt: bytes, iterations: int) -> bytes:
+    if AESGCM is None or PBKDF2HMAC is None or hashes is None:
+        raise RuntimeError("cryptography dependency is required for encrypted Gemini key files.")
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=max(100_000, int(iterations or _ENCRYPTED_KEY_FILE_KDF_ITERATIONS)),
+    )
+    return kdf.derive(passphrase.encode("utf-8"))
+
+
+def _resolve_key_file_passphrase(explicit_passphrase: Optional[str] = None) -> str:
+    explicit = str(explicit_passphrase or "").strip()
+    if explicit:
+        return explicit
+    for env_name in _ENCRYPTED_KEY_FILE_ENV_NAMES:
+        candidate = str(os.getenv(env_name) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _decode_b64_required(payload: dict[str, Any], field_name: str) -> bytes:
+    value = str(payload.get(field_name) or "").strip()
+    if not value:
+        raise RuntimeError(f"Encrypted Gemini key file is missing '{field_name}'.")
+    try:
+        return base64.b64decode(value.encode("ascii"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Encrypted Gemini key file has invalid base64 '{field_name}'.") from exc
+
+
+def _parse_encrypted_key_file_payload(raw_text: str) -> Optional[dict[str, Any]]:
+    text = str(raw_text or "").strip()
+    if not text or not text.startswith("{"):
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("format") or "").strip() != _ENCRYPTED_KEY_FILE_FORMAT:
+        return None
+    return payload
+
+
+def is_encrypted_key_file_text(raw_text: str) -> bool:
+    return _parse_encrypted_key_file_payload(raw_text) is not None
+
+
+def read_key_file_text(path: Path, *, passphrase: Optional[str] = None) -> str:
+    raw_text = path.read_text(encoding="utf-8", errors="ignore")
+    payload = _parse_encrypted_key_file_payload(raw_text)
+    if payload is None:
+        return raw_text
+
+    resolved_passphrase = _resolve_key_file_passphrase(passphrase)
+    if not resolved_passphrase:
+        raise RuntimeError(
+            "Encrypted Gemini key file detected but no passphrase configured. "
+            "Set GEMINI_KEYS_ENCRYPTION_PASSPHRASE."
+        )
+
+    salt = _decode_b64_required(payload, "salt")
+    nonce = _decode_b64_required(payload, "nonce")
+    ciphertext = _decode_b64_required(payload, "ciphertext")
+    iterations = max(
+        100_000,
+        int(payload.get("iterations") or _ENCRYPTED_KEY_FILE_KDF_ITERATIONS),
+    )
+    key = _derive_encrypted_key_file_key(
+        passphrase=resolved_passphrase,
+        salt=salt,
+        iterations=iterations,
+    )
+    try:
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, _ENCRYPTED_KEY_FILE_AAD)  # type: ignore[misc]
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("Failed to decrypt Gemini key file. Check passphrase or file integrity.") from exc
+    return plaintext.decode("utf-8", errors="ignore")
+
+
+def write_key_file_text(
+    path: Path,
+    raw_text: str,
+    *,
+    encrypt: bool = False,
+    passphrase: Optional[str] = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    next_text = str(raw_text or "")
+    if encrypt:
+        resolved_passphrase = _resolve_key_file_passphrase(passphrase)
+        if not resolved_passphrase:
+            raise RuntimeError(
+                "Encryption requested for Gemini key file, but no passphrase configured. "
+                "Set GEMINI_KEYS_ENCRYPTION_PASSPHRASE."
+            )
+        salt = os.urandom(16)
+        nonce = os.urandom(12)
+        key = _derive_encrypted_key_file_key(
+            passphrase=resolved_passphrase,
+            salt=salt,
+            iterations=_ENCRYPTED_KEY_FILE_KDF_ITERATIONS,
+        )
+        ciphertext = AESGCM(key).encrypt(  # type: ignore[misc]
+            nonce,
+            next_text.encode("utf-8"),
+            _ENCRYPTED_KEY_FILE_AAD,
+        )
+        payload = {
+            "format": _ENCRYPTED_KEY_FILE_FORMAT,
+            "cipher": "AES-256-GCM",
+            "kdf": "PBKDF2-HMAC-SHA256",
+            "iterations": _ENCRYPTED_KEY_FILE_KDF_ITERATIONS,
+            "salt": base64.b64encode(salt).decode("ascii"),
+            "nonce": base64.b64encode(nonce).decode("ascii"),
+            "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        }
+        next_text = json.dumps(payload, ensure_ascii=True, indent=2) + "\n"
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(next_text, encoding="utf-8")
+    os.replace(str(tmp_path), str(path))
 
 
 def _normalize_pool_id(value: Any, *, default: str = "") -> str:

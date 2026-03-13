@@ -102,11 +102,41 @@ def test_parse_api_keys_dedupes_and_filters_invalid_tokens() -> None:
     assert keys == [fake_valid_key]
 
 
+def test_extract_text_content_reads_parts_without_response_text_accessor() -> None:
+    runtime = _load_gemini_runtime_module()
+
+    class _Part:
+        def __init__(self, text: str = "") -> None:
+            self.text = text
+
+    class _Content:
+        def __init__(self, parts: list[object]) -> None:
+            self.parts = parts
+
+    class _Candidate:
+        def __init__(self, parts: list[object]) -> None:
+            self.content = _Content(parts)
+
+    class _Response:
+        def __init__(self) -> None:
+            self.candidates = [
+                _Candidate([_Part("First line"), object(), _Part("Second line")]),
+                _Candidate([_Part("Third line")]),
+            ]
+
+        @property
+        def text(self) -> str:
+            raise AssertionError("extract_text_content should not access response.text when text parts exist")
+
+    assert runtime.extract_text_content(_Response()) == "First line\nSecond line\nThird line"
+
+
 def test_runtime_routes_follow_locked_policy() -> None:
     runtime = _load_gemini_runtime_module()
     tts_candidates = runtime.resolve_tts_model_candidates()
     assert tts_candidates == ["gemini-2.5-flash-lite-preview-tts"]
     assert runtime.resolve_text_model_candidates() == [
+        "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash",
         "gemini-3-flash",
         "gemini-2.5-flash-lite",
@@ -117,6 +147,7 @@ def test_runtime_routes_follow_locked_policy() -> None:
         "gemma-3-1b",
     ]
     assert runtime._RUNTIME_ALLOCATOR.route_models("ocr") == [
+        "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash",
         "gemini-3-flash",
         "gemini-2.5-flash-lite",
@@ -375,17 +406,17 @@ def test_allocator_defaults_to_round_robin_forward() -> None:
     assert int(pool_meta.get("activeBurstTarget") or 0) == 0
 
 
-def test_speaker_key_affinity_is_disabled_by_default(monkeypatch) -> None:
+def test_speaker_key_affinity_is_enabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("GEMINI_SPEAKER_KEY_AFFINITY_ENABLED", raising=False)
     runtime = _load_gemini_runtime_module()
     key_pool = [_make_key(53), _make_key(54)]
 
     runtime._SPEAKER_KEY_AFFINITY.clear()
-    assert runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED is False
+    assert runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED is True
 
     runtime._bind_speakers_to_key(["Narrator"], key_pool[0])
 
-    assert runtime._resolve_affinity_preferred_key(["Narrator"], key_pool) is None
+    assert runtime._resolve_affinity_preferred_key(["Narrator"], key_pool) == key_pool[0]
 
 
 def test_allocator_only_advances_burst_on_successful_release() -> None:
@@ -1175,6 +1206,10 @@ def test_model_access_error_falls_back_to_next_model_without_auth_disable(monkey
     original_genai = runtime.genai
     original_types = runtime.types
     original_speech_attempts = runtime._resolve_speech_attempts
+    original_affinity_enabled = runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED
+    original_affinity_state = dict(runtime._SPEAKER_KEY_AFFINITY)
+    original_affinity_enabled = runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED
+    original_affinity_state = dict(runtime._SPEAKER_KEY_AFFINITY)
 
     call_order: list[str] = []
 
@@ -1283,6 +1318,8 @@ def test_multispeaker_retries_stay_on_same_key_and_only_rotate_after_successes(m
     original_genai = runtime.genai
     original_types = runtime.types
     original_speech_attempts = runtime._resolve_speech_attempts
+    original_affinity_enabled = runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED
+    original_affinity_state = dict(runtime._SPEAKER_KEY_AFFINITY)
 
     multi_config = object()
     single_config = object()
@@ -1355,6 +1392,8 @@ def test_multispeaker_retries_stay_on_same_key_and_only_rotate_after_successes(m
         runtime._RUNTIME_ALLOCATOR.ensure_keys(key_pool)
         runtime.genai = _DummyGenai
         runtime.types = _DummyTypes
+        runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED = False
+        runtime._SPEAKER_KEY_AFFINITY.clear()
         runtime._resolve_speech_attempts = lambda *args, **kwargs: [
             ("multi-speaker", multi_config),
             ("single-speaker", single_config),
@@ -1405,6 +1444,9 @@ def test_multispeaker_retries_stay_on_same_key_and_only_rotate_after_successes(m
         runtime.genai = original_genai
         runtime.types = original_types
         runtime._resolve_speech_attempts = original_speech_attempts
+        runtime.GEMINI_SPEAKER_KEY_AFFINITY_ENABLED = original_affinity_enabled
+        runtime._SPEAKER_KEY_AFFINITY.clear()
+        runtime._SPEAKER_KEY_AFFINITY.update(original_affinity_state)
 
 
 def test_single_speaker_transient_retry_stays_on_same_key(monkeypatch) -> None:

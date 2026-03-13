@@ -150,8 +150,11 @@ def test_reader_tts_job_prefers_reader_model_route(monkeypatch) -> None:
     )
 
     assert job_id == "reader_model_route_job"
-    assert captured["model"] == "gemini-3.1-lite"
-    assert captured["modelCandidates"] == ["gemini-3.1-lite", "gemini-2.5-flash"]
+    assert captured["model"] == "gemini-2.5-flash-preview-tts"
+    assert captured["modelCandidates"] == [
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-flash-lite-preview-tts",
+    ]
     assert captured["syncWaitMs"] == 0
 
 
@@ -323,8 +326,8 @@ def test_reader_upload_session_progress_and_export(monkeypatch, tmp_path: Path) 
     assert session_payload["billing"]["rule"] == "1 char = 1.5 VF"
     assert session_payload["billing"]["engineLabel"] == "Gemini Native Audio Dialog"
     assert session_payload["audioEngine"] == "native_audio_dialog"
-    assert session_payload["billing"]["modelRouting"]["primary"] == "gemini-3.1-lite"
-    assert session_payload["billing"]["modelRouting"]["fallback"] == "gemini-2.5-flash"
+    assert session_payload["billing"]["modelRouting"]["primary"] == "gemini-2.5-flash-preview-tts"
+    assert session_payload["billing"]["modelRouting"]["fallback"] == "gemini-2.5-flash-lite-preview-tts"
     assert session_payload["limits"]["textWindowChars"] == 1500
     assert session_payload["limits"]["prefetchThresholdChars"] == 1000
     assert session_payload["autoAdvanceProfile"] == "medium"

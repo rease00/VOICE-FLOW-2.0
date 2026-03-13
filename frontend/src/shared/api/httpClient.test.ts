@@ -34,4 +34,26 @@ describe('httpClient error parsing', () => {
     const error = await parseResponseError(response);
     expect(error.detail).toBe('userId already exists.');
   });
+
+  it('extracts readable text from object-shaped detail payloads', async () => {
+    const response = new Response(
+      JSON.stringify({
+        detail: {
+          error: 'request_id is already associated with a different user.',
+          errorCode: 'REQUEST_ID_CONFLICT',
+          reason: 'request_id_owner_conflict',
+        },
+      }),
+      {
+        status: 409,
+        statusText: 'Conflict',
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    const error = await parseResponseError(response);
+    expect(error.detail).toContain('request_id is already associated with a different user.');
+    expect(error.detail).toContain('REQUEST_ID_CONFLICT');
+    expect(error.detail).not.toContain('[object Object]');
+  });
 });

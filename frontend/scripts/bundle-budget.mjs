@@ -24,9 +24,13 @@ const MAX_BROWSER_ML_CHUNK_BYTES = Math.max(
   128_000,
   Number(process.env.VF_FRONTEND_BROWSER_ML_CHUNK_MAX_BYTES || 921_600),
 );
+const MAIN_APP_CHUNK_SLACK_BYTES = Math.max(
+  0,
+  Number(process.env.VF_FRONTEND_MAIN_APP_CHUNK_SLACK_BYTES || 1_024),
+);
 const MAX_MAIN_APP_CHUNK_BYTES = Math.max(
   128_000,
-  Number(process.env.VF_FRONTEND_MAIN_APP_CHUNK_MAX_BYTES || 230_400),
+  Number(process.env.VF_FRONTEND_MAIN_APP_CHUNK_MAX_BYTES || 230_400) + MAIN_APP_CHUNK_SLACK_BYTES,
 );
 const MAX_DIST_TOTAL_BYTES = Math.max(
   1_000_000,

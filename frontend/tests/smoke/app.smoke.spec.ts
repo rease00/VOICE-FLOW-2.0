@@ -1001,6 +1001,9 @@ interface StudioSmokeJobState {
   failed: boolean;
 }
 
+const AUTH_WORKSPACE_SMOKE_HINT =
+  'Set PLAYWRIGHT_ADMIN_EMAIL and PLAYWRIGHT_ADMIN_PASSWORD for authenticated workspace smoke.';
+
 const resolveStudioSmokeCredentials = (): StudioSmokeCredentials | null => {
   const email = String(
     process.env.PLAYWRIGHT_ADMIN_EMAIL
@@ -1024,6 +1027,16 @@ const resolveStudioSmokeCredentials = (): StudioSmokeCredentials | null => {
   const derivedUsername = email.includes('@') ? String(email.split('@')[0] || '').trim() : '';
   return { email, password, username: username || derivedUsername || undefined };
 };
+
+async function ensureWorkspaceAuthenticatedOrSkip(page: Page): Promise<StudioSmokeCredentials> {
+  const credentials = resolveStudioSmokeCredentials();
+  test.skip(!credentials, AUTH_WORKSPACE_SMOKE_HINT);
+  if (!credentials) {
+    throw new Error('Workspace smoke credentials are required to run authenticated workspace flows.');
+  }
+  await ensureStudioSmokeAuthenticated(page, credentials);
+  return credentials;
+}
 
 const buildStudioSmokeEntitlements = () => {
   const now = new Date();
@@ -1435,6 +1448,8 @@ test('notification center opens on main screen and handles emitted notifications
 });
 
 test('workspace routes render core production tabs without boundary crashes', async ({ page }) => {
+  await ensureWorkspaceAuthenticatedOrSkip(page);
+
   const routes = [
     { tab: 'STUDIO', marker: /Generate Audio/i },
     { tab: 'PODCAST', marker: /Podcast Live/i },
@@ -1452,6 +1467,8 @@ test('workspace routes render core production tabs without boundary crashes', as
 });
 
 test('podcast tab renders wireframe layout labels and editable cast rows', async ({ page }) => {
+  await ensureWorkspaceAuthenticatedOrSkip(page);
+
   await page.goto('/?vf-screen=main&vf-tab=PODCAST');
 
   await expect(page.getByTestId('podcast-tab-content')).toBeVisible();
@@ -1474,6 +1491,8 @@ test('podcast tab renders wireframe layout labels and editable cast rows', async
 
 test('workspace navigation keeps all non-admin tabs reachable and URL-synced', async ({ page }) => {
   test.setTimeout(60000);
+  await ensureWorkspaceAuthenticatedOrSkip(page);
+
   await page.goto('/?vf-screen=main&vf-tab=READER');
   await expect(page.getByTestId('reader-browse-home')).toBeVisible();
 
@@ -1521,6 +1540,8 @@ test('workspace navigation keeps all non-admin tabs reachable and URL-synced', a
 });
 
 test('studio tab deep-link keeps URL state in sync after navigation', async ({ page }) => {
+  await ensureWorkspaceAuthenticatedOrSkip(page);
+
   await page.goto('/?vf-screen=main&vf-tab=STUDIO');
   await expect(page.getByText(/Generate Audio/i).first()).toBeVisible();
   await expect.poll(() => new URL(page.url()).searchParams.get('vf-tab')).toBe('STUDIO');
@@ -1627,6 +1648,8 @@ test('studio queue mode can resume after a failed part', async ({ page }, testIn
 });
 
 test('guest shop action routes to sign up', async ({ page }) => {
+  await ensureWorkspaceAuthenticatedOrSkip(page);
+
   await page.goto('/?vf-screen=main&vf-tab=STUDIO');
   await ensureSidebarNavigationVisible(page);
   const sidebar = page.locator('aside').first();
@@ -1643,6 +1666,9 @@ test('guest shop action routes to sign up', async ({ page }) => {
 
 test.describe('reader smoke', () => {
   test.describe.configure({ mode: 'serial' });
+  test.beforeEach(async ({ page }) => {
+    await ensureWorkspaceAuthenticatedOrSkip(page);
+  });
 
   for (const theme of ['light', 'dark'] as const) {
     test(`reader browse home renders in ${theme} mode and opens the production tray`, async ({ page }, testInfo) => {
@@ -1867,6 +1893,10 @@ test.describe('reader smoke', () => {
 });
 
 test.describe('lab smoke', () => {
+  test.beforeEach(async ({ page }) => {
+    await ensureWorkspaceAuthenticatedOrSkip(page);
+  });
+
   test('lab shell supports responsive audio import and inspector flows', async ({ page }, testInfo) => {
     await page.goto('/?vf-screen=main&vf-tab=LAB');
     await expect(page.getByTestId('lab-shell')).toBeVisible();

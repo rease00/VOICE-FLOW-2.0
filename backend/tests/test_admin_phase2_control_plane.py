@@ -25,6 +25,8 @@ def _reset_phase2_state() -> None:
 
     backend_app._INMEMORY_COUPON_ANALYTICS_DAILY.clear()
     backend_app._INMEMORY_COUPON_SUB_ATTRIBUTIONS.clear()
+    backend_app._INMEMORY_ACCOUNTING_DAILY_ROLLUP.clear()
+    backend_app._INMEMORY_ACCOUNTING_MONITOR_RUNS.clear()
 
     backend_app._INMEMORY_ENTITLEMENTS.clear()
     backend_app._INMEMORY_USER_PROFILES.clear()

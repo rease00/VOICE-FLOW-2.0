@@ -70,7 +70,10 @@ const DEFAULT_IDLE_MS = 120_000;
 const PRIME_STATUS_TTL_MS = 60_000;
 const UI_YIELD_TIMEOUT_MS = 16;
 const UI_YIELD_TEXT_THRESHOLD_CHARS = 360;
-const KOKORO_MAX_WORDS_PER_SEGMENT = 60;
+const KOKORO_FIRST_CHUNK_TARGET_WORDS = 14;
+const KOKORO_FIRST_CHUNK_HARD_CAP_WORDS = 24;
+const KOKORO_STREAM_CHUNK_TARGET_WORDS = 30;
+const KOKORO_STREAM_CHUNK_HARD_CAP_WORDS = 45;
 const HINDI_VOICES = new Set(['hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi']);
 const FEMALE_VOICES = new Set(['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'bf_emma', 'bf_isabella', 'hf_alpha', 'hf_beta']);
 const MALE_VOICES = new Set(['am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bm_george', 'bm_fable', 'hm_omega', 'hm_psi']);
@@ -372,100 +375,144 @@ const prepareTextForKokoro = (text: string): { preparedText: string; isHindi: bo
   };
 };
 
-const splitUnitByWords = (unit: string, maxLen: number): string[] => {
-  const words = unit.split(/\s+/).map((word) => word.trim()).filter(Boolean);
-  if (words.length <= 1) return [unit];
-
-  const chunks: string[] = [];
-  let current = '';
-
-  for (const word of words) {
-    if (!current) {
-      current = word;
-      continue;
-    }
-    const candidate = `${current} ${word}`.trim();
-    if (candidate.length <= maxLen) {
-      current = candidate;
-      continue;
-    }
-    chunks.push(current);
-    current = word;
-  }
-
-  if (current) chunks.push(current);
-  return chunks.filter(Boolean);
-};
-
-const splitOversizedUnit = (unit: string, maxLen: number): string[] => {
-  const normalized = String(unit || '').trim();
-  if (!normalized) return [];
-  if (normalized.length <= maxLen) return [normalized];
-
-  const punctuationSegments = normalized
-    .split(/(?<=[,;:])\s+/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-
-  if (punctuationSegments.length > 1) {
-    return punctuationSegments.flatMap((segment) => splitOversizedUnit(segment, maxLen));
-  }
-
-  return splitUnitByWords(normalized, maxLen);
-};
-
-const splitForStableTokenization = (text: string, isHindi: boolean): string[] => {
-  const rawUnits = text.match(/[^.!?\n]+[.!?]?/g)?.map((item) => item.trim()).filter(Boolean) || [text];
-  const textLength = String(text || '').trim().length;
-  const maxLen = textLength > 1200
-    ? (isHindi ? 72 : 84)
-    : textLength > 420
-      ? (isHindi ? 84 : 96)
-      : (isHindi ? 96 : 110);
-  const units = rawUnits.flatMap((unit) => splitOversizedUnit(unit, maxLen));
-  const chunks: string[] = [];
-  let current = '';
-
-  for (const unit of units) {
-    if (!current) {
-      current = unit;
-      continue;
-    }
-    const candidate = `${current} ${unit}`.trim();
-    if (candidate.length <= maxLen) {
-      current = candidate;
-      continue;
-    }
-    chunks.push(current);
-    current = unit;
-  }
-
-  if (current) chunks.push(current);
-  return chunks.filter((chunk) => chunk.length > 0);
-};
-
 const countWords = (text: string): number => {
   return String(text || '').trim().split(/\s+/).filter(Boolean).length;
 };
 
-const splitIntoWordBoundedSegments = (
-  text: string,
-  maxWordsPerSegment: number = KOKORO_MAX_WORDS_PER_SEGMENT,
-): string[] => {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return [];
-  const safeMaxWords = Math.max(1, Math.floor(Number(maxWordsPerSegment) || KOKORO_MAX_WORDS_PER_SEGMENT));
-  if (countWords(normalized) <= safeMaxWords) return [normalized];
+const normalizeChunkText = (value: string): string => (
+  String(value || '').replace(/\s+/g, ' ').trim()
+);
 
-  const words = normalized.split(' ').filter(Boolean);
-  const segments: string[] = [];
-  for (let index = 0; index < words.length; index += safeMaxWords) {
-    const chunk = words.slice(index, index + safeMaxWords).join(' ').trim();
-    if (chunk) {
-      segments.push(chunk);
-    }
+const splitIntoSentenceUnits = (text: string): string[] => {
+  const rawLines = String(text || '').split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  return rawLines.flatMap((line) => (
+    line.match(/[^.!?]+[.!?]?/g)?.map((item) => normalizeChunkText(item)).filter(Boolean) || []
+  ));
+};
+
+const splitIntoClauseUnits = (text: string): string[] => (
+  normalizeChunkText(text)
+    .split(/(?<=[,;:])\s+/)
+    .map((item) => normalizeChunkText(item))
+    .filter(Boolean)
+);
+
+const splitByWordCap = (text: string, maxWords: number): string[] => {
+  const safeMax = Math.max(1, Math.floor(Number(maxWords) || 1));
+  const words = normalizeChunkText(text).split(' ').filter(Boolean);
+  if (words.length <= safeMax) {
+    return words.length > 0 ? [words.join(' ')] : [];
   }
-  return segments.length > 0 ? segments : [normalized];
+  const chunks: string[] = [];
+  for (let index = 0; index < words.length; index += safeMax) {
+    const chunk = words.slice(index, index + safeMax).join(' ').trim();
+    if (chunk) chunks.push(chunk);
+  }
+  return chunks;
+};
+
+const splitOversizedUnitForStream = (unit: string, hardCapWords: number): string[] => {
+  const normalized = normalizeChunkText(unit);
+  if (!normalized) return [];
+  if (countWords(normalized) <= hardCapWords) return [normalized];
+
+  const clauses = splitIntoClauseUnits(normalized);
+  if (clauses.length > 1) {
+    return clauses.flatMap((clause) => {
+      if (countWords(clause) <= hardCapWords) return [clause];
+      return splitByWordCap(clause, hardCapWords);
+    });
+  }
+  return splitByWordCap(normalized, hardCapWords);
+};
+
+const packUnitsByWordBudget = (
+  units: string[],
+  targetWords: number,
+  hardCapWords: number,
+): string[] => {
+  const safeTarget = Math.max(1, Math.floor(Number(targetWords) || 1));
+  const safeHardCap = Math.max(safeTarget, Math.floor(Number(hardCapWords) || safeTarget));
+  const chunks: string[] = [];
+  let current = '';
+  let currentWords = 0;
+
+  const commitCurrent = (): void => {
+    const normalized = normalizeChunkText(current);
+    if (!normalized) return;
+    chunks.push(normalized);
+    current = '';
+    currentWords = 0;
+  };
+
+  for (const rawUnit of units) {
+    const unit = normalizeChunkText(rawUnit);
+    if (!unit) continue;
+    const unitWords = countWords(unit);
+    if (unitWords <= 0) continue;
+    if (!current) {
+      current = unit;
+      currentWords = unitWords;
+      continue;
+    }
+    const mergedWords = currentWords + unitWords;
+    if (currentWords < safeTarget && mergedWords <= safeHardCap) {
+      current = `${current} ${unit}`.trim();
+      currentWords = mergedWords;
+      continue;
+    }
+    commitCurrent();
+    current = unit;
+    currentWords = unitWords;
+  }
+
+  commitCurrent();
+  return chunks;
+};
+
+const planSentenceSafeLiveChunks = (text: string): string[] => {
+  const normalizedText = normalizeChunkText(text);
+  if (!normalizedText) return [];
+
+  const sentenceUnits = splitIntoSentenceUnits(normalizedText);
+  if (sentenceUnits.length <= 0) {
+    return splitByWordCap(normalizedText, KOKORO_STREAM_CHUNK_HARD_CAP_WORDS);
+  }
+
+  const [firstSentence, ...remainingSentences] = sentenceUnits;
+  const firstCandidate = normalizeChunkText(firstSentence || '');
+  const firstChunkPieces = (() => {
+    if (!firstCandidate) return [];
+    const firstWords = countWords(firstCandidate);
+    if (firstWords <= KOKORO_FIRST_CHUNK_HARD_CAP_WORDS) {
+      return [firstCandidate];
+    }
+    const clauses = splitIntoClauseUnits(firstCandidate);
+    if (clauses.length > 1) {
+      return packUnitsByWordBudget(
+        clauses.flatMap((clause) => splitOversizedUnitForStream(clause, KOKORO_FIRST_CHUNK_HARD_CAP_WORDS)),
+        KOKORO_FIRST_CHUNK_TARGET_WORDS,
+        KOKORO_FIRST_CHUNK_HARD_CAP_WORDS,
+      );
+    }
+    return splitByWordCap(firstCandidate, KOKORO_FIRST_CHUNK_HARD_CAP_WORDS);
+  })();
+
+  const firstChunk = firstChunkPieces[0] || firstCandidate;
+  const carryOverUnits = firstChunkPieces.slice(1);
+  const streamUnits = [...carryOverUnits, ...remainingSentences]
+    .flatMap((unit) => splitOversizedUnitForStream(unit, KOKORO_STREAM_CHUNK_HARD_CAP_WORDS));
+  const streamChunks = packUnitsByWordBudget(
+    streamUnits,
+    KOKORO_STREAM_CHUNK_TARGET_WORDS,
+    KOKORO_STREAM_CHUNK_HARD_CAP_WORDS,
+  );
+  const output = [firstChunk, ...streamChunks].map((chunk) => normalizeChunkText(chunk)).filter(Boolean);
+  return output.length > 0 ? output : [normalizedText];
+};
+
+export const __kokoroBrowserRuntimePlannerTestOnly = {
+  planSentenceSafeLiveChunks,
 };
 
 const isBuiltInVoice = (tts: KokoroTTS, voiceId: string): boolean => (
@@ -850,8 +897,7 @@ class KokoroBrowserRuntime {
     const selectedVoice = resolveCompatibleVoiceId(voiceId, options.language, prepared.isHindi);
     const useHindiVoicePath = prepared.isHindi || isHindiLanguageHint(options.language) || HINDI_VOICES.has(selectedVoice);
     await this.primeVoiceAsset(resolvedBackendBase, selectedVoice);
-    const segments = splitIntoWordBoundedSegments(prepared.preparedText, KOKORO_MAX_WORDS_PER_SEGMENT);
-    const textChunks = segments.flatMap((segmentText) => splitForStableTokenization(segmentText, useHindiVoicePath));
+    const textChunks = planSentenceSafeLiveChunks(prepared.preparedText);
 
     const chunks: KokoroLiveChunk[] = [];
     const mergedParts: Float32Array[] = [];

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Compass, Search } from 'lucide-react';
+import { Compass, PlayCircle, Search, UploadCloud } from 'lucide-react';
 import type { ReaderCatalogItem, ReaderLibrary, ReaderSession } from '../../../../types';
 import { getReaderPrimaryAction, type ReaderSurfaceFilter } from '../model/library';
 
@@ -12,12 +12,14 @@ interface ReaderBrowseHomeProps {
   surface: ReaderSurfaceFilter;
   regionId: string;
   searchQuery: string;
+  resultsCountLabel: string;
   isLoading: boolean;
   onSelectSurface: (surface: ReaderSurfaceFilter) => void;
   onSelectRegion: (regionId: string) => void;
   onSetSearchQuery: (value: string) => void;
   onSelectItem: (itemId: string) => void;
   onOpenItem: (itemId: string) => void;
+  onOpenImport: () => void;
   onResumeSession: () => void;
   resolveMediaUrl: (url: string | undefined) => string;
   formatCompactStat: (item: ReaderCatalogItem | null) => string;
@@ -193,15 +195,20 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   library,
   filteredItems,
   selectedItemId,
+  resumeSession,
+  resumeItem,
   surface,
   regionId,
   searchQuery,
+  resultsCountLabel,
   isLoading,
   onSelectSurface,
   onSelectRegion,
   onSetSearchQuery,
   onSelectItem,
   onOpenItem,
+  onOpenImport,
+  onResumeSession,
   resolveMediaUrl,
   formatCompactStat,
   formatProgressLabel,
@@ -210,6 +217,10 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   const discoveryRail = useMemo(() => buildShelf(library?.shelves.trending || [], surface), [library?.shelves.trending, surface]);
   const readingLibrary = useMemo(() => buildReadingLibrary(library?.items || [], surface), [library?.items, surface]);
   const newArrivals = useMemo(() => buildShelf(library?.shelves.newArrivals || [], surface), [library?.shelves.newArrivals, surface]);
+  const selectedItem = useMemo(
+    () => (library?.items || []).find((item) => item.id === selectedItemId) || null,
+    [library?.items, selectedItemId]
+  );
   const hasCommercialPolicy = Boolean(library?.commercialPolicyVersion || library?.blockedProviders?.length);
   const regionOptions = useMemo(() => {
     const safeRegions = (library?.regions || []).filter((region) => {
@@ -280,6 +291,37 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
                 </select>
               </label>
             </div>
+          </div>
+          <div className="vf-reader-home__hero-quick">
+            <div className="vf-reader-home__hero-summary">
+              <strong>{selectedItem?.title || 'Select a title from the shelves'}</strong>
+              <span>{selectedItem ? formatCompactStat(selectedItem) : resultsCountLabel}</span>
+            </div>
+            <button
+              type="button"
+              className="vf-reader-home__ghost"
+              onClick={onOpenImport}
+            >
+              <UploadCloud size={14} />
+              Import To Player
+            </button>
+            <button
+              type="button"
+              className="vf-reader-home__primary"
+              onClick={() => {
+                if (!selectedItem) return;
+                onOpenItem(selectedItem.id);
+              }}
+              disabled={!selectedItem}
+            >
+              <PlayCircle size={14} />
+              Open Selected
+            </button>
+            {resumeSession && resumeItem ? (
+              <button type="button" className="vf-reader-home__ghost" onClick={onResumeSession}>
+                Resume {resumeItem.title}
+              </button>
+            ) : null}
           </div>
         </div>
       </section>

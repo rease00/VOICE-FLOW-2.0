@@ -16,6 +16,8 @@ def _reset_inmemory_state() -> None:
     backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
     backend_app._INMEMORY_COUPONS.clear()
     backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
+    backend_app._INMEMORY_ACCOUNTING_DAILY_ROLLUP.clear()
+    backend_app._INMEMORY_ACCOUNTING_MONITOR_RUNS.clear()
     backend_app._INMEMORY_USER_PROFILES.clear()
     backend_app._INMEMORY_USER_ID_INDEX.clear()
     backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
@@ -90,6 +92,45 @@ def test_admin_endpoint_allows_local_admin_uid_only_in_dev_mode(monkeypatch) -> 
 
     non_admin = client.get("/admin/users", headers={"x-dev-uid": "plain_dev_user"})
     assert non_admin.status_code == 403
+
+
+def test_admin_actor_requires_ops_read_permission(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENABLED", True)
+    monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
+
+    backend_app._rbac_write_assignment(
+        "billing_actor_user",
+        {
+            "role": backend_app.RBAC_ROLE_BILLING_OPS,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "updatedBy": "seed",
+        },
+    )
+    backend_app._rbac_write_assignment(
+        "ops_reader_user",
+        {
+            "role": backend_app.RBAC_ROLE_READ_ONLY_OPS,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "updatedBy": "seed",
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    denied = client.get("/admin/actor", headers={"x-dev-uid": "billing_actor_user"})
+    assert denied.status_code == 403
+    assert "Missing permission: ops.read" in str((denied.json() or {}).get("detail") or "")
+
+    allowed = client.get("/admin/actor", headers={"x-dev-uid": "ops_reader_user"})
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload.get("ok") is True
+    assert str(((payload.get("actor") or {}).get("role") or "")).strip() == backend_app.RBAC_ROLE_READ_ONLY_OPS
 
 
 def test_auth_token_without_uid_is_rejected(monkeypatch) -> None:
@@ -232,6 +273,42 @@ class _TxServiceDisabledFirestore:
         return _wrapped
 
 
+class _FakeAuthRecord:
+    def __init__(
+        self,
+        uid: str,
+        *,
+        email: str = "",
+        display_name: str = "",
+        disabled: bool = False,
+        custom_claims: dict | None = None,
+    ) -> None:
+        self.uid = uid
+        self.email = email
+        self.display_name = display_name
+        self.disabled = disabled
+        self.custom_claims = dict(custom_claims or {})
+
+
+class _FakeListUsersPage:
+    def __init__(self, records: list[_FakeAuthRecord]) -> None:
+        self._records = list(records)
+
+    def iterate_all(self):
+        return iter(self._records)
+
+
+class _FakeFirebaseAuthAdmin:
+    def __init__(self, records: list[_FakeAuthRecord]) -> None:
+        self._records = list(records)
+
+    def list_users(self) -> _FakeListUsersPage:
+        return _FakeListUsersPage(self._records)
+
+    def get_user(self, uid: str) -> _FakeAuthRecord:
+        raise AssertionError(f"get_user should not be called during admin user listing for {uid}")
+
+
 def test_user_profile_upsert_falls_back_on_firestore_transaction_id_failure(monkeypatch) -> None:
     _reset_inmemory_state()
     fake_db = _FakeFirestoreDb()
@@ -345,6 +422,103 @@ def test_account_profile_routes_allow_userid_when_firestore_service_disabled(mon
     assert read_payload.get("ok") is True
     assert bool(read_payload.get("requiredUserId")) is False
     assert str((read_payload.get("profile") or {}).get("userId") or "") == "admin1"
+
+
+def test_admin_users_endpoint_repairs_colliding_backfill_user_ids(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_firebase_ready", lambda: True)
+    monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
+    monkeypatch.setattr(
+        backend_app,
+        "firebase_auth",
+        _FakeFirebaseAuthAdmin(
+            [
+                _FakeAuthRecord("uid_existing", email="same@example.com", display_name="Same"),
+                _FakeAuthRecord("uid_new_1234", email="same@example.com", display_name="Same Clone"),
+            ]
+        ),
+    )
+    backend_app._INMEMORY_USER_PROFILES["uid_existing"] = {
+        "uid": "uid_existing",
+        "userId": "same",
+        "displayName": "Same",
+        "email": "same@example.com",
+        "status": "active",
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "updatedAt": "2026-01-01T00:00:00+00:00",
+        "createdBy": "seed",
+        "updatedBy": "seed",
+    }
+    backend_app._INMEMORY_USER_ID_INDEX["same"] = {
+        "userId": "same",
+        "uid": "uid_existing",
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "updatedAt": "2026-01-01T00:00:00+00:00",
+    }
+
+    client = TestClient(backend_app.app)
+    response = client.get("/admin/users", headers={"x-dev-uid": "local_admin"})
+    assert response.status_code == 200
+    payload = response.json()
+    users_by_uid = {str(item.get("uid") or ""): item for item in payload.get("users") or []}
+    assert users_by_uid["uid_new_1234"]["userId"] == "same_1234"
+    assert users_by_uid["uid_existing"]["userId"] == "same"
+    profile = backend_app._INMEMORY_USER_PROFILES.get("uid_new_1234") or {}
+    assert str(profile.get("userId") or "") == "same_1234"
+
+
+def test_admin_users_endpoint_does_not_create_default_entitlement_or_usage_docs(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_firebase_ready", lambda: True)
+    monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
+    monkeypatch.setattr(
+        backend_app,
+        "firebase_auth",
+        _FakeFirebaseAuthAdmin([_FakeAuthRecord("uid_reader_1", email="reader@example.com", display_name="Reader One")]),
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.get("/admin/users", headers={"x-dev-uid": "local_admin"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("count") == 1
+    row = (payload.get("users") or [])[0]
+    assert row["plan"] == "Free"
+    assert row["wallet"]["paidVfBalance"] == 0
+    assert row["wallet"]["vffBalance"] == pytest.approx(float(backend_app.VF_FREE_MONTHLY_VFF_GRANT))
+    assert row["usage"]["monthlyVfUsed"] == 0
+    assert row["usage"]["dailyGenerationUsed"] == 0
+    assert backend_app._INMEMORY_ENTITLEMENTS == {}
+    assert backend_app._INMEMORY_USAGE_MONTHLY == {}
+    assert backend_app._INMEMORY_USAGE_DAILY == {}
+
+
+def test_admin_users_search_handles_missing_profiles_from_firebase_listing(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_firebase_ready", lambda: True)
+    monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
+    monkeypatch.setattr(
+        backend_app,
+        "firebase_auth",
+        _FakeFirebaseAuthAdmin(
+            [
+                _FakeAuthRecord("uid_other_1", email="other@example.com", display_name="Other User"),
+                _FakeAuthRecord("uid_search_9999", display_name="Search User"),
+            ]
+        ),
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.get("/admin/users?q=search_user", headers={"x-dev-uid": "local_admin"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("count") == 1
+    row = (payload.get("users") or [])[0]
+    assert row["uid"] == "uid_search_9999"
+    assert row["userId"] == "search_user"
 
 
 class _DummyRuntimeResponse:

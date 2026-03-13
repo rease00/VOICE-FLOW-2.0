@@ -624,8 +624,8 @@ def test_admin_gemini_pools_rotate_persists_authoritative_file_order(monkeypatch
     assert payload["rotation"]["beforeHead"]["fingerprint"] != payload["rotation"]["afterHead"]["fingerprint"]
     _assert_masked_pool_keys(payload["config"], "free", 3)
 
-    rotated_lines = [line.strip() for line in keys_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert rotated_lines == [free_b, free_c, free_a]
+    rotated_keys = backend_app._read_gemini_keys_from_file(str(keys_path))
+    assert rotated_keys == [free_b, free_c, free_a]
 
     backend_app._GEMINI_POOLS_CACHE = None
     backend_app._GEMINI_POOLS_META = {}
@@ -1412,6 +1412,51 @@ def test_tts_success_limit_idempotency_key_does_not_double_count(monkeypatch) ->
     assert first.headers.get("x-ratelimit-success-remaining") == str(max(0, free_limit - 1))
     assert second_same.headers.get("x-ratelimit-success-remaining") == str(max(0, free_limit - 1))
     assert extra_unique[-1].headers.get("x-ratelimit-success-remaining") == "0"
+
+
+def test_tts_synthesize_rejects_cross_user_request_id_collision(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_resolve_request_user_id", lambda _request, uid: f"{uid}_id")
+    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda _request, uid: {"uid": uid, "userId": f"{uid}_id"})
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+    client = TestClient(backend_app.app)
+    shared_request_id = "req_cross_user_collision_1"
+
+    first = client.post(
+        "/tts/synthesize?wait_ms=0",
+        headers={"x-dev-uid": "collision_user_a"},
+        json={
+            "engine": "NEURAL2",
+            "text": "first tenant payload",
+            "voice_id": "v2",
+            "request_id": shared_request_id,
+        },
+    )
+    assert first.status_code == 202
+    first_payload = first.json()
+    assert first_payload.get("jobId") == shared_request_id
+
+    second = client.post(
+        "/tts/synthesize?wait_ms=0",
+        headers={"x-dev-uid": "collision_user_b"},
+        json={
+            "engine": "NEURAL2",
+            "text": "second tenant payload",
+            "voice_id": "v2",
+            "request_id": shared_request_id,
+        },
+    )
+    assert second.status_code == 409
+    detail = second.json().get("detail") or {}
+    assert detail.get("errorCode") == backend_app.REQUEST_ID_CONFLICT
+    assert detail.get("reason") == "request_id_owner_conflict"
+    assert detail.get("jobId") == shared_request_id
+
+    usage_key = f"collision_user_b_{shared_request_id}"
+    usage_event = backend_app._INMEMORY_USAGE_EVENTS.get(usage_key) or {}
+    assert usage_event.get("status") == "reverted"
+    assert str(usage_event.get("error") or "") == "request_id_owner_conflict"
 
 
 def test_wallet_spendable_now_includes_vff_for_gem() -> None:

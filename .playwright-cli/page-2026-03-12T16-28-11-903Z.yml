@@ -1,0 +1,718 @@
+- generic [ref=e2]:
+  - generic [ref=e117]:
+    - complementary [ref=e118]:
+      - generic [ref=e120]:
+        - generic [ref=e121]:
+          - img [ref=e125]
+          - img [ref=e129]
+          - img [ref=e133]
+        - generic [ref=e135]:
+          - generic [ref=e136]: VoiceFlow
+          - generic [ref=e137]: AI Studio
+      - navigation [ref=e138]:
+        - button "Studio" [ref=e139]:
+          - img [ref=e141]
+          - generic [ref=e144]: Studio
+        - button "Podcast" [ref=e145]:
+          - img [ref=e147]
+          - generic [ref=e153]: Podcast
+        - button "Reader" [ref=e154]:
+          - img [ref=e156]
+          - generic [ref=e160]: Reader
+        - button "Novel" [ref=e161]:
+          - img [ref=e163]
+          - generic [ref=e165]: Novel
+        - button "Character" [ref=e166]:
+          - img [ref=e168]
+          - generic [ref=e171]: Character
+        - button "History" [ref=e172]:
+          - img [ref=e174]
+          - generic [ref=e178]: History
+        - button "Shop" [ref=e179]:
+          - img [ref=e181]
+          - generic [ref=e186]: Shop
+        - button "Admin" [ref=e187]:
+          - img [ref=e189]
+          - generic [ref=e192]: Admin
+      - generic [ref=e194]:
+        - button "Sign Out" [ref=e195]:
+          - img [ref=e196]
+          - text: Sign Out
+        - button "Open profile" [ref=e199]:
+          - generic [ref=e200]: a
+          - generic [ref=e201]:
+            - generic [ref=e202]: admin
+            - generic [ref=e203]: admin@local.admin
+          - img [ref=e204]
+    - main [ref=e207]:
+      - generic [ref=e209]:
+        - button "Open navigation menu" [ref=e210]:
+          - img [ref=e211]
+        - generic [ref=e212]:
+          - generic [ref=e215]:
+            - img [ref=e219]
+            - img [ref=e223]
+            - img [ref=e227]
+          - generic [ref=e229]:
+            - generic [ref=e230]: Workspace
+            - generic [ref=e231]: Studio
+        - generic [ref=e233]:
+          - 'button "Basic runtime: Standby" [ref=e234]':
+            - img [ref=e238]
+            - generic [ref=e241]: Bas
+          - 'button "Vector runtime: Online" [ref=e242]':
+            - img [ref=e246]
+            - generic [ref=e248]: Vec
+          - 'button "Prime runtime: Online" [ref=e249]':
+            - img [ref=e253]
+            - generic [ref=e255]: Pri
+        - generic [ref=e256]:
+          - button "Open plan and credits" [ref=e257]:
+            - img [ref=e258]
+            - generic [ref=e261]: Unlimited
+            - generic [ref=e262]: "|"
+            - generic [ref=e263]: Today 0 gens
+            - generic [ref=e264]: Upgrade
+          - button "Open notifications" [ref=e265]:
+            - img [ref=e266]
+          - button "Open configuration" [ref=e269]:
+            - img [ref=e270]
+      - generic [ref=e276]:
+        - generic [ref=e278]:
+          - generic [ref=e279]:
+            - generic [ref=e280]:
+              - button "Pause" [ref=e281]:
+                - img [ref=e282]
+                - generic [ref=e285]: Pause
+              - button "Whisper" [ref=e286]:
+                - img [ref=e287]
+                - generic [ref=e291]: Whisper
+              - generic [ref=e292]:
+                - button "Grammar" [ref=e293]:
+                  - img [ref=e294]
+                  - generic [ref=e297]: Grammar
+                - button "Flow" [ref=e299]:
+                  - img [ref=e300]
+                  - generic [ref=e303]: Flow
+                - button "Audio Novel" [ref=e305]:
+                  - img [ref=e306]
+                  - generic [ref=e308]: Audio Novel
+              - button "Clear studio script" [ref=e309]:
+                - img [ref=e310]
+            - generic [ref=e313]:
+              - button "Import" [ref=e314]:
+                - img [ref=e315]
+                - generic [ref=e318]: Import
+              - button "Assistant" [ref=e319]:
+                - img [ref=e320]
+                - generic [ref=e323]: Assistant
+              - button "AI Director" [ref=e324]:
+                - img [ref=e325]
+                - generic [ref=e328]: AI Director
+          - generic [ref=e330]:
+            - generic [ref=e332]:
+              - button "Blocks" [ref=e333]
+              - button "Raw" [ref=e334]
+            - textbox "Write your script here... The AI Director can auto-assign voices for characters." [ref=e335]
+          - generic [ref=e336]:
+            - generic [ref=e338]:
+              - img [ref=e339]
+              - generic [ref=e343]: "Translate:"
+              - generic [ref=e344]:
+                - button "Hinglish" [ref=e345]
+                - button "English" [ref=e346]
+                - button "Hindi" [ref=e347]
+                - combobox [ref=e348] [cursor=pointer]:
+                  - option "English"
+                  - option "English (US)"
+                  - option "English (UK)"
+                  - option "English (Australia)"
+                  - option "English (Canada)"
+                  - option "English (India)"
+                  - option "Hindi"
+                  - option "Hinglish" [selected]
+                  - option "Bengali"
+                  - option "Telugu"
+                  - option "Marathi"
+                  - option "Tamil"
+                  - option "Urdu"
+                  - option "Gujarati"
+                  - option "Kannada"
+                  - option "Malayalam"
+                  - option "Punjabi"
+                  - option "Odia"
+                  - option "Spanish"
+                  - option "French"
+                  - option "German"
+                  - option "Italian"
+                  - option "Portuguese"
+                  - option "Portuguese (Brazil)"
+                  - option "Russian"
+                  - option "Dutch"
+                  - option "Polish"
+                  - option "Swedish"
+                  - option "Danish"
+                  - option "Finnish"
+                  - option "Norwegian"
+                  - option "Ukrainian"
+                  - option "Greek"
+                  - option "Czech"
+                  - option "Romanian"
+                  - option "Hungarian"
+                  - option "Bulgarian"
+                  - option "Croatian"
+                  - option "Slovak"
+                  - option "Slovenian"
+                  - option "Lithuanian"
+                  - option "Latvian"
+                  - option "Estonian"
+                  - option "Icelandic"
+                  - option "Irish"
+                  - option "Welsh"
+                  - option "Albanian"
+                  - option "Macedonian"
+                  - option "Serbian"
+                  - option "Bosnian"
+                  - option "Chinese (Simplified)"
+                  - option "Chinese (Traditional)"
+                  - option "Japanese"
+                  - option "Korean"
+                  - option "Thai"
+                  - option "Vietnamese"
+                  - option "Indonesian"
+                  - option "Malay"
+                  - option "Filipino"
+                  - option "Lao"
+                  - option "Burmese"
+                  - option "Khmer"
+                  - option "Nepali"
+                  - option "Sinhala"
+                  - option "Arabic"
+                  - option "Hebrew"
+                  - option "Persian"
+                  - option "Turkish"
+                  - option "Swahili"
+                  - option "Amharic"
+                  - option "Hausa"
+                  - option "Yoruba"
+                  - option "Igbo"
+                  - option "Zulu"
+                  - option "Xhosa"
+                  - option "Afrikaans"
+                  - option "Azerbaijani"
+                  - option "Kazakh"
+                  - option "Uzbek"
+                  - option "Georgian"
+                  - option "Armenian"
+                  - option "Mongolian"
+                  - option "Pashto"
+            - button "Run Translate" [ref=e349]:
+              - img [ref=e350]
+              - text: Run Translate
+          - generic [ref=e353]:
+            - generic [ref=e355]: 0 chars
+            - generic [ref=e356]:
+              - button "Queue Off" [ref=e357]:
+                - img [ref=e358]
+                - text: Queue Off
+              - button "Multi-Speaker On" [ref=e361]:
+                - img [ref=e362]
+                - text: Multi-Speaker On
+              - button "Save Draft" [ref=e367]:
+                - img [ref=e368]
+                - text: Save Draft
+        - generic [ref=e372]:
+          - generic [ref=e374]:
+            - button "Voice" [pressed] [ref=e375]:
+              - img [ref=e376]
+              - text: Voice
+            - button "Mix" [ref=e380]:
+              - img [ref=e381]
+              - text: Mix
+            - button "Cast" [ref=e382]:
+              - img [ref=e383]
+              - text: Cast
+            - button "Queue" [ref=e386]:
+              - img [ref=e387]
+              - text: Queue
+          - generic [ref=e391]:
+            - generic [ref=e392]:
+              - heading "Speaker" [level=3] [ref=e393]
+              - generic [ref=e394]:
+                - generic [ref=e395]: Prime
+                - generic [ref=e396]: 30 voices
+            - generic [ref=e397]:
+              - generic [ref=e398]:
+                - generic [ref=e399]:
+                  - generic [ref=e400]: Free Speakers
+                  - generic [ref=e401]: "10"
+                - generic [ref=e402]:
+                  - button "A Arjun India Male US Male Adult" [ref=e403]:
+                    - generic [ref=e404]: A
+                    - generic [ref=e405]:
+                      - generic [ref=e406]:
+                        - generic [ref=e407]: Arjun India Male
+                        - generic [ref=e408]: US
+                      - generic [ref=e409]: Male Adult
+                  - button "M Meera India Female US Female Adult" [ref=e410]:
+                    - generic [ref=e411]: M
+                    - generic [ref=e412]:
+                      - generic [ref=e413]:
+                        - generic [ref=e414]: Meera India Female
+                        - generic [ref=e415]: US
+                      - generic [ref=e416]: Female Adult
+                  - button "E Ethan US Male US Male Adult" [ref=e417]:
+                    - generic [ref=e418]: E
+                    - generic [ref=e419]:
+                      - generic [ref=e420]:
+                        - generic [ref=e421]: Ethan US Male
+                        - generic [ref=e422]: US
+                      - generic [ref=e423]: Male Adult
+                  - button "A Ava US Female US Female Adult" [ref=e424]:
+                    - generic [ref=e425]: A
+                    - generic [ref=e426]:
+                      - generic [ref=e427]:
+                        - generic [ref=e428]: Ava US Female
+                        - generic [ref=e429]: US
+                      - generic [ref=e430]: Female Adult
+                  - button "O Oliver UK Male US Male Adult" [ref=e431]:
+                    - generic [ref=e432]: O
+                    - generic [ref=e433]:
+                      - generic [ref=e434]:
+                        - generic [ref=e435]: Oliver UK Male
+                        - generic [ref=e436]: US
+                      - generic [ref=e437]: Male Adult
+                  - button "E Emily UK Female US Female Adult" [ref=e438]:
+                    - generic [ref=e439]: E
+                    - generic [ref=e440]:
+                      - generic [ref=e441]:
+                        - generic [ref=e442]: Emily UK Female
+                        - generic [ref=e443]: US
+                      - generic [ref=e444]: Female Adult
+                  - button "L Liam Canada Male US Male Adult" [ref=e445]:
+                    - generic [ref=e446]: L
+                    - generic [ref=e447]:
+                      - generic [ref=e448]:
+                        - generic [ref=e449]: Liam Canada Male
+                        - generic [ref=e450]: US
+                      - generic [ref=e451]: Male Adult
+                  - button "S Sophie Canada Female US Female Adult" [ref=e452]:
+                    - generic [ref=e453]: S
+                    - generic [ref=e454]:
+                      - generic [ref=e455]:
+                        - generic [ref=e456]: Sophie Canada Female
+                        - generic [ref=e457]: US
+                      - generic [ref=e458]: Female Adult
+                  - button "N Noah Australia Male UK Male Adult" [ref=e459]:
+                    - generic [ref=e460]: "N"
+                    - generic [ref=e461]:
+                      - generic [ref=e462]:
+                        - generic [ref=e463]: Noah Australia Male
+                        - generic [ref=e464]: UK
+                      - generic [ref=e465]: Male Adult
+                  - button "I Isla Australia Female UK Female Adult" [ref=e466]:
+                    - generic [ref=e467]: I
+                    - generic [ref=e468]:
+                      - generic [ref=e469]:
+                        - generic [ref=e470]: Isla Australia Female
+                        - generic [ref=e471]: UK
+                      - generic [ref=e472]: Female Adult
+              - generic [ref=e473]:
+                - generic [ref=e474]:
+                  - generic [ref=e475]: Pro Speakers
+                  - generic [ref=e476]: "20"
+                - generic [ref=e477]:
+                  - button "K Kenji Japan Male UK Male Adult" [ref=e478]:
+                    - generic [ref=e479]: K
+                    - generic [ref=e480]:
+                      - generic [ref=e481]:
+                        - generic [ref=e482]: Kenji Japan Male
+                        - generic [ref=e483]: UK
+                      - generic [ref=e484]: Male Adult
+                  - button "Y Yui Japan Female UK Female Adult" [ref=e485]:
+                    - generic [ref=e486]: "Y"
+                    - generic [ref=e487]:
+                      - generic [ref=e488]:
+                        - generic [ref=e489]: Yui Japan Female
+                        - generic [ref=e490]: UK
+                      - generic [ref=e491]: Female Adult
+                  - button "L Lucas Brazil Male UK Male Adult" [ref=e492]:
+                    - generic [ref=e493]: L
+                    - generic [ref=e494]:
+                      - generic [ref=e495]:
+                        - generic [ref=e496]: Lucas Brazil Male
+                        - generic [ref=e497]: UK
+                      - generic [ref=e498]: Male Adult
+                  - button "C Camila Brazil Female UK Female Adult" [ref=e499]:
+                    - generic [ref=e500]: C
+                    - generic [ref=e501]:
+                      - generic [ref=e502]:
+                        - generic [ref=e503]: Camila Brazil Female
+                        - generic [ref=e504]: UK
+                      - generic [ref=e505]: Female Adult
+                  - button "M Mateo Spain Male AU Male Adult" [ref=e506]:
+                    - generic [ref=e507]: M
+                    - generic [ref=e508]:
+                      - generic [ref=e509]:
+                        - generic [ref=e510]: Mateo Spain Male
+                        - generic [ref=e511]: AU
+                      - generic [ref=e512]: Male Adult
+                  - button "V Valentina Spain Female AU Female Adult" [ref=e513]:
+                    - generic [ref=e514]: V
+                    - generic [ref=e515]:
+                      - generic [ref=e516]:
+                        - generic [ref=e517]: Valentina Spain Female
+                        - generic [ref=e518]: AU
+                      - generic [ref=e519]: Female Adult
+                  - button "A Adi India BOY Boy" [ref=e520]:
+                    - generic [ref=e521]: A
+                    - generic [ref=e522]:
+                      - generic [ref=e523]:
+                        - generic [ref=e524]: Adi India
+                        - generic [ref=e525]: BOY
+                      - generic [ref=e526]: Boy
+                  - button "T Tara India Girl AU Girl" [ref=e527]:
+                    - generic [ref=e528]: T
+                    - generic [ref=e529]:
+                      - generic [ref=e530]:
+                        - generic [ref=e531]: Tara India Girl
+                        - generic [ref=e532]: AU
+                      - generic [ref=e533]: Girl
+                  - button "R Raghu India Elder CA Old Man" [ref=e534]:
+                    - generic [ref=e535]: R
+                    - generic [ref=e536]:
+                      - generic [ref=e537]:
+                        - generic [ref=e538]: Raghu India Elder
+                        - generic [ref=e539]: CA
+                      - generic [ref=e540]: Old Man
+                  - button "G Grace UK Elder CA Old Lady" [ref=e541]:
+                    - generic [ref=e542]: G
+                    - generic [ref=e543]:
+                      - generic [ref=e544]:
+                        - generic [ref=e545]: Grace UK Elder
+                        - generic [ref=e546]: CA
+                      - generic [ref=e547]: Old Lady
+                  - button "N Noir Novel Artist CA Male Adult" [ref=e548]:
+                    - generic [ref=e549]: "N"
+                    - generic [ref=e550]:
+                      - generic [ref=e551]:
+                        - generic [ref=e552]: Noir Novel Artist
+                        - generic [ref=e553]: CA
+                      - generic [ref=e554]: Male Adult
+                  - button "L Lyris Novel Artist IE Female Adult" [ref=e555]:
+                    - generic [ref=e556]: L
+                    - generic [ref=e557]:
+                      - generic [ref=e558]:
+                        - generic [ref=e559]: Lyris Novel Artist
+                        - generic [ref=e560]: IE
+                      - generic [ref=e561]: Female Adult
+                  - button "H Hans Germany Male IE Male Adult" [ref=e562]:
+                    - generic [ref=e563]: H
+                    - generic [ref=e564]:
+                      - generic [ref=e565]:
+                        - generic [ref=e566]: Hans Germany Male
+                        - generic [ref=e567]: IE
+                      - generic [ref=e568]: Male Adult
+                  - button "A Anna Germany Female IE Female Adult" [ref=e569]:
+                    - generic [ref=e570]: A
+                    - generic [ref=e571]:
+                      - generic [ref=e572]:
+                        - generic [ref=e573]: Anna Germany Female
+                        - generic [ref=e574]: IE
+                      - generic [ref=e575]: Female Adult
+                  - button "P Pierre France Male UK Male Adult" [ref=e576]:
+                    - generic [ref=e577]: P
+                    - generic [ref=e578]:
+                      - generic [ref=e579]:
+                        - generic [ref=e580]: Pierre France Male
+                        - generic [ref=e581]: UK
+                      - generic [ref=e582]: Male Adult
+                  - button "C Claire France Female UK Female Adult" [ref=e583]:
+                    - generic [ref=e584]: C
+                    - generic [ref=e585]:
+                      - generic [ref=e586]:
+                        - generic [ref=e587]: Claire France Female
+                        - generic [ref=e588]: UK
+                      - generic [ref=e589]: Female Adult
+                  - button "O Omar UAE Male IN Male Adult" [ref=e590]:
+                    - generic [ref=e591]: O
+                    - generic [ref=e592]:
+                      - generic [ref=e593]:
+                        - generic [ref=e594]: Omar UAE Male
+                        - generic [ref=e595]: IN
+                      - generic [ref=e596]: Male Adult
+                  - button "L Leila UAE Female IN Female Adult" [ref=e597]:
+                    - generic [ref=e598]: L
+                    - generic [ref=e599]:
+                      - generic [ref=e600]:
+                        - generic [ref=e601]: Leila UAE Female
+                        - generic [ref=e602]: IN
+                      - generic [ref=e603]: Female Adult
+                  - button "I Ivan Russia Male IN Male Adult" [ref=e604]:
+                    - generic [ref=e605]: I
+                    - generic [ref=e606]:
+                      - generic [ref=e607]:
+                        - generic [ref=e608]: Ivan Russia Male
+                        - generic [ref=e609]: IN
+                      - generic [ref=e610]: Male Adult
+                  - button "A Alina Russia Female IN Female Adult" [ref=e611]:
+                    - generic [ref=e612]: A
+                    - generic [ref=e613]:
+                      - generic [ref=e614]:
+                        - generic [ref=e615]: Alina Russia Female
+                        - generic [ref=e616]: IN
+                      - generic [ref=e617]: Female Adult
+            - generic [ref=e619]:
+              - heading "Emotion" [level=3] [ref=e620]
+              - combobox [ref=e621]:
+                - option "Neutral" [selected]
+                - option "Calm"
+                - option "Relaxed"
+                - option "Happy"
+                - option "Joyful"
+                - option "Cheerful"
+                - option "Excited"
+                - option "Energetic"
+                - option "Optimistic"
+                - option "Hopeful"
+                - option "Grateful"
+                - option "Confident"
+                - option "Determined"
+                - option "Heroic"
+                - option "Proud"
+                - option "Serious"
+                - option "Authoritative"
+                - option "Formal"
+                - option "Persuasive"
+                - option "Motivational"
+                - option "Warm Storytelling"
+                - option "Cinematic Narration"
+                - option "Dark Storytelling"
+                - option "Mystical"
+                - option "Devotional"
+                - option "Spiritual"
+                - option "Romantic"
+                - option "Loving"
+                - option "Affectionate"
+                - option "Empathetic"
+                - option "Compassionate"
+                - option "Reflective"
+                - option "Nostalgic"
+                - option "Melancholic"
+                - option "Sad"
+                - option "Tearful"
+                - option "Crying"
+                - option "Anxious"
+                - option "Fearful"
+                - option "Tense"
+                - option "Suspenseful"
+                - option "Surprised"
+                - option "Shocked"
+                - option "Disgusted"
+                - option "Angry"
+                - option "Furious"
+                - option "Frustrated"
+                - option "Sarcastic"
+                - option "Taunting"
+                - option "Mocking"
+                - option "Playful"
+                - option "Childlike"
+                - option "Elderly Gentle"
+                - option "Whispering"
+                - option "Soft Spoken"
+                - option "Breathless"
+                - option "Panting"
+                - option "Laughing"
+                - option "Sighing"
+                - option "Gasping"
+                - option "Shouting"
+                - option "Screaming"
+                - option "Coughing"
+                - option "Yawning"
+                - option "Throat Clearing"
+                - option "Sneezing"
+                - option "Moaning"
+          - generic [ref=e623]:
+            - heading "Audio Mix" [level=3] [ref=e624]:
+              - img [ref=e625]
+              - text: Audio Mix
+            - generic [ref=e627]:
+              - generic [ref=e628]:
+                - generic [ref=e629]:
+                  - generic [ref=e630]: Speech Speed
+                  - generic [ref=e631]: 1.0x
+                - slider [ref=e632]: "1"
+              - generic [ref=e633]:
+                - generic [ref=e634]: TTS Output Language
+                - combobox [ref=e635]:
+                  - option "Auto-Detect" [selected]
+                  - option "English"
+                  - option "English (US)"
+                  - option "English (UK)"
+                  - option "English (Australia)"
+                  - option "English (Canada)"
+                  - option "English (India)"
+                  - option "Hindi"
+                  - option "Hinglish"
+                  - option "Bengali"
+                  - option "Telugu"
+                  - option "Marathi"
+                  - option "Tamil"
+                  - option "Urdu"
+                  - option "Gujarati"
+                  - option "Kannada"
+                  - option "Malayalam"
+                  - option "Punjabi"
+                  - option "Odia"
+                  - option "Spanish"
+                  - option "French"
+                  - option "German"
+                  - option "Italian"
+                  - option "Portuguese"
+                  - option "Portuguese (Brazil)"
+                  - option "Russian"
+                  - option "Dutch"
+                  - option "Polish"
+                  - option "Swedish"
+                  - option "Danish"
+                  - option "Finnish"
+                  - option "Norwegian"
+                  - option "Ukrainian"
+                  - option "Greek"
+                  - option "Czech"
+                  - option "Romanian"
+                  - option "Hungarian"
+                  - option "Bulgarian"
+                  - option "Croatian"
+                  - option "Slovak"
+                  - option "Slovenian"
+                  - option "Lithuanian"
+                  - option "Latvian"
+                  - option "Estonian"
+                  - option "Icelandic"
+                  - option "Irish"
+                  - option "Welsh"
+                  - option "Albanian"
+                  - option "Macedonian"
+                  - option "Serbian"
+                  - option "Bosnian"
+                  - option "Chinese (Simplified)"
+                  - option "Chinese (Traditional)"
+                  - option "Japanese"
+                  - option "Korean"
+                  - option "Thai"
+                  - option "Vietnamese"
+                  - option "Indonesian"
+                  - option "Malay"
+                  - option "Filipino"
+                  - option "Lao"
+                  - option "Burmese"
+                  - option "Khmer"
+                  - option "Nepali"
+                  - option "Sinhala"
+                  - option "Arabic"
+                  - option "Hebrew"
+                  - option "Persian"
+                  - option "Turkish"
+                  - option "Swahili"
+                  - option "Amharic"
+                  - option "Hausa"
+                  - option "Yoruba"
+                  - option "Igbo"
+                  - option "Zulu"
+                  - option "Xhosa"
+                  - option "Afrikaans"
+                  - option "Azerbaijani"
+                  - option "Kazakh"
+                  - option "Uzbek"
+                  - option "Georgian"
+                  - option "Armenian"
+                  - option "Mongolian"
+                  - option "Pashto"
+              - generic [ref=e636]:
+                - generic [ref=e637]: Background Music Track
+                - combobox [ref=e638]:
+                  - option "No Background Music (None)" [selected]
+                  - option "Cinematic Melody (Cinematic)"
+                  - option "Just Relax (Calm)"
+                  - option "Beyond Horizons (Cinematic)"
+                  - option "Autumn Piano (Calm)"
+                  - option "Lo-Fi Chill (Lo-Fi)"
+                  - option "Corporate Upbeat (Upbeat)"
+                  - option "Chill Synthwave (Electronic)"
+                  - option "Soaring Heights (Cinematic)"
+              - generic [ref=e639]:
+                - generic [ref=e640]:
+                  - generic [ref=e641]: Speech Volume
+                  - generic [ref=e642]:
+                    - text: 1.00x
+                    - generic [ref=e643]: (67% of max)
+                - slider "Speech volume gain" [ref=e644]: "1"
+              - generic [ref=e645]:
+                - generic [ref=e646]:
+                  - generic [ref=e647]: Music Volume
+                  - generic [ref=e648]: 0.30x (30%)
+                - slider "Music volume gain" [ref=e649]: "0.3"
+          - generic [ref=e651]:
+            - generic [ref=e652]:
+              - heading "Cast & Crew" [level=3] [ref=e653]:
+                - img [ref=e654]
+                - text: Cast & Crew
+              - generic [ref=e657]:
+                - button "AI Auto" [ref=e658]:
+                  - img [ref=e659]
+                  - text: AI Auto
+                - generic [ref=e662]: EN
+            - generic [ref=e664]:
+              - generic [ref=e665]: Narrator
+              - combobox [ref=e666]:
+                - option "Arjun India Male [US] (Male Adult)" [selected]
+                - option "Meera India Female [US] (Female Adult)"
+                - option "Ethan US Male [US] (Male Adult)"
+                - option "Ava US Female [US] (Female Adult)"
+                - option "Oliver UK Male [US] (Male Adult)"
+                - option "Emily UK Female [US] (Female Adult)"
+                - option "Liam Canada Male [US] (Male Adult)"
+                - option "Sophie Canada Female [US] (Female Adult)"
+                - option "Noah Australia Male [UK] (Male Adult)"
+                - option "Isla Australia Female [UK] (Female Adult)"
+                - option "Kenji Japan Male [UK] (Male Adult) - Pro"
+                - option "Yui Japan Female [UK] (Female Adult) - Pro"
+                - option "Lucas Brazil Male [UK] (Male Adult) - Pro"
+                - option "Camila Brazil Female [UK] (Female Adult) - Pro"
+                - option "Mateo Spain Male [AU] (Male Adult) - Pro"
+                - option "Valentina Spain Female [AU] (Female Adult) - Pro"
+                - option "Adi India [BOY] (Boy) - Pro"
+                - option "Tara India Girl [AU] (Girl) - Pro"
+                - option "Raghu India Elder [CA] (Old Man) - Pro"
+                - option "Grace UK Elder [CA] (Old Lady) - Pro"
+                - option "Noir Novel Artist [CA] (Male Adult) - Pro"
+                - option "Lyris Novel Artist [IE] (Female Adult) - Pro"
+                - option "Hans Germany Male [IE] (Male Adult) - Pro"
+                - option "Anna Germany Female [IE] (Female Adult) - Pro"
+                - option "Pierre France Male [UK] (Male Adult) - Pro"
+                - option "Claire France Female [UK] (Female Adult) - Pro"
+                - option "Omar UAE Male [IN] (Male Adult) - Pro"
+                - option "Leila UAE Female [IN] (Female Adult) - Pro"
+                - option "Ivan Russia Male [IN] (Male Adult) - Pro"
+                - option "Alina Russia Female [IN] (Female Adult) - Pro"
+            - generic [ref=e667]: No explicit speaker tags detected. Narrator mapping is active.
+          - generic [ref=e669]:
+            - heading "Queue" [level=3] [ref=e670]:
+              - img [ref=e671]
+              - text: Queue
+            - paragraph [ref=e674]: Queue panel appears after you turn Queue mode on in the Studio editor footer.
+      - button "Generate Audio" [disabled] [ref=e677]:
+        - generic [ref=e680]:
+          - img [ref=e681]
+          - generic [ref=e683]: Generate Audio
+    - button "Open assistant" [ref=e685]:
+      - img [ref=e689]
+  - status [ref=e692]:
+    - generic [ref=e693]:
+      - img [ref=e694]
+      - generic [ref=e697]:
+        - generic [ref=e698]: Sign In Success
+        - paragraph [ref=e699]: Signed in successfully.
+      - button "Dismiss notification" [ref=e700]:
+        - img [ref=e701]

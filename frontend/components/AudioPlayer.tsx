@@ -285,7 +285,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const hasPlayableAudio = Boolean(activeSourceUrl) || liveQueueRef.current.length > 0;
   const seekEnabled = Boolean(audioUrl && activeSourceType === 'final');
   const isLiveMode = Boolean(activeSourceType === 'live' || isLiveStreaming || (liveChunks.length > 0 && !audioUrl));
-  const showLiveVisualizer = hasPlayableAudio && readUiMotionLevel() === 'rich';
+  const uiMotionLevel = readUiMotionLevel();
+  const showLiveVisualizer = hasPlayableAudio && uiMotionLevel !== 'off';
   const seekProgressPct = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0;
   const liveQueueRemaining = liveQueueRef.current.length + (activeSourceType === 'live' && activeSourceUrl ? 1 : 0);
   const holdLiveElapsedBetweenChunks = shouldHoldLiveElapsedBetweenChunks({
@@ -664,14 +665,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             </span>
          )}
          {hasPlayableAudio && !isPlaying && currentTime === 0 && !isGenerating && activeSourceType === 'final' && (
-             <div className="absolute text-gray-400 text-sm font-medium flex items-center gap-2 z-10">
+             <div className="vf-live-player__viz-copy absolute text-sm font-semibold flex items-center gap-2 z-10">
                  Press Play to Listen
              </div>
          )}
          {showLiveVisualizer ? (
            <Visualizer audioElement={audioRef.current} isPlaying={isPlaying} height={128} />
          ) : (
-           <div className="h-full w-full bg-gradient-to-r from-indigo-50/60 to-purple-50/60" />
+           <div className="vf-live-player__viz-fallback h-full w-full" />
          )}
       </div>
 

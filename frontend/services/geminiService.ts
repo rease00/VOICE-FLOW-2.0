@@ -11,6 +11,7 @@ import { resolveAssistantProviderRouting } from "../src/shared/settings/assistan
 import { shouldFailFastOnGeminiRuntimeError } from "./geminiRuntimeErrorUtils";
 import { loadKokoroBrowserRuntimeModule } from "./loadKokoroBrowserRuntime";
 import { shouldUseBrowserKokoroExecution } from "./kokoroBrowserRuntimeFlags";
+import { synthesizeKokoroStudioInWorker } from "./kokoroStudioWorkerClient";
 import {
   emitGatewayAudioChunk,
   emitGatewayProgress,
@@ -287,12 +288,11 @@ const optionalBearerAuthHeaders = (apiKey?: string): Record<string, string> => {
 
 // --- MODEL FALLBACK LISTS (Priority High -> Low) ---
 // Keep direct personal-key mode aligned with runtime allocator routing.
-const TEXT_MODELS_FALLBACK = [
-  "gemini-3.1-flash-lite",
-  "gemini-3-flash-lite",
-  "gemini-2.5-flash-lite",
-  "gemini-3-flash",
+export const TEXT_MODELS_FALLBACK = [
+  "gemini-3.1-flash-lite-preview",
   "gemini-2.5-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash-lite",
   "gemma-3-27b",
   "gemma-3-12b",
   "gemma-3-4b",
@@ -300,12 +300,11 @@ const TEXT_MODELS_FALLBACK = [
   "gemma-3-1b",
 ];
 
-const STUDIO_CAST_TEXT_MODELS = [
-  "gemini-3.1-flash-lite",
-  "gemini-3-flash-lite",
-  "gemini-2.5-flash-lite",
-  "gemini-3-flash",
+export const STUDIO_CAST_TEXT_MODELS = [
+  "gemini-3.1-flash-lite-preview",
   "gemini-2.5-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash-lite",
 ];
 
 const TTS_MODELS_FALLBACK_BY_ENGINE: Record<'GEM' | 'NEURAL2', string[]> = {
@@ -534,6 +533,22 @@ interface GenerationOptions {
   temperature?: number;
 }
 
+const extractGeminiTextFromCandidates = (response: any): string => {
+  const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
+  const chunks: string[] = [];
+  candidates.forEach((candidate: any) => {
+    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    parts.forEach((part: any) => {
+      const token = String(part?.text || '').trim();
+      if (token) chunks.push(token);
+    });
+  });
+  if (chunks.length > 0) {
+    return chunks.join('\n').trim();
+  }
+  return String(response?.text || '').trim();
+};
+
 // Core function to handle Model Fallback
 async function callGeminiWithFallback(
   userContent: any,
@@ -581,7 +596,7 @@ async function callGeminiWithFallback(
         contents: contents,
         config: config
       });
-      const text = String(response.text || '').trim();
+      const text = extractGeminiTextFromCandidates(response);
       if (!text) {
         throw new Error(`Gemini model "${model}" returned empty text.`);
       }
@@ -602,7 +617,7 @@ interface RuntimeTextOptions {
   temperature?: number;
 }
 
-const normalizeTextModelCandidates = (
+export const resolveTextModelCandidates = (
   preferredModels?: string[],
   forcedModel?: string
 ): string[] => {
@@ -619,7 +634,7 @@ async function callGeminiRuntimeText(
   options: RuntimeTextOptions = {}
 ): Promise<string> {
   const baseUrl = resolveMediaBackendBaseUrl(settings);
-  const modelCandidates = normalizeTextModelCandidates(options.preferredModels);
+  const modelCandidates = resolveTextModelCandidates(options.preferredModels);
   const response = await authFetch(`${baseUrl}/ai/generate-text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -739,7 +754,7 @@ export const generateText = async (
   options: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {}
 ): Promise<string> => {
   const dispatchPlan = resolveAssistantTextDispatchPlan(settings);
-  const preferredModels = normalizeTextModelCandidates(
+  const preferredModels = resolveTextModelCandidates(
     options.preferredModels,
     options.model
   );
@@ -1974,7 +1989,7 @@ IMPORTANT: Return ONLY valid JSON with NO additional text.`;
       Array.isArray(options?.preferredModels) && options.preferredModels.length > 0
         ? options.preferredModels
         : STUDIO_CAST_TEXT_MODELS;
-    const preferredModels = normalizeTextModelCandidates(
+    const preferredModels = resolveTextModelCandidates(
       preferredSeed,
       options?.model
     );
@@ -3328,6 +3343,118 @@ export const generateSpeech = async (
 
   // --- KOKORO RUNTIME ---
   if (activeEngine === 'KOKORO') {
+    if (context === 'studio') {
+      try {
+        const backendBase = resolveMediaBackendBaseUrl(settings);
+        const targetVoiceId = String(settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
+        const jobId = `kokoro-browser-${traceId}`;
+        const startedAt = Date.now();
+        let firstChunkAtMs = 0;
+        const shouldEmitLiveChunks = options?.preferLiveChunks !== false;
+
+        const emitChunk = (chunk: {
+          index: number;
+          text: string;
+          durationMs: number;
+          sampleRate: number;
+          contentType: 'audio/wav';
+          audioBase64: string;
+        }): void => {
+          const audioBase64 = String(chunk.audioBase64 || '').trim();
+          if (!audioBase64) return;
+          emitGatewayAudioChunk({
+            jobId,
+            index: Math.max(0, Math.floor(Number(chunk.index || 0))),
+            engine: 'KOKORO',
+            contentType: chunk.contentType || 'audio/wav',
+            durationMs: Math.max(0, Math.floor(Number(chunk.durationMs || 0))),
+            textChars: Math.max(0, String(chunk.text || '').length),
+            traceId,
+            audioBase64,
+          });
+        };
+
+        emitGatewayProgress({
+          jobId,
+          status: 'queued',
+          engine: 'KOKORO',
+          queueAgeMs: 0,
+          queueDepth: 0,
+          stage: 'Preparing isolated Basic browser worker...',
+          progressPct: 10,
+        });
+
+        const synthResult = await synthesizeKokoroStudioInWorker(
+          {
+            text: processedText,
+            voiceId: targetVoiceId,
+            language: lang,
+            speed: settings.speed,
+            backendBaseUrl: backendBase,
+          },
+          {
+            ...(signal ? { signal } : {}),
+            onProgress: ({ progressPct, stage }) => {
+              emitGatewayProgress({
+                jobId,
+                status: 'running',
+                engine: 'KOKORO',
+                queueAgeMs: Math.max(0, Date.now() - startedAt),
+                queueDepth: 0,
+                stage,
+                progressPct: Math.max(10, Math.min(97, Math.round(Number(progressPct || 0)))),
+              });
+            },
+            onChunk: (chunk) => {
+              if (!firstChunkAtMs) {
+                firstChunkAtMs = Date.now();
+                emitGatewayProgress({
+                  jobId,
+                  status: 'running',
+                  engine: 'KOKORO',
+                  queueAgeMs: Math.max(0, firstChunkAtMs - startedAt),
+                  queueDepth: 0,
+                  stage: 'First live chunk ready.',
+                  progressPct: 22,
+                });
+              }
+              if (!shouldEmitLiveChunks) return;
+              emitChunk(chunk);
+            },
+          },
+        );
+
+        emitGatewayProgress({
+          jobId,
+          status: 'completed',
+          engine: 'KOKORO',
+          queueAgeMs: Math.max(0, Date.now() - startedAt),
+          queueDepth: 0,
+          stage: 'Synthesis completed. Preparing playback...',
+          progressPct: 98,
+        });
+
+        const mergedBuffer = ctx.createBuffer(
+          1,
+          synthResult.mergedAudio.length,
+          Math.max(1, synthResult.sampleRate)
+        );
+        mergedBuffer.copyToChannel(synthResult.mergedAudio, 0);
+        return mergedBuffer;
+      } catch (error: any) {
+        if (error?.name === 'AbortError') {
+          throw error;
+        }
+        const message = String(error?.message || '').trim();
+        if (message) {
+          throw new Error(message);
+        }
+        throw new Error(
+          'Basic browser worker failed. Reload the tab, close heavy tabs, and update to the latest Chromium-based browser.',
+        );
+      }
+    }
+
     const useBrowserKokoro = shouldUseBrowserKokoroExecution(activeEngine, context) && options?.preferBrowserKokoro !== false;
     if (useBrowserKokoro) {
       try {

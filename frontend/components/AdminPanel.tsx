@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Key, Loader2, MessageSquareText, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { useAdminCoupons } from '../src/features/admin/hooks/useAdminCoupons';
@@ -18,6 +18,10 @@ import {
   type AuditVerifyPayload,
   type CouponAnalyticsPoint,
   type CouponAnalyticsSummary,
+  type AccountingRecord,
+  type AccountingSummary,
+  type AccountingTimeseriesPoint,
+  type AccountingMonitorRun,
   type DailyUsageResetStatusPayload,
   type DailyUsageResetSummary,
   disableAdminRbacUser,
@@ -39,6 +43,10 @@ import {
   fetchCouponAnalyticsImpact,
   fetchCouponAnalyticsSummary,
   fetchCouponAnalyticsTimeseries,
+  fetchAdminAccountingSummary,
+  fetchAdminAccountingTimeseries,
+  fetchAdminAccountingRecords,
+  fetchAdminAccountingMonitorRuns,
   fetchDailyUsageResetStatus,
   fetchGeminiPools,
   type GeminiPoolAllocatorSnapshot,
@@ -72,6 +80,7 @@ import {
   createSchedulerTask,
   patchSchedulerTask,
   runSchedulerTask,
+  runAdminAccountingMonitor,
   type ScheduledTask,
   type ScheduledTaskRun,
   verifyAdminSessionUnlock,
@@ -101,6 +110,13 @@ import {
   type AdminMainTab,
 } from '../src/features/admin/model/tabs';
 import {
+  ADMIN_REFRESH_ALL_SECTIONS,
+  getAdminSectionsToLoad,
+  resolveAdminSectionsForView,
+  type AdminDataSection,
+  type OpsTab,
+} from '../src/features/admin/model/loadPlan';
+import {
   applyKeysToPoolInConfig,
   applySelectedPoolToAllPlans,
   classifyGeminiPoolKeyTone,
@@ -115,7 +131,6 @@ import {
 } from '../src/features/admin/pools/geminiPools';
 
 type ToastKind = 'success' | 'error' | 'info';
-type OpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
 type CouponKind = 'wallet_credit' | 'subscription_discount';
 type CouponPolicy = 'single_global' | 'single_per_user' | 'max_redemptions';
 type RbacDraft = { role: string; status: string };
@@ -370,12 +385,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     byPlan: CouponAnalyticsPoint[];
   } | null>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
+  const [accountingFrom, setAccountingFrom] = useState(toDateInput(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000)));
+  const [accountingTo, setAccountingTo] = useState(toDateInput(now));
+  const [accountingGroupBy, setAccountingGroupBy] = useState<'day' | 'month' | 'year'>('day');
+  const [accountingIncludeUnpaidAccrual, setAccountingIncludeUnpaidAccrual] = useState(true);
+  const [accountingSummary, setAccountingSummary] = useState<AccountingSummary | null>(null);
+  const [accountingSeries, setAccountingSeries] = useState<AccountingTimeseriesPoint[]>([]);
+  const [accountingRecords, setAccountingRecords] = useState<AccountingRecord[]>([]);
+  const [accountingWarnings, setAccountingWarnings] = useState<string[]>([]);
+  const [accountingSourceStatus, setAccountingSourceStatus] = useState<Record<string, unknown>>({});
+  const [accountingMonitorRuns, setAccountingMonitorRuns] = useState<AccountingMonitorRun[]>([]);
+  const [isLoadingAccounting, setIsLoadingAccounting] = useState(false);
+  const [isExportingAccounting, setIsExportingAccounting] = useState(false);
+  const [isRunningAccountingMonitor, setIsRunningAccountingMonitor] = useState(false);
   const [adminUnlockStatusPayload, setAdminUnlockStatusPayload] = useState<AdminSessionUnlockStatusPayload | null>(null);
   const [adminUnlockKeyInput, setAdminUnlockKeyInput] = useState('');
   const [latestAdminUnlockKey, setLatestAdminUnlockKey] = useState('');
   const [isIssuingAdminUnlockKey, setIsIssuingAdminUnlockKey] = useState(false);
   const [isVerifyingAdminUnlockKey, setIsVerifyingAdminUnlockKey] = useState(false);
   const [isRefreshingAdminUnlockStatus, setIsRefreshingAdminUnlockStatus] = useState(false);
+  const loadedAdminSectionsRef = useRef<Set<AdminDataSection>>(new Set());
+
+  const markAdminSectionLoaded = (section: AdminDataSection) => {
+    loadedAdminSectionsRef.current.add(section);
+  };
 
   const couponTabs = useManagedTabs({
     items: [
@@ -395,6 +428,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       { id: 'scheduler' as OpsTab },
       { id: 'audit' as OpsTab },
       { id: 'analytics' as OpsTab },
+      { id: 'accounting' as OpsTab },
     ],
     activeId: opsTab,
     onChange: setOpsTab,
@@ -436,6 +470,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const reloadUsersSafely = async (query = search) => {
     try {
       await reloadUsers(query, 120);
+      markAdminSectionLoaded('users');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load admin users.');
     }
@@ -444,6 +479,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const reloadCouponsSafely = async () => {
     try {
       await reloadCoupons(200);
+      markAdminSectionLoaded('coupons');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load coupons.');
     }
@@ -458,6 +494,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ]);
       setRbacCatalog(catalog);
       setRbacAssignments(usersPayload.items || []);
+      markAdminSectionLoaded('rbac');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load access control.');
     } finally {
@@ -482,6 +519,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setSelectedSupportConversationId('');
         setSelectedSupportMessages([]);
       }
+      markAdminSectionLoaded('supportConversations');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load support conversations.');
     } finally {
@@ -511,6 +549,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const policy = await fetchAdminSupportAiPolicy(mediaBackendUrl);
       setSupportAiPolicy(policy);
       setSupportAiPolicyDraft(policy);
+      markAdminSectionLoaded('supportAiPolicy');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load support AI policy.');
     } finally {
@@ -543,6 +582,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           ? 'Failed to load ops telemetry.'
           : `Some ops telemetry endpoints failed (${failures.length}/6).`;
         notifyError(failures[0]?.reason, fallback);
+      }
+      if ([usage, guardian, approvals, gateway, queue, labRuntime].some((result) => result.status === 'fulfilled')) {
+        markAdminSectionLoaded('ops');
       }
     } catch (error: unknown) {
       notifyError(error, 'Failed to load ops telemetry.');
@@ -584,6 +626,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAlertPolicies(policies);
       setAlertDestinations(destinations);
       setAlertEvents(events);
+      markAdminSectionLoaded('alerts');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load alerts.');
     } finally {
@@ -600,6 +643,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ]);
       setSchedulerTasks(tasks);
       setSchedulerRuns(runs);
+      markAdminSectionLoaded('scheduler');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load scheduler.');
     } finally {
@@ -624,6 +668,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (resourceType) options.resourceType = resourceType;
       const payload = await fetchAdminAuditEvents(mediaBackendUrl, options);
       setAuditEvents(payload.items || []);
+      markAdminSectionLoaded('audit');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load audit events.');
     } finally {
@@ -664,6 +709,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           ...(previous.inputText ? { inputText: previous.inputText } : {}),
         };
       });
+      markAdminSectionLoaded('audioMetadata');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load audio metadata records.');
     } finally {
@@ -726,10 +772,151 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ]);
       setAnalyticsSummary(summaryPayload.summary);
       setAnalyticsSeries(seriesPayload.series || []);
+      markAdminSectionLoaded('analytics');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load coupon analytics.');
     } finally {
       setIsLoadingAnalytics(false);
+    }
+  };
+
+  const reloadAccountingSafely = async () => {
+    setIsLoadingAccounting(true);
+    try {
+      const [summaryPayload, seriesPayload, recordsPayload, monitorPayload] = await Promise.all([
+        fetchAdminAccountingSummary(mediaBackendUrl, {
+          from: accountingFrom,
+          to: accountingTo,
+          includeUnpaidAccrual: accountingIncludeUnpaidAccrual,
+        }),
+        fetchAdminAccountingTimeseries(mediaBackendUrl, {
+          from: accountingFrom,
+          to: accountingTo,
+          groupBy: accountingGroupBy,
+          includeUnpaidAccrual: accountingIncludeUnpaidAccrual,
+        }),
+        fetchAdminAccountingRecords(mediaBackendUrl, {
+          from: accountingFrom,
+          to: accountingTo,
+          limit: 250,
+          includeUnpaidAccrual: accountingIncludeUnpaidAccrual,
+        }),
+        fetchAdminAccountingMonitorRuns(mediaBackendUrl, 25),
+      ]);
+      setAccountingSummary((summaryPayload?.summary || null) as AccountingSummary | null);
+      setAccountingSeries(Array.isArray(seriesPayload?.series) ? seriesPayload.series : []);
+      setAccountingRecords(Array.isArray(recordsPayload?.items) ? recordsPayload.items : []);
+      setAccountingMonitorRuns(Array.isArray(monitorPayload?.items) ? monitorPayload.items : []);
+      const warningTokens = [
+        ...(Array.isArray(summaryPayload?.warnings) ? summaryPayload.warnings : []),
+        ...(Array.isArray(seriesPayload?.warnings) ? seriesPayload.warnings : []),
+        ...(Array.isArray(recordsPayload?.warnings) ? recordsPayload.warnings : []),
+      ].map((item) => String(item || '').trim()).filter(Boolean);
+      setAccountingWarnings(Array.from(new Set(warningTokens)));
+      setAccountingSourceStatus({
+        ...(summaryPayload?.sourceStatus || {}),
+        ...(seriesPayload?.sourceStatus || {}),
+        ...(recordsPayload?.sourceStatus || {}),
+      });
+      markAdminSectionLoaded('accounting');
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load accounting data.');
+    } finally {
+      setIsLoadingAccounting(false);
+    }
+  };
+
+  const handleRunAccountingMonitor = async (dryRun = false) => {
+    if (!canBillingWrite) {
+      onToast('Missing `billing.write` permission.', 'info');
+      return;
+    }
+    setIsRunningAccountingMonitor(true);
+    try {
+      const payload = await runAdminAccountingMonitor(mediaBackendUrl, { dryRun });
+      onToast(
+        dryRun
+          ? `Accounting monitor dry-run completed (${Number(payload?.anomalyCount || 0)} anomalies).`
+          : `Accounting monitor run queued (${Number(payload?.anomalyCount || 0)} anomalies).`,
+        'success'
+      );
+      await reloadAccountingSafely();
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to run accounting monitor.');
+    } finally {
+      setIsRunningAccountingMonitor(false);
+    }
+  };
+
+  const handleExportAccountingCsv = async () => {
+    if (!canBillingRead) {
+      onToast('Missing `billing.read` permission.', 'info');
+      return;
+    }
+    setIsExportingAccounting(true);
+    try {
+      const payload = await fetchAdminAccountingRecords(mediaBackendUrl, {
+        from: accountingFrom,
+        to: accountingTo,
+        limit: 2000,
+        includeUnpaidAccrual: accountingIncludeUnpaidAccrual,
+      });
+      const items = Array.isArray(payload?.items) ? payload.items : accountingRecords;
+      if (!items.length) {
+        onToast('No accounting rows to export.', 'info');
+        return;
+      }
+      const headers = [
+        'timestamp',
+        'day',
+        'type',
+        'status',
+        'amountInr',
+        'paidInr',
+        'unpaidInr',
+        'taxInr',
+        'currency',
+        'amountOriginal',
+        'source',
+        'id',
+        'metadata',
+      ];
+      const rows = items.map((record) => ([
+        record.timestamp,
+        record.day,
+        record.type,
+        record.status,
+        asNumber(record.amountInr),
+        asNumber(record.paidInr),
+        asNumber(record.unpaidInr),
+        asNumber(record.taxInr),
+        record.currency || '',
+        asNumber(record.amountOriginal),
+        record.source || '',
+        record.id,
+        record.metadata ? JSON.stringify(record.metadata) : '',
+      ]));
+      const lines = [
+        ['from', accountingFrom],
+        ['to', accountingTo],
+        ['group_by', accountingGroupBy],
+        ['include_unpaid_accrual', accountingIncludeUnpaidAccrual ? '1' : '0'],
+        ['generated_at_utc', new Date().toISOString()],
+        [],
+        headers,
+        ...rows,
+      ].map((row) => row.map(csvEscape).join(','));
+      const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `admin-accounting-${accountingFrom || 'from'}-${accountingTo || 'to'}-${Date.now()}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to export accounting CSV.');
+    } finally {
+      setIsExportingAccounting(false);
     }
   };
 
@@ -747,6 +934,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (poolNames.length > 0 && !poolNames.includes(selectedGeminiPool)) {
         setSelectedGeminiPool(poolNames[0] || '');
       }
+      markAdminSectionLoaded('geminiPools');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load primary AI pool status.');
     } finally {
@@ -944,6 +1132,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const payload = await fetchDailyUsageResetStatus(mediaBackendUrl);
       setDailyUsageResetStatus(payload);
+      markAdminSectionLoaded('dailyReset');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load daily reset status.');
     } finally {
@@ -995,11 +1184,75 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (!Boolean(payload?.status?.isUnlocked)) {
         clearAdminUnlockToken();
       }
+      markAdminSectionLoaded('adminUnlockStatus');
     } catch (error: unknown) {
       notifyError(error, 'Failed to load admin unlock status.');
     } finally {
       setIsRefreshingAdminUnlockStatus(false);
     }
+  };
+
+  const ensureAdminSectionsLoaded = async (
+    requiredSections: readonly AdminDataSection[],
+    force = false
+  ) => {
+    const sectionsToLoad = getAdminSectionsToLoad(
+      loadedAdminSectionsRef.current,
+      requiredSections,
+      force
+    );
+    if (sectionsToLoad.length === 0) return;
+    await Promise.all(
+      sectionsToLoad.map(async (section) => {
+        switch (section) {
+          case 'users':
+            await reloadUsersSafely(search);
+            break;
+          case 'coupons':
+            await reloadCouponsSafely();
+            break;
+          case 'rbac':
+            await reloadRbacSafely(rbacSearch);
+            break;
+          case 'geminiPools':
+            await reloadGeminiPoolStatusSafely();
+            break;
+          case 'dailyReset':
+            await reloadDailyUsageResetStatusSafely();
+            break;
+          case 'ops':
+            await reloadOpsSafely();
+            break;
+          case 'alerts':
+            await reloadAlertsSafely();
+            break;
+          case 'scheduler':
+            await reloadSchedulerSafely();
+            break;
+          case 'audit':
+            await reloadAuditSafely();
+            break;
+          case 'audioMetadata':
+            await reloadAudioMetadataSafely();
+            break;
+          case 'analytics':
+            await reloadAnalyticsSafely();
+            break;
+          case 'accounting':
+            await reloadAccountingSafely();
+            break;
+          case 'supportConversations':
+            await reloadSupportConversationsSafely(supportSearch);
+            break;
+          case 'supportAiPolicy':
+            await reloadSupportAiPolicySafely();
+            break;
+          case 'adminUnlockStatus':
+            await reloadAdminUnlockStatusSafely();
+            break;
+        }
+      })
+    );
   };
 
   const handleIssueAdminUnlockKey = async () => {
@@ -1060,23 +1313,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   useEffect(() => {
-    void reloadUsersSafely('');
-    void reloadCouponsSafely();
-    void reloadRbacSafely('');
-    void reloadGeminiPoolStatusSafely();
-    void reloadDailyUsageResetStatusSafely();
-    void reloadOpsSafely();
-    void reloadAlertsSafely();
-    void reloadSchedulerSafely();
-    void reloadAuditSafely();
-    void reloadAudioMetadataSafely();
-    void reloadAnalyticsSafely();
-    void reloadSupportConversationsSafely('');
-    void reloadSupportAiPolicySafely();
-    void reloadAdminUnlockStatusSafely();
-    void hydrateGeneratedCouponCode();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    loadedAdminSectionsRef.current.clear();
   }, [mediaBackendUrl]);
+
+  useEffect(() => {
+    void ensureAdminSectionsLoaded(resolveAdminSectionsForView(adminMainTab, opsTab));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminMainTab, mediaBackendUrl, opsTab]);
 
   const withSaving = async (key: string, action: () => Promise<void>, fallback = 'Admin action failed.') => {
     setIsSaving(key);
@@ -1155,6 +1398,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const canUsersWrite = can('users.write');
   const canCouponsRead = can('coupons.read');
   const canCouponsWrite = can('coupons.write');
+  const canBillingRead = can('billing.read');
+  const canBillingWrite = can('billing.write');
   const canRbacRead = can('rbac.read');
   const canRbacWrite = can('rbac.write');
   const canOpsRead = can('ops.read');
@@ -1171,7 +1416,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const canSupportReply = can('support.reply');
   const canSupportAiReview = can('support.ai.review');
   const canSupportAiConfig = can('support.ai.config');
-  const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite || canSupportReply || canSupportAiConfig;
+  const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canBillingWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite || canSupportReply || canSupportAiConfig;
 
   const handleReplySupportConversation = async () => {
     const safeConversationId = String(selectedSupportConversationId || '').trim();
@@ -1668,20 +1913,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
           <button
             onClick={() => {
-              void reloadUsersSafely(search);
-              void reloadRbacSafely(rbacSearch);
-              void reloadCouponsSafely();
-              void reloadGeminiPoolStatusSafely();
-              void reloadDailyUsageResetStatusSafely();
-              void reloadOpsSafely();
-              void reloadAlertsSafely();
-              void reloadSchedulerSafely();
-              void reloadAuditSafely();
-              void reloadAudioMetadataSafely();
-              void reloadAnalyticsSafely();
-              void reloadSupportConversationsSafely(supportSearch);
-              void reloadSupportAiPolicySafely();
-              void reloadAdminUnlockStatusSafely();
+              void ensureAdminSectionsLoaded(ADMIN_REFRESH_ALL_SECTIONS, true);
             }}
             className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
           >
@@ -2984,7 +3216,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       <section className={`${adminMainTab === 'ops' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Activity size={16} className="text-indigo-600" />Ops</div>
-          <button onClick={() => { void reloadOpsSafely(); void reloadAlertsSafely(); void reloadSchedulerSafely(); void reloadAuditSafely(); void reloadAudioMetadataSafely(); void reloadAnalyticsSafely(); }} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700"><RefreshCw size={13} />Refresh</button>
+          <button onClick={() => { void reloadOpsSafely(); void reloadAlertsSafely(); void reloadSchedulerSafely(); void reloadAuditSafely(); void reloadAudioMetadataSafely(); void reloadAnalyticsSafely(); void reloadAccountingSafely(); }} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700"><RefreshCw size={13} />Refresh</button>
         </div>
         <div className="mb-3 flex flex-wrap gap-2" {...opsTabs.listProps}>
           {([
@@ -2994,6 +3226,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             ['scheduler', 'Scheduled Tasks'],
             ['audit', 'Audit Ledger'],
             ['analytics', 'Coupon Analytics'],
+            ['accounting', 'Accounting'],
           ] as Array<[OpsTab, string]>).map(([tabId, label]) => (
             <button key={tabId} {...opsTabs.getTabProps(tabId)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${opsTab === tabId ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}>{label}</button>
           ))}
@@ -3102,7 +3335,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
         {opsTab === 'scheduler' && (!canSchedulerRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `scheduler.read` permission.</div> : (
           <div className="space-y-2 text-xs">
-            {canSchedulerWrite && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create task</div><div className="grid gap-2 md:grid-cols-3"><select value={newTaskType} onChange={(event) => setNewTaskType(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="usage_reset_daily">usage_reset_daily</option><option value="guardian_scan">guardian_scan</option><option value="usage_export_daily">usage_export_daily</option><option value="coupon_abuse_scan">coupon_abuse_scan</option><option value="audio_generation_audit_retention_cleanup">audio_generation_audit_retention_cleanup</option></select><input value={newTaskCron} onChange={(event) => setNewTaskCron(event.target.value)} placeholder="cronExpr" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newTaskTimezone} onChange={(event) => setNewTaskTimezone(event.target.value)} placeholder="timezone" className="h-8 rounded border border-gray-200 px-2 text-xs" /></div><button onClick={() => { void withSaving('task_create', async () => { await createSchedulerTask({ taskType: newTaskType, cronExpr: newTaskCron, timezone: newTaskTimezone, enabled: newTaskEnabled, dryRun: newTaskDryRun, concurrencyPolicy: newTaskConcurrencyPolicy }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="mt-2 h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Create</button></div>}
+            {canSchedulerWrite && <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Create task</div><div className="grid gap-2 md:grid-cols-3"><select value={newTaskType} onChange={(event) => setNewTaskType(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs"><option value="usage_reset_daily">usage_reset_daily</option><option value="guardian_scan">guardian_scan</option><option value="usage_export_daily">usage_export_daily</option><option value="coupon_abuse_scan">coupon_abuse_scan</option><option value="audio_generation_audit_retention_cleanup">audio_generation_audit_retention_cleanup</option><option value="accounting_monitor_daily">accounting_monitor_daily</option></select><input value={newTaskCron} onChange={(event) => setNewTaskCron(event.target.value)} placeholder="cronExpr" className="h-8 rounded border border-gray-200 px-2 text-xs" /><input value={newTaskTimezone} onChange={(event) => setNewTaskTimezone(event.target.value)} placeholder="timezone" className="h-8 rounded border border-gray-200 px-2 text-xs" /></div><button onClick={() => { void withSaving('task_create', async () => { await createSchedulerTask({ taskType: newTaskType, cronExpr: newTaskCron, timezone: newTaskTimezone, enabled: newTaskEnabled, dryRun: newTaskDryRun, concurrencyPolicy: newTaskConcurrencyPolicy }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="mt-2 h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Create</button></div>}
             <div className="grid gap-2 md:grid-cols-2"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Tasks</div>{schedulerTasks.slice(0, 10).map((task) => <div key={task.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{task.taskType}</div><div className="text-[10px] text-gray-600">{task.cronExpr} | {formatDate(task.nextRunAt || '')}</div>{canSchedulerWrite && <div className="mt-1 flex gap-1"><button onClick={() => { void withSaving(`task_toggle_${task.id}`, async () => { await patchSchedulerTask(task.id, { enabled: !task.enabled }, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{task.enabled ? 'Disable' : 'Enable'}</button><button onClick={() => { void withSaving(`task_run_${task.id}`, async () => { await runSchedulerTask(task.id, task.dryRun, mediaBackendUrl); await reloadSchedulerSafely(); }); }} className="rounded border border-indigo-200 px-2 py-1 text-[10px] font-semibold text-indigo-700">Run</button></div>}</div>)}</div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runs</div>{schedulerRuns.slice(0, 12).map((run) => <div key={run.id} className="mb-1 rounded border border-gray-200 bg-white p-2"><div className="font-semibold">{run.taskId}</div><div className="text-[10px] text-gray-600">{run.status} | {formatDate(run.startedAt || '')}</div></div>)}</div></div>
           </div>
         ))}
@@ -3245,6 +3478,131 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div className="grid gap-2 md:grid-cols-4"><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Conversion</div><div className="text-lg font-bold text-gray-900">{toPercentLabel(analyticsSummary?.conversionRate)}</div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Completion</div><div className="text-lg font-bold text-gray-900">{toPercentLabel(analyticsSummary?.checkoutCompletionRate)}</div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">D30 churn</div><div className="text-lg font-bold text-gray-900">{toPercentLabel(analyticsSummary?.d30ChurnRate)}</div></div><div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Efficiency</div><div className="text-lg font-bold text-gray-900">{asNumber(analyticsSummary?.discountEfficiency).toFixed(2)}</div></div></div>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Impact</div><div className="flex gap-2"><input value={analyticsImpactCode} onChange={(event) => setAnalyticsImpactCode(event.target.value.toUpperCase())} placeholder="Coupon code" className="h-8 rounded border border-gray-200 px-2 text-xs" /><button onClick={() => { const code = analyticsImpactCode.trim().toUpperCase(); if (!code) return; void withSaving('impact_fetch', async () => { const payload = await fetchCouponAnalyticsImpact(code, mediaBackendUrl, { from: analyticsFrom, to: analyticsTo }); setAnalyticsImpact(payload); }); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-700">Load</button></div>{analyticsImpact && <div className="mt-2">Coupon {analyticsImpact.couponCode}: conversion {toPercentLabel(analyticsImpact.overall.conversionRate)}, churn {toPercentLabel(analyticsImpact.overall.d30ChurnRate)}</div>}</div>
             <div className="max-h-36 overflow-auto rounded-xl border border-gray-100"><table className="min-w-full text-xs"><thead className="sticky top-0 bg-gray-50 text-gray-600"><tr><th className="px-2 py-2 text-left">Date</th><th className="px-2 py-2 text-left">Plan</th><th className="px-2 py-2 text-left">Started</th><th className="px-2 py-2 text-left">Activated</th></tr></thead><tbody>{analyticsSeries.slice(0, 60).map((point, idx) => <tr key={`${point.bucket || point.date || 'bucket'}-${idx}`} className="border-t border-gray-100"><td className="px-2 py-2">{point.bucket || point.date || '-'}</td><td className="px-2 py-2">{point.plan || '-'}</td><td className="px-2 py-2">{asNumber(point.checkoutsStarted)}</td><td className="px-2 py-2">{asNumber(point.subscriptionsActivated)}</td></tr>)}</tbody></table></div>
+          </div>
+        ))}
+
+        {opsTab === 'accounting' && (!canBillingRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `billing.read` permission.</div> : (
+          <div className="space-y-3 text-xs">
+            <div className="grid gap-2 md:grid-cols-7">
+              <input type="date" value={accountingFrom} onChange={(event) => setAccountingFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
+              <input type="date" value={accountingTo} onChange={(event) => setAccountingTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
+              <select value={accountingGroupBy} onChange={(event) => setAccountingGroupBy(event.target.value as 'day' | 'month' | 'year')} className="h-8 rounded border border-gray-200 px-2 text-xs">
+                <option value="day">day</option>
+                <option value="month">month</option>
+                <option value="year">year</option>
+              </select>
+              <label className="inline-flex h-8 items-center gap-2 rounded border border-gray-200 px-2 text-[11px] text-gray-700">
+                <input type="checkbox" checked={accountingIncludeUnpaidAccrual} onChange={(event) => setAccountingIncludeUnpaidAccrual(event.target.checked)} />
+                Include unpaid accrual
+              </label>
+              <button onClick={() => { void reloadAccountingSafely(); }} className="h-8 rounded border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700">Apply</button>
+              <button onClick={() => { void handleExportAccountingCsv(); }} disabled={isExportingAccounting} className="h-8 rounded border border-gray-200 bg-white text-xs font-semibold text-gray-700 disabled:opacity-60">{isExportingAccounting ? 'Exporting...' : 'Export CSV'}</button>
+              {canBillingWrite ? (
+                <div className="flex gap-2">
+                  <button onClick={() => { void handleRunAccountingMonitor(true); }} disabled={isRunningAccountingMonitor} className="h-8 rounded border border-gray-200 px-2 text-xs font-semibold text-gray-700 disabled:opacity-60">{isRunningAccountingMonitor ? 'Running...' : 'Dry monitor'}</button>
+                  <button onClick={() => { void handleRunAccountingMonitor(false); }} disabled={isRunningAccountingMonitor} className="h-8 rounded border border-indigo-200 bg-indigo-50 px-2 text-xs font-semibold text-indigo-700 disabled:opacity-60">{isRunningAccountingMonitor ? 'Running...' : 'Run monitor'}</button>
+                </div>
+              ) : <div />}
+            </div>
+
+            {isLoadingAccounting ? <div className="text-gray-500">Loading accounting view...</div> : null}
+
+            <div className="grid gap-2 md:grid-cols-6">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Revenue accrued</div><div className="text-lg font-bold text-gray-900">INR {asNumber(accountingSummary?.revenue?.accruedInr).toLocaleString()}</div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Revenue unpaid</div><div className="text-lg font-bold text-amber-700">INR {asNumber(accountingSummary?.revenue?.unpaidInr).toLocaleString()}</div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Tax accrued</div><div className="text-lg font-bold text-gray-900">INR {asNumber(accountingSummary?.revenue?.taxInr).toLocaleString()}</div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Expenditure</div><div className="text-lg font-bold text-gray-900">INR {asNumber(accountingSummary?.expenditure?.totalInr).toLocaleString()}</div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Cloud Run CPU</div><div className="text-lg font-bold text-gray-900">INR {asNumber(accountingSummary?.cloudRun?.cpuCostInr).toLocaleString()}</div></div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Gemini cost</div><div className="text-lg font-bold text-gray-900">INR {asNumber(accountingSummary?.gemini?.estimatedCostInr).toLocaleString()}</div></div>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Source status</div>
+                <div className="text-[11px] text-gray-700">Stripe: <strong>{String(accountingSourceStatus?.stripeInvoices || 'unknown')}</strong></div>
+                <div className="text-[11px] text-gray-700">Cloud Run CPU: <strong>{String(accountingSourceStatus?.cloudRunCpu || 'unknown')}</strong></div>
+                <div className="text-[11px] text-gray-700">Gemini usage: <strong>{String(accountingSourceStatus?.usageEvents || 'unknown')}</strong></div>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Margin</div>
+                <div className={`text-lg font-bold ${asNumber(accountingSummary?.marginInr) >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>INR {asNumber(accountingSummary?.marginInr).toLocaleString()}</div>
+                <div className="text-[11px] text-gray-700">Margin %: <strong>{toPercentLabel(accountingSummary?.marginPct)}</strong></div>
+                <div className="text-[11px] text-gray-700">Gemini generations: <strong>{asNumber(accountingSummary?.gemini?.generations).toLocaleString()}</strong></div>
+              </div>
+            </div>
+
+            {accountingWarnings.length > 0 ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800">
+                {accountingWarnings.map((warning, index) => <div key={`accounting-warning-${index}`}>- {warning}</div>)}
+              </div>
+            ) : null}
+
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Day/Month/Year series</div>
+                <div className="max-h-52 overflow-auto rounded border border-gray-100 bg-white">
+                  <table className="min-w-full text-xs">
+                    <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                      <tr><th className="px-2 py-2 text-left">Bucket</th><th className="px-2 py-2 text-left">Revenue</th><th className="px-2 py-2 text-left">Expenditure</th><th className="px-2 py-2 text-left">Gemini tokens</th></tr>
+                    </thead>
+                    <tbody>
+                      {accountingSeries.slice(0, 180).map((point, idx) => (
+                        <tr key={`accounting-series-${point.bucket}-${idx}`} className="border-t border-gray-100">
+                          <td className="px-2 py-2">{point.bucket || '-'}</td>
+                          <td className="px-2 py-2">INR {asNumber(point.revenueAccruedInr).toLocaleString()}</td>
+                          <td className="px-2 py-2">INR {(asNumber(point.walletExpenditureInr) + asNumber(point.couponDiscountInr) + asNumber(point.cloudRunCpuCostInr) + asNumber(point.geminiCostInr)).toLocaleString()}</td>
+                          <td className="px-2 py-2">{asNumber(point.geminiTotalTokens).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Monitor runs</div>
+                <div className="max-h-52 overflow-auto rounded border border-gray-100 bg-white">
+                  <table className="min-w-full text-xs">
+                    <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                      <tr><th className="px-2 py-2 text-left">When</th><th className="px-2 py-2 text-left">Source</th><th className="px-2 py-2 text-left">Anomalies</th><th className="px-2 py-2 text-left">Dry run</th></tr>
+                    </thead>
+                    <tbody>
+                      {accountingMonitorRuns.length === 0 ? <tr><td className="px-2 py-3 text-gray-500" colSpan={4}>No monitor runs yet.</td></tr> : null}
+                      {accountingMonitorRuns.map((run) => (
+                        <tr key={run.id} className="border-t border-gray-100">
+                          <td className="px-2 py-2">{formatDate(run.createdAt || run.startedAt || '')}</td>
+                          <td className="px-2 py-2">{run.source || '-'}</td>
+                          <td className="px-2 py-2">{Array.isArray(run.anomalies) ? run.anomalies.length : 0}</td>
+                          <td className="px-2 py-2">{run.dryRun ? 'yes' : 'no'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-1 font-semibold text-gray-800">Ledger records</div>
+              <div className="max-h-72 overflow-auto rounded border border-gray-100 bg-white">
+                <table className="min-w-full text-xs">
+                  <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                    <tr><th className="px-2 py-2 text-left">Time</th><th className="px-2 py-2 text-left">Type</th><th className="px-2 py-2 text-left">Status</th><th className="px-2 py-2 text-left">Amount (INR)</th><th className="px-2 py-2 text-left">Tax (INR)</th></tr>
+                  </thead>
+                  <tbody>
+                    {accountingRecords.length === 0 ? <tr><td className="px-2 py-3 text-gray-500" colSpan={5}>No accounting records in selected range.</td></tr> : null}
+                    {accountingRecords.map((record) => (
+                      <tr key={record.id} className="border-t border-gray-100">
+                        <td className="px-2 py-2">{formatDate(record.timestamp)}</td>
+                        <td className="px-2 py-2">{record.type || '-'}</td>
+                        <td className="px-2 py-2">{record.status || '-'}</td>
+                        <td className="px-2 py-2">INR {asNumber(record.amountInr).toLocaleString()}</td>
+                        <td className="px-2 py-2">INR {asNumber(record.taxInr).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         ))}
         </div>

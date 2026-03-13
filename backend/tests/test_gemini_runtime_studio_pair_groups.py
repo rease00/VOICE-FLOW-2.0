@@ -131,6 +131,26 @@ def test_build_studio_pair_groups_pairs_speakers_in_sequence() -> None:
     assert groups[2]["speakers"] == ["E"]
 
 
+def test_canonicalize_multi_speaker_identities_preserves_consistent_names() -> None:
+    runtime = _load_gemini_runtime_module()
+    speaker_voices = [
+        {"speaker": "Host", "voiceName": "Fenrir"},
+        {"speaker": "Guest", "voiceName": "Kore"},
+    ]
+    line_map = [
+        {"lineIndex": 0, "speaker": "host", "text": "line_0"},
+        {"lineIndex": 1, "speaker": "HOST", "text": "line_1"},
+        {"lineIndex": 2, "speaker": "guest", "text": "line_2"},
+        {"lineIndex": 3, "speaker": "GUEST", "text": "line_3"},
+    ]
+    canonical_voices, canonical_line_map = runtime._canonicalize_multi_speaker_identities(
+        speaker_voices,
+        line_map,
+    )
+    assert [entry["speaker"] for entry in canonical_voices] == ["Host", "Guest"]
+    assert [row["speaker"] for row in canonical_line_map] == ["Host", "Host", "Guest", "Guest"]
+
+
 def test_grouped_synthesis_caps_concurrency_by_pool_size() -> None:
     runtime = _load_gemini_runtime_module()
     auth_mode, source_policy = _runtime_auth_context(runtime)

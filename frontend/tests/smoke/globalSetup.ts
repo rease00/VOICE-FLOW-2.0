@@ -31,10 +31,14 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
       waitUntil: 'domcontentloaded',
       timeout: ROUTE_TIMEOUT_MS,
     });
-    await page.getByTestId('reader-browse-home').waitFor({
-      state: 'visible',
-      timeout: ROUTE_TIMEOUT_MS,
-    });
+    const readerHome = page.getByTestId('reader-browse-home');
+    const authScreen = page.getByText('Secure sign-in for your VoiceFlow workspace.');
+    const onboardingCta = page.getByRole('button', { name: 'Get Started' });
+    await Promise.race([
+      readerHome.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      authScreen.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      onboardingCta.waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+    ]);
   } finally {
     await browser.close();
   }

@@ -31,7 +31,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Optional, Dict, List
 from urllib import error as urllib_error
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
 
@@ -55,6 +55,7 @@ _FIREBASE_SDK_IMPORT_ERROR: Optional[str] = None
 stripe = None  # type: ignore
 _STRIPE_IMPORT_ATTEMPTED = False
 _STRIPE_IMPORT_ERROR: Optional[str] = None
+google_bigquery = None  # type: ignore
 
 APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT
@@ -72,10 +73,12 @@ from shared.gemini_allocator import (
 from shared.gemini_api_pools import (
     duplicate_key_memberships,
     flatten_pool_keys,
+    is_encrypted_key_file_text as is_encrypted_gemini_key_file_text_shared,
     list_pool_names as list_gemini_pool_names,
     load_pool_config as load_pool_config_shared,
     normalize_pool_config as normalize_gemini_pool_config,
     overlay_cached_authoritative_free_pool as overlay_cached_gemini_free_pool_shared,
+    read_key_file_text as read_gemini_key_file_text_shared,
     SOURCE_POLICY_PROVIDER_GEMINI_API,
     SOURCE_POLICY_PROVIDER_VERTEX,
     resolve_default_pool_hint as resolve_default_gemini_pool_hint,
@@ -83,6 +86,7 @@ from shared.gemini_api_pools import (
     resolve_plan_pool_hint as resolve_gemini_plan_pool_hint,
     save_pool_config as save_pool_config_shared,
     sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
+    write_key_file_text as write_gemini_key_file_text_shared,
 )
 from shared.gemini_multi_speaker import normalize_multi_speaker_line_map as normalize_multi_speaker_line_map_shared
 from services.reader_domain import (
@@ -109,7 +113,17 @@ from services.reader_domain import (
     should_schedule_next_text_window,
 )
 from services.admission.redis_limits import SuccessQuotaDecision, SuccessQuotaLimiter
-from services.errors.codes import ENGINE_OVERLOADED, QUEUE_TIMEOUT, RATE_LIMIT_USER, extract_error_code
+from services.errors.codes import (
+    ENGINE_OVERLOADED,
+    LIVE_FIRST_CHUNK_SLA_FALLBACK,
+    QUEUE_TIMEOUT,
+    RATE_LIMIT_USER,
+    RUNTIME_BAD_RESPONSE,
+    RUNTIME_TIMEOUT,
+    RUNTIME_UNAVAILABLE,
+    extract_error_code,
+)
+from services.http.runtime_client import RuntimeHttpClient, RuntimeHttpError
 from services.queue.redis_queue import TtsJobQueue, normalize_lane
 
 load_backend_env_files(Path(__file__).resolve())
@@ -204,6 +218,9 @@ COMMERCIAL_PROVIDER_BLOCKLIST_DEFAULT = frozenset(
 COMMERCIAL_PROVIDER_ALWAYS_ALLOWED = frozenset(
     {"voiceflow_upload", "pepper_carrot", "voiceflow_seed"}
 )
+COMMERCIAL_PROVIDER_LICENSE_GATED = frozenset(
+    {"openverse", "wikisource", "gutendex", "openlibrary", "google_books"}
+)
 READER_OWNERSHIP_BASIS_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "value": "own_work",
@@ -237,7 +254,11 @@ FREESOUND_API_KEY = (os.getenv("FREESOUND_API_KEY") or os.getenv("VF_FREESOUND_A
 VF_DUB_PIPELINE_VERSION = str(os.getenv("VF_DUB_PIPELINE_VERSION") or "2026.1").strip() or "2026.1"
 VF_DUB_PHASE1_MODEL = str(os.getenv("VF_DUB_PHASE1_MODEL") or "BS-Roformer-Viperx-1297").strip() or "BS-Roformer-Viperx-1297"
 VF_DUB_DEREVERB_MODEL = str(os.getenv("VF_DUB_DEREVERB_MODEL") or "uvr_deecho_dereverb").strip() or "uvr_deecho_dereverb"
-VF_DUB_DIRECTOR_MODEL = str(os.getenv("VF_DUB_DIRECTOR_MODEL") or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+VF_AI_TEXT_DEFAULT_MODEL = (
+    str(os.getenv("VF_AI_TEXT_DEFAULT_MODEL") or "gemini-3.1-flash-lite-preview").strip()
+    or "gemini-3.1-flash-lite-preview"
+)
+VF_DUB_DIRECTOR_MODEL = str(os.getenv("VF_DUB_DIRECTOR_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip() or VF_AI_TEXT_DEFAULT_MODEL
 VF_DUB_TTS_MODEL = str(os.getenv("VF_DUB_TTS_MODEL") or "gemini-2.5-flash-preview-tts").strip() or "gemini-2.5-flash-preview-tts"
 VF_DUB_ALLOW_MODEL_FALLBACK = (
     (os.getenv("VF_DUB_ALLOW_MODEL_FALLBACK") or "0").strip().lower()
@@ -304,21 +325,18 @@ VF_READER_CATALOG_CACHE_TTL_MS = max(
     60_000,
     int((os.getenv("VF_READER_CATALOG_CACHE_TTL_MS") or "900000").strip() or "900000"),
 )
-VF_READER_TRANSLATION_MODEL = (
-    str(os.getenv("VF_READER_TRANSLATION_MODEL") or "gemini-2.5-flash").strip()
-    or "gemini-2.5-flash"
-)
+VF_READER_TRANSLATION_MODEL = str(os.getenv("VF_READER_TRANSLATION_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip() or VF_AI_TEXT_DEFAULT_MODEL
 VF_READER_IMPORTS_ONLY = (
-    (os.getenv("VF_READER_IMPORTS_ONLY") or "1").strip().lower()
+    (os.getenv("VF_READER_IMPORTS_ONLY") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_READER_TTS_PRIMARY_MODEL = (
-    str(os.getenv("VF_READER_TTS_PRIMARY_MODEL") or "gemini-3.1-lite").strip()
-    or "gemini-3.1-lite"
+    str(os.getenv("VF_READER_TTS_PRIMARY_MODEL") or "gemini-2.5-flash-preview-tts").strip()
+    or "gemini-2.5-flash-preview-tts"
 )
 VF_READER_TTS_FALLBACK_MODEL = (
-    str(os.getenv("VF_READER_TTS_FALLBACK_MODEL") or "gemini-2.5-flash").strip()
-    or "gemini-2.5-flash"
+    str(os.getenv("VF_READER_TTS_FALLBACK_MODEL") or "gemini-2.5-flash-lite-preview-tts").strip()
+    or "gemini-2.5-flash-lite-preview-tts"
 )
 VF_READER_NATIVE_AUDIO_ENABLED = (
     (os.getenv("VF_READER_NATIVE_AUDIO_ENABLED") or "1").strip().lower()
@@ -513,15 +531,19 @@ VF_TTS_LIVE_FIRST_CHUNK_CHARS = max(
     VF_TTS_LIVE_CHUNK_CHARS_MIN,
     min(
         VF_TTS_LIVE_CHUNK_CHARS_DEFAULT,
-        int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_CHARS") or "110").strip() or "110"),
+        int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_CHARS") or "100").strip() or "100"),
     ),
 )
 VF_TTS_LIVE_FIRST_CHUNK_WORDS = max(
     VF_TTS_LIVE_CHUNK_WORDS_MIN,
     min(
         VF_TTS_LIVE_CHUNK_WORDS_DEFAULT,
-        int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_WORDS") or "20").strip() or "20"),
+        int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_WORDS") or "16").strip() or "16"),
     ),
+)
+VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS = max(
+    1,
+    int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS") or "3000").strip() or "3000"),
 )
 VF_TTS_LIVE_NATIVE_ENABLED = (
     (os.getenv("VF_TTS_LIVE_NATIVE_ENABLED") or "1").strip().lower()
@@ -538,17 +560,27 @@ VF_TTS_LIVE_NATIVE_MODEL = (
     or "gemini-2.5-flash-native-audio-preview-12-2025"
 )
 VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL = (
-    str(os.getenv("VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL") or "gemini-2.5-flash").strip()
-    or "gemini-2.5-flash"
+    str(os.getenv("VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip()
+    or VF_AI_TEXT_DEFAULT_MODEL
 )
 VF_PODCAST_STANDARD_SCRIPT_MODEL = (
-    str(os.getenv("VF_PODCAST_STANDARD_SCRIPT_MODEL") or "gemini-3.1-lite").strip()
-    or "gemini-3.1-lite"
+    str(os.getenv("VF_PODCAST_STANDARD_SCRIPT_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip()
+    or VF_AI_TEXT_DEFAULT_MODEL
 )
 VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES = [
-    "gemini-3.1-lite",
+    VF_PODCAST_STANDARD_SCRIPT_MODEL,
+    "gemini-3.1-flash-lite-preview",
     "gemini-2.5-flash",
+    "gemini-3-flash",
+    "gemini-2.5-flash-lite",
 ]
+VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES = list(
+    dict.fromkeys(
+        str(candidate).strip()
+        for candidate in VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES
+        if str(candidate).strip()
+    )
+)
 VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES = [
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-flash-lite-preview-tts",
@@ -582,7 +614,7 @@ VF_TTS_LIVE_NATIVE_CONNECTION_MAX_SEC = max(
 )
 VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC = max(
     5,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC") or "20").strip() or "20"),
+    int((os.getenv("VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC") or "12").strip() or "12"),
 )
 VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS = max(
     0,
@@ -624,6 +656,7 @@ VOICE_ID_MAP_FILE = Path(
 ).resolve()
 APP_BUILD_TIME = datetime.now(timezone.utc).isoformat()
 API_VERSION = "1.2.0"
+REQUEST_ID_CONFLICT = "REQUEST_ID_CONFLICT"
 VF_AUTH_ENFORCE = (
     (os.getenv("VF_AUTH_ENFORCE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -634,6 +667,7 @@ VF_REQUIRE_EMAIL_VERIFIED = (
 )
 VF_ENV = str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower()
 VF_IS_PRODUCTION = VF_ENV in {"prod", "production"}
+VF_IS_LOCAL_DEV = VF_ENV in {"local", "dev", "development"}
 VF_DOCS_ENABLE = (
     (os.getenv("VF_DOCS_ENABLE") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
     in {"1", "true", "yes", "on"}
@@ -690,9 +724,86 @@ VF_BILLING_REDIRECT_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED = (
-    (os.getenv("VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
+    (os.getenv("VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+ACCOUNTING_DISPLAY_CURRENCY = (os.getenv("VF_ACCOUNTING_CURRENCY") or "INR").strip().upper() or "INR"
+ACCOUNTING_TIMEZONE = (os.getenv("VF_ACCOUNTING_TIMEZONE") or "Asia/Kolkata").strip() or "Asia/Kolkata"
+try:
+    ACCOUNTING_TZINFO = ZoneInfo(ACCOUNTING_TIMEZONE)
+except Exception:
+    ACCOUNTING_TZINFO = timezone.utc
+    ACCOUNTING_TIMEZONE = "UTC"
+VF_ACCOUNTING_BQ_PROJECT = (os.getenv("VF_ACCOUNTING_BQ_PROJECT") or "").strip()
+VF_ACCOUNTING_BQ_DATASET = (os.getenv("VF_ACCOUNTING_BQ_DATASET") or "").strip()
+VF_ACCOUNTING_BQ_TABLE = (os.getenv("VF_ACCOUNTING_BQ_TABLE") or "").strip()
+VF_ACCOUNTING_BQ_BILLING_PROJECT_FILTER = (os.getenv("VF_ACCOUNTING_BQ_BILLING_PROJECT_FILTER") or "").strip()
+VF_ACCOUNTING_BQ_CLOUD_RUN_SERVICE_FILTER = (os.getenv("VF_ACCOUNTING_BQ_CLOUD_RUN_SERVICE_FILTER") or "").strip()
+VF_ACCOUNTING_BQ_QUERY_MAX_DAYS = max(
+    1,
+    min(370, int((os.getenv("VF_ACCOUNTING_BQ_QUERY_MAX_DAYS") or "120").strip() or "120")),
+)
+VF_ACCOUNTING_GEMINI_PROMPT_INR_PER_1K = max(
+    0.0,
+    float((os.getenv("VF_ACCOUNTING_GEMINI_PROMPT_INR_PER_1K") or "0.02").strip() or "0.02"),
+)
+VF_ACCOUNTING_GEMINI_OUTPUT_INR_PER_1K = max(
+    0.0,
+    float((os.getenv("VF_ACCOUNTING_GEMINI_OUTPUT_INR_PER_1K") or "0.05").strip() or "0.05"),
+)
+VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR = max(
+    0.01,
+    float((os.getenv("VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR") or "0.28").strip() or "0.28"),
+)
+VF_ACCOUNTING_MONITOR_ENABLED = (
+    (os.getenv("VF_ACCOUNTING_MONITOR_ENABLED") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT = max(
+    0.0,
+    float((os.getenv("VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT") or "20").strip() or "20"),
+)
+VF_ACCOUNTING_MONITOR_MARGIN_FLOOR_PCT = max(
+    0.0,
+    float((os.getenv("VF_ACCOUNTING_MONITOR_MARGIN_FLOOR_PCT") or "8").strip() or "8"),
+)
+VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER = max(
+    1.0,
+    float((os.getenv("VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER") or "1.6").strip() or "1.6"),
+)
+VF_ACCOUNTING_MONITOR_SPIKE_LOOKBACK_DAYS = max(
+    3,
+    min(120, int((os.getenv("VF_ACCOUNTING_MONITOR_SPIKE_LOOKBACK_DAYS") or "14").strip() or "14")),
+)
+VF_ACCOUNTING_MONITOR_DAILY_CRON = (
+    str(os.getenv("VF_ACCOUNTING_MONITOR_DAILY_CRON") or "30 2 * * *").strip()
+    or "30 2 * * *"
+)
+VF_ACCOUNTING_MONITOR_DAILY_TIMEZONE = (
+    str(os.getenv("VF_ACCOUNTING_MONITOR_DAILY_TIMEZONE") or ACCOUNTING_TIMEZONE).strip()
+    or ACCOUNTING_TIMEZONE
+)
+_accounting_fx_rates_raw = str(
+    os.getenv("VF_ACCOUNTING_FX_RATES")
+    or '{"INR":1.0,"USD":83.0,"EUR":90.0,"GBP":105.0}'
+).strip()
+try:
+    _accounting_fx_rates_json = json.loads(_accounting_fx_rates_raw)
+except Exception:
+    _accounting_fx_rates_json = {}
+ACCOUNTING_FX_RATES: dict[str, float] = {}
+if isinstance(_accounting_fx_rates_json, dict):
+    for raw_currency, raw_rate in _accounting_fx_rates_json.items():
+        code = str(raw_currency or "").strip().upper()
+        if len(code) != 3:
+            continue
+        try:
+            rate = float(raw_rate)
+        except Exception:
+            rate = 0.0
+        if rate > 0:
+            ACCOUNTING_FX_RATES[code] = rate
+ACCOUNTING_FX_RATES["INR"] = 1.0
 VF_TOKEN_PACK_VALIDITY_MONTHS = max(
     1,
     int((os.getenv("VF_TOKEN_PACK_VALIDITY_MONTHS") or "6").strip() or "6"),
@@ -1120,7 +1231,7 @@ VF_TTS_GATEWAY_QUEUE_MAX = max(
 )
 VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS = max(
     500,
-    int((os.getenv("VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS") or "30000").strip() or "30000"),
+    int((os.getenv("VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS") or "9000").strip() or "9000"),
 )
 VF_TTS_QUEUE_ENABLED = (
     (os.getenv("VF_TTS_QUEUE_ENABLED") or "1").strip().lower()
@@ -1135,7 +1246,7 @@ VF_SERVICE_IS_API = VF_SERVICE_ROLE in {"api", "all"}
 VF_SERVICE_IS_WORKER = VF_SERVICE_ROLE in {"worker", "all"}
 VF_TTS_QUEUE_SYNC_WAIT_MS = max(
     500,
-    int((os.getenv("VF_TTS_QUEUE_SYNC_WAIT_MS") or "3000").strip() or "3000"),
+    int((os.getenv("VF_TTS_QUEUE_SYNC_WAIT_MS") or "1200").strip() or "1200"),
 )
 VF_TTS_QUEUE_MAX_DEPTH = max(
     1,
@@ -1165,15 +1276,15 @@ _vf_tts_worker_count_raw = str(os.getenv("VF_TTS_QUEUE_WORKER_COUNT") or "").str
 if _vf_tts_worker_count_raw:
     _vf_tts_worker_count = int(_vf_tts_worker_count_raw or "0")
 else:
-    _vf_tts_worker_count = 4 if VF_SERVICE_IS_WORKER else 0
+    _vf_tts_worker_count = 8 if VF_SERVICE_IS_WORKER else 0
 VF_TTS_QUEUE_WORKER_COUNT = max(0, int(_vf_tts_worker_count))
 VF_TTS_ENGINE_CONCURRENCY_GEM = max(
     1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_GEM") or "12").strip() or "12"),
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_GEM") or "16").strip() or "16"),
 )
 VF_TTS_ENGINE_CONCURRENCY_KOKORO = max(
     1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_KOKORO") or "8").strip() or "8"),
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_KOKORO") or "12").strip() or "12"),
 )
 VF_TTS_QUEUE_METRICS_WINDOW = max(
     20,
@@ -1433,6 +1544,8 @@ SCHEDULER_RUNS_COLLECTION = "ops_task_runs"
 SCHEDULER_LOCK_COLLECTION = "ops_scheduler_lock"
 COUPON_ANALYTICS_DAILY_COLLECTION = "coupon_analytics_daily"
 COUPON_SUBSCRIPTION_ATTRIBUTIONS_COLLECTION = "coupon_subscription_attributions"
+ACCOUNTING_DAILY_ROLLUP_COLLECTION = "accounting_daily_rollup"
+ACCOUNTING_MONITOR_RUNS_COLLECTION = "accounting_monitor_runs"
 USER_PROFILES_COLLECTION = "user_profiles"
 USER_ID_INDEX_COLLECTION = "user_id_index"
 TEAMS_COLLECTION = "teams"
@@ -1464,6 +1577,7 @@ SCHEDULER_TASK_TYPES = {
     "usage_export_daily",
     "coupon_abuse_scan",
     "audio_generation_audit_retention_cleanup",
+    "accounting_monitor_daily",
 }
 SCHEDULER_CONCURRENCY_POLICIES = {"forbid", "replace", "allow"}
 TEAM_MEMBER_ROLES = {"owner", "admin", "member", "viewer"}
@@ -3035,11 +3149,21 @@ class LlvcRuntime:
         url = f"{self.base_url}{path}"
         request_timeout = float(timeout_sec) if timeout_sec is not None else (25.0 if method.upper() == "GET" else 30.0)
         try:
-            if method.upper() == "GET":
-                response = requests.get(url, timeout=request_timeout)
-            else:
-                response = requests.post(url, json=payload or {}, timeout=request_timeout)
-        except Exception as exc:  # noqa: BLE001
+            request_kwargs: dict[str, Any] = {
+                "timeout": request_timeout,
+                "retry_attempts": 2 if method.upper() == "GET" else 1,
+                "retry_backoff_ms": 150,
+                "retry_status_codes": {502, 503, 504},
+                "allow_retry_non_idempotent": False,
+            }
+            if method.upper() != "GET":
+                request_kwargs["json"] = payload or {}
+            response = _runtime_http_request(
+                method.upper(),
+                url,
+                **request_kwargs,
+            )
+        except RuntimeHttpError as exc:
             self.import_error = f"voice-transfer-runtime unreachable: {exc}"
             raise RuntimeError(self.import_error) from exc
         if not response.ok:
@@ -3476,6 +3600,10 @@ def _phase2_background_warmups() -> None:
             _ensure_audio_generation_audit_cleanup_task()
         except Exception:
             pass
+        try:
+            _ensure_accounting_monitor_task()
+        except Exception:
+            pass
     try:
         _init_firebase_clients()
     except Exception:
@@ -3554,6 +3682,8 @@ _INMEMORY_SCHEDULER_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SCHEDULER_LOCK: dict[str, Any] = {}
 _INMEMORY_COUPON_ANALYTICS_DAILY: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPON_SUB_ATTRIBUTIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_ACCOUNTING_DAILY_ROLLUP: dict[str, dict[str, Any]] = {}
+_INMEMORY_ACCOUNTING_MONITOR_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_USER_PROFILES: dict[str, dict[str, Any]] = {}
 _INMEMORY_USER_ID_INDEX: dict[str, dict[str, Any]] = {}
 _INMEMORY_TEAMS: dict[str, dict[str, Any]] = {}
@@ -3656,28 +3786,24 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
         "KOKORO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
 }
-_RUNTIME_HTTP_LOCAL = threading.local()
 _REQUESTS_GET_BASE = requests.get
 _REQUESTS_POST_BASE = requests.post
 _REQUESTS_PUT_BASE = requests.put
 _REQUESTS_PATCH_BASE = requests.patch
 _REQUESTS_DELETE_BASE = requests.delete
+_RUNTIME_HTTP_CLIENT = RuntimeHttpClient(pool_connections=64, pool_maxsize=64)
 
 
 def _runtime_http_session() -> requests.Session:
-    session = getattr(_RUNTIME_HTTP_LOCAL, "session", None)
-    if isinstance(session, requests.Session):
-        return session
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=0)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    _RUNTIME_HTTP_LOCAL.session = session
-    return session
+    return _RUNTIME_HTTP_CLIENT.session()
 
 
 def _runtime_http_request(method: str, url: str, **kwargs: Any) -> requests.Response:
     method_upper = str(method or "GET").strip().upper() or "GET"
+    retry_attempts = max(1, int(kwargs.pop("retry_attempts", 1) or 1))
+    retry_backoff_ms = max(0, int(kwargs.pop("retry_backoff_ms", 120) or 120))
+    retry_status_codes = kwargs.pop("retry_status_codes", None)
+    allow_retry_non_idempotent = bool(kwargs.pop("allow_retry_non_idempotent", False))
     direct_overrides = {
         "GET": (_REQUESTS_GET_BASE, requests.get),
         "POST": (_REQUESTS_POST_BASE, requests.post),
@@ -3690,8 +3816,15 @@ def _runtime_http_request(method: str, url: str, **kwargs: Any) -> requests.Resp
         original_fn, current_fn = current_pair
         if current_fn is not original_fn:
             return current_fn(url, **kwargs)
-    session = _runtime_http_session()
-    return session.request(method=method_upper, url=url, **kwargs)
+    return _RUNTIME_HTTP_CLIENT.request(
+        method_upper,
+        url,
+        max_attempts=retry_attempts,
+        retry_backoff_ms=retry_backoff_ms,
+        retry_status_codes=retry_status_codes,
+        allow_retry_non_idempotent=allow_retry_non_idempotent,
+        **kwargs,
+    )
 
 _GEMINI_POOLS_LOCK = threading.Lock()
 _GEMINI_POOLS_CACHE: Optional[dict[str, Any]] = None
@@ -4661,6 +4794,35 @@ def _user_profile_backfill_candidate(uid: str, email: str = "", display_name: st
     return base
 
 
+def _user_profile_backfill_candidates(uid: str, email: str = "", display_name: str = "") -> list[str]:
+    base = _user_profile_backfill_candidate(uid, email, display_name)
+    candidates = [base]
+    safe_uid = re.sub(r"[^a-z0-9]", "", str(uid or "").strip().lower())
+    suffixes: list[str] = []
+    for length in (4, 6, 8, 10):
+        suffix = safe_uid[-length:]
+        if suffix and suffix not in suffixes:
+            suffixes.append(suffix)
+    if safe_uid:
+        digest = hashlib.sha1(safe_uid.encode("utf-8")).hexdigest()[:6]
+        if digest not in suffixes:
+            suffixes.append(digest)
+    for suffix in suffixes:
+        max_base_len = 24 - len(suffix) - 1
+        if max_base_len < 4:
+            continue
+        prefix = re.sub(r"_+$", "", base[:max_base_len]).strip("_")
+        if len(prefix) < 4:
+            prefix = base[:max_base_len]
+        try:
+            candidate = _normalize_user_id_handle(f"{prefix}_{suffix}")
+        except HTTPException:
+            continue
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
 def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
@@ -4994,6 +5156,11 @@ def _ensure_user_profile(
     *,
     request: Optional[Request] = None,
     allow_auto_backfill: bool = True,
+    seed_email: str = "",
+    seed_display_name: str = "",
+    repair_user_id_collisions: bool = False,
+    suppress_backfill_errors: bool = False,
+    fetch_firebase_identity: bool = True,
 ) -> Optional[dict[str, Any]]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
@@ -5003,9 +5170,9 @@ def _ensure_user_profile(
         return existing
     if not allow_auto_backfill:
         return None
-    email = _request_claim_email(request)
-    display_name = ""
-    if _firebase_ready() and firebase_auth is not None:
+    email = _request_claim_email(request) or str(seed_email or "").strip().lower()
+    display_name = str(seed_display_name or "").strip()
+    if fetch_firebase_identity and _firebase_ready() and firebase_auth is not None:
         try:
             record = firebase_auth.get_user(safe_uid)  # type: ignore[attr-defined]
             display_name = str(getattr(record, "display_name", "") or "").strip()
@@ -5013,16 +5180,49 @@ def _ensure_user_profile(
                 email = str(getattr(record, "email", "") or "").strip().lower()
         except Exception:
             pass
-    return _user_profile_upsert(
-        safe_uid,
-        user_id=_user_profile_backfill_candidate(safe_uid, email, display_name),
-        display_name=display_name or None,
-        email=email or None,
-        created_by="system_backfill",
-        updated_by="system_backfill",
-        force_change=False,
-        allow_existing_immutable=True,
+    candidates = (
+        _user_profile_backfill_candidates(safe_uid, email, display_name)
+        if repair_user_id_collisions
+        else [_user_profile_backfill_candidate(safe_uid, email, display_name)]
     )
+    last_error: Optional[Exception] = None
+    last_candidate = candidates[0] if candidates else ""
+    for candidate in candidates:
+        last_candidate = candidate
+        try:
+            return _user_profile_upsert(
+                safe_uid,
+                user_id=candidate,
+                display_name=display_name or None,
+                email=email or None,
+                created_by="system_backfill",
+                updated_by="system_backfill",
+                force_change=False,
+                allow_existing_immutable=True,
+            )
+        except HTTPException as exc:
+            last_error = exc
+            detail = str(exc.detail or "").strip().lower()
+            if exc.status_code == 409 and repair_user_id_collisions and "userid already exists" in detail:
+                continue
+            if suppress_backfill_errors:
+                _log_user_profile_write_error("backfill_failed", safe_uid, candidate, exc)
+                return _user_profile_read(safe_uid)
+            raise
+        except Exception as exc:
+            last_error = exc
+            if suppress_backfill_errors:
+                _log_user_profile_write_error("backfill_failed", safe_uid, candidate, exc)
+                return _user_profile_read(safe_uid)
+            raise
+    if suppress_backfill_errors:
+        if last_error is None:
+            last_error = RuntimeError("userId repair candidates exhausted.")
+        _log_user_profile_write_error("backfill_candidates_exhausted", safe_uid, last_candidate, last_error)
+        return _user_profile_read(safe_uid)
+    if isinstance(last_error, HTTPException):
+        raise last_error
+    raise HTTPException(status_code=409, detail="userId already exists.")
 
 
 def _resolve_request_user_id(request: Optional[Request], uid: str) -> str:
@@ -6414,7 +6614,9 @@ def _notification_admin_tab_for_permission(permission: str) -> str:
         return "alerts"
     if safe_permission in {PERM_AUDIT_READ, PERM_RBAC_READ}:
         return "audit"
-    if safe_permission in {PERM_ANALYTICS_READ, PERM_BILLING_READ}:
+    if safe_permission == PERM_BILLING_READ:
+        return "accounting"
+    if safe_permission == PERM_ANALYTICS_READ:
         return "analytics"
     if safe_permission in {PERM_GUARDIAN_READ, PERM_OPS_READ}:
         return "guardian"
@@ -6932,20 +7134,25 @@ def _ad_claims_today(uid: str, now: Optional[datetime] = None) -> int:
     return _as_positive_int(payload.get("adClaimCount"))
 
 
-def _load_entitlement(uid: str) -> dict[str, Any]:
+def _load_entitlement(uid: str, *, create_missing: bool = True) -> dict[str, Any]:
     defaults = _default_entitlement(uid)
     collection = _firestore_collection("entitlements")
     if collection is None:
         with _INMEMORY_LOCK:
             existing = _INMEMORY_ENTITLEMENTS.get(uid)
             if not existing:
-                _INMEMORY_ENTITLEMENTS[uid] = {**defaults}
-            current = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS[uid])
-            _INMEMORY_ENTITLEMENTS[uid] = current
+                current = _normalize_entitlement_wallet({**defaults})
+                if create_missing:
+                    _INMEMORY_ENTITLEMENTS[uid] = current
+                return {**current}
+            current = _normalize_entitlement_wallet(existing)
+            if create_missing:
+                _INMEMORY_ENTITLEMENTS[uid] = current
             return {**current}
     doc = collection.document(uid).get()
     if not doc.exists:
-        collection.document(uid).set(defaults)
+        if create_missing:
+            collection.document(uid).set(defaults)
         return {**defaults}
     payload = doc.to_dict() or {}
     merged = {**defaults, **payload}
@@ -7040,7 +7247,12 @@ def _usage_defaults(uid: str, now: Optional[datetime] = None) -> tuple[dict[str,
     return monthly, daily
 
 
-def _load_usage_windows(uid: str, now: Optional[datetime] = None) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_usage_windows(
+    uid: str,
+    now: Optional[datetime] = None,
+    *,
+    create_missing: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     current = now or _utc_now()
     monthly_doc_id = _inmemory_usage_month_doc_id(uid, current)
     daily_doc_id = _inmemory_usage_day_doc_id(uid, current)
@@ -7052,17 +7264,18 @@ def _load_usage_windows(uid: str, now: Optional[datetime] = None) -> tuple[dict[
         with _INMEMORY_LOCK:
             monthly = _INMEMORY_USAGE_MONTHLY.get(monthly_doc_id) or {**default_monthly}
             daily = _INMEMORY_USAGE_DAILY.get(daily_doc_id) or {**default_daily}
-            _INMEMORY_USAGE_MONTHLY[monthly_doc_id] = monthly
-            _INMEMORY_USAGE_DAILY[daily_doc_id] = daily
+            if create_missing:
+                _INMEMORY_USAGE_MONTHLY[monthly_doc_id] = monthly
+                _INMEMORY_USAGE_DAILY[daily_doc_id] = daily
             return {**monthly}, {**daily}
 
     monthly_ref = monthly_collection.document(monthly_doc_id)
     daily_ref = daily_collection.document(daily_doc_id)
     monthly_doc = monthly_ref.get()
     daily_doc = daily_ref.get()
-    if not monthly_doc.exists:
+    if not monthly_doc.exists and create_missing:
         monthly_ref.set(default_monthly)
-    if not daily_doc.exists:
+    if not daily_doc.exists and create_missing:
         daily_ref.set(default_daily)
     monthly = monthly_doc.to_dict() if monthly_doc.exists else default_monthly
     daily = daily_doc.to_dict() if daily_doc.exists else default_daily
@@ -7852,6 +8065,10 @@ class ScheduledTaskRunRequest(BaseModel):
     dryRun: Optional[bool] = None
 
 
+class AccountingMonitorRunRequest(BaseModel):
+    dryRun: bool = False
+
+
 class GeminiApiPoolsUpdateRequest(BaseModel):
     version: Optional[int] = None
     pools: dict[str, Any]
@@ -7903,6 +8120,8 @@ class LiveNativeConfigRequest(BaseModel):
     pacingStyle: Optional[str] = None
     nativeAudioModel: Optional[str] = None
     directorModel: Optional[str] = None
+    language: Optional[str] = None
+    seedScript: Optional[str] = None
 
 
 class PodcastLiveJobRequest(BaseModel):
@@ -7915,6 +8134,8 @@ class PodcastLiveJobRequest(BaseModel):
     output: Optional[LiveNativeOutputRequest] = None
     pacingStyle: Optional[str] = None
     language: Optional[str] = None
+    seedScript: Optional[str] = None
+    directorModel: Optional[str] = None
     request_id: Optional[str] = None
     trace_id: Optional[str] = None
     stream: Optional[bool] = True
@@ -7922,6 +8143,7 @@ class PodcastLiveJobRequest(BaseModel):
 
 class PodcastStandardJobRequest(BaseModel):
     topic: str
+    engine: Optional[str] = None
     durationSec: Optional[int] = None
     speakerCount: Optional[int] = None
     cast: Optional[list[LiveNativeCastMemberRequest]] = None
@@ -7934,6 +8156,7 @@ class PodcastStandardJobRequest(BaseModel):
     includeTranscript: Optional[bool] = True
     audioFormat: Optional[str] = "wav"
     scriptWindowChars: Optional[int] = None
+    directorModel: Optional[str] = None
 
 
 class TtsSynthesizeRequest(BaseModel):
@@ -10434,6 +10657,12 @@ def _scheduler_execute_task(task: dict[str, Any], *, requested_by: str, dry_run:
         return {"ok": True, "dryRun": bool(dry_run), **snapshot}
     if task_type == "audio_generation_audit_retention_cleanup":
         return _audio_generation_audit_retention_cleanup(dry_run=bool(dry_run))
+    if task_type == "accounting_monitor_daily":
+        return _accounting_monitor_execute(
+            dry_run=bool(dry_run),
+            requested_by=requested_by,
+            source="scheduler",
+        )
     raise RuntimeError("Unsupported task type.")
 
 
@@ -11926,6 +12155,927 @@ def _ensure_audio_generation_audit_cleanup_task() -> None:
     )
 
 
+def _ensure_accounting_monitor_task() -> None:
+    if not VF_ACCOUNTING_MONITOR_ENABLED:
+        return
+    task_id = "accounting_monitor_daily_default"
+    if isinstance(_scheduler_get_task(task_id), dict):
+        return
+    now = _utc_now()
+    safe_tz = str(VF_ACCOUNTING_MONITOR_DAILY_TIMEZONE or ACCOUNTING_TIMEZONE).strip() or ACCOUNTING_TIMEZONE
+    try:
+        ZoneInfo(safe_tz)
+    except Exception:
+        safe_tz = ACCOUNTING_TIMEZONE
+    safe_cron = str(VF_ACCOUNTING_MONITOR_DAILY_CRON or "30 2 * * *").strip() or "30 2 * * *"
+    _scheduler_upsert_task(
+        task_id,
+        {
+            "taskType": "accounting_monitor_daily",
+            "cronExpr": safe_cron,
+            "timezone": safe_tz,
+            "enabled": True,
+            "dryRun": False,
+            "payload": {},
+            "concurrencyPolicy": "forbid",
+            "nextRunAt": _scheduler_next_run_at(safe_cron, safe_tz, after=now).isoformat(),
+            "lastRunAt": None,
+            "lastResult": {},
+            "createdAt": now.isoformat(),
+            "updatedAt": now.isoformat(),
+            "updatedBy": "system_bootstrap",
+        },
+    )
+
+
+def _accounting_rollup_upsert(day_token: str, row: dict[str, Any]) -> dict[str, Any]:
+    safe_day = str(day_token or "").strip()
+    if not safe_day:
+        raise RuntimeError("Invalid accounting day token.")
+    payload = dict(row or {})
+    payload["id"] = safe_day
+    payload["day"] = safe_day
+    payload["updatedAt"] = _safe_now_iso()
+    collection = _firestore_collection(ACCOUNTING_DAILY_ROLLUP_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ACCOUNTING_DAILY_ROLLUP[safe_day] = dict(payload)
+        return payload
+    collection.document(safe_day).set(payload, merge=True)
+    return payload
+
+
+def _accounting_rollup_list(from_dt: datetime, to_dt: datetime, limit: int = 2000) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(5000, int(limit)))
+    collection = _firestore_collection(ACCOUNTING_DAILY_ROLLUP_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_ACCOUNTING_DAILY_ROLLUP.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit * 2).stream()]
+        except Exception:
+            rows = []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        day_token = str(row.get("day") or row.get("id") or "").strip()
+        parsed = _parse_optional_datetime(f"{day_token}T00:00:00+00:00")
+        if parsed is None:
+            continue
+        if parsed < from_dt or parsed > to_dt:
+            continue
+        normalized = dict(row)
+        normalized["day"] = day_token
+        normalized["id"] = day_token
+        result.append(normalized)
+    result.sort(key=lambda item: str(item.get("day") or ""))
+    return result[:safe_limit]
+
+
+def _accounting_monitor_run_upsert(run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_id = str(run_id or "").strip() or f"run_{uuid.uuid4().hex[:12]}"
+    row = dict(payload or {})
+    row["id"] = safe_id
+    row["updatedAt"] = _safe_now_iso()
+    collection = _firestore_collection(ACCOUNTING_MONITOR_RUNS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_ACCOUNTING_MONITOR_RUNS[safe_id] = dict(row)
+        return row
+    collection.document(safe_id).set(row, merge=True)
+    return row
+
+
+def _accounting_monitor_run_list(limit: int = 80) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    collection = _firestore_collection(ACCOUNTING_MONITOR_RUNS_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_ACCOUNTING_MONITOR_RUNS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(safe_limit * 2).stream()]
+        except Exception:
+            rows = []
+    rows.sort(
+        key=lambda item: str(item.get("startedAt") or item.get("createdAt") or ""),
+        reverse=True,
+    )
+    return rows[:safe_limit]
+
+
+def _parse_runtime_usage_header(raw_header: Any) -> dict[str, int]:
+    raw_value = str(raw_header or "").strip()
+    if not raw_value:
+        return {}
+    decoded = raw_value
+    try:
+        decoded = unquote(raw_value)
+    except Exception:
+        decoded = raw_value
+    try:
+        payload = json.loads(decoded)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    prompt_tokens = _safe_int(
+        payload.get("promptTokens")
+        or payload.get("promptTokenCount")
+        or payload.get("prompt_token_count"),
+        0,
+    )
+    output_tokens = _safe_int(
+        payload.get("outputTokens")
+        or payload.get("candidatesTokenCount")
+        or payload.get("output_token_count")
+        or payload.get("completionTokens"),
+        0,
+    )
+    total_tokens = _safe_int(
+        payload.get("totalTokens")
+        or payload.get("totalTokenCount")
+        or payload.get("total_token_count"),
+        prompt_tokens + output_tokens,
+    )
+    if total_tokens <= 0 and prompt_tokens <= 0 and output_tokens <= 0:
+        return {}
+    if total_tokens <= 0:
+        total_tokens = max(0, prompt_tokens + output_tokens)
+    if output_tokens <= 0 and total_tokens > prompt_tokens:
+        output_tokens = max(0, total_tokens - prompt_tokens)
+    return {
+        "promptTokens": max(0, prompt_tokens),
+        "outputTokens": max(0, output_tokens),
+        "totalTokens": max(0, total_tokens),
+    }
+
+
+def _usage_event_attach_runtime_usage(
+    uid: str,
+    request_id: str,
+    usage_payload: dict[str, int],
+    *,
+    mode: str = "",
+    trace_id: str = "",
+) -> None:
+    safe_uid = str(uid or "").strip()
+    safe_request_id = str(request_id or "").strip()
+    if not safe_uid or not safe_request_id or not isinstance(usage_payload, dict):
+        return
+    if (
+        _safe_int(usage_payload.get("promptTokens"), 0) <= 0
+        and _safe_int(usage_payload.get("outputTokens"), 0) <= 0
+        and _safe_int(usage_payload.get("totalTokens"), 0) <= 0
+    ):
+        return
+    event_doc_id = f"{safe_uid}_{safe_request_id}"
+    patch = {
+        "runtimeUsage": {
+            "promptTokens": max(0, _safe_int(usage_payload.get("promptTokens"), 0)),
+            "outputTokens": max(0, _safe_int(usage_payload.get("outputTokens"), 0)),
+            "totalTokens": max(0, _safe_int(usage_payload.get("totalTokens"), 0)),
+        },
+        "runtimeUsageUpdatedAt": _safe_now_iso(),
+    }
+    safe_mode = str(mode or "").strip()
+    if safe_mode:
+        patch["runtimeMode"] = safe_mode
+    safe_trace = str(trace_id or "").strip()
+    if safe_trace:
+        patch["traceId"] = safe_trace
+    collection = _firestore_collection("usage_events")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            current = dict(_INMEMORY_USAGE_EVENTS.get(event_doc_id) or {})
+            if not current:
+                return
+            current.update(patch)
+            _INMEMORY_USAGE_EVENTS[event_doc_id] = current
+        return
+    try:
+        collection.document(event_doc_id).set(patch, merge=True)
+    except Exception:
+        return
+
+
+def _accounting_day_token(value: datetime) -> str:
+    local_value = value.astimezone(ACCOUNTING_TZINFO)
+    return local_value.strftime("%Y-%m-%d")
+
+
+def _accounting_bucket_token(day_token: str, group_by: str) -> str:
+    parsed = _parse_optional_datetime(f"{str(day_token or '').strip()}T00:00:00+00:00")
+    if parsed is None:
+        return str(day_token or "").strip()
+    local_value = parsed.astimezone(ACCOUNTING_TZINFO)
+    safe_group = str(group_by or "day").strip().lower()
+    if safe_group == "year":
+        return local_value.strftime("%Y")
+    if safe_group == "month":
+        return local_value.strftime("%Y-%m")
+    return local_value.strftime("%Y-%m-%d")
+
+
+def _accounting_parse_range(
+    *,
+    from_iso: str,
+    to_iso: str,
+    default_days: int = 30,
+    max_days: int = 370,
+) -> tuple[datetime, datetime]:
+    end_dt = _normalize_iso_datetime(to_iso) if str(to_iso or "").strip() else _utc_now()
+    start_default = end_dt - timedelta(days=max(1, int(default_days)))
+    start_dt = _normalize_iso_datetime(from_iso, fallback=start_default) if str(from_iso or "").strip() else start_default
+    if start_dt > end_dt:
+        start_dt, end_dt = end_dt, start_dt
+    max_window_days = max(1, int(max_days))
+    if (end_dt - start_dt).days > max_window_days:
+        start_dt = end_dt - timedelta(days=max_window_days)
+    return start_dt, end_dt
+
+
+def _accounting_to_inr(
+    amount: float,
+    currency: str,
+    *,
+    warnings: Optional[set[str]] = None,
+) -> float:
+    value = _safe_float(amount, 0.0)
+    safe_currency = str(currency or "INR").strip().upper() or "INR"
+    if safe_currency == "INR":
+        return value
+    rate = _safe_float(ACCOUNTING_FX_RATES.get(safe_currency), 0.0)
+    if rate <= 0:
+        if warnings is not None:
+            warnings.add(f"Missing FX rate for {safe_currency}; kept original amount as INR proxy.")
+        return value
+    return value * rate
+
+
+def _accounting_extract_stripe_tax_minor(row: Any) -> int:
+    direct = _safe_int(_stripe_obj_get(row, "tax", 0), 0)
+    if direct > 0:
+        return direct
+    total_tax_amounts = _stripe_obj_get(row, "total_tax_amounts", [])
+    if isinstance(total_tax_amounts, list):
+        tax_minor = 0
+        for item in total_tax_amounts:
+            if isinstance(item, dict):
+                tax_minor += _safe_int(item.get("amount"), 0)
+        if tax_minor > 0:
+            return tax_minor
+    total_details = _stripe_obj_get(row, "total_details", {})
+    if isinstance(total_details, dict):
+        return max(0, _safe_int(total_details.get("amount_tax"), 0))
+    return 0
+
+
+def _accounting_list_wallet_transactions(from_dt: datetime, to_dt: datetime) -> list[dict[str, Any]]:
+    collection = _firestore_collection("wallet_transactions")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_WALLET_TRANSACTIONS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(5000).stream()]
+        except Exception:
+            rows = []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        created_at = _parse_optional_datetime(str(row.get("createdAt") or row.get("updatedAt") or ""))
+        if created_at is None or created_at < from_dt or created_at > to_dt:
+            continue
+        result.append(
+            {
+                "id": str(row.get("id") or "").strip() or f"wallet_{uuid.uuid4().hex[:10]}",
+                "uid": str(row.get("uid") or "").strip(),
+                "kind": str(row.get("kind") or "").strip().lower(),
+                "bucket": str(row.get("bucket") or "").strip().lower(),
+                "amount": _safe_float(row.get("amount"), 0.0),
+                "reason": str(row.get("reason") or "").strip().lower(),
+                "metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+                "createdAt": created_at.isoformat(),
+                "day": _accounting_day_token(created_at),
+            }
+        )
+    return result
+
+
+def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[dict[str, Any]]:
+    collection = _firestore_collection("usage_events")
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = [dict(item) for item in _INMEMORY_USAGE_EVENTS.values()]
+    else:
+        try:
+            rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in collection.limit(7000).stream()]
+        except Exception:
+            rows = []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        status = str(row.get("status") or "").strip().lower()
+        if status not in {"committed", "reserved"}:
+            continue
+        updated_at = _parse_optional_datetime(str(row.get("updatedAt") or row.get("createdAt") or ""))
+        if updated_at is None or updated_at < from_dt or updated_at > to_dt:
+            continue
+        engine = str(row.get("engine") or "").strip().upper()
+        if engine not in {"GEM", "NEURAL2"}:
+            continue
+        runtime_usage = row.get("runtimeUsage") if isinstance(row.get("runtimeUsage"), dict) else {}
+        prompt_tokens = max(0, _safe_int(runtime_usage.get("promptTokens"), 0))
+        output_tokens = max(0, _safe_int(runtime_usage.get("outputTokens"), 0))
+        total_tokens = max(0, _safe_int(runtime_usage.get("totalTokens"), prompt_tokens + output_tokens))
+        chars = max(0, _safe_int(row.get("chars"), 0))
+        fallback_estimated = False
+        if total_tokens <= 0:
+            total_tokens = max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR)))
+            prompt_tokens = total_tokens
+            output_tokens = 0
+            fallback_estimated = True
+        result.append(
+            {
+                "id": str(row.get("id") or row.get("requestId") or "").strip() or uuid.uuid4().hex,
+                "uid": str(row.get("uid") or "").strip(),
+                "engine": engine,
+                "chars": chars,
+                "vfCost": _safe_float(row.get("vfCost"), 0.0),
+                "promptTokens": prompt_tokens,
+                "outputTokens": output_tokens,
+                "totalTokens": total_tokens,
+                "fallbackEstimated": fallback_estimated,
+                "updatedAt": updated_at.isoformat(),
+                "day": _accounting_day_token(updated_at),
+            }
+        )
+    return result
+
+
+def _accounting_list_stripe_invoices(from_dt: datetime, to_dt: datetime) -> tuple[list[dict[str, Any]], str, list[str]]:
+    if not _stripe_available() or not _ensure_stripe_sdk_imported() or stripe is None:
+        return [], "unavailable", ["Stripe accounting feed unavailable (missing key/sdk)."]
+    invoice_lister = getattr(getattr(stripe, "Invoice", None), "list", None)
+    if not callable(invoice_lister):
+        return [], "unavailable", ["Stripe invoice list API unavailable in current runtime."]
+    warnings: list[str] = []
+    try:
+        created_filter = {"gte": int(from_dt.timestamp()), "lte": int(to_dt.timestamp())}
+        try:
+            invoice_list = invoice_lister(limit=500, created=created_filter)
+        except TypeError:
+            invoice_list = invoice_lister(limit=500)
+    except Exception:
+        return [], "partial", ["Stripe invoice aggregation failed. Returned partial accounting payload."]
+
+    rows: list[dict[str, Any]] = []
+    for row in _stripe_data_list(invoice_list):
+        created_at = _stripe_timestamp_to_iso(_stripe_obj_get(row, "created"))
+        created_dt = _parse_optional_datetime(created_at or "")
+        if created_dt is None or created_dt < from_dt or created_dt > to_dt:
+            continue
+        status = str(_stripe_obj_get(row, "status", "open") or "open").strip().lower() or "open"
+        currency = str(_stripe_obj_get(row, "currency", "inr") or "inr").strip().upper()
+        amount_due_minor = max(0, _safe_int(_stripe_obj_get(row, "amount_due", 0), 0))
+        amount_paid_minor = max(0, _safe_int(_stripe_obj_get(row, "amount_paid", 0), 0))
+        amount_remaining_minor = max(0, _safe_int(_stripe_obj_get(row, "amount_remaining", 0), 0))
+        tax_minor = max(0, _accounting_extract_stripe_tax_minor(row))
+        rows.append(
+            {
+                "id": str(_stripe_obj_get(row, "id", "") or "").strip(),
+                "status": status,
+                "currency": currency,
+                "amountDue": float(amount_due_minor) / 100.0,
+                "amountPaid": float(amount_paid_minor) / 100.0,
+                "amountRemaining": float(amount_remaining_minor) / 100.0,
+                "taxAmount": float(tax_minor) / 100.0,
+                "number": str(_stripe_obj_get(row, "number", "") or "").strip() or None,
+                "customerId": str(_stripe_obj_get(row, "customer", "") or "").strip() or None,
+                "billingReason": str(_stripe_obj_get(row, "billing_reason", "") or "").strip() or None,
+                "createdAt": created_dt.isoformat(),
+                "day": _accounting_day_token(created_dt),
+            }
+        )
+    return rows, "ok", warnings
+
+
+def _accounting_cloud_run_cpu_costs(from_dt: datetime, to_dt: datetime) -> tuple[dict[str, float], str, list[str]]:
+    if not (VF_ACCOUNTING_BQ_PROJECT and VF_ACCOUNTING_BQ_DATASET and VF_ACCOUNTING_BQ_TABLE):
+        return {}, "unavailable", ["Cloud Run CPU billing source is not configured."]
+    full_table = f"{VF_ACCOUNTING_BQ_PROJECT}.{VF_ACCOUNTING_BQ_DATASET}.{VF_ACCOUNTING_BQ_TABLE}"
+    warnings: list[str] = []
+    try:
+        global google_bigquery
+        if google_bigquery is None:
+            from google.cloud import bigquery as _google_bigquery  # type: ignore
+            google_bigquery = _google_bigquery  # type: ignore
+    except Exception:
+        return {}, "partial", ["BigQuery client not installed. Cloud Run CPU costs are unavailable."]
+
+    safe_from_days = max(0, min((to_dt - from_dt).days + 1, VF_ACCOUNTING_BQ_QUERY_MAX_DAYS))
+    start_dt = to_dt - timedelta(days=safe_from_days)
+    query_lines = [
+        f"SELECT DATE(usage_start_time, @tz) AS day_token, SUM(cost) AS total_cost",
+        f"FROM `{full_table}`",
+        "WHERE DATE(usage_start_time, @tz) BETWEEN @from_day AND @to_day",
+        "  AND service.description = 'Cloud Run'",
+        "  AND LOWER(sku.description) LIKE '%cpu%'",
+    ]
+    query_params = [
+        google_bigquery.ScalarQueryParameter("tz", "STRING", ACCOUNTING_TIMEZONE),  # type: ignore[attr-defined]
+        google_bigquery.ScalarQueryParameter("from_day", "DATE", start_dt.astimezone(ACCOUNTING_TZINFO).date()),  # type: ignore[attr-defined]
+        google_bigquery.ScalarQueryParameter("to_day", "DATE", to_dt.astimezone(ACCOUNTING_TZINFO).date()),  # type: ignore[attr-defined]
+    ]
+    project_filter = str(VF_ACCOUNTING_BQ_BILLING_PROJECT_FILTER or "").strip()
+    if project_filter:
+        query_lines.append("  AND project.id = @billing_project")
+        query_params.append(google_bigquery.ScalarQueryParameter("billing_project", "STRING", project_filter))  # type: ignore[attr-defined]
+    query_lines.append("GROUP BY day_token ORDER BY day_token")
+    query_text = "\n".join(query_lines)
+    try:
+        client = google_bigquery.Client(project=VF_ACCOUNTING_BQ_PROJECT)  # type: ignore[attr-defined]
+        config = google_bigquery.QueryJobConfig(query_parameters=query_params)  # type: ignore[attr-defined]
+        rows = list(client.query(query_text, job_config=config).result())  # type: ignore[attr-defined]
+    except Exception:
+        return {}, "partial", ["BigQuery billing export query failed; Cloud Run CPU totals are partial."]
+    costs_by_day: dict[str, float] = {}
+    for row in rows:
+        day_token = str(getattr(row, "day_token", "") or "").strip()
+        if not day_token:
+            continue
+        costs_by_day[day_token] = costs_by_day.get(day_token, 0.0) + max(0.0, _safe_float(getattr(row, "total_cost", 0.0), 0.0))
+    return costs_by_day, "ok", warnings
+
+
+def _accounting_compute_report(
+    *,
+    from_dt: datetime,
+    to_dt: datetime,
+    group_by: str = "day",
+    include_unpaid_accrual: bool = True,
+    include_records: bool = False,
+    record_limit: int = 300,
+    persist_rollup: bool = True,
+) -> dict[str, Any]:
+    warnings_set: set[str] = set()
+    safe_group = str(group_by or "day").strip().lower()
+    if safe_group not in {"day", "month", "year"}:
+        safe_group = "day"
+
+    day_map: dict[str, dict[str, Any]] = {}
+    cursor = from_dt.astimezone(ACCOUNTING_TZINFO).date()
+    end_day = to_dt.astimezone(ACCOUNTING_TZINFO).date()
+    while cursor <= end_day:
+        token = cursor.strftime("%Y-%m-%d")
+        day_map[token] = {
+            "day": token,
+            "revenuePaidInr": 0.0,
+            "revenueAccruedInr": 0.0,
+            "revenueUnpaidInr": 0.0,
+            "taxAccruedInr": 0.0,
+            "walletExpenditureInr": 0.0,
+            "couponDiscountInr": 0.0,
+            "cloudRunCpuCostInr": 0.0,
+            "geminiCostInr": 0.0,
+            "geminiGenerations": 0,
+            "geminiPromptTokens": 0,
+            "geminiOutputTokens": 0,
+            "geminiTotalTokens": 0,
+            "geminiFallbackEstimatedCount": 0,
+            "invoicePaidCount": 0,
+            "invoiceUnpaidCount": 0,
+            "invoiceTotalCount": 0,
+        }
+        cursor = cursor + timedelta(days=1)
+
+    records: list[dict[str, Any]] = []
+    stripe_rows, stripe_status, stripe_warnings = _accounting_list_stripe_invoices(from_dt, to_dt)
+    for warning in stripe_warnings:
+        warnings_set.add(str(warning))
+    for row in stripe_rows:
+        day_token = str(row.get("day") or "").strip()
+        if day_token not in day_map:
+            continue
+        bucket = day_map[day_token]
+        currency = str(row.get("currency") or "INR").strip().upper()
+        paid_inr = _accounting_to_inr(_safe_float(row.get("amountPaid"), 0.0), currency, warnings=warnings_set)
+        due_inr = _accounting_to_inr(_safe_float(row.get("amountDue"), 0.0), currency, warnings=warnings_set)
+        remaining_inr = _accounting_to_inr(_safe_float(row.get("amountRemaining"), 0.0), currency, warnings=warnings_set)
+        tax_inr = _accounting_to_inr(_safe_float(row.get("taxAmount"), 0.0), currency, warnings=warnings_set)
+        status = str(row.get("status") or "").strip().lower()
+        accrued_inr = due_inr if include_unpaid_accrual else paid_inr
+        bucket["invoiceTotalCount"] = int(bucket.get("invoiceTotalCount") or 0) + 1
+        if status in {"paid"} or (paid_inr > 0 and remaining_inr <= 0):
+            bucket["invoicePaidCount"] = int(bucket.get("invoicePaidCount") or 0) + 1
+        else:
+            bucket["invoiceUnpaidCount"] = int(bucket.get("invoiceUnpaidCount") or 0) + 1
+        bucket["revenuePaidInr"] = _safe_float(bucket.get("revenuePaidInr"), 0.0) + paid_inr
+        bucket["revenueAccruedInr"] = _safe_float(bucket.get("revenueAccruedInr"), 0.0) + accrued_inr
+        bucket["revenueUnpaidInr"] = _safe_float(bucket.get("revenueUnpaidInr"), 0.0) + max(0.0, min(remaining_inr, accrued_inr))
+        bucket["taxAccruedInr"] = _safe_float(bucket.get("taxAccruedInr"), 0.0) + tax_inr
+        if include_records:
+            records.append(
+                {
+                    "id": str(row.get("id") or f"invoice_{uuid.uuid4().hex[:10]}"),
+                    "timestamp": str(row.get("createdAt") or ""),
+                    "day": day_token,
+                    "type": "invoice",
+                    "status": status,
+                    "amountInr": round(accrued_inr, 6),
+                    "paidInr": round(paid_inr, 6),
+                    "unpaidInr": round(max(0.0, min(remaining_inr, accrued_inr)), 6),
+                    "taxInr": round(tax_inr, 6),
+                    "currency": currency,
+                    "amountOriginal": _safe_float(row.get("amountDue"), 0.0),
+                    "source": "stripe_invoice",
+                    "metadata": {
+                        "number": row.get("number"),
+                        "billingReason": row.get("billingReason"),
+                        "customerId": row.get("customerId"),
+                    },
+                }
+            )
+
+    for row in _accounting_list_wallet_transactions(from_dt, to_dt):
+        day_token = str(row.get("day") or "").strip()
+        if day_token not in day_map:
+            continue
+        amount = max(0.0, _safe_float(row.get("amount"), 0.0))
+        kind = str(row.get("kind") or "").strip().lower()
+        reason = str(row.get("reason") or "").strip().lower()
+        bucket = day_map[day_token]
+        is_paid_revenue = kind == "credit" and (
+            reason.startswith("stripe_")
+            or reason.startswith("token_pack")
+            or reason.startswith("subscription")
+        )
+        if is_paid_revenue:
+            bucket["revenuePaidInr"] = _safe_float(bucket.get("revenuePaidInr"), 0.0) + amount
+            bucket["revenueAccruedInr"] = _safe_float(bucket.get("revenueAccruedInr"), 0.0) + amount
+        if kind == "debit" and (reason.startswith("refund") or reason.startswith("chargeback") or reason.startswith("reversal")):
+            bucket["walletExpenditureInr"] = _safe_float(bucket.get("walletExpenditureInr"), 0.0) + amount
+        if include_records and (is_paid_revenue or kind == "debit"):
+            records.append(
+                {
+                    "id": str(row.get("id") or f"wallet_{uuid.uuid4().hex[:10]}"),
+                    "timestamp": str(row.get("createdAt") or ""),
+                    "day": day_token,
+                    "type": "wallet_transaction",
+                    "status": kind,
+                    "amountInr": round(amount, 6),
+                    "taxInr": 0.0,
+                    "currency": "INR",
+                    "amountOriginal": amount,
+                    "source": "wallet_transactions",
+                    "metadata": {"uid": row.get("uid"), "bucket": row.get("bucket"), "reason": reason},
+                }
+            )
+
+    for row in _accounting_list_usage_events(from_dt, to_dt):
+        day_token = str(row.get("day") or "").strip()
+        if day_token not in day_map:
+            continue
+        prompt_tokens = max(0, _safe_int(row.get("promptTokens"), 0))
+        output_tokens = max(0, _safe_int(row.get("outputTokens"), 0))
+        total_tokens = max(0, _safe_int(row.get("totalTokens"), prompt_tokens + output_tokens))
+        if total_tokens <= 0:
+            continue
+        cost_inr = (
+            (float(prompt_tokens) / 1000.0) * float(VF_ACCOUNTING_GEMINI_PROMPT_INR_PER_1K)
+            + (float(output_tokens) / 1000.0) * float(VF_ACCOUNTING_GEMINI_OUTPUT_INR_PER_1K)
+        )
+        bucket = day_map[day_token]
+        bucket["geminiCostInr"] = _safe_float(bucket.get("geminiCostInr"), 0.0) + cost_inr
+        bucket["geminiGenerations"] = int(bucket.get("geminiGenerations") or 0) + 1
+        bucket["geminiPromptTokens"] = int(bucket.get("geminiPromptTokens") or 0) + prompt_tokens
+        bucket["geminiOutputTokens"] = int(bucket.get("geminiOutputTokens") or 0) + output_tokens
+        bucket["geminiTotalTokens"] = int(bucket.get("geminiTotalTokens") or 0) + total_tokens
+        if _as_bool(row.get("fallbackEstimated")):
+            bucket["geminiFallbackEstimatedCount"] = int(bucket.get("geminiFallbackEstimatedCount") or 0) + 1
+        if include_records:
+            records.append(
+                {
+                    "id": str(row.get("id") or f"usage_{uuid.uuid4().hex[:10]}"),
+                    "timestamp": str(row.get("updatedAt") or ""),
+                    "day": day_token,
+                    "type": "gemini_generation",
+                    "status": "completed",
+                    "amountInr": round(cost_inr, 6),
+                    "taxInr": 0.0,
+                    "currency": "INR",
+                    "amountOriginal": cost_inr,
+                    "source": "usage_events",
+                    "metadata": {
+                        "uid": row.get("uid"),
+                        "engine": row.get("engine"),
+                        "chars": row.get("chars"),
+                        "promptTokens": prompt_tokens,
+                        "outputTokens": output_tokens,
+                        "totalTokens": total_tokens,
+                        "fallbackEstimated": bool(row.get("fallbackEstimated")),
+                    },
+                }
+            )
+
+    coupon_rows = _analytics_list_coupon_daily(from_dt=from_dt, to_dt=to_dt, plan="", coupon_kind="", coupon_code="")
+    for row in coupon_rows:
+        day_token = str(row.get("date") or "").strip()
+        if day_token not in day_map:
+            continue
+        discount_inr = max(0.0, _safe_float(row.get("discountAmount"), 0.0))
+        day_map[day_token]["couponDiscountInr"] = _safe_float(day_map[day_token].get("couponDiscountInr"), 0.0) + discount_inr
+
+    cloud_run_daily, cloud_run_status, cloud_warnings = _accounting_cloud_run_cpu_costs(from_dt, to_dt)
+    for warning in cloud_warnings:
+        warnings_set.add(str(warning))
+    for day_token, amount in cloud_run_daily.items():
+        if day_token in day_map:
+            day_map[day_token]["cloudRunCpuCostInr"] = _safe_float(day_map[day_token].get("cloudRunCpuCostInr"), 0.0) + max(0.0, _safe_float(amount, 0.0))
+
+    if persist_rollup:
+        for day_token, row in day_map.items():
+            expenditure_total = (
+                _safe_float(row.get("walletExpenditureInr"), 0.0)
+                + _safe_float(row.get("couponDiscountInr"), 0.0)
+                + _safe_float(row.get("cloudRunCpuCostInr"), 0.0)
+                + _safe_float(row.get("geminiCostInr"), 0.0)
+            )
+            margin_inr = _safe_float(row.get("revenueAccruedInr"), 0.0) - expenditure_total
+            margin_pct = (margin_inr / _safe_float(row.get("revenueAccruedInr"), 0.0)) if _safe_float(row.get("revenueAccruedInr"), 0.0) > 0 else 0.0
+            _accounting_rollup_upsert(
+                day_token,
+                {
+                    **row,
+                    "expenditureTotalInr": expenditure_total,
+                    "marginInr": margin_inr,
+                    "marginPct": margin_pct,
+                    "sourceStatus": {"stripeInvoices": stripe_status, "cloudRunCpu": cloud_run_status, "usageEvents": "ok"},
+                    "warnings": sorted(warnings_set),
+                    "timezone": ACCOUNTING_TIMEZONE,
+                    "currency": ACCOUNTING_DISPLAY_CURRENCY,
+                },
+            )
+
+    totals: dict[str, float] = {}
+    int_totals: dict[str, int] = {}
+    for row in day_map.values():
+        for key in ["revenuePaidInr", "revenueAccruedInr", "revenueUnpaidInr", "taxAccruedInr", "walletExpenditureInr", "couponDiscountInr", "cloudRunCpuCostInr", "geminiCostInr"]:
+            totals[key] = _safe_float(totals.get(key), 0.0) + _safe_float(row.get(key), 0.0)
+        for key in ["geminiGenerations", "geminiPromptTokens", "geminiOutputTokens", "geminiTotalTokens", "geminiFallbackEstimatedCount", "invoicePaidCount", "invoiceUnpaidCount", "invoiceTotalCount"]:
+            int_totals[key] = int(int_totals.get(key) or 0) + int(row.get(key) or 0)
+
+    expenditure_total = _safe_float(totals.get("walletExpenditureInr"), 0.0) + _safe_float(totals.get("couponDiscountInr"), 0.0) + _safe_float(totals.get("cloudRunCpuCostInr"), 0.0) + _safe_float(totals.get("geminiCostInr"), 0.0)
+    revenue_for_margin = _safe_float(totals.get("revenueAccruedInr"), 0.0)
+    margin_inr = revenue_for_margin - expenditure_total
+    margin_pct = (margin_inr / revenue_for_margin) if revenue_for_margin > 0 else 0.0
+
+    bucket_map: dict[str, dict[str, Any]] = {}
+    for day_token, row in day_map.items():
+        bucket_token = _accounting_bucket_token(day_token, safe_group)
+        bucket = bucket_map.setdefault(bucket_token, {"bucket": bucket_token})
+        for key, value in row.items():
+            if key in {"day"}:
+                continue
+            if isinstance(value, (int, float)):
+                bucket[key] = _safe_float(bucket.get(key), 0.0) + _safe_float(value, 0.0)
+    series = [bucket for _k, bucket in sorted(bucket_map.items(), key=lambda item: item[0])]
+
+    if include_records:
+        records.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+        records = records[: max(1, min(2000, int(record_limit)))]
+
+    return {
+        "ok": True,
+        "generatedAt": _safe_now_iso(),
+        "currency": ACCOUNTING_DISPLAY_CURRENCY,
+        "timezone": ACCOUNTING_TIMEZONE,
+        "groupBy": safe_group,
+        "range": {"from": from_dt.isoformat(), "to": to_dt.isoformat(), "includeUnpaidAccrual": bool(include_unpaid_accrual)},
+        "summary": {
+            "revenue": {"paidInr": _safe_float(totals.get("revenuePaidInr"), 0.0), "accruedInr": _safe_float(totals.get("revenueAccruedInr"), 0.0), "unpaidInr": _safe_float(totals.get("revenueUnpaidInr"), 0.0), "taxInr": _safe_float(totals.get("taxAccruedInr"), 0.0)},
+            "expenditure": {"walletInr": _safe_float(totals.get("walletExpenditureInr"), 0.0), "couponDiscountInr": _safe_float(totals.get("couponDiscountInr"), 0.0), "cloudRunCpuInr": _safe_float(totals.get("cloudRunCpuCostInr"), 0.0), "geminiInr": _safe_float(totals.get("geminiCostInr"), 0.0), "totalInr": expenditure_total},
+            "marginInr": margin_inr,
+            "marginPct": margin_pct,
+            "invoices": {"paid": int(int_totals.get("invoicePaidCount") or 0), "unpaid": int(int_totals.get("invoiceUnpaidCount") or 0), "total": int(int_totals.get("invoiceTotalCount") or 0)},
+            "gemini": {"generations": int(int_totals.get("geminiGenerations") or 0), "promptTokens": int(int_totals.get("geminiPromptTokens") or 0), "outputTokens": int(int_totals.get("geminiOutputTokens") or 0), "totalTokens": int(int_totals.get("geminiTotalTokens") or 0), "estimatedCostInr": _safe_float(totals.get("geminiCostInr"), 0.0), "fallbackEstimatedCount": int(int_totals.get("geminiFallbackEstimatedCount") or 0)},
+            "cloudRun": {"cpuCostInr": _safe_float(totals.get("cloudRunCpuCostInr"), 0.0)},
+        },
+        "timeseries": series,
+        "records": records if include_records else [],
+        "sourceStatus": {"stripeInvoices": stripe_status, "cloudRunCpu": cloud_run_status, "usageEvents": "ok"},
+        "warnings": sorted(warnings_set),
+    }
+
+
+def _accounting_monitor_sync_alert(
+    *,
+    policy_id: str,
+    severity: str,
+    triggered: bool,
+    value: float,
+    threshold: float,
+    reason: str,
+    run_id: str,
+) -> dict[str, Any]:
+    safe_policy = str(policy_id or "").strip() or "accounting.monitor"
+    now_iso = _safe_now_iso()
+    existing = _alert_find_open_event(safe_policy)
+    if triggered:
+        sample = {
+            "ts": now_iso,
+            "value": value,
+            "threshold": threshold,
+            "reason": reason,
+            "runId": run_id,
+        }
+        if existing is None:
+            event = {
+                "policyId": safe_policy,
+                "status": "open",
+                "severity": str(severity or "warning"),
+                "resourceType": "billing",
+                "resourceId": "accounting",
+                "openedAt": now_iso,
+                "lastTriggeredAt": now_iso,
+                "resolvedAt": None,
+                "samples": [sample],
+                "channels": ["in_app"],
+                "delivery": [],
+                "note": reason,
+            }
+            saved = _alert_upsert_event("", event)
+            return {"action": "opened", "eventId": str(saved.get("id") or "")}
+        samples = list(existing.get("samples") or [])
+        samples.append(sample)
+        existing["status"] = "open"
+        existing["severity"] = str(severity or "warning")
+        existing["lastTriggeredAt"] = now_iso
+        existing["samples"] = samples[-40:]
+        existing["note"] = reason
+        saved = _alert_upsert_event(str(existing.get("id") or ""), existing)
+        return {"action": "updated", "eventId": str(saved.get("id") or "")}
+    if existing is not None:
+        existing["status"] = "resolved"
+        existing["resolvedAt"] = now_iso
+        existing["updatedAt"] = now_iso
+        existing["note"] = f"Resolved by accounting monitor run {run_id}."
+        saved = _alert_upsert_event(str(existing.get("id") or ""), existing)
+        return {"action": "resolved", "eventId": str(saved.get("id") or "")}
+    return {"action": "none", "eventId": ""}
+
+
+def _accounting_monitor_execute(
+    *,
+    dry_run: bool,
+    requested_by: str,
+    source: str,
+) -> dict[str, Any]:
+    now = _utc_now()
+    lookback_days = max(3, int(VF_ACCOUNTING_MONITOR_SPIKE_LOOKBACK_DAYS))
+    current_from = now - timedelta(days=lookback_days)
+    prev_to = current_from - timedelta(seconds=1)
+    prev_from = prev_to - timedelta(days=lookback_days)
+    current = _accounting_compute_report(
+        from_dt=current_from,
+        to_dt=now,
+        group_by="day",
+        include_unpaid_accrual=True,
+        include_records=False,
+        persist_rollup=not bool(dry_run),
+    )
+    previous = _accounting_compute_report(
+        from_dt=prev_from,
+        to_dt=prev_to,
+        group_by="day",
+        include_unpaid_accrual=True,
+        include_records=False,
+        persist_rollup=False,
+    )
+    current_summary = current.get("summary") if isinstance(current.get("summary"), dict) else {}
+    previous_summary = previous.get("summary") if isinstance(previous.get("summary"), dict) else {}
+    current_revenue = _safe_float(((current_summary or {}).get("revenue") or {}).get("accruedInr"), 0.0)
+    prev_revenue = _safe_float(((previous_summary or {}).get("revenue") or {}).get("accruedInr"), 0.0)
+    current_unpaid = _safe_float(((current_summary or {}).get("revenue") or {}).get("unpaidInr"), 0.0)
+    prev_unpaid = _safe_float(((previous_summary or {}).get("revenue") or {}).get("unpaidInr"), 0.0)
+    current_expenditure = _safe_float(((current_summary or {}).get("expenditure") or {}).get("totalInr"), 0.0)
+    prev_expenditure = _safe_float(((previous_summary or {}).get("expenditure") or {}).get("totalInr"), 0.0)
+    margin_pct = _safe_float((current_summary or {}).get("marginPct"), 0.0) * 100.0
+    unpaid_growth_pct = ((current_unpaid - prev_unpaid) / max(1.0, prev_unpaid)) * 100.0
+    expenditure_spike_ratio = current_expenditure / max(1.0, prev_expenditure)
+
+    anomalies: list[dict[str, Any]] = []
+    if current_unpaid > 0 and unpaid_growth_pct >= float(VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT):
+        anomalies.append(
+            {
+                "id": "unpaid_growth",
+                "severity": "warning" if unpaid_growth_pct < (float(VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT) * 1.5) else "critical",
+                "value": unpaid_growth_pct,
+                "threshold": float(VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT),
+                "reason": "Unpaid accrual growth exceeded threshold.",
+            }
+        )
+    if current_revenue > 0 and margin_pct < float(VF_ACCOUNTING_MONITOR_MARGIN_FLOOR_PCT):
+        anomalies.append(
+            {
+                "id": "margin_floor",
+                "severity": "critical",
+                "value": margin_pct,
+                "threshold": float(VF_ACCOUNTING_MONITOR_MARGIN_FLOOR_PCT),
+                "reason": "Accounting margin dropped below floor.",
+            }
+        )
+    if current_expenditure > 0 and expenditure_spike_ratio >= float(VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER):
+        anomalies.append(
+            {
+                "id": "cost_spike",
+                "severity": "warning" if expenditure_spike_ratio < (float(VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER) * 1.5) else "critical",
+                "value": expenditure_spike_ratio,
+                "threshold": float(VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER),
+                "reason": "Cost spike ratio exceeded monitor threshold.",
+            }
+        )
+
+    run_id = f"acct_mon_{uuid.uuid4().hex[:10]}"
+    alert_actions: list[dict[str, Any]] = []
+    for anomaly in anomalies:
+        if dry_run:
+            alert_actions.append({"id": str(anomaly.get("id") or ""), "action": "dry_run"})
+            continue
+        alert_actions.append(
+            {
+                "id": str(anomaly.get("id") or ""),
+                **_accounting_monitor_sync_alert(
+                    policy_id=f"accounting.{str(anomaly.get('id') or '').strip()}",
+                    severity=str(anomaly.get("severity") or "warning"),
+                    triggered=True,
+                    value=_safe_float(anomaly.get("value"), 0.0),
+                    threshold=_safe_float(anomaly.get("threshold"), 0.0),
+                    reason=str(anomaly.get("reason") or ""),
+                    run_id=run_id,
+                ),
+            }
+        )
+    if not dry_run:
+        for anomaly_id, threshold, value in [
+            ("unpaid_growth", float(VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT), unpaid_growth_pct),
+            ("margin_floor", float(VF_ACCOUNTING_MONITOR_MARGIN_FLOOR_PCT), margin_pct),
+            ("cost_spike", float(VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER), expenditure_spike_ratio),
+        ]:
+            if any(str(item.get("id") or "") == anomaly_id for item in anomalies):
+                continue
+            action = _accounting_monitor_sync_alert(
+                policy_id=f"accounting.{anomaly_id}",
+                severity="info",
+                triggered=False,
+                value=value,
+                threshold=threshold,
+                reason="Condition recovered.",
+                run_id=run_id,
+            )
+            if str(action.get("action") or "") != "none":
+                alert_actions.append({"id": anomaly_id, **action})
+
+    payload = {
+        "id": run_id,
+        "createdAt": now.isoformat(),
+        "startedAt": now.isoformat(),
+        "finishedAt": _safe_now_iso(),
+        "requestedBy": str(requested_by or "system").strip() or "system",
+        "source": str(source or "manual").strip() or "manual",
+        "dryRun": bool(dry_run),
+        "thresholds": {
+            "unpaidGrowthPct": float(VF_ACCOUNTING_MONITOR_UNPAID_GROWTH_PCT),
+            "marginFloorPct": float(VF_ACCOUNTING_MONITOR_MARGIN_FLOOR_PCT),
+            "costSpikeMultiplier": float(VF_ACCOUNTING_MONITOR_COST_SPIKE_MULTIPLIER),
+            "lookbackDays": lookback_days,
+        },
+        "derived": {
+            "unpaidGrowthPct": unpaid_growth_pct,
+            "expenditureSpikeRatio": expenditure_spike_ratio,
+            "marginPct": margin_pct,
+        },
+        "anomalies": anomalies,
+        "alertActions": alert_actions,
+        "warnings": list(current.get("warnings") or []),
+        "status": "completed",
+    }
+    if not dry_run:
+        _accounting_monitor_run_upsert(run_id, payload)
+    return {
+        "ok": True,
+        "dryRun": bool(dry_run),
+        "runId": run_id,
+        "anomalyCount": len(anomalies),
+        "alertActions": alert_actions,
+        "summary": {
+            "revenueAccruedInr": current_revenue,
+            "unpaidInr": current_unpaid,
+            "expenditureInr": current_expenditure,
+            "marginPct": margin_pct,
+        },
+    }
+
+
 def _normalize_coupon_code(raw_code: str) -> str:
     token = str(raw_code or "").strip().upper()
     token = re.sub(r"[^A-Z0-9_-]", "", token)
@@ -13331,7 +14481,7 @@ def _read_gemini_keys_from_file(path_hint: str) -> list[str]:
     try:
         if not target.exists() or not target.is_file():
             return []
-        raw = target.read_text(encoding="utf-8", errors="ignore")
+        raw = read_gemini_key_file_text_shared(target)
     except Exception:
         return []
     return parse_api_keys_shared(raw)
@@ -13398,14 +14548,26 @@ def _resolve_gemini_api_pools_file_path() -> Path:
 
 def _write_gemini_keys_to_file(path_hint: str | Path, keys: list[str]) -> Path:
     target = _resolve_gemini_keys_file_path(str(path_hint or "").strip())
-    target.parent.mkdir(parents=True, exist_ok=True)
     safe_keys = [str(item or "").strip() for item in keys if str(item or "").strip()]
     payload = "\n".join(safe_keys)
     if payload:
         payload = f"{payload}\n"
-    tmp_path = target.with_suffix(f"{target.suffix}.tmp")
-    tmp_path.write_text(payload, encoding="utf-8")
-    os.replace(str(tmp_path), str(target))
+    encrypt_keys_file = (
+        str(os.getenv("GEMINI_KEYS_FILE_ENCRYPTION") or "0").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if not encrypt_keys_file:
+        try:
+            if target.exists() and target.is_file():
+                existing_text = target.read_text(encoding="utf-8", errors="ignore")
+                encrypt_keys_file = is_encrypted_gemini_key_file_text_shared(existing_text)
+        except Exception:
+            encrypt_keys_file = False
+    write_gemini_key_file_text_shared(
+        target,
+        payload,
+        encrypt=encrypt_keys_file,
+    )
     return target
 
 
@@ -13680,9 +14842,7 @@ def _sync_authoritative_gemini_free_pool(
     try:
         file_exists = bool(resolved_file_path.exists() and resolved_file_path.is_file())
         if file_exists:
-            file_keys = parse_api_keys_shared(
-                resolved_file_path.read_text(encoding="utf-8", errors="ignore")
-            )
+            file_keys = _read_gemini_keys_from_file(str(resolved_file_path))
     except Exception:
         file_exists = False
         file_keys = []
@@ -14045,7 +15205,15 @@ def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
     ]
     for endpoint in endpoints:
         try:
-            response = requests.get(endpoint, timeout=timeout_sec, headers=runtime_headers or None)
+            response = _runtime_http_request(
+                "GET",
+                endpoint,
+                timeout=timeout_sec,
+                headers=runtime_headers or None,
+                retry_attempts=2,
+                retry_backoff_ms=120,
+                retry_status_codes={502, 503, 504},
+            )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
         try:
@@ -14070,7 +15238,12 @@ def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
     ]
     for endpoint in endpoints:
         try:
-            response = requests.post(endpoint, timeout=timeout_sec, headers=runtime_headers or None)
+            response = _runtime_http_request(
+                "POST",
+                endpoint,
+                timeout=timeout_sec,
+                headers=runtime_headers or None,
+            )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
         try:
@@ -14091,7 +15264,15 @@ def _runtime_gemini_pool_usage(timeout_sec: float = 8.0) -> dict[str, Any]:
     endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/usage"
     runtime_headers = _gemini_runtime_admin_headers()
     try:
-        response = requests.get(endpoint, timeout=timeout_sec, headers=runtime_headers or None)
+        response = _runtime_http_request(
+            "GET",
+            endpoint,
+            timeout=timeout_sec,
+            headers=runtime_headers or None,
+            retry_attempts=2,
+            retry_backoff_ms=120,
+            retry_status_codes={502, 503, 504},
+        )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
     try:
@@ -15949,7 +17130,35 @@ _READER_ATOM_NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "media": "http://search.yahoo.com/mrss/",
 }
-_READER_ASYNC_REMOTE_COMIC_PROVIDERS = {"pepper_carrot"}
+_READER_ASYNC_REMOTE_COMIC_PROVIDERS = {"pepper_carrot", "openverse"}
+_READER_WIKISOURCE_DOMAIN_BY_REGION: dict[str, str] = {
+    "english": "en.wikisource.org",
+    "hindi": "hi.wikisource.org",
+    "japanese": "ja.wikisource.org",
+    "chinese": "zh.wikisource.org",
+    "korean": "ko.wikisource.org",
+    "spanish": "es.wikisource.org",
+    "french": "fr.wikisource.org",
+    "german": "de.wikisource.org",
+    "portuguese": "pt.wikisource.org",
+    "arabic": "ar.wikisource.org",
+}
+
+
+def _reader_region_language_code(region_id: str, *, fallback: str = "en") -> str:
+    region = reader_region(region_id)
+    for code in list(region.get("languageCodes") or []):
+        token = str(code or "").strip().lower()
+        if len(token) >= 2:
+            return token.split("-", 1)[0]
+    return str(fallback or "en").strip().lower() or "en"
+
+
+def _reader_default_discovery_query(*, surface: str, region_id: str) -> str:
+    region_label = str(reader_region(region_id).get("label") or "global").strip()
+    if normalize_reader_surface(surface) == "comics":
+        return f"{region_label} comic panel"
+    return f"{region_label} public domain book"
 
 
 def _reader_parse_xml_entries(payload: str) -> list[ET.Element]:
@@ -16729,22 +17938,23 @@ def _commercial_provider_decision(
 ) -> tuple[str, Optional[str]]:
     safe_provider = str(provider or "").strip().lower()
     safe_attribution = str(attribution_url or "").strip()
+    provider_label = str(provider or "Provider").strip() or "Provider"
     if not VF_COMMERCIAL_MODE:
         return "allowed", None
     if not safe_provider:
         return "blocked", "Provider is missing and denied by strict commercial policy."
     if safe_provider in COMMERCIAL_PROVIDER_ALWAYS_ALLOWED:
         return "allowed", None
-    if safe_provider in VF_COMMERCIAL_PROVIDER_ALLOWLIST and safe_provider != "openverse":
+    if safe_provider in VF_COMMERCIAL_PROVIDER_ALLOWLIST and safe_provider not in COMMERCIAL_PROVIDER_LICENSE_GATED:
         return "allowed", None
-    if safe_provider == "openverse":
+    if safe_provider in COMMERCIAL_PROVIDER_LICENSE_GATED:
         license_token = _commercial_license_token(license_value)
         if not license_token:
-            return "review", "Openverse item missing clear license metadata."
+            return "review", f"{provider_label} item is missing clear license metadata."
         if VF_COMMERCIAL_LICENSE_ALLOWLIST and license_token not in VF_COMMERCIAL_LICENSE_ALLOWLIST:
-            return "blocked", f"Openverse license '{license_token}' is not in VF_COMMERCIAL_LICENSE_ALLOWLIST."
+            return "blocked", f"{provider_label} license '{license_token}' is not in VF_COMMERCIAL_LICENSE_ALLOWLIST."
         if not safe_attribution:
-            return "review", "Openverse item missing attribution URL metadata."
+            return "review", f"{provider_label} item is missing attribution URL metadata."
         return "allowed", None
     if safe_provider in COMMERCIAL_PROVIDER_BLOCKLIST_DEFAULT and safe_provider not in VF_COMMERCIAL_PROVIDER_ALLOWLIST:
         return "blocked", f"Provider '{safe_provider}' is blocked by strict commercial policy."
@@ -21795,18 +23005,23 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
             email = str(getattr(record, "email", "") or "")
             display_name = str(getattr(record, "display_name", "") or "")
             disabled = bool(getattr(record, "disabled", False))
-            entitlement = _load_entitlement(uid)
-            monthly, daily = _load_usage_windows(uid)
             custom_claims = getattr(record, "custom_claims", None) or {}
             profile = _ensure_user_profile(
                 uid,
                 allow_auto_backfill=True,
+                seed_email=email,
+                seed_display_name=display_name,
+                repair_user_id_collisions=True,
+                suppress_backfill_errors=True,
+                fetch_firebase_identity=False,
             ) or {}
             user_id = str(profile.get("userId") or "").strip().lower()
             if needle:
                 haystack = f"{uid} {email} {display_name} {user_id}".lower()
                 if needle not in haystack:
                     continue
+            entitlement = _load_entitlement(uid, create_missing=False)
+            monthly, daily = _load_usage_windows(uid, create_missing=False)
             plan_name, features, limits = _entitlement_view(entitlement)
             users.append(
                 {
@@ -21841,7 +23056,12 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                 if needle and needle not in uid.lower():
                     continue
                 entitlement = _normalize_entitlement_wallet(payload)
-                profile = _ensure_user_profile(uid, allow_auto_backfill=True) or {}
+                profile = _ensure_user_profile(
+                    uid,
+                    allow_auto_backfill=True,
+                    repair_user_id_collisions=True,
+                    suppress_backfill_errors=True,
+                ) or {}
                 user_id = str(profile.get("userId") or "").strip().lower()
                 if needle:
                     haystack = f"{uid} {user_id}".lower()
@@ -21877,7 +23097,12 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
         if needle and needle not in uid.lower():
             continue
         entitlement = _normalize_entitlement_wallet(doc.to_dict() or {})
-        profile = _ensure_user_profile(uid, allow_auto_backfill=True) or {}
+        profile = _ensure_user_profile(
+            uid,
+            allow_auto_backfill=True,
+            repair_user_id_collisions=True,
+            suppress_backfill_errors=True,
+        ) or {}
         user_id = str(profile.get("userId") or "").strip().lower()
         if needle:
             haystack = f"{uid} {user_id}".lower()
@@ -23620,8 +24845,7 @@ def admin_support_resolve(conversation_id: str, request: Request) -> JSONRespons
 
 @app.get("/admin/actor")
 def admin_actor(request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    actor = _resolve_actor(uid, request)
+    uid, actor = _require_permission(request, PERM_OPS_READ)
     return JSONResponse({"ok": True, "actor": actor})
 
 
@@ -25438,6 +26662,170 @@ def admin_coupon_analytics_impact(
     return JSONResponse({"ok": True, "couponCode": safe_code, "overall": overall, "byPlan": plan_rows})
 
 
+@app.get("/admin/accounting/summary")
+def admin_accounting_summary(
+    request: Request,
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    includeUnpaidAccrual: bool = True,
+) -> JSONResponse:
+    _require_permission(request, PERM_BILLING_READ)
+    from_dt, to_dt = _accounting_parse_range(
+        from_iso=fromIso,
+        to_iso=toIso,
+        default_days=30,
+    )
+    payload = _accounting_compute_report(
+        from_dt=from_dt,
+        to_dt=to_dt,
+        group_by="day",
+        include_unpaid_accrual=bool(includeUnpaidAccrual),
+        include_records=False,
+        persist_rollup=True,
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "summary": payload.get("summary") or {},
+            "currency": payload.get("currency"),
+            "timezone": payload.get("timezone"),
+            "sourceStatus": payload.get("sourceStatus") or {},
+            "warnings": payload.get("warnings") or [],
+            "range": payload.get("range") or {},
+            "generatedAt": payload.get("generatedAt"),
+        }
+    )
+
+
+@app.get("/admin/accounting/timeseries")
+def admin_accounting_timeseries(
+    request: Request,
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    groupBy: str = "day",
+    includeUnpaidAccrual: bool = True,
+) -> JSONResponse:
+    _require_permission(request, PERM_BILLING_READ)
+    safe_group = str(groupBy or "day").strip().lower()
+    if safe_group not in {"day", "month", "year"}:
+        raise HTTPException(status_code=400, detail="groupBy must be one of day, month, year.")
+    default_days = 90 if safe_group == "day" else 365
+    from_dt, to_dt = _accounting_parse_range(
+        from_iso=fromIso,
+        to_iso=toIso,
+        default_days=default_days,
+    )
+    payload = _accounting_compute_report(
+        from_dt=from_dt,
+        to_dt=to_dt,
+        group_by=safe_group,
+        include_unpaid_accrual=bool(includeUnpaidAccrual),
+        include_records=False,
+        persist_rollup=True,
+    )
+    series = payload.get("timeseries") if isinstance(payload.get("timeseries"), list) else []
+    return JSONResponse(
+        {
+            "ok": True,
+            "groupBy": safe_group,
+            "series": series,
+            "count": len(series),
+            "currency": payload.get("currency"),
+            "timezone": payload.get("timezone"),
+            "sourceStatus": payload.get("sourceStatus") or {},
+            "warnings": payload.get("warnings") or [],
+            "range": payload.get("range") or {},
+            "generatedAt": payload.get("generatedAt"),
+        }
+    )
+
+
+@app.get("/admin/accounting/records")
+def admin_accounting_records(
+    request: Request,
+    fromIso: str = Query("", alias="from"),
+    toIso: str = Query("", alias="to"),
+    limit: int = Query(200, ge=1, le=2000),
+    includeUnpaidAccrual: bool = True,
+) -> JSONResponse:
+    _require_permission(request, PERM_BILLING_READ)
+    from_dt, to_dt = _accounting_parse_range(
+        from_iso=fromIso,
+        to_iso=toIso,
+        default_days=31,
+    )
+    payload = _accounting_compute_report(
+        from_dt=from_dt,
+        to_dt=to_dt,
+        group_by="day",
+        include_unpaid_accrual=bool(includeUnpaidAccrual),
+        include_records=True,
+        record_limit=int(limit),
+        persist_rollup=True,
+    )
+    records = payload.get("records") if isinstance(payload.get("records"), list) else []
+    return JSONResponse(
+        {
+            "ok": True,
+            "items": records,
+            "count": len(records),
+            "currency": payload.get("currency"),
+            "timezone": payload.get("timezone"),
+            "sourceStatus": payload.get("sourceStatus") or {},
+            "warnings": payload.get("warnings") or [],
+            "range": payload.get("range") or {},
+            "generatedAt": payload.get("generatedAt"),
+        }
+    )
+
+
+@app.get("/admin/accounting/monitor/runs")
+def admin_accounting_monitor_runs(request: Request, limit: int = 40) -> JSONResponse:
+    _require_permission(request, PERM_BILLING_READ)
+    rows = _accounting_monitor_run_list(limit=limit)
+    return JSONResponse({"ok": True, "items": rows, "count": len(rows)})
+
+
+@app.post("/admin/accounting/monitor/run")
+def admin_accounting_monitor_run(
+    payload: AccountingMonitorRunRequest,
+    request: Request,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_BILLING_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    result = _accounting_monitor_execute(
+        dry_run=bool(payload.dryRun),
+        requested_by=actor_uid,
+        source="manual",
+    )
+    _audit_append_event(
+        action="accounting_monitor_run",
+        resource_type="accounting_monitor",
+        resource_id=str(result.get("runId") or ""),
+        after=result,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    _notification_emit_persisted(
+        actor_uid,
+        event_code="admin.accounting.monitor.run.accepted",
+        title="Accounting Monitor Run Requested",
+        message="Accounting monitor run request was accepted.",
+        details=f"runId={str(result.get('runId') or '').strip()}",
+        severity="info",
+        category="system",
+        audience="admin",
+        entity_key=str(result.get("runId") or "").strip(),
+        dedupe_key=f"admin.accounting.monitor.run.accepted::{str(result.get('runId') or '').strip()}::{actor_uid}",
+        action_label="Open Accounting",
+        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "accounting"},
+        email_eligible=False,
+        email_pref_key="emailAdminAlerts",
+    )
+    return JSONResponse({"ok": True, **result})
+
+
 def _coupon_plan_allowed_for_checkout(coupon: dict[str, Any], plan_token: str) -> bool:
     plan_discounts = _normalize_coupon_plan_discounts(
         coupon.get("planDiscounts"),
@@ -26073,8 +27461,14 @@ async def billing_webhook(request: Request) -> JSONResponse:
                 secret=STRIPE_WEBHOOK_SECRET,
             )
         else:
-            if not VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED:
-                raise HTTPException(status_code=400, detail="Unsigned Stripe webhook payload is not allowed.")
+            allow_unsigned_webhook = bool(VF_IS_LOCAL_DEV and VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED)
+            if not allow_unsigned_webhook:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Unsigned Stripe webhook payload is only allowed in explicit local development mode."
+                    ),
+                )
             event = json.loads(payload_raw.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}") from exc
@@ -26359,11 +27753,15 @@ _TTS_PUBLIC_ERROR_ALLOWED_KEYS = {
 
 _TTS_PUBLIC_ERROR_MESSAGE_BY_REASON = {
     "runtime_unreachable": "TTS runtime is temporarily unavailable.",
+    "runtime_unavailable": "TTS runtime is temporarily unavailable.",
+    "runtime_timeout": "TTS runtime timed out before audio could be generated.",
+    "runtime_bad_response": "TTS runtime returned an invalid response.",
     "runtime_empty_audio": "TTS runtime returned empty audio.",
     "job_deadline_exceeded": "Queued TTS job expired before completion.",
     "engine_concurrency_wait_timeout": "Queued TTS job expired while waiting for engine capacity.",
     "estimated_queue_timeout": "TTS engine is overloaded and queue completion would exceed the allowed wait budget.",
     "post_tts_conversion_failed": "Post-TTS conversion failed.",
+    "live_first_chunk_sla_fallback": "Live generation fell back to protect first-chunk latency.",
     "live_chunk_persist_failed": "Generated live chunk could not be persisted.",
     "live_chunk_concat_failed": "Generated live chunks could not be merged.",
     "live_chunk_concat_empty": "Generated live audio was empty after merging chunks.",
@@ -26373,6 +27771,10 @@ _TTS_PUBLIC_ERROR_MESSAGE_BY_REASON = {
 }
 
 _TTS_PUBLIC_ERROR_MESSAGE_BY_CODE = {
+    "RUNTIME_TIMEOUT": "TTS runtime timed out before audio could be generated.",
+    "RUNTIME_UNAVAILABLE": "TTS runtime is temporarily unavailable.",
+    "RUNTIME_BAD_RESPONSE": "TTS runtime returned an invalid response.",
+    "LIVE_FIRST_CHUNK_SLA_FALLBACK": "Live generation fell back to protect first-chunk latency.",
     "GEMINI_API_KEY_MISSING": "Gemini key pool is not configured.",
     "GEMINI_RUNTIME_SDK_UNAVAILABLE": "Gemini runtime dependencies are unavailable.",
     "GEMINI_ALL_KEYS_AUTH_FAILED": "All configured Gemini keys were rejected by upstream authentication.",
@@ -26478,6 +27880,106 @@ def _sanitize_public_tts_error_detail(detail: Any) -> Any:
     if detail is None:
         return "TTS request failed."
     return _sanitize_public_tts_error_text(str(detail), fallback="TTS request failed.", max_len=260)
+
+
+def _reason_token(value: Any, *, fallback: str = "runtime_error") -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    if token:
+        return token[:64]
+    return str(fallback or "runtime_error").strip().lower() or "runtime_error"
+
+
+def _extract_tts_error_code_reason(
+    detail: Any,
+    *,
+    fallback_code: str = "",
+    fallback_reason: str = "",
+) -> tuple[str, str]:
+    code = str(fallback_code or "").strip().upper()
+    reason = str(fallback_reason or "").strip().lower()
+    if isinstance(detail, dict):
+        detail_code = str(extract_error_code(detail) or "").strip().upper()
+        detail_reason = str(detail.get("reason") or "").strip().lower()
+        if detail_code:
+            code = detail_code
+        if detail_reason:
+            reason = detail_reason
+        elif code and not reason:
+            reason = _reason_token(code, fallback="runtime_error")
+    elif isinstance(detail, str):
+        if not reason:
+            reason = _reason_token(detail, fallback="runtime_error")
+    return code, reason
+
+
+def _error_headers_for_detail(
+    detail: Any,
+    *,
+    fallback_code: str = "",
+    fallback_reason: str = "",
+) -> dict[str, str]:
+    code, reason = _extract_tts_error_code_reason(
+        detail,
+        fallback_code=fallback_code,
+        fallback_reason=fallback_reason,
+    )
+    out: dict[str, str] = {}
+    if code:
+        out["x-vf-error-code"] = code
+    if reason:
+        out["x-vf-error-reason"] = reason
+    return out
+
+
+def _runtime_failure_payload_from_exception(
+    exc: Exception,
+    *,
+    trace_id: str,
+    job_id: str,
+    context_message: str,
+    chunk_index: Optional[int] = None,
+) -> tuple[int, dict[str, Any]]:
+    status_code = 502
+    error_code = RUNTIME_UNAVAILABLE
+    reason = "runtime_unavailable"
+    detail_text = str(exc)
+    if isinstance(exc, RuntimeHttpError):
+        detail_text = str(exc.message or exc)
+        if exc.category in {"timeout", "retry_exhausted"}:
+            status_code = 504
+            error_code = RUNTIME_TIMEOUT
+            reason = "runtime_timeout"
+        elif exc.category in {"connection", "request"}:
+            status_code = 502
+            error_code = RUNTIME_UNAVAILABLE
+            reason = "runtime_unavailable"
+        else:
+            status_code = 502
+            error_code = RUNTIME_BAD_RESPONSE
+            reason = "runtime_bad_response"
+    elif isinstance(exc, requests.exceptions.Timeout):
+        status_code = 504
+        error_code = RUNTIME_TIMEOUT
+        reason = "runtime_timeout"
+    elif isinstance(exc, requests.exceptions.RequestException):
+        status_code = 502
+        error_code = RUNTIME_UNAVAILABLE
+        reason = "runtime_unavailable"
+    else:
+        status_code = 502
+        error_code = RUNTIME_BAD_RESPONSE
+        reason = "runtime_bad_response"
+
+    safe_detail = {
+        "error": f"{context_message}: {str(detail_text or '').strip()}".strip(": "),
+        "errorCode": str(error_code),
+        "reason": str(reason),
+        "trace_id": str(trace_id or "").strip(),
+        "jobId": str(job_id or "").strip(),
+    }
+    if chunk_index is not None:
+        safe_detail["chunkIndex"] = max(0, int(chunk_index))
+    return int(status_code), safe_detail
 
 
 _GEMINI_CAPACITY_PRESSURE_ERROR_CODES = {
@@ -26645,6 +28147,13 @@ def _runtime_tts_request_with_gemini_failover(
 
 def _map_runtime_failure_status(engine: str, status_code: int, detail: Any) -> int:
     safe_status = int(status_code)
+    code = str(extract_error_code(detail) or "").strip().upper()
+    if code == RUNTIME_TIMEOUT:
+        return 504
+    if code in {RUNTIME_UNAVAILABLE, RUNTIME_BAD_RESPONSE}:
+        return 502
+    if code == LIVE_FIRST_CHUNK_SLA_FALLBACK:
+        return 503
     if _is_gem_runtime_engine(engine) and safe_status >= 500:
         if _is_gemini_upstream_timeout_error(detail):
             return 504
@@ -26655,6 +28164,13 @@ def _map_runtime_failure_status(engine: str, status_code: int, detail: Any) -> i
 
 def _is_retryable_runtime_failure(engine: str, status_code: int, detail: Any) -> bool:
     safe_status = int(status_code)
+    code = str(extract_error_code(detail) or "").strip().upper()
+    if code == LIVE_FIRST_CHUNK_SLA_FALLBACK:
+        return False
+    if code in {RUNTIME_TIMEOUT, RUNTIME_UNAVAILABLE}:
+        return True
+    if code == RUNTIME_BAD_RESPONSE:
+        return False
     if _is_gem_runtime_engine(engine):
         if _is_gemini_capacity_pressure_error(detail):
             return False
@@ -26821,13 +28337,24 @@ def _build_tts_history_item(
     _history_append_item(uid, history_item)
 
 
-def _tts_job_lane_for_plan(plan_key: str) -> str:
+def _tts_job_lane_for_plan(
+    plan_key: str,
+    *,
+    live_stream: bool = False,
+    mode: Any = "",
+) -> str:
     token = _plan_key_from_name(plan_key)
+    lane = "free"
     if token == "scale":
-        return normalize_lane("pro_plus")
-    if token in {"pro", "starter", "creator"}:
-        return normalize_lane("pro")
-    return normalize_lane("free")
+        lane = "pro_plus"
+    elif token in {"pro", "starter", "creator"}:
+        lane = "pro"
+    if bool(live_stream) or _normalize_live_native_job_mode(mode) == "live_native":
+        if lane == "free":
+            lane = "pro"
+        elif lane == "pro":
+            lane = "pro_plus"
+    return normalize_lane(lane)
 
 
 def _tts_job_retry_backoff_ms(attempt: int) -> int:
@@ -27260,6 +28787,42 @@ def _normalize_podcast_standard_job_mode(raw_mode: object) -> str:
     return "podcast_standard" if token == "podcast_standard" else ""
 
 
+def _normalize_podcast_language(raw_language: Any, *, default: str = "en") -> str:
+    token = str(raw_language or "").strip().lower()
+    token = token.replace("_", "-")
+    if token in {"", "auto", "default"}:
+        token = str(default or "en").strip().lower()
+    token = re.sub(r"[^a-z0-9\-]+", "", token).strip("-")
+    return token or "en"
+
+
+def _normalize_model_candidates(
+    candidates: Any,
+    *,
+    default: Optional[list[str]] = None,
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        token = str(value or "").strip()
+        if not token:
+            return
+        key = token.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(token)
+
+    if isinstance(candidates, list):
+        for item in candidates:
+            _add(item)
+    if not out and isinstance(default, list):
+        for item in default:
+            _add(item)
+    return out
+
+
 def _default_live_native_cast(speaker_count: int) -> list[dict[str, str]]:
     safe_count = max(2, min(4, int(speaker_count)))
     out: list[dict[str, str]] = []
@@ -27299,6 +28862,10 @@ def _normalize_live_native_config(raw_config: Any, *, fallback_topic: str) -> di
     topic = str(source.get("topic") or fallback_topic or "").strip()
     if not topic:
         topic = "AI and creative technology"
+    language = _normalize_podcast_language(source.get("language"), default="en")
+    seed_script = str(source.get("seedScript") or "").strip()
+    if len(seed_script) > 16_000:
+        seed_script = seed_script[:16_000].strip()
 
     speaker_count = _safe_bounded_int(
         source.get("speakerCount"),
@@ -27387,6 +28954,8 @@ def _normalize_live_native_config(raw_config: Any, *, fallback_topic: str) -> di
 
     return {
         "topic": topic,
+        "language": language,
+        "seedScript": seed_script,
         "durationSec": int(duration_sec),
         "speakerCount": int(speaker_count),
         "cast": normalized_cast,
@@ -27413,8 +28982,22 @@ def _normalize_live_native_config(raw_config: Any, *, fallback_topic: str) -> di
     }
 
 
+def _normalize_podcast_standard_engine(raw_engine: Any) -> str:
+    token = str(raw_engine or "").strip()
+    if not token:
+        return "NEURAL2"
+    try:
+        normalized = _normalize_engine_name(token)
+    except Exception:  # noqa: BLE001
+        return "NEURAL2"
+    if normalized not in {"NEURAL2", "GEM"}:
+        return "NEURAL2"
+    return normalized
+
+
 def _normalize_podcast_standard_config(raw_config: Any, *, fallback_topic: str) -> dict[str, Any]:
     source = dict(raw_config or {}) if isinstance(raw_config, dict) else {}
+    engine = _normalize_podcast_standard_engine(source.get("engine"))
     topic = str(source.get("topic") or fallback_topic or "").strip() or "AI and creative technology"
     speaker_count = _safe_bounded_int(
         source.get("speakerCount"),
@@ -27429,8 +29012,17 @@ def _normalize_podcast_standard_config(raw_config: Any, *, fallback_topic: str) 
         max_value=VF_PODCAST_STANDARD_MAX_DURATION_SEC,
     )
     pacing_style = str(source.get("pacingStyle") or "conversational deep dive").strip() or "conversational deep dive"
-    language = str(source.get("language") or "en").strip() or "en"
+    language = _normalize_podcast_language(source.get("language"), default="en")
     seed_script = str(source.get("seedScript") or "").strip()
+    director_model = str(source.get("directorModel") or VF_PODCAST_STANDARD_SCRIPT_MODEL).strip() or VF_PODCAST_STANDARD_SCRIPT_MODEL
+    script_model_candidates = _normalize_model_candidates(
+        source.get("scriptModelCandidates"),
+        default=[director_model, *list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES)],
+    )
+    tts_model_candidates = _normalize_model_candidates(
+        source.get("ttsModelCandidates"),
+        default=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
+    )
     script_window_chars = _safe_bounded_int(
         source.get("scriptWindowChars"),
         default=VF_PODCAST_STANDARD_SCRIPT_WINDOW_CHARS,
@@ -27471,6 +29063,7 @@ def _normalize_podcast_standard_config(raw_config: Any, *, fallback_topic: str) 
     estimated_windows = max(1, int(math.ceil(float(target_script_chars) / float(script_window_chars))))
 
     return {
+        "engine": engine,
         "topic": topic,
         "durationSec": int(duration_sec),
         "speakerCount": int(speaker_count),
@@ -27487,9 +29080,9 @@ def _normalize_podcast_standard_config(raw_config: Any, *, fallback_topic: str) 
             "includeTranscript": bool(source.get("includeTranscript", True)),
         },
         "models": {
-            "script": VF_PODCAST_STANDARD_SCRIPT_MODEL,
-            "scriptCandidates": list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES),
-            "ttsCandidates": list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
+            "script": director_model,
+            "scriptCandidates": script_model_candidates,
+            "ttsCandidates": tts_model_candidates,
         },
     }
 
@@ -27559,6 +29152,14 @@ def _validate_podcast_standard_request_shape(raw_config: Any) -> None:
         raise HTTPException(status_code=400, detail="podcast standard config must be an object.")
     if not str(raw_config.get("topic") or "").strip():
         raise HTTPException(status_code=400, detail="topic is required.")
+    raw_engine = str(raw_config.get("engine") or "").strip()
+    if raw_engine:
+        try:
+            normalized_engine = _normalize_engine_name(raw_engine)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="engine must be NEURAL2 (Vector) or GEM (Prime).") from exc
+        if normalized_engine not in {"NEURAL2", "GEM"}:
+            raise HTTPException(status_code=400, detail="engine must be NEURAL2 (Vector) or GEM (Prime).")
 
     raw_speaker_count = raw_config.get("speakerCount")
     try:
@@ -27644,6 +29245,21 @@ def _live_native_text_history(turns: list[dict[str, Any]], *, limit_turns: int) 
     return "\n".join(lines) if lines else "No prior discussion yet."
 
 
+def _live_native_seed_script_window(seed_script: str, *, turn_index: int, max_lines: int = 6) -> str:
+    lines = [
+        re.sub(r"\s+", " ", str(line or "")).strip()
+        for line in str(seed_script or "").splitlines()
+        if str(line or "").strip()
+    ]
+    if not lines:
+        return ""
+    safe_window = max(2, int(max_lines))
+    max_start = max(0, len(lines) - safe_window)
+    start = min(max_start, max(0, int(turn_index)) * 2)
+    window = lines[start : start + safe_window]
+    return "\n".join(window).strip()
+
+
 def _live_native_fallback_turn_text(
     *,
     topic: str,
@@ -27666,9 +29282,11 @@ def _runtime_generate_live_native_turn_text(
     *,
     topic: str,
     pacing_style: str,
+    language: str,
     speaker: dict[str, Any],
     next_speaker: dict[str, Any],
     transcript_window: str,
+    seed_script_hint: str = "",
     trace_id: str,
     timeout_sec: int,
     model: str,
@@ -27689,6 +29307,7 @@ def _runtime_generate_live_native_turn_text(
     user_prompt = "\n".join(
         [
             f"Topic: {topic}",
+            f"Output language: {language} (keep this turn strictly in this language).",
             f"Pacing style: {pacing_style}",
             f"You are: {safe_speaker_name} ({safe_speaker_role}).",
             f"Persona focus: {safe_persona or 'Stay in character and concise.'}",
@@ -27696,6 +29315,12 @@ def _runtime_generate_live_native_turn_text(
             "1. One dedicated speaker stream per cast member.",
             "2. Shared-context bridge injects each completed turn to the other speakers.",
             "3. Token turn-taking: only the active speaker emits audio now.",
+            (
+                "Director seed-script context (adapt naturally, do not copy verbatim):\n"
+                f"{seed_script_hint}"
+                if str(seed_script_hint or "").strip()
+                else "Director seed-script context: (none provided)"
+            ),
             f"Conversation so far:\n{transcript_window}",
             f"Now deliver {safe_speaker_name}'s next turn in 1-3 sentences (<= {VF_TTS_LIVE_NATIVE_MAX_TEXT_CHARS_PER_TURN} chars).",
             f"Close by directly passing the mic to {safe_next_name}.",
@@ -28803,6 +30428,7 @@ def _process_live_native_tts_job(
 
     topic = str(config.get("topic") or text or "").strip() or "AI and creative technology"
     pacing_style = str(config.get("pacingStyle") or "fast-paced debate").strip() or "fast-paced debate"
+    seed_script = str(config.get("seedScript") or "").strip()
     target_duration_sec = max(30, int(config.get("durationSec") or VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC))
     speaker_count = max(2, min(4, int(config.get("speakerCount") or len(cast))))
     cast = cast[:speaker_count]
@@ -28845,9 +30471,18 @@ def _process_live_native_tts_job(
     base_upstream_payload.pop("multi_speaker_max_concurrency", None)
     base_upstream_payload.pop("multi_speaker_retry_once", None)
     base_upstream_payload["engine"] = engine
-    base_upstream_payload["language"] = str(base_upstream_payload.get("language") or "en").strip() or "en"
+    language = _normalize_podcast_language(
+        config.get("language") or base_upstream_payload.get("language"),
+        default="en",
+    )
+    base_upstream_payload["language"] = language
 
     live_started_ms = int(time.time() * 1000)
+    live_first_chunk_target_ms = max(
+        1,
+        int(current.get("liveFirstChunkTargetMs") or VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
+    )
+    first_chunk_deadline_ms = int(live_started_ms + live_first_chunk_target_ms)
     session_started_ms = live_started_ms
     connection_epoch_started_ms = live_started_ms
     session_epoch = 0
@@ -28855,6 +30490,7 @@ def _process_live_native_tts_job(
     total_fallbacks = 0
     chunk_gap_count = 0
     total_text_chars = 0
+    first_chunk_sla_fallback_used = False
 
     transcript_turns: list[dict[str, Any]] = []
     chunk_audio_bytes: list[bytes] = []
@@ -28871,6 +30507,7 @@ def _process_live_native_tts_job(
         "mode": "live_native",
         "status": "running",
         "topic": topic,
+        "language": language,
         "targetDurationSec": int(target_duration_sec),
         "speakerCount": int(speaker_count),
         "activeSpeakerId": "",
@@ -28883,6 +30520,7 @@ def _process_live_native_tts_job(
         "chunkGapCount": int(chunk_gap_count),
         "chunkCount": 0,
         "playableDurationMs": 0,
+        "firstChunkTargetMs": int(live_first_chunk_target_ms),
         "updatedAtMs": int(live_started_ms),
     }
     _TTS_JOB_QUEUE.update(
@@ -28905,6 +30543,8 @@ def _process_live_native_tts_job(
             "maxTurns": max_turns,
             "nativeModel": native_audio_model,
             "directorModel": director_model,
+            "language": language,
+            "firstChunkTargetMs": int(live_first_chunk_target_ms),
         },
     )
 
@@ -28933,10 +30573,16 @@ def _process_live_native_tts_job(
                 trace_id=trace_id,
             )
 
+    def _first_chunk_deadline_exceeded() -> bool:
+        if chunk_audio_bytes:
+            return False
+        return int(time.time() * 1000) >= int(first_chunk_deadline_ms)
+
     response_trace_id = ""
     diagnostics_header = ""
     runtime_model_header = ""
     runtime_speech_mode_header = ""
+    runtime_usage_totals: dict[str, int] = {"promptTokens": 0, "outputTokens": 0, "totalTokens": 0}
     media_type = "audio/wav"
 
     for turn_index in range(max_turns):
@@ -29004,19 +30650,23 @@ def _process_live_native_tts_job(
 
         while True:
             try:
+                seed_script_hint = _live_native_seed_script_window(seed_script, turn_index=turn_index)
                 turn_text = _runtime_generate_live_native_turn_text(
                     topic=topic,
                     pacing_style=pacing_style,
+                    language=language,
                     speaker=speaker,
                     next_speaker=next_speaker,
                     transcript_window=transcript_window,
+                    seed_script_hint=seed_script_hint,
                     trace_id=f"{trace_id}:turn:{turn_index}:gen:{generation_resume_attempts}",
                     timeout_sec=per_turn_timeout_sec,
                     model=director_model,
                 )
                 break
             except Exception as exc:  # noqa: BLE001
-                if generation_resume_attempts < max_resume_attempts:
+                allow_resume = generation_resume_attempts < max_resume_attempts and not _first_chunk_deadline_exceeded()
+                if allow_resume:
                     generation_resume_attempts += 1
                     total_resume_attempts += 1
                     session_epoch += 1
@@ -29034,9 +30684,21 @@ def _process_live_native_tts_job(
                         },
                     )
                     continue
+                if _first_chunk_deadline_exceeded():
+                    _log_live_native_event(
+                        job_id,
+                        "first_chunk_sla_deadline",
+                        {
+                            "turnIndex": turn_index,
+                            "stage": "generate_text",
+                            "targetMs": int(live_first_chunk_target_ms),
+                        },
+                    )
                 break
 
         if not turn_text:
+            if _first_chunk_deadline_exceeded():
+                first_chunk_sla_fallback_used = True
             fallback_used = True
             total_fallbacks += 1
             _record_tts_live_native_fallback()
@@ -29064,6 +30726,43 @@ def _process_live_native_tts_job(
             if _job_cancelled():
                 _mark_cancelled()
                 return
+            if _first_chunk_deadline_exceeded() and not fallback_used:
+                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast":
+                    fallback_used = True
+                    first_chunk_sla_fallback_used = True
+                    total_fallbacks += 1
+                    _record_tts_live_native_fallback()
+                    synth_payload.pop("model", None)
+                    synth_payload.pop("modelCandidates", None)
+                    _log_live_native_event(
+                        job_id,
+                        "fallback_used",
+                        {
+                            "turnIndex": turn_index,
+                            "stage": "synthesize_sla",
+                            "reason": "live_first_chunk_sla_fallback",
+                            "targetMs": int(live_first_chunk_target_ms),
+                        },
+                    )
+                    continue
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=503,
+                    detail={
+                        "error": "Live first chunk exceeded latency target and no fallback path was available.",
+                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                        "reason": "live_first_chunk_sla_fallback",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                        "turnIndex": turn_index,
+                        "retryAfterMs": 500,
+                        "timeoutMs": int(live_first_chunk_target_ms),
+                    },
+                    error_tag="live_first_chunk_sla_fallback",
+                )
+                return
             runtime_started_ms = int(time.time() * 1000)
             try:
                 runtime_response = _runtime_tts_request_with_gemini_failover(
@@ -29075,19 +30774,27 @@ def _process_live_native_tts_job(
                     json=synth_payload,
                     timeout=max(5, int(per_turn_timeout_sec)),
                 )
-            except Exception as exc:  # noqa: BLE001
+            except (RuntimeHttpError, requests.exceptions.Timeout, requests.exceptions.RequestException) as exc:
+                runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started_ms)
+                status_code, detail = _runtime_failure_payload_from_exception(
+                    exc if isinstance(exc, Exception) else RuntimeError(str(exc)),
+                    trace_id=trace_id,
+                    job_id=job_id,
+                    context_message="Live native turn synthesis failed",
+                )
                 _record_tts_runtime_latency(
                     engine=safe_engine,
-                    elapsed_ms=max(0, int(time.time() * 1000) - runtime_started_ms),
+                    elapsed_ms=runtime_elapsed,
                 )
                 _admin_usage_record_runtime_call(
                     engine=engine,
                     endpoint=runtime_path,
                     method="POST",
-                    status_code=502,
-                    elapsed_ms=max(0, int(time.time() * 1000) - runtime_started_ms),
+                    status_code=int(status_code),
+                    elapsed_ms=runtime_elapsed,
                 )
-                if synthesis_resume_attempts < max_resume_attempts:
+                allow_resume = synthesis_resume_attempts < max_resume_attempts and not _first_chunk_deadline_exceeded()
+                if allow_resume:
                     synthesis_resume_attempts += 1
                     total_resume_attempts += 1
                     session_epoch += 1
@@ -29100,13 +30807,15 @@ def _process_live_native_tts_job(
                             "turnIndex": turn_index,
                             "stage": "synthesize",
                             "attempt": synthesis_resume_attempts,
-                            "error": str(exc)[:220],
+                            "error": str(detail.get("error") or str(exc))[:220],
                             "sessionEpoch": session_epoch,
                         },
                     )
                     continue
                 if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
                     fallback_used = True
+                    if _first_chunk_deadline_exceeded():
+                        first_chunk_sla_fallback_used = True
                     total_fallbacks += 1
                     _record_tts_live_native_fallback()
                     synth_payload.pop("model", None)
@@ -29114,22 +30823,76 @@ def _process_live_native_tts_job(
                     _log_live_native_event(
                         job_id,
                         "fallback_used",
-                        {"turnIndex": turn_index, "stage": "synthesize", "reason": "runtime_unreachable"},
+                        {
+                            "turnIndex": turn_index,
+                            "stage": "synthesize",
+                            "reason": "live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else str(detail.get("reason") or "runtime_unavailable"),
+                            "targetMs": int(live_first_chunk_target_ms),
+                        },
+                    )
+                    continue
+                if _first_chunk_deadline_exceeded():
+                    status_code = 503
+                    detail = {
+                        **dict(detail),
+                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                        "reason": "live_first_chunk_sla_fallback",
+                        "retryAfterMs": 500,
+                        "timeoutMs": int(live_first_chunk_target_ms),
+                    }
+                _mark_job_failed_and_revert_usage(
+                    job_id=job_id,
+                    uid=uid,
+                    request_id=request_id,
+                    status_code=int(status_code),
+                    detail=detail,
+                    error_tag=str(detail.get("reason") or "live_native_synthesize_failed"),
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started_ms)
+                status_code, detail = _runtime_failure_payload_from_exception(
+                    exc,
+                    trace_id=trace_id,
+                    job_id=job_id,
+                    context_message="Live native turn synthesis returned an invalid response",
+                )
+                _record_tts_runtime_latency(
+                    engine=safe_engine,
+                    elapsed_ms=runtime_elapsed,
+                )
+                _admin_usage_record_runtime_call(
+                    engine=engine,
+                    endpoint=runtime_path,
+                    method="POST",
+                    status_code=int(status_code),
+                    elapsed_ms=runtime_elapsed,
+                )
+                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
+                    fallback_used = True
+                    if _first_chunk_deadline_exceeded():
+                        first_chunk_sla_fallback_used = True
+                    total_fallbacks += 1
+                    _record_tts_live_native_fallback()
+                    synth_payload.pop("model", None)
+                    synth_payload.pop("modelCandidates", None)
+                    _log_live_native_event(
+                        job_id,
+                        "fallback_used",
+                        {
+                            "turnIndex": turn_index,
+                            "stage": "synthesize_invalid_response",
+                            "reason": str(detail.get("reason") or "runtime_bad_response"),
+                        },
                     )
                     continue
                 _mark_job_failed_and_revert_usage(
                     job_id=job_id,
                     uid=uid,
                     request_id=request_id,
-                    status_code=502,
-                    detail={
-                        "error": f"Live native turn synthesis failed: {exc}",
-                        "reason": "live_native_synthesize_failed",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                        "turnIndex": turn_index,
-                    },
-                    error_tag="live_native_synthesize_failed",
+                    status_code=int(status_code),
+                    detail=detail,
+                    error_tag=str(detail.get("reason") or "live_native_runtime_error"),
                 )
                 return
 
@@ -29145,7 +30908,11 @@ def _process_live_native_tts_job(
             )
             if not runtime_response.ok:
                 detail = _decode_runtime_error_detail(runtime_response)
-                if synthesis_resume_attempts < max_resume_attempts:
+                response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
+                if isinstance(detail, dict) and response_trace_id and not detail.get("trace_id"):
+                    detail = {**detail, "trace_id": response_trace_id}
+                allow_resume = synthesis_resume_attempts < max_resume_attempts and not _first_chunk_deadline_exceeded()
+                if allow_resume:
                     synthesis_resume_attempts += 1
                     total_resume_attempts += 1
                     session_epoch += 1
@@ -29165,6 +30932,8 @@ def _process_live_native_tts_job(
                     continue
                 if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
                     fallback_used = True
+                    if _first_chunk_deadline_exceeded():
+                        first_chunk_sla_fallback_used = True
                     total_fallbacks += 1
                     _record_tts_live_native_fallback()
                     synth_payload.pop("model", None)
@@ -29172,14 +30941,34 @@ def _process_live_native_tts_job(
                     _log_live_native_event(
                         job_id,
                         "fallback_used",
-                        {"turnIndex": turn_index, "stage": "synthesize_http", "statusCode": chunk_status_code},
+                        {
+                            "turnIndex": turn_index,
+                            "stage": "synthesize_http",
+                            "statusCode": chunk_status_code,
+                            "reason": "live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else str((detail or {}).get("reason") or "runtime_error"),
+                        },
                     )
                     continue
+                if _first_chunk_deadline_exceeded():
+                    detail = {
+                        **(dict(detail) if isinstance(detail, dict) else {}),
+                        "error": "Live first chunk exceeded latency target and switched to fallback handling.",
+                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                        "reason": "live_first_chunk_sla_fallback",
+                        "trace_id": trace_id,
+                        "jobId": job_id,
+                        "turnIndex": turn_index,
+                        "retryAfterMs": 500,
+                        "timeoutMs": int(live_first_chunk_target_ms),
+                    }
+                    mapped_status = 503
+                else:
+                    mapped_status = _map_runtime_failure_status(engine, chunk_status_code, detail)
                 _mark_job_failed_and_revert_usage(
                     job_id=job_id,
                     uid=uid,
                     request_id=request_id,
-                    status_code=_map_runtime_failure_status(engine, chunk_status_code, detail),
+                    status_code=int(mapped_status),
                     detail=detail or {
                         "error": "Live native synthesis failed.",
                         "reason": "live_native_runtime_error",
@@ -29195,6 +30984,8 @@ def _process_live_native_tts_job(
             if len(chunk_audio) < 100:
                 if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
                     fallback_used = True
+                    if _first_chunk_deadline_exceeded():
+                        first_chunk_sla_fallback_used = True
                     total_fallbacks += 1
                     _record_tts_live_native_fallback()
                     synth_payload.pop("model", None)
@@ -29209,15 +31000,18 @@ def _process_live_native_tts_job(
                     job_id=job_id,
                     uid=uid,
                     request_id=request_id,
-                    status_code=502,
+                    status_code=503 if _first_chunk_deadline_exceeded() else 502,
                     detail={
                         "error": "Live native turn returned empty audio.",
-                        "reason": "live_native_empty_audio",
+                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK if _first_chunk_deadline_exceeded() else RUNTIME_BAD_RESPONSE,
+                        "reason": "live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else "live_native_empty_audio",
                         "trace_id": trace_id,
                         "jobId": job_id,
                         "turnIndex": turn_index,
+                        "retryAfterMs": 500 if _first_chunk_deadline_exceeded() else 0,
+                        "timeoutMs": int(live_first_chunk_target_ms) if _first_chunk_deadline_exceeded() else 0,
                     },
-                    error_tag="live_native_empty_audio",
+                    error_tag="live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else "live_native_empty_audio",
                 )
                 return
 
@@ -29225,6 +31019,11 @@ def _process_live_native_tts_job(
             diagnostics_header = str(runtime_response.headers.get("x-voiceflow-diagnostics") or diagnostics_header or "").strip()
             runtime_model_header = str(runtime_response.headers.get("x-voiceflow-model") or runtime_model_header or "").strip()
             runtime_speech_mode_header = str(runtime_response.headers.get("x-voiceflow-speech-mode") or runtime_speech_mode_header or "").strip()
+            usage_header = _parse_runtime_usage_header(runtime_response.headers.get("x-voiceflow-usage"))
+            if usage_header:
+                runtime_usage_totals["promptTokens"] = int(runtime_usage_totals.get("promptTokens") or 0) + int(usage_header.get("promptTokens") or 0)
+                runtime_usage_totals["outputTokens"] = int(runtime_usage_totals.get("outputTokens") or 0) + int(usage_header.get("outputTokens") or 0)
+                runtime_usage_totals["totalTokens"] = int(runtime_usage_totals.get("totalTokens") or 0) + int(usage_header.get("totalTokens") or 0)
             media_type = str(runtime_response.headers.get("content-type") or media_type or "audio/wav")
             break
 
@@ -29416,6 +31215,13 @@ def _process_live_native_tts_job(
         bypass_limits=admin_limit_bypass,
         bypass_reason="admin_request" if admin_limit_bypass else "",
     )
+    _usage_event_attach_runtime_usage(
+        uid,
+        request_id,
+        runtime_usage_totals,
+        mode="live_native",
+        trace_id=response_trace_id or trace_id,
+    )
     _finalize_usage(uid, request_id, success=True)
     _build_tts_history_item(
         uid=uid,
@@ -29442,6 +31248,7 @@ def _process_live_native_tts_job(
     completed_headers["x-vf-live-chunks"] = str(len(chunk_audio_bytes))
     completed_headers["x-vf-live-resume-count"] = str(total_resume_attempts)
     completed_headers["x-vf-live-fallback-count"] = str(total_fallbacks)
+    completed_headers["x-vf-live-first-chunk-target-ms"] = str(int(live_first_chunk_target_ms))
 
     result_ref = _persist_tts_result_audio(
         job_id,
@@ -29460,6 +31267,8 @@ def _process_live_native_tts_job(
     summary_payload = {
         "mode": "live_native",
         "topic": topic,
+        "language": language,
+        "seedScriptUsed": bool(seed_script),
         "speakerCount": len(cast),
         "targetDurationSec": target_duration_sec,
         "renderedDurationMs": int(rendered_duration_ms),
@@ -29471,10 +31280,13 @@ def _process_live_native_tts_job(
         "fallbackCount": int(total_fallbacks),
         "chunkGapCount": int(chunk_gap_count),
         "sessionEpoch": int(session_epoch),
+        "firstChunkTargetMs": int(live_first_chunk_target_ms),
+        "firstChunkSlaFallbackUsed": bool(first_chunk_sla_fallback_used),
         "recovery": {
             "strategy": recovery_strategy,
             "maxResumeAttempts": max_resume_attempts,
             "fallbackMode": fallback_mode,
+            "firstChunkSlaFallbackUsed": bool(first_chunk_sla_fallback_used),
         },
         "limits": {
             "sessionMaxSec": session_max_sec,
@@ -29618,7 +31430,11 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     deadline_ms = int(current.get("deadlineAtMs") or 0)
     max_attempts = max(1, int(current.get("maxAttempts") or VF_TTS_QUEUE_MAX_ATTEMPTS))
     attempts_used = max(1, int(current.get("attempts") or 1))
-    lane = _tts_job_lane_for_plan(plan_key)
+    lane = _tts_job_lane_for_plan(
+        plan_key,
+        live_stream=bool(current.get("liveStream")),
+        mode=current.get("mode"),
+    )
 
     if deadline_ms > 0 and int(time.time() * 1000) >= deadline_ms:
         detail = {
@@ -29785,11 +31601,17 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 post_conversion_headers["x-vf-post-tts-conversion"] = post_tts_conversion_status
 
             live_started_ms = int(time.time() * 1000)
+            live_first_chunk_target_ms = max(
+                1,
+                int(current.get("liveFirstChunkTargetMs") or VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
+            )
+            first_chunk_deadline_ms = int(live_started_ms + live_first_chunk_target_ms)
             first_chunk_recorded = False
             response_trace_id = ""
             diagnostics_header = ""
             runtime_model_header = ""
             runtime_speech_mode_header = ""
+            runtime_usage_totals: dict[str, int] = {"promptTokens": 0, "outputTokens": 0, "totalTokens": 0}
             media_type = "audio/wav"
 
             pipeline_enabled = (
@@ -29836,15 +31658,58 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     error_tag=error_tag,
                 )
 
+            def _first_chunk_deadline_exceeded() -> bool:
+                if first_chunk_recorded:
+                    return False
+                return int(time.time() * 1000) >= int(first_chunk_deadline_ms)
+
             def _synthesize_live_chunk(chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
                 if _live_job_cancelled():
                     return {"ok": False, "cancelled": True, "index": int(chunk_index)}
+                if int(chunk_index) == 0 and _first_chunk_deadline_exceeded():
+                    return {
+                        "ok": False,
+                        "index": int(chunk_index),
+                        "status_code": 503,
+                        "error_tag": "live_first_chunk_sla_fallback",
+                        "detail": {
+                            "error": "Live first chunk exceeded latency target before synthesis could start.",
+                            "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                            "reason": "live_first_chunk_sla_fallback",
+                            "trace_id": trace_id,
+                            "jobId": job_id,
+                            "chunkIndex": int(chunk_index),
+                            "retryAfterMs": 500,
+                            "timeoutMs": int(live_first_chunk_target_ms),
+                        },
+                    }
                 chunk_payload = _build_live_chunk_upstream_payload(
                     engine=engine,
                     base_payload=upstream_payload,
                     chunk=chunk,
                 )
                 chunk_started_ms = int(time.time() * 1000)
+                chunk_timeout_sec = int(VF_TTS_RUNTIME_TIMEOUT_SEC)
+                if int(chunk_index) == 0 and not first_chunk_recorded:
+                    remaining_ms = max(0, int(first_chunk_deadline_ms - chunk_started_ms))
+                    if remaining_ms <= 0:
+                        return {
+                            "ok": False,
+                            "index": int(chunk_index),
+                            "status_code": 503,
+                            "error_tag": "live_first_chunk_sla_fallback",
+                            "detail": {
+                                "error": "Live first chunk exceeded latency target before runtime request.",
+                                "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                                "reason": "live_first_chunk_sla_fallback",
+                                "trace_id": trace_id,
+                                "jobId": job_id,
+                                "chunkIndex": int(chunk_index),
+                                "retryAfterMs": 500,
+                                "timeoutMs": int(live_first_chunk_target_ms),
+                            },
+                        }
+                    chunk_timeout_sec = max(1, min(int(chunk_timeout_sec), int(math.ceil(remaining_ms / 1000.0))))
                 try:
                     runtime_chunk_response = _runtime_tts_request_with_gemini_failover(
                         "POST",
@@ -29853,31 +31718,64 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         trace_id=trace_id,
                         job_id=job_id,
                         json=chunk_payload,
-                        timeout=VF_TTS_RUNTIME_TIMEOUT_SEC,
+                        timeout=chunk_timeout_sec,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except (RuntimeHttpError, requests.exceptions.Timeout, requests.exceptions.RequestException) as exc:
                     chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
+                    status_code, detail = _runtime_failure_payload_from_exception(
+                        exc if isinstance(exc, Exception) else RuntimeError(str(exc)),
+                        trace_id=trace_id,
+                        job_id=job_id,
+                        context_message="TTS runtime is unreachable during live chunk synthesis",
+                        chunk_index=int(chunk_index),
+                    )
+                    if int(chunk_index) == 0 and _first_chunk_deadline_exceeded():
+                        status_code = 503
+                        detail = {
+                            **dict(detail or {}),
+                            "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                            "reason": "live_first_chunk_sla_fallback",
+                            "retryAfterMs": 500,
+                            "timeoutMs": int(live_first_chunk_target_ms),
+                        }
                     _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=chunk_elapsed)
                     _admin_usage_record_runtime_call(
                         engine=engine,
                         endpoint=runtime_path,
                         method="POST",
-                        status_code=502,
+                        status_code=int(status_code),
                         elapsed_ms=chunk_elapsed,
                     )
                     return {
                         "ok": False,
                         "index": int(chunk_index),
-                        "status_code": 502,
-                        "error_tag": f"runtime_unreachable:{exc}",
-                        "detail": {
-                            "error": f"TTS runtime is unreachable during live chunk synthesis: {exc}",
-                            "errorCode": ENGINE_OVERLOADED,
-                            "reason": "runtime_unreachable",
-                            "trace_id": trace_id,
-                            "jobId": job_id,
-                            "chunkIndex": int(chunk_index),
-                        },
+                        "status_code": int(status_code),
+                        "error_tag": str((detail or {}).get("reason") or "runtime_unreachable"),
+                        "detail": detail,
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
+                    status_code, detail = _runtime_failure_payload_from_exception(
+                        exc,
+                        trace_id=trace_id,
+                        job_id=job_id,
+                        context_message="TTS runtime returned an invalid response during live chunk synthesis",
+                        chunk_index=int(chunk_index),
+                    )
+                    _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=chunk_elapsed)
+                    _admin_usage_record_runtime_call(
+                        engine=engine,
+                        endpoint=runtime_path,
+                        method="POST",
+                        status_code=int(status_code),
+                        elapsed_ms=chunk_elapsed,
+                    )
+                    return {
+                        "ok": False,
+                        "index": int(chunk_index),
+                        "status_code": int(status_code),
+                        "error_tag": str((detail or {}).get("reason") or "runtime_bad_response"),
+                        "detail": detail,
                     }
 
                 chunk_elapsed = max(0, int(time.time() * 1000) - chunk_started_ms)
@@ -29895,6 +31793,19 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     response_trace = str(runtime_chunk_response.headers.get("x-voiceflow-trace-id") or "").strip()
                     if isinstance(detail, dict) and response_trace and not detail.get("trace_id"):
                         detail = {**detail, "trace_id": response_trace}
+                    if int(chunk_index) == 0 and _first_chunk_deadline_exceeded():
+                        detail = {
+                            **(dict(detail) if isinstance(detail, dict) else {}),
+                            "error": "Live first chunk exceeded latency target and was moved to fallback handling.",
+                            "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
+                            "reason": "live_first_chunk_sla_fallback",
+                            "trace_id": trace_id,
+                            "jobId": job_id,
+                            "chunkIndex": int(chunk_index),
+                            "retryAfterMs": 500,
+                            "timeoutMs": int(live_first_chunk_target_ms),
+                        }
+                        mapped_status = 503
                     return {
                         "ok": False,
                         "index": int(chunk_index),
@@ -29912,7 +31823,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                         "error_tag": "runtime_empty_audio",
                         "detail": {
                             "error": "Live chunk synthesis returned empty audio.",
-                            "errorCode": ENGINE_OVERLOADED,
+                            "errorCode": RUNTIME_BAD_RESPONSE,
                             "reason": "runtime_empty_audio",
                             "trace_id": trace_id,
                             "jobId": job_id,
@@ -29931,6 +31842,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     "diagnosticsHeader": str(runtime_chunk_response.headers.get("x-voiceflow-diagnostics") or "").strip(),
                     "runtimeModelHeader": str(runtime_chunk_response.headers.get("x-voiceflow-model") or "").strip(),
                     "runtimeSpeechModeHeader": str(runtime_chunk_response.headers.get("x-voiceflow-speech-mode") or "").strip(),
+                    "usageHeader": _parse_runtime_usage_header(runtime_chunk_response.headers.get("x-voiceflow-usage")),
                 }
 
             def _emit_live_chunk(result: dict[str, Any]) -> bool:
@@ -29952,6 +31864,11 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 diagnostics_header = str(result.get("diagnosticsHeader") or diagnostics_header or "").strip()
                 runtime_model_header = str(result.get("runtimeModelHeader") or runtime_model_header or "").strip()
                 runtime_speech_mode_header = str(result.get("runtimeSpeechModeHeader") or runtime_speech_mode_header or "").strip()
+                usage_header = result.get("usageHeader") if isinstance(result.get("usageHeader"), dict) else {}
+                if usage_header:
+                    runtime_usage_totals["promptTokens"] = int(runtime_usage_totals.get("promptTokens") or 0) + int(usage_header.get("promptTokens") or 0)
+                    runtime_usage_totals["outputTokens"] = int(runtime_usage_totals.get("outputTokens") or 0) + int(usage_header.get("outputTokens") or 0)
+                    runtime_usage_totals["totalTokens"] = int(runtime_usage_totals.get("totalTokens") or 0) + int(usage_header.get("totalTokens") or 0)
 
                 try:
                     chunk_meta = _persist_live_chunk(
@@ -30025,10 +31942,16 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
 
             if pipeline_enabled:
                 ready_by_index: dict[int, dict[str, Any]] = {}
-                next_emit_index = 0
+                next_emit_index = 1
                 synth_futures: dict[Future[dict[str, Any]], int] = {}
+                first_result = _synthesize_live_chunk(0, dict(live_chunks[0]))
+                if not bool(first_result.get("ok")):
+                    _handle_live_result_failure(first_result)
+                    return
+                if not _emit_live_chunk(first_result):
+                    return
                 with ThreadPoolExecutor(max_workers=synth_concurrency) as synth_executor:
-                    for chunk_index, chunk in enumerate(live_chunks):
+                    for chunk_index, chunk in enumerate(live_chunks[1:], start=1):
                         synth_future = synth_executor.submit(_synthesize_live_chunk, int(chunk_index), dict(chunk))
                         synth_futures[synth_future] = int(chunk_index)
 
@@ -30128,6 +32051,13 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     return
                 quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
 
+            _usage_event_attach_runtime_usage(
+                uid,
+                request_id,
+                runtime_usage_totals,
+                mode="live_stream",
+                trace_id=response_trace_id or trace_id,
+            )
             _finalize_usage(uid, request_id, success=True)
             _build_tts_history_item(
                 uid=uid,
@@ -30152,6 +32082,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             completed_headers.update(post_conversion_headers)
             completed_headers["x-vf-live-stream"] = "1"
             completed_headers["x-vf-live-chunks"] = str(len(chunk_audio_bytes))
+            completed_headers["x-vf-live-first-chunk-target-ms"] = str(int(live_first_chunk_target_ms))
             result_ref = _persist_tts_result_audio(
                 job_id,
                 synthesized_audio_bytes,
@@ -30197,23 +32128,22 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 json=upstream_payload,
                 timeout=VF_TTS_RUNTIME_TIMEOUT_SEC,
             )
-        except Exception as exc:  # noqa: BLE001
+        except (RuntimeHttpError, requests.exceptions.Timeout, requests.exceptions.RequestException) as exc:
             runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started)
+            status_code, detail = _runtime_failure_payload_from_exception(
+                exc if isinstance(exc, Exception) else RuntimeError(str(exc)),
+                trace_id=trace_id,
+                job_id=job_id,
+                context_message="TTS runtime is unreachable",
+            )
             _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=runtime_elapsed)
             _admin_usage_record_runtime_call(
                 engine=engine,
                 endpoint=runtime_path,
                 method="POST",
-                status_code=502,
+                status_code=int(status_code),
                 elapsed_ms=runtime_elapsed,
             )
-            detail = {
-                "error": f"TTS runtime is unreachable: {exc}",
-                "errorCode": ENGINE_OVERLOADED,
-                "reason": "runtime_unreachable",
-                "trace_id": trace_id,
-                "jobId": job_id,
-            }
             can_retry = attempts_used < max_attempts and (deadline_ms <= 0 or int(time.time() * 1000) < deadline_ms)
             if can_retry:
                 backoff_ms = _tts_job_retry_backoff_ms(attempts_used)
@@ -30222,7 +32152,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     {
                         "status": "queued",
                         "lastError": detail,
-                        "lastStatusCode": 502,
+                        "lastStatusCode": int(status_code),
                         "attempts": attempts_used,
                     },
                 )
@@ -30236,9 +32166,34 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 job_id=job_id,
                 uid=uid,
                 request_id=request_id,
-                status_code=502,
+                status_code=int(status_code),
                 detail=detail,
-                error_tag=f"runtime_unreachable:{exc}",
+                error_tag=str((detail or {}).get("reason") or "runtime_unreachable"),
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started)
+            status_code, detail = _runtime_failure_payload_from_exception(
+                exc,
+                trace_id=trace_id,
+                job_id=job_id,
+                context_message="TTS runtime returned an invalid response",
+            )
+            _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=runtime_elapsed)
+            _admin_usage_record_runtime_call(
+                engine=engine,
+                endpoint=runtime_path,
+                method="POST",
+                status_code=int(status_code),
+                elapsed_ms=runtime_elapsed,
+            )
+            _mark_job_failed_and_revert_usage(
+                job_id=job_id,
+                uid=uid,
+                request_id=request_id,
+                status_code=int(status_code),
+                detail=detail,
+                error_tag=str((detail or {}).get("reason") or "runtime_bad_response"),
             )
             return
 
@@ -30317,9 +32272,17 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 return
             quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
 
+        response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
+        runtime_usage_header = _parse_runtime_usage_header(runtime_response.headers.get("x-voiceflow-usage"))
+        _usage_event_attach_runtime_usage(
+            uid,
+            request_id,
+            runtime_usage_header,
+            mode="standard",
+            trace_id=response_trace_id or trace_id,
+        )
         _finalize_usage(uid, request_id, success=True)
 
-        response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
         _build_tts_history_item(
             uid=uid,
             request_id=request_id,
@@ -30660,6 +32623,8 @@ def _runtime_generate_podcast_standard_window(
     topic: str,
     pacing_style: str,
     language: str,
+    script_model: str,
+    script_model_candidates: list[str],
     cast: list[dict[str, Any]],
     transcript_tail: str,
     window_chars: int,
@@ -30711,8 +32676,11 @@ def _runtime_generate_podcast_standard_window(
             "jsonMode": False,
             "temperature": 0.85,
             "trace_id": trace_id,
-            "model": VF_PODCAST_STANDARD_SCRIPT_MODEL,
-            "modelCandidates": list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES),
+            "model": str(script_model or VF_PODCAST_STANDARD_SCRIPT_MODEL),
+            "modelCandidates": _normalize_model_candidates(
+                script_model_candidates,
+                default=[VF_PODCAST_STANDARD_SCRIPT_MODEL, *list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES)],
+            ),
         },
         timeout=120,
     )
@@ -30736,13 +32704,24 @@ def _enqueue_podcast_standard_subjob(
 ) -> str:
     uid = str(parent_job.get("uid") or "").strip()
     trace_id = str(parent_job.get("traceId") or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    standard_engine = _normalize_podcast_standard_engine(parent_job.get("engine"))
     admin_limit_bypass = bool(parent_job.get("adminLimitBypass"))
-    request_id = f"{str(parent_job.get('jobId') or '').strip()}_window_{window_index + 1}"
+    run_nonce = str(parent_job.get("runNonce") or "").strip() or uuid.uuid4().hex[:8]
+    request_id = f"{str(parent_job.get('jobId') or '').strip()}_{run_nonce}_window_{window_index + 1}"
+    model_config = (
+        dict((parent_job.get("standardConfig") or {}).get("models") or {})
+        if isinstance(parent_job.get("standardConfig"), dict)
+        else {}
+    )
+    tts_model_candidates = _normalize_model_candidates(
+        model_config.get("ttsCandidates"),
+        default=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
+    )
     plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
         uid,
         len(script_text),
         trace_id,
-        engine="GEM",
+        engine=standard_engine,
         bypass=admin_limit_bypass,
     )
     if not admin_limit_bypass:
@@ -30750,18 +32729,18 @@ def _enqueue_podcast_standard_subjob(
     _reserve_usage(
         uid,
         request_id,
-        "GEM",
+        standard_engine,
         len(script_text),
         bypass_limits=admin_limit_bypass,
         bypass_reason="admin_request" if admin_limit_bypass else "",
     )
     live_chunk_profile = _resolve_live_chunk_profile()
     payload = TtsSynthesizeRequest(
-        engine="GEM",
+        engine=standard_engine,
         text=script_text,
         language=str(parent_job.get("language") or "en").strip() or "en",
         voiceName=str((speaker_voices[0] or {}).get("voiceName") or "Puck"),
-        modelCandidates=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
+        modelCandidates=tts_model_candidates,
         speaker_voices=[dict(item) for item in list(speaker_voices or [])],
         stream=True,
         live_chunk_chars=int(live_chunk_profile["chunkChars"]),
@@ -30775,7 +32754,7 @@ def _enqueue_podcast_standard_subjob(
     )
     upstream_payload, voice_id = _build_tts_upstream_payload(
         payload,
-        engine="GEM",
+        engine=standard_engine,
         text=script_text,
         request_id=request_id,
         trace_id=str(payload.trace_id or trace_id),
@@ -30788,15 +32767,15 @@ def _enqueue_podcast_standard_subjob(
     _ensure_tts_workers_started()
     _cleanup_expired_live_artifacts()
     _cleanup_expired_tts_result_artifacts()
-    runtime_base = _runtime_url_for_engine("GEM")
-    runtime_path = _runtime_synthesize_path_for_engine("GEM")
+    runtime_base = _runtime_url_for_engine(standard_engine)
+    runtime_path = _runtime_synthesize_path_for_engine(standard_engine)
     job_payload = {
         "jobId": request_id,
         "uid": uid,
         "userId": str(parent_job.get("userId") or "").strip(),
         "requestId": request_id,
         "traceId": str(payload.trace_id or trace_id),
-        "engine": "GEM",
+        "engine": standard_engine,
         "text": script_text,
         "voiceId": voice_id,
         "voiceName": resolved_voice_name,
@@ -30816,14 +32795,19 @@ def _enqueue_podcast_standard_subjob(
         "liveChunkWords": int(live_chunk_profile["chunkWords"]),
         "liveFirstChunkChars": int(live_chunk_profile["firstChunkChars"]),
         "liveFirstChunkWords": int(live_chunk_profile["firstChunkWords"]),
+        "liveFirstChunkTargetMs": int(VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
         "audioAuditId": "",
         "audioAuditIds": [],
     }
-    lane = _tts_job_lane_for_plan(plan_key)
+    lane = _tts_job_lane_for_plan(
+        plan_key,
+        live_stream=True,
+        mode="",
+    )
     current_job = _TTS_JOB_QUEUE.enqueue(lane=lane, payload=job_payload)
     _record_tts_job_enqueued(
         job_id=request_id,
-        engine="GEM",
+        engine=standard_engine,
         created_at_ms=int((current_job or {}).get("createdAtMs") or int(time.time() * 1000)),
     )
     return request_id
@@ -30878,7 +32862,7 @@ def _wait_for_podcast_standard_subjob(
                     chunk_audio,
                     meta={
                         "textChars": int(item.get("textChars") or 0),
-                        "engine": "GEM",
+                        "engine": str(item.get("engine") or child_job.get("engine") or ""),
                         "traceId": str(item.get("traceId") or child_job.get("traceId") or ""),
                         "speakerId": str(item.get("speakerId") or ""),
                         "speakerName": str(item.get("speakerName") or ""),
@@ -30941,6 +32925,18 @@ def _process_podcast_standard_job(job_id: str) -> None:
     if not isinstance(job, dict):
         return
     config = dict(job.get("standardConfig") or {})
+    standard_engine = _normalize_podcast_standard_engine(config.get("engine") or job.get("engine"))
+    model_config = dict(config.get("models") or {})
+    script_model = str(model_config.get("script") or VF_PODCAST_STANDARD_SCRIPT_MODEL).strip() or VF_PODCAST_STANDARD_SCRIPT_MODEL
+    script_model_candidates = _normalize_model_candidates(
+        model_config.get("scriptCandidates"),
+        default=[script_model, *list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES)],
+    )
+    tts_model_candidates = _normalize_model_candidates(
+        model_config.get("ttsCandidates"),
+        default=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
+    )
+    primary_tts_model = str((tts_model_candidates[0] if tts_model_candidates else VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES[0]) or "").strip() or str(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES[0])
     cast = [dict(item) for item in list(config.get("cast") or []) if isinstance(item, dict)]
     transcript_turns: list[dict[str, Any]] = []
     final_audio_chunks: list[bytes] = []
@@ -31026,6 +33022,8 @@ def _process_podcast_standard_job(job_id: str) -> None:
                     topic=str(config.get("topic") or ""),
                     pacing_style=str(config.get("pacingStyle") or ""),
                     language=str(config.get("language") or "en"),
+                    script_model=script_model,
+                    script_model_candidates=script_model_candidates,
                     cast=cast,
                     transcript_tail=transcript_tail,
                     window_chars=window_chars,
@@ -31085,16 +33083,18 @@ def _process_podcast_standard_job(job_id: str) -> None:
         }
         summary_payload = {
             "podcastMode": "standard",
+            "engine": standard_engine,
             "topic": str(config.get("topic") or ""),
             "speakerCount": len(cast),
             "durationSec": int(config.get("durationSec") or 0),
             "scriptWindowCount": int(completed_windows),
             "scriptCharsGenerated": int(generated_script_chars),
             "billedChars": int(total_billed_chars),
-            "vfRate": float(_engine_rate("GEM")),
-            "vfCost": float(total_billed_chars) * float(_engine_rate("GEM")),
-            "scriptModel": VF_PODCAST_STANDARD_SCRIPT_MODEL,
-            "ttsModel": str(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES[0]),
+            "vfRate": float(_engine_rate(standard_engine)),
+            "vfCost": float(total_billed_chars) * float(_engine_rate(standard_engine)),
+            "language": str(config.get("language") or "en"),
+            "scriptModel": script_model,
+            "ttsModel": primary_tts_model,
         }
         artifacts = _persist_podcast_standard_artifacts(
             job_id=job_id,
@@ -31133,10 +33133,12 @@ def _process_podcast_standard_job(job_id: str) -> None:
                     "mediaType": "audio/wav",
                     "headers": {
                         "x-podcast-mode": "standard",
-                        "x-podcast-script-model": VF_PODCAST_STANDARD_SCRIPT_MODEL,
-                        "x-podcast-tts-model": str(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES[0]),
+                        "x-podcast-engine": standard_engine,
+                        "x-podcast-script-model": script_model,
+                        "x-podcast-tts-model": primary_tts_model,
                     },
                 },
+                "engine": standard_engine,
                 "liveState": live_state,
                 "liveOrchestration": orchestration,
                 "podcastSummary": summary_payload,
@@ -31323,7 +33325,14 @@ def _raise_failed_tts_job(job: dict[str, Any], *, default_headers: Optional[dict
     detail = job.get("error")
     if detail is None:
         detail = {"error": "TTS job failed."}
-    raise HTTPException(status_code=status_code, detail=detail, headers=dict(default_headers or {}))
+    headers = dict(default_headers or {})
+    headers.update(
+        _error_headers_for_detail(
+            detail,
+            fallback_code=ENGINE_OVERLOADED,
+        )
+    )
+    raise HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
 def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wait_ms: int) -> Response:
@@ -31565,7 +33574,11 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
                     raise HTTPException(status_code=503, detail=detail, headers=error_headers)
 
                 deadline_at_ms = int(time.time() * 1000) + VF_TTS_QUEUE_JOB_TTL_MS
-                lane = _tts_job_lane_for_plan(plan_key)
+                lane = _tts_job_lane_for_plan(
+                    plan_key,
+                    live_stream=bool(live_stream_requested),
+                    mode=requested_mode or "",
+                )
                 job_payload = {
                     "jobId": request_id,
                     "uid": uid,
@@ -31592,6 +33605,7 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
                     "liveChunkWords": int(live_chunk_words or VF_TTS_LIVE_CHUNK_WORDS_DEFAULT),
                     "liveFirstChunkChars": int(live_first_chunk_chars or VF_TTS_LIVE_FIRST_CHUNK_CHARS),
                     "liveFirstChunkWords": int(live_first_chunk_words or VF_TTS_LIVE_FIRST_CHUNK_WORDS),
+                    "liveFirstChunkTargetMs": int(VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
                     "audioAuditId": audit_id,
                     "audioAuditIds": [audit_id],
                 }
@@ -31612,6 +33626,20 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
                 )
             else:
                 current_job = existing_job
+                owner_uid = str(existing_job.get("uid") or "").strip()
+                if not owner_uid or owner_uid != uid:
+                    _finalize_usage(uid, request_id, success=False, error_detail="request_id_owner_conflict")
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "request_id is already associated with a different user.",
+                            "errorCode": REQUEST_ID_CONFLICT,
+                            "reason": "request_id_owner_conflict",
+                            "jobId": request_id,
+                            "trace_id": trace_id,
+                        },
+                        headers=dict(quota_headers),
+                    )
                 existing_status = str(existing_job.get("status") or "queued").strip().lower() or "queued"
                 if existing_status in {"queued", "running"}:
                     linked_audit_ids = _audio_generation_audit_ids_from_job(existing_job)
@@ -31946,8 +33974,10 @@ def podcast_live_job_create(payload: PodcastLiveJobRequest, request: Request) ->
             recovery=payload.recovery,
             output=payload.output,
             pacingStyle=payload.pacingStyle,
+            language=payload.language,
+            seedScript=payload.seedScript,
             nativeAudioModel=VF_TTS_LIVE_NATIVE_MODEL,
-            directorModel=VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL,
+            directorModel=str(payload.directorModel or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL).strip() or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL,
         ),
         language=str(payload.language or "en").strip() or "en",
         request_id=payload.request_id,
@@ -32097,19 +34127,41 @@ def podcast_live_job_cancel(job_id: str, request: Request) -> JSONResponse:
 def podcast_standard_job_create(payload: PodcastStandardJobRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
     is_admin = _request_is_admin(request, uid)
-    resolved_user_id = _resolve_request_user_id(request, uid)
+    resolved_user_id = _resolve_request_user_id_read_only(uid)
     if not is_admin:
         profile = _require_user_id_ready(request, uid)
         profile_user_id = str((profile or {}).get("userId") or "").strip().lower()
         if profile_user_id:
             resolved_user_id = profile_user_id
+    elif not resolved_user_id:
+        resolved_user_id = _resolve_request_user_id(request, uid)
 
     raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
     _validate_podcast_standard_request_shape(raw_payload)
     normalized = _normalize_podcast_standard_config(raw_payload, fallback_topic=str(payload.topic or "").strip())
+    standard_engine = _normalize_podcast_standard_engine(normalized.get("engine"))
 
     request_id = str(payload.request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
     trace_id = str(payload.trace_id or request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    existing_job = _podcast_standard_job_get(request_id)
+    if isinstance(existing_job, dict):
+        owner_uid = str(existing_job.get("uid") or "").strip()
+        if not owner_uid or owner_uid != uid:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "request_id is already associated with a different user.",
+                    "errorCode": REQUEST_ID_CONFLICT,
+                    "reason": "request_id_owner_conflict",
+                    "jobId": request_id,
+                    "trace_id": trace_id,
+                },
+            )
+        status_payload = _podcast_standard_status_payload(existing_job, include_result=False)
+        status_payload["accepted"] = False
+        status_payload["reused"] = True
+        return JSONResponse(status_payload, status_code=200)
+
     now_ms = int(time.time() * 1000)
     orchestration = {
         "mode": "podcast_standard",
@@ -32135,7 +34187,7 @@ def podcast_standard_job_create(payload: PodcastStandardJobRequest, request: Req
         "traceId": trace_id,
         "uid": uid,
         "userId": resolved_user_id,
-        "engine": "GEM",
+        "engine": standard_engine,
         "text": str(normalized.get("topic") or ""),
         "language": str(normalized.get("language") or "en"),
         "mode": "podcast_standard",

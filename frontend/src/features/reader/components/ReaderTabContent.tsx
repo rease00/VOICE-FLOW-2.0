@@ -1957,6 +1957,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   }, [activeItem, isSpeechPlaying, onToast]);
 
   const warningCountdown = session?.deleteAtMs ? getReaderDeleteCountdownLabel(session.deleteAtMs) : '03:00';
+  const resultsCountLabel = `${filteredItems.length.toLocaleString()} title${filteredItems.length === 1 ? '' : 's'}`;
 
   const targetLanguageLabel = useMemo(
     () => findLanguageLabel(session?.targetLanguage || targetLanguageDraft || activeCatalogItem?.sourceLanguage),
@@ -2088,12 +2089,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
                     surface={surface}
                     regionId={regionId}
                     searchQuery={searchQuery}
+                    resultsCountLabel={resultsCountLabel}
                     isLoading={isLoading}
                     onSelectSurface={setSurface}
                     onSelectRegion={setRegionId}
                     onSetSearchQuery={setSearchQuery}
                     onSelectItem={setSelectedItemId}
                     onOpenItem={handleOpenItem}
+                    onOpenImport={() => toggleUtilityPanel('import')}
                     onResumeSession={() => void handleResumeSession()}
                     resolveMediaUrl={resolveMediaUrl}
                     formatCompactStat={formatCompactStat}
@@ -2190,6 +2193,11 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
           dockScale={readerDockScale}
           onOpenImport={() => toggleUtilityPanel('import')}
           onOpenTranslate={toggleTranslatePanel}
+          onOpenSettings={() => toggleUtilityPanel('settings')}
+          onOpenDetectedText={() => toggleUtilityPanel('detected')}
+          onOpenCast={() => toggleUtilityPanel('cast')}
+          onSavepoint={() => void handleSavepoint()}
+          onCloseSession={() => void handleCloseSession()}
           onToggleNativeAudio={() => handleAudioEngineChange(activeAudioEngine === 'native_audio_dialog' ? 'tts_hd' : 'native_audio_dialog')}
           onNarratorVoiceChange={setNarratorVoiceDraft}
           onToggleMultiSpeaker={() => setMultiSpeakerEnabledDraft((value) => !value)}

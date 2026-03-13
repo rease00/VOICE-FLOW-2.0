@@ -4,11 +4,17 @@ import { AudioPlayer } from '../../../../components/AudioPlayer';
 import { Button } from '../../../../components/Button';
 import { SectionCard } from '../../../../components/SectionCard';
 import type { GenerationSettings, VoiceOption } from '../../../../types';
-import { autoFormatScript, generateTextContent, parseMultiSpeakerScript } from '../../../../services/geminiService';
+import {
+  autoFormatScript,
+  generateTextContent,
+  parseMultiSpeakerScript,
+  STUDIO_CAST_TEXT_MODELS,
+} from '../../../../services/geminiService';
 import { resolveApiUrl } from '../../../shared/api/config';
 import type { RuntimeVoiceItem, TtsJobStatusResponse } from '../../../shared/api/contracts';
 import { fetchTtsEngineVoices } from '../../../shared/api/gatewayClient';
 import { useManagedTabs } from '../../../shared/ui/tabs';
+import { useWorkspaceViewport } from '../../../shared/ui/useWorkspaceViewport';
 import { autoAssignSpeakerVoices } from '../../../shared/voices/castAssignment';
 import { resolvePublicVoiceLabel } from '../../../shared/voices/voicePublicName';
 import {
@@ -49,6 +55,18 @@ import {
   type StandardPodcastJobRequest,
 } from '../model/podcast';
 import {
+  buildLivePodcastSubmitRequest,
+  buildStandardPodcastSubmitRequest,
+  createPodcastEntitlementRefreshInvoker,
+  modeLabel as getModeLabel,
+  normalizePodcastLanguage,
+  PODCAST_DEFAULT_LANGUAGE,
+  PODCAST_DIRECTOR_DEFAULT_MODEL,
+  PODCAST_LANGUAGE_OPTIONS,
+  resolvePodcastErrorMessage,
+  shouldAutoRunDirectorAtStart,
+} from '../model/podcastRuntime';
+import {
   pollTtsGatewayJobForAudio,
   TTS_GATEWAY_AUDIO_CHUNK_EVENT,
   TTS_GATEWAY_JOB_PROGRESS_EVENT,
@@ -58,7 +76,9 @@ import './podcastWireframe.css';
 interface PodcastTabContentProps {
   mediaBackendUrl: string;
   resolvedTheme: 'light' | 'dark';
+  selectedEngine: GenerationSettings['engine'];
   onToast: (message: string, type?: 'success' | 'error' | 'info') => void;
+  onRefreshEntitlements?: () => Promise<void>;
 }
 
 interface GatewayJobProgressEventDetail {
@@ -84,9 +104,13 @@ interface GatewayAudioChunkEventDetail {
 }
 
 const GEM_ENGINE = 'GEM' as const;
+const VECTOR_ENGINE = 'NEURAL2' as const;
+type StandardPodcastEngine = Extract<GenerationSettings['engine'], 'GEM' | 'NEURAL2'>;
+const STANDARD_PODCAST_ENGINE_SET = new Set<StandardPodcastEngine>([VECTOR_ENGINE, GEM_ENGINE]);
 const APP_BRAND = 'VoiceFlow';
-const APP_STUDIO_TITLE = `${APP_BRAND} Studio`;
-const DIRECTOR_TEXT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3-flash-lite', 'gemini-2.5-flash-lite'] as const;
+const APP_PODCAST_TITLE = `${APP_BRAND} Podcast`;
+const DIRECTOR_TEXT_MODELS = STUDIO_CAST_TEXT_MODELS;
+const DIRECTOR_PRIMARY_TEXT_MODEL = DIRECTOR_TEXT_MODELS[0] || PODCAST_DIRECTOR_DEFAULT_MODEL;
 const PODCAST_STANDARD_EMOTION_DIRECTIVE = 'Use nuanced real emotions and natural non-linguistic cues (for example: [laughs], [sighs], [pause], [hmm], [chuckles]) sparingly and naturally.';
 const PODCAST_LIVE_STRICT_PRODUCER_DIRECTIVE = [
   'Multi-WebSocket producer architecture: one distinct Gemini Native Live speaker instance per cast member.',
@@ -123,12 +147,10 @@ const LIVE_NATIVE_STRICT_CAST_PRESET: ReadonlyArray<Pick<PodcastCastMember, 'nam
 const formatElapsedSeconds = (elapsedMs?: number): string => `${Math.max(0, Math.round(Number(elapsedMs || 0) / 1000))}s`;
 const formatNumber = (value: unknown): string => Number(value || 0).toLocaleString();
 const formatVf = (value: unknown): string => `${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 })} VF`;
-const getModeLabel = (mode: PodcastMode): string => (mode === 'live' ? 'Podcast Live' : 'Podcast Standard');
-const getModeModelLabel = (mode: PodcastMode): string => (mode === 'live' ? 'Gemini Native Live Engine' : 'Podcast Standard Engine');
-const getModeHelperText = (mode: PodcastMode): string => (
-  mode === 'live'
-    ? 'Experimental: strict producer orchestration with token turn-taking.'
-    : 'Auto-script from topic with emotion-rich, realistic dialogue.'
+const resolveStandardPodcastEngine = (selectedEngine: GenerationSettings['engine']): StandardPodcastEngine => (
+  STANDARD_PODCAST_ENGINE_SET.has(selectedEngine as StandardPodcastEngine)
+    ? (selectedEngine as StandardPodcastEngine)
+    : VECTOR_ENGINE
 );
 const buildLiveNativeStrictPacingStyle = (base: string): string => {
   const safeBase = String(base || '').trim() || PODCAST_DEFAULT_LIVE_PACING;
@@ -194,7 +216,7 @@ const normalizeVoiceGender = (raw: unknown): VoiceOption['gender'] => {
   if (token.includes('male')) return 'Male';
   return 'Unknown';
 };
-const runtimeVoiceToVoiceOption = (voice: RuntimeVoiceItem): VoiceOption => {
+const runtimeVoiceToVoiceOption = (voice: RuntimeVoiceItem, engine: GenerationSettings['engine']): VoiceOption => {
   const safeId = resolvePrimeVoiceToken(voice) || 'Puck';
   const safeName = resolveVisibleVoiceName(voice);
   const output: VoiceOption = {
@@ -205,7 +227,7 @@ const runtimeVoiceToVoiceOption = (voice: RuntimeVoiceItem): VoiceOption => {
     geminiVoiceName: safeId,
     country: String(voice.country || 'Unknown').trim() || 'Unknown',
     ageGroup: String(voice.age_group || 'Unknown').trim() || 'Unknown',
-    engine: 'GEM',
+    engine,
     accessTier: voice.access_tier || 'free',
     isPlanRestricted: Boolean(voice.is_plan_restricted),
   };
@@ -229,12 +251,21 @@ const buildStatusClient = (mode: PodcastMode) => (
       }
 );
 
-export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBackendUrl, resolvedTheme, onToast }) => {
+export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({
+  mediaBackendUrl,
+  resolvedTheme,
+  selectedEngine,
+  onToast,
+  onRefreshEntitlements,
+}) => {
   const isDarkUi = resolvedTheme === 'dark';
+  const { isPhone } = useWorkspaceViewport();
   const showInternalDiagnostics = String(import.meta.env.VITE_SHOW_PODCAST_INTERNALS || '').trim() === '1';
   const [mode, setMode] = useState<PodcastMode>('live');
+  const [phonePanel, setPhonePanel] = useState<'overview' | 'player' | 'cast'>('overview');
   const [topic, setTopic] = useState(PODCAST_DEFAULT_TOPIC);
   const [script, setScript] = useState('');
+  const [language, setLanguage] = useState(PODCAST_DEFAULT_LANGUAGE);
   const [liveDurationSec, setLiveDurationSec] = useState(180);
   const [standardDurationSec, setStandardDurationSec] = useState(1800);
   const [liveSpeakerCount, setLiveSpeakerCount] = useState<2 | 3 | 4>(4);
@@ -245,7 +276,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
   const [jobId, setJobId] = useState('');
   const [activeMode, setActiveMode] = useState<PodcastMode>('live');
   const [progressPct, setProgressPct] = useState(0);
-  const [stageLabel, setStageLabel] = useState('Ready to launch a VoiceFlow run.');
+  const [stageLabel, setStageLabel] = useState('Ready to launch a podcast run.');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDirectorWorking, setIsDirectorWorking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -265,10 +296,19 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
   const selectedDurationSec = mode === 'live' ? liveDurationSec : standardDurationSec;
   const selectedSpeakerCount = mode === 'live' ? liveSpeakerCount : standardSpeakerCount;
   const selectedPacingStyle = mode === 'live' ? livePacingStyle : standardPacingStyle;
+  const standardEngine = useMemo<StandardPodcastEngine>(
+    () => resolveStandardPodcastEngine(selectedEngine),
+    [selectedEngine]
+  );
+  const activeModeEngine = mode === 'live' ? GEM_ENGINE : standardEngine;
   const visibleCast = useMemo(() => cast.slice(0, clampPodcastSpeakerCount(mode, selectedSpeakerCount)), [cast, mode, selectedSpeakerCount]);
   const estimatedChars = useMemo(() => estimatePodcastChars(mode, selectedDurationSec), [mode, selectedDurationSec]);
   const estimatedVf = useMemo(() => estimatePodcastVf(mode, selectedDurationSec), [mode, selectedDurationSec]);
   const managedTabs = useManagedTabs({ items: PODCAST_TAB_ITEMS.map((item) => ({ id: item.id })), activeId: mode, onChange: setMode, label: 'Podcast modes' });
+  const invokeEntitlementRefresh = useMemo(
+    () => createPodcastEntitlementRefreshInvoker(onRefreshEntitlements, 1500),
+    [onRefreshEntitlements]
+  );
 
   const clearStatusPoll = useCallback(() => {
     if (statusPollRef.current) {
@@ -320,7 +360,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     let cancelled = false;
     const loadVoices = async () => {
       try {
-        const payload = await fetchTtsEngineVoices(GEM_ENGINE, mediaBackendUrl);
+        const payload = await fetchTtsEngineVoices(activeModeEngine, mediaBackendUrl);
         if (cancelled) return;
         const deduped = new Map<string, RuntimeVoiceItem>();
         (payload.voices || []).forEach((voice) => {
@@ -360,7 +400,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     return () => {
       cancelled = true;
     };
-  }, [mediaBackendUrl]);
+  }, [activeModeEngine, mediaBackendUrl]);
 
   useEffect(() => {
     const handleGatewayProgress = (event: Event) => {
@@ -436,8 +476,9 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     clearStatusPoll();
     setIsGenerating(false);
     activeJobIdRef.current = '';
+    void invokeEntitlementRefresh('cancelled');
     onToast(`${getModeLabel(safeMode)} cancelled.`, 'info');
-  }, [clearStatusPoll, jobId, mediaBackendUrl, onToast]);
+  }, [clearStatusPoll, invokeEntitlementRefresh, jobId, mediaBackendUrl, onToast]);
 
   const handleStart = useCallback(async () => {
     if (isGenerating || isDirectorWorking) {
@@ -452,9 +493,14 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     }
 
     const safeMode = mode;
+    const safeLanguage = normalizePodcastLanguage(language);
     const normalizedSpeakerCount = clampPodcastSpeakerCount(safeMode, selectedSpeakerCount);
     const normalizedCast = cast.slice(0, normalizedSpeakerCount).map((item, index) => normalizePodcastCastRow(item, index));
     const normalizedDurationSec = clampPodcastDurationSec(safeMode, selectedDurationSec);
+    const targetScriptChars = Math.max(
+      PODCAST_STANDARD_SCRIPT_WINDOW_CHARS,
+      estimatePodcastChars(safeMode, normalizedDurationSec)
+    );
     clearStatusPoll();
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
@@ -469,34 +515,128 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     resetOutput();
 
     try {
+      let scriptForRun = String(script || '').trim();
+      if (shouldAutoRunDirectorAtStart(scriptForRun)) {
+        setStageLabel('AI Director is preparing your podcast script...');
+        setIsDirectorWorking(true);
+        const speakerNames = normalizedCast
+          .map((item, index) => String(item.name || `SPEAKER ${index + 1}`).trim())
+          .filter(Boolean);
+        const uniqueSpeakerNames = Array.from(new Set(speakerNames));
+        const fallbackVoice = String(normalizedCast[0]?.voice || PODCAST_DEFAULT_CAST[0]?.voice || 'Zephyr').trim() || 'Zephyr';
+        const directorSettingsForStart: GenerationSettings = {
+          voiceId: fallbackVoice,
+          speed: 1,
+          pitch: 'Medium',
+          language: safeLanguage,
+          engine: safeMode === 'standard' ? standardEngine : GEM_ENGINE,
+          helperProvider: 'GEMINI',
+          mediaBackendUrl,
+          multiSpeakerEnabled: true,
+        };
+        const generationPrompt = [
+          `Write a full-length multi-speaker VoiceFlow script on "${safeTopic}".`,
+          `Target output language: ${safeLanguage}.`,
+          `Target duration: ~${Math.max(1, Math.round(normalizedDurationSec / 60))} minutes.`,
+          `Target script length: at least ${targetScriptChars} characters.`,
+          `Use exactly ${uniqueSpeakerNames.length || normalizedSpeakerCount} voices.`,
+          `Allowed voices: ${uniqueSpeakerNames.join(', ') || 'LEAD, STRATEGIST, ANALYST, CHALLENGER'}.`,
+          'Format each dialogue line as: Speaker (Emotion): Dialogue',
+          'Return a complete intro-to-outro script; do not return a partial draft.',
+          safeMode === 'standard'
+            ? PODCAST_STANDARD_EMOTION_DIRECTIVE
+            : 'Keep each turn concise and ready for live token hand-off.',
+          `Style: ${selectedPacingStyle}`,
+        ].join('\n');
+        const draftedScript = String(await generateTextContent(generationPrompt, undefined, directorSettingsForStart, {
+          model: DIRECTOR_PRIMARY_TEXT_MODEL,
+          preferredModels: [...DIRECTOR_TEXT_MODELS],
+          temperature: 0.3,
+        })).trim();
+        const directed = await autoFormatScript(
+          draftedScript,
+          directorSettingsForStart,
+          'audio_drama',
+          {
+            style: 'natural',
+            tone: 'neutral',
+            model: DIRECTOR_PRIMARY_TEXT_MODEL,
+            preferredModels: [...DIRECTOR_TEXT_MODELS],
+          },
+          []
+        );
+        const formattedScript = String(directed.formattedText || draftedScript).trim();
+        if (!formattedScript) throw new Error('AI Director returned an empty script.');
+        scriptForRun = formattedScript;
+        setScript(formattedScript);
+        const parsed = parseMultiSpeakerScript(formattedScript);
+        const parsedSpeakers = parsed.speakersList
+          .map((speaker) => String(speaker || '').trim())
+          .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX');
+        const maxAllowed = safeMode === 'live' ? 4 : 6;
+        const targetSpeakerCount = Math.max(2, Math.min(maxAllowed, parsedSpeakers.length || normalizedSpeakerCount));
+        const trimmedSpeakers = parsedSpeakers.slice(0, targetSpeakerCount);
+        if (safeMode === 'live') setLiveSpeakerCount(targetSpeakerCount as 2 | 3 | 4);
+        else setStandardSpeakerCount(targetSpeakerCount as 2 | 3 | 4 | 5 | 6);
+        const startAssignableVoices = voiceOptions.map((voice) => (
+          runtimeVoiceToVoiceOption(voice, safeMode === 'live' ? GEM_ENGINE : standardEngine)
+        ));
+        const { mapping } = autoAssignSpeakerVoices({
+          speakers: trimmedSpeakers.length > 0 ? trimmedSpeakers : normalizedCast.map((item) => item.name),
+          script: formattedScript,
+          voices: startAssignableVoices,
+        });
+        setCast((current) => {
+          const next = current.map((item) => ({ ...item }));
+          for (let index = 0; index < targetSpeakerCount; index += 1) {
+            const fallback = normalizePodcastCastRow(
+              (next[index] || PODCAST_DEFAULT_CAST[index]) as PodcastCastMember,
+              index
+            );
+            const speakerName = String(trimmedSpeakers[index] || fallback.name).trim() || fallback.name;
+            next[index] = {
+              ...fallback,
+              name: speakerName,
+              voice: String(mapping[speakerName] || fallback.voice).trim() || fallback.voice,
+            };
+          }
+          return next;
+        });
+      }
+
       let created;
       if (safeMode === 'live') {
         const strictCast = applyLiveNativeStrictCast(normalizedCast);
-        const payload: LivePodcastJobRequest = {
+        const payload: LivePodcastJobRequest = buildLivePodcastSubmitRequest({
           topic: safeTopic,
           durationSec: normalizedDurationSec,
           speakerCount: normalizedSpeakerCount as 2 | 3 | 4,
           cast: strictCast,
           pacingStyle: buildLiveNativeStrictPacingStyle(String(livePacingStyle || '').trim() || PODCAST_DEFAULT_LIVE_PACING),
+          language: safeLanguage,
+          seedScript: scriptForRun,
+          directorModel: DIRECTOR_PRIMARY_TEXT_MODEL,
           limits: { sessionMaxSec: 840, connectionMaxSec: 570, perTurnTimeoutSec: 20 },
           recovery: { strategy: 'resume_then_fallback', maxResumeAttempts: 1, fallbackMode: 'runtime_nonlive_same_cast' },
           output: { autoSave: true, audioFormat: 'wav', includeTranscript: true },
-        };
+        });
         created = await createLivePodcastJob(payload, { baseUrl: mediaBackendUrl });
       } else {
-        const payload: StandardPodcastJobRequest = {
+        const payload: StandardPodcastJobRequest = buildStandardPodcastSubmitRequest({
+          engine: standardEngine,
           topic: safeTopic,
           durationSec: normalizedDurationSec,
           speakerCount: normalizedSpeakerCount as 2 | 3 | 4 | 5 | 6,
           cast: normalizedCast,
           pacingStyle: `${String(standardPacingStyle || '').trim() || PODCAST_DEFAULT_STANDARD_PACING} | ${PODCAST_STANDARD_EMOTION_DIRECTIVE}`,
-          ...(String(script || '').trim() ? { seedScript: String(script || '').trim() } : {}),
-          language: 'en',
+          seedScript: scriptForRun,
+          language: safeLanguage,
+          directorModel: DIRECTOR_PRIMARY_TEXT_MODEL,
           autoSave: true,
           includeTranscript: true,
           audioFormat: 'wav',
           scriptWindowChars: PODCAST_STANDARD_SCRIPT_WINDOW_CHARS,
-        };
+        });
         created = await createStandardPodcastJob(payload, { baseUrl: mediaBackendUrl });
       }
 
@@ -508,11 +648,12 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
       setStageLabel(safeMode === 'live' ? 'VoiceFlow live room is running...' : 'Generating script windows and streaming VoiceFlow chunks...');
       startStatusPolling(nextJobId, safeMode);
       void refreshStatus(nextJobId, safeMode).catch(() => undefined);
+      void invokeEntitlementRefresh('accepted');
 
       const queuedResult = await pollTtsGatewayJobForAudio({
         jobId: nextJobId,
         runtimeLabel: getModeLabel(safeMode),
-        engine: GEM_ENGINE,
+        engine: safeMode === 'live' ? GEM_ENGINE : standardEngine,
         baseUrl: mediaBackendUrl,
         signal: abortControllerRef.current.signal,
         timeoutMs: Math.max(180000, Math.round(normalizedDurationSec * 1000 * 1.8)),
@@ -524,21 +665,24 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
       setProgressPct(100);
       setStageLabel(`${getModeLabel(safeMode)} complete.`);
       void refreshStatus(nextJobId, safeMode).catch(() => undefined);
+      void invokeEntitlementRefresh('completed');
       onToast(`${getModeLabel(safeMode)} ready.`, 'success');
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
-        const message = String(error?.message || `${getModeLabel(safeMode)} generation failed.`).trim() || `${getModeLabel(safeMode)} generation failed.`;
+        const message = resolvePodcastErrorMessage(error, `${getModeLabel(safeMode)} generation failed.`);
         setErrorMessage(message);
         setStageLabel(message);
+        void invokeEntitlementRefresh('failed');
         onToast(message, 'error');
       }
     } finally {
+      setIsDirectorWorking(false);
       abortControllerRef.current = null;
       clearStatusPoll();
       setIsGenerating(false);
       activeJobIdRef.current = '';
     }
-  }, [cast, clearStatusPoll, isDirectorWorking, isGenerating, livePacingStyle, mediaBackendUrl, mode, onToast, refreshStatus, resetOutput, revokeAudioUrl, script, selectedDurationSec, selectedSpeakerCount, standardPacingStyle, startStatusPolling, topic]);
+  }, [cast, clearStatusPoll, invokeEntitlementRefresh, isDirectorWorking, isGenerating, language, livePacingStyle, mediaBackendUrl, mode, onToast, refreshStatus, resetOutput, revokeAudioUrl, script, selectedDurationSec, selectedPacingStyle, selectedSpeakerCount, standardEngine, standardPacingStyle, startStatusPolling, topic, voiceOptions]);
 
   const voiceSelectOptions = useMemo(() => {
     const deduped = new Map<string, RuntimeVoiceItem>();
@@ -556,27 +700,33 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
   }, [visibleCast, voiceOptions]);
 
   const assignableVoices = useMemo<VoiceOption[]>(
-    () => voiceSelectOptions.map((voice) => runtimeVoiceToVoiceOption(voice)),
-    [voiceSelectOptions]
+    () => voiceSelectOptions.map((voice) => runtimeVoiceToVoiceOption(voice, activeModeEngine)),
+    [activeModeEngine, voiceSelectOptions]
   );
 
   const directorSettings = useMemo<GenerationSettings>(() => {
     const fallbackVoice = String(visibleCast[0]?.voice || PODCAST_DEFAULT_CAST[0]?.voice || 'Zephyr').trim() || 'Zephyr';
+    const safeLanguage = normalizePodcastLanguage(language);
     return {
       voiceId: fallbackVoice,
       speed: 1,
       pitch: 'Medium',
-      language: 'en',
-      engine: 'GEM',
+      language: safeLanguage,
+      engine: mode === 'standard' ? standardEngine : GEM_ENGINE,
       helperProvider: 'GEMINI',
       mediaBackendUrl,
       multiSpeakerEnabled: true,
     };
-  }, [mediaBackendUrl, visibleCast]);
+  }, [language, mediaBackendUrl, mode, standardEngine, visibleCast]);
 
   const handleDirectorAutoScript = useCallback(async () => {
     const safeTopic = String(topic || '').trim();
     const safeScript = String(script || '').trim();
+    const targetDurationSec = clampPodcastDurationSec(mode, selectedDurationSec);
+    const targetScriptChars = Math.max(
+      PODCAST_STANDARD_SCRIPT_WINDOW_CHARS,
+      estimatePodcastChars(mode, targetDurationSec)
+    );
     if (!safeTopic && !safeScript) {
       onToast('Add a topic or script first.', 'info');
       return;
@@ -587,22 +737,29 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
     setErrorMessage('');
     try {
       let draftScript = safeScript;
-      if (!draftScript) {
+      if (safeTopic) {
         const speakerNames = cast
           .slice(0, clampPodcastSpeakerCount(mode, selectedSpeakerCount))
           .map((item, index) => String(item.name || `SPEAKER ${index + 1}`).trim())
           .filter(Boolean);
         const uniqueSpeakerNames = Array.from(new Set(speakerNames));
         const generationPrompt = [
-          `Write a compact multi-speaker VoiceFlow script on "${safeTopic}".`,
+          `Write a full-length multi-speaker VoiceFlow script on "${safeTopic}".`,
+          `Target output language: ${normalizePodcastLanguage(language)}.`,
+          `Target duration: ~${Math.max(1, Math.round(targetDurationSec / 60))} minutes.`,
+          `Target script length: at least ${targetScriptChars} characters.`,
           `Use exactly ${uniqueSpeakerNames.length || clampPodcastSpeakerCount(mode, selectedSpeakerCount)} voices.`,
           `Allowed voices: ${uniqueSpeakerNames.join(', ') || 'LEAD, STRATEGIST, ANALYST, CHALLENGER'}.`,
           'Format each dialogue line as: Speaker (Emotion): Dialogue',
+          'Return a complete intro-to-outro script; do not return a partial draft.',
           mode === 'standard' ? PODCAST_STANDARD_EMOTION_DIRECTIVE : 'Keep each turn concise and ready for live token hand-off.',
           `Style: ${selectedPacingStyle}`,
+          safeScript
+            ? `Current draft context (revise and improve this, but output a complete fresh script):\n${safeScript}`
+            : 'Create a fresh script from scratch.',
         ].join('\n');
         draftScript = String(await generateTextContent(generationPrompt, undefined, directorSettings, {
-          model: DIRECTOR_TEXT_MODELS[0],
+          model: DIRECTOR_PRIMARY_TEXT_MODEL,
           preferredModels: [...DIRECTOR_TEXT_MODELS],
           temperature: 0.3,
         })).trim();
@@ -615,7 +772,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
         {
           style: 'natural',
           tone: 'neutral',
-          model: DIRECTOR_TEXT_MODELS[0],
+          model: DIRECTOR_PRIMARY_TEXT_MODEL,
           preferredModels: [...DIRECTOR_TEXT_MODELS],
         },
         []
@@ -661,21 +818,24 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
       setStageLabel('AI Director prepared script and cast.');
       onToast('AI Director updated script.', 'success');
     } catch (error: any) {
-      const message = String(error?.message || 'AI Director failed.').trim() || 'AI Director failed.';
+      const message = resolvePodcastErrorMessage(error, 'AI Director failed.');
       setErrorMessage(message);
       onToast(message, 'error');
     } finally {
       setIsDirectorWorking(false);
     }
-  }, [assignableVoices, cast, directorSettings, isDirectorWorking, isGenerating, mode, onToast, script, selectedPacingStyle, selectedSpeakerCount, topic, visibleCast]);
+  }, [assignableVoices, cast, directorSettings, isDirectorWorking, isGenerating, language, mode, onToast, script, selectedDurationSec, selectedPacingStyle, selectedSpeakerCount, topic, visibleCast]);
 
   const hasPlayerOutput = Boolean(audioUrl || isGenerating || liveChunks.length > 0);
+  const showOverviewPanel = !isPhone || phonePanel === 'overview';
+  const showPlayerPanel = !isPhone || phonePanel === 'player';
+  const showCastPanel = !isPhone || phonePanel === 'cast';
 
   return (
     <div className={`vf-podcast-wireframe animate-in fade-in duration-300 ${isDarkUi ? 'vf-podcast-wireframe--dark' : ''}`} data-testid="podcast-tab-content">
       <SectionCard className="vf-podcast-wireframe__utility">
         <div className="vf-podcast-wireframe__utility-head">
-          <h2 className="vf-podcast-wireframe__title">{APP_STUDIO_TITLE}</h2>
+          <h2 className="vf-podcast-wireframe__title">{APP_PODCAST_TITLE}</h2>
           <span className="vf-podcast-wireframe__billing">Billing: 1 char = {PODCAST_BILLING_RATE} VF</span>
         </div>
 
@@ -697,49 +857,59 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
             })}
           </div>
 
-          <label className="vf-podcast-compact-field">
-            <span>Duration</span>
-            <select
-              value={String(selectedDurationSec)}
-              onChange={(event) => {
-                const nextValue = clampPodcastDurationSec(mode, Number(event.target.value || selectedDurationSec));
-                if (mode === 'live') setLiveDurationSec(nextValue);
-                else setStandardDurationSec(nextValue);
-              }}
-              className="vf-podcast-compact-select"
-            >
-              {(mode === 'live' ? PODCAST_LIVE_DURATION_OPTIONS : PODCAST_STANDARD_DURATION_OPTIONS).map((option) => (
-                <option key={`${mode}-${option.value}`} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
+          <div className="vf-podcast-wireframe__utility-meta">
+            <label className="vf-podcast-compact-field">
+              <span>Duration</span>
+              <select
+                value={String(selectedDurationSec)}
+                onChange={(event) => {
+                  const nextValue = clampPodcastDurationSec(mode, Number(event.target.value || selectedDurationSec));
+                  if (mode === 'live') setLiveDurationSec(nextValue);
+                  else setStandardDurationSec(nextValue);
+                }}
+                className="vf-podcast-compact-select"
+              >
+                {(mode === 'live' ? PODCAST_LIVE_DURATION_OPTIONS : PODCAST_STANDARD_DURATION_OPTIONS).map((option) => (
+                  <option key={`${mode}-${option.value}`} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
 
-          <label className="vf-podcast-compact-field">
-            <span>Voices</span>
-            <select
-              value={String(selectedSpeakerCount)}
-              onChange={(event) => {
-                const nextValue = clampPodcastSpeakerCount(mode, Number(event.target.value || selectedSpeakerCount));
-                if (mode === 'live') setLiveSpeakerCount(nextValue as 2 | 3 | 4);
-                else setStandardSpeakerCount(nextValue as 2 | 3 | 4 | 5 | 6);
-              }}
-              className="vf-podcast-compact-select"
-            >
-              {(mode === 'live' ? [2, 3, 4] : [2, 3, 4, 5, 6]).map((value) => (
-                <option key={`${mode}-speaker-${value}`} value={value}>{value} voices</option>
-              ))}
-            </select>
-          </label>
+            <label className="vf-podcast-compact-field">
+              <span>Voices</span>
+              <select
+                value={String(selectedSpeakerCount)}
+                onChange={(event) => {
+                  const nextValue = clampPodcastSpeakerCount(mode, Number(event.target.value || selectedSpeakerCount));
+                  if (mode === 'live') setLiveSpeakerCount(nextValue as 2 | 3 | 4);
+                  else setStandardSpeakerCount(nextValue as 2 | 3 | 4 | 5 | 6);
+                }}
+                className="vf-podcast-compact-select"
+              >
+                {(mode === 'live' ? [2, 3, 4] : [2, 3, 4, 5, 6]).map((value) => (
+                  <option key={`${mode}-speaker-${value}`} value={value}>{value} voices</option>
+                ))}
+              </select>
+            </label>
 
-          <div className="vf-podcast-compact-model">
-            <div className="vf-podcast-compact-model__title">{getModeModelLabel(mode)}</div>
-            <div className="vf-podcast-compact-model__hint">{getModeHelperText(mode)}</div>
+            <label className="vf-podcast-compact-field">
+              <span>Language</span>
+              <select
+                value={language}
+                onChange={(event) => setLanguage(normalizePodcastLanguage(event.target.value))}
+                className="vf-podcast-compact-select"
+              >
+                {PODCAST_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={`podcast-language-${option.value}`} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+
           </div>
         </div>
 
         <div className="vf-podcast-wireframe__utility-foot">
           <span>{formatNumber(estimatedChars)} chars · {formatVf(estimatedVf)}</span>
-          <span>{getModeLabel(mode)}</span>
         </div>
 
         {showInternalDiagnostics && (
@@ -753,8 +923,42 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
         )}
       </SectionCard>
 
+      {isPhone && (
+        <SectionCard className="vf-podcast-phone-switch">
+          <div className="vf-podcast-phone-switch__tabs" role="tablist" aria-label="Podcast sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={phonePanel === 'overview'}
+              className={`vf-podcast-phone-switch__tab ${phonePanel === 'overview' ? 'vf-podcast-phone-switch__tab--active' : ''}`}
+              onClick={() => setPhonePanel('overview')}
+            >
+              Setup
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={phonePanel === 'player'}
+              className={`vf-podcast-phone-switch__tab ${phonePanel === 'player' ? 'vf-podcast-phone-switch__tab--active' : ''}`}
+              onClick={() => setPhonePanel('player')}
+            >
+              Player
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={phonePanel === 'cast'}
+              className={`vf-podcast-phone-switch__tab ${phonePanel === 'cast' ? 'vf-podcast-phone-switch__tab--active' : ''}`}
+              onClick={() => setPhonePanel('cast')}
+            >
+              Cast
+            </button>
+          </div>
+        </SectionCard>
+      )}
+
       <div className="vf-podcast-wireframe__layout">
-        <SectionCard className="vf-podcast-wireframe__left-column">
+        <SectionCard className={`vf-podcast-wireframe__left-column ${showOverviewPanel ? '' : 'vf-podcast-pane--hidden'}`}>
           <section className="vf-podcast-box" data-testid="podcast-topic-box">
             <div className="vf-podcast-box__label">TOPIC</div>
             <textarea
@@ -771,7 +975,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
             <textarea
               value={script}
               onChange={(event) => setScript(event.target.value)}
-              rows={8}
+              rows={12}
               className="vf-podcast-field vf-podcast-field--script"
               placeholder="AI Director will draft and format your VoiceFlow script here."
             />
@@ -789,7 +993,8 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
 
         </SectionCard>
 
-        <SectionCard className="vf-podcast-wireframe__cast-column">
+        <SectionCard className={`vf-podcast-wireframe__cast-column ${showPlayerPanel || showCastPanel ? '' : 'vf-podcast-pane--hidden'}`}>
+          {showPlayerPanel && (
           <section className="vf-podcast-box vf-podcast-box--player" data-testid="podcast-player-box">
             <div className="vf-podcast-box__header">
               <div className="vf-podcast-box__label">PLAYER</div>
@@ -818,7 +1023,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
                   onReset={resetOutput}
                 />
               ) : (
-                <div className="vf-podcast-player-placeholder">Player output appears here after generation.</div>
+                <div className="vf-podcast-player-placeholder">Podcast output appears here after generation.</div>
               )}
             </div>
 
@@ -858,7 +1063,9 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
               ) : null}
             </div>
           </section>
+          )}
 
+          {showCastPanel && (
           <section className="vf-podcast-box vf-podcast-box--cast" data-testid="podcast-cast-box">
             <div className="vf-podcast-box__header">
               <div className="vf-podcast-box__label">CAST</div>
@@ -900,6 +1107,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({ mediaBacke
               ))}
             </div>
           </section>
+          )}
         </SectionCard>
       </div>
     </div>

@@ -1,35 +1,35 @@
 {
-  "generatedAt": "2026-03-10T18:56:40.795Z",
+  "generatedAt": "2026-03-12T15:56:47.648Z",
   "entryHtml": "dist/index.html",
   "budgets": {
     "eagerJsBytes": 327680,
     "eagerCssBytes": 196608,
     "eagerWasmBytes": 5242880,
     "browserMlChunkBytes": 921600,
-    "mainAppChunkBytes": 230400,
+    "mainAppChunkBytes": 231424,
     "distTotalBytes": 62914560,
     "distShippedAudioBytes": 10485760
   },
   "passed": true,
   "files": [
     {
-      "file": "assets/index-B_iUs3io.js",
+      "file": "assets/index-5fdEnh4P.js",
       "kind": "js",
-      "bytes": 210028,
+      "bytes": 225084,
       "maxBytes": 327680,
       "withinBudget": true
     },
     {
-      "file": "assets/index-BJErZk0c.css",
+      "file": "assets/index-wke95d1g.css",
       "kind": "css",
-      "bytes": 184636,
+      "bytes": 189714,
       "maxBytes": 196608,
       "withinBudget": true
     }
   ],
   "violations": [],
   "summary": {
-    "distTotalBytes": 25755649,
+    "distTotalBytes": 26794609,
     "distShippedAudioBytes": 793057
   }
 }

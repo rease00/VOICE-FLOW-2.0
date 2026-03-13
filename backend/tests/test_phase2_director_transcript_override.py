@@ -4,8 +4,14 @@ from pathlib import Path
 
 import pytest
 
-_video_dubbing_config = pytest.importorskip("video_dubbing.config")
-phase2 = pytest.importorskip("video_dubbing.pipeline.phase2_director_multimodal")
+_video_dubbing_config = pytest.importorskip(
+    "video_dubbing.config",
+    reason="video_dubbing source modules are optional in this workspace snapshot.",
+)
+phase2 = pytest.importorskip(
+    "video_dubbing.pipeline.phase2_director_multimodal",
+    reason="video_dubbing source modules are optional in this workspace snapshot.",
+)
 build_config = _video_dubbing_config.build_config
 
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, Home, Languages, Pause, Play, UploadCloud, Users, Volume2, Waves } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Home, Languages, Pause, Play, Save, Settings2, UploadCloud, Users, Volume2, Wand2, Waves, X } from 'lucide-react';
 import type { VoiceOption } from '../../../../types';
 import type { ReaderCatalogItem, ReaderSession } from '../../../../types';
 import type { PlaylistItem } from './readerTypes';
@@ -28,6 +28,11 @@ interface ReaderPlayerDockProps {
   onGoHome: () => void;
   onOpenImport: () => void;
   onOpenTranslate: () => void;
+  onOpenSettings: () => void;
+  onOpenDetectedText: () => void;
+  onOpenCast: () => void;
+  onSavepoint: () => void;
+  onCloseSession: () => void;
   onToggleNativeAudio: () => void;
   onNarratorVoiceChange: (value: string) => void;
   onToggleMultiSpeaker: () => void;
@@ -57,6 +62,11 @@ export const ReaderPlayerDock: React.FC<ReaderPlayerDockProps> = ({
   onGoHome,
   onOpenImport,
   onOpenTranslate,
+  onOpenSettings,
+  onOpenDetectedText,
+  onOpenCast,
+  onSavepoint,
+  onCloseSession,
   onToggleNativeAudio,
   onNarratorVoiceChange,
   onToggleMultiSpeaker,
@@ -119,6 +129,21 @@ export const ReaderPlayerDock: React.FC<ReaderPlayerDockProps> = ({
           Multi {multiSpeakerEnabled ? 'On' : 'Off'}
         </button>
 
+        <button type="button" className="vf-reader-dock__button" onClick={onOpenCast} disabled={!session || !multiSpeakerEnabled}>
+          <Users size={12} />
+          Cast
+        </button>
+
+        <button type="button" className="vf-reader-dock__button" onClick={onOpenDetectedText} disabled={!session}>
+          <Wand2 size={12} />
+          AI Text
+        </button>
+
+        <button type="button" className="vf-reader-dock__button" onClick={onOpenSettings}>
+          <Settings2 size={12} />
+          Settings
+        </button>
+
         <button type="button" className={`vf-reader-dock__button ${audioEngine === 'native_audio_dialog' ? 'vf-reader-dock__button--active' : ''}`} onClick={onToggleNativeAudio}>
           <Waves size={12} />
           Native {audioEngine === 'native_audio_dialog' ? 'On' : 'Off'}
@@ -133,6 +158,16 @@ export const ReaderPlayerDock: React.FC<ReaderPlayerDockProps> = ({
             ))}
           </select>
         </label>
+
+        <button type="button" className="vf-reader-dock__button" onClick={onSavepoint} disabled={!session}>
+          <Save size={12} />
+          Save
+        </button>
+
+        <button type="button" className="vf-reader-dock__button vf-reader-dock__button--danger" onClick={onCloseSession} disabled={!session}>
+          <X size={12} />
+          Close
+        </button>
       </div>
     </div>
   );

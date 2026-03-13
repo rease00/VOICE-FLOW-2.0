@@ -5,7 +5,7 @@ interface AdminTabContentProps {
   mediaBackendUrl: string;
   onToast: (message: string, kind?: 'success' | 'error' | 'info') => void;
   onRefreshEntitlements: () => Promise<void>;
-  initialOpsTab?: 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
+  initialOpsTab?: 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 }
 
 export const AdminTabContent: React.FC<AdminTabContentProps> = ({

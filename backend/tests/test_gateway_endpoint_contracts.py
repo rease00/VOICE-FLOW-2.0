@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 import threading
 import time
+import uuid
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -21,6 +22,15 @@ def _reset_runtime_status_cache() -> None:
     backend_app._invalidate_tts_status_cache()
     yield
     backend_app._invalidate_tts_status_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_podcast_standard_jobs() -> None:
+    with backend_app.PODCAST_STANDARD_JOB_LOCK:
+        backend_app.PODCAST_STANDARD_JOBS.clear()
+    yield
+    with backend_app.PODCAST_STANDARD_JOB_LOCK:
+        backend_app.PODCAST_STANDARD_JOBS.clear()
 
 
 def test_tts_engines_status_contract(monkeypatch) -> None:
@@ -216,6 +226,9 @@ def test_podcast_live_job_create_alias_builds_live_native_request(monkeypatch) -
             "topic": "Should AI podcasts sound live?",
             "durationSec": 180,
             "speakerCount": 2,
+            "language": "hi",
+            "seedScript": "HOST (Curious): Namaste, aaj ka topic AI podcast pacing hai.",
+            "directorModel": "gemini-3.1-flash-lite-preview",
             "cast": [
                 {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the discussion."},
                 {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test claims."},
@@ -235,6 +248,10 @@ def test_podcast_live_job_create_alias_builds_live_native_request(monkeypatch) -
     assert payload.liveNative.topic == "Should AI podcasts sound live?"
     assert payload.liveNative.speakerCount == 2
     assert payload.liveNative.durationSec == 180
+    assert payload.liveNative.language == "hi"
+    assert payload.liveNative.seedScript == "HOST (Curious): Namaste, aaj ka topic AI podcast pacing hai."
+    assert payload.liveNative.directorModel == "gemini-3.1-flash-lite-preview"
+    assert payload.language == "hi"
     assert payload.liveNative.nativeAudioModel == "gemini-2.5-flash-native-audio-preview-12-2025"
     assert captured["wait_ms"] == 0
 
@@ -298,11 +315,139 @@ def test_podcast_standard_job_create_returns_queued_job(monkeypatch) -> None:
     assert payload["accepted"] is True
     assert payload["mode"] == "podcast_standard"
     assert payload["podcastMode"] == "standard"
-    assert payload["engine"] == "GEM"
+    assert payload["engine"] == backend_app._normalize_podcast_standard_engine("")
     assert payload["status"] == "queued"
     assert payload["liveOrchestration"]["speakerCount"] == 4
     assert started["started"] is True
     assert started["target"] == backend_app._process_podcast_standard_job
+
+
+def test_podcast_standard_job_create_reuses_same_owner_request_id(monkeypatch) -> None:
+    started = {"count": 0}
+
+    class _FakeThread:
+        def __init__(self, *, target=None, args=(), kwargs=None, name=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+            self._name = name
+            self._daemon = daemon
+
+        def start(self):
+            started["count"] += 1
+
+    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda request, uid: {"userId": uid})
+    monkeypatch.setattr(backend_app.threading, "Thread", _FakeThread)
+    with backend_app.PODCAST_STANDARD_JOB_LOCK:
+        backend_app.PODCAST_STANDARD_JOBS.clear()
+
+    request_id = f"podcast_standard_reuse_req_{uuid.uuid4().hex}"
+    first = client.post(
+        "/podcast/standard/jobs",
+        json={
+            "request_id": request_id,
+            "topic": "First standard topic",
+            "durationSec": 1200,
+            "speakerCount": 3,
+            "language": "en",
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the show."},
+                {"id": "expert", "name": "EXPERT", "role": "authority", "voice": "Charon", "persona": "Explain clearly."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test ideas."},
+            ],
+            "pacingStyle": "conversational deep dive",
+        },
+        headers={"x-dev-uid": "podcast_user_owner"},
+    )
+    second = client.post(
+        "/podcast/standard/jobs",
+        json={
+            "request_id": request_id,
+            "topic": "Second topic should not overwrite",
+            "durationSec": 600,
+            "speakerCount": 2,
+            "language": "hi",
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
+            ],
+            "pacingStyle": "fast-paced debate",
+        },
+        headers={"x-dev-uid": "podcast_user_owner"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["accepted"] is False
+    assert second_payload["reused"] is True
+    assert second_payload["jobId"] == request_id
+    assert started["count"] == 1
+    stored = backend_app._podcast_standard_job_get(request_id) or {}
+    assert str(stored.get("uid") or "") == "podcast_user_owner"
+    assert str(stored.get("text") or "") == "First standard topic"
+
+
+def test_podcast_standard_job_create_rejects_cross_user_request_id_collision(monkeypatch) -> None:
+    started = {"count": 0}
+
+    class _FakeThread:
+        def __init__(self, *, target=None, args=(), kwargs=None, name=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+            self._name = name
+            self._daemon = daemon
+
+        def start(self):
+            started["count"] += 1
+
+    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda request, uid: {"userId": uid})
+    monkeypatch.setattr(backend_app.threading, "Thread", _FakeThread)
+    with backend_app.PODCAST_STANDARD_JOB_LOCK:
+        backend_app.PODCAST_STANDARD_JOBS.clear()
+
+    request_id = f"podcast_standard_owner_conflict_req_{uuid.uuid4().hex}"
+    first = client.post(
+        "/podcast/standard/jobs",
+        json={
+            "request_id": request_id,
+            "topic": "Owner A topic",
+            "durationSec": 900,
+            "speakerCount": 2,
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
+            ],
+            "pacingStyle": "conversational",
+        },
+        headers={"x-dev-uid": "podcast_user_a"},
+    )
+    second = client.post(
+        "/podcast/standard/jobs",
+        json={
+            "request_id": request_id,
+            "topic": "Owner B takeover attempt",
+            "durationSec": 900,
+            "speakerCount": 2,
+            "cast": [
+                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
+                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
+            ],
+            "pacingStyle": "conversational",
+        },
+        headers={"x-dev-uid": "podcast_user_b"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    detail = second.json().get("detail") or {}
+    assert detail.get("errorCode") == backend_app.REQUEST_ID_CONFLICT
+    assert detail.get("reason") == "request_id_owner_conflict"
+    assert detail.get("jobId") == request_id
+    assert started["count"] == 1
+    stored = backend_app._podcast_standard_job_get(request_id) or {}
+    assert str(stored.get("uid") or "") == "podcast_user_a"
 
 
 def test_tts_engines_status_reports_not_configured_when_gemini_keys_missing(monkeypatch) -> None:

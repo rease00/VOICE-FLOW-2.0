@@ -1,0 +1,12 @@
+{
+  "id": "reader_retry_session",
+  "uid": "reader_retry_user",
+  "contentKind": "book",
+  "prep": {
+    "state": "running",
+    "stage": "audio",
+    "completedItems": 0,
+    "totalItems": 1,
+    "failedItems": 0
+  }
+}

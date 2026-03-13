@@ -73,6 +73,11 @@ import {
   isBrowserKokoroExecutionEnabled,
   shouldUseBrowserKokoroExecution,
 } from '../services/kokoroBrowserRuntimeFlags';
+import {
+  getKokoroStudioWorkerState,
+  isKokoroStudioWorkerSupported,
+  warmupKokoroStudioWorker,
+} from '../services/kokoroStudioWorkerClient';
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
@@ -90,7 +95,6 @@ import { createTtsJob, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/ap
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../src/shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
-import { useManagedTabs } from '../src/shared/ui/tabs';
 import {
   createRuntimePollTabId,
   isRuntimePollCoordinationAvailable,
@@ -390,7 +394,7 @@ const formatInr = (amount: number): string =>
     maximumFractionDigits: 0,
   }).format(Math.max(0, Number(amount || 0)));
 
-type AdminOpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
+type AdminOpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 const resolveWorkspaceTabFromUrl = (): Tab => {
   if (typeof window === 'undefined') return Tab.STUDIO;
   const token = String(new URLSearchParams(window.location.search).get('vf-tab') || '').trim().toUpperCase();
@@ -400,7 +404,7 @@ const resolveWorkspaceTabFromUrl = (): Tab => {
 const resolveAdminOpsTabFromUrl = (): AdminOpsTab => {
   if (typeof window === 'undefined') return 'usage';
   const token = String(new URLSearchParams(window.location.search).get('vf-admin-tab') || '').trim().toLowerCase();
-  return ['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics'].includes(token)
+  return ['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics', 'accounting'].includes(token)
     ? (token as AdminOpsTab)
     : 'usage';
 };
@@ -993,6 +997,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const toggleStudioMobilePanel = useCallback((panel: keyof typeof studioMobilePanels) => {
     setStudioMobilePanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
   }, []);
+  const jumpToStudioRailSection = useCallback((section: StudioRailTab) => {
+    setStudioRailTab(section);
+    if (typeof document === 'undefined') return;
+    const target = document.getElementById(`studio-rail-${section}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   // Translation & Chat State
   const [targetLang, setTargetLang] = useState('Hinglish');
@@ -1490,7 +1501,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           if (target.adminTab) {
               const adminToken = String(target.adminTab || '').trim().toLowerCase();
-              if (['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics'].includes(adminToken)) {
+              if (['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics', 'accounting'].includes(adminToken)) {
                   setInitialAdminOpsTab(adminToken as AdminOpsTab);
               }
           }
@@ -2081,20 +2092,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [detectedSpeakers, dubScript, isStudioWorkspaceTab, studioParsedScript, text]);
   const isStudioMultiSpeakerEnabled = settings.multiSpeakerEnabled !== false;
   const shouldShowStudioQueuePanel = isStudioQueueModeEnabled;
-  const studioRailTabItems = useMemo(
-    () => STUDIO_RAIL_TAB_ITEMS.map((item) => ({
-      ...item,
-      disabled: item.id === 'voice' && isStudioMultiSpeakerEnabled,
-    })),
-    [isStudioMultiSpeakerEnabled]
-  );
-  const studioRailTabs = useManagedTabs({
-    items: studioRailTabItems,
-    activeId: studioRailTab,
-    onChange: setStudioRailTab,
-    label: 'Studio controls',
-    idBase: 'studio-controls',
-  });
+  const studioRailTabItems = STUDIO_RAIL_TAB_ITEMS;
   const creditsActionState = useMemo(
     () => getStudioCreditsActionState({
       canClaimAdReward,
@@ -2361,6 +2359,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const browserKokoroEnabled = isBrowserKokoroExecutionEnabled();
           const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
           for (const engine of ENGINE_ORDER) {
+              if (engine === 'KOKORO' && isStudioWorkspaceTab) {
+                  if (isLimitReached) {
+                      nextStatuses[engine] = { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' };
+                      continue;
+                  }
+                  nextStatuses[engine] = { state: 'standby', detail: 'Studio Basic uses an isolated browser worker (auto-start on generate).' };
+                  continue;
+              }
               if (engine === 'KOKORO' && browserKokoroEnabled) {
                   const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
                   const browserState = kokoroBrowserRuntime.getState();
@@ -2404,7 +2410,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         });
       runtimePollRefreshInFlightRef.current = inFlight;
       return inFlight;
-  }, [applyRuntimeStatusMap, isLimitReached, managedActiveEngine, mediaBackendUrl, toRuntimeStatus]);
+  }, [applyRuntimeStatusMap, isLimitReached, isStudioWorkspaceTab, managedActiveEngine, mediaBackendUrl, toRuntimeStatus]);
 
   const waitForRuntimeOnline = async (engine: GenerationSettings['engine'], timeoutMs: number): Promise<boolean> => {
       const started = Date.now();
@@ -2629,7 +2635,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           String(voiceId || DEFAULT_KOKORO_VOICE_ID)
       );
       if (isLimitReached && !hasUnlimitedAccess) {
-          if (isBrowserKokoroExecutionEnabled()) {
+          if (context !== 'studio' && isBrowserKokoroExecutionEnabled()) {
               const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
               await kokoroBrowserRuntime.suspend();
           }
@@ -2642,6 +2648,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const access = await refreshTtsAccessState(true);
       if (!access.ok) {
           throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
+      }
+
+      if (context === 'studio') {
+          setManagedActiveEngine('KOKORO');
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'standby', detail: 'Studio Basic uses an isolated browser worker (auto-start on generate).' },
+          }));
+          return {
+              runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
+              catalog: getEngineVoiceCatalog('KOKORO'),
+              syncedVoiceId: normalizedWarmupVoiceId,
+          };
       }
 
       const useBrowserKokoro = shouldUseBrowserKokoroExecution('KOKORO', context) && preferBrowserExecution !== false;
@@ -2722,14 +2741,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setStudioRailTab('voice');
           return;
       }
-  }, [activeTab, studioRailTab]);
-  useEffect(() => {
-      if (!isStudioWorkspaceTab) return;
-      if (!isStudioMultiSpeakerEnabled) return;
-      if (studioRailTab === 'voice') {
-          setStudioRailTab('cast');
-      }
-  }, [isStudioWorkspaceTab, isStudioMultiSpeakerEnabled, studioRailTab]);
+  }, [activeTab]);
   useEffect(() => {
       const handlePointerDown = (event: MouseEvent) => {
           const target = event.target;
@@ -3201,55 +3213,137 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       if (!isStudioWorkspaceTab) return;
       if (!hasSessionIdentity) return;
-      if (!isBrowserKokoroExecutionEnabled()) return;
+      if (settings.engine !== 'KOKORO') return;
+      if (isLimitReached && !hasUnlimitedAccess) {
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+              KOKORO: { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' },
+          }));
+          return;
+      }
+      setTtsRuntimeStatus((prev) => {
+          if (prev.KOKORO?.state === 'offline') return prev;
+          return {
+              ...prev,
+              KOKORO: { state: 'standby', detail: 'Studio Basic uses an isolated browser worker (auto-start on generate).' },
+          };
+      });
+      return;
+  }, [
+      hasUnlimitedAccess,
+      isStudioWorkspaceTab,
+      isLimitReached,
+      hasSessionIdentity,
+      settings.engine,
+  ]);
+
+  useEffect(() => {
+      if (typeof window === 'undefined') return;
+      if (!isStudioWorkspaceTab) return;
+      if (!hasSessionIdentity) return;
+      if (settings.engine !== 'KOKORO') return;
+      if (isLimitReached && !hasUnlimitedAccess) return;
+      if (!isKokoroStudioWorkerSupported()) return;
+
+      const workerState = getKokoroStudioWorkerState();
+      if (workerState === 'ready' || workerState === 'warming') return;
+
       let cancelled = false;
-      const timer = setTimeout(() => {
-          void (async () => {
-              try {
-                  const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-                  const state = kokoroBrowserRuntime.getState();
-                  if (state === 'ready' || state === 'warming') return;
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      KOKORO: { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' },
-                  }));
-                  const warmupVoiceId = getValidVoiceIdForEngine(
-                      'KOKORO',
-                      settings.voiceId || DEFAULT_KOKORO_VOICE_ID
-                  );
-                  await kokoroBrowserRuntime.ensureReady({
-                      backendBaseUrl: mediaBackendUrl,
-                      voiceId: warmupVoiceId,
-                      speed: 1.0,
+      const abortController = new AbortController();
+      let debounceTimer: number | null = null;
+      let fallbackTimer: number | null = null;
+      let idleCallbackId: number | null = null;
+
+      const runWarmup = () => {
+          if (cancelled || abortController.signal.aborted) return;
+          const stateSnapshot = getKokoroStudioWorkerState();
+          if (stateSnapshot === 'ready' || stateSnapshot === 'warming') return;
+
+          const warmupVoiceId = getValidVoiceIdForEngine(
+              'KOKORO',
+              String(settings.voiceId || DEFAULT_KOKORO_VOICE_ID),
+          );
+
+          setTtsRuntimeStatus((prev) => {
+              if (prev.KOKORO?.state === 'offline') return prev;
+              return {
+                  ...prev,
+                  KOKORO: { state: 'starting', detail: 'Preparing isolated Basic browser worker...' },
+              };
+          });
+
+          void warmupKokoroStudioWorker(
+              {
+                  backendBaseUrl: mediaBackendUrl,
+                  voiceId: warmupVoiceId,
+                  language: studioTextLanguageCode,
+                  speed: settings.speed,
+              },
+              abortController.signal,
+          )
+              .then(() => {
+                  if (cancelled || abortController.signal.aborted) return;
+                  setTtsRuntimeStatus((prev) => {
+                      if (prev.KOKORO?.state === 'offline') return prev;
+                      return {
+                          ...prev,
+                          KOKORO: { state: 'standby', detail: 'Studio Basic worker ready for faster live playback.' },
+                      };
                   });
-                  if (cancelled) return;
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      KOKORO: { state: 'online', detail: 'Local ONNX CPU runtime ready' },
-                  }));
-              } catch (error: any) {
-                  if (cancelled) return;
-                  setTtsRuntimeStatus((prev) => ({
-                      ...prev,
-                      KOKORO: {
-                          state: 'standby',
-                          detail: error?.message || 'Local ONNX CPU runtime warmup failed. Auto-resume on generate.',
-                      },
-                  }));
-              }
-          })();
-      }, 1200);
+              })
+              .catch((error: any) => {
+                  if (cancelled || abortController.signal.aborted || error?.name === 'AbortError') return;
+                  const detail = toUserFriendlySystemMessage(
+                      error?.message,
+                      'Studio Basic worker warmup failed. Generation will retry on start.',
+                  );
+                  setTtsRuntimeStatus((prev) => {
+                      if (prev.KOKORO?.state === 'offline') return prev;
+                      return {
+                          ...prev,
+                          KOKORO: { state: 'standby', detail },
+                      };
+                  });
+              });
+      };
+
+      debounceTimer = window.setTimeout(() => {
+          if (cancelled) return;
+          const win = window as Window & {
+              requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+              cancelIdleCallback?: (handle: number) => void;
+          };
+          if (typeof win.requestIdleCallback === 'function') {
+              idleCallbackId = win.requestIdleCallback(() => runWarmup(), { timeout: 900 });
+              return;
+          }
+          fallbackTimer = window.setTimeout(() => runWarmup(), 0);
+      }, 240);
 
       return () => {
           cancelled = true;
-          clearTimeout(timer);
+          abortController.abort();
+          if (debounceTimer) window.clearTimeout(debounceTimer);
+          if (fallbackTimer) window.clearTimeout(fallbackTimer);
+          if (idleCallbackId !== null) {
+              const win = window as Window & { cancelIdleCallback?: (handle: number) => void };
+              if (typeof win.cancelIdleCallback === 'function') {
+                  win.cancelIdleCallback(idleCallbackId);
+              }
+          }
       };
   }, [
-      isStudioWorkspaceTab,
-      hasSessionIdentity,
-      mediaBackendUrl,
-      settings.voiceId,
       getValidVoiceIdForEngine,
+      hasSessionIdentity,
+      hasUnlimitedAccess,
+      isStudioWorkspaceTab,
+      isLimitReached,
+      mediaBackendUrl,
+      settings.engine,
+      settings.speed,
+      settings.voiceId,
+      studioTextLanguageCode,
+      toUserFriendlySystemMessage,
   ]);
 
   useEffect(() => {
@@ -4400,11 +4494,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (!scriptText.trim()) throw new Error("Text is empty");
       const studioSettings = normalizeSettings(settingsOverride || settings);
       const multiSpeakerEnabled = studioSettings.multiSpeakerEnabled !== false;
-      const preferBrowserKokoro = shouldUseBrowserKokoro(studioSettings.engine, 'studio');
+      const preferBrowserKokoro = studioSettings.engine === 'KOKORO'
+          ? true
+          : shouldUseBrowserKokoro(studioSettings.engine, 'studio');
       const runtimePrepStage = studioSettings.engine === 'KOKORO'
           ? (
               preferBrowserKokoro
-                ? 'Preparing local ONNX CPU runtime...'
+                ? 'Preparing isolated Basic browser worker...'
                 : 'Using Basic backend runtime to keep UI responsive...'
             )
           : `Checking ${studioSettings.engine} runtime...`;
@@ -4418,7 +4514,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } else {
           engineState = await ensureEngineOnline(studioSettings.engine, { silent: true, syncVoiceId: studioSettings.voiceId, requireAccess: true });
       }
-      const browserKokoro = studioSettings.engine === 'KOKORO' && preferBrowserKokoro;
+      const browserKokoro = studioSettings.engine === 'KOKORO';
       setLiveProgress(28, browserKokoro ? 'Local ONNX CPU runtime ready. Preparing voice selection...' : 'Runtime ready. Preparing voice selection...');
       
       // Auto-Add Characters to Library before generation
@@ -4460,10 +4556,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           signal,
           { context: 'studio', preferLiveChunks: true, preferBrowserKokoro: preferBrowserKokoro }
       );
-      if (browserKokoro) {
-          const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-          kokoroBrowserRuntime.scheduleSuspend(studioSettings.kokoroStandbyIdleMs || 300000);
-      }
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
       const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings);
       setLiveProgress(90, 'Rendering final audio buffer...');
@@ -7239,21 +7331,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                        {/* Controls Sidebar */}
 		                        <div className={`vf-studio-rail h-fit xl:sticky xl:top-24 xl:self-start ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
                               <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-3 rounded-3xl'}>
-                                <div className="flex flex-wrap gap-2" {...studioRailTabs.listProps}>
+                                <div className="flex flex-wrap gap-2">
                                   {studioRailTabItems.map((tabItem) => {
                                     const isActive = studioRailTab === tabItem.id;
-                                    const isDisabled = Boolean(tabItem.disabled);
                                     return (
                                       <button
                                         key={tabItem.id}
                                         type="button"
-                                        {...studioRailTabs.getTabProps(tabItem.id, isDisabled)}
-                                        title={isDisabled ? 'Voice controls are disabled while Multi-Speaker mode is on. Use Cast.' : undefined}
+                                        onClick={() => jumpToStudioRailSection(tabItem.id)}
+                                        aria-pressed={isActive}
                                         className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
                                           isActive
                                             ? (isDarkUi ? 'border-cyan-500/45 bg-cyan-500/14 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700')
-                                            : isDisabled
-                                              ? (isDarkUi ? 'cursor-not-allowed border-slate-800 bg-slate-950 text-slate-500 opacity-65' : 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400')
                                             : (isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200' : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700')
                                         }`}
                                       >
@@ -7272,7 +7361,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   })}
                                 </div>
                               </SectionCard>
-		                            {studioRailTab === 'voice' && (
+                                <div id="studio-rail-voice">
 	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -7415,10 +7504,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </>
                                     )}
 		                            </SectionCard>
-                                  )}
+                                  </div>
 
 	                            {/* Studio Audio Mix */}
-                                  {studioRailTab === 'mix' && (
+                                  <div id="studio-rail-mix">
 		                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -7516,10 +7605,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </div>
                                     )}
 			                            </SectionCard>
-                                  )}
+                                  </div>
 
-                                    {studioRailTab === 'cast' && (
-                                      isStudioMultiSpeakerEnabled ? (
+                                    <div id="studio-rail-cast">
+                                      {isStudioMultiSpeakerEnabled ? (
 		                            <>
 		                            {/* Cast & Crew */}
 	                            <SectionCard className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
@@ -7719,10 +7808,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             Enable Multi-Speaker Mode from the editor toolbar to configure cast mappings.
                                           </p>
                                         </SectionCard>
-                                      )
-                                    )}
+                                      )}
+                                    </div>
 
-                                    {studioRailTab === 'queue' && shouldShowStudioQueuePanel && (
+                                    <div id="studio-rail-queue">
+                                    {shouldShowStudioQueuePanel && (
                                         <StudioQueuePanel
                                             queueState={studioQueueState}
                                             draftPartCount={studioQueueDraftPartCount}
@@ -7743,7 +7833,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             onReorderItems={reorderStudioQueueItems}
                                         />
                                     )}
-                                    {studioRailTab === 'queue' && !shouldShowStudioQueuePanel && (
+                                    {!shouldShowStudioQueuePanel && (
                                       <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                         <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
                                           <Clock size={13} /> Queue
@@ -7753,6 +7843,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </p>
                                       </SectionCard>
                                     )}
+                                    </div>
 
                         </div>
                     </div>
@@ -7764,7 +7855,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       <PodcastTabContent
                         mediaBackendUrl={mediaBackendUrl}
                         resolvedTheme={resolvedTheme}
+                        selectedEngine={settings.engine}
                         onToast={showToast}
+                        onRefreshEntitlements={refreshEntitlements}
                       />
                     </Suspense>
                 )}

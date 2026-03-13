@@ -181,6 +181,34 @@ def test_billing_webhook_security_enforced_in_production(monkeypatch) -> None:
     assert "invalid webhook payload" in str((unsigned.json() or {}).get("detail") or "").lower()
 
 
+def test_billing_webhook_unsigned_requires_explicit_local_dev_mode(monkeypatch) -> None:
+    class _DummyStripe:
+        api_key = ""
+
+        class Webhook:
+            @staticmethod
+            def construct_event(payload, sig_header, secret):
+                _ = payload, sig_header, secret
+                raise AssertionError("Webhook.construct_event should not be used without a webhook secret")
+
+    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
+    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_unsigned_mode")
+    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
+    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", False)
+
+    client = TestClient(backend_app.app)
+    blocked = client.post("/billing/webhook", json={"type": "noop.event", "data": {"object": {}}})
+    assert blocked.status_code == 400
+    assert "local development mode" in str((blocked.json() or {}).get("detail") or "").lower()
+
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
+    allowed = client.post("/billing/webhook", json={"type": "noop.event", "data": {"object": {}}})
+    assert allowed.status_code == 200
+    assert (allowed.json() or {}).get("ok") is True
+
+
 def test_billing_redirect_override_rejects_non_allowlisted_origin(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_BILLING_REDIRECT_ALLOWLIST", frozenset({"https://app.voiceflow.test"}))
     with pytest.raises(HTTPException) as exc:

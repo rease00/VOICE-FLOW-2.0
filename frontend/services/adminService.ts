@@ -7,6 +7,8 @@ const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
 };
 
+export const ADMIN_READ_TIMEOUT_MS = 12000;
+
 let adminUnlockTokenMemory = '';
 
 export const setAdminUnlockToken = (token: string): void => {
@@ -21,6 +23,11 @@ export const getAdminUnlockToken = (): string => adminUnlockTokenMemory;
 
 const adminAuthFetch: typeof authFetch = (url, init, options) => {
   const method = String(init?.method || 'GET').toUpperCase();
+  const resolvedOptions = (
+    method === 'GET' && !Number.isFinite(Number(options?.timeoutMs))
+      ? { ...(options || {}), timeoutMs: ADMIN_READ_TIMEOUT_MS }
+      : options
+  );
   if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
     const token = getAdminUnlockToken();
     if (token) {
@@ -28,10 +35,10 @@ const adminAuthFetch: typeof authFetch = (url, init, options) => {
       if (!headers.has('X-Admin-Unlock')) {
         headers.set('X-Admin-Unlock', `Bearer ${token}`);
       }
-      return authFetch(url, { ...(init || {}), headers }, options);
+      return authFetch(url, { ...(init || {}), headers }, resolvedOptions);
     }
   }
-  return authFetch(url, init, options);
+  return authFetch(url, init, resolvedOptions);
 };
 
 export interface AdminUserSummary {
@@ -670,6 +677,96 @@ export interface CouponAnalyticsPoint extends CouponAnalyticsSummary {
   date?: string;
   plan?: string;
   couponCode?: string;
+}
+
+export interface AccountingRevenueSummary {
+  paidInr: number;
+  accruedInr: number;
+  unpaidInr: number;
+  taxInr: number;
+}
+
+export interface AccountingExpenditureSummary {
+  walletInr: number;
+  couponDiscountInr: number;
+  cloudRunCpuInr: number;
+  geminiInr: number;
+  totalInr: number;
+}
+
+export interface AccountingGeminiSummary {
+  generations: number;
+  promptTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostInr: number;
+  fallbackEstimatedCount: number;
+}
+
+export interface AccountingCloudRunSummary {
+  cpuCostInr: number;
+}
+
+export interface AccountingSummary {
+  revenue: AccountingRevenueSummary;
+  expenditure: AccountingExpenditureSummary;
+  marginInr: number;
+  marginPct: number;
+  invoices: { paid: number; unpaid: number; total: number };
+  gemini: AccountingGeminiSummary;
+  cloudRun: AccountingCloudRunSummary;
+}
+
+export interface AccountingTimeseriesPoint {
+  bucket: string;
+  revenuePaidInr?: number;
+  revenueAccruedInr?: number;
+  revenueUnpaidInr?: number;
+  taxAccruedInr?: number;
+  walletExpenditureInr?: number;
+  couponDiscountInr?: number;
+  cloudRunCpuCostInr?: number;
+  geminiCostInr?: number;
+  geminiGenerations?: number;
+  geminiPromptTokens?: number;
+  geminiOutputTokens?: number;
+  geminiTotalTokens?: number;
+}
+
+export interface AccountingRecord {
+  id: string;
+  timestamp: string;
+  day: string;
+  type: string;
+  status: string;
+  amountInr: number;
+  paidInr?: number;
+  unpaidInr?: number;
+  taxInr?: number;
+  currency?: string;
+  amountOriginal?: number;
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AccountingSourceStatus {
+  stripeInvoices?: string;
+  cloudRunCpu?: string;
+  usageEvents?: string;
+}
+
+export interface AccountingMonitorRun {
+  id: string;
+  createdAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  requestedBy?: string;
+  source?: string;
+  dryRun?: boolean;
+  anomalies?: Array<Record<string, unknown>>;
+  alertActions?: Array<Record<string, unknown>>;
+  status?: string;
+  warnings?: string[];
 }
 
 export interface AdminTeam {
@@ -1554,6 +1651,137 @@ export const fetchCouponAnalyticsImpact = async (
   ));
   return payload;
 };
+
+export const fetchAdminAccountingSummary = async (
+  baseUrl?: string,
+  options?: { from?: string; to?: string; includeUnpaidAccrual?: boolean }
+): Promise<{
+  summary: AccountingSummary;
+  currency?: string;
+  timezone?: string;
+  sourceStatus?: AccountingSourceStatus;
+  warnings?: string[];
+  range?: Record<string, unknown>;
+}> => {
+  const query = new URLSearchParams();
+  if (options?.from) query.set('from', options.from);
+  if (options?.to) query.set('to', options.to);
+  if (typeof options?.includeUnpaidAccrual === 'boolean') query.set('includeUnpaidAccrual', String(options.includeUnpaidAccrual));
+  return readJsonOrThrow<{
+    summary: AccountingSummary;
+    currency?: string;
+    timezone?: string;
+    sourceStatus?: AccountingSourceStatus;
+    warnings?: string[];
+    range?: Record<string, unknown>;
+  }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/accounting/summary${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const fetchAdminAccountingTimeseries = async (
+  baseUrl?: string,
+  options?: { from?: string; to?: string; groupBy?: 'day' | 'month' | 'year'; includeUnpaidAccrual?: boolean }
+): Promise<{
+  groupBy: string;
+  series: AccountingTimeseriesPoint[];
+  count: number;
+  currency?: string;
+  timezone?: string;
+  sourceStatus?: AccountingSourceStatus;
+  warnings?: string[];
+  range?: Record<string, unknown>;
+}> => {
+  const query = new URLSearchParams();
+  if (options?.from) query.set('from', options.from);
+  if (options?.to) query.set('to', options.to);
+  if (options?.groupBy) query.set('groupBy', options.groupBy);
+  if (typeof options?.includeUnpaidAccrual === 'boolean') query.set('includeUnpaidAccrual', String(options.includeUnpaidAccrual));
+  return readJsonOrThrow<{
+    groupBy: string;
+    series: AccountingTimeseriesPoint[];
+    count: number;
+    currency?: string;
+    timezone?: string;
+    sourceStatus?: AccountingSourceStatus;
+    warnings?: string[];
+    range?: Record<string, unknown>;
+  }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/accounting/timeseries${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const fetchAdminAccountingRecords = async (
+  baseUrl?: string,
+  options?: { from?: string; to?: string; limit?: number; includeUnpaidAccrual?: boolean }
+): Promise<{
+  items: AccountingRecord[];
+  count: number;
+  currency?: string;
+  timezone?: string;
+  sourceStatus?: AccountingSourceStatus;
+  warnings?: string[];
+  range?: Record<string, unknown>;
+}> => {
+  const query = new URLSearchParams();
+  if (options?.from) query.set('from', options.from);
+  if (options?.to) query.set('to', options.to);
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  if (typeof options?.includeUnpaidAccrual === 'boolean') query.set('includeUnpaidAccrual', String(options.includeUnpaidAccrual));
+  return readJsonOrThrow<{
+    items: AccountingRecord[];
+    count: number;
+    currency?: string;
+    timezone?: string;
+    sourceStatus?: AccountingSourceStatus;
+    warnings?: string[];
+    range?: Record<string, unknown>;
+  }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/accounting/records${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+};
+
+export const fetchAdminAccountingMonitorRuns = async (
+  baseUrl?: string,
+  limit = 40
+): Promise<{ items: AccountingMonitorRun[]; count: number }> => (
+  readJsonOrThrow<{ items: AccountingMonitorRun[]; count: number }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/accounting/monitor/runs?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    { requireAuth: true }
+  ))
+);
+
+export const runAdminAccountingMonitor = async (
+  baseUrl?: string,
+  options?: { dryRun?: boolean }
+): Promise<{
+  runId: string;
+  anomalyCount: number;
+  alertActions?: Array<Record<string, unknown>>;
+  summary?: Record<string, unknown>;
+}> => (
+  readJsonOrThrow<{
+    runId: string;
+    anomalyCount: number;
+    alertActions?: Array<Record<string, unknown>>;
+    summary?: Record<string, unknown>;
+  }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/accounting/monitor/run`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dryRun: Boolean(options?.dryRun) }),
+    },
+    { requireAuth: true }
+  ))
+);
 
 export const fetchAdminTeams = async (
   baseUrl?: string,

@@ -48,8 +48,10 @@ describe('admin audio metadata service', () => {
     expect(mockAuthFetch).toHaveBeenCalledWith(
       'http://backend.test/admin/audio-metadata/records?uid=uid_1&userId=user_1&identityValue=user%40example.com&paymentRef=pi_123&status=completed&engine=GEM&from=2026-03-01&to=2026-03-07&cursor=cursor_1&limit=50',
       undefined,
-      { requireAuth: true }
+      expect.objectContaining({ requireAuth: true, timeoutMs: 12_000 })
     );
+    const listRequestOptions = mockAuthFetch.mock.calls[0]?.[2] as { timeoutMs?: number } | undefined;
+    expect(listRequestOptions?.timeoutMs).toBe(12_000);
   });
 
   it('serializes export filters and returns the CSV blob', async () => {
@@ -69,7 +71,7 @@ describe('admin audio metadata service', () => {
     expect(mockAuthFetch).toHaveBeenCalledWith(
       'http://backend.test/admin/audio-metadata/export.csv?uid=uid_1&status=failed&engine=KOKORO',
       undefined,
-      { requireAuth: true }
+      expect.objectContaining({ requireAuth: true, timeoutMs: 12_000 })
     );
     await expect(blob.text()).resolves.toContain('auditId,uid');
   });

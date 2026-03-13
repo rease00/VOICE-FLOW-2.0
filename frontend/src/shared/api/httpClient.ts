@@ -38,11 +38,38 @@ const toSafeHttpErrorDetail = (rawDetail: string, status: number, statusText: st
   return detail;
 };
 
+const normalizeApiErrorFragment = (value: unknown): string => String(value || '').replace(/\s+/g, ' ').trim();
+
+const extractApiErrorDetail = (payload: unknown): string => {
+  if (!payload || typeof payload !== 'object') return '';
+  const source = payload as Record<string, unknown>;
+  const detail = source.detail;
+  if (typeof detail === 'string') {
+    const token = normalizeApiErrorFragment(detail);
+    if (token) return token;
+  }
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const nested = extractApiErrorDetail(detail);
+    if (nested) return nested;
+  }
+  const message = normalizeApiErrorFragment(source.message);
+  const summary = normalizeApiErrorFragment(source.summary);
+  const error = normalizeApiErrorFragment(source.error);
+  const reason = normalizeApiErrorFragment(source.reason);
+  const errorCode = normalizeApiErrorFragment(source.errorCode);
+  const primary = summary || error || message;
+  const tags = [errorCode, reason].filter(Boolean);
+  if (primary && tags.length > 0) return `${primary} (${tags.join(': ')})`;
+  if (primary) return primary;
+  if (tags.length > 0) return tags.join(': ');
+  return '';
+};
+
 export const parseResponseError = async (response: Response): Promise<HttpError> => {
   let detail = `${response.status} ${response.statusText}`;
   try {
     const payload = await response.json();
-    const apiDetail = String(payload?.detail || payload?.error || '').trim();
+    const apiDetail = extractApiErrorDetail(payload);
     if (apiDetail) detail = apiDetail;
   } catch {
     // no-op

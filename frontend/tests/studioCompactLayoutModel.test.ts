@@ -24,10 +24,10 @@ describe('studio compact layout model', () => {
   });
 
   it('keeps studio rail tab order and default tab contract', () => {
-    expect(STUDIO_RAIL_TAB_ITEMS.map((item) => item.id)).toEqual(['voice', 'mix', 'cast', 'queue', 'live']);
+    expect(STUDIO_RAIL_TAB_ITEMS.map((item) => item.id)).toEqual(['voice', 'mix', 'cast', 'queue']);
     expect(resolveStudioRailTab(undefined)).toBe('voice');
     expect(resolveStudioRailTab('queue')).toBe('queue');
-    expect(resolveStudioRailTab('live')).toBe('live');
+    expect(resolveStudioRailTab('live')).toBe('voice');
   });
 
   it('computes credits action states for ad claim, token buy, and coupon redeem', () => {

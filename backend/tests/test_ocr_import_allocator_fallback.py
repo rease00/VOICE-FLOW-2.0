@@ -28,7 +28,12 @@ def _make_key(seed: int) -> str:
 def test_ocr_fallback_uses_multimodal_model_order(monkeypatch) -> None:
     key = _make_key(11)
     route = list(backend_app.GEMINI_ALLOCATOR_CONFIG.routes["ocr"])
-    assert route == ["gemini-2.5-flash", "gemini-3-flash", "gemini-2.5-flash-lite"]
+    assert route == [
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-3-flash",
+        "gemini-2.5-flash-lite",
+    ]
 
     calls: list[str] = []
 
@@ -70,7 +75,7 @@ def test_ocr_fallback_uses_multimodal_model_order(monkeypatch) -> None:
         task_label="novel page",
     )
     assert "Chapter 1" in extracted
-    assert calls[:3] == route
+    assert calls[:3] == route[:3]
 
 
 def test_ocr_fallback_exhaustion_returns_retry_metadata(monkeypatch) -> None:

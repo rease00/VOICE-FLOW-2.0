@@ -101,9 +101,9 @@ def test_notification_endpoints_honor_rbac_actor_for_admin_inbox_and_preferences
     monkeypatch.setattr(backend_app, "VF_RBAC_ENFORCE", True)
 
     backend_app._rbac_write_assignment(
-        "billing_ops_user",
+        "read_only_ops_user",
         {
-            "role": backend_app.RBAC_ROLE_BILLING_OPS,
+            "role": backend_app.RBAC_ROLE_READ_ONLY_OPS,
             "allowOverrides": [],
             "denyOverrides": [],
             "status": "active",
@@ -114,17 +114,17 @@ def test_notification_endpoints_honor_rbac_actor_for_admin_inbox_and_preferences
 
     client = TestClient(backend_app.app)
 
-    actor_response = client.get("/admin/actor", headers={"x-dev-uid": "billing_ops_user"})
+    actor_response = client.get("/admin/actor", headers={"x-dev-uid": "read_only_ops_user"})
     assert actor_response.status_code == 200
     actor_payload = actor_response.json()["actor"]
-    assert actor_payload["role"] == backend_app.RBAC_ROLE_BILLING_OPS
+    assert actor_payload["role"] == backend_app.RBAC_ROLE_READ_ONLY_OPS
     assert backend_app.PERM_BILLING_READ in list(actor_payload.get("permissions") or [])
 
-    prefs_response = client.get("/account/notification-preferences", headers={"x-dev-uid": "billing_ops_user"})
+    prefs_response = client.get("/account/notification-preferences", headers={"x-dev-uid": "read_only_ops_user"})
     assert prefs_response.status_code == 200
     assert prefs_response.json()["preferences"]["emailAdminAlerts"] is True
 
-    inbox_response = client.get("/account/notifications", headers={"x-dev-uid": "billing_ops_user"})
+    inbox_response = client.get("/account/notifications", headers={"x-dev-uid": "read_only_ops_user"})
     assert inbox_response.status_code == 200
     items = list(inbox_response.json()["items"] or [])
     assert len(items) == 1

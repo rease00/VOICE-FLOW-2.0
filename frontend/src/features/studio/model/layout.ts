@@ -1,5 +1,5 @@
 export type SidebarMode = 'compact' | 'expanded';
-export type StudioRailTab = 'voice' | 'mix' | 'cast' | 'queue' | 'live';
+export type StudioRailTab = 'voice' | 'mix' | 'cast' | 'queue';
 
 export interface StudioRailTabItem {
   id: StudioRailTab;

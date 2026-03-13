@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { getAudioContext } from '../services/geminiService';
 
 interface VisualizerProps {
@@ -7,148 +7,313 @@ interface VisualizerProps {
   height?: number;
 }
 
-// Global WeakMap to store AudioSourceNodes associated with Audio Elements
-// This prevents "MediaElementAudioSourceNode has already been created" errors
+interface VisualizerPalette {
+  primary: string;
+  secondary: string;
+  tertiary: string;
+}
+
 const sourceCache = new WeakMap<HTMLAudioElement, MediaElementAudioSourceNode>();
+const DEFAULT_PALETTE: VisualizerPalette = {
+  primary: '#22d3ee',
+  secondary: '#818cf8',
+  tertiary: '#f472b6',
+};
+
+const clampNumber = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
+
+const drawRoundedRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void => {
+  const r = clampNumber(radius, 0, Math.min(width, height) / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+};
 
 export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying, height = 128 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const frequencyDataRef = useRef<Uint8Array | null>(null);
+  const timeDataRef = useRef<Uint8Array | null>(null);
+  const smoothedPeaksRef = useRef<Float32Array | null>(null);
+  const gradientRef = useRef<CanvasGradient | null>(null);
+  const gradientKeyRef = useRef<string>('');
+  const graphConnectedRef = useRef(false);
+  const connectedElementRef = useRef<HTMLAudioElement | null>(null);
+  const paletteRef = useRef<VisualizerPalette>(DEFAULT_PALETTE);
+  const dprRef = useRef<number>(1);
 
   useEffect(() => {
-    if (!audioElement || !canvasRef.current) return;
+    if (typeof document === 'undefined') return;
+    const readPalette = () => {
+      const body = document.body;
+      if (!body) return;
+      const computed = getComputedStyle(body);
+      const primary = computed.getPropertyValue('--vf-accent-primary').trim();
+      const secondary = computed.getPropertyValue('--vf-accent-secondary').trim();
+      const tertiary = computed.getPropertyValue('--vf-accent-tertiary').trim();
+      paletteRef.current = {
+        primary: primary || DEFAULT_PALETTE.primary,
+        secondary: secondary || DEFAULT_PALETTE.secondary,
+        tertiary: tertiary || DEFAULT_PALETTE.tertiary,
+      };
+    };
+    readPalette();
+    const observer = new MutationObserver(readPalette);
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    return () => observer.disconnect();
+  }, []);
 
-    const initAudio = () => {
-      // Use Shared Singleton AudioContext from service
-      const ctx = getAudioContext();
-      
-      // Init Analyser if needed
-      if (!analyserRef.current) {
-         analyserRef.current = ctx.createAnalyser();
-         analyserRef.current.fftSize = 256;
-      }
-      const analyser = analyserRef.current;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !audioElement) return;
 
+    const audioCtx = getAudioContext();
+    if (!analyserRef.current) {
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.84;
+      analyser.minDecibels = -88;
+      analyser.maxDecibels = -12;
+      analyserRef.current = analyser;
+    }
+    const analyser = analyserRef.current;
+
+    if (connectedElementRef.current !== audioElement) {
+      connectedElementRef.current = audioElement;
+      graphConnectedRef.current = false;
+    }
+
+    if (!graphConnectedRef.current) {
       try {
-        // Reuse existing source or create new one safely
-        // Since we now use a singleton AudioContext, the source cache should stay valid for the lifetime of the element+context
         let source = sourceCache.get(audioElement);
         if (!source) {
-            source = ctx.createMediaElementSource(audioElement);
-            sourceCache.set(audioElement, source);
+          source = audioCtx.createMediaElementSource(audioElement);
+          sourceCache.set(audioElement, source);
         }
-        
-        // Connect source to analyser
-        // Note: Disconnecting first is good practice if component remounts frequently
-        try { source.disconnect(); } catch(e) {} 
-        
         source.connect(analyser);
-        analyser.connect(ctx.destination);
-      } catch (e) {
-        console.warn("Visualizer connection warning:", e);
-      }
-    };
-
-    if (isPlaying) {
-      initAudio();
-      // Resume if needed
-      const ctx = getAudioContext();
-      if (ctx.state === 'suspended') {
-        ctx.resume().catch(e => console.error("Audio resume failed", e));
+        analyser.connect(audioCtx.destination);
+        graphConnectedRef.current = true;
+      } catch (error) {
+        // The graph may already be connected, which is safe to ignore.
+        console.warn('Visualizer connection warning:', error);
       }
     }
 
+    if (isPlaying && audioCtx.state === 'suspended') {
+      void audioCtx.resume().catch((error) => {
+        console.error('Audio resume failed', error);
+      });
+    }
+
     const render = () => {
-      if (!canvasRef.current || !analyserRef.current) return;
-      
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      const nextCanvas = canvasRef.current;
+      const nextAnalyser = analyserRef.current;
+      if (!nextCanvas || !nextAnalyser) return;
 
-      const bufferLength = analyserRef.current.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      analyserRef.current.getByteFrequencyData(dataArray);
+      const context2d = nextCanvas.getContext('2d');
+      if (!context2d) return;
 
-      const w = canvas.width;
-      const h = canvas.height;
+      const width = nextCanvas.width;
+      const visualHeight = nextCanvas.height;
+      if (width <= 0 || visualHeight <= 0) return;
 
-      ctx.clearRect(0, 0, w, h);
+      const dpr = dprRef.current || 1;
+      const logicalWidth = width / dpr;
+      const logicalHeight = visualHeight / dpr;
+      context2d.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      const barWidth = (w / bufferLength) * 2.5;
-      let barHeight;
-      let x = 0;
-
-      // Gradient for bars
-      const gradient = ctx.createLinearGradient(0, h, 0, 0);
-      gradient.addColorStop(0, 'rgba(99, 102, 241, 0.8)'); // Indigo-500
-      gradient.addColorStop(0.5, 'rgba(168, 85, 247, 0.8)'); // Purple-500
-      gradient.addColorStop(1, 'rgba(236, 72, 153, 0.8)'); // Pink-500
-
-      for (let i = 0; i < bufferLength; i++) {
-        // Smooth out bar height
-        barHeight = (dataArray[i] ?? 0) / 2; // Scale down slightly
-        
-        // Draw rounded bar
-        ctx.fillStyle = gradient;
-        
-        // Rounded top
-        if (barHeight > 0) {
-            ctx.beginPath();
-            // x, y, width, height, radius
-            const radius = barWidth / 2;
-            const y = h - barHeight;
-            
-            ctx.moveTo(x, y + radius);
-            ctx.lineTo(x, h);
-            ctx.lineTo(x + barWidth, h);
-            ctx.lineTo(x + barWidth, y + radius);
-            ctx.arc(x + radius, y + radius, radius, Math.PI * 2, Math.PI, true);
-            ctx.fill();
-        }
-
-        x += barWidth + 2; // Spacing
+      if (!frequencyDataRef.current || frequencyDataRef.current.length !== nextAnalyser.frequencyBinCount) {
+        frequencyDataRef.current = new Uint8Array(nextAnalyser.frequencyBinCount);
       }
+      if (!timeDataRef.current || timeDataRef.current.length !== nextAnalyser.fftSize) {
+        timeDataRef.current = new Uint8Array(nextAnalyser.fftSize);
+      }
+      const frequencyData = frequencyDataRef.current;
+      const timeData = timeDataRef.current;
+      nextAnalyser.getByteFrequencyData(frequencyData);
+      nextAnalyser.getByteTimeDomainData(timeData);
+
+      let rmsAccumulator = 0;
+      for (let index = 0; index < timeData.length; index += 1) {
+        const centered = ((timeData[index] ?? 128) - 128) / 128;
+        rmsAccumulator += centered * centered;
+      }
+      const rms = Math.sqrt(rmsAccumulator / timeData.length);
+
+      const barCount = clampNumber(Math.floor(logicalWidth / 11), 28, 96);
+      if (!smoothedPeaksRef.current || smoothedPeaksRef.current.length !== barCount) {
+        smoothedPeaksRef.current = new Float32Array(barCount);
+      }
+      const smoothedPeaks = smoothedPeaksRef.current;
+      const binStep = frequencyData.length / barCount;
+      const gap = 2;
+      const barWidth = (logicalWidth - (barCount - 1) * gap) / barCount;
+      const centerY = logicalHeight / 2;
+      const minBarHeight = Math.max(4, logicalHeight * 0.08);
+      const maxBarHeight = logicalHeight * 0.9;
+      const energyFloor = clampNumber(rms * 2.2, 0.06, 0.32);
+
+      for (let index = 0; index < barCount; index += 1) {
+        const start = Math.floor(index * binStep);
+        const end = Math.max(start + 1, Math.floor((index + 1) * binStep));
+        let sum = 0;
+        for (let cursor = start; cursor < end; cursor += 1) {
+          sum += frequencyData[cursor] || 0;
+        }
+        const average = sum / (end - start);
+        const normalized = average / 255;
+        const shaped = Math.pow(normalized, 1.35);
+        const lowBandBoost = 1 + (1 - index / barCount) * 0.28;
+        const target = clampNumber(Math.max(shaped * lowBandBoost, energyFloor * 0.6), 0.03, 1);
+        const previous = smoothedPeaks[index] || 0;
+        const attack = 0.38;
+        const release = 0.14;
+        smoothedPeaks[index] = target > previous
+          ? previous + (target - previous) * attack
+          : previous - (previous - target) * release;
+      }
+
+      const palette = paletteRef.current;
+      const gradientKey = `${logicalWidth}:${logicalHeight}:${palette.primary}:${palette.secondary}:${palette.tertiary}`;
+      if (!gradientRef.current || gradientKeyRef.current !== gradientKey) {
+        const gradient = context2d.createLinearGradient(0, logicalHeight, logicalWidth, 0);
+        gradient.addColorStop(0, palette.primary);
+        gradient.addColorStop(0.55, palette.secondary);
+        gradient.addColorStop(1, palette.tertiary);
+        gradientRef.current = gradient;
+        gradientKeyRef.current = gradientKey;
+      }
+
+      context2d.clearRect(0, 0, logicalWidth, logicalHeight);
+
+      context2d.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+      context2d.lineWidth = 1;
+      context2d.beginPath();
+      context2d.moveTo(0, centerY + 0.5);
+      context2d.lineTo(logicalWidth, centerY + 0.5);
+      context2d.stroke();
+
+      const pointCount = clampNumber(Math.floor(logicalWidth / 6), 48, 180);
+      const sampleStep = (timeData.length - 1) / Math.max(1, pointCount - 1);
+      const amplitude = clampNumber(logicalHeight * (0.14 + rms * 0.52), logicalHeight * 0.1, logicalHeight * 0.34);
+      context2d.beginPath();
+      let previousX = 0;
+      let previousY = centerY;
+      for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+        const sampleIndex = Math.min(timeData.length - 1, Math.floor(pointIndex * sampleStep));
+        const normalized = ((timeData[sampleIndex] ?? 128) - 128) / 128;
+        const x = (pointIndex / Math.max(1, pointCount - 1)) * logicalWidth;
+        const y = centerY + normalized * amplitude;
+        if (pointIndex === 0) {
+          context2d.moveTo(x, y);
+        } else {
+          const controlX = (previousX + x) / 2;
+          const controlY = (previousY + y) / 2;
+          context2d.quadraticCurveTo(previousX, previousY, controlX, controlY);
+        }
+        previousX = x;
+        previousY = y;
+      }
+      context2d.lineTo(previousX, previousY);
+      context2d.globalAlpha = 0.22;
+      context2d.strokeStyle = palette.secondary;
+      context2d.lineWidth = 7;
+      context2d.stroke();
+      context2d.globalAlpha = 0.88;
+      context2d.strokeStyle = palette.primary;
+      context2d.lineWidth = 2.2;
+      context2d.stroke();
+      context2d.globalAlpha = 1;
+
+      context2d.fillStyle = gradientRef.current;
+      context2d.shadowColor = palette.secondary;
+      context2d.shadowBlur = isPlaying ? 12 : 6;
+
+      for (let index = 0; index < barCount; index += 1) {
+        const level = smoothedPeaks[index] || 0;
+        const barHeight = clampNumber(level * maxBarHeight, minBarHeight, maxBarHeight);
+        const x = index * (barWidth + gap);
+        const y = centerY - barHeight / 2;
+        drawRoundedRect(context2d, x, y, Math.max(1, barWidth), barHeight, Math.max(1, barWidth / 2));
+        context2d.fill();
+      }
+
+      context2d.shadowBlur = 0;
 
       if (isPlaying) {
         animationFrameRef.current = requestAnimationFrame(render);
       }
     };
 
-    if (isPlaying) {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    if (isPlaying || audioElement.currentTime > 0) {
       render();
     } else {
-       // Clear canvas when stopped
-       const canvas = canvasRef.current;
-       const ctx = canvas.getContext('2d');
-       if(ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      const context2d = canvas.getContext('2d');
+      if (context2d) {
+        context2d.setTransform(1, 0, 0, 1, 0, 0);
+        context2d.clearRect(0, 0, canvas.width, canvas.height);
+      }
     }
 
     return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
     };
   }, [audioElement, isPlaying]);
 
-  // Responsive canvas sizing
   useEffect(() => {
-      const resize = () => {
-          if(canvasRef.current && canvasRef.current.parentElement) {
-              canvasRef.current.width = canvasRef.current.parentElement.clientWidth;
-              canvasRef.current.height = height;
-          }
+    const resizeCanvas = () => {
+      const canvas = canvasRef.current;
+      const parent = canvas?.parentElement;
+      if (!canvas || !parent) return;
+
+      const targetWidth = Math.max(1, Math.floor(parent.clientWidth));
+      const targetHeight = Math.max(1, Math.floor(height));
+      const dpr = clampNumber(window.devicePixelRatio || 1, 1, 2);
+      dprRef.current = dpr;
+      const renderWidth = Math.max(1, Math.floor(targetWidth * dpr));
+      const renderHeight = Math.max(1, Math.floor(targetHeight * dpr));
+
+      if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
+        canvas.width = renderWidth;
+        canvas.height = renderHeight;
       }
-      resize();
-      window.addEventListener('resize', resize);
-      return () => window.removeEventListener('resize', resize);
+      if (canvas.style.width !== `${targetWidth}px`) {
+        canvas.style.width = `${targetWidth}px`;
+      }
+      if (canvas.style.height !== `${targetHeight}px`) {
+        canvas.style.height = `${targetHeight}px`;
+      }
+    };
+
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    return () => window.removeEventListener('resize', resizeCanvas);
   }, [height]);
 
-  return (
-    <canvas 
-        ref={canvasRef} 
-        height={height} 
-        className="w-full rounded-xl" 
-        style={{ height: `${height}px` }} 
-    />
-  );
+  return <canvas ref={canvasRef} height={height} className="vf-live-player__viz-canvas w-full rounded-xl" style={{ height: `${height}px` }} />;
 };

@@ -65,6 +65,9 @@ export interface LivePodcastJobRequest {
   speakerCount: 2 | 3 | 4;
   cast: PodcastCastMember[];
   pacingStyle: string;
+  language?: string;
+  seedScript?: string;
+  directorModel?: string;
   limits?: {
     sessionMaxSec?: number;
     connectionMaxSec?: number;
@@ -83,6 +86,7 @@ export interface LivePodcastJobRequest {
 }
 
 export interface StandardPodcastJobRequest {
+  engine?: 'GEM' | 'NEURAL2';
   topic: string;
   durationSec: number;
   speakerCount: 2 | 3 | 4 | 5 | 6;
@@ -90,6 +94,7 @@ export interface StandardPodcastJobRequest {
   pacingStyle: string;
   seedScript?: string;
   language?: string;
+  directorModel?: string;
   autoSave?: boolean;
   includeTranscript?: boolean;
   audioFormat?: 'wav';

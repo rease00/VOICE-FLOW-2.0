@@ -5,7 +5,11 @@ import {
   normalizePreferUserGeminiKey,
   resolveAssistantProviderRouting,
 } from './assistantProvider';
-import { resolveAssistantTextDispatchPlan } from '../../../services/geminiService';
+import {
+  resolveAssistantTextDispatchPlan,
+  resolveTextModelCandidates,
+  STUDIO_CAST_TEXT_MODELS,
+} from '../../../services/geminiService';
 
 const baseSettings = (): GenerationSettings => ({
   voiceId: 'Fenrir',
@@ -113,5 +117,24 @@ describe('assistant dispatch plan', () => {
     expect(plan.usePerplexity).toBe(false);
     expect(plan.useRuntimeGemini).toBe(true);
   });
-});
 
+  it('uses runtime-safe Gemini text candidates led by Gemini 3.1 Flash Lite', () => {
+    expect(resolveTextModelCandidates()).toEqual([
+      'gemini-3.1-flash-lite-preview',
+      'gemini-2.5-flash',
+      'gemini-3-flash',
+      'gemini-2.5-flash-lite',
+      'gemma-3-27b',
+      'gemma-3-12b',
+      'gemma-3-4b',
+      'gemma-3-2b',
+      'gemma-3-1b',
+    ]);
+    expect(STUDIO_CAST_TEXT_MODELS).toEqual([
+      'gemini-3.1-flash-lite-preview',
+      'gemini-2.5-flash',
+      'gemini-3-flash',
+      'gemini-2.5-flash-lite',
+    ]);
+  });
+});

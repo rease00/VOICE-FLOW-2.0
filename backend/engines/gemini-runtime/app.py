@@ -58,6 +58,7 @@ from shared.gemini_api_pools import (
     load_pool_config as load_pool_config_shared,
     normalize_pool_config,
     overlay_cached_authoritative_free_pool as overlay_cached_runtime_free_pool_shared,
+    read_key_file_text as read_runtime_key_file_text_shared,
     resolve_default_pool_hint as resolve_default_runtime_pool_hint,
     resolve_effective_keys as resolve_effective_keys_shared,
     save_pool_config as save_pool_config_shared,
@@ -207,25 +208,25 @@ MODEL_DISCOVERY_SCAN_LIMIT = max(20, int(os.getenv("GEMINI_MODEL_DISCOVERY_SCAN_
 KEY_COOLDOWN_BASE_MS = max(1000, int(os.getenv("GEMINI_KEY_COOLDOWN_BASE_MS", "8000")))
 KEY_COOLDOWN_MAX_MS = max(KEY_COOLDOWN_BASE_MS, int(os.getenv("GEMINI_KEY_COOLDOWN_MAX_MS", "120000")))
 KEY_RETRY_LIMIT = max(1, int(os.getenv("GEMINI_KEY_RETRY_LIMIT", "8")))
-KEY_WAIT_SLICE_MS = max(100, int(os.getenv("GEMINI_KEY_WAIT_SLICE_MS", "1000")))
+KEY_WAIT_SLICE_MS = max(100, int(os.getenv("GEMINI_KEY_WAIT_SLICE_MS", "300")))
 GEMINI_KEY_ROTATION_BURST = _read_positive_int_env("GEMINI_KEY_ROTATION_BURST")
 KEY_TOTAL_TIMEOUT_MS = max(
     5000,
     int(os.getenv("GEMINI_KEY_TOTAL_TIMEOUT_MS", str(ALLOCATOR_CONFIG.default_wait_timeout_ms))),
 )
 KEY_AUTH_DISABLE_MS = max(60_000, int(os.getenv("GEMINI_KEY_AUTH_DISABLE_MS", "600000")))
-ALLOCATOR_WAIT_SLICE_MS = max(100, int(os.getenv("GEMINI_ALLOCATOR_WAIT_SLICE_MS", "500")))
+ALLOCATOR_WAIT_SLICE_MS = max(100, int(os.getenv("GEMINI_ALLOCATOR_WAIT_SLICE_MS", "250")))
 GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS = max(
     1000,
-    int(os.getenv("GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS", "45000")),
+    int(os.getenv("GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS", "22000")),
 )
 GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS = max(
     1000,
-    int(os.getenv("GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS", "90000")),
+    int(os.getenv("GEMINI_TTS_MULTI_REQUEST_TIMEOUT_MS", "35000")),
 )
 GEMINI_TTS_ADMISSION_MAX_WAIT_MS = max(
     1000,
-    int(os.getenv("GEMINI_TTS_ADMISSION_MAX_WAIT_MS", "18000")),
+    int(os.getenv("GEMINI_TTS_ADMISSION_MAX_WAIT_MS", "7000")),
 )
 GEMINI_TTS_ADMISSION_SOFT_MARGIN_MS = max(
     0,
@@ -238,7 +239,7 @@ GEMINI_BATCH_DEFAULT_PARALLEL = max(
         (
             os.getenv("GEMINI_BATCH_DEFAULT_PARALLEL")
             or os.getenv("GEMINI_BATCH_MAX_PARALLEL")
-            or "3"
+            or "4"
         )
     ),
 )
@@ -248,13 +249,13 @@ GEMINI_BATCH_MAX_PARALLEL = max(
         (
             os.getenv("GEMINI_BATCH_PARALLEL_LIMIT")
             or os.getenv("GEMINI_BATCH_MAX_PARALLEL")
-            or "6"
+            or "8"
         )
     ),
 )
 GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY = max(
     1,
-    int(os.getenv("GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY", "4")),
+    int(os.getenv("GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY", "6")),
 )
 GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS = max(
     0,
@@ -280,7 +281,7 @@ _RUNTIME_ALLOCATOR = GeminiRateAllocator(
     key_rotation_burst=GEMINI_KEY_ROTATION_BURST,
 )
 GEMINI_SPEAKER_KEY_AFFINITY_ENABLED = (
-    (os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_ENABLED") or "0").strip().lower()
+    (os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 SPEAKER_KEY_AFFINITY_MAX = max(64, int(os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_MAX", "4096")))
@@ -376,7 +377,10 @@ def _resolve_affinity_preferred_key(speakers: list[str], key_pool: list[str]) ->
     key_pool_set = set(key_pool)
     with _KEY_STATE_LOCK:
         for speaker in speakers:
-            state = _SPEAKER_KEY_AFFINITY.get(speaker) or {}
+            normalized = _normalize_speaker_affinity_id(speaker)
+            if not normalized:
+                continue
+            state = _SPEAKER_KEY_AFFINITY.get(normalized) or {}
             bound_key = str(state.get("key") or "").strip()
             if bound_key and bound_key in key_pool_set:
                 return bound_key
@@ -793,7 +797,7 @@ def _build_server_api_key_pool() -> list[str]:
     try:
         key_file = _resolve_key_file_path(path_hint)
         if key_file.exists() and key_file.is_file():
-            file_tokens = parse_api_keys(key_file.read_text(encoding="utf-8", errors="ignore"))
+            file_tokens = parse_api_keys(read_runtime_key_file_text_shared(key_file))
     except Exception:
         file_tokens = []
     pool: list[str] = []
@@ -1100,9 +1104,7 @@ def _sync_authoritative_runtime_free_pool(
     try:
         file_exists = bool(resolved_file_path.exists() and resolved_file_path.is_file())
         if file_exists:
-            file_keys = parse_api_keys(
-                resolved_file_path.read_text(encoding="utf-8", errors="ignore")
-            )
+            file_keys = parse_api_keys(read_runtime_key_file_text_shared(resolved_file_path))
     except Exception:
         file_exists = False
         file_keys = []
@@ -1603,18 +1605,24 @@ def resolve_text_model_candidates() -> list[str]:
 
 
 def extract_text_content(response: object) -> str:
-    primary = str(getattr(response, "text", "") or "").strip()
-    if primary:
-        return primary
-
+    # Avoid SDK `.text` accessor because it can warn when non-text parts
+    # (for example `thought_signature`) are present in the response payload.
     candidates = getattr(response, "candidates", None) or []
+    text_fragments: list[str] = []
     for cand in candidates:
         content = getattr(cand, "content", None)
         parts = getattr(content, "parts", None) or []
         for part in parts:
             text_value = str(getattr(part, "text", "") or "").strip()
             if text_value:
-                return text_value
+                text_fragments.append(text_value)
+    if text_fragments:
+        return "\n".join(text_fragments).strip()
+
+    # Safe fallback for unexpected response shapes.
+    primary = str(getattr(response, "text", "") or "").strip()
+    if primary:
+        return primary
     return ""
 
 
@@ -2311,6 +2319,53 @@ def _normalize_multi_speaker_line_map(raw_line_map: object) -> list[Dict[str, An
             }
         )
     return out
+
+
+def _canonicalize_multi_speaker_identities(
+    speaker_voices: list[Dict[str, str]],
+    line_map: list[Dict[str, Any]],
+) -> tuple[list[Dict[str, str]], list[Dict[str, Any]]]:
+    canonical_by_key: Dict[str, str] = {}
+    for entry in list(speaker_voices or []):
+        speaker = re.sub(r"\s+", " ", str(entry.get("speaker") or "")).strip()
+        if not speaker:
+            continue
+        speaker_key = speaker.lower()
+        canonical_by_key.setdefault(speaker_key, speaker)
+    for line in list(line_map or []):
+        speaker = re.sub(r"\s+", " ", str(line.get("speaker") or "")).strip()
+        if not speaker:
+            continue
+        speaker_key = speaker.lower()
+        canonical_by_key.setdefault(speaker_key, speaker)
+
+    normalized_speaker_voices: list[Dict[str, str]] = []
+    seen_speakers: set[str] = set()
+    for entry in list(speaker_voices or []):
+        speaker = re.sub(r"\s+", " ", str(entry.get("speaker") or "")).strip()
+        if not speaker:
+            continue
+        speaker_key = speaker.lower()
+        if speaker_key in seen_speakers:
+            continue
+        seen_speakers.add(speaker_key)
+        canonical_name = str(canonical_by_key.get(speaker_key) or speaker).strip() or speaker
+        normalized_speaker_voices.append(
+            {
+                "speaker": canonical_name,
+                "voiceName": str(entry.get("voiceName") or "").strip(),
+            }
+        )
+
+    normalized_line_map: list[Dict[str, Any]] = []
+    for line in list(line_map or []):
+        safe_line = dict(line or {}) if isinstance(line, dict) else {}
+        speaker = re.sub(r"\s+", " ", str(safe_line.get("speaker") or "")).strip()
+        if speaker:
+            speaker_key = speaker.lower()
+            safe_line["speaker"] = str(canonical_by_key.get(speaker_key) or speaker).strip() or speaker
+        normalized_line_map.append(safe_line)
+    return normalized_speaker_voices, normalized_line_map
 
 
 def _split_int16_pcm_for_lines(pcm_bytes: bytes, line_weights: list[float]) -> tuple[list[bytes], bool]:
@@ -3530,6 +3585,10 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     if multi_speaker_mode == "off":
         normalized_speaker_voices = []
     normalized_line_map = _normalize_multi_speaker_line_map(payload.multi_speaker_line_map)
+    normalized_speaker_voices, normalized_line_map = _canonicalize_multi_speaker_identities(
+        normalized_speaker_voices,
+        normalized_line_map,
+    )
     return_line_chunks_requested = bool(payload.return_line_chunks)
     try:
         requested_pair_concurrency = (

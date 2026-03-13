@@ -535,6 +535,9 @@ class _DummyStripe:
 def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
+    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
     monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
     monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
     monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
@@ -721,6 +724,9 @@ def test_admin_wallet_coupon_redeem_bypasses_user_and_max_limits(monkeypatch) ->
 def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
+    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
     monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
     monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
     monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
