@@ -6,6 +6,7 @@ import {
   normalizePoolIdInput,
   setPlanPoolInConfig,
   setTtsModelFallbackEnabled,
+  setVertexSourcePolicyFields,
 } from './geminiPools';
 
 describe('geminiPools helpers', () => {
@@ -72,5 +73,18 @@ describe('geminiPools helpers', () => {
     const disabled = setTtsModelFallbackEnabled(enabled, false);
     expect(disabled.sourcePolicy?.ttsModelFallbackEnabled).toBe(false);
     expect(disabled.sourcePolicy?.provider).toBe('gemini_api');
+  });
+
+  it('stores write-only vertex credentials fields in source policy payload', () => {
+    const base = { sourcePolicy: { provider: 'vertex' as const } };
+    const updated = setVertexSourcePolicyFields(base, {
+      vertexProject: 'voiceflow-000f',
+      vertexLocation: 'us-central1',
+      vertexAccessToken: 'AQ.example',
+    });
+
+    expect(updated.sourcePolicy?.vertexProject).toBe('voiceflow-000f');
+    expect(updated.sourcePolicy?.vertexLocation).toBe('us-central1');
+    expect(updated.sourcePolicy?.vertexAccessToken).toBe('AQ.example');
   });
 });

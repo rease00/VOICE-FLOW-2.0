@@ -134,7 +134,11 @@ def test_extract_text_content_reads_parts_without_response_text_accessor() -> No
 def test_runtime_routes_follow_locked_policy() -> None:
     runtime = _load_gemini_runtime_module()
     tts_candidates = runtime.resolve_tts_model_candidates()
-    assert tts_candidates == ["gemini-2.5-flash-lite-preview-tts"]
+    assert tts_candidates == [
+        "gemini-2.5-flash-lite-preview-tts",
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-pro-tts",
+    ]
     assert runtime.resolve_text_model_candidates() == [
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash",
@@ -188,20 +192,111 @@ def test_tts_model_candidates_resolve_by_engine_and_provider() -> None:
     ]
 
 
+def test_vertex_mode_uses_synthetic_lane_without_touching_gemini_key_pool(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    monkeypatch.setattr(runtime, "genai", object())
+    monkeypatch.setattr(runtime, "types", object())
+    monkeypatch.setattr(
+        runtime,
+        "_runtime_source_policy",
+        lambda force=False: {"provider": "vertex", "vertexProject": "voiceflow-000f"},
+    )
+
+    def _unexpected_key_plan(*_args, **_kwargs):
+        raise AssertionError("Gemini key pool should not be used when vertex mode is active.")
+
+    monkeypatch.setattr(runtime, "_resolve_request_key_plan", _unexpected_key_plan)
+    primary_pool, fallback_request_key, effective_pool = runtime._ensure_runtime_pool_or_raise(
+        trace_id="trace_vertex_only_mode"
+    )
+
+    assert fallback_request_key is None
+    assert primary_pool == ["vertex::voiceflow-000f"]
+    assert effective_pool == ["vertex::voiceflow-000f"]
+
+
+def test_resolve_explicit_model_candidates_dedupes_invalid_entries() -> None:
+    runtime = _load_gemini_runtime_module()
+    valid, invalid = runtime._resolve_explicit_model_candidates(
+        raw_candidates=[
+            "gemini-2.5-flash-native-audio-dialog-unknown",
+            "gemini-2.5-flash-native-audio-dialog-unknown",
+        ],
+        raw_model="gemini-2.5-flash-native-audio-dialog-unknown",
+        task="tts",
+    )
+    assert valid == []
+    assert invalid == ["gemini-2.5-flash-native-audio-dialog-unknown"]
+
+
+def test_normalize_model_name_aliases_deprecated_live_dialog_models() -> None:
+    runtime = _load_gemini_runtime_module()
+    assert runtime._normalize_model_name("gemini-2.5-flash-native-audio-dialog") == "gemini-2.5-flash-native-audio-latest"
+    assert runtime._normalize_model_name("models/gemini-2.5-flash-preview-native-audio-dialog") == "gemini-2.5-flash-native-audio-latest"
+
+
+def test_resolve_language_code_uses_live_supported_bcp47_codes() -> None:
+    runtime = _load_gemini_runtime_module()
+    assert runtime.resolve_language_code("Hello world", "en") == "en-US"
+    assert runtime.resolve_language_code("Hello world", "en-GB") == "en-US"
+    assert runtime.resolve_language_code("नमस्ते दुनिया", None) == "hi-IN"
+    assert runtime.resolve_language_code("Fallback to English", None) == "en-US"
+
+
+def test_synthesize_allows_partial_invalid_model_candidates(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    key_pool = [_make_key(91)]
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        runtime,
+        "_resolve_tts_key_pool",
+        lambda *_args, **_kwargs: (key_pool, None, key_pool),
+    )
+
+    def _fake_synthesize_pcm_with_key_pool(*_args, **kwargs):
+        captured["modelCandidatesOverride"] = list(kwargs.get("model_candidates_override") or [])
+        return (
+            b"\x00\x00" * 2400,
+            "gemini-2.5-flash-preview-tts",
+            "single-speaker",
+            0,
+            {"promptTokens": 1, "outputTokens": 1, "totalTokens": 2},
+            {"attemptStatuses": ["success"], "attemptErrorKinds": [""], "attemptKeySelectionIndexes": [0]},
+        )
+
+    monkeypatch.setattr(runtime, "_synthesize_pcm_with_key_pool", _fake_synthesize_pcm_with_key_pool)
+
+    result = runtime._synthesize_text_to_wav(
+        runtime.SynthesizeRequest(
+            engine="GEM",
+            text="Runtime should keep valid candidates and ignore invalid ones.",
+            model="gemini-2.5-flash-native-audio-dialog-unknown",
+            modelCandidates=["gemini-2.5-flash-preview-tts"],
+            voiceName="Fenrir",
+            trace_id="trace_partial_invalid_candidates",
+        )
+    )
+
+    assert bytes(result.get("wavBytes") or b"")
+    assert captured["modelCandidatesOverride"] == ["gemini-2.5-flash-preview-tts"]
+    assert str(result.get("model") or "") == "gemini-2.5-flash-preview-tts"
+
+
 def test_health_and_capabilities_report_tts_model_fallback_state() -> None:
     runtime = _load_gemini_runtime_module()
     client = TestClient(runtime.app)
 
     health_default = client.get("/health?engine=NEURAL2")
     assert health_default.status_code == 200
-    assert health_default.json()["ttsModelFallbackEnabled"] is False
+    assert health_default.json()["ttsModelFallbackEnabled"] is True
     assert health_default.json()["provider"] == "gemini-api"
     assert health_default.json()["gpu_enabled"] is False
     assert health_default.json()["openvino_enabled"] is False
 
     capabilities_default = client.get("/v1/capabilities?engine=NEURAL2")
     assert capabilities_default.status_code == 200
-    assert capabilities_default.json()["metadata"]["ttsModelFallbackEnabled"] is False
+    assert capabilities_default.json()["metadata"]["ttsModelFallbackEnabled"] is True
     assert capabilities_default.json()["metadata"]["provider"] == "gemini-api"
     assert capabilities_default.json()["metadata"]["gpuEnabled"] is False
     assert capabilities_default.json()["metadata"]["openvinoEnabled"] is False

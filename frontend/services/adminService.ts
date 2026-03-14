@@ -207,6 +207,9 @@ export interface GeminiSourcePolicy {
   vertexServiceAccountRef?: string;
   vertexServiceAccountConfigured?: boolean;
   vertexServiceAccountJson?: string;
+  vertexAccessTokenRef?: string;
+  vertexAccessTokenConfigured?: boolean;
+  vertexAccessToken?: string;
   [key: string]: unknown;
 }
 

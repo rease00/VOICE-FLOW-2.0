@@ -4,18 +4,26 @@ import type {
   PodcastMode,
   StandardPodcastJobRequest,
 } from './podcast';
+import { LANGUAGES } from '../../../../constants';
+import type { GenerationSettings } from '../../../../types';
+import type { TtsEngineCapabilitiesResponse } from '../../../shared/api/contracts';
 
 export const PODCAST_DIRECTOR_DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
 export const PODCAST_DEFAULT_LANGUAGE = 'en';
 
-export const PODCAST_LANGUAGE_OPTIONS = [
+export interface PodcastLanguageOption {
+  value: string;
+  label: string;
+}
+
+export const PODCAST_LANGUAGE_OPTIONS: PodcastLanguageOption[] = [
   { value: 'en', label: 'English' },
   { value: 'hi', label: 'Hindi' },
   { value: 'es', label: 'Spanish' },
   { value: 'fr', label: 'French' },
   { value: 'de', label: 'German' },
   { value: 'ja', label: 'Japanese' },
-] as const;
+];
 
 export type PodcastRefreshReason = 'accepted' | 'completed' | 'failed' | 'cancelled';
 
@@ -25,18 +33,72 @@ const REFRESH_REASONS = new Set<PodcastRefreshReason>([
   'failed',
   'cancelled',
 ]);
+const LANGUAGE_TOKEN_REGEX = /^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/i;
+const MULTILINGUAL_LANGUAGE_TOKENS = new Set<string>(['multilingual', 'multi', 'all', '*']);
 
 const compactText = (value: unknown): string => String(value || '').replace(/\s+/g, ' ').trim();
+const normalizeLanguageToken = (value: unknown): string => {
+  const token = compactText(value).toLowerCase();
+  if (!token) return '';
+  return LANGUAGE_TOKEN_REGEX.test(token) ? token : '';
+};
+const resolveLanguageLabel = (normalizedCode: string): string => (
+  LANGUAGES.find((item) => normalizeLanguageToken(item.code) === normalizedCode)?.name ||
+  normalizedCode.toUpperCase()
+);
+const dedupeLanguageOptions = (options: PodcastLanguageOption[]): PodcastLanguageOption[] => {
+  const deduped = new Map<string, PodcastLanguageOption>();
+  for (const option of options) {
+    const value = normalizeLanguageToken(option.value);
+    if (!value || deduped.has(value)) continue;
+    deduped.set(value, { value, label: compactText(option.label) || resolveLanguageLabel(value) });
+  }
+  return Array.from(deduped.values());
+};
+
+export const resolvePodcastLanguageOptions = (
+  capabilities: Pick<TtsEngineCapabilitiesResponse, 'engines'> | null | undefined,
+  engine: GenerationSettings['engine'],
+  fallbackOptions: PodcastLanguageOption[] = PODCAST_LANGUAGE_OPTIONS
+): PodcastLanguageOption[] => {
+  const safeFallback = dedupeLanguageOptions(fallbackOptions);
+  const engineLanguages = capabilities?.engines?.[engine]?.languages;
+  if (!Array.isArray(engineLanguages) || engineLanguages.length === 0) {
+    return safeFallback.length ? safeFallback : [...PODCAST_LANGUAGE_OPTIONS];
+  }
+
+  const hasMultilingualFlag = engineLanguages.some((value) => (
+    MULTILINGUAL_LANGUAGE_TOKENS.has(compactText(value).toLowerCase())
+  ));
+  if (hasMultilingualFlag) {
+    const fullLanguageOptions = dedupeLanguageOptions(
+      LANGUAGES.map((item) => ({
+        value: normalizePodcastLanguage(item.code),
+        label: item.name,
+      }))
+    );
+    return fullLanguageOptions.length ? fullLanguageOptions : (safeFallback.length ? safeFallback : [...PODCAST_LANGUAGE_OPTIONS]);
+  }
+
+  const declaredLanguageOptions = dedupeLanguageOptions(
+    engineLanguages.map((code) => {
+      const normalizedCode = normalizeLanguageToken(code);
+      return {
+        value: normalizedCode,
+        label: resolveLanguageLabel(normalizedCode),
+      };
+    })
+  );
+  return declaredLanguageOptions.length ? declaredLanguageOptions : (safeFallback.length ? safeFallback : [...PODCAST_LANGUAGE_OPTIONS]);
+};
 
 export const normalizePodcastLanguage = (
   value: unknown,
   fallback: string = PODCAST_DEFAULT_LANGUAGE
 ): string => {
-  const fallbackToken = compactText(fallback).toLowerCase() || PODCAST_DEFAULT_LANGUAGE;
-  const token = compactText(value).toLowerCase();
-  if (!token) return fallbackToken;
-  if (/^[a-z]{2}(?:-[a-z0-9]{2,8})?$/i.test(token)) return token;
-  return fallbackToken;
+  const fallbackToken = normalizeLanguageToken(fallback) || PODCAST_DEFAULT_LANGUAGE;
+  const token = normalizeLanguageToken(value);
+  return token || fallbackToken;
 };
 
 export const shouldAutoRunDirectorAtStart = (script: unknown): boolean => !compactText(script);

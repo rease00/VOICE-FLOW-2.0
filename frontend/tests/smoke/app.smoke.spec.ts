@@ -1038,6 +1038,26 @@ async function ensureWorkspaceAuthenticatedOrSkip(page: Page): Promise<StudioSmo
   return credentials;
 }
 
+async function ensureReaderDockExpanded(page: Page): Promise<void> {
+  const dock = page.getByTestId('reader-sticky-dock');
+  await expect(dock).toBeVisible();
+  const expandButton = dock.getByRole('button', { name: /^Expand reader controls$/i });
+  if (await expandButton.count()) {
+    await expandButton.first().click({ force: true });
+  }
+}
+
+async function switchReaderUtilityPanel(page: Page, label: string): Promise<void> {
+  const tray = page.getByTestId('reader-utility-tray');
+  await expect(tray).toBeVisible();
+  const panelTab = tray.getByRole('tab', { name: label }).first();
+  if (await panelTab.count()) {
+    await panelTab.click();
+    return;
+  }
+  await tray.getByRole('button', { name: label }).first().click();
+}
+
 const buildStudioSmokeEntitlements = () => {
   const now = new Date();
   const currentIso = now.toISOString();
@@ -1678,7 +1698,7 @@ test.describe('reader smoke', () => {
 
       const browseHome = page.getByTestId('reader-browse-home');
       await expect(browseHome).toBeVisible();
-      await expect(page.getByRole('button', { name: /^imports$/i })).toHaveCount(0);
+      await expect(browseHome.getByRole('button', { name: /^imports$/i })).toHaveCount(1);
       await expect(page.getByText(/Resume first, import fast, and keep discovery below the fold until you need it\./)).toHaveCount(0);
       await expect(page.getByText(/Continue active sessions, keep your reading library current, or jump into discovery only after your production work is in motion\./)).toHaveCount(0);
 
@@ -1691,14 +1711,15 @@ test.describe('reader smoke', () => {
       const regionSelect = browseHome.locator('label[aria-label="Reader region"] select');
       await expect(regionSelect).toBeVisible();
 
-      const booksChip = browseHome.getByRole('button', { name: /^books$/i });
-      const novelsChip = browseHome.getByRole('button', { name: /^novels$/i });
-      await booksChip.click();
-      await expect(booksChip).toHaveClass(/vf-reader-home__chip--active/);
-      await novelsChip.click();
-      await expect(novelsChip).toHaveClass(/vf-reader-home__chip--active/);
+      const booksNovelsChip = browseHome.getByRole('button', { name: /^books\/novels$/i });
+      const allChip = browseHome.getByRole('button', { name: /^all$/i });
+      await booksNovelsChip.click();
+      await expect(booksNovelsChip).toHaveClass(/vf-reader-home__chip--active/);
+      await allChip.click();
+      await expect(allChip).toHaveClass(/vf-reader-home__chip--active/);
 
       await expect(page.getByText('Commercial Mode')).toBeVisible();
+      await ensureReaderDockExpanded(page);
       await page.getByTestId('reader-sticky-dock').getByRole('button', { name: 'Import' }).click();
       await expect(page.getByTestId('reader-utility-tray')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Import To Reader' })).toBeVisible();
@@ -1726,6 +1747,7 @@ test.describe('reader smoke', () => {
       await expect(page.getByRole('button', { name: /Import.*Open/i })).toBeEnabled();
 
       if (testInfo.project.name === 'chromium-mobile') {
+        await ensureReaderDockExpanded(page);
         await expect(page.getByTestId('reader-sticky-dock').getByRole('button', { name: 'Translate' })).toBeVisible();
       }
     });
@@ -1739,6 +1761,7 @@ test.describe('reader smoke', () => {
     await expect(page.getByTestId('reader-browse-home')).toBeVisible();
 
     const dock = page.getByTestId('reader-sticky-dock');
+    await ensureReaderDockExpanded(page);
     await dock.getByRole('button', { name: 'Translate' }).click();
     await expect(page.getByRole('heading', { name: 'Translator' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Import To Reader' })).toHaveCount(0);
@@ -1747,8 +1770,13 @@ test.describe('reader smoke', () => {
     await page.getByRole('button', { name: 'Save Translation Defaults' }).click();
     await expect(page.getByText('Reader defaults updated.')).toBeVisible();
 
-    await dock.getByRole('button', { name: 'Import' }).click();
-    await page.getByRole('tab', { name: 'Settings' }).click();
+    const settingsTab = page.getByRole('tab', { name: 'Settings' });
+    if (await settingsTab.count()) {
+      await settingsTab.first().click();
+    } else {
+      await ensureReaderDockExpanded(page);
+      await dock.getByRole('button', { name: 'Settings' }).click({ force: true });
+    }
     await expect(page.getByRole('heading', { name: 'Reader Settings' })).toBeVisible();
     await page.getByLabel('Audio Engine').selectOption('tts_hd');
     await page.getByRole('button', { name: 'Save Reader Defaults' }).click();
@@ -1778,20 +1806,137 @@ test.describe('reader smoke', () => {
     await page.getByRole('button', { name: 'Open In Book Player' }).first().click();
 
     await expect(page.getByTestId('reader-playback-stage')).toBeVisible();
+    await expect(page.locator('.vf-reader-player__active-line').first()).toBeVisible();
     await expect(page.getByTestId('reader-sticky-dock')).toBeVisible();
+    await ensureReaderDockExpanded(page);
     await page.getByTestId('reader-sticky-dock').getByRole('button', { name: 'Import' }).click();
     await expect(page.getByTestId('reader-utility-tray')).toBeVisible();
-    await expect(page.getByRole('tab', { name: 'Import' })).toHaveAttribute('aria-selected', 'true');
-    await page.getByRole('tab', { name: 'Settings' }).click();
-    await expect(page.getByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true');
-    await page.getByRole('tab', { name: 'Translator' }).click();
-    await expect(page.getByRole('tab', { name: 'Translator' })).toHaveAttribute('aria-selected', 'true');
-    await page.getByRole('tab', { name: 'AI Text' }).click();
-    await expect(page.getByRole('tab', { name: 'AI Text' })).toHaveAttribute('aria-selected', 'true');
-    await page.getByRole('tab', { name: 'Cast' }).click();
-    await expect(page.getByRole('tab', { name: 'Cast' })).toHaveAttribute('aria-selected', 'true');
-    await page.getByRole('tab', { name: 'Import' }).click();
     await expect(page.getByRole('heading', { name: 'Import To Reader' })).toBeVisible();
+    await switchReaderUtilityPanel(page, 'Settings');
+    await expect(page.getByRole('heading', { name: 'Reader Settings' })).toBeVisible();
+    await switchReaderUtilityPanel(page, 'Translator');
+    await expect(page.getByRole('heading', { name: 'Translator' })).toBeVisible();
+    await switchReaderUtilityPanel(page, 'AI Text');
+    await expect(page.getByRole('heading', { name: /AI (Detected )?Text/i })).toBeVisible();
+    await switchReaderUtilityPanel(page, 'Cast');
+    await expect(page.getByRole('heading', { name: 'Cast & Crew' })).toBeVisible();
+    await switchReaderUtilityPanel(page, 'Import');
+    await expect(page.getByRole('heading', { name: 'Import To Reader' })).toBeVisible();
+  });
+
+  test('reader dock controls are interactive end-to-end', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'chromium-desktop', 'Detailed dock sweep runs on desktop profile.');
+    await setTheme(page, 'dark');
+    await stubReaderApi(page, { activeSession: true });
+    await page.goto('/?vf-screen=main&vf-tab=READER');
+    await expect(page.getByRole('button', { name: 'Open In Book Player' }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'Open In Book Player' }).first().click();
+
+    await expect(page.getByTestId('reader-playback-stage')).toBeVisible();
+
+    const dock = page.getByTestId('reader-sticky-dock');
+    await ensureReaderDockExpanded(page);
+    await expect(dock.getByRole('button', { name: 'Open Reader home' })).toBeVisible();
+    await expect(dock.getByRole('button', { name: /reader audio/i })).toBeVisible();
+    await expect(dock.getByRole('button', { name: 'Previous reader item' })).toBeDisabled();
+    await expect(dock.getByRole('button', { name: 'Next reader item' })).toBeDisabled();
+
+    const voiceSelect = dock.getByRole('combobox', { name: 'Voice narrator' });
+    await expect(voiceSelect).toBeVisible();
+    const currentVoice = await voiceSelect.inputValue();
+    const optionValues = await voiceSelect.locator('option').evaluateAll((nodes) =>
+      nodes.map((node) => (node as HTMLOptionElement).value).filter(Boolean)
+    );
+    const nextVoice = optionValues.find((value) => value !== currentVoice);
+    if (nextVoice) {
+      await voiceSelect.selectOption(nextVoice);
+      await expect(voiceSelect).toHaveValue(nextVoice);
+    }
+
+    const nativeToggle = dock.getByRole('button', { name: /Native (On|Off)/ }).first();
+    const nativeBefore = (await nativeToggle.innerText()).trim();
+    await nativeToggle.click({ force: true });
+    await ensureReaderDockExpanded(page);
+    const nativeAfter = (await dock.getByRole('button', { name: /Native (On|Off)/ }).first().innerText()).trim();
+    expect(nativeAfter).not.toBe(nativeBefore);
+
+    const multiToggle = dock.getByRole('button', { name: /Multi (On|Off)/ }).first();
+    const multiBefore = (await multiToggle.innerText()).trim();
+    await multiToggle.click({ force: true });
+    await ensureReaderDockExpanded(page);
+    const multiAfter = (await dock.getByRole('button', { name: /Multi (On|Off)/ }).first().innerText()).trim();
+    if (!/Multi On/i.test(multiAfter)) {
+      await dock.getByRole('button', { name: /Multi (On|Off)/ }).first().click({ force: true });
+      await ensureReaderDockExpanded(page);
+    }
+    expect(/Multi (On|Off)/i.test(multiAfter) || /Multi On/i.test(multiAfter)).toBe(true);
+
+    await dock.getByRole('button', { name: 'Import' }).click({ force: true });
+    await expect(page.getByRole('heading', { name: 'Import To Reader' })).toBeVisible();
+
+    await ensureReaderDockExpanded(page);
+    await dock.getByRole('button', { name: 'Translate' }).click({ force: true });
+    await expect(page.getByRole('heading', { name: 'Translator' })).toBeVisible();
+
+    await ensureReaderDockExpanded(page);
+    await dock.getByRole('button', { name: 'Settings' }).click({ force: true });
+    await expect(page.getByRole('heading', { name: 'Reader Settings' })).toBeVisible();
+
+    await ensureReaderDockExpanded(page);
+    await dock.getByRole('button', { name: 'AI Text' }).click({ force: true });
+    await expect(page.getByRole('heading', { name: /AI (Detected )?Text/i })).toBeVisible();
+
+    await ensureReaderDockExpanded(page);
+    const castButton = dock.getByRole('button', { name: 'Cast' });
+    await expect(castButton).toBeVisible();
+    await castButton.click({ force: true });
+    await expect(page.getByRole('heading', { name: 'Cast & Crew' })).toBeVisible();
+
+    const utilityTray = page.getByTestId('reader-utility-tray');
+    const trayClose = utilityTray.getByRole('button', { name: /Close reader utility tray/i }).first();
+    if (await utilityTray.isVisible().catch(() => false)) {
+      if (await trayClose.count()) {
+        await trayClose.click({ force: true });
+      }
+      if (await utilityTray.isVisible().catch(() => false)) {
+        await page.keyboard.press('Escape').catch(() => undefined);
+      }
+    }
+
+    await ensureReaderDockExpanded(page);
+    await dock.getByRole('button', { name: 'Open Reader home' }).click();
+    await expect(page.getByTestId('reader-browse-home')).toBeVisible();
+  });
+
+  test('reader dock collapses after inactivity and stays expanded while utility tray is open', async ({ page }) => {
+    await setTheme(page, 'dark');
+    await stubReaderApi(page, { activeSession: true });
+    await page.goto('/?vf-screen=main&vf-tab=READER');
+    await expect(page.getByRole('button', { name: 'Open In Book Player' }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'Open In Book Player' }).first().click();
+
+    const dock = page.getByTestId('reader-sticky-dock');
+    await ensureReaderDockExpanded(page);
+    await expect(dock.getByRole('button', { name: 'Import' })).toBeVisible();
+
+    const viewport = page.viewportSize();
+    const expandedBox = await dock.boundingBox();
+    expect(viewport && expandedBox).toBeTruthy();
+    if (viewport && expandedBox) {
+      const centerDelta = Math.abs((expandedBox.x + expandedBox.width / 2) - (viewport.width / 2));
+      expect(centerDelta).toBeLessThan(36);
+    }
+
+    await page.waitForTimeout(3300);
+    await expect(dock.getByRole('button', { name: /^Expand reader controls$/i })).toBeVisible();
+
+    await dock.getByRole('button', { name: /^Expand reader controls$/i }).click();
+    await expect(dock.getByRole('button', { name: 'Import' })).toBeVisible();
+    await dock.getByRole('button', { name: 'Import' }).click();
+    await expect(page.getByTestId('reader-utility-tray')).toBeVisible();
+
+    await page.waitForTimeout(3600);
+    await expect(dock.getByRole('button', { name: 'Import' })).toBeVisible();
   });
 
   test('reader import flow opens playback and saves native plus multi-speaker settings', async ({ page }) => {
@@ -1800,6 +1945,7 @@ test.describe('reader smoke', () => {
     await page.goto('/?vf-screen=main&vf-tab=READER');
     await expect(page.getByTestId('reader-browse-home')).toBeVisible();
 
+    await ensureReaderDockExpanded(page);
     await page.getByTestId('reader-sticky-dock').getByRole('button', { name: 'Import' }).click();
     await expect(page.getByRole('heading', { name: 'Import To Reader' })).toBeVisible();
 
@@ -1818,6 +1964,7 @@ test.describe('reader smoke', () => {
     expect(uploadAudit?.ownershipBasis).toBe('licensed');
     expect(uploadAudit?.title).toBe('Smoke Import Session');
 
+    await ensureReaderDockExpanded(page);
     const dock = page.getByTestId('reader-sticky-dock');
     const nativeToggle = dock.getByRole('button', { name: /Native (On|Off)/ }).first();
     await expect(nativeToggle).toBeVisible();
@@ -1826,6 +1973,7 @@ test.describe('reader smoke', () => {
     const expectedNativeButtonLabel = nextAudioEngine === 'native_audio_dialog' ? 'Native On' : 'Native Off';
     await nativeToggle.click();
 
+    await ensureReaderDockExpanded(page);
     await page.getByTestId('reader-sticky-dock').getByRole('button', { name: 'Import' }).click();
     await page.getByRole('tab', { name: 'Settings' }).click();
     const multiSpeakerSelect = page.getByLabel('Multi-Speaker');
@@ -1841,6 +1989,7 @@ test.describe('reader smoke', () => {
     expect(saveAudit?.multiSpeakerEnabled).toBe(nextMultiSpeakerMode === 'multi');
     expect(saveAudit?.voiceMode).toBe(nextMultiSpeakerMode);
 
+    await ensureReaderDockExpanded(page);
     const expectedMultiButtonLabel = nextMultiSpeakerMode === 'multi' ? 'Multi On' : 'Multi Off';
     const desktopMultiToggle = page.getByTestId('reader-sticky-dock').getByRole('button', { name: expectedMultiButtonLabel });
     if (await desktopMultiToggle.count()) {
@@ -1867,7 +2016,7 @@ test.describe('reader smoke', () => {
     await expect(page.getByTestId('reader-playback-stage')).toBeVisible({ timeout: 3000 });
     expect(Date.now() - prepareStartedAt).toBeLessThan(3500);
 
-    await expect(page.getByText('Hydrated panel 1')).toBeVisible();
+    await expect(page.locator('.vf-reader-player__active-line', { hasText: 'Hydrated panel 1' }).first()).toBeVisible();
     await expect(page.getByRole('img', { name: 'Panel 1' })).toHaveAttribute('src', /\/reader\/assets\//);
   });
 

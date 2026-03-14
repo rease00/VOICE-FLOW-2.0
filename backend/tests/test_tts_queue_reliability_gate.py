@@ -168,6 +168,33 @@ def test_live_native_request_shape_rejects_invalid_limits() -> None:
     assert "connectionMaxSec" in str(exc_info.value.detail)
 
 
+def test_normalize_live_native_config_defaults_to_native_audio_only_fallback() -> None:
+    normalized = backend_app._normalize_live_native_config(
+        {
+            "topic": "Native-only fallback policy",
+            "speakerCount": 2,
+            "cast": backend_app._default_live_native_cast(2),
+        },
+        fallback_topic="Native-only fallback policy",
+    )
+    recovery = dict(normalized.get("recovery") or {})
+    assert str(recovery.get("fallbackMode") or "") == "native_audio_only"
+
+
+def test_normalize_live_native_config_accepts_explicit_runtime_nonlive_fallback() -> None:
+    normalized = backend_app._normalize_live_native_config(
+        {
+            "topic": "Legacy fallback compatibility",
+            "speakerCount": 2,
+            "cast": backend_app._default_live_native_cast(2),
+            "recovery": {"fallbackMode": "runtime_nonlive_same_cast"},
+        },
+        fallback_topic="Legacy fallback compatibility",
+    )
+    recovery = dict(normalized.get("recovery") or {})
+    assert str(recovery.get("fallbackMode") or "") == "runtime_nonlive_same_cast"
+
+
 def test_live_jobs_use_priority_lane_bump() -> None:
     assert backend_app._tts_job_lane_for_plan("free", live_stream=False, mode="") == "free"
     assert backend_app._tts_job_lane_for_plan("free", live_stream=True, mode="") == "pro"
@@ -227,7 +254,15 @@ def test_process_tts_job_live_native_turn_order_and_artifacts(monkeypatch, tmp_p
             return {}
 
     monkeypatch.setattr(backend_app, "_runtime_generate_live_native_turn_text", _fake_turn_text)
-    monkeypatch.setattr(backend_app, "_runtime_tts_request_with_gemini_failover", lambda *_args, **_kwargs: _RuntimeResponse())
+    captured_runtime_payloads: list[dict] = []
+
+    def _fake_runtime_request(*_args, **_kwargs):
+        payload = dict(_kwargs.get("json") or {}) if isinstance(_kwargs.get("json"), dict) else {}
+        if payload:
+            captured_runtime_payloads.append(payload)
+        return _RuntimeResponse()
+
+    monkeypatch.setattr(backend_app, "_runtime_tts_request_with_gemini_failover", _fake_runtime_request)
 
     job_id = "live_native_turn_order_job"
     payload = {
@@ -279,6 +314,12 @@ def test_process_tts_job_live_native_turn_order_and_artifacts(monkeypatch, tmp_p
     completed = backend_app._TTS_JOB_QUEUE.get(job_id) or {}
     assert str(completed.get("status") or "") == "completed"
     assert str(completed.get("mode") or "") == "live_native"
+    assert captured_runtime_payloads
+    first_runtime_payload = dict(captured_runtime_payloads[0])
+    assert str(first_runtime_payload.get("model") or "").strip()
+    model_candidates = list(first_runtime_payload.get("modelCandidates") or [])
+    assert model_candidates
+    assert str(first_runtime_payload.get("model") or "").strip() in model_candidates
     live_state = completed.get("liveState") if isinstance(completed.get("liveState"), dict) else {}
     chunks = list(live_state.get("chunks") or [])
     assert len(chunks) >= 2
@@ -638,12 +679,27 @@ def test_tts_job_gemini_pool_exhaustion_auto_rotates_and_retries_once(monkeypatc
     )
     monkeypatch.setattr(backend_app._TTS_JOB_QUEUE, "dequeue_next", lambda: None)
 
+    target_request_id = "gemini_auto_rotate_req_1"
+    target_trace_id = "gemini_auto_rotate_trace_1"
+    target_text = "auto rotate should recover the request"
     runtime_calls = {"count": 0}
+    target_runtime_calls = {"count": 0}
     rotations = {"count": 0}
 
     def _fake_runtime_request(*_args, **_kwargs):
         runtime_calls["count"] += 1
-        if runtime_calls["count"] == 1:
+        payload = dict(_kwargs.get("json") or {}) if isinstance(_kwargs.get("json"), dict) else {}
+        request_id = str(payload.get("request_id") or payload.get("requestId") or "").strip()
+        trace_id = str(payload.get("trace_id") or payload.get("traceId") or "").strip()
+        text_value = str(payload.get("text") or "").strip()
+        is_target_job = (
+            request_id == target_request_id
+            or trace_id == target_trace_id
+            or text_value == target_text
+        )
+        if is_target_job:
+            target_runtime_calls["count"] += 1
+        if is_target_job and target_runtime_calls["count"] == 1:
             return _DummyRuntimeResponse(
                 status_code=502,
                 body={
@@ -680,10 +736,10 @@ def test_tts_job_gemini_pool_exhaustion_auto_rotates_and_retries_once(monkeypatc
     job_payload = {
         "jobId": "gemini_auto_rotate_job_1",
         "uid": "gemini_auto_rotate_user",
-        "requestId": "gemini_auto_rotate_req_1",
-        "traceId": "gemini_auto_rotate_trace_1",
+        "requestId": target_request_id,
+        "traceId": target_trace_id,
         "engine": "GEM",
-        "text": "auto rotate should recover the request",
+        "text": target_text,
         "voiceId": "Fenrir",
         "voiceName": "Fenrir",
         "planName": "Free",
@@ -691,7 +747,7 @@ def test_tts_job_gemini_pool_exhaustion_auto_rotates_and_retries_once(monkeypatc
         "adminLimitBypass": True,
         "runtimeBase": "http://127.0.0.1:7810",
         "runtimePath": "/synthesize",
-        "upstreamPayload": {"text": "auto rotate should recover the request", "voiceName": "Fenrir"},
+        "upstreamPayload": {"text": target_text, "voiceName": "Fenrir"},
         "postTtsDisable": True,
         "deadlineAtMs": int(time.time() * 1000) + 60_000,
         "maxAttempts": 1,
@@ -704,7 +760,8 @@ def test_tts_job_gemini_pool_exhaustion_auto_rotates_and_retries_once(monkeypatc
 
     completed = backend_app._TTS_JOB_QUEUE.get(job_payload["jobId"]) or {}
     assert str(completed.get("status") or "") == "completed"
-    assert runtime_calls["count"] == 2
+    assert target_runtime_calls["count"] == 2
+    assert runtime_calls["count"] >= target_runtime_calls["count"]
     assert rotations["count"] == 1
     assert str(backend_app._GEMINI_AUTO_ROTATE_STATE.get("lastErrorCode") or "") == "GEMINI_UPSTREAM_MODEL_FAILED"
     assert str(backend_app._GEMINI_AUTO_ROTATE_STATE.get("lastJobId") or "") == job_payload["jobId"]

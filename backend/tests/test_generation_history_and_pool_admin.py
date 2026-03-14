@@ -747,7 +747,7 @@ def test_admin_gemini_pools_persists_tts_model_fallback_toggle(monkeypatch, tmp_
     client = TestClient(backend_app.app)
     warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
     assert warm.status_code == 200
-    assert warm.json()["sourcePolicy"]["ttsModelFallbackEnabled"] is False
+    assert warm.json()["sourcePolicy"]["ttsModelFallbackEnabled"] is True
 
     update = client.put(
         "/admin/gemini/pools",
@@ -783,6 +783,89 @@ def test_admin_gemini_pools_persists_tts_model_fallback_toggle(monkeypatch, tmp_
 
     persisted = json.loads(pools_path.read_text(encoding="utf-8"))
     assert bool((persisted.get("sourcePolicy") or {}).get("ttsModelFallbackEnabled")) is True
+
+
+def test_admin_gemini_pools_persists_vertex_access_token_reference(monkeypatch, tmp_path: Path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "GEMINI_API_POOLS_PREFER_FIRESTORE", False)
+
+    free_key = _make_key(133)
+    keys_path = tmp_path / "API.txt"
+    keys_path.write_text(f"{free_key}\n", encoding="utf-8")
+    pools_path = tmp_path / "gemini_api_pools.json"
+    pools_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pools": {
+                    "free": {"keys": []},
+                    "pro": {"keys": []},
+                    "pro_plus": {"keys": []},
+                },
+                "fallbackChains": {
+                    "free": ["free"],
+                    "pro": ["pro", "free"],
+                    "pro_plus": ["pro_plus", "pro", "free"],
+                },
+                "constraints": {"uniqueKeyMembership": True},
+            },
+            ensure_ascii=True,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    vertex_token_path = tmp_path / "vertex-access-token.txt"
+    monkeypatch.setenv("GEMINI_API_KEYS_FILE", str(keys_path))
+    monkeypatch.setenv("GEMINI_API_POOLS_FILE", str(pools_path))
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "voiceflow-000f")
+    monkeypatch.setattr(backend_app, "GEMINI_VERTEX_ACCESS_TOKEN_FILE", str(vertex_token_path), raising=False)
+    backend_app._GEMINI_POOLS_CACHE = None
+    backend_app._GEMINI_POOLS_META = {}
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_reload", lambda: {"ok": True})
+    monkeypatch.setattr(backend_app, "_runtime_gemini_pool_snapshot", lambda: {"ok": True, "pool": {"keyCount": 0}})
+
+    client = TestClient(backend_app.app)
+    warm = client.get("/admin/gemini/pools", headers={"x-dev-uid": "local_admin"})
+    assert warm.status_code == 200
+
+    update = client.put(
+        "/admin/gemini/pools",
+        headers={"x-dev-uid": "local_admin"},
+        json={
+            "version": 1,
+            "pools": {
+                "free": {"keys": []},
+                "pro": {"keys": []},
+                "pro_plus": {"keys": []},
+            },
+            "fallbackChains": {
+                "free": ["free"],
+                "pro": ["pro", "free"],
+                "pro_plus": ["pro_plus", "pro", "free"],
+            },
+            "constraints": {"uniqueKeyMembership": True},
+            "sourcePolicy": {
+                "provider": "vertex",
+                "vertexAccessToken": "AQ.test.vertex.token",
+            },
+        },
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert payload["sourcePolicy"]["provider"] == "vertex"
+    assert payload["sourcePolicy"]["vertexAccessTokenConfigured"] is True
+    assert payload["sourcePolicy"]["freePoolLocked"] is False
+    assert payload["sourcePolicy"].get("vertexAccessToken") is None
+    assert str(payload["sourcePolicy"].get("vertexProject") or "").strip() == "voiceflow-000f"
+    assert vertex_token_path.exists()
+    assert vertex_token_path.read_text(encoding="utf-8").strip() == "AQ.test.vertex.token"
+    assert str(payload["sourcePolicy"]["vertexAccessTokenRef"] or "").strip() == str(vertex_token_path)
+
+    persisted = json.loads(pools_path.read_text(encoding="utf-8"))
+    persisted_policy = persisted.get("sourcePolicy") or {}
+    assert str(persisted_policy.get("vertexAccessTokenRef") or "").strip() == str(vertex_token_path)
+    assert str(persisted_policy.get("provider") or "").strip() == "vertex"
 
 
 def test_admin_gemini_pools_missing_file_keeps_last_good(monkeypatch, tmp_path: Path) -> None:

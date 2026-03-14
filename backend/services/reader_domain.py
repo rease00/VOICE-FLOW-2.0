@@ -22,6 +22,16 @@ READER_REGION_DEFS: tuple[dict[str, Any], ...] = (
     {"id": "german", "label": "German", "languageCodes": ("de", "deu", "ger"), "locale": "de"},
     {"id": "portuguese", "label": "Portuguese", "languageCodes": ("pt", "por"), "locale": "pt"},
     {"id": "arabic", "label": "Arabic", "languageCodes": ("ar", "ara"), "locale": "ar"},
+    {"id": "united_states", "label": "United States", "languageCodes": ("en-US", "en"), "locale": "en-US", "countryCode": "US"},
+    {"id": "united_kingdom", "label": "United Kingdom", "languageCodes": ("en-GB", "en"), "locale": "en-GB", "countryCode": "GB"},
+    {"id": "india", "label": "India", "languageCodes": ("hi", "en-IN"), "locale": "hi", "countryCode": "IN"},
+    {"id": "japan", "label": "Japan", "languageCodes": ("ja", "jpn"), "locale": "ja", "countryCode": "JP"},
+    {"id": "china", "label": "China", "languageCodes": ("zh", "zho", "chi"), "locale": "zh", "countryCode": "CN"},
+    {"id": "south_korea", "label": "South Korea", "languageCodes": ("ko", "kor"), "locale": "ko", "countryCode": "KR"},
+    {"id": "spain", "label": "Spain", "languageCodes": ("es", "spa"), "locale": "es", "countryCode": "ES"},
+    {"id": "france", "label": "France", "languageCodes": ("fr", "fra", "fre"), "locale": "fr", "countryCode": "FR"},
+    {"id": "germany", "label": "Germany", "languageCodes": ("de", "deu", "ger"), "locale": "de", "countryCode": "DE"},
+    {"id": "brazil", "label": "Brazil", "languageCodes": ("pt", "por"), "locale": "pt", "countryCode": "BR"},
 )
 
 READER_FALLBACK_CATALOG: tuple[dict[str, Any], ...] = (
@@ -461,6 +471,16 @@ def normalize_reader_catalog_item(raw_item: dict[str, Any]) -> dict[str, Any]:
     content_kind = normalize_reader_content_kind(raw_item.get("contentKind"))
     summary = collapse_whitespace(raw_item.get("summary") or raw_item.get("excerpt") or "")
     sample_text = str(raw_item.get("sampleText") or "").strip()
+    source_meta = dict(raw_item.get("sourceMeta") or {})
+    source_language = (
+        str(
+            raw_item.get("sourceLanguage")
+            or source_meta.get("sourceLanguage")
+            or region.get("locale")
+            or "en"
+        ).strip()
+        or "en"
+    )
     supports_read_here = bool(raw_item.get("supportsReadHere")) or bool(sample_text or raw_item.get("contentUrl") or raw_item.get("archiveTxtUrl"))
     return {
         "id": str(raw_item.get("id") or "").strip(),
@@ -480,7 +500,8 @@ def normalize_reader_catalog_item(raw_item: dict[str, Any]) -> dict[str, Any]:
         "archiveTxtUrl": str(raw_item.get("archiveTxtUrl") or "").strip(),
         "coverUrl": str(raw_item.get("coverUrl") or "").strip(),
         "supportsReadHere": supports_read_here,
-        "sourceMeta": dict(raw_item.get("sourceMeta") or {}),
+        "sourceLanguage": source_language,
+        "sourceMeta": source_meta,
         "createdAt": str(raw_item.get("createdAt") or "").strip(),
         "updatedAt": str(raw_item.get("updatedAt") or "").strip(),
         "direction": str(raw_item.get("direction") or "").strip(),
@@ -494,10 +515,25 @@ def fallback_catalog_items(region_id: Optional[str] = None, *, content_kind: str
     safe_region = str(region_id or "").strip().lower()
     safe_content_kind = normalize_reader_content_kind(content_kind)
     out: list[dict[str, Any]] = []
+    fallback_by_locale: list[dict[str, Any]] = []
+    safe_region_locale = str(reader_region(safe_region).get("locale") or "").strip().lower()
+    safe_region_locale_base = safe_region_locale.split("-", 1)[0] if safe_region_locale else ""
     for item in READER_FALLBACK_CATALOG:
-        if safe_region and str(item.get("regionId") or "").strip().lower() != safe_region:
-            continue
         if normalize_reader_content_kind(item.get("contentKind")) != safe_content_kind:
             continue
-        out.append(normalize_reader_catalog_item(dict(item)))
+        item_region = str(item.get("regionId") or "").strip().lower()
+        normalized_item = normalize_reader_catalog_item(dict(item))
+        if safe_region and item_region == safe_region:
+            out.append(normalized_item)
+            continue
+        if not safe_region:
+            out.append(normalized_item)
+            continue
+        if safe_region_locale_base:
+            item_locale = str(reader_region(item_region).get("locale") or "").strip().lower()
+            item_locale_base = item_locale.split("-", 1)[0] if item_locale else ""
+            if item_locale_base and item_locale_base == safe_region_locale_base:
+                fallback_by_locale.append(normalized_item)
+    if safe_region and not out:
+        out.extend(fallback_by_locale)
     return out

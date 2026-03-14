@@ -26,10 +26,11 @@ interface ReaderBrowseHomeProps {
   formatProgressLabel: (item: ReaderCatalogItem | null) => string;
 }
 
-const SURFACE_OPTIONS: Array<{ id: ReaderSurfaceFilter; label: string }> = [
-  { id: 'all', label: 'novels' },
-  { id: 'books', label: 'books' },
-  { id: 'comics', label: 'manga/comics' },
+const SURFACE_OPTIONS: Array<{ id: string; surface: ReaderSurfaceFilter; label: string }> = [
+  { id: 'all', surface: 'all', label: 'all' },
+  { id: 'books', surface: 'books', label: 'books/novels' },
+  { id: 'manga-comics', surface: 'comics', label: 'manga/comics' },
+  { id: 'imports', surface: 'uploads', label: 'imports' },
 ];
 
 const buildShelf = (source: ReaderCatalogItem[], surface: ReaderSurfaceFilter): ReaderCatalogItem[] =>
@@ -48,6 +49,18 @@ const buildReadingLibrary = (source: ReaderCatalogItem[], surface: ReaderSurface
       if (rightScore !== leftScore) return rightScore - leftScore;
       return String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''));
     });
+
+const dedupeShelfItems = (source: ReaderCatalogItem[]): ReaderCatalogItem[] => {
+  const out: ReaderCatalogItem[] = [];
+  const seen = new Set<string>();
+  for (const item of source) {
+    const safeId = String(item.id || '').trim();
+    if (!safeId || seen.has(safeId)) continue;
+    seen.add(safeId);
+    out.push(item);
+  }
+  return out;
+};
 
 const renderCardCover = (item: ReaderCatalogItem, resolveMediaUrl: (url: string | undefined) => string): React.ReactNode => {
   const coverUrl = resolveMediaUrl(item.coverUrl);
@@ -96,6 +109,7 @@ const resolveCardActionLabel = (item: ReaderCatalogItem): string => {
 const ShelfSection: React.FC<{
   title: string;
   eyebrow: string;
+  emptyMessage: string;
   items: ReaderCatalogItem[];
   selectedItemId: string;
   onSelectItem: (itemId: string) => void;
@@ -106,6 +120,7 @@ const ShelfSection: React.FC<{
 }> = ({
   title,
   eyebrow,
+  emptyMessage,
   items,
   selectedItemId,
   onSelectItem,
@@ -123,7 +138,7 @@ const ShelfSection: React.FC<{
       <div className="vf-reader-home__shelf-count">{items.length} titles</div>
     </div>
     {items.length === 0 ? (
-      <div className="vf-reader-home__empty-card">No surfaced titles yet for this section.</div>
+      <div className="vf-reader-home__empty-card">{emptyMessage}</div>
     ) : (
       <div className="vf-reader-home__card-grid">
         {items.map((item) => {
@@ -213,10 +228,69 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   formatCompactStat,
   formatProgressLabel,
 }) => {
-  const continueReading = useMemo(() => buildShelf(library?.shelves.continueReading || [], surface), [library?.shelves.continueReading, surface]);
-  const discoveryRail = useMemo(() => buildShelf(library?.shelves.trending || [], surface), [library?.shelves.trending, surface]);
-  const readingLibrary = useMemo(() => buildReadingLibrary(library?.items || [], surface), [library?.items, surface]);
-  const newArrivals = useMemo(() => buildShelf(library?.shelves.newArrivals || [], surface), [library?.shelves.newArrivals, surface]);
+  const searchResults = useMemo(
+    () => dedupeShelfItems(buildShelf(filteredItems, surface)),
+    [filteredItems, surface]
+  );
+  const shelves = useMemo(() => {
+    const used = new Set<string>();
+    const continueReading = dedupeShelfItems(buildShelf(library?.shelves.continueReading || [], surface));
+    continueReading.forEach((item) => used.add(item.id));
+    const readingLibrary = dedupeShelfItems(buildReadingLibrary(library?.items || [], surface))
+      .filter((item) => !used.has(item.id));
+    readingLibrary.forEach((item) => used.add(item.id));
+    const discoveryRail = dedupeShelfItems(buildShelf(library?.shelves.trending || [], surface))
+      .filter((item) => !used.has(item.id));
+    discoveryRail.forEach((item) => used.add(item.id));
+    const newArrivals = dedupeShelfItems(buildShelf(library?.shelves.newArrivals || [], surface))
+      .filter((item) => !used.has(item.id));
+    const recentImports = dedupeShelfItems(buildShelf(library?.shelves.recentlyImported || [], surface === 'books' ? 'all' : surface));
+    return {
+      continueReading,
+      readingLibrary,
+      discoveryRail,
+      newArrivals,
+      recentImports,
+    };
+  }, [library?.items, library?.shelves.continueReading, library?.shelves.newArrivals, library?.shelves.recentlyImported, library?.shelves.trending, surface]);
+  const isSearching = Boolean(searchQuery.trim());
+  const shelfSections = useMemo(() => {
+    if (isSearching) {
+      return [
+        {
+          key: 'search-results',
+          title: 'Search Results',
+          eyebrow: 'Search',
+          emptyMessage: 'No titles matched your search.',
+          items: searchResults,
+        },
+      ];
+    }
+    const popularItems = shelves.readingLibrary.length > 0 ? shelves.readingLibrary : shelves.continueReading;
+    return [
+      {
+        key: 'top-trending',
+        title: 'Top Trending',
+        eyebrow: 'Discovery Rail',
+        emptyMessage: 'No trending items yet in this filter.',
+        items: shelves.discoveryRail,
+      },
+      {
+        key: 'popular',
+        title: 'Popular',
+        eyebrow: 'Library',
+        emptyMessage: 'No popular titles available yet.',
+        items: popularItems,
+      },
+      {
+        key: 'new-uploads',
+        title: 'New Uploads',
+        eyebrow: 'Imports',
+        emptyMessage: 'Import a title and it will appear here.',
+        items: shelves.recentImports,
+      },
+    ].filter((section) => section.items.length > 0);
+  }, [isSearching, searchResults, shelves.continueReading, shelves.discoveryRail, shelves.readingLibrary, shelves.recentImports]);
   const selectedItem = useMemo(
     () => (library?.items || []).find((item) => item.id === selectedItemId) || null,
     [library?.items, selectedItemId]
@@ -237,6 +311,8 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
     ];
   }, [isLoading, library?.regions, regionId]);
   const isRegionSelectDisabled = regionOptions.length <= 1;
+
+  const handleSurfaceSelect = (nextSurface: ReaderSurfaceFilter) => onSelectSurface(nextSurface);
 
   return (
     <div className="vf-reader-home" data-testid="reader-browse-home">
@@ -261,28 +337,25 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
         <div className="vf-reader-home__hero-copy">
           <div className="vf-reader-home__eyebrow">
             <Compass size={14} />
-            Reader Home
+            Home Page
           </div>
-          <div className="vf-reader-home__hero-actions">
-            <div className="vf-reader-home__surface-strip">
-              {SURFACE_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={`vf-reader-home__chip ${surface === option.id ? 'vf-reader-home__chip--active' : ''}`}
-                  onClick={() => onSelectSurface(option.id)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <div className="vf-reader-home__hero-toolbar">
-              <label className="vf-reader-home__search vf-reader-home__search--hero">
-                <Search size={16} />
-                <input value={searchQuery} onChange={(event) => onSetSearchQuery(event.target.value)} placeholder="search" aria-label="Search reader titles" />
-              </label>
+          <div className="vf-reader-home__topbar">
+            <label className="vf-reader-home__search vf-reader-home__search--hero">
+              <Search size={16} />
+              <input
+                value={searchQuery}
+                onChange={(event) => onSetSearchQuery(event.target.value)}
+                placeholder="Search novels, books, manga, comics"
+                aria-label="Search reader titles"
+              />
+            </label>
+            <div className="vf-reader-home__filter-actions">
               <label className="vf-reader-home__region-toggle" aria-label="Reader region">
-                <select value={regionOptions.some((region) => region.id === regionId) ? regionId : regionOptions[0]?.id} onChange={(event) => onSelectRegion(event.target.value)} disabled={isRegionSelectDisabled}>
+                <select
+                  value={regionOptions.some((region) => region.id === regionId) ? regionId : regionOptions[0]?.id}
+                  onChange={(event) => onSelectRegion(event.target.value)}
+                  disabled={isRegionSelectDisabled}
+                >
                   {regionOptions.map((region) => (
                     <option key={region.id} value={region.id}>
                       {region.label}
@@ -292,18 +365,29 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
               </label>
             </div>
           </div>
+          <div className="vf-reader-home__surface-strip">
+            {SURFACE_OPTIONS.map((option) => {
+              const isActive = surface === option.surface;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`vf-reader-home__chip ${isActive ? 'vf-reader-home__chip--active' : ''}`}
+                  onClick={() => handleSurfaceSelect(option.surface)}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
           <div className="vf-reader-home__hero-quick">
             <div className="vf-reader-home__hero-summary">
-              <strong>{selectedItem?.title || 'Select a title from the shelves'}</strong>
+              <strong>{selectedItem?.title || 'Select from Top Trending, Popular, or New Uploads'}</strong>
               <span>{selectedItem ? formatCompactStat(selectedItem) : resultsCountLabel}</span>
             </div>
-            <button
-              type="button"
-              className="vf-reader-home__ghost"
-              onClick={onOpenImport}
-            >
+            <button type="button" className="vf-reader-home__ghost" onClick={onOpenImport}>
               <UploadCloud size={14} />
-              Import To Player
+              Import
             </button>
             <button
               type="button"
@@ -315,66 +399,40 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
               disabled={!selectedItem}
             >
               <PlayCircle size={14} />
-              Open Selected
+              Play
             </button>
             {resumeSession && resumeItem ? (
               <button type="button" className="vf-reader-home__ghost" onClick={onResumeSession}>
-                Resume {resumeItem.title}
+                Resume
               </button>
             ) : null}
           </div>
+          <p className="vf-reader-home__hint">
+            Uploads open directly in player mode. Discovery shelves only surface reviewed legal sources with attribution.
+          </p>
         </div>
       </section>
 
       <div className="vf-reader-home__shelves">
-        <ShelfSection
-          title="Continue Reading"
-          eyebrow="Creator Queue"
-          items={continueReading}
-          selectedItemId={selectedItemId}
-          onSelectItem={onSelectItem}
-          onOpenItem={onOpenItem}
-          resolveMediaUrl={resolveMediaUrl}
-          formatCompactStat={formatCompactStat}
-          formatProgressLabel={formatProgressLabel}
-        />
-        <ShelfSection
-          title="Reading Library"
-          eyebrow="Your Library"
-          items={readingLibrary}
-          selectedItemId={selectedItemId}
-          onSelectItem={onSelectItem}
-          onOpenItem={onOpenItem}
-          resolveMediaUrl={resolveMediaUrl}
-          formatCompactStat={formatCompactStat}
-          formatProgressLabel={formatProgressLabel}
-        />
-        <ShelfSection
-          title="Top Trending"
-          eyebrow="Discovery Rail"
-          items={discoveryRail}
-          selectedItemId={selectedItemId}
-          onSelectItem={onSelectItem}
-          onOpenItem={onOpenItem}
-          resolveMediaUrl={resolveMediaUrl}
-          formatCompactStat={formatCompactStat}
-          formatProgressLabel={formatProgressLabel}
-        />
-        <ShelfSection
-          title="New Arrivals"
-          eyebrow="Discovery Rail"
-          items={newArrivals}
-          selectedItemId={selectedItemId}
-          onSelectItem={onSelectItem}
-          onOpenItem={onOpenItem}
-          resolveMediaUrl={resolveMediaUrl}
-          formatCompactStat={formatCompactStat}
-          formatProgressLabel={formatProgressLabel}
-        />
+        {shelfSections.map((section) => (
+          <ShelfSection
+            key={section.key}
+            title={section.title}
+            eyebrow={section.eyebrow}
+            emptyMessage={section.emptyMessage}
+            items={section.items}
+            selectedItemId={selectedItemId}
+            onSelectItem={onSelectItem}
+            onOpenItem={onOpenItem}
+            resolveMediaUrl={resolveMediaUrl}
+            formatCompactStat={formatCompactStat}
+            formatProgressLabel={formatProgressLabel}
+          />
+        ))}
       </div>
 
       {isLoading ? <div className="vf-reader-home__loading">Loading Reader library...</div> : null}
-      {filteredItems.length === 0 && !isLoading ? (
+      {!shelfSections.length && !isLoading ? (
         <div className="vf-reader-home__loading">No titles match the current search or surface filter.</div>
       ) : null}
     </div>

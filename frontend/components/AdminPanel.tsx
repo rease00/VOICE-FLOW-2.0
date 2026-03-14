@@ -294,6 +294,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [newGeminiPoolKeyInput, setNewGeminiPoolKeyInput] = useState('');
   const [geminiGlobalKeyInput, setGeminiGlobalKeyInput] = useState('');
   const [vertexServiceAccountJsonInput, setVertexServiceAccountJsonInput] = useState('');
+  const [vertexAccessTokenInput, setVertexAccessTokenInput] = useState('');
   const [isSavingGeminiPools, setIsSavingGeminiPools] = useState(false);
   const [isLoadingGeminiPool, setIsLoadingGeminiPool] = useState(false);
   const [isReloadingGeminiPool, setIsReloadingGeminiPool] = useState(false);
@@ -1074,11 +1075,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleGeminiSourceProviderChange = (provider: 'gemini_api' | 'vertex') => {
     updateGeminiPoolEditorConfig((previous) => {
       let next = setSourcePolicyProvider(previous, provider) as GeminiPoolConfig;
-      if (provider === 'vertex' && selectedPoolName) {
-        next = setPlanPoolInConfig(next, 'free', selectedPoolName) as GeminiPoolConfig;
+      if (provider === 'vertex') {
+        const poolNames = Object.keys(next.pools || {});
+        const preferredPool = (selectedPoolName && selectedPoolName !== 'free')
+          ? selectedPoolName
+          : poolNames.find((poolName) => poolName !== 'free') || selectedPoolName || poolNames[0] || 'free';
+        if (preferredPool) {
+          next = setPlanPoolInConfig(next, 'free', preferredPool) as GeminiPoolConfig;
+        }
       }
       return next;
     });
+  };
+
+  const handleVertexOnlyToggle = (enabled: boolean) => {
+    handleGeminiSourceProviderChange(enabled ? 'vertex' : 'gemini_api');
   };
 
   const handleVertexSourceFieldChange = (field: 'vertexProject' | 'vertexLocation', value: string) => {
@@ -1112,6 +1123,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (serviceAccountJson) {
         payloadInput = setVertexSourcePolicyFields(payloadInput, { vertexServiceAccountJson: serviceAccountJson }) as GeminiPoolConfig;
       }
+      const vertexAccessToken = String(vertexAccessTokenInput || '').trim();
+      if (vertexAccessToken) {
+        payloadInput = setVertexSourcePolicyFields(payloadInput, { vertexAccessToken }) as GeminiPoolConfig;
+      }
       const payload = await updateGeminiPools(payloadInput, mediaBackendUrl);
       setGeminiPoolStatus(payload);
       setGeminiPoolEditor(payload?.config || null);
@@ -1119,6 +1134,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setGeminiPoolsUsage(usagePayload);
       await handleReloadGeminiPool();
       setVertexServiceAccountJsonInput('');
+      setVertexAccessTokenInput('');
       onToast('Primary AI pool config saved and reloaded.', 'success');
     } catch (error: unknown) {
       notifyError(error, 'Failed to save primary AI pools.');
@@ -1867,6 +1883,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const vertexLocation = String(geminiSourcePolicy.vertexLocation || '');
   const vertexServiceAccountRef = String(geminiSourcePolicy.vertexServiceAccountRef || '');
   const vertexServiceAccountConfigured = Boolean(geminiSourcePolicy.vertexServiceAccountConfigured || vertexServiceAccountRef);
+  const vertexAccessTokenRef = String(geminiSourcePolicy.vertexAccessTokenRef || '');
+  const vertexAccessTokenConfigured = Boolean(geminiSourcePolicy.vertexAccessTokenConfigured || vertexAccessTokenRef);
+  const vertexOnlyEnabled = geminiSourceProvider === 'vertex';
   const parsedGlobalGeminiKeys = parseGeminiKeysInput(geminiGlobalKeyInput);
   const geminiWarnings = [
     ...(Array.isArray(geminiPoolStatus?.warnings) ? geminiPoolStatus.warnings : []),
@@ -2928,7 +2947,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
               <div className="mb-2 font-semibold text-gray-800">Source Provider</div>
-              <div className="grid gap-2 md:grid-cols-3">
+              <div className="grid gap-2 md:grid-cols-4">
                 <label className="space-y-1">
                   <div className="text-[11px] font-semibold uppercase text-gray-600">Provider</div>
                   <select
@@ -2942,8 +2961,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </select>
                 </label>
                 <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
+                  <div className="mb-1 font-semibold uppercase text-gray-600">Vertex only</div>
+                  <button
+                    onClick={() => handleVertexOnlyToggle(!vertexOnlyEnabled)}
+                    disabled={!canOpsMutate}
+                    className={`rounded border px-2 py-1 text-[11px] font-semibold ${vertexOnlyEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-600'} disabled:opacity-60`}
+                  >
+                    {vertexOnlyEnabled ? 'ON' : 'OFF'}
+                  </button>
+                  <div className="mt-1">ON = use Vertex only, ignore free API-key pool.</div>
+                </div>
+                <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
                   <div>Service account: <strong>{vertexServiceAccountConfigured ? 'Configured' : 'Not configured'}</strong></div>
                   <div className="truncate">Ref: {vertexServiceAccountRef || '-'}</div>
+                  <div className="mt-1">Access token: <strong>{vertexAccessTokenConfigured ? 'Configured' : 'Not configured'}</strong></div>
                 </div>
                 <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
                   <div>Current free pool: <strong>{String(geminiConfig?.planPools?.free || '-')}</strong></div>
@@ -2999,6 +3030,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       rows={4}
                       placeholder='{"type":"service_account", ...}'
                       className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-[11px]"
+                    />
+                  </label>
+                  <label className="space-y-1 md:col-span-2">
+                    <div className="text-[11px] font-semibold uppercase text-gray-600">Vertex Access Token (write-only)</div>
+                    <input
+                      value={vertexAccessTokenInput}
+                      onChange={(event) => setVertexAccessTokenInput(event.target.value)}
+                      disabled={!canOpsMutate}
+                      className="h-8 w-full rounded border border-gray-200 px-2 font-mono text-[11px]"
+                      placeholder="AQ..."
                     />
                   </label>
                 </div>

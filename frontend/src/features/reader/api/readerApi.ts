@@ -12,7 +12,8 @@ import { authFetch } from '../../../../services/authHttpClient';
 import { resolveApiUrl } from '../../../shared/api/config';
 
 type ReaderSurface = 'all' | 'books' | 'comics' | 'uploads';
-const READER_BOOTSTRAP_TIMEOUT_MS = 10_000;
+const READER_BOOTSTRAP_TIMEOUT_MS = 20_000;
+const READER_LIBRARY_TIMEOUT_MS = 30_000;
 
 const extractReaderErrorMessage = (detail: unknown): string => {
   if (typeof detail === 'string') return detail.trim();
@@ -125,7 +126,7 @@ export const getReaderLibrary = async (
   const payload = await readerFetchJson<{ library: ReaderLibrary }>(
     resolveApiUrl(`/reader/library?${search.toString()}`, backendBaseUrl),
     undefined,
-    { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+    { timeoutMs: READER_LIBRARY_TIMEOUT_MS }
   );
   return payload.library;
 };

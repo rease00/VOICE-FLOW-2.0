@@ -23,13 +23,13 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 import wave
 from collections import defaultdict, deque
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict, List, Callable
 from urllib import error as urllib_error
 from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib import request as urllib_request
@@ -325,26 +325,34 @@ VF_READER_CATALOG_CACHE_TTL_MS = max(
     60_000,
     int((os.getenv("VF_READER_CATALOG_CACHE_TTL_MS") or "900000").strip() or "900000"),
 )
+VF_READER_FIRESTORE_QUERY_TIMEOUT_SEC = max(
+    0.5,
+    float((os.getenv("VF_READER_FIRESTORE_QUERY_TIMEOUT_SEC") or "2.5").strip() or "2.5"),
+)
+VF_READER_FIRESTORE_LISTS_ENABLED = (
+    (os.getenv("VF_READER_FIRESTORE_LISTS_ENABLED") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 VF_READER_TRANSLATION_MODEL = str(os.getenv("VF_READER_TRANSLATION_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip() or VF_AI_TEXT_DEFAULT_MODEL
 VF_READER_IMPORTS_ONLY = (
     (os.getenv("VF_READER_IMPORTS_ONLY") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_READER_TTS_PRIMARY_MODEL = (
-    str(os.getenv("VF_READER_TTS_PRIMARY_MODEL") or "gemini-2.5-flash-preview-tts").strip()
-    or "gemini-2.5-flash-preview-tts"
+    str(os.getenv("VF_READER_TTS_PRIMARY_MODEL") or "gemini-2.5-flash").strip()
+    or "gemini-2.5-flash"
 )
 VF_READER_TTS_FALLBACK_MODEL = (
-    str(os.getenv("VF_READER_TTS_FALLBACK_MODEL") or "gemini-2.5-flash-lite-preview-tts").strip()
-    or "gemini-2.5-flash-lite-preview-tts"
+    str(os.getenv("VF_READER_TTS_FALLBACK_MODEL") or "gemini-2.5-flash").strip()
+    or "gemini-2.5-flash"
 )
 VF_READER_NATIVE_AUDIO_ENABLED = (
     (os.getenv("VF_READER_NATIVE_AUDIO_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_READER_NATIVE_AUDIO_MODEL = (
-    str(os.getenv("VF_READER_NATIVE_AUDIO_MODEL") or "gemini-2.5-flash-native-audio-preview-12-2025").strip()
-    or "gemini-2.5-flash-native-audio-preview-12-2025"
+    str(os.getenv("VF_READER_NATIVE_AUDIO_MODEL") or "gemini-2.5-flash-native-audio-dialog").strip()
+    or "gemini-2.5-flash-native-audio-dialog"
 )
 VF_READER_TRANSLATION_BATCH_SIZE_BOOK = max(
     1,
@@ -543,7 +551,7 @@ VF_TTS_LIVE_FIRST_CHUNK_WORDS = max(
 )
 VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS = max(
     1,
-    int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS") or "3000").strip() or "3000"),
+    int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS") or "20000").strip() or "20000"),
 )
 VF_TTS_LIVE_NATIVE_ENABLED = (
     (os.getenv("VF_TTS_LIVE_NATIVE_ENABLED") or "1").strip().lower()
@@ -554,10 +562,10 @@ VF_TTS_LIVE_NATIVE_MODEL = (
         os.getenv(
             "VF_TTS_LIVE_NATIVE_MODEL",
             os.getenv("VF_READER_NATIVE_AUDIO_MODEL")
-            or "gemini-2.5-flash-native-audio-preview-12-2025",
+            or "gemini-2.5-flash-native-audio-latest",
         )
     ).strip()
-    or "gemini-2.5-flash-native-audio-preview-12-2025"
+    or "gemini-2.5-flash-native-audio-latest"
 )
 VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL = (
     str(os.getenv("VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip()
@@ -614,7 +622,19 @@ VF_TTS_LIVE_NATIVE_CONNECTION_MAX_SEC = max(
 )
 VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC = max(
     5,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC") or "12").strip() or "12"),
+    int((os.getenv("VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC") or "20").strip() or "20"),
+)
+VF_TTS_LIVE_NATIVE_FIRST_CHUNK_TEXT_TIMEOUT_SEC = max(
+    2,
+    int((os.getenv("VF_TTS_LIVE_NATIVE_FIRST_CHUNK_TEXT_TIMEOUT_SEC") or "12").strip() or "12"),
+)
+VF_TTS_LIVE_NATIVE_FIRST_CHUNK_SYNTH_TIMEOUT_SEC = max(
+    2,
+    int((os.getenv("VF_TTS_LIVE_NATIVE_FIRST_CHUNK_SYNTH_TIMEOUT_SEC") or "20").strip() or "20"),
+)
+VF_TTS_LIVE_NATIVE_POST_DEADLINE_TIMEOUT_SEC = max(
+    2,
+    int((os.getenv("VF_TTS_LIVE_NATIVE_POST_DEADLINE_TIMEOUT_SEC") or "3").strip() or "3"),
 )
 VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS = max(
     0,
@@ -625,9 +645,39 @@ VF_TTS_LIVE_NATIVE_STRATEGY = (
     or "resume_then_fallback"
 )
 VF_TTS_LIVE_NATIVE_FALLBACK_MODE = (
-    str(os.getenv("VF_TTS_LIVE_NATIVE_FALLBACK_MODE") or "runtime_nonlive_same_cast").strip().lower()
-    or "runtime_nonlive_same_cast"
+    str(os.getenv("VF_TTS_LIVE_NATIVE_FALLBACK_MODE") or "native_audio_only").strip().lower()
+    or "native_audio_only"
 )
+_vf_tts_live_native_model_candidates_raw = str(
+    os.getenv("VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES") or ""
+).strip()
+if _vf_tts_live_native_model_candidates_raw:
+    VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = list(
+        dict.fromkeys(
+            str(item).strip()
+            for item in _vf_tts_live_native_model_candidates_raw.split(",")
+            if str(item).strip()
+        )
+    )
+else:
+    VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = [
+        VF_TTS_LIVE_NATIVE_MODEL,
+        "gemini-2.5-flash-native-audio-latest",
+        "gemini-2.5-flash-native-audio-preview-12-2025",
+        "gemini-2.5-flash-native-audio-preview-09-2025",
+    ]
+VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = list(
+    dict.fromkeys(
+        str(item).strip()
+        for item in VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES
+        if str(item).strip()
+    )
+)
+if VF_TTS_LIVE_NATIVE_MODEL not in VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES:
+    VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = [
+        VF_TTS_LIVE_NATIVE_MODEL,
+        *VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES,
+    ]
 VF_DUB_LIVE_PLAY_ENABLED = (
     (os.getenv("VF_DUB_LIVE_PLAY_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -969,6 +1019,10 @@ GEMINI_VERTEX_SECRET_DIR = (PROJECT_ROOT / ".runtime" / "secrets" / "gemini").re
 GEMINI_VERTEX_SERVICE_ACCOUNT_FILE = str(
     os.getenv("VF_GEMINI_VERTEX_SERVICE_ACCOUNT_FILE")
     or (GEMINI_VERTEX_SECRET_DIR / "vertex-service-account.json")
+).strip()
+GEMINI_VERTEX_ACCESS_TOKEN_FILE = str(
+    os.getenv("VF_GEMINI_VERTEX_ACCESS_TOKEN_FILE")
+    or (GEMINI_VERTEX_SECRET_DIR / "vertex-access-token.txt")
 ).strip()
 GEMINI_ALLOCATOR_CONFIG = load_allocator_config()
 BACKEND_GEMINI_ALLOCATOR_WAIT_TIMEOUT_MS = max(
@@ -14599,6 +14653,14 @@ def _resolve_vertex_service_account_store_path(path_hint: str) -> Path:
     return (PROJECT_ROOT / path).resolve()
 
 
+def _resolve_vertex_access_token_store_path(path_hint: str) -> Path:
+    raw_hint = str(path_hint or GEMINI_VERTEX_ACCESS_TOKEN_FILE).strip()
+    path = Path(raw_hint).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (PROJECT_ROOT / path).resolve()
+
+
 def _persist_vertex_service_account_json(raw_json: str, *, path_hint: str) -> tuple[str, dict[str, Any]]:
     payload: dict[str, Any]
     try:
@@ -14623,13 +14685,58 @@ def _persist_vertex_service_account_json(raw_json: str, *, path_hint: str) -> tu
     return str(target_path), payload
 
 
+def _persist_vertex_access_token(raw_token: str, *, path_hint: str) -> str:
+    token = str(raw_token or "").strip()
+    if not token:
+        raise ValueError("Vertex access token cannot be empty.")
+    target_path = _resolve_vertex_access_token_store_path(path_hint)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+    tmp_path.write_text(f"{token}\n", encoding="utf-8")
+    os.replace(str(tmp_path), str(target_path))
+    try:
+        os.chmod(str(target_path), 0o600)
+    except Exception:
+        pass
+    return str(target_path)
+
+
+def _default_vertex_project() -> str:
+    for env_name in (
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_PROJECT_ID",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "FIREBASE_PROJECT_ID",
+        "VITE_FIREBASE_PROJECT_ID",
+        "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
+    ):
+        candidate = str(os.getenv(env_name) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _default_vertex_location() -> str:
+    return str(
+        os.getenv("GOOGLE_CLOUD_LOCATION")
+        or os.getenv("GOOGLE_CLOUD_REGION")
+        or "us-central1"
+    ).strip() or "us-central1"
+
+
 def _sanitize_gemini_source_policy_for_response(source_policy: dict[str, Any]) -> dict[str, Any]:
     policy = dict(source_policy or {})
     policy.pop("vertexServiceAccountJson", None)
     policy.pop("serviceAccountJson", None)
     policy.pop("vertexServiceAccount", None)
+    policy.pop("vertexAccessToken", None)
+    policy.pop("accessToken", None)
+    policy.pop("vertexApiKey", None)
     service_account_ref = str(policy.get("vertexServiceAccountRef") or "").strip()
+    access_token_ref = str(policy.get("vertexAccessTokenRef") or "").strip()
     policy["vertexServiceAccountConfigured"] = bool(service_account_ref)
+    policy["vertexAccessTokenConfigured"] = bool(access_token_ref)
     return policy
 
 
@@ -16111,25 +16218,45 @@ def _reader_estimated_read_ms(text: object, *, content_kind: str = "book") -> in
 
 def _reader_emotion_pacing_multiplier(emotion: object) -> float:
     token = str(emotion or "").strip().lower()
-    if token in {"sad", "fear", "tense", "suspense", "shocked", "crying"}:
+    if token in {
+        "sad",
+        "fear",
+        "fearful",
+        "tense",
+        "suspense",
+        "shocked",
+        "crying",
+        "anxious",
+        "whispering",
+    }:
         return 1.24
-    if token in {"angry", "shouting", "excited", "urgent"}:
+    if token in {"angry", "shouting", "excited", "urgent", "intense", "laughing"}:
         return 0.9
-    if token in {"romantic", "calm", "serene"}:
+    if token in {"romantic", "calm", "serene", "empathetic", "curious"}:
         return 1.14
     return 1.0
+
+
+def _reader_infer_unit_emotion(text: object, *, content_kind: str) -> str:
+    safe_text = collapse_whitespace(text)
+    if not safe_text:
+        return "Neutral"
+    if normalize_reader_content_kind(content_kind) == "comic":
+        return guess_panel_emotion(safe_text)
+    return _canonical_emotion_label(_infer_emotion_from_text(safe_text))
 
 
 def _reader_unit_pacing_meta(unit: dict[str, Any], *, content_kind: str) -> dict[str, Any]:
     source_text = _reader_unit_source_text(unit)
     base_ms = int(unit.get("estimatedReadMs") or _reader_estimated_read_ms(source_text, content_kind=content_kind))
-    emotion_multiplier = _reader_emotion_pacing_multiplier(unit.get("emotion"))
+    emotion = str(unit.get("emotion") or "").strip() or _reader_infer_unit_emotion(source_text, content_kind=content_kind)
+    emotion_multiplier = _reader_emotion_pacing_multiplier(emotion)
     emotion_aware_ms = max(1600, min(60_000, int(round(base_ms * emotion_multiplier))))
     return {
         "baseReadMs": base_ms,
         "emotionAwareReadMs": emotion_aware_ms,
         "emotionMultiplier": round(float(emotion_multiplier), 3),
-        "emotion": str(unit.get("emotion") or "").strip(),
+        "emotion": emotion,
     }
 
 
@@ -16186,9 +16313,6 @@ def _reader_apply_unit_overrides(session: dict[str, Any], unit_overrides: dict[s
             unit["translationStatus"] = "pending"
             unit.pop("translatedText", None)
             unit.pop("translatedLanguage", None)
-            if content_kind == "comic":
-                unit["emotion"] = guess_panel_emotion(next_text)
-                unit["sfx"] = guess_panel_sfx(next_text)
         else:
             unit.pop("overrideText", None)
             unit["textOverrideStatus"] = "none"
@@ -16201,6 +16325,9 @@ def _reader_apply_unit_overrides(session: dict[str, Any], unit_overrides: dict[s
             unit.pop("translatedText", None)
             unit.pop("translatedLanguage", None)
         updated_source = _reader_unit_source_text(unit)
+        unit["emotion"] = _reader_infer_unit_emotion(updated_source, content_kind=content_kind)
+        if content_kind == "comic":
+            unit["sfx"] = guess_panel_sfx(updated_source)
         unit["estimatedReadMs"] = int(_reader_estimated_read_ms(updated_source, content_kind=content_kind))
         units[index] = unit
 
@@ -16875,10 +17002,10 @@ def _reader_upload_write(uid: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Missing reader upload owner or id.")
     safe_payload = dict(payload)
     safe_payload["uid"] = safe_uid
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_UPLOADS[upload_id] = dict(safe_payload)
     collection = _firestore_collection(READER_UPLOADS_COLLECTION)
     if collection is None:
-        with _INMEMORY_LOCK:
-            _INMEMORY_READER_UPLOADS[upload_id] = dict(safe_payload)
         return safe_payload
     collection.document(upload_id).set(safe_payload, merge=True)
     return safe_payload
@@ -16889,45 +17016,78 @@ def _reader_upload_get(uid: str, upload_id: str) -> Optional[dict[str, Any]]:
     safe_upload_id = str(upload_id or "").strip()
     if not safe_uid or not safe_upload_id:
         return None
+    with _INMEMORY_LOCK:
+        cached = dict(_INMEMORY_READER_UPLOADS.get(safe_upload_id) or {})
+    if cached and str(cached.get("uid") or "").strip() == safe_uid:
+        return cached
     collection = _firestore_collection(READER_UPLOADS_COLLECTION)
     if collection is None:
-        with _INMEMORY_LOCK:
-            payload = dict(_INMEMORY_READER_UPLOADS.get(safe_upload_id) or {})
-    else:
-        try:
-            doc = collection.document(safe_upload_id).get()
-        except Exception:
-            return None
-        if not doc.exists:
-            return None
-        payload = dict(doc.to_dict() or {})
+        return None
+    try:
+        doc = collection.document(safe_upload_id).get()
+    except Exception:
+        return None
+    if not doc.exists:
+        return None
+    payload = dict(doc.to_dict() or {})
     if str(payload.get("uid") or "").strip() != safe_uid:
         return None
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_UPLOADS[safe_upload_id] = dict(payload)
     return payload
+
+
+def _reader_firestore_docs_with_timeout(
+    loader: Callable[[], list[dict[str, Any]]],
+    *,
+    timeout_sec: float = VF_READER_FIRESTORE_QUERY_TIMEOUT_SEC,
+) -> list[dict[str, Any]]:
+    executor = ThreadPoolExecutor(max_workers=1)
+    future: Future[Any] = executor.submit(loader)
+    try:
+        payload = future.result(timeout=max(0.5, float(timeout_sec or 2.5)))
+    except Exception:
+        future.cancel()
+        return []
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    if not isinstance(payload, list):
+        return []
+    return [dict(item) for item in payload if isinstance(item, dict)]
 
 
 def _reader_upload_list(uid: str) -> list[dict[str, Any]]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         return []
+    with _INMEMORY_LOCK:
+        memory_items = [
+            dict(item)
+            for item in _INMEMORY_READER_UPLOADS.values()
+            if str((item or {}).get("uid") or "").strip() == safe_uid
+        ]
+    if not VF_READER_FIRESTORE_LISTS_ENABLED:
+        memory_items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return memory_items
     collection = _firestore_collection(READER_UPLOADS_COLLECTION)
     if collection is None:
-        with _INMEMORY_LOCK:
-            items = [
-                dict(item)
-                for item in _INMEMORY_READER_UPLOADS.values()
-                if str((item or {}).get("uid") or "").strip() == safe_uid
-            ]
-        items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
-        return items
-    try:
+        memory_items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return memory_items
+    if not VF_READER_FIRESTORE_LISTS_ENABLED:
+        memory_items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return memory_items
+
+    def _load_firestore_uploads() -> list[dict[str, Any]]:
         docs = collection.where("uid", "==", safe_uid).stream()
-    except Exception:
-        return []
-    out: list[dict[str, Any]] = []
-    for doc in docs:
-        payload = doc.to_dict() or {}
-        out.append(dict(payload))
+        return [dict(doc.to_dict() or {}) for doc in docs]
+
+    out = _reader_firestore_docs_with_timeout(_load_firestore_uploads)
+    for row in out:
+        upload_id = str(row.get("id") or "").strip()
+        if not upload_id:
+            continue
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_UPLOADS[upload_id] = dict(row)
     out.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
     return out
 
@@ -16938,17 +17098,23 @@ def _reader_progress_get(uid: str, work_key: str) -> dict[str, Any]:
     if not safe_uid or not safe_work_key:
         return {}
     doc_id = _reader_progress_doc_id(safe_uid, safe_work_key)
+    with _INMEMORY_LOCK:
+        cached = dict(_INMEMORY_READER_PROGRESS.get(doc_id) or {})
+    if cached:
+        return cached
     collection = _firestore_collection(READER_PROGRESS_COLLECTION)
     if collection is None:
-        with _INMEMORY_LOCK:
-            return dict(_INMEMORY_READER_PROGRESS.get(doc_id) or {})
+        return {}
     try:
         doc = collection.document(doc_id).get()
     except Exception:
         return {}
     if not doc.exists:
         return {}
-    return dict(doc.to_dict() or {})
+    payload = dict(doc.to_dict() or {})
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_PROGRESS[doc_id] = dict(payload)
+    return payload
 
 
 def _reader_progress_set(uid: str, work_key: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -16961,10 +17127,10 @@ def _reader_progress_set(uid: str, work_key: str, payload: dict[str, Any]) -> di
         "workKey": safe_work_key,
         "updatedAt": _safe_now_iso(),
     }
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_PROGRESS[doc_id] = dict(safe_payload)
     collection = _firestore_collection(READER_PROGRESS_COLLECTION)
     if collection is None:
-        with _INMEMORY_LOCK:
-            _INMEMORY_READER_PROGRESS[doc_id] = dict(safe_payload)
         return safe_payload
     collection.document(doc_id).set(safe_payload, merge=True)
     return safe_payload
@@ -16974,20 +17140,35 @@ def _reader_progress_list(uid: str) -> list[dict[str, Any]]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         return []
+    with _INMEMORY_LOCK:
+        memory_items = [
+            dict(item)
+            for item in _INMEMORY_READER_PROGRESS.values()
+            if str((item or {}).get("uid") or "").strip() == safe_uid
+        ]
+    if not VF_READER_FIRESTORE_LISTS_ENABLED:
+        memory_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return memory_items
     collection = _firestore_collection(READER_PROGRESS_COLLECTION)
     if collection is None:
+        memory_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return memory_items
+    if not VF_READER_FIRESTORE_LISTS_ENABLED:
+        memory_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return memory_items
+
+    def _load_firestore_progress() -> list[dict[str, Any]]:
+        docs = collection.where("uid", "==", safe_uid).stream()
+        return [dict(doc.to_dict() or {}) for doc in docs]
+
+    items = _reader_firestore_docs_with_timeout(_load_firestore_progress)
+    for row in items:
+        work_id = str(row.get("workKey") or "").strip()
+        if not work_id:
+            continue
+        doc_id = _reader_progress_doc_id(safe_uid, work_id)
         with _INMEMORY_LOCK:
-            items = [
-                dict(item)
-                for item in _INMEMORY_READER_PROGRESS.values()
-                if str((item or {}).get("uid") or "").strip() == safe_uid
-            ]
-    else:
-        try:
-            docs = collection.where("uid", "==", safe_uid).stream()
-            items = [dict(doc.to_dict() or {}) for doc in docs]
-        except Exception:
-            return []
+            _INMEMORY_READER_PROGRESS[doc_id] = dict(row)
     items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
     return items
 
@@ -17142,6 +17323,16 @@ _READER_WIKISOURCE_DOMAIN_BY_REGION: dict[str, str] = {
     "german": "de.wikisource.org",
     "portuguese": "pt.wikisource.org",
     "arabic": "ar.wikisource.org",
+    "united_states": "en.wikisource.org",
+    "united_kingdom": "en.wikisource.org",
+    "india": "hi.wikisource.org",
+    "japan": "ja.wikisource.org",
+    "china": "zh.wikisource.org",
+    "south_korea": "ko.wikisource.org",
+    "spain": "es.wikisource.org",
+    "france": "fr.wikisource.org",
+    "germany": "de.wikisource.org",
+    "brazil": "pt.wikisource.org",
 }
 
 
@@ -17171,7 +17362,7 @@ def _reader_parse_xml_entries(payload: str) -> list[ET.Element]:
 
 def _reader_fetch_project_gutenberg_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
     safe_region_id = str(reader_region(region_id).get("id") or "english")
-    if safe_region_id != "english":
+    if _reader_region_language_code(safe_region_id) != "en":
         return []
     safe_search = _reader_search_term(search_query)
     try:
@@ -17228,7 +17419,7 @@ def _reader_fetch_project_gutenberg_catalog(region_id: str, *, search_query: str
 
 def _reader_fetch_standard_ebooks_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
     safe_region_id = str(reader_region(region_id).get("id") or "english")
-    if safe_region_id != "english":
+    if _reader_region_language_code(safe_region_id) != "en":
         return []
     safe_search = _reader_search_term(search_query)
     try:
@@ -17294,6 +17485,364 @@ def _reader_fetch_standard_ebooks_catalog(region_id: str, *, search_query: str =
                 }
             )
         )
+    return out
+
+
+def _reader_fetch_gutendex_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    safe_search = _reader_search_term(search_query)
+    language = _reader_region_language_code(safe_region_id)
+    query = safe_search or _reader_default_discovery_query(surface="books", region_id=safe_region_id)
+    try:
+        response = requests.get(
+            "https://gutendex.com/books",
+            params={"languages": language, "search": query},
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in list(payload.get("results") or []):
+        if not isinstance(entry, dict):
+            continue
+        title = collapse_whitespace(entry.get("title"))
+        if not title:
+            continue
+        formats = dict(entry.get("formats") or {})
+        text_url = ""
+        for format_key in (
+            "text/plain; charset=utf-8",
+            "text/plain; charset=us-ascii",
+            "text/plain",
+            "text/html; charset=utf-8",
+            "text/html",
+        ):
+            candidate = str(formats.get(format_key) or "").strip()
+            if candidate:
+                text_url = candidate
+                break
+        source_url = str(entry.get("url") or "").strip()
+        if not source_url:
+            source_url = str(formats.get("text/html") or text_url).strip()
+        if not source_url:
+            source_url = f"https://www.gutenberg.org/ebooks/{str(entry.get('id') or '').strip()}"
+        cover_url = str(formats.get("image/jpeg") or "").strip()
+        author_names = [
+            collapse_whitespace(author.get("name"))
+            for author in list(entry.get("authors") or [])
+            if isinstance(author, dict) and collapse_whitespace(author.get("name"))
+        ]
+        rights_restricted = bool(entry.get("copyright"))
+        license_label = "Rights vary by jurisdiction" if rights_restricted else "Public domain"
+        item_id = str(entry.get("id") or "").strip()
+        safe_item_id = re.sub(r"[^a-z0-9]+", "_", item_id.lower()).strip("_") or hashlib.sha1(title.encode("utf-8")).hexdigest()[:10]
+        out.append(
+            normalize_reader_catalog_item(
+                {
+                    "id": f"gutendex_{safe_item_id}",
+                    "title": title,
+                    "author": ", ".join(author_names) or "Gutendex",
+                    "regionId": safe_region_id,
+                    "contentKind": "book",
+                    "provider": "gutendex",
+                    "license": license_label,
+                    "sourceUrl": source_url,
+                    "contentUrl": text_url,
+                    "coverUrl": cover_url,
+                    "summary": "Global public-domain book discovery powered by Gutendex.",
+                    "supportsReadHere": bool(text_url),
+                    "collectionLabel": "Gutendex",
+                    "sourceMeta": {
+                        "gutendexId": item_id,
+                        "attributionUrl": source_url,
+                        "license": license_label,
+                        "language": language,
+                        "copyright": rights_restricted,
+                    },
+                }
+            )
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _reader_fetch_wikisource_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    safe_search = _reader_search_term(search_query)
+    domain = _READER_WIKISOURCE_DOMAIN_BY_REGION.get(safe_region_id, "en.wikisource.org")
+    query = safe_search or _reader_default_discovery_query(surface="books", region_id=safe_region_id)
+    try:
+        response = requests.get(
+            f"https://{domain}/w/api.php",
+            params={
+                "action": "query",
+                "format": "json",
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrlimit": 8,
+                "gsrnamespace": 0,
+                "prop": "info|extracts",
+                "inprop": "url",
+                "explaintext": 1,
+                "exintro": 1,
+                "exchars": 420,
+                "origin": "*",
+            },
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception:
+        return []
+    query_payload = payload.get("query")
+    pages_payload = dict(query_payload.get("pages") or {}) if isinstance(query_payload, dict) else {}
+    pages = [item for item in pages_payload.values() if isinstance(item, dict)]
+    pages.sort(key=lambda item: int(item.get("index") or 999999))
+    out: list[dict[str, Any]] = []
+    source_language = _reader_region_language_code(safe_region_id)
+    for entry in pages:
+        title = collapse_whitespace(entry.get("title"))
+        full_url = str(entry.get("fullurl") or "").strip()
+        page_id = str(entry.get("pageid") or "").strip()
+        if not title or not full_url:
+            continue
+        excerpt = collapse_whitespace(entry.get("extract"))
+        item_key = page_id or re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+        out.append(
+            normalize_reader_catalog_item(
+                {
+                    "id": f"wikisource_{safe_region_id}_{item_key}",
+                    "title": title,
+                    "author": "Wikisource community",
+                    "regionId": safe_region_id,
+                    "sourceLanguage": source_language,
+                    "contentKind": "book",
+                    "provider": "wikisource",
+                    "license": "CC BY-SA 4.0",
+                    "sourceUrl": full_url,
+                    "contentUrl": full_url,
+                    "summary": excerpt or f"Open licensed reading discovery from {domain}.",
+                    "supportsReadHere": True,
+                    "collectionLabel": "Wikisource",
+                    "sourceMeta": {
+                        "domain": domain,
+                        "pageId": page_id,
+                        "attributionUrl": full_url,
+                        "license": "CC BY-SA 4.0",
+                    },
+                }
+            )
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _reader_fetch_openlibrary_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    safe_search = _reader_search_term(search_query)
+    language = _reader_region_language_code(safe_region_id)
+    query = safe_search or _reader_default_discovery_query(surface="books", region_id=safe_region_id)
+    try:
+        response = requests.get(
+            "https://openlibrary.org/search.json",
+            params={
+                "q": query,
+                "language": language,
+                "limit": 10,
+                "fields": "key,title,author_name,cover_i,first_publish_year,ebook_access,public_scan_b,id_project_gutenberg",
+            },
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in list(payload.get("docs") or []):
+        if not isinstance(entry, dict):
+            continue
+        title = collapse_whitespace(entry.get("title"))
+        key = str(entry.get("key") or "").strip()
+        if not title or not key:
+            continue
+        source_url = f"https://openlibrary.org{key}"
+        author_names = [collapse_whitespace(name) for name in list(entry.get("author_name") or []) if collapse_whitespace(name)]
+        cover_id = str(entry.get("cover_i") or "").strip()
+        cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-L.jpg" if cover_id else ""
+        gutenberg_refs = list(entry.get("id_project_gutenberg") or [])
+        gutenberg_id = str(gutenberg_refs[0] if gutenberg_refs else "").strip()
+        content_url = f"https://www.gutenberg.org/ebooks/{gutenberg_id}.txt.utf-8" if gutenberg_id else ""
+        public_scan = bool(entry.get("public_scan_b"))
+        license_label = "Public domain" if gutenberg_id or public_scan else "Rights vary by edition"
+        publish_year = str(entry.get("first_publish_year") or "").strip()
+        summary_parts = [
+            "Global metadata discovery from Open Library.",
+            f"First published: {publish_year}." if publish_year else "",
+        ]
+        out.append(
+            normalize_reader_catalog_item(
+                {
+                    "id": f"openlibrary_{re.sub(r'[^a-z0-9]+', '_', key.lower()).strip('_')}",
+                    "title": title,
+                    "author": ", ".join(author_names) or "Open Library",
+                    "regionId": safe_region_id,
+                    "sourceLanguage": language,
+                    "contentKind": "book",
+                    "provider": "openlibrary",
+                    "license": license_label,
+                    "sourceUrl": source_url,
+                    "contentUrl": content_url,
+                    "coverUrl": cover_url,
+                    "summary": " ".join([part for part in summary_parts if part]).strip(),
+                    "supportsReadHere": bool(content_url),
+                    "collectionLabel": "Open Library",
+                    "sourceMeta": {
+                        "openLibraryKey": key,
+                        "ebookAccess": str(entry.get("ebook_access") or "").strip(),
+                        "publicScan": public_scan,
+                        "attributionUrl": source_url,
+                        "license": license_label,
+                    },
+                }
+            )
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _reader_fetch_google_books_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    safe_search = _reader_search_term(search_query)
+    language = _reader_region_language_code(safe_region_id)
+    query = safe_search or _reader_default_discovery_query(surface="books", region_id=safe_region_id)
+    try:
+        response = requests.get(
+            "https://www.googleapis.com/books/v1/volumes",
+            params={
+                "q": query,
+                "langRestrict": language,
+                "printType": "books",
+                "orderBy": "relevance",
+                "maxResults": 8,
+            },
+            headers={"User-Agent": _reader_public_user_agent(), "Accept": "application/json"},
+            timeout=(4, 12),
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in list(payload.get("items") or []):
+        if not isinstance(entry, dict):
+            continue
+        volume_id = str(entry.get("id") or "").strip()
+        volume_info = dict(entry.get("volumeInfo") or {})
+        access_info = dict(entry.get("accessInfo") or {})
+        title = collapse_whitespace(volume_info.get("title"))
+        if not title:
+            continue
+        authors = [collapse_whitespace(name) for name in list(volume_info.get("authors") or []) if collapse_whitespace(name)]
+        image_links = dict(volume_info.get("imageLinks") or {})
+        source_url = str(volume_info.get("infoLink") or volume_info.get("previewLink") or "").strip()
+        attribution_url = str(volume_info.get("canonicalVolumeLink") or source_url).strip()
+        epub_info = dict(access_info.get("epub") or {})
+        pdf_info = dict(access_info.get("pdf") or {})
+        public_domain = bool(access_info.get("publicDomain"))
+        download_url = str(epub_info.get("downloadLink") or pdf_info.get("downloadLink") or "").strip()
+        supports_read_here = bool(public_domain and download_url)
+        license_label = "Public domain" if public_domain else "Rights vary by publisher license"
+        out.append(
+            normalize_reader_catalog_item(
+                {
+                    "id": f"google_books_{re.sub(r'[^a-z0-9]+', '_', volume_id.lower()).strip('_') or hashlib.sha1(title.encode('utf-8')).hexdigest()[:10]}",
+                    "title": title,
+                    "author": ", ".join(authors) or "Google Books",
+                    "regionId": safe_region_id,
+                    "sourceLanguage": _reader_normalize_language(volume_info.get("language"), default=language) or language,
+                    "contentKind": "book",
+                    "provider": "google_books",
+                    "license": license_label,
+                    "sourceUrl": source_url,
+                    "contentUrl": download_url if supports_read_here else "",
+                    "coverUrl": str(image_links.get("thumbnail") or image_links.get("smallThumbnail") or "").strip(),
+                    "summary": collapse_whitespace(volume_info.get("description")) or "Commercial catalog discovery powered by Google Books.",
+                    "supportsReadHere": supports_read_here,
+                    "collectionLabel": "Google Books",
+                    "sourceMeta": {
+                        "googleVolumeId": volume_id,
+                        "viewability": str(access_info.get("viewability") or "").strip(),
+                        "publicDomain": public_domain,
+                        "attributionUrl": attribution_url,
+                        "license": license_label,
+                    },
+                }
+            )
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _reader_fetch_openverse_comic_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
+    safe_region_id = str(reader_region(region_id).get("id") or "english")
+    safe_search = _reader_search_term(search_query)
+    query = safe_search or _reader_default_discovery_query(surface="comics", region_id=safe_region_id)
+    try:
+        entries = _lab_catalog_search_openverse("image", query, "comic", 1)
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in list(entries or []):
+        if not isinstance(entry, dict):
+            continue
+        openverse_id = str(entry.get("id") or "").strip()
+        image_url = str(entry.get("downloadUrl") or entry.get("previewUrl") or "").strip()
+        if not image_url:
+            continue
+        title = collapse_whitespace(entry.get("title")) or "Openverse Comic Panel"
+        attribution_url = str(entry.get("attributionUrl") or entry.get("externalUrl") or image_url).strip()
+        license_value = str(entry.get("license") or "").strip()
+        creator = collapse_whitespace(entry.get("creator")) or "Openverse creator"
+        item_id = openverse_id or hashlib.sha1(f"{title}:{image_url}".encode("utf-8")).hexdigest()[:12]
+        out.append(
+            normalize_reader_catalog_item(
+                {
+                    "id": f"openverse_comic_{re.sub(r'[^a-z0-9]+', '_', item_id.lower()).strip('_')}",
+                    "title": title,
+                    "author": creator,
+                    "regionId": safe_region_id,
+                    "contentKind": "comic",
+                    "provider": "openverse",
+                    "license": license_value,
+                    "sourceUrl": attribution_url,
+                    "contentUrl": image_url,
+                    "coverUrl": str(entry.get("thumbUrl") or entry.get("previewUrl") or image_url).strip(),
+                    "summary": "Open-license comic-style artwork from Openverse API.",
+                    "supportsReadHere": True,
+                    "direction": "vertical-scroll",
+                    "readingModeDefault": "vertical_strip",
+                    "collectionLabel": "Openverse Comics",
+                    "attributionUrl": attribution_url,
+                    "sourceMeta": {
+                        "openverseId": openverse_id,
+                        "imageUrl": image_url,
+                        "attributionUrl": attribution_url,
+                        "license": license_value,
+                    },
+                }
+            )
+        )
+        if len(out) >= 8:
+            break
     return out
 
 
@@ -17385,6 +17934,38 @@ def _reader_merge_catalog_items(*sources: list[dict[str, Any]]) -> list[dict[str
     return merged
 
 
+def _reader_collect_catalog_sources(
+    factories: list[Callable[[], list[dict[str, Any]]]],
+    *,
+    max_wait_sec: float = 8.5,
+) -> list[list[dict[str, Any]]]:
+    safe_factories = [factory for factory in list(factories or []) if callable(factory)]
+    if not safe_factories:
+        return []
+    deadline = time.time() + max(1.0, float(max_wait_sec or 8.5))
+    out: list[list[dict[str, Any]]] = []
+    executor = ThreadPoolExecutor(max_workers=max(1, min(6, len(safe_factories))))
+    pending: set[Future[Any]] = set()
+    try:
+        pending = {executor.submit(factory) for factory in safe_factories}
+        while pending and time.time() < deadline:
+            remaining_sec = max(0.05, deadline - time.time())
+            done, pending = wait(pending, timeout=remaining_sec, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    payload = future.result()
+                except Exception:
+                    continue
+                if not isinstance(payload, list):
+                    continue
+                out.append([dict(item) for item in payload if isinstance(item, dict)])
+        for future in pending:
+            future.cancel()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return out
+
+
 def _reader_catalog_items(region_id: str, *, surface: str, search_query: str = "") -> list[dict[str, Any]]:
     safe_surface = normalize_reader_surface(surface)
     safe_region_id = str(reader_region(region_id).get("id") or "english")
@@ -17415,16 +17996,27 @@ def _reader_catalog_items(region_id: str, *, surface: str, search_query: str = "
     if cached is not None:
         return cached
     if safe_surface == "comics":
-        items = _reader_merge_catalog_items(
-            _reader_fetch_pepper_carrot_catalog(safe_region_id, search_query=safe_search),
-            fallback_catalog_items(safe_region_id, content_kind="comic") if not safe_search else [],
-        )
+        comic_factories: list[Callable[[], list[dict[str, Any]]]] = [
+            lambda: _reader_fetch_pepper_carrot_catalog(safe_region_id, search_query=safe_search),
+            lambda: _reader_fetch_openverse_comic_catalog(safe_region_id, search_query=safe_search),
+        ]
+        if not safe_search:
+            comic_factories.append(lambda: fallback_catalog_items(safe_region_id, content_kind="comic"))
+        items = _reader_merge_catalog_items(*_reader_collect_catalog_sources(comic_factories))
         return _reader_catalog_cache_set(cache_key, items)
-    items = _reader_merge_catalog_items(
-        _reader_fetch_standard_ebooks_catalog(safe_region_id, search_query=safe_search),
-        _reader_fetch_project_gutenberg_catalog(safe_region_id, search_query=safe_search),
-        fallback_catalog_items(safe_region_id, content_kind="book") if not safe_search else [],
-    )
+    book_factories: list[Callable[[], list[dict[str, Any]]]] = [
+        lambda: _reader_fetch_gutendex_catalog(safe_region_id, search_query=safe_search),
+        lambda: _reader_fetch_wikisource_catalog(safe_region_id, search_query=safe_search),
+        lambda: _reader_fetch_standard_ebooks_catalog(safe_region_id, search_query=safe_search),
+        lambda: _reader_fetch_project_gutenberg_catalog(safe_region_id, search_query=safe_search),
+    ]
+    if safe_search or safe_region_id != "english":
+        book_factories.append(lambda: _reader_fetch_openlibrary_catalog(safe_region_id, search_query=safe_search))
+    if safe_search:
+        book_factories.append(lambda: _reader_fetch_google_books_catalog(safe_region_id, search_query=safe_search))
+    if not safe_search:
+        book_factories.append(lambda: fallback_catalog_items(safe_region_id, content_kind="book"))
+    items = _reader_merge_catalog_items(*_reader_collect_catalog_sources(book_factories))
     return _reader_catalog_cache_set(cache_key, items)
 
 
@@ -17977,6 +18569,15 @@ def _commercial_annotate_item(item: dict[str, Any]) -> dict[str, Any]:
     return safe_item
 
 
+def _reader_is_discovery_item_allowed(item: dict[str, Any]) -> bool:
+    safe_item = dict(item or {})
+    if str(safe_item.get("surface") or "").strip() == "uploads":
+        return True
+    if not VF_COMMERCIAL_MODE:
+        return True
+    return str(safe_item.get("commercialUseStatus") or "").strip().lower() == "allowed"
+
+
 def _commercial_policy_blocked_providers(items: Optional[list[dict[str, Any]]] = None) -> list[str]:
     if not VF_COMMERCIAL_MODE:
         return []
@@ -18235,8 +18836,14 @@ def _reader_decorate_catalog_item(
     safe_content_kind = normalize_reader_content_kind(safe_item.get("contentKind"))
     safe_surface = normalize_reader_surface(safe_item.get("surface") or ("comics" if safe_content_kind == "comic" else "books"))
     work_key = f"{'upload' if safe_surface == 'uploads' else 'catalog'}:{str(safe_item.get('id') or '').strip()}"
-    progress = dict((progress_lookup or {}).get(work_key) or _reader_progress_get(uid, work_key))
-    live_session = dict((session_lookup or {}).get(work_key) or {})
+    if isinstance(progress_lookup, dict):
+        progress = dict(progress_lookup.get(work_key) or {})
+    else:
+        progress = dict(_reader_progress_get(uid, work_key))
+    if isinstance(session_lookup, dict):
+        live_session = dict(session_lookup.get(work_key) or {})
+    else:
+        live_session = dict(_reader_find_live_session(uid, work_key) or {})
     stats = _reader_item_stats(safe_item)
     resume = _reader_resume_payload(progress, session_id=str(live_session.get("id") or ""))
     if safe_content_kind == "book" and int(stats.get("totalChars") or 0) > 0:
@@ -18270,6 +18877,16 @@ def _reader_decorate_catalog_item(
             collection_label = "Standard Ebooks"
         elif provider == "pepper_carrot":
             collection_label = "Pepper&Carrot"
+        elif provider == "gutendex":
+            collection_label = "Gutendex"
+        elif provider == "wikisource":
+            collection_label = "Wikisource"
+        elif provider == "openlibrary":
+            collection_label = "Open Library"
+        elif provider == "google_books":
+            collection_label = "Google Books"
+        elif provider == "openverse":
+            collection_label = "Openverse Comics"
         else:
             collection_label = "Reader Catalog"
     source_language = _reader_normalize_language(
@@ -18345,10 +18962,11 @@ def _reader_build_library_payload(uid: str, *, surface: str = "all", region_id: 
         if work_key and work_key not in session_lookup:
             session_lookup[work_key] = saved
         active_sessions.append(_reader_session_public_view(saved))
-    all_items = [
+    all_items_raw = [
         _reader_decorate_catalog_item(uid, item, progress_lookup=progress_lookup, session_lookup=session_lookup)
         for item in [*uploads, *books, *comics]
     ]
+    all_items = [item for item in all_items_raw if _reader_is_discovery_item_allowed(item)]
     if safe_surface == "books":
         visible_items = [item for item in all_items if normalize_reader_content_kind(item.get("contentKind")) == "book"]
     elif safe_surface == "comics":
@@ -18433,7 +19051,7 @@ def _reader_build_library_payload(uid: str, *, surface: str = "all", region_id: 
             "newArrivals": new_arrivals[:8],
             "recentlyImported": recently_imported[:8],
         },
-        **_commercial_policy_payload(all_items),
+        **_commercial_policy_payload(all_items_raw),
     }
 
 
@@ -18837,7 +19455,7 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
             "rule": "1 char = 1.5 VF",
             "label": "Reader pricing: 1 char = 1.5 VF",
             "engine": "GEM",
-            "engineLabel": "Gemini TTS HD" if audio_engine != "native_audio_dialog" else "Gemini Native Audio Dialog",
+            "engineLabel": "Gemini 2.5 Flash TTS" if audio_engine != "native_audio_dialog" else "Gemini 2.5 Native Audio Dialog",
             "modelRouting": {
                 "primary": VF_READER_TTS_PRIMARY_MODEL,
                 "fallback": VF_READER_TTS_FALLBACK_MODEL,
@@ -18848,13 +19466,13 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
                 "status": audio_engine_status,
                 "tts_hd": {
                     "engine": "GEM",
-                    "label": "Gemini TTS HD",
+                    "label": "Gemini 2.5 Flash TTS",
                     "primaryModel": VF_READER_TTS_PRIMARY_MODEL,
                     "fallbackModel": VF_READER_TTS_FALLBACK_MODEL,
                 },
                 "native_audio_dialog": {
                     "engine": "GEM",
-                    "label": "Gemini Native Audio Dialog (Experimental)",
+                    "label": "Gemini 2.5 Native Audio Dialog",
                     "model": VF_READER_NATIVE_AUDIO_MODEL,
                     "enabled": bool(VF_READER_NATIVE_AUDIO_ENABLED),
                 },
@@ -19008,6 +19626,14 @@ def _reader_remote_comic_fallback_title(item: dict[str, Any]) -> str:
 def _reader_catalog_comic_page_sources(item: dict[str, Any]) -> list[str]:
     safe_item = normalize_reader_catalog_item(item)
     provider = str(safe_item.get("provider") or "").strip().lower()
+    if provider == "openverse":
+        source_meta = dict(safe_item.get("sourceMeta") or {})
+        image_url = (
+            str(source_meta.get("imageUrl") or "").strip()
+            or str(safe_item.get("contentUrl") or "").strip()
+            or str(safe_item.get("coverUrl") or "").strip()
+        )
+        return [image_url] if image_url else []
     if provider != "pepper_carrot":
         return []
     source_meta = dict(safe_item.get("sourceMeta") or {})
@@ -19355,8 +19981,18 @@ def _reader_tts_text_for_unit(session: dict[str, Any], unit: dict[str, Any]) -> 
 def _reader_tts_model_route(audio_engine: str) -> tuple[str, list[str]]:
     safe_engine = _reader_normalize_audio_engine(audio_engine, default="tts_hd")
     if safe_engine == "native_audio_dialog":
-        return VF_READER_NATIVE_AUDIO_MODEL, [VF_READER_NATIVE_AUDIO_MODEL]
-    return VF_READER_TTS_PRIMARY_MODEL, [VF_READER_TTS_PRIMARY_MODEL, VF_READER_TTS_FALLBACK_MODEL]
+        model = str(VF_READER_NATIVE_AUDIO_MODEL or "").strip() or "gemini-2.5-flash-native-audio-dialog"
+        return model, [model]
+    model_candidates = list(
+        dict.fromkeys(
+            str(model).strip()
+            for model in [VF_READER_TTS_PRIMARY_MODEL, VF_READER_TTS_FALLBACK_MODEL]
+            if str(model).strip()
+        )
+    )
+    if not model_candidates:
+        model_candidates = ["gemini-2.5-flash"]
+    return model_candidates[0], model_candidates
 
 
 def _reader_create_tts_job(
@@ -19750,7 +20386,7 @@ def reader_legal_ack_status(request: Request) -> JSONResponse:
                 "rule": "1 char = 1.5 VF",
                 "label": "Reader pricing: 1 char = 1.5 VF",
                 "engine": "GEM",
-                "engineLabel": "Gemini TTS HD",
+                "engineLabel": "Gemini 2.5 Flash TTS",
                 "modelRouting": {
                     "primary": VF_READER_TTS_PRIMARY_MODEL,
                     "fallback": VF_READER_TTS_FALLBACK_MODEL,
@@ -19862,12 +20498,13 @@ def reader_catalog_items(
         ]
         return JSONResponse({"ok": True, "surface": safe_surface, "items": uploads, **_commercial_policy_payload(uploads)})
     safe_region = str(reader_region(regionId).get("id") or "english")
-    items = [
+    all_items = [
         _reader_decorate_catalog_item(uid, item, progress_lookup=progress_lookup, session_lookup=session_lookup)
         for item in _reader_catalog_items(safe_region, surface=safe_surface, search_query=safe_search)
     ]
+    items = [item for item in all_items if _reader_is_discovery_item_allowed(item)]
     return JSONResponse(
-        {"ok": True, "surface": safe_surface, "regionId": safe_region, "items": items, **_commercial_policy_payload(items)}
+        {"ok": True, "surface": safe_surface, "regionId": safe_region, "items": items, **_commercial_policy_payload(all_items)}
     )
 
 
@@ -19905,7 +20542,7 @@ def reader_catalog_item_detail(item_id: str, request: Request) -> JSONResponse:
                 "rule": "1 char = 1.5 VF",
                 "label": "Reader pricing: 1 char = 1.5 VF",
                 "engine": "GEM",
-                "engineLabel": "Gemini TTS HD",
+                "engineLabel": "Gemini 2.5 Flash TTS",
                 "modelRouting": {
                     "primary": VF_READER_TTS_PRIMARY_MODEL,
                     "fallback": VF_READER_TTS_FALLBACK_MODEL,
@@ -19963,7 +20600,7 @@ async def reader_upload_create(
     uid = _require_request_uid(request)
     _reader_require_legal_ack(uid)
     safe_region_id = str(reader_region(regionId).get("id") or "english")
-    safe_ownership_basis = _reader_normalize_ownership_basis(ownershipBasis, raise_on_invalid=True)
+    safe_ownership_basis = _reader_normalize_ownership_basis(ownershipBasis, raise_on_invalid=False)
     upload_id = f"reader_upload_{uuid.uuid4().hex}"
     file_names: list[str] = []
     prepared_files: list[dict[str, Any]] = []
@@ -25812,9 +26449,18 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
         or raw_source_policy.get("serviceAccountJson")
         or ""
     ).strip()
+    vertex_access_token = str(
+        raw_source_policy.get("vertexAccessToken")
+        or raw_source_policy.get("accessToken")
+        or raw_source_policy.get("vertexApiKey")
+        or ""
+    ).strip()
     if source_policy_requested:
         raw_source_policy.pop("vertexServiceAccountJson", None)
         raw_source_policy.pop("serviceAccountJson", None)
+        raw_source_policy.pop("vertexAccessToken", None)
+        raw_source_policy.pop("accessToken", None)
+        raw_source_policy.pop("vertexApiKey", None)
         raw_payload["sourcePolicy"] = raw_source_policy
 
     normalized = normalize_gemini_pool_config(raw_payload)
@@ -25847,12 +26493,29 @@ def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Reques
                     next_source_policy["vertexProject"] = inferred_project
                     applied_overrides.append("vertex_project_inferred_from_service_account")
             if not str(next_source_policy.get("vertexLocation") or "").strip():
-                default_location = str(
-                    os.getenv("GOOGLE_CLOUD_LOCATION")
-                    or os.getenv("GOOGLE_CLOUD_REGION")
-                    or "us-central1"
-                ).strip() or "us-central1"
-                next_source_policy["vertexLocation"] = default_location
+                next_source_policy["vertexLocation"] = _default_vertex_location()
+        if vertex_access_token:
+            if provider != SOURCE_POLICY_PROVIDER_VERTEX:
+                provider = SOURCE_POLICY_PROVIDER_VERTEX
+                next_source_policy["provider"] = provider
+                applied_overrides.append("source_policy_provider_set_vertex")
+            path_hint = str(next_source_policy.get("vertexAccessTokenRef") or "").strip()
+            try:
+                persisted_ref = _persist_vertex_access_token(
+                    vertex_access_token,
+                    path_hint=path_hint,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            next_source_policy["vertexAccessTokenRef"] = persisted_ref
+        if provider == SOURCE_POLICY_PROVIDER_VERTEX:
+            if not str(next_source_policy.get("vertexProject") or "").strip():
+                inferred_project = _default_vertex_project()
+                if inferred_project:
+                    next_source_policy["vertexProject"] = inferred_project
+                    applied_overrides.append("vertex_project_inferred_from_env")
+            if not str(next_source_policy.get("vertexLocation") or "").strip():
+                next_source_policy["vertexLocation"] = _default_vertex_location()
         normalized["sourcePolicy"] = next_source_policy
     elif current_source_policy:
         normalized["sourcePolicy"] = dict(current_source_policy)
@@ -28943,8 +29606,8 @@ def _normalize_live_native_config(raw_config: Any, *, fallback_topic: str) -> di
         max_value=3,
     )
     fallback_mode = str(recovery_source.get("fallbackMode") or VF_TTS_LIVE_NATIVE_FALLBACK_MODE).strip().lower()
-    if fallback_mode not in {"runtime_nonlive_same_cast"}:
-        fallback_mode = "runtime_nonlive_same_cast"
+    if fallback_mode not in {"runtime_nonlive_same_cast", "native_audio_only"}:
+        fallback_mode = "native_audio_only"
 
     raw_output = source.get("output")
     output_source = dict(raw_output or {}) if isinstance(raw_output, dict) else {}
@@ -30453,11 +31116,23 @@ def _process_live_native_tts_job(
     except Exception:  # noqa: BLE001
         parsed_max_resume_attempts = int(VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS)
     max_resume_attempts = max(0, min(3, int(parsed_max_resume_attempts)))
-    fallback_mode = str(recovery.get("fallbackMode") or "runtime_nonlive_same_cast").strip().lower() or "runtime_nonlive_same_cast"
+    fallback_mode = (
+        str(recovery.get("fallbackMode") or VF_TTS_LIVE_NATIVE_FALLBACK_MODE).strip().lower()
+        or VF_TTS_LIVE_NATIVE_FALLBACK_MODE
+    )
+    if fallback_mode not in {"runtime_nonlive_same_cast", "native_audio_only"}:
+        fallback_mode = "native_audio_only"
     include_transcript = bool(output.get("includeTranscript", True))
     auto_save = bool(output.get("autoSave", True))
     native_audio_model = str(models.get("nativeAudio") or VF_TTS_LIVE_NATIVE_MODEL).strip() or VF_TTS_LIVE_NATIVE_MODEL
     director_model = str(models.get("director") or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL).strip() or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL
+    native_audio_model_candidates = list(
+        dict.fromkeys(
+            str(item).strip()
+            for item in [native_audio_model, *VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES]
+            if str(item).strip()
+        )
+    )
     max_turns = min(
         VF_TTS_LIVE_NATIVE_MAX_TURNS,
         max(speaker_count * 2, int(round(target_duration_sec / 8.0)) + speaker_count),
@@ -30651,6 +31326,12 @@ def _process_live_native_tts_job(
         while True:
             try:
                 seed_script_hint = _live_native_seed_script_window(seed_script, turn_index=turn_index)
+                generation_timeout_sec = max(2, int(per_turn_timeout_sec))
+                if not chunk_audio_bytes:
+                    generation_timeout_sec = min(
+                        generation_timeout_sec,
+                        int(VF_TTS_LIVE_NATIVE_FIRST_CHUNK_TEXT_TIMEOUT_SEC),
+                    )
                 turn_text = _runtime_generate_live_native_turn_text(
                     topic=topic,
                     pacing_style=pacing_style,
@@ -30660,7 +31341,7 @@ def _process_live_native_tts_job(
                     transcript_window=transcript_window,
                     seed_script_hint=seed_script_hint,
                     trace_id=f"{trace_id}:turn:{turn_index}:gen:{generation_resume_attempts}",
-                    timeout_sec=per_turn_timeout_sec,
+                    timeout_sec=generation_timeout_sec,
                     model=director_model,
                 )
                 break
@@ -30716,9 +31397,9 @@ def _process_live_native_tts_job(
         synth_payload["voice_id"] = speaker_voice
         synth_payload["voiceId"] = speaker_voice
         synth_payload["model"] = native_audio_model
+        synth_payload["modelCandidates"] = list(native_audio_model_candidates)
         synth_payload["request_id"] = f"{request_id}:turn:{turn_index}"
         synth_payload["trace_id"] = f"{trace_id}:turn:{turn_index}:tts"
-        synth_payload.pop("modelCandidates", None)
 
         chunk_audio = b""
         chunk_status_code = 500
@@ -30765,6 +31446,17 @@ def _process_live_native_tts_job(
                 return
             runtime_started_ms = int(time.time() * 1000)
             try:
+                runtime_timeout_sec = max(2, int(per_turn_timeout_sec))
+                if not chunk_audio_bytes:
+                    runtime_timeout_sec = min(
+                        runtime_timeout_sec,
+                        int(VF_TTS_LIVE_NATIVE_FIRST_CHUNK_SYNTH_TIMEOUT_SEC),
+                    )
+                    if _first_chunk_deadline_exceeded() or fallback_used:
+                        runtime_timeout_sec = min(
+                            runtime_timeout_sec,
+                            int(VF_TTS_LIVE_NATIVE_POST_DEADLINE_TIMEOUT_SEC),
+                        )
                 runtime_response = _runtime_tts_request_with_gemini_failover(
                     "POST",
                     upstream_url,
@@ -30772,7 +31464,7 @@ def _process_live_native_tts_job(
                     trace_id=trace_id,
                     job_id=job_id,
                     json=synth_payload,
-                    timeout=max(5, int(per_turn_timeout_sec)),
+                    timeout=runtime_timeout_sec,
                 )
             except (RuntimeHttpError, requests.exceptions.Timeout, requests.exceptions.RequestException) as exc:
                 runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started_ms)

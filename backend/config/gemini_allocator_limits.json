@@ -22,6 +22,18 @@
       "enabledFor": ["tts"]
     },
     {
+      "id": "gemini-2.5-flash-native-audio-latest",
+      "rpm": 1000,
+      "tpm": 1000000,
+      "enabledFor": ["tts"]
+    },
+    {
+      "id": "gemini-2.5-flash-native-audio-preview-09-2025",
+      "rpm": 1000,
+      "tpm": 1000000,
+      "enabledFor": ["tts"]
+    },
+    {
       "id": "gemini-3-flash",
       "rpm": 5,
       "tpm": 250000,

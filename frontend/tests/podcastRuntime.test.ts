@@ -3,6 +3,9 @@ import {
   buildLivePodcastSubmitRequest,
   buildStandardPodcastSubmitRequest,
   createPodcastEntitlementRefreshInvoker,
+  normalizePodcastLanguage,
+  PODCAST_LANGUAGE_OPTIONS,
+  resolvePodcastLanguageOptions,
   resolvePodcastErrorMessage,
   shouldAutoRunDirectorAtStart,
 } from '../src/features/podcast/model/podcastRuntime';
@@ -91,5 +94,39 @@ describe('podcast runtime model', () => {
     expect(message).toContain('request_id is already associated with a different user.');
     expect(message).toContain('REQUEST_ID_CONFLICT');
     expect(message).not.toContain('[object Object]');
+  });
+
+  it('accepts 3-letter and extended language tags', () => {
+    expect(normalizePodcastLanguage('fil')).toBe('fil');
+    expect(normalizePodcastLanguage('zh-Hant')).toBe('zh-hant');
+    expect(normalizePodcastLanguage('bad token')).toBe('en');
+  });
+
+  it('uses full language catalog when engine reports multilingual support', () => {
+    const options = resolvePodcastLanguageOptions(
+      {
+        engines: {
+          GEM: { languages: ['multilingual'] },
+        },
+      } as any,
+      'GEM'
+    );
+
+    expect(options.length).toBeGreaterThan(PODCAST_LANGUAGE_OPTIONS.length);
+    expect(options.some((option) => option.value === 'fil')).toBe(true);
+    expect(options.some((option) => option.value === 'de')).toBe(true);
+  });
+
+  it('uses engine-declared language set when explicit list is provided', () => {
+    const options = resolvePodcastLanguageOptions(
+      {
+        engines: {
+          KOKORO: { languages: ['en', 'hi'] },
+        },
+      } as any,
+      'KOKORO'
+    );
+
+    expect(options.map((option) => option.value)).toEqual(['en', 'hi']);
   });
 });

@@ -1,0 +1,8 @@
+{
+    "voice":  "Kore",
+    "modelCandidates":  [
+                            "gemini-2.5-flash-native-audio-dialog"
+                        ],
+    "language":  "en",
+    "text":  "Final live runtime check."
+}

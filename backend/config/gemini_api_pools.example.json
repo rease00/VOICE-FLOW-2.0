@@ -33,6 +33,7 @@
     "fileKeyCount": 0,
     "vertexProject": "",
     "vertexLocation": "",
-    "vertexServiceAccountRef": ""
+    "vertexServiceAccountRef": "",
+    "vertexAccessTokenRef": ""
   }
 }

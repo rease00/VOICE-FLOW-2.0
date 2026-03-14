@@ -214,10 +214,11 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
   onResetDetectedTextOverride,
 }) => {
   const availablePanels: ReaderUtilityPanel[] = panelScope === 'translator_only'
-    ? ['translator']
+    ? ['translator', 'settings']
     : getReaderAvailableUtilityPanels(Boolean(session));
   const activePanel = panel && availablePanels.includes(panel) ? panel : (availablePanels[0] || null);
-  const isCompactImport = layoutMode === 'desktop' && activePanel === 'import';
+  // Keep desktop tray behavior consistent across panels so dock interactions are never blocked by a full-screen scrim.
+  const isCompactImport = false;
   const ownershipBasisOptions = commercialPolicy?.ownershipBasisOptions?.length
     ? commercialPolicy.ownershipBasisOptions
     : DEFAULT_OWNERSHIP_BASIS_OPTIONS;
@@ -339,8 +340,8 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
             <label className="vf-reader-tray__field">
               <span>Audio Engine</span>
               <select value={audioEngineDraft} onChange={(event) => onSetAudioEngineDraft(event.target.value as ReaderAudioEngine)}>
-                <option value="native_audio_dialog">Native Audio Dialog (Default)</option>
-                <option value="tts_hd">TTS HD (Fallback)</option>
+                <option value="native_audio_dialog">Gemini 2.5 Native Audio Dialog (Default)</option>
+                <option value="tts_hd">Gemini 2.5 Flash TTS</option>
               </select>
               <small>Status: {audioEngineStatusLabel}</small>
             </label>
@@ -552,7 +553,7 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
 
   return (
     <div className={shellClassName} data-testid="reader-utility-shell">
-      {layoutMode !== 'desktop' || isCompactImport ? <button type="button" className={`vf-reader-tray__scrim${isCompactImport ? ' vf-reader-tray__scrim--desktop' : ''}`} onClick={onClose} aria-label="Close reader tools overlay" /> : null}
+      {layoutMode !== 'desktop' ? <button type="button" className="vf-reader-tray__scrim" onClick={onClose} aria-label="Close reader tools overlay" /> : null}
       <section className={trayClassName} data-testid="reader-utility-tray">
         <div className="vf-reader-tray__header">
           <div>
@@ -568,7 +569,7 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
           </button>
         </div>
 
-        {!isCompactImport && panelScope !== 'translator_only' ? (
+        {!isCompactImport && availablePanels.length > 1 ? (
           <div className="vf-reader-tray__panel-strip" {...managedTabs.listProps}>
             {availablePanels.map((panelId) => (
               <button

@@ -183,21 +183,6 @@ const normalizeReaderComicDraftMode = (value: string | undefined): string => {
   return 'vertical_strip';
 };
 
-const READER_DOCK_DEFAULT_BASE_WIDTH_PX = 760;
-const READER_DOCK_HORIZONTAL_GUTTER_PX = (96 / 2.54) * 0.5;
-const READER_DOCK_PREFERRED_MIN_SCALE = 0.9;
-
-const resolveCssLengthPx = (value: string, rootFontPx: number): number => {
-  const safe = String(value || '').trim().toLowerCase();
-  if (!safe) return 0;
-  const numeric = Number.parseFloat(safe);
-  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-  if (safe.endsWith('rem')) return numeric * rootFontPx;
-  if (safe.endsWith('cm')) return (numeric * 96) / 2.54;
-  if (safe.endsWith('px')) return numeric;
-  return numeric;
-};
-
 const READER_PREP_TERMINAL_STATES = new Set(['ready', 'error', 'degraded']);
 
 const isReaderPrepTerminal = (readerSession: ReaderSession | null | undefined): boolean => {
@@ -309,7 +294,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
   const [autoSwipePausedUntil, setAutoSwipePausedUntil] = useState<number>(0);
   const [activeUtilityPanel, setActiveUtilityPanel] = useState<ReaderUtilityPanel | null>(null);
   const [activeUtilityPanelScope, setActiveUtilityPanelScope] = useState<ReaderUtilityPanelScope>('all');
-  const [readerDockScale, setReaderDockScale] = useState<number>(1);
   const [pageVisibility, setPageVisibility] = useState<DocumentVisibilityState>(
     typeof document === 'undefined' ? 'visible' : document.visibilityState
   );
@@ -421,33 +405,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     if (activeUtilityPanel) return;
     if (activeUtilityPanelScope !== 'all') setActiveUtilityPanelScope('all');
   }, [activeUtilityPanel, activeUtilityPanelScope]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const computeDockScale = () => {
-      const dockNode = playerDockRef.current;
-      const rootFontPx = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize || '16') || 16;
-      const baseWidthFromCss = resolveCssLengthPx(
-        dockNode ? window.getComputedStyle(dockNode).getPropertyValue('--reader-dock-base-width') : '',
-        rootFontPx
-      );
-      const baseWidthPx = baseWidthFromCss > 0
-        ? baseWidthFromCss
-        : dockNode?.offsetWidth || READER_DOCK_DEFAULT_BASE_WIDTH_PX;
-      const availableWidth = Math.max(0, window.innerWidth - (READER_DOCK_HORIZONTAL_GUTTER_PX * 2));
-      const ratio = baseWidthPx > 0 ? availableWidth / baseWidthPx : 1;
-      const clamped = ratio >= READER_DOCK_PREFERRED_MIN_SCALE
-        ? Math.max(READER_DOCK_PREFERRED_MIN_SCALE, Math.min(1, ratio || 1))
-        : Math.max(0, Math.min(1, ratio || 1));
-      const normalized = Number(clamped.toFixed(3));
-      setReaderDockScale((current) => (Math.abs(current - normalized) < 0.001 ? current : normalized));
-    };
-    computeDockScale();
-    window.addEventListener('resize', computeDockScale);
-    return () => {
-      window.removeEventListener('resize', computeDockScale);
-    };
-  }, []);
 
   useEffect(() => () => {
     Object.values(audioUrls).forEach((url) => {
@@ -1967,20 +1924,19 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
     ? 'native_audio_dialog'
     : 'tts_hd';
   const audioEngineLabel = activeAudioEngine === 'native_audio_dialog'
-    ? 'Native Audio Dialog'
-    : 'TTS HD';
+    ? 'Gemini 2.5 Native Audio Dialog'
+    : 'Gemini 2.5 Flash TTS';
   const audioEngineStatusLabel = String(
     session?.audioEngineStatus
       || (activeAudioEngine === 'native_audio_dialog' ? 'active' : 'active')
   ).trim().toLowerCase() || 'active';
   const pageViewModeLabel = pageViewModeDraft === 'translated' ? 'Translated Page View' : 'Original Page View';
   const isPlaybackMode = workspaceMode === 'playback' && Boolean(session);
-  const isCompactImportPanel = layoutMode === 'desktop' && activeUtilityPanel === 'import';
   const showReaderAuthState = !isPlaybackMode && readerBootstrapState === 'needs_auth';
   const showReaderErrorState = !isPlaybackMode && readerBootstrapState === 'error' && !library;
   const shouldShowRightsNotice = readerBootstrapState === 'ready' && legalAck !== null && !legalAck.accepted;
-  const rootClassName = `${getReaderThemeClassName(resolvedTheme)} vf-reader--layout-${layoutMode}${isFullscreen ? ' vf-reader--fullscreen' : ''}${activeUtilityPanel && !isCompactImportPanel ? ' vf-reader--tray-open' : ''}`;
-  const workspaceClassName = `vf-reader__workspace vf-reader__workspace--${layoutMode} ${isPlaybackMode ? 'vf-reader__workspace--playback' : 'vf-reader__workspace--browse'}${activeUtilityPanel && !isCompactImportPanel ? ' vf-reader__workspace--has-tray' : ''}`;
+  const rootClassName = `${getReaderThemeClassName(resolvedTheme)} vf-reader--layout-${layoutMode}${isFullscreen ? ' vf-reader--fullscreen' : ''}${activeUtilityPanel ? ' vf-reader--tray-open' : ''}`;
+  const workspaceClassName = `vf-reader__workspace vf-reader__workspace--${layoutMode} ${isPlaybackMode ? 'vf-reader__workspace--playback' : 'vf-reader__workspace--browse'}${activeUtilityPanel ? ' vf-reader__workspace--has-tray' : ''}`;
   const selectQueueIndexFromWindow = useCallback(
     (startChar: number | undefined) => {
       const nextIndex = playlist.findIndex((entry) => entry.kind === 'window' && entry.startChar === startChar);
@@ -2171,6 +2127,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
 
         <ReaderPlayerDock
           dockRef={playerDockRef}
+          suspendAutoCollapse={Boolean(activeUtilityPanel)}
           session={session}
           selectedItem={sessionItem || selectedItem}
           activeItem={activeItem}
@@ -2190,14 +2147,11 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({ mediaBackend
           onPrev={() => goToQueueIndex(activeQueueIndex - 1, isSpeechPlaying || isSpeechBuffering)}
           onNext={() => goToQueueIndex(activeQueueIndex + 1, isSpeechPlaying || isSpeechBuffering)}
           onGoHome={handleGoHome}
-          dockScale={readerDockScale}
           onOpenImport={() => toggleUtilityPanel('import')}
           onOpenTranslate={toggleTranslatePanel}
           onOpenSettings={() => toggleUtilityPanel('settings')}
           onOpenDetectedText={() => toggleUtilityPanel('detected')}
           onOpenCast={() => toggleUtilityPanel('cast')}
-          onSavepoint={() => void handleSavepoint()}
-          onCloseSession={() => void handleCloseSession()}
           onToggleNativeAudio={() => handleAudioEngineChange(activeAudioEngine === 'native_audio_dialog' ? 'tts_hd' : 'native_audio_dialog')}
           onNarratorVoiceChange={setNarratorVoiceDraft}
           onToggleMultiSpeaker={() => setMultiSpeakerEnabledDraft((value) => !value)}

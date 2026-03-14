@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import concurrent.futures
 import hmac
@@ -80,6 +81,11 @@ try:
 except Exception:
     genai = None
     types = None
+
+try:
+    from google.oauth2 import credentials as google_oauth2_credentials
+except Exception:
+    google_oauth2_credentials = None
 
 APP_NAME = "gemini-runtime"
 GEMINI_RUNTIME_ADMIN_TOKEN = str(os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
@@ -173,6 +179,10 @@ GEMINI_VERTEX_SECRET_DIR = (RUNTIME_ROOT / ".runtime" / "secrets" / "gemini").re
 GEMINI_VERTEX_SERVICE_ACCOUNT_FILE = str(
     os.getenv("VF_GEMINI_VERTEX_SERVICE_ACCOUNT_FILE")
     or (GEMINI_VERTEX_SECRET_DIR / "vertex-service-account.json")
+).strip()
+GEMINI_VERTEX_ACCESS_TOKEN_FILE = str(
+    os.getenv("VF_GEMINI_VERTEX_ACCESS_TOKEN_FILE")
+    or (GEMINI_VERTEX_SECRET_DIR / "vertex-access-token.txt")
 ).strip()
 TTS_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["tts"])
 TEXT_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["text"])
@@ -650,17 +660,152 @@ def extract_pcm_bytes(response: object) -> bytes:
     raise ValueError("No audio payload returned by Gemini.")
 
 
+def _is_live_native_audio_model(model_name: str) -> bool:
+    token = _normalize_model_name(str(model_name or "")).lower()
+    return "native-audio" in token or token.startswith("gemini-live-") or "-live-" in token
+
+
+def _decode_inline_blob_data(raw_data: object) -> bytes:
+    if isinstance(raw_data, bytes):
+        return raw_data
+    if isinstance(raw_data, str):
+        try:
+            return base64.b64decode(raw_data)
+        except Exception:
+            return b""
+    return b""
+
+
+def _extract_live_audio_chunks(message: object) -> list[bytes]:
+    server_content = getattr(message, "server_content", None) or getattr(message, "serverContent", None)
+    if server_content is None:
+        return []
+    model_turn = getattr(server_content, "model_turn", None) or getattr(server_content, "modelTurn", None)
+    if model_turn is None:
+        return []
+    parts = list(getattr(model_turn, "parts", None) or [])
+    out: list[bytes] = []
+    for part in parts:
+        inline_data = getattr(part, "inline_data", None) or getattr(part, "inlineData", None)
+        if inline_data is None:
+            continue
+        mime_type = str(
+            getattr(inline_data, "mime_type", None)
+            or getattr(inline_data, "mimeType", None)
+            or ""
+        ).lower()
+        if "audio/" not in mime_type:
+            continue
+        chunk = _decode_inline_blob_data(getattr(inline_data, "data", None))
+        if chunk:
+            out.append(chunk)
+    return out
+
+
+def _live_server_turn_complete(message: object) -> bool:
+    server_content = getattr(message, "server_content", None) or getattr(message, "serverContent", None)
+    if server_content is None:
+        return False
+    return bool(
+        getattr(server_content, "generation_complete", False)
+        or getattr(server_content, "generationComplete", False)
+        or getattr(server_content, "turn_complete", False)
+        or getattr(server_content, "turnComplete", False)
+        or getattr(server_content, "interrupted", False)
+    )
+
+
+async def _synthesize_live_pcm_async(
+    *,
+    client: object,
+    model_id: str,
+    text_input: str,
+    speech_config: object,
+) -> tuple[bytes, Optional[Dict[str, int]]]:
+    if types is None:
+        raise RuntimeError("google-genai types are unavailable in runtime.")
+    if not hasattr(client, "aio") or not hasattr(client.aio, "live"):
+        raise RuntimeError("Gemini Live API client is unavailable in runtime.")
+
+    live_config = types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        speech_config=speech_config,
+    )
+
+    audio_chunks: list[bytes] = []
+    usage_metadata: Optional[Dict[str, int]] = None
+    async with client.aio.live.connect(model=model_id, config=live_config) as session:
+        await session.send_client_content(
+            turns=types.Content(
+                role="user",
+                parts=[types.Part(text=text_input)],
+            ),
+            turn_complete=True,
+        )
+        async for message in session.receive():
+            live_usage = extract_usage_metadata(message)
+            if isinstance(live_usage, dict):
+                usage_metadata = dict(live_usage)
+            chunks = _extract_live_audio_chunks(message)
+            if chunks:
+                audio_chunks.extend(chunks)
+            if _live_server_turn_complete(message) and audio_chunks:
+                break
+    if not audio_chunks:
+        raise ValueError("No audio payload returned by Gemini Live API.")
+    return b"".join(audio_chunks), usage_metadata
+
+
+def _synthesize_live_pcm(
+    *,
+    client: object,
+    model_id: str,
+    text_input: str,
+    speech_config: object,
+    timeout_ms: int,
+) -> tuple[bytes, Optional[Dict[str, int]]]:
+    timeout_sec = max(1.0, float(timeout_ms) / 1000.0)
+    coro = _synthesize_live_pcm_async(
+        client=client,
+        model_id=model_id,
+        text_input=text_input,
+        speech_config=speech_config,
+    )
+    try:
+        return asyncio.run(asyncio.wait_for(coro, timeout=timeout_sec))
+    except RuntimeError as exc:
+        if "asyncio.run() cannot be called from a running event loop" not in str(exc):
+            raise
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                lambda: asyncio.run(asyncio.wait_for(coro, timeout=timeout_sec))
+            )
+            return future.result(timeout=timeout_sec + 1.0)
+
+
 def resolve_language_code(text: str, hint: Optional[str]) -> str:
     normalized = str(hint or "").strip().lower()
     if normalized.startswith("hi"):
-        return "hi"
+        return "hi-IN"
+    if normalized.startswith("en"):
+        return "en-US"
     if re.search(r"[\u0900-\u097F]", str(text or "")):
-        return "hi"
-    return "en"
+        return "hi-IN"
+    return "en-US"
+
+
+_DEPRECATED_LIVE_MODEL_ALIASES: dict[str, str] = {
+    "gemini-2.5-flash-native-audio-dialog": "gemini-2.5-flash-native-audio-latest",
+    "gemini-2.5-flash-preview-native-audio-dialog": "gemini-2.5-flash-native-audio-latest",
+    "gemini-2.5-flash-exp-native-audio-thinking-dialog": "gemini-2.5-flash-native-audio-latest",
+}
 
 
 def _normalize_model_name(model_name: str) -> str:
-    return normalize_model_name(model_name)
+    normalized = normalize_model_name(model_name)
+    if not normalized:
+        return ""
+    return _DEPRECATED_LIVE_MODEL_ALIASES.get(normalized.lower(), normalized)
 
 
 def _normalize_runtime_engine(raw_engine: object, default: str = TTS_ENGINE_DEFAULT) -> str:
@@ -829,6 +974,14 @@ def _resolve_vertex_service_account_store_path(path_hint: str) -> Path:
     return (RUNTIME_ROOT / path).resolve()
 
 
+def _resolve_vertex_access_token_store_path(path_hint: str) -> Path:
+    raw_hint = str(path_hint or GEMINI_VERTEX_ACCESS_TOKEN_FILE).strip()
+    path = Path(raw_hint).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (RUNTIME_ROOT / path).resolve()
+
+
 def _persist_vertex_service_account_json(raw_json: str, *, path_hint: str) -> tuple[str, dict[str, Any]]:
     payload: dict[str, Any]
     try:
@@ -853,13 +1006,58 @@ def _persist_vertex_service_account_json(raw_json: str, *, path_hint: str) -> tu
     return str(target_path), payload
 
 
+def _persist_vertex_access_token(raw_token: str, *, path_hint: str) -> str:
+    token = str(raw_token or "").strip()
+    if not token:
+        raise ValueError("Vertex access token cannot be empty.")
+    target_path = _resolve_vertex_access_token_store_path(path_hint)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+    tmp_path.write_text(f"{token}\n", encoding="utf-8")
+    os.replace(str(tmp_path), str(target_path))
+    try:
+        os.chmod(str(target_path), 0o600)
+    except Exception:
+        pass
+    return str(target_path)
+
+
+def _default_vertex_project() -> str:
+    for env_name in (
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_PROJECT_ID",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "FIREBASE_PROJECT_ID",
+        "VITE_FIREBASE_PROJECT_ID",
+        "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
+    ):
+        candidate = str(os.getenv(env_name) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _default_vertex_location() -> str:
+    return str(
+        os.getenv("GOOGLE_CLOUD_LOCATION")
+        or os.getenv("GOOGLE_CLOUD_REGION")
+        or "us-central1"
+    ).strip() or "us-central1"
+
+
 def _sanitize_source_policy_for_response(source_policy: dict[str, Any]) -> dict[str, Any]:
     policy = dict(source_policy or {})
     policy.pop("vertexServiceAccountJson", None)
     policy.pop("serviceAccountJson", None)
     policy.pop("vertexServiceAccount", None)
+    policy.pop("vertexAccessToken", None)
+    policy.pop("accessToken", None)
+    policy.pop("vertexApiKey", None)
     service_account_ref = str(policy.get("vertexServiceAccountRef") or "").strip()
+    access_token_ref = str(policy.get("vertexAccessTokenRef") or "").strip()
     policy["vertexServiceAccountConfigured"] = bool(service_account_ref)
+    policy["vertexAccessTokenConfigured"] = bool(access_token_ref)
     return policy
 
 
@@ -1187,6 +1385,39 @@ def _resolve_vertex_credentials_path(source_policy: Optional[dict[str, Any]] = N
     return str((WORKSPACE_ROOT / path).resolve())
 
 
+def _resolve_vertex_access_token_path(source_policy: Optional[dict[str, Any]] = None) -> str:
+    policy = dict(source_policy or {})
+    raw_path = str(policy.get("vertexAccessTokenRef") or "").strip()
+    if not raw_path:
+        return ""
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    runtime_candidate = (RUNTIME_ROOT / path).resolve()
+    if runtime_candidate.exists():
+        return str(runtime_candidate)
+    return str((WORKSPACE_ROOT / path).resolve())
+
+
+def _read_vertex_access_token(source_policy: Optional[dict[str, Any]] = None) -> str:
+    policy = dict(source_policy or {})
+    path = _resolve_vertex_access_token_path(policy)
+    if path:
+        token_path = Path(path)
+        try:
+            if token_path.exists() and token_path.is_file():
+                token = str(token_path.read_text(encoding="utf-8", errors="ignore")).strip()
+                if token:
+                    return token
+        except Exception:
+            pass
+    return str(
+        os.getenv("VF_GEMINI_VERTEX_ACCESS_TOKEN")
+        or os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
+        or ""
+    ).strip()
+
+
 def _pool_keys_for_hint(pool_hint: Optional[str]) -> list[str]:
     config, _meta = _load_api_pool_config()
     effective_hint = str(pool_hint or "").strip() or resolve_default_runtime_pool_hint(config)
@@ -1242,42 +1473,47 @@ def _ensure_runtime_pool_or_raise(
 ) -> tuple[list[str], Optional[str], list[str]]:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
-    primary_key_pool, fallback_request_key = _resolve_request_key_plan(
-        str(api_key or "").strip(),
-        pool_hint=pool_hint,
-    )
-    effective_key_pool = list(primary_key_pool)
-    if fallback_request_key:
-        effective_key_pool.append(fallback_request_key)
-
-    # When the in-memory server pool is empty, force a refresh before honoring cached config pools.
-    if not _SERVER_API_KEY_POOL and not str(api_key or "").strip():
-        refreshed_pool = list(_refresh_server_api_key_pool())
-        if refreshed_pool:
-            primary_key_pool = list(refreshed_pool)
-            fallback_request_key = None
-            effective_key_pool = list(refreshed_pool)
-
-    if not effective_key_pool:
-        _load_api_pool_config(force=True)
-        refreshed_pool = list(_refresh_server_api_key_pool())
-        if refreshed_pool:
-            primary_key_pool, fallback_request_key = _resolve_request_key_plan(
-                str(api_key or "").strip(),
-                pool_hint=pool_hint,
-            )
-            if not primary_key_pool:
-                primary_key_pool = refreshed_pool
-            effective_key_pool = list(primary_key_pool)
-            if fallback_request_key and fallback_request_key not in effective_key_pool:
-                effective_key_pool.append(fallback_request_key)
-
-    if not effective_key_pool and auth_mode == SOURCE_POLICY_PROVIDER_VERTEX:
-        synthetic_key = f"vertex::{str(source_policy.get('vertexProject') or 'default').strip() or 'default'}"
+    if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX:
+        project = str(
+            source_policy.get("vertexProject")
+            or _default_vertex_project()
+            or "default"
+        ).strip() or "default"
+        synthetic_key = f"vertex::{project}"
         primary_key_pool = [synthetic_key]
         fallback_request_key = None
         effective_key_pool = [synthetic_key]
         _RUNTIME_ALLOCATOR.ensure_keys(effective_key_pool)
+    else:
+        primary_key_pool, fallback_request_key = _resolve_request_key_plan(
+            str(api_key or "").strip(),
+            pool_hint=pool_hint,
+        )
+        effective_key_pool = list(primary_key_pool)
+        if fallback_request_key:
+            effective_key_pool.append(fallback_request_key)
+
+        # When the in-memory server pool is empty, force a refresh before honoring cached config pools.
+        if not _SERVER_API_KEY_POOL and not str(api_key or "").strip():
+            refreshed_pool = list(_refresh_server_api_key_pool())
+            if refreshed_pool:
+                primary_key_pool = list(refreshed_pool)
+                fallback_request_key = None
+                effective_key_pool = list(refreshed_pool)
+
+        if not effective_key_pool:
+            _load_api_pool_config(force=True)
+            refreshed_pool = list(_refresh_server_api_key_pool())
+            if refreshed_pool:
+                primary_key_pool, fallback_request_key = _resolve_request_key_plan(
+                    str(api_key or "").strip(),
+                    pool_hint=pool_hint,
+                )
+                if not primary_key_pool:
+                    primary_key_pool = refreshed_pool
+                effective_key_pool = list(primary_key_pool)
+                if fallback_request_key and fallback_request_key not in effective_key_pool:
+                    effective_key_pool.append(fallback_request_key)
 
     if not effective_key_pool:
         raise HTTPException(
@@ -1590,11 +1826,11 @@ def _resolve_explicit_model_candidates(
             continue
         if token in seen:
             continue
+        seen.add(token)
         model_limit = ALLOCATOR_CONFIG.models.get(token)
         if model_limit is None or task not in model_limit.enabled_for:
             invalid.append(token)
             continue
-        seen.add(token)
         normalized.append(token)
     return normalized, invalid
 
@@ -2154,23 +2390,24 @@ def _build_genai_client(
     safe_mode = _normalize_runtime_auth_mode(auth_mode, source_policy=source_policy)
     if safe_mode == SOURCE_POLICY_PROVIDER_VERTEX:
         policy = dict(source_policy or _runtime_source_policy())
-        project = str(policy.get("vertexProject") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
-        location = str(
-            policy.get("vertexLocation")
-            or os.getenv("GOOGLE_CLOUD_LOCATION")
-            or os.getenv("GOOGLE_CLOUD_REGION")
-            or "us-central1"
-        ).strip()
+        project = str(policy.get("vertexProject") or _default_vertex_project() or "").strip()
+        location = str(policy.get("vertexLocation") or _default_vertex_location()).strip()
         if not project:
             raise RuntimeError("Vertex mode is enabled but sourcePolicy.vertexProject is missing.")
         credentials_path = _resolve_vertex_credentials_path(policy)
         if credentials_path and Path(credentials_path).exists():
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+        access_token = _read_vertex_access_token(policy)
         client_kwargs: Dict[str, Any] = {
             "vertexai": True,
             "project": project,
             "location": location,
         }
+        if access_token and google_oauth2_credentials is not None:
+            try:
+                client_kwargs["credentials"] = google_oauth2_credentials.Credentials(token=access_token)
+            except Exception:
+                pass
         if types is not None and hasattr(types, "HttpOptions"):
             try:
                 http_options = types.HttpOptions(timeout=bounded_timeout)
@@ -3414,16 +3651,25 @@ def _synthesize_pcm_with_key_pool(
                 auth_mode=auth_mode,
                 source_policy=source_policy,
             )
-            response = client.models.generate_content(
-                model=lease.model_id,
-                contents=text_input,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
+            if _is_live_native_audio_model(lease.model_id):
+                pcm_bytes, usage_metadata = _synthesize_live_pcm(
+                    client=client,
+                    model_id=lease.model_id,
+                    text_input=text_input,
                     speech_config=speech_config,
-                ),
-            )
-            pcm_bytes = extract_pcm_bytes(response)
-            usage_metadata = extract_usage_metadata(response)
+                    timeout_ms=request_timeout_ms,
+                )
+            else:
+                response = client.models.generate_content(
+                    model=lease.model_id,
+                    contents=text_input,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=speech_config,
+                    ),
+                )
+                pcm_bytes = extract_pcm_bytes(response)
+                usage_metadata = extract_usage_metadata(response)
             used_tokens = int(usage_metadata.get("totalTokens") or 0) if isinstance(usage_metadata, dict) else token_estimate
             _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=used_tokens)
             _bind_speakers_to_key(affinity_speakers, lease.key)
@@ -3569,13 +3815,23 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         raw_model=payload.model,
         task="tts",
     )
-    if invalid_model_candidates:
+    if invalid_model_candidates and not explicit_model_candidates:
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "invalid_model_candidates",
                 "task": "tts",
                 "invalid": invalid_model_candidates,
+            },
+        )
+    if invalid_model_candidates and explicit_model_candidates:
+        _emit_stage_event(
+            trace_id,
+            "preprocess",
+            "model_candidates_partial_invalid",
+            {
+                "invalidModelCandidates": invalid_model_candidates,
+                "selectedModelCandidates": explicit_model_candidates,
             },
         )
     model_candidates_override = explicit_model_candidates if explicit_model_candidates else None
@@ -4178,9 +4434,18 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
         or raw_source_policy.get("serviceAccountJson")
         or ""
     ).strip()
+    vertex_access_token = str(
+        raw_source_policy.get("vertexAccessToken")
+        or raw_source_policy.get("accessToken")
+        or raw_source_policy.get("vertexApiKey")
+        or ""
+    ).strip()
     if source_policy_requested:
         raw_source_policy.pop("vertexServiceAccountJson", None)
         raw_source_policy.pop("serviceAccountJson", None)
+        raw_source_policy.pop("vertexAccessToken", None)
+        raw_source_policy.pop("accessToken", None)
+        raw_source_policy.pop("vertexApiKey", None)
         raw_payload["sourcePolicy"] = raw_source_policy
 
     normalized = normalize_pool_config(raw_payload)
@@ -4213,12 +4478,29 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
                     next_source_policy["vertexProject"] = inferred_project
                     applied_overrides.append("vertex_project_inferred_from_service_account")
             if not str(next_source_policy.get("vertexLocation") or "").strip():
-                default_location = str(
-                    os.getenv("GOOGLE_CLOUD_LOCATION")
-                    or os.getenv("GOOGLE_CLOUD_REGION")
-                    or "us-central1"
-                ).strip() or "us-central1"
-                next_source_policy["vertexLocation"] = default_location
+                next_source_policy["vertexLocation"] = _default_vertex_location()
+        if vertex_access_token:
+            if provider != SOURCE_POLICY_PROVIDER_VERTEX:
+                provider = SOURCE_POLICY_PROVIDER_VERTEX
+                next_source_policy["provider"] = provider
+                applied_overrides.append("source_policy_provider_set_vertex")
+            path_hint = str(next_source_policy.get("vertexAccessTokenRef") or "").strip()
+            try:
+                persisted_ref = _persist_vertex_access_token(
+                    vertex_access_token,
+                    path_hint=path_hint,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            next_source_policy["vertexAccessTokenRef"] = persisted_ref
+        if provider == SOURCE_POLICY_PROVIDER_VERTEX:
+            if not str(next_source_policy.get("vertexProject") or "").strip():
+                inferred_project = _default_vertex_project()
+                if inferred_project:
+                    next_source_policy["vertexProject"] = inferred_project
+                    applied_overrides.append("vertex_project_inferred_from_env")
+            if not str(next_source_policy.get("vertexLocation") or "").strip():
+                next_source_policy["vertexLocation"] = _default_vertex_location()
         normalized["sourcePolicy"] = next_source_policy
     elif current_source_policy:
         normalized["sourcePolicy"] = dict(current_source_policy)

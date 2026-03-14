@@ -12,7 +12,7 @@ import {
 } from '../../../../services/geminiService';
 import { resolveApiUrl } from '../../../shared/api/config';
 import type { RuntimeVoiceItem, TtsJobStatusResponse } from '../../../shared/api/contracts';
-import { fetchTtsEngineVoices } from '../../../shared/api/gatewayClient';
+import { fetchTtsEngineCapabilities, fetchTtsEngineVoices } from '../../../shared/api/gatewayClient';
 import { useManagedTabs } from '../../../shared/ui/tabs';
 import { useWorkspaceViewport } from '../../../shared/ui/useWorkspaceViewport';
 import { autoAssignSpeakerVoices } from '../../../shared/voices/castAssignment';
@@ -62,7 +62,9 @@ import {
   normalizePodcastLanguage,
   PODCAST_DEFAULT_LANGUAGE,
   PODCAST_DIRECTOR_DEFAULT_MODEL,
+  type PodcastLanguageOption,
   PODCAST_LANGUAGE_OPTIONS,
+  resolvePodcastLanguageOptions,
   resolvePodcastErrorMessage,
   shouldAutoRunDirectorAtStart,
 } from '../model/podcastRuntime';
@@ -286,6 +288,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [artifacts, setArtifacts] = useState<PodcastArtifacts | null>(null);
   const [voiceOptions, setVoiceOptions] = useState<RuntimeVoiceItem[]>([]);
+  const [languageOptions, setLanguageOptions] = useState<PodcastLanguageOption[]>(() => [...PODCAST_LANGUAGE_OPTIONS]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeJobIdRef = useRef('');
@@ -401,6 +404,37 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({
       cancelled = true;
     };
   }, [activeModeEngine, mediaBackendUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLanguageOptions = async () => {
+      try {
+        const capabilities = await fetchTtsEngineCapabilities(mediaBackendUrl);
+        if (cancelled) return;
+        setLanguageOptions(resolvePodcastLanguageOptions(capabilities, activeModeEngine));
+      } catch {
+        if (cancelled) return;
+        setLanguageOptions([...PODCAST_LANGUAGE_OPTIONS]);
+      }
+    };
+    void loadLanguageOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeModeEngine, mediaBackendUrl]);
+
+  useEffect(() => {
+    setLanguage((current) => {
+      const normalizedCurrent = normalizePodcastLanguage(current);
+      if (languageOptions.some((option) => option.value === normalizedCurrent)) {
+        return normalizedCurrent;
+      }
+      const preferredFallback = languageOptions.find((option) => option.value === PODCAST_DEFAULT_LANGUAGE)?.value
+        || languageOptions[0]?.value
+        || PODCAST_DEFAULT_LANGUAGE;
+      return normalizePodcastLanguage(preferredFallback);
+    });
+  }, [languageOptions]);
 
   useEffect(() => {
     const handleGatewayProgress = (event: Event) => {
@@ -899,7 +933,7 @@ export const PodcastTabContent: React.FC<PodcastTabContentProps> = ({
                 onChange={(event) => setLanguage(normalizePodcastLanguage(event.target.value))}
                 className="vf-podcast-compact-select"
               >
-                {PODCAST_LANGUAGE_OPTIONS.map((option) => (
+                {languageOptions.map((option) => (
                   <option key={`podcast-language-${option.value}`} value={option.value}>{option.label}</option>
                 ))}
               </select>

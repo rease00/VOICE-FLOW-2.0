@@ -281,7 +281,7 @@ def default_pool_config() -> dict[str, Any]:
             "freePoolMode": SOURCE_POLICY_MODE_CONFIG,
             "freePoolFilePath": "",
             "freePoolLocked": False,
-            "ttsModelFallbackEnabled": False,
+            "ttsModelFallbackEnabled": True,
             "failureMode": SOURCE_POLICY_FAILURE_KEEP_LAST,
             "lastSyncAt": "",
             "lastSyncStatus": "uninitialized",
@@ -290,6 +290,7 @@ def default_pool_config() -> dict[str, Any]:
             "vertexProject": "",
             "vertexLocation": "",
             "vertexServiceAccountRef": "",
+            "vertexAccessTokenRef": "",
         },
     }
 
@@ -361,7 +362,7 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
         "freePoolMode": mode,
         "freePoolFilePath": str(values.get("freePoolFilePath") or "").strip(),
         "freePoolLocked": bool(values.get("freePoolLocked", False)),
-        "ttsModelFallbackEnabled": bool(values.get("ttsModelFallbackEnabled", False)),
+        "ttsModelFallbackEnabled": bool(values.get("ttsModelFallbackEnabled", True)),
         "failureMode": failure_mode,
         "lastSyncAt": str(values.get("lastSyncAt") or "").strip(),
         "lastSyncStatus": str(values.get("lastSyncStatus") or "uninitialized").strip() or "uninitialized",
@@ -370,6 +371,7 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
         "vertexProject": str(values.get("vertexProject") or "").strip(),
         "vertexLocation": str(values.get("vertexLocation") or "").strip(),
         "vertexServiceAccountRef": str(values.get("vertexServiceAccountRef") or "").strip(),
+        "vertexAccessTokenRef": str(values.get("vertexAccessTokenRef") or "").strip(),
     }
 
 

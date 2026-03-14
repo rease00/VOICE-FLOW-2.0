@@ -1,5 +1,5 @@
 {
-  "id": "reader_session_fa3b48734c1048ddac51875f9e6458d1",
+  "id": "reader_session_42d7a6a5e24d41c38a159c8830c7ffa8",
   "uid": "reader_pepper_user",
   "workKey": "catalog:pepper_demo_title",
   "sourceKind": "catalog",
@@ -23,8 +23,8 @@
   "translationState": "idle",
   "translationLeadRatio": 0.0,
   "voiceFallbacks": {},
-  "createdAtMs": 1773397774721,
-  "updatedAtMs": 1773397774722,
+  "createdAtMs": 1773409256033,
+  "updatedAtMs": 1773409256033,
   "consumedChars": 0,
   "currentPanelIndex": 0,
   "totalChars": 0,
@@ -103,7 +103,7 @@
     "activeItemIndex": 0,
     "activeUnitId": "",
     "viewportAnchor": "",
-    "updatedAt": "2026-03-13T10:29:34.721668+00:00"
+    "updatedAt": "2026-03-13T13:40:56.033904+00:00"
   },
   "activeItemIndex": 0,
   "activeUnitId": "",

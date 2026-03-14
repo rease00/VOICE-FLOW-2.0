@@ -252,7 +252,7 @@ def test_podcast_live_job_create_alias_builds_live_native_request(monkeypatch) -
     assert payload.liveNative.seedScript == "HOST (Curious): Namaste, aaj ka topic AI podcast pacing hai."
     assert payload.liveNative.directorModel == "gemini-3.1-flash-lite-preview"
     assert payload.language == "hi"
-    assert payload.liveNative.nativeAudioModel == "gemini-2.5-flash-native-audio-preview-12-2025"
+    assert payload.liveNative.nativeAudioModel == "gemini-2.5-flash-native-audio-latest"
     assert captured["wait_ms"] == 0
 
 

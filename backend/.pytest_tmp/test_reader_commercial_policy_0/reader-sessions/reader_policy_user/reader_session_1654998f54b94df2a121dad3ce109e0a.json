@@ -1,5 +1,5 @@
 {
-  "id": "reader_session_8d783e72c4554a89b849a1aff779cf93",
+  "id": "reader_session_1654998f54b94df2a121dad3ce109e0a",
   "uid": "reader_policy_user",
   "workKey": "catalog:reader_allowed_pc_1",
   "sourceKind": "catalog",
@@ -23,8 +23,8 @@
   "translationState": "idle",
   "translationLeadRatio": 0.0,
   "voiceFallbacks": {},
-  "createdAtMs": 1773397775363,
-  "updatedAtMs": 1773397775363,
+  "createdAtMs": 1773409256669,
+  "updatedAtMs": 1773409256672,
   "consumedChars": 0,
   "currentPanelIndex": 0,
   "totalChars": 0,
@@ -82,7 +82,7 @@
     "activeItemIndex": 0,
     "activeUnitId": "",
     "viewportAnchor": "",
-    "updatedAt": "2026-03-13T10:29:35.363497+00:00"
+    "updatedAt": "2026-03-13T13:40:56.669628+00:00"
   },
   "activeItemIndex": 0,
   "activeUnitId": "",

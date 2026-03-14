@@ -117,7 +117,7 @@ def test_reader_library_imports_only_includes_uploads_and_safe_discovery(monkeyp
     )
     assert upload_response.status_code == 200
 
-    library_response = client.get("/reader/library?surface=books&regionId=english&search=moon", headers=headers)
+    library_response = client.get("/reader/library?surface=books&regionId=english&search=orbit", headers=headers)
     assert library_response.status_code == 200
     library_payload = library_response.json()["library"]
 
@@ -125,8 +125,9 @@ def test_reader_library_imports_only_includes_uploads_and_safe_discovery(monkeyp
     assert library_payload["items"]
     assert all(item["contentKind"] == "book" for item in library_payload["items"])
     assert any(item["surface"] == "uploads" for item in library_payload["items"])
-    assert any(item["surface"] == "books" for item in library_payload["items"])
-    assert catalog_calls == [("english", "books", "moon")]
+    # Imports-only mode keeps discovery probes active for telemetry/ranking but serves only uploads to the shelf.
+    assert not any(item["surface"] == "books" for item in library_payload["items"])
+    assert catalog_calls == [("english", "books", "orbit")]
 
 
 def test_reader_tts_job_prefers_reader_model_route(monkeypatch) -> None:
@@ -150,10 +151,9 @@ def test_reader_tts_job_prefers_reader_model_route(monkeypatch) -> None:
     )
 
     assert job_id == "reader_model_route_job"
-    assert captured["model"] == "gemini-2.5-flash-preview-tts"
+    assert captured["model"] == "gemini-2.5-flash"
     assert captured["modelCandidates"] == [
-        "gemini-2.5-flash-preview-tts",
-        "gemini-2.5-flash-lite-preview-tts",
+        "gemini-2.5-flash",
     ]
     assert captured["syncWaitMs"] == 0
 
@@ -174,7 +174,7 @@ def test_reader_legal_ack_exposes_commercial_payload(monkeypatch) -> None:
     assert "project_gutenberg" in commercial["blockedProviders"]
 
 
-def test_reader_upload_rejects_invalid_ownership_basis(monkeypatch) -> None:
+def test_reader_upload_accepts_unknown_ownership_basis_as_user_responsible(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     client = TestClient(backend_app.app)
     headers = {"x-dev-uid": "reader_bad_rights_user"}
@@ -185,14 +185,15 @@ def test_reader_upload_rejects_invalid_ownership_basis(monkeypatch) -> None:
         "/reader/uploads",
         headers=headers,
         data={
-            "title": "Bad rights upload",
+            "title": "Unknown rights upload",
             "ownershipBasis": "totally_invalid",
             "regionId": "english",
         },
         files=[("files", ("story.txt", b"Invalid ownership basis test.", "text/plain"))],
     )
-    assert response.status_code == 400
-    assert "ownershipBasis" in str(response.json().get("detail") or "")
+    assert response.status_code == 200
+    upload_payload = response.json()["upload"]
+    assert upload_payload["ownershipBasis"] == "user_responsible"
 
 
 def test_reader_catalog_item_detail_uses_uploads_in_imports_only(monkeypatch) -> None:
@@ -235,6 +236,32 @@ def test_reader_comic_pacing_metadata_applies_emotion_multiplier() -> None:
     assert suspense_meta["emotionAwareReadMs"] > suspense_meta["baseReadMs"]
     assert intense_meta["emotionAwareReadMs"] < intense_meta["baseReadMs"]
     assert suspense_meta["emotion"] == "Suspense"
+
+
+def test_reader_apply_unit_overrides_enriches_book_emotion_for_pacing() -> None:
+    session = {
+        "contentKind": "book",
+        "windows": [
+            {
+                "index": 0,
+                "sourceText": "Narrator line",
+                "text": "Narrator line",
+                "estimatedReadMs": 4200,
+            }
+        ],
+    }
+
+    updated_session, changed = backend_app._reader_apply_unit_overrides(  # type: ignore[attr-defined]
+        session,
+        {"window_0": "Run now!"},
+    )
+    assert changed is True
+    unit = updated_session["windows"][0]
+    assert unit["textOverrideStatus"] == "edited"
+    assert unit["emotion"] == "Shouting"
+    pacing = backend_app._reader_unit_pacing_meta(unit, content_kind="book")  # type: ignore[attr-defined]
+    assert pacing["emotion"] == "Shouting"
+    assert pacing["emotionAwareReadMs"] < pacing["baseReadMs"]
 
 
 def test_reader_upload_session_progress_and_export(monkeypatch, tmp_path: Path) -> None:
@@ -324,10 +351,10 @@ def test_reader_upload_session_progress_and_export(monkeypatch, tmp_path: Path) 
     assert session_response.status_code == 200
     session_payload = session_response.json()["session"]
     assert session_payload["billing"]["rule"] == "1 char = 1.5 VF"
-    assert session_payload["billing"]["engineLabel"] == "Gemini Native Audio Dialog"
+    assert session_payload["billing"]["engineLabel"] == "Gemini 2.5 Native Audio Dialog"
     assert session_payload["audioEngine"] == "native_audio_dialog"
-    assert session_payload["billing"]["modelRouting"]["primary"] == "gemini-2.5-flash-preview-tts"
-    assert session_payload["billing"]["modelRouting"]["fallback"] == "gemini-2.5-flash-lite-preview-tts"
+    assert session_payload["billing"]["modelRouting"]["primary"] == "gemini-2.5-flash"
+    assert session_payload["billing"]["modelRouting"]["fallback"] == "gemini-2.5-flash"
     assert session_payload["limits"]["textWindowChars"] == 1500
     assert session_payload["limits"]["prefetchThresholdChars"] == 1000
     assert session_payload["autoAdvanceProfile"] == "medium"
@@ -1032,6 +1059,171 @@ Second line. </summary>
     assert items[0]["summary"] == "First line. Second line."
     assert items[0]["provider"] == "standard_ebooks"
     assert items[0]["contentUrl"].endswith("/text/single-page")
+
+
+def test_reader_fetch_wikisource_catalog_maps_public_pages(monkeypatch) -> None:
+    payload = {
+        "query": {
+            "pages": {
+                "101": {
+                    "pageid": 101,
+                    "index": 1,
+                    "title": "Premchand Story",
+                    "fullurl": "https://hi.wikisource.org/wiki/Premchand_Story",
+                    "extract": "  Hindi public-domain excerpt.  ",
+                }
+            }
+        }
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return payload
+
+    def fake_get(url: str, *args, **kwargs):  # type: ignore[no-untyped-def]
+        assert "hi.wikisource.org/w/api.php" in url
+        return FakeResponse()
+
+    monkeypatch.setattr(backend_app.requests, "get", fake_get)
+
+    items = backend_app._reader_fetch_wikisource_catalog("hindi", search_query="premchand")
+
+    assert len(items) == 1
+    assert items[0]["provider"] == "wikisource"
+    assert items[0]["supportsReadHere"] is True
+    assert items[0]["sourceUrl"] == "https://hi.wikisource.org/wiki/Premchand_Story"
+    assert items[0]["license"] == "CC BY-SA 4.0"
+
+
+def test_reader_regions_include_country_top10() -> None:
+    region_ids = {str(item.get("id") or "").strip() for item in backend_app.reader_regions()}
+    assert {
+        "united_states",
+        "united_kingdom",
+        "india",
+        "japan",
+        "china",
+        "south_korea",
+        "spain",
+        "france",
+        "germany",
+        "brazil",
+    }.issubset(region_ids)
+
+
+def test_reader_fetch_wikisource_catalog_uses_country_region_mapping(monkeypatch) -> None:
+    payload = {
+        "query": {
+            "pages": {
+                "202": {
+                    "pageid": 202,
+                    "index": 1,
+                    "title": "Desh Kahani",
+                    "fullurl": "https://hi.wikisource.org/wiki/Desh_Kahani",
+                    "extract": "  Country-level mapping sample.  ",
+                }
+            }
+        }
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return payload
+
+    def fake_get(url: str, *args, **kwargs):  # type: ignore[no-untyped-def]
+        assert "hi.wikisource.org/w/api.php" in url
+        return FakeResponse()
+
+    monkeypatch.setattr(backend_app.requests, "get", fake_get)
+
+    items = backend_app._reader_fetch_wikisource_catalog("india", search_query="desh")
+    assert len(items) == 1
+    assert items[0]["regionId"] == "india"
+    assert items[0]["sourceLanguage"] == "hi"
+
+
+def test_reader_fallback_catalog_aliases_country_to_locale_seed_items() -> None:
+    us_books = backend_app.fallback_catalog_items("united_states", content_kind="book")
+    brazil_books = backend_app.fallback_catalog_items("brazil", content_kind="book")
+    assert any(str(item.get("regionId") or "") == "english" for item in us_books)
+    assert any(str(item.get("regionId") or "") == "portuguese" for item in brazil_books)
+
+
+def test_reader_fetch_openverse_comic_catalog_maps_assets(monkeypatch) -> None:
+    monkeypatch.setattr(
+        backend_app,
+        "_lab_catalog_search_openverse",
+        lambda kind, query, tag, page: [  # type: ignore[no-untyped-def]
+            {
+                "id": "ov-99",
+                "title": "Open comic panel",
+                "creator": "Open Artist",
+                "downloadUrl": "https://cdn.example.com/panel-99.jpg",
+                "thumbUrl": "https://cdn.example.com/thumb-99.jpg",
+                "license": "https://creativecommons.org/licenses/by/4.0/",
+                "attributionUrl": "https://openverse.org/image/ov-99",
+            }
+        ],
+    )
+
+    items = backend_app._reader_fetch_openverse_comic_catalog("english", search_query="comic")
+
+    assert len(items) == 1
+    assert items[0]["provider"] == "openverse"
+    assert items[0]["contentKind"] == "comic"
+    assert items[0]["supportsReadHere"] is True
+    assert items[0]["sourceMeta"]["imageUrl"] == "https://cdn.example.com/panel-99.jpg"
+
+
+def test_reader_catalog_comic_page_sources_supports_openverse_source_meta() -> None:
+    item = backend_app.normalize_reader_catalog_item(
+        {
+            "id": "openverse_comic_fixture",
+            "title": "Openverse fixture",
+            "author": "Open Artist",
+            "regionId": "english",
+            "contentKind": "comic",
+            "provider": "openverse",
+            "license": "CC BY 4.0",
+            "sourceMeta": {
+                "imageUrl": "https://cdn.example.com/panel-01.jpg",
+            },
+        }
+    )
+
+    page_sources = backend_app._reader_catalog_comic_page_sources(item)
+    assert page_sources == ["https://cdn.example.com/panel-01.jpg"]
+
+
+def test_commercial_provider_decision_allows_license_gated_sources_with_attribution(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_COMMERCIAL_MODE", True)
+    monkeypatch.setattr(
+        backend_app,
+        "VF_COMMERCIAL_LICENSE_ALLOWLIST",
+        frozenset({"cc-by-sa-4.0", "cc-by-4.0", "public-domain"}),
+    )
+
+    allowed_status, allowed_reason = backend_app._commercial_provider_decision(
+        "wikisource",
+        license_value="https://creativecommons.org/licenses/by-sa/4.0/",
+        attribution_url="https://hi.wikisource.org/wiki/Example",
+    )
+    blocked_status, blocked_reason = backend_app._commercial_provider_decision(
+        "google_books",
+        license_value="all rights reserved",
+        attribution_url="https://books.google.com/books?id=abc123",
+    )
+
+    assert allowed_status == "allowed"
+    assert allowed_reason is None
+    assert blocked_status == "blocked"
+    assert "license" in str(blocked_reason or "").lower()
 
 
 def test_reader_session_translation_modes_and_voice_fallback(monkeypatch, tmp_path: Path) -> None:
@@ -1743,7 +1935,7 @@ def test_reader_commercial_policy_blocks_non_compliant_catalog_sessions(monkeypa
     assert library_response.status_code == 200
     library_payload = library_response.json()["library"]
     items = {item["id"]: item for item in library_payload["items"]}
-    assert items["reader_blocked_pg_1"]["commercialUseStatus"] == "blocked"
+    assert "reader_blocked_pg_1" not in items
     assert items["reader_allowed_pc_1"]["commercialUseStatus"] == "allowed"
     assert library_payload["commercialPolicyVersion"]
     assert "project_gutenberg" in library_payload["blockedProviders"]
@@ -1763,3 +1955,55 @@ def test_reader_commercial_policy_blocks_non_compliant_catalog_sessions(monkeypa
         json={"itemId": "reader_allowed_pc_1"},
     )
     assert allowed_session.status_code == 200
+
+
+def test_reader_library_keeps_uploads_while_filtering_blocked_discovery(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_READER_IMPORTS_ONLY", False)
+    monkeypatch.setattr(backend_app, "VF_COMMERCIAL_MODE", True)
+    _configure_reader_storage(monkeypatch, tmp_path)
+
+    blocked_item = backend_app.normalize_reader_catalog_item(
+        {
+            "id": "reader_blocked_only_book",
+            "title": "Blocked Discovery Book",
+            "author": "Blocked Provider",
+            "regionId": "english",
+            "contentKind": "book",
+            "provider": "project_gutenberg",
+            "license": "Public domain in the United States",
+            "sampleText": "Blocked sample text",
+            "supportsReadHere": True,
+        }
+    )
+
+    monkeypatch.setattr(
+        backend_app,
+        "_reader_catalog_items",
+        lambda region_id, surface, search_query="": [blocked_item] if surface == "books" else [],
+    )
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": "reader_filter_upload_user"}
+    assert client.post("/reader/legal/ack", headers=headers, json={"accepted": True}).status_code == 200
+
+    upload_response = client.post(
+        "/reader/uploads",
+        headers=headers,
+        data={
+            "title": "Upload survives filtering",
+            "ownershipBasis": "custom_basis_from_user",
+            "regionId": "english",
+        },
+        files=[("files", ("upload.txt", b"Uploaded text should stay visible.", "text/plain"))],
+    )
+    assert upload_response.status_code == 200
+    upload_id = upload_response.json()["upload"]["id"]
+
+    library_response = client.get("/reader/library?surface=all&regionId=english", headers=headers)
+    assert library_response.status_code == 200
+    library_payload = library_response.json()["library"]
+    item_ids = {item["id"] for item in library_payload["items"]}
+    assert upload_id in item_ids
+    assert "reader_blocked_only_book" not in item_ids
+    assert "project_gutenberg" in library_payload["blockedProviders"]

@@ -1,0 +1,29 @@
+{
+    "topic":  "Live native default resume test after timeout tuning",
+    "cast":  [
+                 {
+                     "voice":  "Kore",
+                     "name":  "HOST",
+                     "id":  "host",
+                     "persona":  "Lead",
+                     "role":  "anchor"
+                 },
+                 {
+                     "voice":  "Puck",
+                     "name":  "GUEST",
+                     "id":  "guest",
+                     "persona":  "Challenge",
+                     "role":  "skeptic"
+                 }
+             ],
+    "speakerCount":  2,
+    "language":  "en",
+    "recovery":  {
+                     "fallbackMode":  "native_audio_only",
+                     "strategy":  "resume_then_fallback"
+                 },
+    "durationSec":  60,
+    "models":  {
+                   "nativeAudio":  "gemini-2.5-flash-native-audio-dialog"
+               }
+}

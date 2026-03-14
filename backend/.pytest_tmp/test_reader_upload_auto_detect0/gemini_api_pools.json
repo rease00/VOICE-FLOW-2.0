@@ -1,11 +1,9 @@
 {
   "version": 1,
-  "updatedAt": "2026-03-13T10:29:33.914244+00:00",
+  "updatedAt": "2026-03-13T13:40:54.576038+00:00",
   "pools": {
     "free": {
       "keys": [
-        "__vf_masked_key__:bb42d8d72108:58g",
-        "__vf_masked_key__:73792adfdbc6:eexc",
         "__vf_masked_key__:8ac80053c626:3gnu",
         "__vf_masked_key__:7a71f89c758e:nws4",
         "__vf_masked_key__:0fc91e0df3de:ghco",
@@ -41,198 +39,200 @@
         "__vf_masked_key__:13c40aa80494:kk50",
         "__vf_masked_key__:0ac94050a574:39q",
         "__vf_masked_key__:f304227a7da3:bcek",
-        "__vf_masked_key__:825ed3297b88:av3g"
+        "__vf_masked_key__:825ed3297b88:av3g",
+        "__vf_masked_key__:bb42d8d72108:58g",
+        "__vf_masked_key__:73792adfdbc6:eexc"
       ],
       "keyMetadata": [
         {
           "index": 0,
-          "fingerprint": "bb42d8d72108",
-          "masked": "AIza...5-8g"
-        },
-        {
-          "index": 1,
-          "fingerprint": "73792adfdbc6",
-          "masked": "AIza...EExc"
-        },
-        {
-          "index": 2,
           "fingerprint": "8ac80053c626",
           "masked": "AIza...3gNU"
         },
         {
-          "index": 3,
+          "index": 1,
           "fingerprint": "7a71f89c758e",
           "masked": "AIza...NWs4"
         },
         {
-          "index": 4,
+          "index": 2,
           "fingerprint": "0fc91e0df3de",
           "masked": "AIza...ghCo"
         },
         {
-          "index": 5,
+          "index": 3,
           "fingerprint": "178eeaf4a493",
           "masked": "AIza...Wtl4"
         },
         {
-          "index": 6,
+          "index": 4,
           "fingerprint": "6fbb2fd1a521",
           "masked": "AIza...LvzU"
         },
         {
-          "index": 7,
+          "index": 5,
           "fingerprint": "3c59dc0f5f5c",
           "masked": "AIza...yrPs"
         },
         {
-          "index": 8,
+          "index": 6,
           "fingerprint": "d95f1870a3db",
           "masked": "AIza...kaJ0"
         },
         {
-          "index": 9,
+          "index": 7,
           "fingerprint": "f3d319ef9e7d",
           "masked": "AIza...agk0"
         },
         {
-          "index": 10,
+          "index": 8,
           "fingerprint": "f7d4787b9e29",
           "masked": "AIza...-o88"
         },
         {
-          "index": 11,
+          "index": 9,
           "fingerprint": "d33c24bf1fff",
           "masked": "AIza...MPk0"
         },
         {
-          "index": 12,
+          "index": 10,
           "fingerprint": "362a1fbef0f9",
           "masked": "AIza...A0t8"
         },
         {
-          "index": 13,
+          "index": 11,
           "fingerprint": "f932597217a6",
           "masked": "AIza..._otc"
         },
         {
-          "index": 14,
+          "index": 12,
           "fingerprint": "343763140c43",
           "masked": "AIza...z2hM"
         },
         {
-          "index": 15,
+          "index": 13,
           "fingerprint": "0a95dd3c1045",
           "masked": "AIza...wwm8"
         },
         {
-          "index": 16,
+          "index": 14,
           "fingerprint": "8fb9efcbb366",
           "masked": "AIza...U-9U"
         },
         {
-          "index": 17,
+          "index": 15,
           "fingerprint": "eabd06d70415",
           "masked": "AIza...3XlI"
         },
         {
-          "index": 18,
+          "index": 16,
           "fingerprint": "f015823dba97",
           "masked": "AIza...cQio"
         },
         {
-          "index": 19,
+          "index": 17,
           "fingerprint": "0e48e410f6e0",
           "masked": "AIza...r5O8"
         },
         {
-          "index": 20,
+          "index": 18,
           "fingerprint": "6e69792447a6",
           "masked": "AIza...23bs"
         },
         {
-          "index": 21,
+          "index": 19,
           "fingerprint": "535e6dc76486",
           "masked": "AIza...guJ8"
         },
         {
-          "index": 22,
+          "index": 20,
           "fingerprint": "5e0e9ad5f6e1",
           "masked": "AIza...PgAM"
         },
         {
-          "index": 23,
+          "index": 21,
           "fingerprint": "3567fe9b9896",
           "masked": "AIza...X3-g"
         },
         {
-          "index": 24,
+          "index": 22,
           "fingerprint": "23c5c2fc12e7",
           "masked": "AIza...F-7U"
         },
         {
-          "index": 25,
+          "index": 23,
           "fingerprint": "5fe46fb75a09",
           "masked": "AIza...xNC0"
         },
         {
-          "index": 26,
+          "index": 24,
           "fingerprint": "fba5ac451afc",
           "masked": "AIza...2SEE"
         },
         {
-          "index": 27,
+          "index": 25,
           "fingerprint": "1a2e8478bcda",
           "masked": "AIza...jQrI"
         },
         {
-          "index": 28,
+          "index": 26,
           "fingerprint": "04eaa60f3b60",
           "masked": "AIza...RPIY"
         },
         {
-          "index": 29,
+          "index": 27,
           "fingerprint": "bb8e61f94fc9",
           "masked": "AIza...eXH4"
         },
         {
-          "index": 30,
+          "index": 28,
           "fingerprint": "9abcd64f8c5a",
           "masked": "AIza...UR_E"
         },
         {
-          "index": 31,
+          "index": 29,
           "fingerprint": "82b7c09177df",
           "masked": "AIza...FJPI"
         },
         {
-          "index": 32,
+          "index": 30,
           "fingerprint": "158a5140c06b",
           "masked": "AIza...h4jQ"
         },
         {
-          "index": 33,
+          "index": 31,
           "fingerprint": "755109e8eaa1",
           "masked": "AIza...hj9g"
         },
         {
-          "index": 34,
+          "index": 32,
           "fingerprint": "13c40aa80494",
           "masked": "AIza...Kk50"
         },
         {
-          "index": 35,
+          "index": 33,
           "fingerprint": "0ac94050a574",
           "masked": "AIza...39-Q"
         },
         {
-          "index": 36,
+          "index": 34,
           "fingerprint": "f304227a7da3",
           "masked": "AIza...BCek"
         },
         {
-          "index": 37,
+          "index": 35,
           "fingerprint": "825ed3297b88",
           "masked": "AIza...aV3g"
+        },
+        {
+          "index": 36,
+          "fingerprint": "bb42d8d72108",
+          "masked": "AIza...5-8g"
+        },
+        {
+          "index": 37,
+          "fingerprint": "73792adfdbc6",
+          "masked": "AIza...EExc"
         }
       ]
     }
@@ -260,9 +260,9 @@
     "freePoolLocked": true,
     "ttsModelFallbackEnabled": false,
     "failureMode": "keep_last_good",
-    "lastSyncAt": "2026-03-13T10:29:33.914244+00:00",
+    "lastSyncAt": "2026-03-13T13:40:54.576038+00:00",
     "lastSyncStatus": "success",
-    "lastSyncHash": "e329d36256b4a2a5114b2e551543c03db721094a35ebeb0c475f3551800e5e67",
+    "lastSyncHash": "d37a3c2db4d6ccc754c2599e879e98d641808fe91e8db6428089aff38caf67a8",
     "fileKeyCount": 38,
     "vertexProject": "",
     "vertexLocation": "",
@@ -272,193 +272,193 @@
     "free": [
       {
         "index": 0,
-        "fingerprint": "bb42d8d72108",
-        "masked": "AIza...5-8g"
-      },
-      {
-        "index": 1,
-        "fingerprint": "73792adfdbc6",
-        "masked": "AIza...EExc"
-      },
-      {
-        "index": 2,
         "fingerprint": "8ac80053c626",
         "masked": "AIza...3gNU"
       },
       {
-        "index": 3,
+        "index": 1,
         "fingerprint": "7a71f89c758e",
         "masked": "AIza...NWs4"
       },
       {
-        "index": 4,
+        "index": 2,
         "fingerprint": "0fc91e0df3de",
         "masked": "AIza...ghCo"
       },
       {
-        "index": 5,
+        "index": 3,
         "fingerprint": "178eeaf4a493",
         "masked": "AIza...Wtl4"
       },
       {
-        "index": 6,
+        "index": 4,
         "fingerprint": "6fbb2fd1a521",
         "masked": "AIza...LvzU"
       },
       {
-        "index": 7,
+        "index": 5,
         "fingerprint": "3c59dc0f5f5c",
         "masked": "AIza...yrPs"
       },
       {
-        "index": 8,
+        "index": 6,
         "fingerprint": "d95f1870a3db",
         "masked": "AIza...kaJ0"
       },
       {
-        "index": 9,
+        "index": 7,
         "fingerprint": "f3d319ef9e7d",
         "masked": "AIza...agk0"
       },
       {
-        "index": 10,
+        "index": 8,
         "fingerprint": "f7d4787b9e29",
         "masked": "AIza...-o88"
       },
       {
-        "index": 11,
+        "index": 9,
         "fingerprint": "d33c24bf1fff",
         "masked": "AIza...MPk0"
       },
       {
-        "index": 12,
+        "index": 10,
         "fingerprint": "362a1fbef0f9",
         "masked": "AIza...A0t8"
       },
       {
-        "index": 13,
+        "index": 11,
         "fingerprint": "f932597217a6",
         "masked": "AIza..._otc"
       },
       {
-        "index": 14,
+        "index": 12,
         "fingerprint": "343763140c43",
         "masked": "AIza...z2hM"
       },
       {
-        "index": 15,
+        "index": 13,
         "fingerprint": "0a95dd3c1045",
         "masked": "AIza...wwm8"
       },
       {
-        "index": 16,
+        "index": 14,
         "fingerprint": "8fb9efcbb366",
         "masked": "AIza...U-9U"
       },
       {
-        "index": 17,
+        "index": 15,
         "fingerprint": "eabd06d70415",
         "masked": "AIza...3XlI"
       },
       {
-        "index": 18,
+        "index": 16,
         "fingerprint": "f015823dba97",
         "masked": "AIza...cQio"
       },
       {
-        "index": 19,
+        "index": 17,
         "fingerprint": "0e48e410f6e0",
         "masked": "AIza...r5O8"
       },
       {
-        "index": 20,
+        "index": 18,
         "fingerprint": "6e69792447a6",
         "masked": "AIza...23bs"
       },
       {
-        "index": 21,
+        "index": 19,
         "fingerprint": "535e6dc76486",
         "masked": "AIza...guJ8"
       },
       {
-        "index": 22,
+        "index": 20,
         "fingerprint": "5e0e9ad5f6e1",
         "masked": "AIza...PgAM"
       },
       {
-        "index": 23,
+        "index": 21,
         "fingerprint": "3567fe9b9896",
         "masked": "AIza...X3-g"
       },
       {
-        "index": 24,
+        "index": 22,
         "fingerprint": "23c5c2fc12e7",
         "masked": "AIza...F-7U"
       },
       {
-        "index": 25,
+        "index": 23,
         "fingerprint": "5fe46fb75a09",
         "masked": "AIza...xNC0"
       },
       {
-        "index": 26,
+        "index": 24,
         "fingerprint": "fba5ac451afc",
         "masked": "AIza...2SEE"
       },
       {
-        "index": 27,
+        "index": 25,
         "fingerprint": "1a2e8478bcda",
         "masked": "AIza...jQrI"
       },
       {
-        "index": 28,
+        "index": 26,
         "fingerprint": "04eaa60f3b60",
         "masked": "AIza...RPIY"
       },
       {
-        "index": 29,
+        "index": 27,
         "fingerprint": "bb8e61f94fc9",
         "masked": "AIza...eXH4"
       },
       {
-        "index": 30,
+        "index": 28,
         "fingerprint": "9abcd64f8c5a",
         "masked": "AIza...UR_E"
       },
       {
-        "index": 31,
+        "index": 29,
         "fingerprint": "82b7c09177df",
         "masked": "AIza...FJPI"
       },
       {
-        "index": 32,
+        "index": 30,
         "fingerprint": "158a5140c06b",
         "masked": "AIza...h4jQ"
       },
       {
-        "index": 33,
+        "index": 31,
         "fingerprint": "755109e8eaa1",
         "masked": "AIza...hj9g"
       },
       {
-        "index": 34,
+        "index": 32,
         "fingerprint": "13c40aa80494",
         "masked": "AIza...Kk50"
       },
       {
-        "index": 35,
+        "index": 33,
         "fingerprint": "0ac94050a574",
         "masked": "AIza...39-Q"
       },
       {
-        "index": 36,
+        "index": 34,
         "fingerprint": "f304227a7da3",
         "masked": "AIza...BCek"
       },
       {
-        "index": 37,
+        "index": 35,
         "fingerprint": "825ed3297b88",
         "masked": "AIza...aV3g"
+      },
+      {
+        "index": 36,
+        "fingerprint": "bb42d8d72108",
+        "masked": "AIza...5-8g"
+      },
+      {
+        "index": 37,
+        "fingerprint": "73792adfdbc6",
+        "masked": "AIza...EExc"
       }
     ]
   }

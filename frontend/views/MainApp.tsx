@@ -6898,7 +6898,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
   const usesFullBleedLabContent = activeTab === Tab.LAB;
   const shouldLockLabScroll = usesFullBleedLabContent && !isPhone;
-  const shouldHideAssistantForLab = activeTab === Tab.LAB;
+  const shouldShowCreativeAssistant = isStudioWorkspaceTab;
   const isDesktopCompactSidebar = isDesktop && sidebarMode === 'compact';
   const mainDesktopPaddingClass = isDesktopCompactSidebar ? 'xl:pl-[4.5rem]' : 'xl:pl-64';
   const topbarDesktopOffsetClass = isDesktopCompactSidebar
@@ -6927,7 +6927,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
-  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForLab && !isStudioWorkspaceTab;
+  const showTopbarAssistantButton = isPhone && shouldShowCreativeAssistant;
   const showFloatingAssistantFab = !isPhone;
   const assistantFabSizeClass = isPhone ? 'w-14 h-14' : 'w-16 h-16';
   const assistantPanelSizeClass = isPhone
@@ -6941,7 +6941,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = !shouldHideAssistantForLab && (showFloatingAssistantFab || isChatOpen);
+  const shouldRenderFloatingAssistant = shouldShowCreativeAssistant && (showFloatingAssistantFab || isChatOpen);
 
   return (
     <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
@@ -8355,7 +8355,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
-      {!shouldHideAssistantForLab && isChatOpen && (
+      {shouldRenderFloatingAssistant && isChatOpen && (
         <button
           type="button"
           className="fixed inset-0 z-40 bg-transparent"

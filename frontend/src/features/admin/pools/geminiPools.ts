@@ -30,6 +30,8 @@ export interface EditableGeminiPoolConfig {
     vertexLocation?: string;
     vertexServiceAccountRef?: string;
     vertexServiceAccountJson?: string;
+    vertexAccessTokenRef?: string;
+    vertexAccessToken?: string;
     [key: string]: unknown;
   };
 }
@@ -200,6 +202,7 @@ export const setVertexSourcePolicyFields = (
     vertexProject?: string;
     vertexLocation?: string;
     vertexServiceAccountJson?: string;
+    vertexAccessToken?: string;
   }
 ): EditableGeminiPoolConfig => {
   return {
@@ -210,6 +213,9 @@ export const setVertexSourcePolicyFields = (
       ...(fields.vertexLocation !== undefined ? { vertexLocation: String(fields.vertexLocation || '').trim() } : {}),
       ...(fields.vertexServiceAccountJson !== undefined
         ? { vertexServiceAccountJson: String(fields.vertexServiceAccountJson || '').trim() }
+        : {}),
+      ...(fields.vertexAccessToken !== undefined
+        ? { vertexAccessToken: String(fields.vertexAccessToken || '').trim() }
         : {}),
     },
   };
