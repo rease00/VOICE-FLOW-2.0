@@ -1,5 +1,4 @@
 export {
-  claimAdReward,
   createCheckoutSession,
   createPortalSession,
   createTokenPackCheckoutSession,

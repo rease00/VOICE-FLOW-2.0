@@ -1,3 +1,4 @@
+'use client';
 import React from 'react';
 import { AppScreen } from '../types';
 import { ProfileAccountView } from '../components/account/ProfileAccountView';

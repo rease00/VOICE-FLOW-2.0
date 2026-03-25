@@ -16,10 +16,52 @@ import { resolveApiBaseUrl, resolveApiUrl } from './config';
 import { requestBlob, requestJson, requestPublicJson } from './httpClient';
 
 export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime';
+const TTS_V2_SESSION_HEADER = 'x-vf-tts-session-key';
+const TTS_V2_SESSION_REFRESH_SKEW_MS = 30_000;
+const TTS_V2_SESSION_CACHE = new Map<string, { sessionKey: string; expiresAtMs: number }>();
 
 const withBaseUrl = (baseUrl?: string): { baseUrl?: string } => (baseUrl ? { baseUrl } : {});
 const removedGatewayFeature = (feature: string): Error =>
   new Error(`${feature} endpoint was removed from this project.`);
+
+const ttsV2SessionCacheKey = (baseUrl?: string): string => {
+  return resolveApiBaseUrl(baseUrl) || 'default';
+};
+
+interface TtsV2SessionIssueResponse {
+  ok?: boolean;
+  sessionKey?: string;
+  expiresAtMs?: number;
+  ttlSeconds?: number;
+}
+
+export const issueTtsV2SessionKey = async (options?: {
+  baseUrl?: string;
+  force?: boolean;
+}): Promise<string> => {
+  const cacheKey = ttsV2SessionCacheKey(options?.baseUrl);
+  const now = Date.now();
+  if (!options?.force) {
+    const cached = TTS_V2_SESSION_CACHE.get(cacheKey);
+    if (cached && cached.expiresAtMs > (now + TTS_V2_SESSION_REFRESH_SKEW_MS)) {
+      return cached.sessionKey;
+    }
+  }
+  const issued = await requestJson<TtsV2SessionIssueResponse>(
+    '/tts/v2/sessions',
+    { method: 'POST' },
+    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+  );
+  const sessionKey = String(issued?.sessionKey || '').trim();
+  if (!sessionKey) {
+    throw new Error('Gateway did not return a valid TTS session key.');
+  }
+  const ttlSeconds = Math.max(60, Math.floor(Number(issued?.ttlSeconds || 1800)));
+  const expiresAtMsRaw = Math.floor(Number(issued?.expiresAtMs || 0));
+  const expiresAtMs = expiresAtMsRaw > now ? expiresAtMsRaw : (now + (ttlSeconds * 1000));
+  TTS_V2_SESSION_CACHE.set(cacheKey, { sessionKey, expiresAtMs });
+  return sessionKey;
+};
 
 const fetchPublicJsonWithTimeout = async <T>(
   pathOrUrl: string,
@@ -343,11 +385,14 @@ export const createTtsJob = async (
   payload: Record<string, unknown>,
   options?: { baseUrl?: string }
 ): Promise<TtsJobStatusResponse> => {
+  const sessionKey = await issueTtsV2SessionKey(
+    options?.baseUrl ? { baseUrl: options.baseUrl } : undefined
+  );
   return requestJson<TtsJobStatusResponse>(
     '/tts/v2/jobs',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', [TTS_V2_SESSION_HEADER]: sessionKey },
       body: JSON.stringify(payload),
     },
     { ...withBaseUrl(options?.baseUrl), requireAuth: true }

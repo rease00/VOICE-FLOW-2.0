@@ -26,7 +26,7 @@
    - Major actions can queue pending approvals (`202`) when token confirmation is missing.
 6. Production toggles:
    - Keep `VF_AUTH_ENFORCE=1`.
-   - Keep `VITE_ENABLE_DEV_UID_HEADER=0`.
+   - Keep `NEXT_PUBLIC_ENABLE_DEV_UID_HEADER=0` (legacy `VITE_ENABLE_DEV_UID_HEADER=0` is still accepted during migration).
    - Keep `VF_ADMIN_COUPON_LIMIT_BYPASS=0` (dev-only escape hatch).
    - Set `GEMINI_RUNTIME_ADMIN_TOKEN` on both media-backend and gemini-runtime processes.
 

@@ -56,8 +56,6 @@ export interface AccountEntitlements {
     vffBalance: number;
     paidVfBalance: number;
     spendableNowByEngine: Record<'KOKORO' | 'NEURAL2' | 'GEM', number>;
-    adClaimsToday: number;
-    adClaimsDailyLimit: number;
     vffMonthKey?: string;
   };
 }
@@ -278,7 +276,7 @@ export const createTokenPackCheckoutSession = async (
   pack: TokenPackKey,
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string }
-): Promise<{ url: string; sessionId?: string; packKey?: TokenPackKey; packVf?: number; standardAmountInr?: number; finalAmountInr?: number }> => {
+): Promise<{ url: string; sessionId?: string; packKey?: TokenPackKey; packVf?: number; standardAmountInr?: number; finalAmountInr?: number; discountPercent?: number }> => {
   const payload = await readJsonOrThrow<{
     url?: string;
     sessionId?: string;
@@ -286,6 +284,7 @@ export const createTokenPackCheckoutSession = async (
     packVf?: number;
     standardAmountInr?: number;
     finalAmountInr?: number;
+    discountPercent?: number;
   }>(await authFetch(
     `${toBaseUrl(baseUrl)}/billing/token-pack/checkout-session`,
     {
@@ -304,6 +303,7 @@ export const createTokenPackCheckoutSession = async (
   const packVf = Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined;
   const standardAmountInr = Number.isFinite(payload?.standardAmountInr) ? Number(payload.standardAmountInr) : undefined;
   const finalAmountInr = Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined;
+  const discountPercent = Number.isFinite(payload?.discountPercent) ? Number(payload.discountPercent) : undefined;
   return {
     url: String(payload?.url || ''),
     ...(sessionId ? { sessionId } : {}),
@@ -311,19 +311,8 @@ export const createTokenPackCheckoutSession = async (
     ...(packVf !== undefined ? { packVf } : {}),
     ...(standardAmountInr !== undefined ? { standardAmountInr } : {}),
     ...(finalAmountInr !== undefined ? { finalAmountInr } : {}),
+    ...(discountPercent !== undefined ? { discountPercent } : {}),
   };
-};
-
-export const claimAdReward = async (baseUrl?: string): Promise<AccountEntitlements> => {
-  const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/wallet/ad-reward/claim`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    },
-    { requireAuth: true }
-  ));
-  return payload?.entitlements as AccountEntitlements;
 };
 
 export const redeemCoupon = async (code: string, baseUrl?: string): Promise<{ creditedVf: number; entitlements: AccountEntitlements }> => {

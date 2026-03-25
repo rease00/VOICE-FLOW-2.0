@@ -33,7 +33,7 @@ import {
   UserStats,
 } from '../types';
 import { INITIAL_STATS, VOICES } from '../constants';
-import { guessGenderFromName } from '../services/geminiService';
+import { guessGenderFromName } from '../services/speakerScriptService';
 import { createEmptyWalletStats, ensureStatsUsageWindows, ensureVfUsageStats } from '../services/usageMetering';
 import {
   facebookProvider,
@@ -46,7 +46,6 @@ import {
 } from '../services/firebaseClient';
 import {
   AccountEntitlements,
-  claimAdReward,
   clearGenerationHistory,
   fetchAccountProfile,
   fetchAccountEntitlements,
@@ -57,6 +56,7 @@ import { fetchAdminActor } from '../services/adminService';
 import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
+import { readEnvValue } from '../src/shared/runtime/env';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey, writeStorageString } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
@@ -173,7 +173,10 @@ const clearPendingSignupProfile = (): void => {
 };
 
 const resolveEmailVerificationContinueUrl = (): string => {
-  const configured = String(import.meta.env.VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL || '').trim();
+  const configured = readEnvValue(
+    process.env.NEXT_PUBLIC_AUTH_EMAIL_VERIFY_CONTINUE_URL,
+    process.env.VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL
+  );
   if (configured) return configured;
   if (typeof window === 'undefined' || !window.location) return DEFAULT_EMAIL_VERIFY_CONTINUE_URL;
   const url = new URL(window.location.href);
@@ -415,8 +418,6 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
           Number(wallet.spendableNowByEngine?.GEM || 0) + Number((wallet as any).spendableNowByEngine?.GOOD || 0)
         ),
       },
-      adClaimsToday: Math.max(0, Number(wallet.adClaimsToday || 0)),
-      adClaimsDailyLimit: Math.max(1, Number(wallet.adClaimsDailyLimit || walletFallback.adClaimsDailyLimit)),
       vffMonthKey: wallet.vffMonthKey,
     },
     limits: {
@@ -498,7 +499,7 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
 
 const resolveFirebaseConfigIssue = (): string =>
   String(firebaseConfigIssue || '').trim() ||
-  'Firebase auth is not configured. Set VITE_FIREBASE_* and restart the frontend server.';
+  'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart the frontend server.';
 
 const requireFirebaseConfigForAuth = (): string | null => {
   if (isFirebaseConfigured) return null;
@@ -1135,10 +1136,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     deleteDraft: (id) => setDrafts((prev) => prev.filter((item) => item.id !== id)),
     showSubscriptionModal,
     setShowSubscriptionModal: (show) => setShowSubscriptionModal(show),
-    watchAd: async () => {
-      const entitlements = await claimAdReward(readSettingsBackendUrl());
-      setStats((prev) => mapEntitlementsToStats(entitlements, prev));
-    },
     recordTtsUsage: () => {
       void refreshEntitlements();
     },

@@ -1,5 +1,7 @@
 import { firebaseAuth } from './firebaseClient';
 import { resolveAuthHeaders } from '../src/shared/auth/tokenPolicy';
+import { readEnvBoolean } from '../src/shared/runtime/env';
+import { fetchWithRequestDedup } from '../src/shared/api/requestDeduper';
 
 export interface AuthFetchOptions {
   requireAuth?: boolean;
@@ -22,12 +24,10 @@ const NETWORK_FAILURE_HINTS = [
   'err_connection_refused',
 ];
 
-const truthyEnv = (value: unknown): boolean => {
-  const token = String(value || '').trim().toLowerCase();
-  return token === '1' || token === 'true' || token === 'yes' || token === 'on';
-};
-
-const DEV_UID_HEADER_ENABLED = truthyEnv(import.meta.env.VITE_ENABLE_DEV_UID_HEADER);
+const DEV_UID_HEADER_ENABLED = Boolean(readEnvBoolean(
+  process.env.NEXT_PUBLIC_ENABLE_DEV_UID_HEADER,
+  process.env.VITE_ENABLE_DEV_UID_HEADER
+));
 const TOKEN_TIMING_HINTS = [
   'token used too early',
   'token is not yet valid',
@@ -59,8 +59,10 @@ const resolveRequestTarget = (input: RequestInfo | URL): string => {
   try {
     const base = typeof window !== 'undefined' && window.location ? window.location.origin : undefined;
     const target = new URL(safeRaw, base);
-    return target.origin || safeRaw;
+    const pathname = String(target.pathname || '').replace(/\/+$/, '');
+    return `${target.origin}${pathname}${target.search || ''}` || safeRaw;
   } catch {
+    if (safeRaw.startsWith('/')) return safeRaw;
     return safeRaw;
   }
 };
@@ -196,7 +198,7 @@ export const authFetch = async (
       if (controller?.signal || originalSignal) {
         fetchInit.signal = controller?.signal || originalSignal || null;
       }
-      const response = await fetch(input, fetchInit);
+      const response = await fetchWithRequestDedup(input, fetchInit);
       return {
         response,
         hasFirebaseToken: attempt.hasFirebaseToken,

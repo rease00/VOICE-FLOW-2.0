@@ -1,5 +1,6 @@
 import { authFetch } from '../../../services/authHttpClient';
 import { resolveApiUrl } from './config';
+import { fetchWithRequestDedup } from './requestDeduper';
 
 export class HttpError extends Error {
   status: number;
@@ -108,7 +109,7 @@ const requestPublic = async (
   options: ApiRequestOptions | undefined
 ): Promise<Response> => {
   const url = resolveApiUrl(pathOrUrl, options?.baseUrl);
-  return fetch(url, init);
+  return fetchWithRequestDedup(url, init);
 };
 
 export const requestJson = async <T>(

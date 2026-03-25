@@ -1,0 +1,11 @@
+{
+  "name": "onnxruntime-node",
+  "version": "0.0.0-stub",
+  "main": "./index.cjs",
+  "exports": {
+    ".": {
+      "require": "./index.cjs",
+      "default": "./index.cjs"
+    }
+  }
+}

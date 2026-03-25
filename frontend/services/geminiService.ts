@@ -9,10 +9,10 @@ import { resolveApiBaseUrl } from "../src/shared/api/config";
 import {
   cancelTtsJob,
   extractAudioFromVideo as gatewayExtractAudioFromVideo,
+  issueTtsV2SessionKey,
 } from "../src/shared/api/gatewayClient";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
 import { shouldFailFastOnGeminiRuntimeError } from "./geminiRuntimeErrorUtils";
-import { loadKokoroBrowserRuntimeModule } from "./loadKokoroBrowserRuntime";
 import { shouldUseBrowserKokoroExecution } from "./kokoroBrowserRuntimeFlags";
 import { synthesizeKokoroStudioInWorker } from "./kokoroStudioWorkerClient";
 import {
@@ -37,10 +37,25 @@ import {
   sleepMs,
 } from "./ttsLongTextService";
 import { getSessionClonedVoices } from "./clonedVoiceSessionStore";
+import {
+  guessAgeGroupFromSpeaker,
+  guessGenderFromName,
+  normalizeSpeakerMapKey,
+  parseScriptToSegments,
+  resolveSpeakerMappedVoiceId,
+  type SpeakerAgeGroup,
+} from "./speakerScriptService";
 
 // Gemini helper defaults to the backend-held slot set; user key is optional override.
 export const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
 export { TTS_GATEWAY_AUDIO_CHUNK_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT } from "./ttsGatewayJobService";
+export {
+  guessAgeGroupFromSpeaker,
+  guessGenderFromName,
+  normalizeSpeakerMapKey,
+  parseScriptToSegments,
+  resolveSpeakerMappedVoiceId,
+};
 
 interface RuntimeDiagnosticsPayload {
   engine?: string | undefined;
@@ -1020,45 +1035,6 @@ export const extractAudioFromVideo = async (videoFile: File, backendUrl?: string
   }
 };
 
-// --- GENDER DETECTION HEURISTICS ---
-// Common indicators for gender guessing when AI isn't available
-const MALE_INDICATORS = ['mr', 'lord', 'king', 'sir', 'father', 'dad', 'uncle', 'brother', 'boy', 'man', 'he', 'him', 'his', 'john', 'david', 'michael', 'james', 'robert', 'william', 'joseph', 'thomas', 'charles', 'christopher', 'daniel', 'matthew', 'anthony', 'mark', 'donald', 'steven', 'paul', 'andrew', 'joshua', 'kenneth', 'kevin', 'brian', 'george', 'edward', 'ronald', 'timothy', 'jason', 'jeffrey', 'ryan', 'jacob', 'gary', 'nicholas', 'eric', 'jonathan', 'stephen', 'larry', 'justin', 'scott', 'brandon', 'benjamin', 'samuel', 'gregory', 'frank', 'alexander', 'raymond', 'patrick', 'jack', 'dennis', 'jerry', 'tyler', 'aaron', 'jose', 'adam', 'henry', 'nathan', 'douglas', 'zachary', 'peter', 'kyle', 'walter', 'ethan', 'jeremy', 'harold', 'keith', 'christian', 'roger', 'noah', 'gerald', 'terry', 'sean', 'austin', 'carl', 'arthur', 'lawrence', 'dylan', 'jesse', 'jordan', 'bryan', 'billy', 'joe', 'bruce', 'gabriel', 'logan', 'albert', 'willie', 'alan', 'juan', 'wayne', 'elijah', 'randy', 'roy', 'vincent', 'ralph', 'eugene', 'russell', 'bobby', 'mason', 'philip', 'louis', 'detective', 'officer', 'sergeant', 'captain', 'commander', 'chief', 'boss', 'guard', 'soldier'];
-const FEMALE_INDICATORS = ['mrs', 'ms', 'miss', 'lady', 'queen', 'madam', 'mother', 'mom', 'aunt', 'sister', 'girl', 'woman', 'she', 'her', 'hers', 'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica', 'sarah', 'karen', 'nancy', 'lisa', 'betty', 'margaret', 'sandra', 'ashley', 'kimberly', 'emily', 'donna', 'michelle', 'dorothy', 'carol', 'amanda', 'melissa', 'deborah', 'stephanie', 'rebecca', 'sharon', 'laura', 'cynthia', 'kathleen', 'amy', 'shirley', 'angela', 'helen', 'anna', 'brenda', 'pamela', 'nicole', 'samantha', 'katherine', 'emma', 'ruth', 'christine', 'catherine', 'debra', 'rachel', 'carolyn', 'janet', 'virginia', 'maria', 'heather', 'diane', 'julie', 'joyce', 'evelyn', 'joan', 'victoria', 'kelly', 'christina', 'lauren', 'frances', 'martha', 'judith', 'cheryl', 'megan', 'andrea', 'olivia', 'ann', 'alice', 'jean', 'doris', 'jacqueline', 'kathryn', 'hannah', 'julia', 'gloria', 'teresa', 'velma', 'sara', 'janice', 'phyllis', 'marie', 'julia', 'grace', 'judy', 'theresa', 'madison', 'beverly', 'denise', 'marilyn', 'amber', 'danielle', 'rose', 'brittany', 'diana', 'abigail', 'natalie', 'jane', 'lori', 'alexis', 'tiffany', 'kayla', 'witch', 'princess', 'bride', 'nurse', 'waitress', 'actress'];
-
-export function guessGenderFromName(name: string): 'Male' | 'Female' | 'Unknown' {
-  const raw = String(name || '').trim();
-  const n = raw.toLowerCase().trim();
-  const parts = n.split(' ');
-
-  // Hindi + Hinglish kinship/title hints.
-  if (/(?:\u092e\u093e\u0901|\u0906\u0902\u091f\u0940|\u0926\u0940\u0926\u0940|\u092c\u0939\u0928|\u092e\u0948\u0921\u092e|\u0936\u094d\u0930\u0940\u092e\u0924\u0940)/u.test(raw)) {
-    return 'Female';
-  }
-  if (/(?:\u092a\u093e\u092a\u093e|\u091a\u093e\u091a\u093e|\u092d\u093e\u0908|\u092d\u0948\u092f\u093e|\u0938\u0930|\u0936\u094d\u0930\u0940\u092e\u093e\u0928)/u.test(raw)) {
-    return 'Male';
-  }
-  if (/\b(mom|mother|mummy|maa|aunty|aunt|didi|sister|madam|mrs|ms)\b/i.test(n)) {
-    return 'Female';
-  }
-  if (/\b(dad|father|papa|uncle|brother|bhai|bhaiya|sir|mr)\b/i.test(n)) {
-    return 'Male';
-  }
-  
-  // Check full name parts
-  for (const part of parts) {
-    if (MALE_INDICATORS.includes(part)) return 'Male';
-    if (FEMALE_INDICATORS.includes(part)) return 'Female';
-  }
-  
-  // Suffix checks (rough heuristics for English)
-  if (n.endsWith('a') || n.endsWith('ie') || n.endsWith('elle') || n.endsWith('i') || n.endsWith('enne') || n.endsWith('ine')) return 'Female';
-  if (n.endsWith('o') || n.endsWith('us') || n.endsWith('er') || n.endsWith('or') || n.endsWith('son') || n.endsWith('an')) return 'Male';
-  
-  return 'Unknown';
-}
-
-export type SpeakerAgeGroup = 'Child' | 'Adult' | 'Elderly' | 'Unknown';
-
 const CHILD_AGE_INDICATORS = [
   'child', 'kid', 'boy', 'girl', 'teen', 'son', 'daughter', 'school', 'student',
   'beta', 'bacha', 'bachi', 'ladka', 'ladki', 'baccha',
@@ -1078,27 +1054,6 @@ const normalizeAgeGroupToken = (value: string): SpeakerAgeGroup => {
   if (ELDER_AGE_INDICATORS.some((item) => token.includes(item))) return 'Elderly';
   return 'Unknown';
 };
-
-export function guessAgeGroupFromSpeaker(name: string): SpeakerAgeGroup {
-  const raw = String(name || '').trim();
-  if (!raw) return 'Unknown';
-  const normalized = raw.toLowerCase();
-
-  if (
-    /(?:\u092c\u091a\u094d\u091a\u093e|\u092c\u091a\u094d\u091a\u0940|\u0932\u0921\u093c\u0915\u093e|\u0932\u0921\u093c\u0915\u0940|\u0915\u093f\u0936\u094b\u0930)/u.test(raw)
-  ) {
-    return 'Child';
-  }
-  if (
-    /(?:\u092c\u0941\u091c\u0941\u0930\u094d\u0917|\u0935\u0943\u0926\u094d\u0927|\u0926\u093e\u0926\u093e|\u0926\u093e\u0926\u0940|\u0928\u093e\u0928\u093e|\u0928\u093e\u0928\u0940)/u.test(raw)
-  ) {
-    return 'Elderly';
-  }
-
-  if (CHILD_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Child';
-  if (ELDER_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Elderly';
-  return 'Unknown';
-}
 
 const inferVoiceAgeGroup = (voice: { ageGroup?: string; name?: string; id?: string }): SpeakerAgeGroup => {
   const fromAgeGroup = normalizeAgeGroupToken(String(voice?.ageGroup || ''));
@@ -1137,46 +1092,6 @@ const normalizeSpeakerName = (raw: string): string => (
     .replace(/\s+/g, ' ')
     .trim()
 );
-
-export const normalizeSpeakerMapKey = (raw: string): string => (
-  normalizeSpeakerName(raw)
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s._'-]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-);
-
-const findSpeakerMappingKey = (
-  speakerMapping: Record<string, string> | undefined,
-  speaker: string,
-): string => {
-  if (!speakerMapping || typeof speakerMapping !== 'object') return '';
-  const rawSpeaker = String(speaker || '');
-  if (!rawSpeaker.trim()) return '';
-  if (speakerMapping[rawSpeaker]) return rawSpeaker;
-  const trimmed = rawSpeaker.trim();
-  if (trimmed && speakerMapping[trimmed]) return trimmed;
-
-  const normalizedTarget = normalizeSpeakerMapKey(rawSpeaker);
-  if (!normalizedTarget) return '';
-
-  for (const key of Object.keys(speakerMapping)) {
-    if (!key) continue;
-    if (normalizeSpeakerMapKey(key) === normalizedTarget) {
-      return key;
-    }
-  }
-  return '';
-};
-
-export const resolveSpeakerMappedVoiceId = (
-  speakerMapping: Record<string, string> | undefined,
-  speaker: string,
-): string => {
-  const matchedKey = findSpeakerMappingKey(speakerMapping, speaker);
-  if (!matchedKey) return '';
-  return String(speakerMapping?.[matchedKey] || '').trim();
-};
 
 const isLikelySpeakerName = (name: string): boolean => {
   const normalized = normalizeSpeakerName(name);
@@ -1698,127 +1613,6 @@ export const parseStudioDialogue = (text: string): {
   return segments;
 };
 
-export const parseScriptToSegments = (text: string): {
-  startTime: number;
-  endTime?: number | undefined;
-  speaker: string;
-  text: string;
-  emotion?: string | undefined;
-  crewTags?: string[] | undefined;
-  emotionTags?: string[] | undefined;
-}[] => {
-  const lines = normalizeInlineBracketSpeakerScript(text).split('\n');
-  const segments: {
-    startTime: number;
-    endTime?: number | undefined;
-    speaker: string;
-    text: string;
-    emotion?: string | undefined;
-    crewTags?: string[] | undefined;
-    emotionTags?: string[] | undefined;
-  }[] = [];
-  let fallbackCursor = 0;
-  let currentSpeaker = 'Narrator';
-  let currentEmotion = 'Neutral';
-  let currentCrewTags: string[] = [];
-  let currentEmotionTags: string[] = [];
-
-  const timeToSeconds = (timestamp: string) => {
-    const parts = String(timestamp || '').split(':').map((part) => Number(part));
-    if (parts.length === 2) return ((parts[0] ?? 0) * 60) + (parts[1] ?? 0);
-    if (parts.length === 3) return ((parts[0] ?? 0) * 3600) + ((parts[1] ?? 0) * 60) + (parts[2] ?? 0);
-    return 0;
-  };
-
-  const estimateSpeechDuration = (dialogue: string) => {
-    const words = dialogue.trim().split(/\s+/).filter(Boolean).length;
-    const punctuation = (dialogue.match(/[,.!?;:]/g) || []).length;
-    const base = Math.max(1, words) / 2.6;
-    return Math.max(0.7, Math.min(12, base + (punctuation * 0.08)));
-  };
-  
-  lines.forEach((line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-
-    let working = trimmed;
-    let explicitStart: number | undefined;
-    let explicitEnd: number | undefined;
-
-    // Accept [00:00], (00:00), bare 00:00, and range formats like (00:01.20-00:03.85).
-    const timestampMatch = working.match(
-      /^[\[(]?\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?)(?:\s*[-â€“]\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?))?\s*[\])]?\s*(.*)$/
-    );
-    if (timestampMatch) {
-      explicitStart = timeToSeconds(String(timestampMatch[1] || '0:00'));
-      if (timestampMatch[2]) {
-        const parsedEnd = timeToSeconds(String(timestampMatch[2] || '0:00'));
-        if (parsedEnd > explicitStart) explicitEnd = parsedEnd;
-      }
-      working = (timestampMatch[3] || '').trim();
-    }
-
-    if (!working) return;
-
-    const sfxMatch = working.match(SFX_REGEX);
-    if (sfxMatch) {
-      const label = String(sfxMatch[1] || '').trim();
-      const start = explicitStart ?? fallbackCursor;
-      const dur = estimateSfxDurationSeconds(label);
-      segments.push({
-        startTime: start,
-        endTime: explicitEnd,
-        speaker: 'SFX',
-        text: label,
-        emotion: 'Neutral',
-      });
-      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + dur;
-      return;
-    }
-
-    const parsed = parseSpeakerLine(working);
-    if (parsed) {
-      currentSpeaker = parsed.speaker;
-      currentEmotion = parsed.emotion || 'Neutral';
-      currentCrewTags = parsed.crewTags;
-      currentEmotionTags = parsed.emotionTags;
-
-      const dialogue = addCrewCueToDialogue(parsed.dialogue, parsed.crewTags);
-      if (!dialogue) return;
-
-      const start = explicitStart ?? fallbackCursor;
-      segments.push({
-        startTime: start,
-        endTime: explicitEnd,
-        speaker: currentSpeaker,
-        text: dialogue,
-        emotion: currentEmotion,
-        crewTags: currentCrewTags,
-        emotionTags: currentEmotionTags,
-      });
-      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + estimateSpeechDuration(dialogue);
-      return;
-    }
-
-    const fallbackDialogue = addCrewCueToDialogue(working, currentCrewTags);
-    if (!fallbackDialogue) return;
-
-    const start = explicitStart ?? fallbackCursor;
-    segments.push({
-      startTime: start,
-      endTime: explicitEnd,
-      speaker: currentSpeaker,
-      text: fallbackDialogue,
-      emotion: currentEmotion,
-      crewTags: currentCrewTags,
-      emotionTags: currentEmotionTags,
-    });
-    fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + estimateSpeechDuration(fallbackDialogue);
-  });
-
-  return segments;
-};
-
 // --- AI DIRECTOR SERVICES ---
 export const autoCorrectText = async (text: string, settings: GenerationSettings): Promise<string> => {
   const systemPrompt = `You are an expert Audio Script Editor.
@@ -1843,10 +1637,37 @@ Output ONLY the script with NO additional commentary.`;
   }
 };
 
+export const autoDirectStudioScript = async (
+  text: string,
+  settings: GenerationSettings,
+  options?: DirectorOptions,
+  existingCharacters: CharacterProfile[] = []
+): Promise<{
+  directedText: string;
+  cast: {
+    name: string;
+    gender: 'Male' | 'Female' | 'Unknown';
+    age?: 'Child' | 'Young Adult' | 'Adult' | 'Elderly' | undefined;
+  }[];
+  mood?: string | undefined;
+  crewTags?: string[] | undefined;
+  suggestedMusicTrackId?: string | undefined;
+}> => {
+  const result = await autoFormatScript(text, settings, 'audio_drama', options, existingCharacters);
+  return {
+    directedText: result.formattedText,
+    cast: result.cast,
+    mood: result.mood,
+    crewTags: result.crewTags,
+    suggestedMusicTrackId: result.suggestedMusicTrackId,
+  };
+};
+
 export const proofreadScript = async (
   text: string, 
   settings: GenerationSettings,
-  mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow'
+  mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow',
+  options?: { languageCode?: string }
 ): Promise<string> => {
   let systemPrompt = `You are an Expert Audio Script Editor and Proofreader.
 Your goal is to prepare text for Ultra-Realistic Text-to-Speech synthesis.
@@ -1865,6 +1686,11 @@ CRITICAL RULES for REALISM:
 6. Use phonetic spelling for difficult names if possible (e.g., "Siobhan" -> "Shi-vawn") in parenthesis or just fix spacing.
 
 Output ONLY the corrected text. Do not add "Here is the corrected version".`;
+
+  const languageCode = String(options?.languageCode || '').trim();
+  if (languageCode) {
+    systemPrompt += `\n\nLANGUAGE CONTEXT: The source text language code is ${languageCode}. Preserve the language and only improve readability for speech.`;
+  }
 
   if (mode === 'novel') {
       systemPrompt = `You are a World-Class Audio Drama Director and Novelist.
@@ -2660,6 +2486,7 @@ export const generateSpeech = async (
     }
     (livePayload as any).request_id = requestId;
     (livePayload as any).trace_id = String((livePayload as any)?.trace_id || requestId).trim() || requestId;
+    const ttsSessionKey = await issueTtsV2SessionKey({ baseUrl: backendBase });
 
     const submitGatewayRequest = async (url: string): Promise<Response> => (
       authFetch(
@@ -2670,6 +2497,7 @@ export const generateSpeech = async (
             'Content-Type': 'application/json',
             'ngrok-skip-browser-warning': 'true',
             'Idempotency-Key': requestId,
+            'x-vf-tts-session-key': ttsSessionKey,
           },
           body: JSON.stringify(livePayload),
           ...(signal ? { signal } : {}),
@@ -3608,6 +3436,7 @@ export const generateSpeech = async (
     const useBrowserKokoro = shouldUseBrowserKokoroExecution(activeEngine, context) && options?.preferBrowserKokoro !== false;
     if (useBrowserKokoro) {
       try {
+        const { loadKokoroBrowserRuntimeModule } = await import("./loadKokoroBrowserRuntime");
         const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
         const targetVoiceId = String(resolvedVoiceInput || settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
         const jobId = `kokoro-browser-${traceId}`;

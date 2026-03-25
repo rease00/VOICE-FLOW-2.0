@@ -1,3 +1,5 @@
+import { readEnvValue } from '../runtime/env';
+
 const DEFAULT_BROWSER_PHONEMIZER_URL = 'https://cdn.jsdelivr.net/npm/phonemizer@1.2.1/dist/phonemizer.js';
 
 type PhonemizeFn = (text: string, language?: string, options?: unknown) => Promise<string[]>;
@@ -5,7 +7,10 @@ type PhonemizeFn = (text: string, language?: string, options?: unknown) => Promi
 let phonemizerModulePromise: Promise<{ phonemize: PhonemizeFn }> | null = null;
 
 const resolveBrowserPhonemizerUrl = (): string => {
-  const configured = String(import.meta.env.VITE_BROWSER_PHONEMIZER_URL || '').trim();
+  const configured = readEnvValue(
+    process.env.NEXT_PUBLIC_BROWSER_PHONEMIZER_URL,
+    process.env.VITE_BROWSER_PHONEMIZER_URL
+  );
   return configured || DEFAULT_BROWSER_PHONEMIZER_URL;
 };
 

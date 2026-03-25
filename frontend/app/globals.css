@@ -1,0 +1,35 @@
+@import "../index.css";
+
+@layer base {
+  html,
+  body,
+  #__next {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+  }
+
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: var(--vf-bg);
+    color: var(--vf-text);
+  }
+
+  .vf-theme-dark {
+    --vf-bg: #0d0e15;
+    --vf-surface: #161821;
+    --vf-surface-soft: #1b1e28;
+    --vf-surface-muted: #202434;
+    --vf-border: #2a2d3d;
+    --vf-border-strong: #353a4c;
+    --vf-text: #e7ecf8;
+    --vf-text-muted: #b0bdd6;
+    --vf-placeholder: #8390a9;
+    --vf-overlay: rgba(7, 10, 18, 0.72);
+    --vf-focus-ring: var(--vf-accent-primary);
+    --vf-focus-ring-offset: #0d0e15;
+    --vf-shadow-color: var(--vf-accent-secondary-glow);
+    color-scheme: dark;
+  }
+}

@@ -1,3 +1,4 @@
+'use client';
 import React, { useCallback, useEffect, useState } from 'react';
 import { reportFrontendError } from '../../shared/telemetry/frontendErrors';
 import { sanitizeUiText } from '../../shared/ui/terminology';

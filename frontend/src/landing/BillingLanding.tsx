@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+'use client';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, CheckCircle2, CreditCard, Sparkles, Wallet } from 'lucide-react';
 import type { BillingPlanKey, TokenPackKey } from '../../services/accountService';
 import { useBillingActions } from '../features/billing/hooks/useBillingActions';
@@ -21,6 +22,11 @@ const formatInr = (amount: number): string =>
   new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
+    maximumFractionDigits: 0,
+  }).format(Math.max(0, Number(amount || 0)));
+
+const formatVfCount = (amount: number): string =>
+  new Intl.NumberFormat('en-IN', {
     maximumFractionDigits: 0,
   }).format(Math.max(0, Number(amount || 0)));
 
@@ -56,18 +62,24 @@ const resolveReturnState = (): 'success' | 'cancel' | '' => {
 };
 
 export const BillingLanding: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<BillingTab>(resolveTabFromUrl);
+  const [activeTab, setActiveTab] = useState<BillingTab>('subscription');
   const [couponCode, setCouponCode] = useState('');
   const [selectedPack, setSelectedPack] = useState<TokenPackKey>('standard');
   const [loadingKey, setLoadingKey] = useState('');
   const [error, setError] = useState('');
-  const [returnState] = useState<'success' | 'cancel' | ''>(resolveReturnState);
+  const [returnState, setReturnState] = useState<'success' | 'cancel' | ''>('');
   const billingActions = useBillingActions({ baseUrl: resolveBackendUrl() });
 
+  const fallbackPack = TOKEN_PACK_ROWS[1] ?? TOKEN_PACK_ROWS[0]!;
   const selectedPackSummary = useMemo(
-    () => TOKEN_PACK_ROWS.find((item) => item.key === selectedPack) || TOKEN_PACK_ROWS[1],
-    [selectedPack]
+    () => TOKEN_PACK_ROWS.find((item) => item.key === selectedPack) || fallbackPack,
+    [fallbackPack, selectedPack]
   );
+
+  useEffect(() => {
+    setActiveTab(resolveTabFromUrl());
+    setReturnState(resolveReturnState());
+  }, []);
 
   const setTab = (tab: BillingTab) => {
     setActiveTab(tab);
@@ -212,7 +224,7 @@ export const BillingLanding: React.FC = () => {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <div className="text-sm font-semibold text-slate-900">{plan.name}</div>
-                          <div className="text-xs text-slate-600">{plan.vfCredits.toLocaleString()} VF credits</div>
+                          <div className="text-xs text-slate-600">{formatVfCount(plan.vfCredits)} VF credits</div>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold text-slate-900">{formatInr(plan.priceInr)}</span>
@@ -262,7 +274,7 @@ export const BillingLanding: React.FC = () => {
                         <tr key={`table-${plan.key}`} className="border-t border-slate-200">
                           <td className="px-3 py-2 font-semibold text-slate-900">{plan.name}</td>
                           <td className="px-3 py-2 text-slate-700">{formatInr(plan.priceInr)}</td>
-                          <td className="px-3 py-2 text-slate-700">{plan.vfCredits.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-slate-700">{formatVfCount(plan.vfCredits)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -288,12 +300,12 @@ export const BillingLanding: React.FC = () => {
                   >
                     {TOKEN_PACK_ROWS.map((pack) => (
                       <option key={pack.key} value={pack.key}>
-                        {pack.label} - {pack.vf.toLocaleString()} VF - {formatInr(pack.priceInr)}
+                        {pack.label} - {formatVfCount(pack.vf)} VF - {formatInr(pack.priceInr)}
                       </option>
                     ))}
                   </select>
                   <p className="mt-2 text-xs text-slate-600">
-                    Selected: {selectedPackSummary.vf.toLocaleString()} VF for {formatInr(selectedPackSummary.priceInr)}.
+                    Selected: {formatVfCount(selectedPackSummary.vf)} VF for {formatInr(selectedPackSummary.priceInr)}.
                   </p>
                 </div>
                 <button
@@ -331,4 +343,3 @@ export const BillingLanding: React.FC = () => {
     </div>
   );
 };
-

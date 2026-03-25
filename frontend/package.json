@@ -4,10 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:ui": "vite",
-    "build": "vite build && node scripts/prune-bundled-audio.mjs",
-    "preview": "vite preview",
+    "dev": "next dev",
+    "dev:ui": "next dev",
+    "build": "next build --webpack && node scripts/prune-bundled-audio.mjs",
+    "start": "next start",
+    "preview": "next start",
+    "cloudflare:build": "node scripts/verify-cloudflare-workers.mjs && npm run build && node scripts/prune-cloudflare-browser-deps.mjs && opennextjs-cloudflare build --skipBuild",
+    "cloudflare:preview": "npm run cloudflare:build && opennextjs-cloudflare preview",
+    "cloudflare:deploy": "npm run cloudflare:build && opennextjs-cloudflare deploy",
+    "cloudflare:verify": "node scripts/verify-cloudflare-workers.mjs",
+    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "verify:single-frontend": "node scripts/verify-single-frontend.mjs",
     "clean:frontend-artifacts": "node scripts/clean-frontend-artifacts.mjs",
     "typecheck": "tsc --noEmit --project tsconfig.json",
@@ -28,14 +34,15 @@
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
+    "eslint-config-next": "^16.2.1",
     "firebase": "^11.3.1",
-    "kokoro-js": "^1.2.1",
     "lucide-react": "^0.554.0",
-    "onnxruntime-web": "^1.22.0-dev.20250409-89f8206ba4",
+    "next": "^16.2.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "^1.17.3",
     "@playwright/test": "^1.56.1",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^22.14.0",
@@ -46,11 +53,18 @@
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
+    "kokoro-js": "^1.2.1",
     "postcss": "^8.5.6",
+    "onnxruntime-common": "^1.22.0-dev.20250409-89f8206ba4",
+    "onnxruntime-web": "^1.22.0-dev.20250409-89f8206ba4",
     "tailwindcss": "^4.1.18",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "wrangler": "^4.77.0"
+  },
+  "overrides": {
+    "onnxruntime-node": "file:./stubs/onnxruntime-node"
   }
 }

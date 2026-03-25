@@ -1,5 +1,20 @@
 import { AppScreen } from '../../entities/contracts';
 
+export const requiresAuthenticatedScreen = (screen: AppScreen): boolean => (
+  screen === AppScreen.MAIN ||
+  screen === AppScreen.PROFILE ||
+  screen === AppScreen.USER_ID_SETUP
+);
+
+export const resolveScreenFromSearch = (search: string): AppScreen | null => {
+  const forced = String(new URLSearchParams(search).get('vf-screen') || '').trim().toLowerCase();
+  if (forced === 'login') return AppScreen.LOGIN;
+  if (forced === 'profile') return AppScreen.PROFILE;
+  if (forced === 'uid' || forced === 'userid' || forced === 'user-id') return AppScreen.USER_ID_SETUP;
+  if (forced === 'main') return AppScreen.MAIN;
+  return null;
+};
+
 export const resolveInitialScreen = (search: string, isDev: boolean): AppScreen => {
   if (!isDev) return AppScreen.ONBOARDING;
   const forced = String(new URLSearchParams(search).get('vf-screen') || '').trim().toLowerCase();

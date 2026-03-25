@@ -827,8 +827,18 @@ VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS = max(
     int((os.getenv("VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS") or "86400").strip() or "86400"),
 )
 VF_REDIS_URL = str(os.getenv("VF_REDIS_URL") or os.getenv("REDIS_URL") or "").strip()
-VF_AD_REWARD_CLAIM_LIMIT_PER_DAY = max(1, int((os.getenv("VF_AD_REWARD_CLAIM_LIMIT_PER_DAY") or "3").strip() or "3"))
-VF_AD_REWARD_VFF_AMOUNT = max(1, int((os.getenv("VF_AD_REWARD_VFF_AMOUNT") or "1000").strip() or "1000"))
+TTS_V2_SESSION_HEADER = "x-vf-tts-session-key"
+VF_TTS_V2_SESSION_TTL_SECONDS = max(
+    60,
+    min(
+        1800,
+        int((os.getenv("VF_TTS_V2_SESSION_TTL_SECONDS") or "1800").strip() or "1800"),
+    ),
+)
+VF_TTS_V2_SESSION_ENFORCE = (
+    (os.getenv("VF_TTS_V2_SESSION_ENFORCE") or "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 VF_FREE_MONTHLY_VFF_GRANT = max(0, int((os.getenv("VF_FREE_MONTHLY_VFF_GRANT") or "10000").strip() or "10000"))
 VF_FREE_MONTHLY_VFF_CAP = max(
     VF_FREE_MONTHLY_VFF_GRANT,
@@ -3619,7 +3629,10 @@ _INMEMORY_READER_CAST_MEMORY: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_TRANSLATIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_CATALOG_CACHE: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_SESSIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_TTS_V2_SESSIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID: dict[str, str] = {}
 _INMEMORY_LOCK = threading.RLock()
+_TTS_V2_SESSION_LOCK = threading.RLock()
 _READER_HYDRATION_LOCK = threading.Lock()
 _READER_HYDRATION_ACTIVE: set[str] = set()
 _READER_SESSION_FILE_LOCKS_GUARD = threading.Lock()
@@ -5672,6 +5685,130 @@ def _request_is_admin(request: Request, uid: Optional[str] = None) -> bool:
     return False
 
 
+def _tts_v2_session_redis_client() -> Any:
+    candidate = getattr(_TTS_V2_ENGINE, "_redis", None)
+    return candidate
+
+
+def _tts_v2_session_uid_key(uid: str) -> str:
+    return f"vf:tts:v2:session:uid:{str(uid or '').strip()}"
+
+
+def _tts_v2_session_record_key(session_key: str) -> str:
+    return f"vf:tts:v2:session:key:{str(session_key or '').strip()}"
+
+
+def _tts_v2_prune_local_sessions_locked(now_ms: Optional[int] = None) -> None:
+    now = int(now_ms or int(time.time() * 1000))
+    expired: list[str] = []
+    for key, row in list(_INMEMORY_TTS_V2_SESSIONS.items()):
+        expires_at_ms = int((row or {}).get("expiresAtMs") or 0)
+        if expires_at_ms > 0 and expires_at_ms <= now:
+            expired.append(str(key))
+    for key in expired:
+        row = _INMEMORY_TTS_V2_SESSIONS.pop(key, None)
+        safe_uid = str((row or {}).get("uid") or "").strip()
+        if safe_uid and _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.get(safe_uid) == key:
+            _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.pop(safe_uid, None)
+
+
+def _issue_tts_v2_session(uid: str) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    now_ms = int(time.time() * 1000)
+    ttl_seconds = max(60, int(VF_TTS_V2_SESSION_TTL_SECONDS or 1800))
+    expires_at_ms = now_ms + (ttl_seconds * 1000)
+    token_core = re.sub(r"[^A-Za-z0-9]", "", secrets.token_urlsafe(24))
+    session_key = f"v2s_{token_core}"[:80]
+    if len(session_key) < 16:
+        session_key = f"v2s_{uuid.uuid4().hex}"
+    payload = {
+        "uid": safe_uid,
+        "sessionKey": session_key,
+        "createdAtMs": now_ms,
+        "expiresAtMs": expires_at_ms,
+        "ttlSeconds": ttl_seconds,
+    }
+    redis_client = _tts_v2_session_redis_client()
+    if redis_client is not None:
+        try:
+            uid_key = _tts_v2_session_uid_key(safe_uid)
+            old_key = str(redis_client.get(uid_key) or "").strip()
+            pipe = redis_client.pipeline(transaction=True)
+            if old_key:
+                pipe.delete(_tts_v2_session_record_key(old_key))
+            pipe.set(
+                _tts_v2_session_record_key(session_key),
+                json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+                ex=ttl_seconds,
+            )
+            pipe.set(uid_key, session_key, ex=ttl_seconds)
+            pipe.execute()
+            return payload
+        except Exception:
+            pass
+    with _TTS_V2_SESSION_LOCK:
+        _tts_v2_prune_local_sessions_locked(now_ms)
+        old_key = str(_INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.get(safe_uid) or "").strip()
+        if old_key:
+            _INMEMORY_TTS_V2_SESSIONS.pop(old_key, None)
+        _INMEMORY_TTS_V2_SESSIONS[session_key] = dict(payload)
+        _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID[safe_uid] = session_key
+    return payload
+
+
+def _require_tts_v2_session(request: Request, uid: str) -> dict[str, Any]:
+    if not VF_TTS_V2_SESSION_ENFORCE:
+        return {}
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    provided = str(request.headers.get(TTS_V2_SESSION_HEADER) or "").strip()
+    if not provided:
+        raise HTTPException(status_code=401, detail=f"Missing {TTS_V2_SESSION_HEADER} header.")
+    now_ms = int(time.time() * 1000)
+    redis_client = _tts_v2_session_redis_client()
+    if redis_client is not None:
+        try:
+            active = str(redis_client.get(_tts_v2_session_uid_key(safe_uid)) or "").strip()
+            if not active or active != provided:
+                raise HTTPException(status_code=401, detail="Invalid or expired TTS session key.")
+            encoded = redis_client.get(_tts_v2_session_record_key(provided))
+            if not encoded:
+                raise HTTPException(status_code=401, detail="Invalid or expired TTS session key.")
+            row = json.loads(str(encoded) or "{}")
+            owner_uid = str((row or {}).get("uid") or "").strip()
+            if owner_uid != safe_uid:
+                raise HTTPException(status_code=403, detail="TTS session key ownership mismatch.")
+            expires_at_ms = int((row or {}).get("expiresAtMs") or 0)
+            if expires_at_ms > 0 and expires_at_ms <= now_ms:
+                raise HTTPException(status_code=401, detail="TTS session key expired.")
+            return dict(row or {})
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    with _TTS_V2_SESSION_LOCK:
+        _tts_v2_prune_local_sessions_locked(now_ms)
+        active = str(_INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.get(safe_uid) or "").strip()
+        if not active or active != provided:
+            raise HTTPException(status_code=401, detail="Invalid or expired TTS session key.")
+        row = dict(_INMEMORY_TTS_V2_SESSIONS.get(provided) or {})
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid or expired TTS session key.")
+        owner_uid = str(row.get("uid") or "").strip()
+        if owner_uid != safe_uid:
+            raise HTTPException(status_code=403, detail="TTS session key ownership mismatch.")
+        expires_at_ms = int(row.get("expiresAtMs") or 0)
+        if expires_at_ms > 0 and expires_at_ms <= now_ms:
+            _INMEMORY_TTS_V2_SESSIONS.pop(provided, None)
+            if _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.get(safe_uid) == provided:
+                _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.pop(safe_uid, None)
+            raise HTTPException(status_code=401, detail="TTS session key expired.")
+        return row
+
+
 def _require_admin_uid(request: Request) -> str:
     uid = _require_request_uid(request)
     if _request_is_admin(request, uid):
@@ -7591,25 +7728,6 @@ def _wallet_charge_breakdown(
     return breakdown
 
 
-def _wallet_daily_doc_id(uid: str, now: Optional[datetime] = None) -> str:
-    return f"{uid}_{_usage_day_key(now)}"
-
-
-def _ad_claims_today(uid: str, now: Optional[datetime] = None) -> int:
-    current = now or _utc_now()
-    doc_id = _wallet_daily_doc_id(uid, current)
-    collection = _firestore_collection("wallet_daily")
-    if collection is None:
-        with _INMEMORY_LOCK:
-            row = _INMEMORY_WALLET_DAILY.get(doc_id) or {}
-            return _as_positive_int(row.get("adClaimCount"))
-    doc = collection.document(doc_id).get()
-    if not doc.exists:
-        return 0
-    payload = doc.to_dict() or {}
-    return _as_positive_int(payload.get("adClaimCount"))
-
-
 def _prefer_inmemory_entitlement_store() -> bool:
     if str(os.getenv("PYTEST_CURRENT_TEST") or "").strip():
         return True
@@ -8140,7 +8258,6 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
     vff_balance = _as_positive_number(entitlement.get("vffBalance"))
     paid_balance = _as_positive_number(entitlement.get("paidVfBalance"))
     monthly_free_remaining = _as_positive_number(float(monthly_limit) - monthly_free_used)
-    ad_claims_today = _ad_claims_today(uid)
     month_start, month_end = _month_window_bounds()
     day_start, day_end = _day_window_bounds()
     plan_key = _plan_key_from_name(plan_name)
@@ -8184,8 +8301,6 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
                 engine: _wallet_spendable_now(entitlement, monthly, engine)
                 for engine in TTS_ENGINE_KEYS
             },
-            "adClaimsToday": ad_claims_today,
-            "adClaimsDailyLimit": VF_AD_REWARD_CLAIM_LIMIT_PER_DAY,
             "vffMonthKey": str(entitlement.get("vffMonthKey") or month_key),
         },
         "limits": {
@@ -18814,22 +18929,47 @@ def _reader_job_status_summary(uid: str, job_id: str) -> dict[str, Any]:
     safe_job_id = str(job_id or "").strip()
     if not safe_job_id:
         return {"status": "idle"}
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        return {"status": "missing", "jobId": safe_job_id}
-    if str(job.get("uid") or "").strip() != str(uid or "").strip():
+    try:
+        job = _TTS_V2_ENGINE.get_job(uid=uid, is_admin=False, job_id=safe_job_id)
+        payload = _TTS_V2_ENGINE.status_payload(job=job, include_result=False, include_chunks=True, include_chunk_audio=False)
+        live = payload.get("live") if isinstance(payload.get("live"), dict) else {}
+        return {
+            "jobId": safe_job_id,
+            "status": str(payload.get("status") or "queued"),
+            "engine": str(payload.get("engine") or "GEM"),
+            "chunkCursorNext": int(payload.get("chunkCursorNext") or 0),
+            "playableChunks": int((live or {}).get("playableChunks") or 0),
+            "playableDurationMs": int((live or {}).get("playableDurationMs") or 0),
+            "downloadUrl": f"/tts/v2/jobs/{safe_job_id}/result/audio",
+        }
+    except TtsV2AuthorizationError:
         return {"status": "forbidden", "jobId": safe_job_id}
-    payload = _tts_job_status_payload(job, include_result=False, include_chunks=True, include_chunk_audio=False)
-    live = payload.get("live") if isinstance(payload.get("live"), dict) else {}
-    return {
-        "jobId": safe_job_id,
-        "status": str(payload.get("status") or "queued"),
-        "engine": str(payload.get("engine") or "GEM"),
-        "chunkCursorNext": int(payload.get("chunkCursorNext") or 0),
-        "playableChunks": int((live or {}).get("playableChunks") or 0),
-        "playableDurationMs": int((live or {}).get("playableDurationMs") or 0),
-        "downloadUrl": f"/tts/v2/jobs/{safe_job_id}/result/audio",
-    }
+    except TtsV2JobNotFoundError:
+        return {"status": "missing", "jobId": safe_job_id}
+    except Exception:
+        return {"status": "missing", "jobId": safe_job_id}
+
+
+def _reader_tts_job_result_audio_bytes(uid: str, job_id: str, *, is_admin: bool) -> Optional[bytes]:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return None
+    try:
+        audio, _ = _TTS_V2_ENGINE.get_result_audio(uid=uid, is_admin=is_admin, job_id=safe_job_id)
+        return bytes(audio or b"")
+    except Exception:
+        return None
+
+
+def _reader_cancel_tts_job(uid: str, job_id: str, *, is_admin: bool) -> bool:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return False
+    try:
+        _TTS_V2_ENGINE.cancel_job(uid=uid, is_admin=is_admin, job_id=safe_job_id)
+        return True
+    except Exception:
+        return False
 
 
 def _reader_extract_job_id_from_response(response: Response) -> str:
@@ -19627,22 +19767,27 @@ def _reader_create_tts_job(
         route_audio_engine or str(session.get("audioEngine") or "tts_hd")
     )
     live_chunk_profile = _resolve_live_chunk_profile()
-    payload = TtsSynthesizeRequest(
-        engine="NEURAL2",
-        text=str(text or "").strip(),
-        model=model,
-        modelCandidates=model_candidates,
-        voiceId=str(voice_id or "v21").strip() or "v21",
-        language=str(language or "en").strip() or "en",
-        request_id=request_id,
-        stream=True,
-        live_chunk_chars=int(live_chunk_profile["chunkChars"]),
-        live_chunk_words=int(live_chunk_profile["chunkWords"]),
-        multi_speaker_mode=multi_speaker_mode,
-        multi_speaker_line_map=line_map or None,
-        speaker_voices=speaker_voices or None,
-    )
-    response = _submit_tts_job(payload, request, sync_wait_ms=0)
+    speaker_voice_rows = [dict(item) for item in list(speaker_voices or []) if isinstance(item, dict)]
+    inferred_mode = "multi_speaker" if len(speaker_voice_rows) >= 6 else "single_speaker"
+    payload = {
+        "engine": "NEURAL2",
+        "mode": inferred_mode,
+        "text": str(text or "").strip(),
+        "model": model,
+        "modelCandidates": model_candidates,
+        "voiceName": str(voice_id or "").strip() or None,
+        "voiceId": str(voice_id or "v21").strip() or "v21",
+        "voice_id": str(voice_id or "v21").strip() or "v21",
+        "language": str(language or "en").strip() or "en",
+        "request_id": request_id,
+        "stream": True,
+        "live_chunk_chars": int(live_chunk_profile["chunkChars"]),
+        "live_chunk_words": int(live_chunk_profile["chunkWords"]),
+        "multi_speaker_mode": multi_speaker_mode,
+        "multi_speaker_line_map": line_map or None,
+        "speaker_voices": speaker_voice_rows or None,
+    }
+    response = _create_tts_v2_job_response(request, payload, require_session=False)
     job_id = _reader_extract_job_id_from_response(response)
     if not job_id:
         raise HTTPException(status_code=502, detail="Failed to queue Reader TTS job.")
@@ -20913,6 +21058,7 @@ def reader_session_savepoint(session_id: str, payload: ReaderSessionSavepointReq
 @app.get("/reader/sessions/{session_id}/export")
 def reader_session_export(session_id: str, request: Request) -> FileResponse:
     uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
     session = _reader_session_get(uid, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Reader session not found.")
@@ -20929,10 +21075,10 @@ def reader_session_export(session_id: str, request: Request) -> FileResponse:
         job_id = str(item.get("jobId") or "").strip()
         if not job_id:
             continue
-        job = _TTS_JOB_QUEUE.get(job_id)
-        if not isinstance(job, dict) or str(job.get("status") or "") != "completed":
+        audio_bytes = _reader_tts_job_result_audio_bytes(uid, job_id, is_admin=is_admin)
+        if audio_bytes is None:
             continue
-        export_chunks.append(_resolve_tts_result_audio_bytes(dict(job.get("result") or {})))
+        export_chunks.append(audio_bytes)
         newly_exported_windows.append(index)
     exported_panel_set = {int(value) for value in list(safe_session.get("exportedPanelIndexes") or [])}
     newly_exported_panels: list[int] = []
@@ -20945,10 +21091,10 @@ def reader_session_export(session_id: str, request: Request) -> FileResponse:
         job_id = str(item.get("audioJobId") or "").strip()
         if not job_id:
             continue
-        job = _TTS_JOB_QUEUE.get(job_id)
-        if not isinstance(job, dict) or str(job.get("status") or "") != "completed":
+        audio_bytes = _reader_tts_job_result_audio_bytes(uid, job_id, is_admin=is_admin)
+        if audio_bytes is None:
             continue
-        export_chunks.append(_resolve_tts_result_audio_bytes(dict(job.get("result") or {})))
+        export_chunks.append(audio_bytes)
         newly_exported_panels.append(index)
     export_path = _reader_export_path(session_id)
     existing_chunks: list[bytes] = []
@@ -20987,6 +21133,7 @@ def reader_session_export(session_id: str, request: Request) -> FileResponse:
 @app.delete("/reader/sessions/{session_id}")
 def reader_session_delete(session_id: str, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
     session = _reader_session_get(uid, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Reader session not found.")
@@ -21000,11 +21147,11 @@ def reader_session_delete(session_id: str, request: Request) -> JSONResponse:
     for item in list(safe_session.get("windows") or []):
         job_id = str((item or {}).get("jobId") or "").strip()
         if job_id:
-            _TTS_JOB_QUEUE.cancel(job_id)
+            _reader_cancel_tts_job(uid, job_id, is_admin=is_admin)
     for item in list(safe_session.get("panels") or []):
         job_id = str((item or {}).get("audioJobId") or "").strip()
         if job_id:
-            _TTS_JOB_QUEUE.cancel(job_id)
+            _reader_cancel_tts_job(uid, job_id, is_admin=is_admin)
     _reader_session_delete(session_id)
     return JSONResponse({"ok": True})
 
@@ -22973,83 +23120,6 @@ def account_notification_preferences_patch(
     )
     return JSONResponse({"ok": True, "preferences": next_payload})
 
-
-@app.post("/wallet/ad-reward/claim")
-def wallet_ad_reward_claim(request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    admin_limit_bypass = _request_is_admin(request, uid)
-    now = _utc_now()
-    day_doc_id = _wallet_daily_doc_id(uid, now)
-    wallet_daily = _firestore_collection("wallet_daily")
-    entitlements = _firestore_collection("entitlements")
-    cap_error = "Monthly free VFF cap reached."
-
-    if wallet_daily is None or entitlements is None or _FIRESTORE_DB is None or firebase_firestore is None:
-        with _INMEMORY_LOCK:
-            row = _INMEMORY_WALLET_DAILY.get(day_doc_id) or {
-                "uid": uid,
-                "periodKey": _usage_day_period_label(now),
-                "adClaimCount": 0,
-            }
-            claim_count = _as_positive_int(row.get("adClaimCount"))
-            if not admin_limit_bypass and claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
-                raise HTTPException(status_code=429, detail="Daily ad reward limit reached.")
-            entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid), now)
-            plan_key = _plan_key_from_name(str(entitlement.get("plan") or "Free"))
-            vff_cap = None if admin_limit_bypass or plan_key != "free" else float(VF_FREE_MONTHLY_VFF_CAP)
-            current_vff = _as_positive_number(entitlement.get("vffBalance"))
-            if vff_cap is not None and current_vff >= vff_cap:
-                raise HTTPException(status_code=429, detail=cap_error)
-            row["adClaimCount"] = claim_count + 1
-            row["updatedAt"] = now.isoformat()
-            _INMEMORY_WALLET_DAILY[day_doc_id] = row
-            next_vff = current_vff + float(VF_AD_REWARD_VFF_AMOUNT)
-            if vff_cap is not None:
-                next_vff = min(vff_cap, next_vff)
-            entitlement["vffBalance"] = _as_positive_number(next_vff)
-            entitlement["updatedAt"] = now.isoformat()
-            _INMEMORY_ENTITLEMENTS[uid] = entitlement
-        return JSONResponse({"ok": True, "entitlements": _entitlement_usage_payload(uid)})
-
-    daily_ref = _FIRESTORE_DB.collection("wallet_daily").document(day_doc_id)
-    ent_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
-    transaction = _FIRESTORE_DB.transaction()
-
-    @firebase_firestore.transactional
-    def _apply(transaction_obj: Any) -> None:
-        daily_doc = daily_ref.get(transaction=transaction_obj)
-        row = (
-            {**(daily_doc.to_dict() or {})}
-            if daily_doc.exists
-            else {"uid": uid, "periodKey": _usage_day_period_label(now), "adClaimCount": 0}
-        )
-        claim_count = _as_positive_int(row.get("adClaimCount"))
-        if not admin_limit_bypass and claim_count >= VF_AD_REWARD_CLAIM_LIMIT_PER_DAY:
-            raise RuntimeError("Daily ad reward limit reached.")
-        ent_doc = ent_ref.get(transaction=transaction_obj)
-        entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(uid), now)
-        plan_key = _plan_key_from_name(str(entitlement.get("plan") or "Free"))
-        vff_cap = None if admin_limit_bypass or plan_key != "free" else float(VF_FREE_MONTHLY_VFF_CAP)
-        current_vff = _as_positive_number(entitlement.get("vffBalance"))
-        if vff_cap is not None and current_vff >= vff_cap:
-            raise RuntimeError(cap_error)
-        row["adClaimCount"] = claim_count + 1
-        row["updatedAt"] = now.isoformat()
-        next_vff = current_vff + float(VF_AD_REWARD_VFF_AMOUNT)
-        if vff_cap is not None:
-            next_vff = min(vff_cap, next_vff)
-        entitlement["vffBalance"] = _as_positive_number(next_vff)
-        entitlement["updatedAt"] = now.isoformat()
-
-        transaction_obj.set(daily_ref, row, merge=True)
-        transaction_obj.set(ent_ref, entitlement, merge=True)
-
-    try:
-        _apply(transaction)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-
-
 def _reprice_reserved_usage(
     uid: str,
     request_id: str,
@@ -23842,7 +23912,6 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
         "usage_monthly",
         "usage_daily",
         "usage_events",
-        "wallet_daily",
         "coupon_redemptions",
     ]
     if _FIRESTORE_DB is not None:
@@ -30000,444 +30069,54 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             semaphore.release()
 
 
-def _tts_worker_loop(worker_id: str) -> None:
-    while True:
-        try:
-            job = _TTS_JOB_QUEUE.dequeue_next()
-            if not isinstance(job, dict):
-                time.sleep(0.06)
-                continue
-            status = str(job.get("status") or "").strip().lower()
-            if status in {"completed", "failed", "cancelled"}:
-                if status == "cancelled":
-                    _record_tts_terminal_event(
-                        job_id=str(job.get("jobId") or ""),
-                        engine=str(job.get("engine") or "GEM"),
-                        status="cancelled",
-                        reason="cancelled",
-                        status_code=409,
-                    )
-                continue
-            _process_tts_job(job, worker_id)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[tts-worker:{worker_id}] error: {exc}", flush=True)
-            time.sleep(0.2)
-
-
 def _ensure_tts_workers_started() -> None:
-    if not VF_TTS_QUEUE_ENABLED or not VF_SERVICE_IS_WORKER or VF_TTS_QUEUE_WORKER_COUNT <= 0:
-        return
-    with _TTS_JOB_WORKER_LOCK:
-        if len(_TTS_JOB_WORKER_THREADS) >= VF_TTS_QUEUE_WORKER_COUNT:
-            return
-        for index in range(len(_TTS_JOB_WORKER_THREADS), VF_TTS_QUEUE_WORKER_COUNT):
-            worker_id = f"tts-worker-{index + 1}"
-            thread = threading.Thread(
-                target=_tts_worker_loop,
-                args=(worker_id,),
-                daemon=True,
-                name=worker_id,
-            )
-            thread.start()
-            _TTS_JOB_WORKER_THREADS.append(thread)
+    return None
 
-
-def _tts_job_can_access(job: dict[str, Any], *, uid: str, is_admin: bool) -> bool:
-    if is_admin:
-        return True
-    owner_uid = str(job.get("uid") or "").strip()
-    return bool(owner_uid) and owner_uid == uid
-
-
-def _get_authorized_tts_job(job_id: str, request: Request) -> tuple[str, str, bool, dict[str, Any]]:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    return safe_job_id, uid, is_admin, job
 
 def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wait_ms: int) -> Response:
-    safe_sync_wait_ms = max(0, min(60_000, int(sync_wait_ms)))
-    uid = _require_request_uid(request)
-    admin_limit_bypass = _request_is_admin(request, uid)
-    resolved_user_id = _resolve_request_user_id(request, uid)
-    raw_text = str(payload.text or "")
-    text = raw_text.strip()
-    billable_char_count = len(text)
-    engine = _normalize_engine_name(payload.engine)
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
-    request_id = str(payload.request_id or idempotency_key or uuid.uuid4().hex).strip()
-    trace_id = str(payload.trace_id or request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
-    requested_voice_id = str(payload.voiceId or payload.voice_id or "").strip()
-    requested_voice_name = str(payload.voiceName or "").strip()
-    initial_voice_id, initial_voice_name = _resolve_history_voice_fields(
-        engine=engine,
-        voice_id=requested_voice_id,
-        voice_name=requested_voice_name,
-    )
-    identity_snapshot = _audio_generation_identity_snapshot(uid, request)
-    payment_ref_type, payment_ref = _resolve_audio_generation_payment_ref(uid)
-    audit_record = _audio_generation_audit_create(
-        {
-            "uid": uid,
-            "userId": resolved_user_id,
-            "identityType": identity_snapshot.get("identityType") or "",
-            "identityValue": identity_snapshot.get("identityValue") or "",
-            "email": identity_snapshot.get("email") or "",
-            "phoneNumber": identity_snapshot.get("phoneNumber") or "",
-            "submittedAt": _safe_now_iso(),
-            "status": "received",
-            "engine": engine,
-            "voiceId": initial_voice_id,
-            "voiceName": initial_voice_name,
-            "language": str(payload.language or "").strip(),
-            "requestId": request_id,
-            "traceId": trace_id,
-            "inputText": raw_text,
-            "sourceIp": _request_source_ip(request),
-            "paymentRefType": payment_ref_type,
-            "paymentRef": payment_ref,
-        }
-    )
-    audit_id = str(audit_record.get("auditId") or "").strip()
-
-    try:
-        # Enforce one-time userId completion before protected synthesis routes for non-admin users.
-        if not admin_limit_bypass:
-            profile = _require_user_id_ready(request, uid)
-            profile_user_id = str((profile or {}).get("userId") or "").strip().lower()
-            if profile_user_id and profile_user_id != resolved_user_id:
-                resolved_user_id = profile_user_id
-                _audio_generation_audit_update(audit_id, {"userId": resolved_user_id})
-        if not text:
-            raise HTTPException(status_code=400, detail="text is required.")
-
-        plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
-            uid,
-            billable_char_count,
-            trace_id,
-            engine=engine,
-            bypass=admin_limit_bypass,
-        )
-        quota_headers: dict[str, str] = {}
-        if not admin_limit_bypass:
-            quota_headers = _precheck_tts_success_quota(uid, plan_name, plan_key, trace_id)
-
-        gateway_lease, reject_detail = _TTS_GATEWAY_CONTROLLER.acquire()
-        if gateway_lease is None:
-            safe_detail = dict(reject_detail or {})
-            reason = str(safe_detail.get("reason") or "queue_rejected").strip().lower()
-            safe_detail.setdefault("reason", reason)
-            if reason == "queue_timeout":
-                safe_detail.setdefault("errorCode", QUEUE_TIMEOUT)
-            else:
-                safe_detail.setdefault("errorCode", ENGINE_OVERLOADED)
-            safe_detail.setdefault("queueDepth", 0)
-            safe_detail.setdefault("retryAfterMs", 1000)
-            safe_detail.setdefault("trace_id", trace_id)
-            retry_after_ms = max(250, int(safe_detail.get("retryAfterMs") or 1000))
-            error_headers = dict(quota_headers)
-            error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
-            raise HTTPException(status_code=503, detail=safe_detail, headers=error_headers)
-
-        try:
-            reserve = _reserve_usage(
-                uid,
-                request_id,
-                engine,
-                billable_char_count,
-                bypass_limits=admin_limit_bypass,
-                bypass_reason="admin_request" if admin_limit_bypass else "",
-            )
-            _ = reserve
-            _ensure_tts_workers_started()
-            _cleanup_expired_live_artifacts()
-            _cleanup_expired_tts_result_artifacts()
-
-            runtime_base = _runtime_url_for_engine(engine)
-            runtime_path = _runtime_synthesize_path_for_engine(engine)
-            live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(payload.stream)
-            live_chunk_chars = None
-            live_chunk_words = None
-            live_first_chunk_chars = None
-            live_first_chunk_words = None
-            if live_stream_requested:
-                live_chunk_profile = _resolve_live_chunk_profile(
-                    chunk_chars=payload.live_chunk_chars,
-                    chunk_words=payload.live_chunk_words,
-                )
-                live_chunk_chars = int(live_chunk_profile["chunkChars"])
-                live_chunk_words = int(live_chunk_profile["chunkWords"])
-                live_first_chunk_chars = int(live_chunk_profile["firstChunkChars"])
-                live_first_chunk_words = int(live_chunk_profile["firstChunkWords"])
-            upstream_payload, voice_id = _build_tts_upstream_payload(
-                payload,
-                engine=engine,
-                text=text,
-                request_id=request_id,
-                trace_id=trace_id,
-                plan_key=plan_key,
-            )
-            resolved_upstream_voice_name = (
-                str(upstream_payload.get("voiceName") or voice_id or requested_voice_name).strip()
-                or str(voice_id or "").strip()
-            )
-            _audio_generation_audit_update(
-                audit_id,
-                {
-                    "engine": engine,
-                    "voiceId": str(voice_id or "").strip(),
-                    "voiceName": resolved_upstream_voice_name,
-                    "language": str(upstream_payload.get("language") or payload.language or "").strip(),
-                    "requestId": request_id,
-                    "traceId": trace_id,
-                },
-            )
-
-            existing_job = _TTS_JOB_QUEUE.get(request_id)
-            if existing_job is None:
-                depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
-                if int(depth_snapshot.get("total") or 0) >= VF_TTS_QUEUE_MAX_DEPTH:
-                    _finalize_usage(uid, request_id, success=False, error_detail="queue_depth_limit")
-                    detail = {
-                        "error": "TTS queue depth limit reached.",
-                        "errorCode": ENGINE_OVERLOADED,
-                        "reason": "queue_full",
-                        "queueDepth": int(depth_snapshot.get("total") or 0),
-                        "queueMax": int(VF_TTS_QUEUE_MAX_DEPTH),
-                        "retryAfterMs": 1000,
-                        "trace_id": trace_id,
-                    }
-                    raise HTTPException(status_code=503, detail=detail, headers=quota_headers)
-
-                projection = _estimate_tts_completion_delay(engine)
-                observed_queue_depth = int(depth_snapshot.get("total") or 0)
-                projection_jobs_ahead = int(projection.get("jobsAhead") or 0)
-                projection_concurrency = max(1, int(projection.get("concurrency") or 1))
-                projection_avg_runtime = max(1, int(projection.get("avgRuntimeMs") or _default_engine_runtime_ms(engine)))
-                estimated_jobs_ahead = max(projection_jobs_ahead, observed_queue_depth)
-                estimated_completion_ms = max(
-                    int(projection.get("estimatedCompletionMs") or 0),
-                    int(((estimated_jobs_ahead // projection_concurrency) + 1) * projection_avg_runtime),
-                )
-                if estimated_completion_ms > int(VF_TTS_QUEUE_JOB_TTL_MS):
-                    _finalize_usage(uid, request_id, success=False, error_detail="estimated_queue_timeout")
-                    retry_after_ms = max(
-                        500,
-                        int(estimated_completion_ms - int(VF_TTS_QUEUE_JOB_TTL_MS) + projection_avg_runtime),
-                    )
-                    detail = {
-                        "error": "TTS engine is overloaded and queue TTL would likely expire before completion.",
-                        "errorCode": ENGINE_OVERLOADED,
-                        "reason": "estimated_queue_timeout",
-                        "trace_id": trace_id,
-                        "engine": str(projection.get("engine") or _safe_tts_engine_name(engine)),
-                        "queueDepth": observed_queue_depth,
-                        "engineQueueDepth": int(estimated_jobs_ahead),
-                        "engineQueued": int(projection.get("queued") or 0),
-                        "engineRunning": int(projection.get("running") or 0),
-                        "engineConcurrency": int(projection.get("concurrency") or 1),
-                        "estimatedCompletionMs": estimated_completion_ms,
-                        "deadlineBudgetMs": int(VF_TTS_QUEUE_JOB_TTL_MS),
-                        "retryAfterMs": retry_after_ms,
-                    }
-                    error_headers = dict(quota_headers)
-                    error_headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
-                    raise HTTPException(status_code=503, detail=detail, headers=error_headers)
-
-                deadline_at_ms = int(time.time() * 1000) + VF_TTS_QUEUE_JOB_TTL_MS
-                lane = _tts_job_lane_for_plan(
-                    plan_key,
-                    live_stream=bool(live_stream_requested),
-                )
-                job_payload = {
-                    "jobId": request_id,
-                    "uid": uid,
-                    "userId": resolved_user_id,
-                    "requestId": request_id,
-                    "traceId": trace_id,
-                    "engine": engine,
-                    "text": text,
-                    "voiceId": voice_id,
-                    "voiceName": resolved_upstream_voice_name,
-                    "planName": plan_name,
-                    "planKey": plan_key,
-                    "adminLimitBypass": bool(admin_limit_bypass),
-                    "idempotencyKey": idempotency_key,
-                    "runtimeBase": runtime_base,
-                    "runtimePath": runtime_path,
-                    "upstreamPayload": upstream_payload,
-                    "deadlineAtMs": deadline_at_ms,
-                    "maxAttempts": VF_TTS_QUEUE_MAX_ATTEMPTS if safe_sync_wait_ms <= 0 else 1,
-                    "liveStream": bool(live_stream_requested),
-                    "liveChunkChars": int(live_chunk_chars or VF_TTS_LIVE_CHUNK_CHARS_DEFAULT),
-                    "liveChunkWords": int(live_chunk_words or VF_TTS_LIVE_CHUNK_WORDS_DEFAULT),
-                    "liveFirstChunkChars": int(live_first_chunk_chars or VF_TTS_LIVE_FIRST_CHUNK_CHARS),
-                    "liveFirstChunkWords": int(live_first_chunk_words or VF_TTS_LIVE_FIRST_CHUNK_WORDS),
-                    "liveFirstChunkTargetMs": int(VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
-                    "audioAuditId": audit_id,
-                    "audioAuditIds": [audit_id],
-                }
-                current_job = _TTS_JOB_QUEUE.enqueue(lane=lane, payload=job_payload)
-                _record_tts_job_enqueued(
-                    job_id=request_id,
-                    engine=engine,
-                    created_at_ms=int((current_job or {}).get("createdAtMs") or int(time.time() * 1000)),
-                )
-                _audio_generation_audit_update(
-                    audit_id,
-                    {
-                        "status": "queued",
-                        "jobId": request_id,
-                        "requestId": request_id,
-                        "traceId": trace_id,
-                    },
-                )
-            else:
-                current_job = existing_job
-                owner_uid = str(existing_job.get("uid") or "").strip()
-                if not owner_uid or owner_uid != uid:
-                    _finalize_usage(uid, request_id, success=False, error_detail="request_id_owner_conflict")
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "error": "request_id is already associated with a different user.",
-                            "errorCode": REQUEST_ID_CONFLICT,
-                            "reason": "request_id_owner_conflict",
-                            "jobId": request_id,
-                            "trace_id": trace_id,
-                        },
-                        headers=dict(quota_headers),
-                    )
-                existing_status = str(existing_job.get("status") or "queued").strip().lower() or "queued"
-                if existing_status in {"queued", "running"}:
-                    linked_audit_ids = _audio_generation_audit_ids_from_job(existing_job)
-                    if audit_id not in linked_audit_ids:
-                        linked_audit_ids.append(audit_id)
-                        _TTS_JOB_QUEUE.update(
-                            request_id,
-                            {
-                                "audioAuditId": linked_audit_ids[0],
-                                "audioAuditIds": linked_audit_ids,
-                            },
-                        )
-                    _audio_generation_audit_update(
-                        audit_id,
-                        {
-                            "status": existing_status,
-                            "jobId": str(existing_job.get("jobId") or request_id),
-                            "requestId": str(existing_job.get("requestId") or request_id),
-                            "traceId": str(existing_job.get("traceId") or trace_id),
-                        },
-                    )
-                elif existing_status == "completed":
-                    _audio_generation_audit_mark_terminal(
-                        audit_id,
-                        status="completed",
-                        job_id=str(existing_job.get("jobId") or request_id),
-                        request_id=str(existing_job.get("requestId") or request_id),
-                        trace_id=str(existing_job.get("traceId") or trace_id),
-                        audio_created_at=_safe_now_iso(),
-                    )
-                elif existing_status == "failed":
-                    _audio_generation_audit_mark_terminal(
-                        audit_id,
-                        status="failed",
-                        failure_code=_audio_generation_failure_code(
-                            existing_job.get("error"),
-                            f"runtime_error:{existing_job.get('statusCode')}",
-                        ),
-                        failure_detail=existing_job.get("error"),
-                        job_id=str(existing_job.get("jobId") or request_id),
-                        request_id=str(existing_job.get("requestId") or request_id),
-                        trace_id=str(existing_job.get("traceId") or trace_id),
-                    )
-                elif existing_status == "cancelled":
-                    _audio_generation_audit_mark_terminal(
-                        audit_id,
-                        status="cancelled",
-                        failure_code="cancelled_by_user",
-                        failure_detail="TTS job was cancelled.",
-                        job_id=str(existing_job.get("jobId") or request_id),
-                        request_id=str(existing_job.get("requestId") or request_id),
-                        trace_id=str(existing_job.get("traceId") or trace_id),
-                    )
-
-            if safe_sync_wait_ms > 0:
-                terminal_job = _TTS_JOB_QUEUE.wait_for_terminal(
-                    request_id,
-                    timeout_ms=safe_sync_wait_ms,
-                    poll_ms=120,
-                )
-                if isinstance(terminal_job, dict):
-                    terminal_status = str(terminal_job.get("status") or "").strip().lower()
-                    if terminal_status == "completed":
-                        return _response_from_completed_tts_job(terminal_job, gateway_lease)
-                    if terminal_status == "failed":
-                        _raise_failed_tts_job(terminal_job, default_headers=quota_headers)
-                    if terminal_status == "cancelled":
-                        raise HTTPException(status_code=409, detail={"error": "TTS job was cancelled.", "jobId": request_id})
-                    current_job = terminal_job
-
-            status_payload = _tts_job_status_payload(current_job if isinstance(current_job, dict) else {"jobId": request_id})
-            status_payload["accepted"] = True
-            status_payload["queue"] = _TTS_JOB_QUEUE.depth_snapshot()
-            headers = dict(quota_headers)
-            headers["x-vf-request-id"] = request_id
-            headers["x-vf-job-id"] = request_id
-            headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
-            headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
-            return JSONResponse(status_payload, status_code=202, headers=headers)
-        finally:
-            gateway_lease.release()
-    except HTTPException as exc:
-        if audit_id:
-            terminal_status = "failed"
-            detail = exc.detail
-            if int(exc.status_code) == 409:
-                detail_str = _audio_generation_audit_stringify_detail(detail).lower()
-                if "cancel" in detail_str:
-                    terminal_status = "cancelled"
-            _audio_generation_audit_mark_terminal(
-                audit_id,
-                status=terminal_status,
-                failure_code=_audio_generation_failure_code(detail, f"http_{exc.status_code}"),
-                failure_detail=detail,
-                request_id=request_id,
-                trace_id=trace_id,
-            )
-        raise
-    except Exception as exc:
-        if audit_id:
-            _audio_generation_audit_mark_terminal(
-                audit_id,
-                status="failed",
-                failure_code=_audio_generation_failure_code(str(exc), "unexpected_error"),
-                failure_detail=str(exc),
-                request_id=request_id,
-                trace_id=trace_id,
-            )
-        raise
+    _ = payload, request, sync_wait_ms
+    raise HTTPException(status_code=410, detail="Legacy TTS enqueue removed. Use /tts/v2/jobs.")
 
 
-@app.post("/tts/v2/jobs")
-def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
+def _sanitize_tts_v2_create_payload(payload: dict[str, Any] | TtsV2CreateJobRequest) -> dict[str, Any]:
     if hasattr(payload, "model_dump"):
         raw_payload = payload.model_dump(exclude_none=True)  # type: ignore[attr-defined]
     else:
-        raw_payload = payload.dict(exclude_none=True)
-    raw_payload = dict(raw_payload or {})
-    raw_payload["engine"] = _normalize_engine_name(str(raw_payload.get("engine") or "GEM"))
-    raw_payload["text"] = str(raw_payload.get("text") or "").strip()
-    raw_payload["mode"] = str(raw_payload.get("mode") or "single_speaker").strip().lower() or "single_speaker"
+        raw_payload = dict(payload or {})
+    safe_payload = dict(raw_payload or {})
+    for key in (
+        "apiKey",
+        "api_key",
+        "providerApiKey",
+        "provider_api_key",
+        "sourcePolicy",
+        "vertexServiceAccountRef",
+        "vertexServiceAccountJson",
+        "vertexAccessToken",
+        "vertexAccessTokenRef",
+        "credentialPath",
+        "credentialsPath",
+        "googleApplicationCredentials",
+        "serviceAccountJson",
+    ):
+        safe_payload.pop(key, None)
+    safe_payload["engine"] = _normalize_engine_name(str(safe_payload.get("engine") or "GEM"))
+    safe_payload["text"] = str(safe_payload.get("text") or "").strip()
+    safe_payload["mode"] = str(safe_payload.get("mode") or "single_speaker").strip().lower() or "single_speaker"
+    return safe_payload
+
+
+def _create_tts_v2_job_response(
+    request: Request,
+    payload: dict[str, Any] | TtsV2CreateJobRequest,
+    *,
+    require_session: bool = True,
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    if require_session:
+        _require_tts_v2_session(request, uid)
+    raw_payload = _sanitize_tts_v2_create_payload(payload)
     trace_id = str(raw_payload.get("trace_id") or raw_payload.get("request_id") or "").strip()
     _plan_name, _plan_key, _ = _enforce_tts_plan_guardrails(
         uid,
@@ -30447,15 +30126,16 @@ def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONR
         bypass=is_admin,
     )
     request_id = str(raw_payload.get("request_id") or "").strip()
-    if request_id:
-        _reserve_usage(
-            uid,
-            request_id,
-            str(raw_payload.get("engine") or "GEM"),
-            len(str(raw_payload.get("text") or "")),
-            bypass_limits=is_admin,
-            bypass_reason="admin_request" if is_admin else "",
-        )
+    if not request_id:
+        raise HTTPException(status_code=400, detail={"error": "request_id is required."})
+    _reserve_usage(
+        uid,
+        request_id,
+        str(raw_payload.get("engine") or "GEM"),
+        len(str(raw_payload.get("text") or "")),
+        bypass_limits=is_admin,
+        bypass_reason="admin_request" if is_admin else "",
+    )
 
     try:
         job = _TTS_V2_ENGINE.create_job(
@@ -30466,16 +30146,13 @@ def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONR
         )
         status_payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
     except V2ValidationError as exc:
-        if request_id:
-            _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
+        _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
         raise HTTPException(status_code=400, detail={"error": str(exc)})
     except TtsV2RequestConflictError as exc:
-        if request_id:
-            _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
+        _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
         raise HTTPException(status_code=409, detail={"error": str(exc), "errorCode": REQUEST_ID_CONFLICT})
     except Exception:
-        if request_id:
-            _finalize_usage(uid, request_id, success=False, error_detail="tts_v2_create_failed")
+        _finalize_usage(uid, request_id, success=False, error_detail="tts_v2_create_failed")
         raise
 
     headers = {
@@ -30489,6 +30166,28 @@ def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONR
     accepted = str(status_payload.get("status") or "").strip().lower() in {"queued", "running"}
     payload_out["accepted"] = bool(accepted)
     return JSONResponse(payload_out, status_code=202 if accepted else 200, headers=headers)
+
+
+@app.post("/tts/v2/jobs")
+def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONResponse:
+    return _create_tts_v2_job_response(request, payload, require_session=True)
+
+
+@app.post("/tts/v2/sessions")
+def tts_v2_session_create(request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    session_payload = _issue_tts_v2_session(uid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "sessionKey": str(session_payload.get("sessionKey") or ""),
+            "ttlSeconds": int(session_payload.get("ttlSeconds") or VF_TTS_V2_SESSION_TTL_SECONDS),
+            "createdAtMs": int(session_payload.get("createdAtMs") or 0),
+            "expiresAtMs": int(session_payload.get("expiresAtMs") or 0),
+        },
+        status_code=201,
+        headers={"x-vf-tts-v2": "1"},
+    )
 
 
 @app.get("/tts/v2/jobs/{job_id}")
@@ -31035,8 +30734,6 @@ def _phase2_startup() -> None:
     _reader_resume_remote_comic_hydration_jobs()
     if VF_SERVICE_IS_API:
         _ensure_scheduler_started()
-    if VF_SERVICE_IS_WORKER:
-        _ensure_tts_workers_started()
     thread = threading.Thread(
         target=_phase2_background_warmups,
         name="phase2-background-warmups",

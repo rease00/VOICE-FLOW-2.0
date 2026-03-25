@@ -10,18 +10,19 @@ const repoRoot = path.resolve(frontendDir, '..');
 
 const targets = [
   path.join(repoRoot, 'dist'),
-  path.join(frontendDir, 'app'),
-  path.join(frontendDir, 'next-env.d.ts'),
-  path.join(frontendDir, 'next.config.js'),
-  path.join(frontendDir, 'next.config.mjs'),
-  path.join(frontendDir, 'next.config.cjs'),
-  path.join(frontendDir, 'next.config.ts'),
+  path.join(frontendDir, '.next'),
+  path.join(frontendDir, '.open-next'),
+  path.join(frontendDir, 'dist'),
+  path.join(frontendDir, 'out'),
+  path.join(frontendDir, 'index.html'),
+  path.join(frontendDir, 'index.tsx'),
+  path.join(frontendDir, 'App.tsx'),
+  path.join(frontendDir, 'src', 'main.tsx'),
+  path.join(frontendDir, 'vite.config.ts'),
+  path.join(frontendDir, 'tsconfig.tsbuildinfo'),
+  path.join(frontendDir, 'src', 'pages'),
+  path.join(frontendDir, 'app', '(workspace)'),
 ];
-
-for (const entry of fs.readdirSync(frontendDir, { withFileTypes: true })) {
-  if (!entry.name.startsWith('.next')) continue;
-  targets.push(path.join(frontendDir, entry.name));
-}
 
 const removed = [];
 for (const target of targets) {

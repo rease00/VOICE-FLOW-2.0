@@ -2747,6 +2747,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <div className="mb-3 flex flex-wrap gap-2" {...opsTabs.listProps}>
           {([
             ['usage', 'Usage'],
+            ['tokens', 'Tokens'],
             ['guardian', 'Guardian'],
             ['alerts', 'Alerts'],
             ['scheduler', 'Scheduled Tasks'],
@@ -2759,7 +2760,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
 
         <div {...opsTabs.getPanelProps(opsTab)}>
-        {opsTab === 'usage' && (!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : (
+        {(opsTab === 'usage' || opsTab === 'tokens') && (!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : (
           <div className="space-y-3 text-xs">
             {isLoadingOps ? <div className="text-gray-500">Loading ops telemetry...</div> : (
               <>

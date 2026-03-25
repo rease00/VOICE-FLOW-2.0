@@ -16,10 +16,15 @@ interface BlockScriptEditorProps {
   emotions: string[];
   speakerSuggestions?: string[];
   onChange: (nextValue: string) => void;
+  onRawBlurNormalize?: (source: string) => string;
+  maxChars?: number;
+  onOverflow?: (info: { maxChars: number }) => void;
   onModeChange: (mode: StudioEditorMode) => void;
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 const clampIndex = (index: number, length: number): number => (
@@ -40,10 +45,15 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
   emotions,
   speakerSuggestions = [],
   onChange,
+  onRawBlurNormalize,
+  maxChars,
+  onOverflow,
   onModeChange,
   placeholder = 'Write your script here...',
   className = '',
   disabled = false,
+  isFullscreen: _isFullscreen = false,
+  onToggleFullscreen,
 }) => {
   const [blocks, setBlocks] = useState<ScriptBlock[]>(() => {
     const parsed = parseScriptToBlocks(value);
@@ -83,6 +93,24 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
     const nextScript = serializeBlocksToScript(normalized);
     lastSerializedRef.current = nextScript;
     onChange(nextScript);
+  };
+
+  const handleRawChange = (nextValue: string) => {
+    const maxCharsLimit = Math.max(0, Number(maxChars || 0));
+    if (maxCharsLimit > 0 && nextValue.length > maxCharsLimit) {
+      onOverflow?.({ maxChars: maxCharsLimit });
+      onChange(nextValue.slice(0, maxCharsLimit));
+      return;
+    }
+    onChange(nextValue);
+  };
+
+  const handleRawBlur = () => {
+    if (!onRawBlurNormalize) return;
+    const normalized = onRawBlurNormalize(value);
+    if (normalized !== value) {
+      onChange(normalized);
+    }
   };
 
   const updateBlock = (blockId: string, patch: Partial<ScriptBlock>) => {
@@ -222,7 +250,8 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
       {mode === 'raw' ? (
         <textarea
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => handleRawChange(event.target.value)}
+          onBlur={handleRawBlur}
           disabled={disabled}
           placeholder={placeholder}
           className={`vf-studio-raw-editor custom-scrollbar flex-1 resize-none border-0 bg-transparent px-5 py-4 text-base outline-none ${

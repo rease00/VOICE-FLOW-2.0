@@ -68,7 +68,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
         heading: '4. Acceptable use',
         paragraphs: [
           'You may not use VoiceFlow for unlawful, infringing, deceptive, abusive, or harmful activity.',
-          'You may not attempt to bypass limits, extract other usersí data, reverse engineer protected systems, or disrupt platform availability.',
+          'You may not attempt to bypass limits, extract other users‚Äô data, reverse engineer protected systems, or disrupt platform availability.',
         ],
       },
       {
@@ -95,7 +95,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '8. Disclaimer and liability limits',
         paragraphs: [
-          'VoiceFlow is provided on an ìas availableî basis without warranties of uninterrupted operation or specific commercial outcomes.',
+          'VoiceFlow is provided on an ‚Äúas available‚Äù basis without warranties of uninterrupted operation or specific commercial outcomes.',
           'To the maximum extent allowed by law, VoiceFlow is not liable for indirect, consequential, special, or punitive damages.',
         ],
       },

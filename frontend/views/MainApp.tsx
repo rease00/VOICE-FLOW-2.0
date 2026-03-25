@@ -1,3 +1,4 @@
+'use client';
 
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
@@ -869,13 +870,22 @@ const readPositiveIntEnv = (value: unknown, fallback: number): number => {
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
 };
-const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 1000);
-const RUNTIME_STATUS_LATENCY_TIMEOUT_MS = readPositiveIntEnv(
-    import.meta.env.VITE_RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
-    5000
+const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(
+  process.env.NEXT_PUBLIC_RUNTIME_STATUS_ACTIVE_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS,
+  1000
 );
-const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_COOLDOWN_POLL_MS, 30000);
-const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
+const RUNTIME_STATUS_LATENCY_TIMEOUT_MS = readPositiveIntEnv(
+  process.env.NEXT_PUBLIC_RUNTIME_STATUS_LATENCY_TIMEOUT_MS ?? process.env.VITE_RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
+  5000
+);
+const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(
+  process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_POLL_MS,
+  30000
+);
+const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(
+  process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_WINDOW_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS,
+  120000
+);
 const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 5000;
 const RUNTIME_STATUS_LEADER_LEASE_MS = 20000;
 
@@ -3770,17 +3780,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       window.addEventListener('keydown', handleFullscreenEscape, true);
       return () => {
           window.removeEventListener('keydown', handleFullscreenEscape, true);
-      };
-  }, [isStudioEditorFullscreen]);
-  useEffect(() => {
-      if (typeof document === 'undefined' || !isStudioEditorFullscreen) return;
-      const prevBodyOverflow = document.body.style.overflow;
-      const prevHtmlOverflow = document.documentElement.style.overflow;
-      document.body.style.overflow = 'hidden';
-      document.documentElement.style.overflow = 'hidden';
-      return () => {
-          document.body.style.overflow = prevBodyOverflow;
-          document.documentElement.style.overflow = prevHtmlOverflow;
       };
   }, [isStudioEditorFullscreen]);
   useEffect(() => {
@@ -7946,15 +7945,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
     return (
     <aside
-      className={`vf-sidebar-shell fixed inset-y-0 left-0 z-[56] xl:z-40 w-72 max-w-[90vw] ${
+      className={`vf-sidebar-shell fixed inset-y-0 left-0 z-[52] w-72 max-w-[90vw] ${
         isDesktopCompact ? 'xl:w-[4.5rem]' : 'xl:w-64'
-      } transform transition-all duration-300 xl:translate-x-0 ${
+      } transform transition-all duration-300 xl:sticky xl:inset-y-auto xl:top-0 xl:z-20 xl:h-[100dvh] xl:translate-x-0 ${
         isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
       } ${
         isDarkUi
           ? 'border-r border-slate-800 bg-slate-950/92 shadow-[0_24px_56px_rgba(2,6,23,0.72)]'
           : 'border-r border-gray-200 bg-white/95 shadow-2xl md:shadow-xl'
-      } flex h-full flex-col overflow-visible backdrop-blur-xl`}
+      } flex h-full flex-col overflow-hidden backdrop-blur-xl`}
     >
       <div
         className={`vf-sidebar-brand flex items-center border-b ${isDesktopCompact ? 'justify-center px-2 py-4' : 'gap-3 px-5 py-5'} ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}
@@ -8564,11 +8563,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const usesPhoneStudioDock = isStudioWorkspaceTab && isPhone;
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
   const shouldHideAssistantForReader = activeTab === Tab.READER;
-  const isDesktopCompactSidebar = isDesktop && sidebarMode === 'compact';
-  const mainDesktopPaddingClass = isDesktopCompactSidebar ? 'xl:pl-[4.5rem]' : 'xl:pl-64';
-  const topbarDesktopOffsetClass = isDesktopCompactSidebar
-    ? 'xl:left-[calc(4.5rem+0.75rem)]'
-    : 'xl:left-[calc(16rem+0.75rem)]';
   const studioMainSpacingClass = isPhone ? 'space-y-3' : 'space-y-4';
   const studioEditorHeightClass = isPhone
     ? 'min-h-[20.5rem] h-[min(34.5rem,calc(100dvh-13rem))]'
@@ -8584,7 +8578,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           : 'pb-52'
       : 'pb-36';
   const workspaceScrollFrameClass =
-    `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`;
+    `vf-main-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 md:px-8 ${studioScrollPaddingClass}`;
   const studioFloatingDockWidthClass = isDesktop
     ? 'w-[clamp(17rem,28vw,20.25rem)] max-w-[calc(100vw-2rem)]'
     : 'w-[clamp(15.5rem,31vw,18.25rem)] max-w-[calc(100vw-2rem)]';
@@ -8611,27 +8605,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const shouldRenderFloatingAssistant = !shouldHideAssistantForReader && (showFloatingAssistantFab || isChatOpen);
 
   return (
-    <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
+    <div className={`relative h-[100dvh] min-h-screen overflow-hidden vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
       <div className="vf-live-wallpaper" aria-hidden />
-      <div className={`vf-app-shell flex min-h-screen bg-transparent font-sans text-gray-900 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
-      {/* Mobile Overlay */}
-      {isMobileMenuOpen && (
-        <button
-          type="button"
-          className="vf-scrim vf-scrim--sheet fixed inset-0 z-[55] xl:hidden"
-          onClick={() => setIsMobileMenuOpen(false)}
-          aria-label="Close mobile menu"
-        />
-      )}
-      
-      {/* Sidebar Navigation */}
-      <Sidebar />
-      
-      {/* Main Content */}
-      <main className={`flex-1 flex flex-col relative h-screen overflow-hidden transition-all ${mainDesktopPaddingClass}`}>
+      <div className={`vf-app-shell flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent font-sans text-gray-900 xl:grid xl:grid-cols-[auto_minmax(0,1fr)] xl:gap-4 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
+        {/* Mobile Overlay */}
+        {isMobileMenuOpen && (
+          <button
+            type="button"
+            className="vf-scrim vf-scrim--sheet fixed inset-0 z-[55] xl:hidden"
+            onClick={() => setIsMobileMenuOpen(false)}
+            aria-label="Close mobile menu"
+          />
+        )}
+
+        {/* Sidebar Navigation */}
+        <Sidebar />
+
+        {/* Main Content */}
+        <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden transition-all">
         
         {/* Floating Top Bar */}
-        <header className={`vf-topbar vf-topbar-shell fixed top-2 left-2 right-2 ${topbarDesktopOffsetClass} xl:right-3 z-[45] h-14 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
+        <header className={`vf-topbar vf-topbar-shell relative z-[25] mx-2 mt-2 h-14 shrink-0 rounded-2xl border backdrop-blur-2xl transition-all duration-300 hover:-translate-y-0.5 ${
           resolvedTheme === 'dark'
             ? 'border-slate-700/80 bg-slate-950/82 shadow-[0_18px_38px_rgba(2,6,23,0.72)]'
             : 'border-white/70 bg-white/85 shadow-[0_18px_38px_rgba(15,23,42,0.14)]'
@@ -8689,7 +8683,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                      <EngineRuntimeStrip
                        engineOrder={ENGINE_ORDER}
                        statuses={ttsRuntimeStatus}
-                       telemetry={selectedEngineTelemetry[settings.engine] || createSelectedEngineTelemetry()}
                        accessState={ttsAccessState}
                        activeEngine={settings.engine}
                        switchingEngine={engineSwitchInProgress}
@@ -8795,7 +8788,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`vf-main-scroll flex-1 studio-scrollbar relative ${workspaceScrollFrameClass}`}
+          className={`studio-scrollbar relative ${workspaceScrollFrameClass}`}
         >
             <div className={`mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
                 

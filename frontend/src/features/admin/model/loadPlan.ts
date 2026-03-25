@@ -1,6 +1,6 @@
 import type { AdminMainTab } from './tabs';
 
-export type OpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
+export type OpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 
 export type AdminDataSection =
   | 'users'
@@ -29,6 +29,7 @@ const ADMIN_MAIN_TAB_SECTIONS: Record<AdminMainTab, readonly AdminDataSection[]>
 
 const ADMIN_OPS_TAB_SECTIONS: Record<OpsTab, readonly AdminDataSection[]> = {
   usage: ['ops'],
+  tokens: ['ops'],
   guardian: ['ops'],
   alerts: ['alerts'],
   scheduler: ['scheduler'],

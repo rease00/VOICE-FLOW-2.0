@@ -1,3 +1,4 @@
+'use client';
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, Mail, User } from 'lucide-react';
 import { AppScreen } from '../types';
@@ -40,7 +41,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const firebaseIssue = !isFirebaseConfigured
-    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set VITE_FIREBASE_* and restart frontend.')
+    ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart frontend.')
     : '';
   const disableEmailAuthSubmit = Boolean(firebaseIssue);
   const disableOAuthAuthSubmit = Boolean(firebaseIssue);

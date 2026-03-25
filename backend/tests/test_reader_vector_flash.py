@@ -32,9 +32,9 @@ def test_reader_uses_vector_flash_unified_tts_and_can_export(monkeypatch) -> Non
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "_reader_require_legal_ack", lambda _uid: None)
     monkeypatch.setattr(
-        backend_app._UNIFIED_TTS_SERVICE.provider_client,
-        "synthesize_chunk",
-        lambda session, chunk, *, config: (_make_test_wav(), "audio/wav", {"seq": chunk.seq, "engine": session.engine}),
+        backend_app,
+        "_tts_v2_synthesize_chunk",
+        lambda payload, text, lane_id: backend_app.TtsV2SynthChunk(audio=_make_test_wav(), media_type="audio/wav", headers={"lane": str(lane_id)}),
     )
 
     client = TestClient(backend_app.app)
@@ -79,10 +79,11 @@ def test_reader_uses_vector_flash_unified_tts_and_can_export(monkeypatch) -> Non
     assert windows
     first_window = windows[0]
     assert session_payload["audioEngine"] == "tts_hd"
-    assert session_payload["billing"]["engine"] == "NEURAL2"
-    assert session_payload["billing"]["modelRouting"]["primary"] == "gemini-2.5-flash-tts"
+    assert str(session_payload["billing"]["modelRouting"]["primary"] or "").startswith("gemini-2.5-flash")
     assert str((first_window.get("job") or {}).get("engine") or "") == "NEURAL2"
-    assert str((first_window.get("job") or {}).get("downloadUrl") or "").startswith("/tts/sessions/")
+    download_url = str((first_window.get("job") or {}).get("downloadUrl") or "")
+    assert download_url.startswith("/tts/v2/jobs/")
+    assert not download_url.startswith("/tts/sessions/")
 
     export_response = client.get(f"/reader/sessions/{session_id}/export", headers=headers)
     assert export_response.status_code == 200

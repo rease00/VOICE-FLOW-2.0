@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { requiresAuthenticatedScreen, resolveScreenFromSearch } from '../src/app/router/ScreenRouter';
+import { requiresAuthenticatedScreen, resolveScreenFromSearch } from '../src/app/router/screenRouting';
 import { AppScreen } from '../src/entities/contracts';
 
 describe('requiresAuthenticatedScreen', () => {

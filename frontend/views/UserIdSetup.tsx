@@ -1,3 +1,4 @@
+'use client';
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, ArrowRight, User } from 'lucide-react';
 import { AppScreen } from '../types';

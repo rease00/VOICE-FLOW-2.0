@@ -282,6 +282,7 @@ export type StudioQueueItemStatus =
   | 'queued'
   | 'running'
   | 'completed'
+  | 'cooldown'
   | 'failed'
   | 'cancelled';
 
@@ -295,6 +296,11 @@ export interface StudioQueueItem {
   jobId?: string | undefined;
   audioCacheKey?: string | undefined;
   error?: string | undefined;
+  cooldownUntil?: number | undefined;
+  startedAt?: number | undefined;
+  firstAudioAt?: number | undefined;
+  timeToFirstAudioMs?: number | undefined;
+  totalGenerationMs?: number | undefined;
   settingsSnapshot: GenerationSettings;
   createdAt: number;
   completedAt?: number | undefined;
@@ -368,8 +374,6 @@ export interface UserWalletStats {
   vffBalance: number;
   paidVfBalance: number;
   spendableNowByEngine: Record<GenerationSettings['engine'], number>;
-  adClaimsToday: number;
-  adClaimsDailyLimit: number;
   vffMonthKey?: string | undefined;
 }
 
@@ -383,6 +387,7 @@ export interface UserStats {
   limits?: {
     maxCharsPerGeneration: number;
     allowedEngines: GenerationSettings['engine'][];
+    tokenPackDiscountPercent?: number | undefined;
   };
   features?: {
     earlyAccess: boolean;
@@ -459,7 +464,6 @@ export interface UserContextType {
   deleteDraft: (id: string) => void;
   showSubscriptionModal: boolean;
   setShowSubscriptionModal: (show: boolean) => void;
-  watchAd: () => Promise<void>;
   recordTtsUsage: (engine: GenerationSettings['engine'], charCount: number) => void;
 
   characterLibrary: CharacterProfile[];
@@ -817,6 +821,7 @@ export interface ReaderAudioWindow {
   status?: string;
   purged?: boolean;
   exported?: boolean;
+  lowConfidence?: boolean;
   jobId?: string;
   job?: {
     jobId?: string;
@@ -855,6 +860,7 @@ export interface ReaderPanelManifest {
   audioJobId?: string;
   audioStatus?: string;
   purged?: boolean;
+  lowConfidence?: boolean;
   audioJob?: {
     jobId?: string;
     status?: string;
@@ -871,6 +877,7 @@ export interface ReaderRestoreState {
   activeItemIndex: number;
   activeUnitId?: string;
   viewportAnchor?: string;
+  activeReaderTab?: string;
   updatedAt?: string;
 }
 
@@ -925,6 +932,7 @@ export interface ReaderSession {
   deleteAtMs: number;
   warningActive: boolean;
   savepointDownloadUrl: string;
+  lowConfidence?: boolean;
   billing: {
     vfPerChar: number;
     rule: string;

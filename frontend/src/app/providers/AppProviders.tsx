@@ -1,3 +1,4 @@
+'use client';
 import React from 'react';
 import { UserProvider } from '../../features/auth/context/UserContext';
 import { NotificationProvider } from '../../shared/notifications/NotificationProvider';

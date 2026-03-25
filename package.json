@@ -9,6 +9,8 @@
     "start:frontend": "npm run frontend -- dev:ui",
     "start:backend": "npm run backend -- services:bootstrap",
     "start:backend:gpu": "npm run backend -- services:bootstrap:gpu",
+    "cloudflare:build": "npm run frontend -- cloudflare:build",
+    "cloudflare:deploy": "npm run frontend -- cloudflare:deploy",
     "dev": "npm --prefix backend run dev-all",
     "dev:ui": "npm --prefix frontend run dev:ui",
     "build": "npm --prefix frontend run build",

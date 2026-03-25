@@ -11,6 +11,7 @@ const repoRoot = path.resolve(frontendDir, '..');
 const toPosix = (value) => value.split(path.sep).join('/');
 const relativeToRoot = (absolutePath) => toPosix(path.relative(repoRoot, absolutePath));
 const exists = (absolutePath) => fs.existsSync(absolutePath);
+const hasChildren = (absolutePath) => exists(absolutePath) && fs.readdirSync(absolutePath).length > 0;
 
 const violations = [];
 
@@ -24,24 +25,34 @@ if (!exists(requiredFrontendPackage)) {
 }
 
 const forbiddenStaticTargets = [
-  { absolutePath: path.join(repoRoot, 'dist'), reason: 'stale alternate frontend output is forbidden' },
-  { absolutePath: path.join(frontendDir, 'app'), reason: 'Next.js app directory is forbidden in the Vite frontend' },
-  { absolutePath: path.join(frontendDir, 'next-env.d.ts'), reason: 'Next.js environment file is forbidden in the Vite frontend' },
-  { absolutePath: path.join(frontendDir, 'next.config.js'), reason: 'Next.js config is forbidden in the Vite frontend' },
-  { absolutePath: path.join(frontendDir, 'next.config.mjs'), reason: 'Next.js config is forbidden in the Vite frontend' },
-  { absolutePath: path.join(frontendDir, 'next.config.cjs'), reason: 'Next.js config is forbidden in the Vite frontend' },
-  { absolutePath: path.join(frontendDir, 'next.config.ts'), reason: 'Next.js config is forbidden in the Vite frontend' },
+  { absolutePath: path.join(frontendDir, 'index.html'), reason: 'Vite HTML entrypoint must not remain in the Next frontend' },
+  { absolutePath: path.join(frontendDir, 'index.tsx'), reason: 'Vite root entrypoint must not remain in the Next frontend' },
+  { absolutePath: path.join(frontendDir, 'App.tsx'), reason: 'Vite app shell entrypoint must not remain in the Next frontend' },
+  { absolutePath: path.join(frontendDir, 'vite.config.ts'), reason: 'Vite config must not remain in the Next frontend' },
+  { absolutePath: path.join(frontendDir, 'src', 'main.tsx'), reason: 'Vite bootstrap entrypoint must not remain in the Next frontend' },
+  { absolutePath: path.join(frontendDir, 'src', 'pages'), reason: 'page re-export shims must be removed', requireContents: true },
+  { absolutePath: path.join(frontendDir, 'app', '(workspace)'), reason: 'legacy workspace route tree must be removed', requireContents: true },
 ];
 
 for (const target of forbiddenStaticTargets) {
-  if (exists(target.absolutePath)) {
+  if (target.requireContents ? hasChildren(target.absolutePath) : exists(target.absolutePath)) {
     addViolation(relativeToRoot(target.absolutePath), target.reason);
   }
 }
 
-for (const entry of fs.readdirSync(frontendDir, { withFileTypes: true })) {
-  if (!entry.name.startsWith('.next')) continue;
-  addViolation(`frontend/${entry.name}`, 'Next.js build artifact is forbidden in the Vite frontend');
+const requiredNextTargets = [
+  { absolutePath: path.join(frontendDir, 'app'), reason: 'missing Next.js app directory' },
+  { absolutePath: path.join(frontendDir, 'app', 'layout.tsx'), reason: 'missing Next.js root layout' },
+  { absolutePath: path.join(frontendDir, 'app', 'globals.css'), reason: 'missing Next.js global stylesheet' },
+  { absolutePath: path.join(frontendDir, 'app', 'api', 'backend', 'route.ts'), reason: 'missing backend proxy route' },
+  { absolutePath: path.join(frontendDir, 'next-env.d.ts'), reason: 'missing Next.js environment declarations' },
+  { absolutePath: path.join(frontendDir, 'next.config.mjs'), reason: 'missing Next.js config' },
+];
+
+for (const target of requiredNextTargets) {
+  if (!exists(target.absolutePath)) {
+    addViolation(relativeToRoot(target.absolutePath), target.reason);
+  }
 }
 
 const allowedTopLevelPackages = new Set(['backend', 'frontend', 'node_modules']);
@@ -67,4 +78,4 @@ if (violations.length > 0) {
 
 console.log('[verify-single-frontend] OK');
 console.log('- primary frontend: frontend/');
-console.log('- framework lock: Vite only');
+console.log('- framework lock: Next.js App Router');

@@ -7,7 +7,7 @@ const PLAYWRIGHT_OUTPUT_ROOT = '../tmp_dir/playwright/frontend-smoke';
 
 export default defineConfig({
   testDir: './tests/smoke',
-  globalSetup: './tests/smoke/globalSetup.ts',
+  testMatch: /app\.smoke\.spec\.ts$/,
   outputDir: `${PLAYWRIGHT_OUTPUT_ROOT}/test-results`,
   timeout: 30_000,
   expect: {
@@ -36,7 +36,7 @@ export default defineConfig({
     { name: 'chromium-mobile', use: { ...devices['Pixel 5'] } },
   ],
   webServer: {
-    command: `npm run dev -- --host 127.0.0.1 --port ${PORT}`,
+    command: `npm run start -- -H 127.0.0.1 -p ${PORT}`,
     port: PORT,
     timeout: 120_000,
     // The smoke suite uses a dedicated port, so reuse is safe across repeated local runs.

@@ -252,7 +252,7 @@ export const pollTtsGatewayJobForAudio = async (
       } else {
         for (const rawChunk of chunks) {
           if (!rawChunk || typeof rawChunk !== 'object') continue;
-          const rawChunkAny = rawChunk as Record<string, unknown>;
+          const rawChunkAny = rawChunk as unknown as Record<string, unknown>;
           const index = Number(
             rawChunkAny.index ??
             rawChunkAny.serial_index ??
@@ -300,7 +300,7 @@ export const pollTtsGatewayJobForAudio = async (
           chunkCursor = Math.max(chunkCursor, Math.round(responseChunkCursorNext));
         } else if (chunks.length > 0) {
           const maxIndex = chunks.reduce((max, chunk) => {
-            const chunkAny = (chunk && typeof chunk === 'object') ? chunk as Record<string, unknown> : {};
+            const chunkAny = (chunk && typeof chunk === 'object') ? (chunk as unknown as Record<string, unknown>) : {};
             const nextIndex = Number(
               chunkAny.index ??
               chunkAny.serial_index ??

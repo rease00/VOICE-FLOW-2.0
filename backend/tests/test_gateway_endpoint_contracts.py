@@ -166,6 +166,7 @@ def test_frontend_gateway_routes_are_registered() -> None:
         ("GET", "/tts/engines/voices"),
         ("GET", "/tts/voice-mapping/catalog"),
         ("GET", "/runtime/logs/tail"),
+        ("POST", "/tts/v2/sessions"),
         ("POST", "/tts/v2/jobs"),
         ("GET", "/tts/v2/jobs/{job_id}"),
         ("POST", "/tts/v2/jobs/{job_id}/cancel"),
@@ -200,6 +201,32 @@ def test_legacy_tts_routes_return_410() -> None:
     for method, path in routes:
         response = client.request(method, path, headers={"x-dev-uid": "legacy_tts"})
         assert response.status_code == 410
+
+
+def test_phase2_startup_does_not_start_legacy_tts_workers(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_SERVICE_IS_API", False)
+    monkeypatch.setattr(backend_app, "VF_SERVICE_IS_WORKER", True)
+    monkeypatch.setattr(backend_app, "_reader_session_load_from_disk", lambda: None)
+    monkeypatch.setattr(backend_app, "_reader_resume_remote_comic_hydration_jobs", lambda: None)
+    monkeypatch.setattr(backend_app, "_ensure_scheduler_started", lambda: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_ensure_tts_workers_started",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy worker bootstrap should be disabled in cutover")),
+    )
+
+    started = {"count": 0}
+
+    class _DummyThread:
+        def __init__(self, *args, **kwargs):
+            _ = args, kwargs
+
+        def start(self):
+            started["count"] += 1
+
+    monkeypatch.setattr(backend_app.threading, "Thread", _DummyThread)
+    backend_app._phase2_startup()
+    assert started["count"] == 1
 
 
 def test_removed_podcast_and_lab_routes_return_404() -> None:

@@ -2,13 +2,19 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Pause, Download, RefreshCw, SkipBack, SkipForward, Loader2 } from 'lucide-react';
 import { Visualizer } from './Visualizer';
 import { shouldAutoplayFirstLiveChunk } from './audioPlayerAutoplay';
+import {
+  resolveSequentialLiveChunkIndexes,
+  shouldHoldLiveElapsedBetweenChunks,
+  shouldShowElapsedOnlyLiveTimeline,
+} from './audioPlayerLiveHelpers';
+import type { PlayerSourceType } from './audioPlayerLiveHelpers';
 
 interface LiveAudioChunk {
   jobId: string;
   index: number;
   contentType?: string;
   durationMs?: number;
-  audioBase64: string;
+  audioBase64?: string;
 }
 
 interface AudioPlayerProps {
@@ -24,8 +30,6 @@ interface AudioPlayerProps {
   onReset: () => void;
 }
 
-export type PlayerSourceType = 'none' | 'live' | 'final';
-
 interface LiveQueueItem {
   key: string;
   index: number;
@@ -33,49 +37,13 @@ interface LiveQueueItem {
   durationSec: number;
 }
 
-export const shouldShowElapsedOnlyLiveTimeline = (input: {
-  isLiveMode: boolean;
-  activeSourceType: PlayerSourceType;
-  audioUrl: string | null;
-}): boolean => {
-  const hasFinalSource = input.activeSourceType === 'final' && Boolean(input.audioUrl);
-  return input.isLiveMode && !hasFinalSource;
-};
-
-export const shouldHoldLiveElapsedBetweenChunks = (input: {
-  isGenerating: boolean;
-  isLiveStreaming: boolean;
-  hasFinalAudio: boolean;
-}): boolean => {
-  if (input.hasFinalAudio) return false;
-  return Boolean(input.isGenerating || input.isLiveStreaming);
-};
-
-export const resolveSequentialLiveChunkIndexes = (input: {
-  pendingIndexes: Iterable<number>;
-  nextIndex: number;
-}): { readyIndexes: number[]; nextIndex: number } => {
-  const pendingSet = new Set<number>();
-  for (const rawIndex of input.pendingIndexes) {
-    const safeIndex = Math.max(0, Math.floor(Number(rawIndex) || 0));
-    pendingSet.add(safeIndex);
-  }
-  const readyIndexes: number[] = [];
-  let cursor = Math.max(0, Math.floor(Number(input.nextIndex) || 0));
-  while (pendingSet.has(cursor)) {
-    readyIndexes.push(cursor);
-    cursor += 1;
-  }
-  return { readyIndexes, nextIndex: cursor };
-};
-
 const readUiMotionLevel = (): 'off' | 'balanced' | 'rich' => {
   if (typeof document === 'undefined') return 'off';
   const value = document.body?.dataset.motion;
   return value === 'rich' || value === 'balanced' || value === 'off' ? value : 'off';
 };
 
-const base64ToBlobUrl = (audioBase64: string, contentType: string): string | null => {
+const base64ToBlobUrl = (audioBase64?: string, contentType?: string): string | null => {
   const safe = String(audioBase64 || '').trim();
   if (!safe) return null;
   try {

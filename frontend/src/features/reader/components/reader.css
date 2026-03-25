@@ -22,7 +22,9 @@
 }
 
 .vf-reader-v2-shell {
-  min-height: calc(100vh - 9rem);
+  position: relative;
+  isolation: isolate;
+  min-height: 0;
   width: 100%;
   overflow-x: clip;
   padding: 0.9rem 0.95rem 10.5rem;
@@ -653,7 +655,7 @@
 .vf-reader-v2-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 36;
+  z-index: 60;
   background: rgba(4, 10, 24, 0.62);
   display: grid;
   place-items: center;
@@ -787,7 +789,7 @@
   left: 0.7rem;
   right: 0.7rem;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 0.7rem);
-  z-index: 28;
+  z-index: 32;
   padding: 0.54rem;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

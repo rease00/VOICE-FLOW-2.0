@@ -217,7 +217,7 @@ export const MarketingLanding: React.FC = () => {
       <footer className="relative z-10 border-t border-white/80 bg-white/75">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-4 py-6 sm:px-6 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-gray-600">
-            © {new Date().getFullYear()} VoiceFlow. AI voice platform for creators.
+            Â© {new Date().getFullYear()} VoiceFlow. AI voice platform for creators.
           </p>
           <LegalLinks />
         </div>

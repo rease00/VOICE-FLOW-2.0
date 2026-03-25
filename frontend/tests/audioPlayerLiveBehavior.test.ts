@@ -3,7 +3,7 @@ import {
   resolveSequentialLiveChunkIndexes,
   shouldHoldLiveElapsedBetweenChunks,
   shouldShowElapsedOnlyLiveTimeline,
-} from '../components/AudioPlayer';
+} from '../components/audioPlayerLiveHelpers';
 
 describe('AudioPlayer live behavior helpers', () => {
   it('holds elapsed time while live generation is still active between chunks', () => {

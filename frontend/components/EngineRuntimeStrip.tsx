@@ -4,7 +4,7 @@ import { getEngineCompactLabel, getEngineDisplayName } from '../services/engineD
 import { EngineLogo } from './EngineLogo';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 
-type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
+type EngineRuntimeState = 'checking' | 'starting' | 'warming' | 'online' | 'offline' | 'not_configured' | 'standby';
 
 interface EngineRuntimeStatus {
   state: EngineRuntimeState;
@@ -25,7 +25,7 @@ interface EngineRuntimeStripProps {
 const getRuntimeStateLabel = (state: EngineRuntimeState): string => {
   if (state === 'online') return 'Online';
   if (state === 'offline') return 'Offline';
-  if (state === 'starting') return 'Starting';
+  if (state === 'starting' || state === 'warming') return 'Starting';
   if (state === 'standby') return 'Standby';
   if (state === 'not_configured') return 'Not Set';
   return 'Checking';
@@ -34,7 +34,7 @@ const getRuntimeStateLabel = (state: EngineRuntimeState): string => {
 const getIndicatorTone = (state: EngineRuntimeState): 'green' | 'orange' | 'red' => {
   if (state === 'online') return 'green';
   if (state === 'offline' || state === 'not_configured') return 'red';
-  if (state === 'starting' || state === 'checking' || state === 'standby') return 'orange';
+  if (state === 'starting' || state === 'warming' || state === 'checking' || state === 'standby') return 'orange';
   return 'red';
 };
 

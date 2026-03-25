@@ -147,8 +147,12 @@ export const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'media
   return toBaseUrl(settings.mediaBackendUrl);
 };
 
-export const checkMediaBackendHealth = async (baseUrl: string): Promise<MediaBackendHealth> => {
-  return requestPublicJson<MediaBackendHealth>('/health', undefined, { baseUrl: toBaseUrl(baseUrl) });
+export const checkMediaBackendHealth = async (
+  baseUrl: string,
+  options?: { forceRefresh?: boolean }
+): Promise<MediaBackendHealth> => {
+  const cacheBust = options?.forceRefresh ? `?t=${Date.now().toString(36)}` : '';
+  return requestPublicJson<MediaBackendHealth>(`/health${cacheBust}`, undefined, { baseUrl: toBaseUrl(baseUrl) });
 };
 
 export const listVoiceTransferModels = async (baseUrl: string): Promise<{ models: string[]; currentModel?: string }> => {

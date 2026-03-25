@@ -5,9 +5,13 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 export default [
   {
     ignores: [
+      '.next/**',
+      '.open-next/**',
+      'artifacts/**',
       'dist/**',
       'node_modules/**',
       'playwright-report/**',
+      'tmp_dir/**',
       'test-results/**',
       'coverage/**',
     ],
@@ -32,6 +36,12 @@ export default [
       'react-hooks/set-state-in-effect': 'off',
       'react-hooks/purity': 'off',
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+    },
+  },
+  {
+    files: ['app/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
 ];

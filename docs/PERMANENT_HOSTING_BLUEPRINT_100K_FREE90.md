@@ -40,12 +40,12 @@ The zero-cash plan can get you to launch and early growth. It cannot make heavy 
 
 ## Repo-Grounded Findings
 
-### 1. Frontend is already Cloudflare Pages ready
+### 1. Frontend is ready for Cloudflare Workers/OpenNext
 
-- `frontend/wrangler.jsonc` already points Pages to `dist`
-- `README.md` already documents a Cloudflare Pages deploy flow
+- `frontend/wrangler.jsonc` already points Workers/OpenNext at `.open-next/worker.js`
+- `README.md` already documents a Cloudflare Workers deploy flow
 
-This means the frontend should stay on Cloudflare Pages Free from day one.
+This means the frontend should deploy through Cloudflare Workers from day one.
 
 ### 2. The backend is already split by workload type
 
@@ -108,7 +108,7 @@ Blueprint implication:
 
 ```text
 Users
-  -> Cloudflare Pages frontend
+  -> Cloudflare Workers frontend
   -> Cloud Run API
       -> Firebase Auth / Firestore
       -> Redis queue
@@ -166,7 +166,7 @@ This is the launch architecture I would actually use.
 
 | Component | Provider | Phase-1 Role | Reason |
 |---|---|---|---|
-| Frontend | Cloudflare Pages Free | permanent | already configured, cheap, stable |
+| Frontend | Cloudflare Workers + OpenNext | permanent | already configured, cheap, stable |
 | API | Cloud Run | permanent | bursty public HTTP |
 | Worker | Cloud Run | temporary-but-valid | repo requires a dedicated worker role |
 | Gemini runtime | Cloud Run + Vertex mode | permanent | lets paid fast lane consume Google Cloud credits |
@@ -254,8 +254,8 @@ These are the launch rules I would enforce.
 
 Important:
 
-- if the product keeps ad rewards, the ad-reward VFF flow must be reduced or disabled
-- otherwise users can exceed the intended `10,000 VFF` free cap very quickly
+- do not add any refill path that bypasses the intended `10,000 VFF` free cap
+- otherwise users can exceed the intended free cap very quickly
 
 ### Paid base plan
 
@@ -402,7 +402,6 @@ These are the changes the project should eventually absorb to match this bluepri
 - lower the free-plan `monthlyVfLimit` from its current larger value to `1,000`
 - add a monthly free-user `VFF` grant of `10,000`
 - treat that `VFF` grant as a monthly allowance, not an unlimited refill path
-- reduce or disable ad-reward VFF if you want the monthly cap to mean anything
 
 ### 5. Artifact storage adapter
 
@@ -433,7 +432,7 @@ Track these from day one:
 
 The permanent answer is:
 
-- Cloudflare Pages for frontend
+- Cloudflare Workers for frontend
 - Cloud Run API permanently
 - Cloud Run Gemini runtime permanently
 - Dedicated worker permanently
@@ -451,7 +450,7 @@ If your top priority is:
 
 Then use:
 
-- Pages Free
+- Cloudflare Workers
 - Cloud Run
 - Vertex-backed Gemini
 - Upstash Free
@@ -471,7 +470,7 @@ These are the external rules this blueprint is based on as of `2026-03-11`:
 - Google Cloud Free Trial: `90` days and up to `$300` in welcome credits
 - Google states the welcome credit cannot be used for Gemini Developer API / AI Studio billing
 - Cloud Run has a free tier and request-based serverless billing
-- Cloudflare Pages Free is suitable for static frontend hosting
+- Cloudflare Workers is suitable for a dynamic Next.js frontend
 - Cloudflare R2 has a free allowance and is appropriate later for durable artifacts
 - Firebase pricing and Firestore/Auth limits are friendly for an early-stage launch
 - Upstash provides a free Redis tier for small workloads

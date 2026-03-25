@@ -32,23 +32,19 @@ describe('studio compact layout model', () => {
 
   it('computes credits action states for ad claim, token buy, and coupon redeem', () => {
     expect(getStudioCreditsActionState({
-      canClaimAdReward: false,
       isBuyingTokenPack: false,
       isRedeemingCoupon: false,
       couponCode: 'VF10',
     })).toEqual({
-      watchAdDisabled: true,
       buyTokenPackDisabled: false,
       redeemCouponDisabled: false,
     });
 
     expect(getStudioCreditsActionState({
-      canClaimAdReward: true,
       isBuyingTokenPack: true,
       isRedeemingCoupon: true,
       couponCode: '   ',
     })).toEqual({
-      watchAdDisabled: false,
       buyTokenPackDisabled: true,
       redeemCouponDisabled: true,
     });

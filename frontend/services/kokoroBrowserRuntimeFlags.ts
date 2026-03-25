@@ -1,3 +1,5 @@
+import { readEnvValue } from '../src/shared/runtime/env';
+
 const parseBooleanFlag = (value: unknown): boolean | undefined => {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return undefined;
@@ -36,14 +38,18 @@ export const assertBrowserKokoroExecutionSupported = (): void => {
   if (!gpu) {
     throw new Error('Browser Kokoro execution requires WebGPU support.');
   }
-  const envOverride = parseBooleanFlag(import.meta.env.VITE_ENABLE_BROWSER_KOKORO);
+  const envOverride = parseBooleanFlag(
+    readEnvValue(process.env.NEXT_PUBLIC_ENABLE_BROWSER_KOKORO, process.env.VITE_ENABLE_BROWSER_KOKORO)
+  );
   if (envOverride === false) {
     throw new Error('Browser Kokoro execution is disabled by configuration.');
   }
 };
 
 export const isBrowserKokoroExecutionEnabled = (): boolean => {
-  const envOverride = parseBooleanFlag(import.meta.env.VITE_ENABLE_BROWSER_KOKORO);
+  const envOverride = parseBooleanFlag(
+    readEnvValue(process.env.NEXT_PUBLIC_ENABLE_BROWSER_KOKORO, process.env.VITE_ENABLE_BROWSER_KOKORO)
+  );
   if (envOverride === false) return false;
   if (!hasBrowserKokoroRuntimeSupport()) return false;
   return envOverride ?? true;

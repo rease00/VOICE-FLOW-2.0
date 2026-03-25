@@ -1,7 +1,9 @@
 
 from __future__ import annotations
 
+import audioop
 import base64
+import math
 import os
 import re
 import sys
@@ -22,6 +24,39 @@ except Exception:  # pragma: no cover
 
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 TERMINAL = {"completed", "failed", "cancelled"}
+TURN_LINE_RE = re.compile(r"^\s*(?P<label>[^:]{1,120})\s*:\s*(?P<body>.+?)\s*$")
+LABEL_META_RE = re.compile(r"(?P<open>[\(\[])(?P<meta>[^()\[\]]{1,120})(?P<close>[\)\]])")
+PROTECTED_SPAN_RE = re.compile(r"<[^>\n]+>|\{\{[^{}\n]+\}\}|\[\[[^\]\n]+\]\]|\[[^\[\]\n]{1,120}\]")
+SENTINEL_PREFIX = "__VFPROT"
+DEFAULT_CONTIGUOUS_READY_MS = 4000
+MAX_CONTIGUOUS_READY_MS = 8000
+STARTUP_PRIORITY_CHUNK_COUNT = 4
+MAX_UPSTREAM_CALLS_MULTIPLIER = 2
+PUBLIC_ERROR_PATH_RE = re.compile(r"([A-Za-z]:\\|/[^ \n\t\r]{2,}|\\.json\b|\\|/)")
+PUBLIC_ERROR_SECRET_RE = re.compile(
+    r"(google_application_credentials|service[_ -]?account|private[_ -]?key|api[_ -]?key|provider[_ -]?api[_ -]?key|credential)",
+    re.IGNORECASE,
+)
+LANE_VERTEX_SLOT_BY_ID: dict[str, str] = {"L1": "slot_1", "L2": "slot_2", "L3": "slot_3"}
+REQUEST_SENSITIVE_KEYS = {
+    "apiKey",
+    "api_key",
+    "providerApiKey",
+    "provider_api_key",
+    "providerKey",
+    "provider_key",
+    "google_application_credentials",
+    "googleApplicationCredentials",
+    "vertexServiceAccountRef",
+    "vertex_service_account_ref",
+}
+REQUEST_SENSITIVE_SOURCE_POLICY_KEYS = {
+    "providerApiKey",
+    "provider_api_key",
+    "vertexServiceAccountRef",
+    "vertex_service_account_ref",
+    "selectedVertexSlotId",
+}
 SPLIT_PATTERNS = [
     re.compile(r"(?<=[.!?\u0964])\s+"),
     re.compile(r"\n{2,}"),
@@ -143,6 +178,15 @@ class Chunk:
     chunk_id: int
     unit_id: str
     text: str
+    speaker_id: str = ""
+    speaker_name: str = ""
+    speaker_profile_id: str = ""
+    emotion: str = "Neutral"
+    cue: str = ""
+    pause_policy: str = "default"
+    planned_text: str = ""
+    planned_bytes: int = 0
+    planned_ms: int = 0
     status: str = "queued"
     lane: str = ""
     duration_ms: int = 0
@@ -174,15 +218,37 @@ class Job:
     finished_at: int = 0
     cancel_requested: bool = False
     chunks: list[Chunk] = field(default_factory=list)
+    turn_nodes: list[dict[str, Any]] = field(default_factory=list)
     unit_lane: dict[str, str] = field(default_factory=dict)
+    speaker_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    planned_chunks: int = 0
+    upstream_call_budget: int = 0
+    contiguous_ready_target_ms: int = DEFAULT_CONTIGUOUS_READY_MS
+    contiguous_ready_ceiling_ms: int = MAX_CONTIGUOUS_READY_MS
     playable_chunks: int = 0
     playable_ms: int = 0
     next_required: int = 0
     result_path: str = ""
+    startup_phase_done: bool = False
     billing_chars: int = 0
     billing_tokens: int = 0
     upstream_calls: int = 0
     lock: threading.RLock = field(default_factory=threading.RLock)
+
+
+@dataclass(frozen=True)
+class TurnNode:
+    unit_id: str
+    dialogue_id: int
+    turn_id: int
+    text: str
+    speaker_id: str = ""
+    speaker_name: str = ""
+    speaker_profile_id: str = ""
+    emotion: str = "Neutral"
+    cue: str = ""
+    pause_policy: str = "default"
+    metadata: tuple[tuple[str, Any], ...] = ()
 
 SynthesizeFn = Callable[[dict[str, Any]], dict[str, Any]]
 TerminalFn = Callable[[Job], None]
@@ -212,9 +278,10 @@ def _split_for_target(text: str, target: int) -> list[str]:
         return []
     if len(value) <= target:
         return [value]
-    parts = [value]
+    protected, mapping = _protect_text_for_chunking(value)
+    parts = [protected]
     for pattern in SPLIT_PATTERNS:
-        trial = [part.strip() for part in pattern.split(value) if part.strip()]
+        trial = [part.strip() for part in pattern.split(protected) if part.strip()]
         if len(trial) > 1:
             parts = trial
             break
@@ -245,7 +312,255 @@ def _split_for_target(text: str, target: int) -> list[str]:
             current = part
     if current:
         out.append(current)
+    return [_restore_text_from_chunking(item, mapping) for item in out if item]
+
+
+def _normalize_wav_for_stitch(
+    audio: bytes,
+    *,
+    target_params: tuple[int, int, int] | None = None,
+    target_rms: int | None = None,
+) -> tuple[bytes, tuple[int, int, int], int]:
+    if not audio:
+        if target_params is None:
+            target_params = (1, 2, 24_000)
+        return b"", target_params, max(0, int(target_rms or 0))
+
+    with wave.open(BytesIO(audio), "rb") as handle:
+        channels = max(1, int(handle.getnchannels() or 1))
+        width = max(1, int(handle.getsampwidth() or 2))
+        rate = max(1, int(handle.getframerate() or 24_000))
+        frames = handle.readframes(int(handle.getnframes()))
+
+    target_channels, target_width, target_rate = target_params or (channels, width, rate)
+    if width != target_width:
+        frames = audioop.lin2lin(frames, width, target_width)
+        width = target_width
+    if channels != target_channels:
+        if channels == 1 and target_channels == 2:
+            frames = audioop.tostereo(frames, width, 1.0, 1.0)
+        elif channels == 2 and target_channels == 1:
+            frames = audioop.tomono(frames, width, 0.5, 0.5)
+        else:
+            raise RuntimeSynthesisError("Chunk WAV channels mismatch; strict stitch refused.", status_code=500)
+        channels = target_channels
+    if rate != target_rate:
+        frames, _ = audioop.ratecv(frames, width, channels, rate, target_rate, None)
+        rate = target_rate
+
+    rms = int(audioop.rms(frames, width) if frames else 0)
+    if target_rms and rms > 0:
+        gain = float(target_rms) / float(rms)
+        gain = max(0.5, min(2.0, gain))
+        frames = audioop.mul(frames, width, gain)
+        rms = int(audioop.rms(frames, width) if frames else 0)
+
+    out = BytesIO()
+    with wave.open(out, "wb") as wav_out:
+        wav_out.setnchannels(channels)
+        wav_out.setsampwidth(width)
+        wav_out.setframerate(rate)
+        wav_out.writeframes(frames)
+    return out.getvalue(), (channels, width, rate), rms
+
+
+def _protect_text_for_chunking(text: str) -> tuple[str, dict[str, str]]:
+    safe = str(text or "")
+    if not safe:
+        return "", {}
+    mapping: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"{SENTINEL_PREFIX}{len(mapping)}__"
+        mapping[token] = match.group(0)
+        return token
+
+    protected = PROTECTED_SPAN_RE.sub(_replace, safe)
+    return protected, mapping
+
+
+def _restore_text_from_chunking(text: str, mapping: dict[str, str]) -> str:
+    result = str(text or "")
+    for token, original in mapping.items():
+        result = result.replace(token, original)
+    return result
+
+
+def _normalize_token(value: Any, *, default: str = "") -> str:
+    token = str(value or "").strip()
+    return token if token else default
+
+
+def _normalize_profile_key(value: Any) -> str:
+    token = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip().lower())
+    return token.strip("_") or "speaker"
+
+
+def _sanitize_public_tts_error_text(value: Any, *, fallback: str = "TTS request failed.", max_len: int = 220) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return str(fallback or "TTS request failed.")
+    compact = " ".join(candidate.split())
+    if not compact:
+        return str(fallback or "TTS request failed.")
+    if PUBLIC_ERROR_SECRET_RE.search(compact) or PUBLIC_ERROR_PATH_RE.search(compact):
+        return str(fallback or "TTS request failed.")
+    if len(compact) > max(32, int(max_len)):
+        compact = compact[: max(32, int(max_len))].rstrip() + "..."
+    return compact
+
+
+def _sanitize_public_tts_error_detail(detail: Any, *, fallback: str = "TTS request failed.") -> Any:
+    if isinstance(detail, dict):
+        safe: dict[str, Any] = {}
+        error_text = _sanitize_public_tts_error_text(detail.get("error"), fallback=fallback, max_len=260)
+        safe["error"] = error_text
+        for key in ("reason", "status", "statusCode", "retryable"):
+            if key in detail:
+                safe[key] = detail.get(key)
+        for key in ("detail", "message", "cause"):
+            if key in detail:
+                safe[key] = _sanitize_public_tts_error_text(detail.get(key), fallback=error_text, max_len=260)
+        return safe
+    if isinstance(detail, list):
+        return [_sanitize_public_tts_error_detail(item, fallback=fallback) for item in detail[:8]]
+    return _sanitize_public_tts_error_text(detail, fallback=fallback, max_len=260)
+
+
+def _split_metadata_tokens(raw: str) -> tuple[str, str, str]:
+    token = str(raw or "").strip()
+    if not token:
+        return "", "", "default"
+    pieces = [part.strip() for part in re.split(r"[;,|]+", token) if part.strip()]
+    if not pieces:
+        return "", "", "default"
+    emotion = pieces[0]
+    cue = ", ".join(pieces[1:]).strip()
+    pause_policy = "default"
+    for part in pieces:
+        lowered = part.lower()
+        if lowered.startswith("pause="):
+            pause_policy = lowered.split("=", 1)[-1].strip() or "default"
+    return emotion, cue, pause_policy
+
+
+def _parse_label_metadata(label: str) -> tuple[str, str, str, str]:
+    speaker_name = str(label or "").strip()
+    if not speaker_name:
+        return "", "", "", "default"
+    meta_bits: list[str] = []
+    for match in LABEL_META_RE.finditer(speaker_name):
+        meta_bits.append(match.group("meta").strip())
+    cleaned = LABEL_META_RE.sub("", speaker_name).strip()
+    emotion = ""
+    cue = ""
+    pause_policy = "default"
+    for bit in meta_bits:
+        parsed_emotion, parsed_cue, parsed_pause = _split_metadata_tokens(bit)
+        if parsed_emotion and not emotion:
+            emotion = parsed_emotion
+        if parsed_cue:
+            cue = ", ".join(part for part in [cue, parsed_cue] if part).strip(", ").strip()
+        if parsed_pause != "default":
+            pause_policy = parsed_pause
+    return cleaned, emotion, cue, pause_policy
+
+
+def _speaker_profile_from_entry(entry: Any) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    speaker_name = _normalize_token(entry.get("speaker") or entry.get("speakerName") or entry.get("name"))
+    voice_id = _normalize_token(entry.get("voice_id") or entry.get("voiceId") or entry.get("voiceID") or entry.get("voice"))
+    voice_name = _normalize_token(entry.get("voiceName") or entry.get("voice_name"))
+    profile_id = _normalize_token(entry.get("profile_id") or entry.get("profileId") or entry.get("speakerProfileId"))
+    if not profile_id:
+        profile_id = _normalize_profile_key(speaker_name or voice_id or voice_name)
+    return {
+        "speaker": speaker_name,
+        "voice_id": voice_id,
+        "voice_name": voice_name,
+        "profile_id": profile_id,
+        "emotion": _normalize_token(entry.get("emotion"), default="Neutral") or "Neutral",
+        "style": _normalize_token(entry.get("style")),
+        "pace": _normalize_token(entry.get("pace")),
+        "tone": _normalize_token(entry.get("tone")),
+        "cue": _normalize_token(entry.get("cue") or entry.get("cueTags") or entry.get("cue_tags")),
+    }
+
+
+def _speaker_profile_index(raw_entries: Any) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw_entries, list):
+        return out
+    for entry in raw_entries:
+        profile = _speaker_profile_from_entry(entry)
+        if not profile:
+            continue
+        keys = {
+            _normalize_profile_key(profile.get("speaker")),
+            _normalize_profile_key(profile.get("profile_id")),
+            _normalize_profile_key(profile.get("voice_id")),
+            _normalize_profile_key(profile.get("voice_name")),
+        }
+        for key in keys:
+            if key:
+                out[key] = dict(profile)
     return out
+
+
+def _default_speaker_profile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    speaker_name = _normalize_token(payload.get("speaker") or payload.get("speakerName") or payload.get("voiceName"))
+    voice_id = _normalize_token(payload.get("voiceId") or payload.get("voice_id") or payload.get("voiceID"))
+    profile_id = _normalize_token(payload.get("speakerProfileId") or payload.get("profileId"))
+    if not profile_id:
+        profile_id = _normalize_profile_key(speaker_name or voice_id or "speaker")
+    return {
+        "speaker": speaker_name,
+        "voice_id": voice_id,
+        "voice_name": _normalize_token(payload.get("voiceName")),
+        "profile_id": profile_id,
+        "emotion": _normalize_token(payload.get("emotion"), default="Neutral") or "Neutral",
+        "style": _normalize_token(payload.get("style")),
+        "pace": _normalize_token(payload.get("pace")),
+        "tone": _normalize_token(payload.get("tone")),
+        "cue": _normalize_token(payload.get("cue") or payload.get("cueTags") or payload.get("cue_tags")),
+    }
+
+
+def _estimate_chunk_duration_ms(text: str) -> int:
+    clean = re.sub(r"\s+", " ", str(text or "").strip())
+    if not clean:
+        return 0
+    return max(450, min(8_000, int(len(clean) * 30)))
+
+
+def _estimate_upstream_call_budget(planned_chunks: int) -> int:
+    safe_chunks = max(1, int(planned_chunks))
+    slack = max(2, (safe_chunks + 3) // 4)
+    return min(safe_chunks * MAX_UPSTREAM_CALLS_MULTIPLIER, safe_chunks + slack)
+
+
+def _strip_turn_metadata(text: str) -> tuple[str, str, str, str]:
+    speaker_name = ""
+    emotion = ""
+    cue = ""
+    pause_policy = "default"
+    body = str(text or "").strip()
+    match = TURN_LINE_RE.match(body)
+    if match:
+        speaker_name, emotion, cue, pause_policy = _parse_label_metadata(match.group("label") or "")
+        body = str(match.group("body") or "").strip()
+        if not emotion or not cue or pause_policy == "default":
+            tail_emotion, tail_cue, tail_pause = _split_metadata_tokens(body[:120])
+            if not emotion and tail_emotion:
+                emotion = tail_emotion
+            if not cue and tail_cue:
+                cue = tail_cue
+            if tail_pause != "default":
+                pause_policy = tail_pause
+    else:
+        speaker_name, emotion, cue, pause_policy = _parse_label_metadata("")
+    return body, speaker_name, emotion or "Neutral", cue, pause_policy
 
 def _chunk_text(text: str, unit_index: int) -> list[str]:
     value = str(text or "").strip()
@@ -299,26 +614,27 @@ def _concat_wav(chunks: list[bytes], unit_ids: list[str], same_ms: int = 35, int
         return bytes(chunks[0] or b"")
     parts: list[bytes] = []
     params: tuple[int, int, int] | None = None
+    target_rms: int | None = None
     for index, audio in enumerate(chunks):
         try:
-            with wave.open(BytesIO(audio), "rb") as w:
-                current = (int(w.getnchannels()), int(w.getsampwidth()), int(w.getframerate()))
-                if params is None:
-                    params = current
-                if current != params:
-                    raise RuntimeSynthesisError("Chunk WAV params mismatch; strict stitch refused.", status_code=500)
-                frames = w.readframes(int(w.getnframes()))
+            normalized_audio, params, normalized_rms = _normalize_wav_for_stitch(
+                audio,
+                target_params=params,
+                target_rms=target_rms,
+            )
         except Exception:
             if _allow_relaxed_wav_validation():
                 return b"".join(bytes(chunk or b"") for chunk in chunks)
             raise
+        if target_rms is None:
+            target_rms = normalized_rms
         if index > 0:
             prev = unit_ids[index - 1] if index - 1 < len(unit_ids) else ""
             cur = unit_ids[index] if index < len(unit_ids) else ""
             pause_ms = same_ms if prev == cur else inter_ms
             frame_count = int(round((pause_ms / 1000.0) * params[2]))
             parts.append(b"\x00" * frame_count * params[0] * params[1])
-        parts.append(frames)
+        parts.append(normalized_audio)
     buf = BytesIO()
     with wave.open(buf, "wb") as out:
         out.setnchannels(params[0])
@@ -399,13 +715,46 @@ class TtsV2Engine:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _parse_units(self, text: str, mode: str) -> list[dict[str, Any]]:
+    def _parse_units(
+        self,
+        text: str,
+        mode: str,
+        *,
+        speaker_profiles: Optional[dict[str, dict[str, Any]]] = None,
+        default_profile: Optional[dict[str, Any]] = None,
+    ) -> list[dict[str, Any]]:
         lines = [line.strip() for line in str(text or "").replace("\r\n", "\n").split("\n") if line.strip()]
         out: list[dict[str, Any]] = []
+        profile_index = dict(speaker_profiles or {})
+        fallback_profile = dict(default_profile or {})
         for idx, line in enumerate(lines, start=1):
-            match = re.match(r"^\s*([^:]{1,64})\s*:\s*(.+)\s*$", line)
-            body = str(match.group(2)).strip() if match else line
-            out.append({"unit_id": f"{'T' if mode == 'multi' else 'D'}{idx:04d}", "dialogue_id": idx, "turn_id": idx, "text": body})
+            body, speaker_name, emotion, cue, pause_policy = _strip_turn_metadata(line)
+            normalized_speaker_name = speaker_name or _normalize_token(fallback_profile.get("speaker"), default="")
+            profile_key = _normalize_profile_key(normalized_speaker_name or fallback_profile.get("profile_id") or f"{mode}_{idx}")
+            profile = dict(profile_index.get(profile_key) or profile_index.get(_normalize_profile_key(fallback_profile.get("speaker"))) or fallback_profile)
+            speaker_id = _normalize_token(
+                profile.get("speaker") or normalized_speaker_name or f"speaker_{idx}",
+                default=f"speaker_{idx}",
+            )
+            speaker_profile_id = _normalize_token(profile.get("profile_id") or profile_key, default=profile_key)
+            out.append(
+                {
+                    "unit_id": f"{'T' if mode == 'multi' else 'D'}{idx:04d}",
+                    "dialogue_id": idx,
+                    "turn_id": idx,
+                    "text": body,
+                    "speaker_id": speaker_id,
+                    "speaker_name": normalized_speaker_name or speaker_id,
+                    "speaker_profile_id": speaker_profile_id,
+                    "emotion": _normalize_token(emotion, default=str(profile.get("emotion") or "Neutral")),
+                    "cue": _normalize_token(cue, default=str(profile.get("cue") or "")),
+                    "pause_policy": _normalize_token(pause_policy, default=str(profile.get("pause_policy") or "default")),
+                    "speaker_profile": profile,
+                    "planned_text": body,
+                    "planned_bytes": len(body.encode("utf-8")),
+                    "planned_ms": _estimate_chunk_duration_ms(body),
+                }
+            )
         return out
 
     def _build_chunks(self, units: list[dict[str, Any]]) -> list[Chunk]:
@@ -414,23 +763,39 @@ class TtsV2Engine:
         for unit_idx, unit in enumerate(units):
             chunk_no = 0
             for text in _chunk_text(str(unit.get("text") or ""), unit_idx):
-                safe_parts = [text]
-                if len(text.encode("utf-8")) > self._max_payload_bytes:
-                    safe_parts = _split_for_target(text, max(128, len(text) // 2))
-                for piece in safe_parts:
-                    chunk_no += 1
-                    out.append(
-                        Chunk(
-                            serial_index=serial,
-                            dialogue_id=int(unit.get("dialogue_id") or unit_idx + 1),
-                            turn_id=int(unit.get("turn_id") or unit_idx + 1),
-                            chunk_id=chunk_no,
-                            unit_id=str(unit.get("unit_id") or f"U{unit_idx+1:04d}"),
-                            text=str(piece or "").strip(),
-                        )
+                planned_piece = str(text or "").strip()
+                if len(planned_piece.encode("utf-8")) > self._max_payload_bytes:
+                    raise V2SizeError(f"Planned chunk exceeds payload budget ({self._max_payload_bytes} bytes).")
+                chunk_no += 1
+                profile = dict(unit.get("speaker_profile") or {})
+                out.append(
+                    Chunk(
+                        serial_index=serial,
+                        dialogue_id=int(unit.get("dialogue_id") or unit_idx + 1),
+                        turn_id=int(unit.get("turn_id") or unit_idx + 1),
+                        chunk_id=chunk_no,
+                        unit_id=str(unit.get("unit_id") or f"U{unit_idx+1:04d}"),
+                        text=planned_piece,
+                        speaker_id=str(unit.get("speaker_id") or profile.get("speaker") or ""),
+                        speaker_name=str(unit.get("speaker_name") or profile.get("speaker") or ""),
+                        speaker_profile_id=str(unit.get("speaker_profile_id") or profile.get("profile_id") or ""),
+                        emotion=str(unit.get("emotion") or profile.get("emotion") or "Neutral"),
+                        cue=str(unit.get("cue") or profile.get("cue") or ""),
+                        pause_policy=str(unit.get("pause_policy") or profile.get("pause_policy") or "default"),
+                        planned_text=planned_piece,
+                        planned_bytes=len(planned_piece.encode("utf-8")),
+                        planned_ms=int(unit.get("planned_ms") or _estimate_chunk_duration_ms(planned_piece)),
                     )
-                    serial += 1
+                )
+                serial += 1
         return out
+
+    def _validate_planned_chunks(self, chunks: list[Chunk]) -> None:
+        for chunk in chunks:
+            if len(str(chunk.text or "").encode("utf-8")) > self._max_payload_bytes:
+                raise V2SizeError(
+                    f"Chunk {chunk.serial_index} exceeds payload budget ({self._max_payload_bytes} bytes)."
+                )
 
     def create_job(self, *, payload: dict[str, Any], uid: str, is_admin: bool = False, plan_key: str = "free") -> Job:
         request_id = str(payload.get("request_id") or "").strip()
@@ -453,14 +818,49 @@ class TtsV2Engine:
                     raise RequestConflictError("request_id is already associated with a different user.")
                 # Fail closed when a claim exists but no local job mapping is available yet.
                 raise RequestConflictError("request_id is already in use. Retry after idempotency TTL if needed.")
+            speaker_profiles = _speaker_profile_index(payload.get("speaker_profiles") or payload.get("speaker_voices") or [])
+            default_profile = _default_speaker_profile_from_payload(payload)
+            if default_profile.get("speaker"):
+                speaker_profiles.setdefault(_normalize_profile_key(default_profile.get("speaker")), dict(default_profile))
+            if default_profile.get("profile_id"):
+                speaker_profiles.setdefault(_normalize_profile_key(default_profile.get("profile_id")), dict(default_profile))
             speakers = len(list(payload.get("speaker_profiles") or payload.get("speaker_voices") or []))
             mode = _norm_mode(payload.get("mode"), speakers)
-            units = self._parse_units(text, mode)
+            units = self._parse_units(
+                text,
+                mode,
+                speaker_profiles=speaker_profiles,
+                default_profile=default_profile,
+            )
             chunks = self._build_chunks(units)
             if not chunks:
                 raise V2ValidationError("No chunks generated.")
+            self._validate_planned_chunks(chunks)
             now = _now_ms()
-            job = Job(id=request_id, request_id=request_id, trace_id=str(payload.get("trace_id") or request_id).strip() or request_id, uid=str(uid or "").strip(), is_admin=bool(is_admin), engine=_norm_engine(payload.get("engine")), mode=mode, text=text, payload={k: v for k, v in dict(payload or {}).items() if str(k) not in {"apiKey", "api_key"}}, plan_key=str(plan_key or "free").strip().lower() or "free", created_at=now, updated_at=now, chunks=chunks, billing_chars=len(text))
+            job = Job(
+                id=request_id,
+                request_id=request_id,
+                trace_id=str(payload.get("trace_id") or request_id).strip() or request_id,
+                uid=str(uid or "").strip(),
+                is_admin=bool(is_admin),
+                engine=_norm_engine(payload.get("engine")),
+                mode=mode,
+                text=text,
+                payload={k: v for k, v in dict(payload or {}).items() if str(k) not in {"apiKey", "api_key"}},
+                plan_key=str(plan_key or "free").strip().lower() or "free",
+                created_at=now,
+                updated_at=now,
+                chunks=chunks,
+                turn_nodes=list(units),
+                speaker_profiles=speaker_profiles,
+                planned_chunks=len(chunks),
+                upstream_call_budget=_estimate_upstream_call_budget(len(chunks)),
+                contiguous_ready_target_ms=DEFAULT_CONTIGUOUS_READY_MS,
+                contiguous_ready_ceiling_ms=MAX_CONTIGUOUS_READY_MS,
+                billing_chars=len(text),
+            )
+            job.playable_chunks = 0
+            job.playable_ms = 0
             self._jobs[job.id] = job
             self._request_to_job[request_id] = job.id
             thread = threading.Thread(target=self._run_job, args=(job.id,), daemon=True, name=f"tts-v2-{job.id[:8]}")
@@ -531,6 +931,82 @@ class TtsV2Engine:
                 return lane
         return None
 
+    def _startup_order(self, job: Job) -> list[int]:
+        with job.lock:
+            ordered_units: list[str] = []
+            seen_units: set[str] = set()
+            for chunk in sorted(job.chunks, key=lambda item: item.serial_index):
+                if chunk.unit_id in seen_units:
+                    continue
+                seen_units.add(chunk.unit_id)
+                ordered_units.append(chunk.unit_id)
+            if not ordered_units:
+                return []
+            startup_indices: list[int] = []
+            first_unit = ordered_units[0]
+            first_unit_chunks = [c.serial_index for c in sorted(job.chunks, key=lambda item: item.serial_index) if c.unit_id == first_unit]
+            startup_indices.extend(first_unit_chunks[:2])
+            for unit_id in ordered_units[1:3]:
+                unit_chunks = [c.serial_index for c in sorted(job.chunks, key=lambda item: item.serial_index) if c.unit_id == unit_id]
+                if unit_chunks:
+                    startup_indices.append(unit_chunks[0])
+            seen: set[int] = set()
+            ordered_indices: list[int] = []
+            for index in startup_indices:
+                if index in seen:
+                    continue
+                seen.add(index)
+                ordered_indices.append(index)
+            return ordered_indices
+
+    def _contiguous_ready_ms(self, job: Job) -> int:
+        with job.lock:
+            total = 0
+            contiguous_chunks = 0
+            for chunk in sorted(job.chunks, key=lambda item: item.serial_index):
+                if chunk.status != "completed":
+                    break
+                total += max(0, int(chunk.duration_ms or chunk.planned_ms or 0))
+                contiguous_chunks += 1
+            job.playable_ms = total
+            job.playable_chunks = contiguous_chunks
+            return total
+
+    def _needs_next_required_reservation(self, job: Job) -> bool:
+        ready_ms = self._contiguous_ready_ms(job)
+        target_ms = max(1, int(getattr(job, "contiguous_ready_target_ms", DEFAULT_CONTIGUOUS_READY_MS)))
+        return ready_ms < target_ms
+
+    def _dispatch_capacity(self, job: Job) -> int:
+        if self._needs_next_required_reservation(job):
+            return max(1, len(self._lanes) - 1)
+        return max(1, len(self._lanes))
+
+    def _adaptive_hot_window(self, job: Job) -> int:
+        ready_ms = self._contiguous_ready_ms(job)
+        target_ms = max(1, int(getattr(job, "contiguous_ready_target_ms", DEFAULT_CONTIGUOUS_READY_MS)))
+        ceiling_ms = max(target_ms, int(getattr(job, "contiguous_ready_ceiling_ms", MAX_CONTIGUOUS_READY_MS)))
+        if ready_ms < target_ms:
+            return 3
+        if ready_ms < ceiling_ms:
+            return 5
+        return 8
+
+    def _upstream_call_allowed(self, job: Job) -> bool:
+        with job.lock:
+            if job.upstream_call_budget <= 0:
+                job.upstream_call_budget = _estimate_upstream_call_budget(len(job.chunks))
+            return job.upstream_calls < job.upstream_call_budget
+
+    def _record_upstream_call(self, job: Job) -> bool:
+        with job.lock:
+            if job.upstream_call_budget <= 0:
+                job.upstream_call_budget = _estimate_upstream_call_budget(len(job.chunks))
+            if job.upstream_calls >= job.upstream_call_budget:
+                return False
+            job.upstream_calls += 1
+            return True
+
     def _pending_order(self, job: Job) -> list[int]:
         with job.lock:
             done = {c.serial_index for c in job.chunks if c.status == "completed"}
@@ -538,7 +1014,15 @@ class TtsV2Engine:
             while next_req in done and next_req < len(job.chunks):
                 next_req += 1
             job.next_required = next_req
-            hot = set(range(next_req, min(len(job.chunks), next_req + 3)))
+            if not job.startup_phase_done:
+                startup_indices = self._startup_order(job)
+                queued_startup = [idx for idx in startup_indices if idx < len(job.chunks) and job.chunks[idx].status == "queued"]
+                if queued_startup:
+                    return queued_startup
+                if startup_indices:
+                    job.startup_phase_done = True
+            hot_window = self._adaptive_hot_window(job)
+            hot = set(range(next_req, min(len(job.chunks), next_req + hot_window)))
             hot_idx = [c.serial_index for c in job.chunks if c.status == "queued" and c.serial_index in hot]
             warm_idx = [c.serial_index for c in job.chunks if c.status == "queued" and c.serial_index not in hot]
             return hot_idx + warm_idx
@@ -550,15 +1034,40 @@ class TtsV2Engine:
         payload["request_id"] = job.request_id
         payload["trace_id"] = job.trace_id
         payload["_lane_id"] = chunk.lane
-        payload.pop("apiKey", None)
-        payload.pop("api_key", None)
+        payload["speaker_id"] = chunk.speaker_id
+        payload["speaker_name"] = chunk.speaker_name
+        payload["speaker_profile_id"] = chunk.speaker_profile_id
+        payload["emotion"] = chunk.emotion
+        payload["cue"] = chunk.cue
+        payload["pause_policy"] = chunk.pause_policy
+        payload["planned_text"] = chunk.planned_text
+        for key in REQUEST_SENSITIVE_KEYS:
+            payload.pop(key, None)
+        existing_source_policy = payload.get("sourcePolicy")
+        source_policy = dict(existing_source_policy) if isinstance(existing_source_policy, dict) else {}
+        for key in REQUEST_SENSITIVE_SOURCE_POLICY_KEYS:
+            source_policy.pop(key, None)
+        if str(job.engine or "").strip().upper() in {"GEM", "NEURAL2"}:
+            lane_slot = str(LANE_VERTEX_SLOT_BY_ID.get(str(chunk.lane or "").strip()) or "").strip()
+            if lane_slot:
+                source_policy["selectedVertexSlotId"] = lane_slot
+        if source_policy:
+            payload["sourcePolicy"] = source_policy
+        else:
+            payload.pop("sourcePolicy", None)
         return payload
 
-    def _resplit_and_synthesize(self, job: Job, chunk: Chunk, lane_id: str, depth: int = 0) -> tuple[bytes, str, int]:
-        if depth > 4:
-            raise RuntimeSynthesisError("Chunk too large after recursive split.", status_code=413)
+    def _synthesize_planned_chunk(self, job: Job, chunk: Chunk, lane_id: str) -> tuple[bytes, str, int]:
         try:
             chunk.lane = str(lane_id or "").strip()
+            if len(str(chunk.text or "").encode("utf-8")) > self._max_payload_bytes:
+                raise RuntimeSynthesisError(
+                    "Chunk exceeds planner budget and cannot be synthesized safely.",
+                    status_code=413,
+                    retryable=False,
+                    lane_unhealthy=False,
+                    detail=str(chunk.text[:120]),
+                )
             result = self._synthesize(self._synthesize_payload(job, chunk))
             if isinstance(result, SynthChunk):
                 audio = bytes(result.audio or b"")
@@ -578,17 +1087,7 @@ class TtsV2Engine:
         except RuntimeSynthesisError:
             raise
         except (PayloadTooLargeError, V2SizeError):
-            parts = _split_for_target(chunk.text, max(128, len(chunk.text) // 2))
-            if len(parts) <= 1:
-                raise RuntimeSynthesisError("Payload too large and cannot be split.", status_code=413)
-            audio_parts: list[bytes] = []
-            tokens = 0
-            for part in parts:
-                sub = Chunk(serial_index=chunk.serial_index, dialogue_id=chunk.dialogue_id, turn_id=chunk.turn_id, chunk_id=chunk.chunk_id, unit_id=chunk.unit_id, text=part)
-                audio, _mt, t = self._resplit_and_synthesize(job, sub, lane_id, depth + 1)
-                audio_parts.append(audio)
-                tokens += t
-            return (_concat_wav(audio_parts, [chunk.unit_id for _ in audio_parts], 20, 20), "audio/wav", tokens)
+            raise RuntimeSynthesisError("Chunk exceeds planner budget and cannot be resplit at runtime.", status_code=413, retryable=False, lane_unhealthy=False, detail=str(chunk.text[:120]))
         except V2TransientError as exc:
             raise RuntimeSynthesisError(str(exc), status_code=503, retryable=True, lane_unhealthy=True, detail=str(exc))
         except V2PermanentError as exc:
@@ -599,23 +1098,24 @@ class TtsV2Engine:
             raise RuntimeSynthesisError(f"Runtime synthesis failed: {exc}", status_code=500, retryable=False, detail=str(exc))
 
     def _execute_chunk(self, job: Job, chunk: Chunk) -> dict[str, Any]:
-        attempts = 0
-        while attempts < 2:
-            attempts += 1
-            try:
-                audio, media_type, usage_tokens = self._resplit_and_synthesize(job, chunk, chunk.lane)
-                sr, dur = _wav_info(audio)
-                return {"action": "complete", "audio": audio, "mediaType": media_type, "sampleRate": sr, "durationMs": dur, "usageTokens": usage_tokens, "attempts": attempts}
-            except RuntimeSynthesisError as exc:
-                if exc.retryable and attempts < 2:
-                    time.sleep(0.25 * attempts)
-                    continue
-                if exc.lane_unhealthy:
-                    return {"action": "failover", "error": str(exc), "detail": exc.detail, "statusCode": exc.status_code, "attempts": attempts}
-                return {"action": "failed", "error": str(exc), "detail": exc.detail, "statusCode": exc.status_code, "attempts": attempts}
-            except Exception as exc:
-                return {"action": "failed", "error": str(exc), "detail": str(exc), "statusCode": 500, "attempts": attempts}
-        return {"action": "failed", "error": "chunk failed", "detail": "chunk failed", "statusCode": 500, "attempts": attempts}
+        attempts = 1
+        try:
+            if not self._record_upstream_call(job):
+                return {"action": "failed", "error": "upstream call budget exceeded", "detail": "upstream call budget exceeded", "statusCode": 429, "attempts": attempts}
+            audio, media_type, usage_tokens = self._synthesize_planned_chunk(job, chunk, chunk.lane)
+            sr, dur = _wav_info(audio)
+            return {"action": "complete", "audio": audio, "mediaType": media_type, "sampleRate": sr, "durationMs": dur, "usageTokens": usage_tokens, "attempts": attempts}
+        except RuntimeSynthesisError as exc:
+            safe_error = _sanitize_public_tts_error_text(str(exc), fallback="Runtime synthesis failed.")
+            safe_detail = _sanitize_public_tts_error_detail(exc.detail, fallback=safe_error)
+            if exc.lane_unhealthy:
+                return {"action": "failover", "error": safe_error, "detail": safe_detail, "statusCode": exc.status_code, "attempts": attempts}
+            if exc.retryable:
+                return {"action": "retry", "error": safe_error, "detail": safe_detail, "statusCode": exc.status_code, "attempts": attempts}
+            return {"action": "failed", "error": safe_error, "detail": safe_detail, "statusCode": exc.status_code, "attempts": attempts}
+        except Exception as exc:
+            safe_error = _sanitize_public_tts_error_text(str(exc), fallback="Runtime synthesis failed.")
+            return {"action": "failed", "error": safe_error, "detail": safe_error, "statusCode": 500, "attempts": attempts}
 
     def _run_job(self, job_id: str) -> None:
         with self._jobs_lock:
@@ -661,15 +1161,29 @@ class TtsV2Engine:
                     break
 
             if not terminal_status:
+                dispatch_capacity = self._dispatch_capacity(job)
                 for idx in self._pending_order(job):
                     if idx in inflight:
                         continue
+                    if len(inflight) >= dispatch_capacity:
+                        break
                     with job.lock:
                         if idx >= len(job.chunks):
                             continue
                         chunk = job.chunks[idx]
                         if chunk.status != "queued":
                             continue
+                        if int(chunk.attempts or 0) >= 2:
+                            chunk.status = "failed"
+                            chunk.error = chunk.error or "chunk retry budget exceeded"
+                            job.status = "failed"
+                            job.status_code = 429
+                            job.error = "chunk retry budget exceeded"
+                            job.finished_at = _now_ms()
+                            job.updated_at = job.finished_at
+                            if lane := self._lanes.get(str(job.unit_lane.get(chunk.unit_id) or "")):
+                                lane.finish(False, unhealthy=True)
+                            break
                         lane = self._pick_lane(job, chunk)
                         if lane is None or not lane.try_start():
                             continue
@@ -714,9 +1228,9 @@ class TtsV2Engine:
                         chunk.duration_ms = int(result.get("durationMs") or 0)
                         chunk.content_type = str(result.get("mediaType") or "audio/wav")
                         chunk.usage_tokens = int(result.get("usageTokens") or 0)
+                        chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
                         chunk.status = "completed"
                         job.billing_tokens += max(0, chunk.usage_tokens)
-                        job.upstream_calls += max(1, int(result.get("attempts") or 1))
                         playable = 0
                         playable_ms = 0
                         for c in sorted(job.chunks, key=lambda x: x.serial_index):
@@ -729,19 +1243,50 @@ class TtsV2Engine:
                         job.updated_at = _now_ms()
                         if lane:
                             lane.finish(True)
+                    elif action == "retry":
+                        if int(chunk.attempts or 0) >= 2:
+                            chunk.status = "failed"
+                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk retry budget exceeded")
+                            job.status = "failed"
+                            job.status_code = max(400, int(result.get("statusCode") or 500))
+                            job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "chunk retry budget exceeded"))
+                            job.finished_at = _now_ms()
+                            job.updated_at = job.finished_at
+                            if lane:
+                                lane.finish(False, unhealthy=False)
+                        else:
+                            chunk.status = "queued"
+                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk retry")
+                            chunk.lane = str(lane.id if lane else chunk.lane)
+                            chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
+                            if lane:
+                                lane.finish(False, unhealthy=False)
                     elif action == "failover":
-                        chunk.status = "queued"
-                        chunk.error = str(result.get("error") or "lane failover")
-                        chunk.lane = ""
-                        job.unit_lane.pop(chunk.unit_id, None)
-                        if lane:
-                            lane.finish(False, unhealthy=True)
+                        if int(chunk.attempts or 0) >= 2:
+                            chunk.status = "failed"
+                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="lane failover budget exceeded")
+                            job.status = "failed"
+                            job.status_code = max(400, int(result.get("statusCode") or 500))
+                            job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "lane failover budget exceeded"))
+                            job.finished_at = _now_ms()
+                            job.updated_at = job.finished_at
+                            if lane:
+                                lane.finish(False, unhealthy=True)
+                        else:
+                            chunk.status = "queued"
+                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="lane failover")
+                            chunk.lane = ""
+                            chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
+                            job.unit_lane.pop(chunk.unit_id, None)
+                            if lane:
+                                lane.finish(False, unhealthy=True)
                     else:
                         chunk.status = "failed"
-                        chunk.error = str(result.get("error") or "chunk failed")
+                        chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk failed")
+                        chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
                         job.status = "failed"
                         job.status_code = max(400, int(result.get("statusCode") or 500))
-                        job.error = result.get("detail") or chunk.error
+                        job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "chunk failed"))
                         job.finished_at = _now_ms()
                         job.updated_at = job.finished_at
                         if lane:
@@ -766,7 +1311,7 @@ class TtsV2Engine:
                         if not p.exists():
                             job.status = "failed"
                             job.status_code = 500
-                            job.error = f"Missing chunk audio at {p}"
+                            job.error = _sanitize_public_tts_error_text("Missing chunk audio file.", fallback="Missing chunk audio.")
                             job.finished_at = _now_ms()
                             job.updated_at = job.finished_at
                             break
@@ -778,7 +1323,10 @@ class TtsV2Engine:
                         except Exception as exc:
                             job.status = "failed"
                             job.status_code = 500
-                            job.error = f"Failed to merge chunk audio: {exc}"
+                            job.error = _sanitize_public_tts_error_text(
+                                f"Failed to merge chunk audio: {exc}",
+                                fallback="Failed to merge chunk audio.",
+                            )
                             job.finished_at = _now_ms()
                             job.updated_at = job.finished_at
                             break
@@ -814,7 +1362,7 @@ class TtsV2Engine:
                 "startedAtMs": job.started_at,
                 "finishedAtMs": job.finished_at,
                 "statusCode": job.status_code,
-                "error": job.error,
+                "error": _sanitize_public_tts_error_detail(job.error, fallback="TTS job failed.") if job.error else "",
                 "live": {"enabled": True, "mode": "ordered_reorder_buffer", "playableChunks": job.playable_chunks, "playableDurationMs": job.playable_ms, "nextRequiredSerialIndex": job.next_required},
                 "billing": {"chars": job.billing_chars, "tokens": job.billing_tokens, "upstreamRequests": job.upstream_calls},
                 "lanes": [lane.snapshot() for lane in self._lanes.values()],
@@ -840,7 +1388,7 @@ class TtsV2Engine:
                         "downloadUrl": f"/tts/v2/jobs/{job.id}/chunks/{c.serial_index}/audio" if c.status == "completed" else "",
                     }
                     if c.error:
-                        row["error"] = c.error
+                        row["error"] = _sanitize_public_tts_error_text(c.error, fallback="Chunk failed.")
                     if include_chunk_audio and c.status == "completed" and c.serial_index >= safe_cursor:
                         p = Path(str(c.audio_path or ""))
                         if p.exists():
@@ -873,7 +1421,8 @@ class TtsV2Engine:
         job = self._get_job_record(job_id=job_id, uid=uid, is_admin=is_admin)
         with job.lock:
             if job.status == "failed":
-                raise RuntimeSynthesisError(str(job.error or "TTS job failed."), status_code=max(400, int(job.status_code or 500)))
+                safe_error = _sanitize_public_tts_error_text(job.error, fallback="TTS job failed.")
+                raise RuntimeSynthesisError(safe_error, status_code=max(400, int(job.status_code or 500)))
             if job.status == "cancelled":
                 raise RuntimeSynthesisError("TTS job was cancelled.", status_code=409)
             if job.status != "completed":

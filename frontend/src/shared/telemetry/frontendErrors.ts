@@ -1,4 +1,5 @@
 import { requestJson } from '../api/httpClient';
+import { readEnvBoolean, readEnvNumber } from '../runtime/env';
 
 type FrontendErrorSeverity = 'info' | 'warning' | 'error' | 'critical' | 'warn' | 'fatal';
 
@@ -12,14 +13,20 @@ interface FrontendErrorPayload {
 }
 
 const isTelemetryEnabled = (): boolean => {
-  const raw = String(import.meta.env.VITE_FRONTEND_OBSERVABILITY_ENABLED || '1').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+  const enabled = readEnvBoolean(
+    process.env.NEXT_PUBLIC_FRONTEND_OBSERVABILITY_ENABLED,
+    process.env.VITE_FRONTEND_OBSERVABILITY_ENABLED
+  );
+  return enabled ?? true;
 };
 
 const errorSampleRate = (): number => {
-  const raw = Number(import.meta.env.VITE_FRONTEND_ERROR_SAMPLE_RATE ?? 1);
+  const raw = readEnvNumber(
+    process.env.NEXT_PUBLIC_FRONTEND_ERROR_SAMPLE_RATE,
+    process.env.VITE_FRONTEND_ERROR_SAMPLE_RATE
+  );
   if (!Number.isFinite(raw)) return 1;
-  return Math.max(0, Math.min(1, raw));
+  return Math.max(0, Math.min(1, raw || 1));
 };
 
 const shouldSample = (): boolean => {
@@ -58,7 +65,7 @@ export const reportFrontendError = async (payload: FrontendErrorPayload): Promis
       { requireAuth: true }
     );
   } catch {
-    // Intentionally swallow telemetry transport failures.
+    // Telemetry is best-effort.
   }
 };
 

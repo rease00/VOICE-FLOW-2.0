@@ -39,6 +39,8 @@ output/
 backend/output/
 frontend/playwright-report/
 frontend/.next*
+frontend/.open-next/
+frontend/tsconfig.tsbuildinfo
 test-results/
 mcp-before-revert/
 mcp-after-revert/

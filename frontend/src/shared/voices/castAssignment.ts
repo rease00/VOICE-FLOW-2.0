@@ -5,7 +5,7 @@ import {
   parseScriptToSegments,
   normalizeSpeakerMapKey,
   resolveSpeakerMappedVoiceId,
-} from '../../../services/geminiService';
+} from '../../../services/speakerScriptService';
 
 export interface AutoAssignedSpeakerVoice {
   speaker: string;

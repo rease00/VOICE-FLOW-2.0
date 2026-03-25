@@ -2,6 +2,7 @@
 import { KokoroTTS } from 'kokoro-js';
 import { env as transformersEnv } from '@huggingface/transformers';
 import { isBrowserKokoroExecutionEnabled } from './kokoroBrowserRuntimeFlags';
+import { readEnvValue } from '../src/shared/runtime/env';
 
 export type KokoroBrowserRuntimeState = 'cold' | 'warming' | 'ready' | 'suspended';
 
@@ -64,8 +65,14 @@ interface KokoroExecutionConfig {
 
 const DEFAULT_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 const DEFAULT_MODEL_REVISION = 'main';
-const MODEL_ID = String(import.meta.env.VITE_KOKORO_MODEL_REPO_ID || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
-const MODEL_REVISION = String(import.meta.env.VITE_KOKORO_MODEL_REVISION || DEFAULT_MODEL_REVISION).trim() || DEFAULT_MODEL_REVISION;
+const MODEL_ID = readEnvValue(
+  process.env.NEXT_PUBLIC_KOKORO_MODEL_REPO_ID,
+  process.env.VITE_KOKORO_MODEL_REPO_ID
+) || DEFAULT_MODEL_ID;
+const MODEL_REVISION = readEnvValue(
+  process.env.NEXT_PUBLIC_KOKORO_MODEL_REVISION,
+  process.env.VITE_KOKORO_MODEL_REVISION
+) || DEFAULT_MODEL_REVISION;
 const DEFAULT_VOICE_ID = 'af_heart';
 const DEFAULT_SAMPLE_RATE = 24000;
 const DEFAULT_IDLE_MS = 120_000;
@@ -99,7 +106,10 @@ const KOKORO_ENGLISH_COMPATIBLE_VOICES = new Map<string, string>([
   ['hm_omega', 'am_fenrir'],
   ['hm_psi', 'am_michael'],
 ]);
-const KOKORO_MODEL_CACHE_VERSION = String(import.meta.env.VITE_KOKORO_MODEL_CACHE_VERSION || 'kokoro-webgpu-q8-v1').trim() || 'kokoro-webgpu-q8-v1';
+const KOKORO_MODEL_CACHE_VERSION = readEnvValue(
+  process.env.NEXT_PUBLIC_KOKORO_MODEL_CACHE_VERSION,
+  process.env.VITE_KOKORO_MODEL_CACHE_VERSION
+) || 'kokoro-webgpu-q8-v1';
 const KOKORO_VOICE_CACHE = `kokoro-voices-${KOKORO_MODEL_CACHE_VERSION}`;
 const KOKORO_MODEL_CACHE = `kokoro-model-${KOKORO_MODEL_CACHE_VERSION}`;
 const KOKORO_CORE_MODEL_FILES = [
@@ -124,7 +134,10 @@ const joinUrl = (baseUrl: string, relativePath: string): string => (
 
 const DEFAULT_MODEL_ASSET_BASE_URL = `https://huggingface.co/${encodeRepoPath(MODEL_ID)}/resolve/${encodeURIComponent(MODEL_REVISION)}`;
 const MODEL_ASSET_BASE_URL = trimTrailingSlash(
-  String(import.meta.env.VITE_KOKORO_MODEL_ASSET_BASE_URL || '').trim() || DEFAULT_MODEL_ASSET_BASE_URL
+  readEnvValue(
+    process.env.NEXT_PUBLIC_KOKORO_MODEL_ASSET_BASE_URL,
+    process.env.VITE_KOKORO_MODEL_ASSET_BASE_URL
+  ) || DEFAULT_MODEL_ASSET_BASE_URL
 );
 const MODEL_FILE_PATH = 'onnx/model_quantized.onnx';
 const KOKORO_VOICE_ASSET_URL_PREFIX = `${MODEL_ASSET_BASE_URL}/voices/`;

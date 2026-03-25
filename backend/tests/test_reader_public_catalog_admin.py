@@ -42,9 +42,9 @@ def test_admin_published_reader_catalog_items_are_visible_to_reader_users(monkey
         lambda request, expected_uid=None: expected_uid or "local_admin_reader",
     )
     monkeypatch.setattr(
-        backend_app._UNIFIED_TTS_SERVICE.provider_client,
-        "synthesize_chunk",
-        lambda session, chunk, *, config: (_make_test_wav(), "audio/wav", {"seq": chunk.seq, "engine": session.engine}),
+        backend_app,
+        "_tts_v2_synthesize_chunk",
+        lambda payload, text, lane_id: backend_app.TtsV2SynthChunk(audio=_make_test_wav(), media_type="audio/wav", headers={"lane": str(lane_id)}),
     )
 
     client = TestClient(backend_app.app)

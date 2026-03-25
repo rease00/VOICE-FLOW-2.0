@@ -65,8 +65,6 @@ export const createEmptyWalletStats = (): UserWalletStats => ({
     NEURAL2: 0,
     GEM: 0,
   },
-  adClaimsToday: 0,
-  adClaimsDailyLimit: 3,
   vffMonthKey: undefined,
 });
 

@@ -17,9 +17,9 @@ This refactor is incremental. Existing root-level modules (`views/`, `components
 
 - `services/authHttpClient.ts` resolves auth headers through `src/shared/auth/tokenPolicy.ts`.
 - Firebase ID token is the auth source (`Authorization: Bearer <token>`).
-- `x-dev-uid` forwarding is DEV-only and must stay disabled in production (`VITE_ENABLE_DEV_UID_HEADER=0`).
-- Frontend gateway base URL is `VITE_API_BASE_URL`.
-- If unset, frontend resolves base URL to current non-localhost origin first, then falls back to `http://127.0.0.1:7800`.
+- `x-dev-uid` forwarding is DEV-only and must stay disabled in production (`NEXT_PUBLIC_ENABLE_DEV_UID_HEADER=0`; legacy `VITE_ENABLE_DEV_UID_HEADER=0` is still honored during migration).
+- Browser-facing frontend gateway base URL is `NEXT_PUBLIC_API_BASE_URL`.
+- If unset, browser code resolves base URL to `/api/backend`, while the Cloudflare Worker proxy uses `VF_MEDIA_BACKEND_URL` as its server-side upstream origin.
 
 ## Storage policy
 

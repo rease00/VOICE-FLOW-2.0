@@ -589,10 +589,17 @@ def test_admin_can_submit_tts_without_userid_profile(monkeypatch) -> None:
     )
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
     client = TestClient(backend_app.app)
+    session = client.post("/tts/v2/sessions", headers={"Authorization": "Bearer token_admin_claim"})
+    assert session.status_code == 201
+    session_key = str(session.json().get("sessionKey") or "").strip()
+    assert session_key
 
     response = client.post(
         "/tts/v2/jobs",
-        headers={"Authorization": "Bearer token_admin_claim"},
+        headers={
+            "Authorization": "Bearer token_admin_claim",
+            "x-vf-tts-session-key": session_key,
+        },
         json={
             "request_id": f"test_{uuid.uuid4().hex}",
             "mode": "single_speaker",

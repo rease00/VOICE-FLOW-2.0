@@ -114,6 +114,104 @@ export const resolveSpeakerMappedVoiceId = (
   return String(speakerMapping?.[matchedKey] || '').trim();
 };
 
+export type SpeakerAgeGroup = 'Child' | 'Adult' | 'Elderly' | 'Unknown';
+
+const MALE_INDICATORS = [
+  'mr', 'lord', 'king', 'sir', 'father', 'dad', 'uncle', 'brother', 'boy', 'man', 'he', 'him', 'his',
+  'john', 'david', 'michael', 'james', 'robert', 'william', 'joseph', 'thomas', 'charles', 'christopher',
+  'daniel', 'matthew', 'anthony', 'mark', 'donald', 'steven', 'paul', 'andrew', 'joshua', 'kenneth',
+  'kevin', 'brian', 'george', 'edward', 'ronald', 'timothy', 'jason', 'jeffrey', 'ryan', 'jacob', 'gary',
+  'nicholas', 'eric', 'jonathan', 'stephen', 'larry', 'justin', 'scott', 'brandon', 'benjamin', 'samuel',
+  'gregory', 'frank', 'alexander', 'raymond', 'patrick', 'jack', 'dennis', 'jerry', 'tyler', 'aaron',
+  'jose', 'adam', 'henry', 'nathan', 'douglas', 'zachary', 'peter', 'kyle', 'walter', 'ethan', 'jeremy',
+  'harold', 'keith', 'christian', 'roger', 'noah', 'gerald', 'terry', 'sean', 'austin', 'carl', 'arthur',
+  'lawrence', 'dylan', 'jesse', 'jordan', 'bryan', 'billy', 'joe', 'bruce', 'gabriel', 'logan', 'albert',
+  'willie', 'alan', 'juan', 'wayne', 'elijah', 'randy', 'roy', 'vincent', 'ralph', 'eugene', 'russell',
+  'bobby', 'mason', 'philip', 'louis', 'detective', 'officer', 'sergeant', 'captain', 'commander', 'chief',
+  'boss', 'guard', 'soldier',
+];
+
+const FEMALE_INDICATORS = [
+  'mrs', 'ms', 'miss', 'lady', 'queen', 'madam', 'mother', 'mom', 'aunt', 'sister', 'girl', 'woman', 'she',
+  'her', 'hers', 'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica',
+  'sarah', 'karen', 'nancy', 'lisa', 'betty', 'margaret', 'sandra', 'ashley', 'kimberly', 'emily', 'donna',
+  'michelle', 'dorothy', 'carol', 'amanda', 'melissa', 'deborah', 'stephanie', 'rebecca', 'sharon', 'laura',
+  'cynthia', 'kathleen', 'amy', 'shirley', 'angela', 'helen', 'anna', 'brenda', 'pamela', 'nicole',
+  'samantha', 'katherine', 'emma', 'ruth', 'christine', 'catherine', 'debra', 'rachel', 'carolyn', 'janet',
+  'virginia', 'maria', 'heather', 'diane', 'julie', 'joyce', 'evelyn', 'joan', 'victoria', 'kelly',
+  'christina', 'lauren', 'frances', 'martha', 'judith', 'cheryl', 'megan', 'andrea', 'olivia', 'ann',
+  'alice', 'jean', 'doris', 'jacqueline', 'kathryn', 'hannah', 'julia', 'gloria', 'teresa', 'velma',
+  'sara', 'janice', 'phyllis', 'marie', 'grace', 'judy', 'theresa', 'madison', 'beverly', 'denise',
+  'marilyn', 'amber', 'danielle', 'rose', 'brittany', 'diana', 'abigail', 'natalie', 'jane', 'lori',
+  'alexis', 'tiffany', 'kayla', 'witch', 'princess', 'bride', 'nurse', 'waitress', 'actress',
+];
+
+export function guessGenderFromName(name: string): 'Male' | 'Female' | 'Unknown' {
+  const raw = String(name || '').trim();
+  const normalized = raw.toLowerCase().trim();
+  const parts = normalized.split(' ');
+
+  if (/(?:\u092e\u093e\u0901|\u0906\u0902\u091f\u0940|\u0926\u0940\u0926\u0940|\u092c\u0939\u0928|\u092e\u0948\u0921\u092e|\u0936\u094d\u0930\u0940\u092e\u0924\u0940)/u.test(raw)) {
+    return 'Female';
+  }
+  if (/(?:\u092a\u093e\u092a\u093e|\u091a\u093e\u091a\u093e|\u092d\u093e\u0908|\u092d\u0948\u092f\u093e|\u0938\u0930|\u0936\u094d\u0930\u0940\u092e\u093e\u0928)/u.test(raw)) {
+    return 'Male';
+  }
+  if (/\b(mom|mother|mummy|maa|aunty|aunt|didi|sister|madam|mrs|ms)\b/i.test(normalized)) {
+    return 'Female';
+  }
+  if (/\b(dad|father|papa|uncle|brother|bhai|bhaiya|sir|mr)\b/i.test(normalized)) {
+    return 'Male';
+  }
+
+  for (const part of parts) {
+    if (MALE_INDICATORS.includes(part)) return 'Male';
+    if (FEMALE_INDICATORS.includes(part)) return 'Female';
+  }
+
+  if (normalized.endsWith('a') || normalized.endsWith('ie') || normalized.endsWith('elle') || normalized.endsWith('i') || normalized.endsWith('enne') || normalized.endsWith('ine')) return 'Female';
+  if (normalized.endsWith('o') || normalized.endsWith('us') || normalized.endsWith('er') || normalized.endsWith('or') || normalized.endsWith('son') || normalized.endsWith('an')) return 'Male';
+
+  return 'Unknown';
+}
+
+const CHILD_AGE_INDICATORS = [
+  'child', 'kid', 'boy', 'girl', 'teen', 'son', 'daughter', 'school', 'student',
+  'beta', 'bacha', 'bachi', 'ladka', 'ladki', 'baccha',
+];
+
+const ELDER_AGE_INDICATORS = [
+  'elder', 'elderly', 'old', 'senior', 'aged', 'grandpa', 'grandma', 'grandfather', 'grandmother',
+  'dada', 'dadi', 'nana', 'nani', 'uncle', 'aunty', 'auntie', 'buzurg', 'vridh',
+];
+
+const normalizeAgeGroupToken = (value: string): SpeakerAgeGroup => {
+  const token = String(value || '').trim().toLowerCase();
+  if (!token) return 'Unknown';
+  if (token.includes('young') && token.includes('adult')) return 'Adult';
+  if (token.includes('adult')) return 'Adult';
+  if (CHILD_AGE_INDICATORS.some((item) => token.includes(item))) return 'Child';
+  if (ELDER_AGE_INDICATORS.some((item) => token.includes(item))) return 'Elderly';
+  return 'Unknown';
+};
+
+export function guessAgeGroupFromSpeaker(name: string): SpeakerAgeGroup {
+  const raw = String(name || '').trim();
+  if (!raw) return 'Unknown';
+  const normalized = raw.toLowerCase();
+
+  if (/(?:\u092c\u091a\u094d\u091a\u093e|\u092c\u091a\u094d\u091a\u0940|\u0932\u0921\u093c\u0915\u093e|\u0932\u0921\u093c\u0915\u0940|\u0915\u093f\u0936\u094b\u0930)/u.test(raw)) {
+    return 'Child';
+  }
+  if (/(?:\u092c\u0941\u091c\u0941\u0930\u094d\u0917|\u0935\u0943\u0926\u094d\u0927|\u0926\u093e\u0926\u093e|\u0926\u093e\u0926\u0940|\u0928\u093e\u0928\u093e|\u0928\u093e\u0928\u0940)/u.test(raw)) {
+    return 'Elderly';
+  }
+
+  if (CHILD_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Child';
+  if (ELDER_AGE_INDICATORS.some((item) => normalized.includes(item))) return 'Elderly';
+  return 'Unknown';
+}
+
 const isLikelySpeakerName = (name: string): boolean => {
   const normalized = normalizeSpeakerName(name);
   if (!normalized) return false;
@@ -286,6 +384,141 @@ const normalizeInlineBracketSpeakerScript = (text: string): string => {
   }
 
   return normalizedLines.join('\n');
+};
+
+const addCrewCueToDialogue = (dialogue: string, crewTags: string[]): string => {
+  const cleanedDialogue = String(dialogue || '').trim();
+  if (!cleanedDialogue) return '';
+  if (!crewTags.length) return cleanedDialogue;
+  return `[${crewTags.join(', ')}] ${cleanedDialogue}`;
+};
+
+const estimateSfxDurationSeconds = (label: string): number => {
+  const normalized = String(label || '').trim();
+  if (!normalized) return 1.2;
+  const words = normalized.split(/\s+/).filter(Boolean).length;
+  return Math.max(0.8, Math.min(4.5, 0.7 + (words * 0.35) + (normalized.length / 120)));
+};
+
+export const parseScriptToSegments = (text: string): {
+  startTime: number;
+  endTime?: number | undefined;
+  speaker: string;
+  text: string;
+  emotion?: string | undefined;
+  crewTags?: string[] | undefined;
+  emotionTags?: string[] | undefined;
+}[] => {
+  const lines = normalizeInlineBracketSpeakerScript(text).split('\n');
+  const segments: {
+    startTime: number;
+    endTime?: number | undefined;
+    speaker: string;
+    text: string;
+    emotion?: string | undefined;
+    crewTags?: string[] | undefined;
+    emotionTags?: string[] | undefined;
+  }[] = [];
+  let fallbackCursor = 0;
+  let currentSpeaker = 'Narrator';
+  let currentEmotion = 'Neutral';
+  let currentCrewTags: string[] = [];
+  let currentEmotionTags: string[] = [];
+
+  const timeToSeconds = (timestamp: string) => {
+    const parts = String(timestamp || '').split(':').map((part) => Number(part));
+    if (parts.length === 2) return ((parts[0] ?? 0) * 60) + (parts[1] ?? 0);
+    if (parts.length === 3) return ((parts[0] ?? 0) * 3600) + ((parts[1] ?? 0) * 60) + (parts[2] ?? 0);
+    return 0;
+  };
+
+  const estimateSpeechDuration = (dialogue: string) => {
+    const words = dialogue.trim().split(/\s+/).filter(Boolean).length;
+    const punctuation = (dialogue.match(/[,.!?;:]/g) || []).length;
+    const base = Math.max(1, words) / 2.6;
+    return Math.max(0.7, Math.min(12, base + (punctuation * 0.08)));
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    let working = trimmed;
+    let explicitStart: number | undefined;
+    let explicitEnd: number | undefined;
+
+    // Accept [00:00], (00:00), bare 00:00, and range formats like (00:01.20-00:03.85).
+    const timestampMatch = working.match(
+      /^[\[(]?\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?)(?:\s*[-\u2013]\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?))?\s*[\])]?\s*(.*)$/
+    );
+    if (timestampMatch) {
+      explicitStart = timeToSeconds(String(timestampMatch[1] || '0:00'));
+      if (timestampMatch[2]) {
+        const parsedEnd = timeToSeconds(String(timestampMatch[2] || '0:00'));
+        if (parsedEnd > explicitStart) explicitEnd = parsedEnd;
+      }
+      working = (timestampMatch[3] || '').trim();
+    }
+
+    if (!working) return;
+
+    const sfxMatch = working.match(SFX_REGEX);
+    if (sfxMatch) {
+      const label = String(sfxMatch[1] || '').trim();
+      const start = explicitStart ?? fallbackCursor;
+      const dur = estimateSfxDurationSeconds(label);
+      segments.push({
+        startTime: start,
+        endTime: explicitEnd,
+        speaker: 'SFX',
+        text: label,
+        emotion: 'Neutral',
+      });
+      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + dur;
+      return;
+    }
+
+    const parsed = parseSpeakerLine(working);
+    if (parsed) {
+      currentSpeaker = parsed.speaker;
+      currentEmotion = parsed.emotion || 'Neutral';
+      currentCrewTags = parsed.crewTags;
+      currentEmotionTags = parsed.emotionTags;
+
+      const dialogue = addCrewCueToDialogue(parsed.dialogue, parsed.crewTags);
+      if (!dialogue) return;
+
+      const start = explicitStart ?? fallbackCursor;
+      segments.push({
+        startTime: start,
+        endTime: explicitEnd,
+        speaker: currentSpeaker,
+        text: dialogue,
+        emotion: currentEmotion,
+        crewTags: currentCrewTags,
+        emotionTags: currentEmotionTags,
+      });
+      fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + estimateSpeechDuration(dialogue);
+      return;
+    }
+
+    const fallbackDialogue = addCrewCueToDialogue(working, currentCrewTags);
+    if (!fallbackDialogue) return;
+
+    const start = explicitStart ?? fallbackCursor;
+    segments.push({
+      startTime: start,
+      endTime: explicitEnd,
+      speaker: currentSpeaker,
+      text: fallbackDialogue,
+      emotion: currentEmotion,
+      crewTags: currentCrewTags,
+      emotionTags: currentEmotionTags,
+    });
+    fallbackCursor = explicitEnd && explicitEnd > start ? explicitEnd : start + estimateSpeechDuration(fallbackDialogue);
+  });
+
+  return segments;
 };
 
 const normalizeSpeakerNameForHeader = (raw: string): string => (

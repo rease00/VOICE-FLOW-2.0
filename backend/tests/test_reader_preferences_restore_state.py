@@ -31,9 +31,9 @@ def test_reader_preferences_and_restore_state_round_trip(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "_reader_require_legal_ack", lambda _uid: None)
     monkeypatch.setattr(
-        backend_app._UNIFIED_TTS_SERVICE.provider_client,
-        "synthesize_chunk",
-        lambda session, chunk, *, config: (_make_test_wav(), "audio/wav", {"seq": chunk.seq, "engine": session.engine}),
+        backend_app,
+        "_tts_v2_synthesize_chunk",
+        lambda payload, text, lane_id: backend_app.TtsV2SynthChunk(audio=_make_test_wav(), media_type="audio/wav", headers={"lane": str(lane_id)}),
     )
 
     client = TestClient(backend_app.app)
@@ -93,7 +93,10 @@ def test_reader_preferences_and_restore_state_round_trip(monkeypatch) -> None:
     )
     assert savepoint_response.status_code == 200
     saved_session = savepoint_response.json()["session"]
-    assert saved_session["restoreState"]["activeReaderTab"] == "text"
+    assert saved_session["restoreState"]["activeItemIndex"] == 0
+    assert saved_session["restoreState"]["activeUnitId"] == "window-1"
+    assert saved_session["restoreState"]["viewportAnchor"] == "window-1"
+    assert saved_session["restoreState"].get("activeReaderTab", "text") == "text"
 
     progress_response = client.post(
         f"/reader/sessions/{session_id}/progress",
@@ -108,8 +111,10 @@ def test_reader_preferences_and_restore_state_round_trip(monkeypatch) -> None:
     assert progress_response.status_code == 200
     progress_session = progress_response.json()["session"]
 
-    assert progress_session["restoreState"]["activeReaderTab"] == "text"
+    assert progress_session["restoreState"]["activeItemIndex"] == 0
+    assert progress_session["restoreState"]["viewportAnchor"] == "window-1"
+    assert progress_session["restoreState"].get("activeReaderTab", "text") == "text"
 
     reloaded = client.get(f"/reader/sessions/{session_id}", headers=headers)
     assert reloaded.status_code == 200
-    assert reloaded.json()["session"]["restoreState"]["activeReaderTab"] == "text"
+    assert reloaded.json()["session"]["restoreState"].get("activeReaderTab", "text") == "text"

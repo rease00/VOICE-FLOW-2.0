@@ -49,12 +49,19 @@ def _submit_tts_and_wait_status(
     headers: dict[str, str],
     timeout_seconds: float = 8.0,
 ) -> tuple[int, object]:
+    safe_headers = dict(headers or {})
+    if "x-vf-tts-session-key" not in {str(k).lower(): v for k, v in safe_headers.items()}:
+        issue = client.post("/tts/v2/sessions", headers=safe_headers)
+        if issue.status_code == 201:
+            session_key = str(issue.json().get("sessionKey") or "").strip()
+            if session_key:
+                safe_headers["x-vf-tts-session-key"] = session_key
     safe_payload = dict(payload or {})
     if not str(safe_payload.get("request_id") or "").strip():
         safe_payload["request_id"] = f"test_{uuid.uuid4().hex}"
     if not str(safe_payload.get("mode") or "").strip():
         safe_payload["mode"] = "single_speaker"
-    submit = client.post("/tts/v2/jobs", json=safe_payload, headers=headers)
+    submit = client.post("/tts/v2/jobs", json=safe_payload, headers=safe_headers)
     if submit.status_code != 202:
         return submit.status_code, submit
 
@@ -71,7 +78,7 @@ def _submit_tts_and_wait_status(
 
     deadline = time.time() + max(1.0, float(timeout_seconds))
     while time.time() < deadline:
-        poll = client.get(f"/tts/v2/jobs/{job_id}", headers=headers)
+        poll = client.get(f"/tts/v2/jobs/{job_id}", headers=safe_headers)
         if poll.status_code != 200:
             return poll.status_code, poll
         status_payload = poll.json()
@@ -263,9 +270,13 @@ def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
 
     client = TestClient(backend_app.app)
+    session = client.post("/tts/v2/sessions", headers={"x-dev-uid": "free_gem_block_user"})
+    assert session.status_code == 201
+    session_key = str(session.json().get("sessionKey") or "").strip()
+    assert session_key
     response = client.post(
         "/tts/v2/jobs",
-        headers={"x-dev-uid": "free_gem_block_user"},
+        headers={"x-dev-uid": "free_gem_block_user", "x-vf-tts-session-key": session_key},
         json={
             "request_id": f"test_{uuid.uuid4().hex}",
             "mode": "single_speaker",
@@ -617,66 +628,6 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     assert payload["paymentMethod"]["last4"] == "4242"
     assert len(payload["invoices"]) == 2
     assert payload["invoices"][0]["amountPaidMinor"] == 216000
-
-
-def test_wallet_ad_reward_daily_cap(monkeypatch) -> None:
-    _reset_inmemory_state()
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    uid = "ad_reward_user"
-    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
-        **backend_app._default_entitlement(uid),
-        "plan": "Pro",
-        "status": "active",
-        "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
-        "vffBalance": 0.0,
-        "vffMonthKey": backend_app._wallet_month_key(),
-        "vffGrantMonthKey": backend_app._wallet_month_key(),
-    }
-    client = TestClient(backend_app.app)
-    headers = {"x-dev-uid": uid}
-    for _ in range(3):
-        ok = client.post("/wallet/ad-reward/claim", headers=headers)
-        assert ok.status_code == 200
-    blocked = client.post("/wallet/ad-reward/claim", headers=headers)
-    assert blocked.status_code == 429
-    assert "Daily ad reward limit reached" in blocked.json()["detail"]
-
-
-def test_free_wallet_ad_reward_respects_monthly_vff_cap(monkeypatch) -> None:
-    _reset_inmemory_state()
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    uid = "free_vff_cap_user"
-    client = TestClient(backend_app.app)
-    response = client.post("/wallet/ad-reward/claim", headers={"x-dev-uid": uid})
-
-    assert response.status_code == 429
-    assert "Monthly free VFF cap reached" in str(response.json().get("detail") or "")
-
-
-def test_admin_wallet_ad_reward_bypasses_daily_cap(monkeypatch) -> None:
-    _reset_inmemory_state()
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    uid = "local_admin_rewards"
-    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
-        **backend_app._default_entitlement(uid),
-        "plan": "Pro",
-        "status": "active",
-        "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
-        "vffBalance": 0.0,
-        "vffMonthKey": backend_app._wallet_month_key(),
-        "vffGrantMonthKey": backend_app._wallet_month_key(),
-    }
-    client = TestClient(backend_app.app)
-    headers = {"x-dev-uid": uid}
-    claims = backend_app.VF_AD_REWARD_CLAIM_LIMIT_PER_DAY + 3
-    latest_wallet = {}
-    for _ in range(claims):
-        ok = client.post("/wallet/ad-reward/claim", headers=headers)
-        assert ok.status_code == 200
-        latest_wallet = ((ok.json() or {}).get("entitlements") or {}).get("wallet") or {}
-    assert int(latest_wallet.get("adClaimsToday") or 0) == claims
-    expected_vff = claims * backend_app.VF_AD_REWARD_VFF_AMOUNT
-    assert float(latest_wallet.get("vffBalance") or 0) == expected_vff
 
 
 def test_wallet_coupon_redeem_once_per_user(monkeypatch) -> None:
