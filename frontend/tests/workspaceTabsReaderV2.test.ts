@@ -7,11 +7,13 @@ describe('workspace tab contract reader v2', () => {
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
       WorkspaceTab.PODCAST,
+      WorkspaceTab.LAB,
       WorkspaceTab.READER,
       WorkspaceTab.NOVEL,
       WorkspaceTab.CHARACTERS,
       WorkspaceTab.HISTORY,
     ]);
+    expect(tabs.some((item) => item.id === WorkspaceTab.LAB && item.label === 'VC')).toBe(true);
     expect(tabs.some((item) => item.id === WorkspaceTab.READER && item.label === 'Reader')).toBe(true);
   });
 
