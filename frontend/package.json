@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:ui": "next dev",
-    "build": "next build --webpack && node scripts/prune-bundled-audio.mjs && node scripts/prune-cloudflare-browser-deps.mjs && opennextjs-cloudflare build --skipBuild && node scripts/create-pages-dist.mjs",
+    "build": "next build --webpack && node scripts/prune-bundled-audio.mjs && opennextjs-cloudflare build --skipBuild && node scripts/prune-cloudflare-browser-deps.mjs && node scripts/create-pages-dist.mjs",
     "start": "next start",
     "preview": "next start",
     "cloudflare:build": "node scripts/verify-cloudflare-workers.mjs && npm run build",

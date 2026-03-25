@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-03-25T21:48:28.082Z",
+  "generatedAt": "2026-03-25T22:05:17.758Z",
   "entryBuild": ".next/static",
   "classification": {
     "eagerSource": "build-manifest + non-lazy fallback",
@@ -582,8 +582,8 @@
       "lazyWasmRef": false
     },
     {
-      "file": "Uxl_QTANrJfNaBg1B5Abj/_buildManifest.js",
-      "manifestPath": "static/Uxl_QTANrJfNaBg1B5Abj/_buildManifest.js",
+      "file": "tMJGR1V0swe6Yg0IGHuXW/_buildManifest.js",
+      "manifestPath": "static/tMJGR1V0swe6Yg0IGHuXW/_buildManifest.js",
       "kind": "js",
       "bucket": "eager",
       "bytes": 902,
@@ -822,8 +822,8 @@
       "lazyWasmRef": false
     },
     {
-      "file": "Uxl_QTANrJfNaBg1B5Abj/_ssgManifest.js",
-      "manifestPath": "static/Uxl_QTANrJfNaBg1B5Abj/_ssgManifest.js",
+      "file": "tMJGR1V0swe6Yg0IGHuXW/_ssgManifest.js",
+      "manifestPath": "static/tMJGR1V0swe6Yg0IGHuXW/_ssgManifest.js",
       "kind": "js",
       "bucket": "eager",
       "bytes": 105,
