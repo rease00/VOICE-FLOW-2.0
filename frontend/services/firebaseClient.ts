@@ -7,10 +7,10 @@ import {
 import { getFirestore } from 'firebase/firestore';
 
 const DEFAULT_DEPLOY_FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyBaokAMP6Cvc4zO2sWbKQZbh1OCLo9p-yo',
-  authDomain: 'voiceflow-000f.firebaseapp.com',
-  projectId: 'voiceflow-000f',
-  appId: '1:529675856553:web:e76d19c0eef7c5280417b8',
+  apiKey: '',
+  authDomain: '',
+  projectId: '',
+  appId: '',
 };
 
 const firebaseConfig = {

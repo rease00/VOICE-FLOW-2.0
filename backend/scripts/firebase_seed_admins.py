@@ -19,7 +19,6 @@ except Exception:
     firestore = None  # type: ignore
 
 
-DEFAULT_ADMIN_PASSWORD = "rease1999"
 DEFAULT_UPDATED_BY = "firebase_seed_admins.py"
 
 
@@ -370,8 +369,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--password",
-        default=DEFAULT_ADMIN_PASSWORD,
-        help=f"Password for allowlist-seeded users (default: {DEFAULT_ADMIN_PASSWORD}).",
+        default="",
+        help=(
+            "Password for allowlist-seeded users. "
+            "If omitted, FIREBASE_SEED_ADMIN_PASSWORD from env/.env is used."
+        ),
     )
     parser.add_argument(
         "--skip-create-missing-uids",
@@ -396,9 +398,16 @@ def main() -> int:
             targets = load_rows_from_csv(csv_path)
         else:
             env_values = resolve_env_values(args.env_file)
+            resolved_password = str(args.password or "").strip() or str(
+                get_env("FIREBASE_SEED_ADMIN_PASSWORD", env_values)
+            ).strip()
+            if not resolved_password:
+                raise ValueError(
+                    "Missing admin seed password. Set --password or FIREBASE_SEED_ADMIN_PASSWORD in env/.env."
+                )
             targets = load_rows_from_allowlists(
                 env_values=env_values,
-                password=str(args.password or DEFAULT_ADMIN_PASSWORD),
+                password=resolved_password,
                 create_missing_uids=create_missing_uids,
             )
     except Exception as exc:  # noqa: BLE001

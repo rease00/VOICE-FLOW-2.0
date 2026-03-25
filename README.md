@@ -129,12 +129,12 @@ Use backend allowlists as source-of-truth and seed Firebase Auth + Firestore adm
 
 ```bash
 cd backend
-python scripts/firebase_seed_admins.py --dry-run
-python scripts/firebase_seed_admins.py
+python scripts/firebase_seed_admins.py --dry-run --password "<strong_admin_password>"
+python scripts/firebase_seed_admins.py --password "<strong_admin_password>"
 ```
 
 Defaults:
-- Password: `rease1999` (override with `--password`).
+- Password: required via `--password` or `FIREBASE_SEED_ADMIN_PASSWORD` from env/`.env`.
 - Reads allowlists from env or `.env`: `VF_ADMIN_APPROVER_UIDS`, `VITE_ADMIN_UID_ALLOWLIST`, `VITE_ADMIN_EMAIL_ALLOWLIST`, `VITE_ADMIN_LOGIN_EMAIL`.
 - Writes:
   - Firebase custom claim: `admin=true`
