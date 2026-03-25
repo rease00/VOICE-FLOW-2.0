@@ -21,6 +21,12 @@ describe('resolvePublicSurface', () => {
     expect(result.legalDocument).toBeNull();
   });
 
+  it('routes billing path on app domain to billing surface', () => {
+    const result = resolvePublicSurface('app.v-flow-ai.com', '/billing');
+    expect(result.surface).toBe('billing');
+    expect(result.legalDocument).toBeNull();
+  });
+
   it('routes app domain to app surface', () => {
     const result = resolvePublicSurface('app.v-flow-ai.com', '/');
     expect(result.surface).toBe('app');

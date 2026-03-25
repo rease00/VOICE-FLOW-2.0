@@ -34,12 +34,12 @@ export const resolvePublicSurface = (
   if (isLegalPath(safePath)) {
     return { surface: 'legal', legalDocument };
   }
+  if (BILLING_PATHS.has(safePath)) {
+    return { surface: 'billing', legalDocument: null };
+  }
 
   const safeHost = normalizeHost(hostname);
   if (LANDING_HOSTS.has(safeHost)) {
-    if (BILLING_PATHS.has(safePath)) {
-      return { surface: 'billing', legalDocument: null };
-    }
     if (LANDING_ONLY_PATHS.has(safePath)) {
       return { surface: 'landing', legalDocument: null };
     }
