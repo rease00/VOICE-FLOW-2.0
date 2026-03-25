@@ -1,4 +1,4 @@
-import type { ClonedVoice } from '../../../../types';
+import type { ClonedVoice } from '../../../types';
 
 export interface OpenVoiceBenchmarkRequest {
   mode: 'tts' | 'vc' | 'tts_then_vc';
@@ -6,8 +6,12 @@ export interface OpenVoiceBenchmarkRequest {
   durationSec: number;
   language: string;
   text: string;
+  sourceVoiceId: string;
+  sourceVoiceName: string;
+  sourceVoiceEngine: string;
   referenceAudioBase64: string;
   referenceAudioName: string;
+  referenceAudioUrl: string;
   sourceAudioBase64: string;
   sourceAudioName: string;
   speed: number;
@@ -75,6 +79,12 @@ export interface OpenVoiceBenchmarkResponse {
   audioBase64?: string;
   notes?: string[];
   message?: string;
+  sourceVoiceId?: string;
+  sourceVoiceName?: string;
+  sourceVoiceEngine?: string;
+  referenceAudioUrl?: string;
+  referenceAudioName?: string;
+  clonedVoice?: ClonedVoice;
 }
 
 export interface OpenVoiceBenchmarkStatusResponse {

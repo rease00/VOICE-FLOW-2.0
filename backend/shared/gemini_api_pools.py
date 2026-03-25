@@ -18,19 +18,20 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     PBKDF2HMAC = None  # type: ignore[assignment]
     hashes = None  # type: ignore[assignment]
 
-# Legacy canonical pool names retained for backward compatibility and migration defaults.
-POOL_NAMES: tuple[str, ...] = ("free", "pro", "pro_plus")
+# Canonical runtime slots. The codebase now treats these as backend-held
+# Vertex/service-account slots rather than user-managed API key pools.
+POOL_NAMES: tuple[str, ...] = ("slot_1", "slot_2", "slot_3")
 DEFAULT_PLAN_POOLS: dict[str, str] = {
-    "free": "free",
-    "pro": "pro",
-    "plus": "pro_plus",
+    "free": "slot_1",
+    "pro": "slot_2",
+    "plus": "slot_3",
 }
 DEFAULT_FALLBACK_CHAINS: dict[str, list[str]] = {
-    "free": ["free"],
-    "pro": ["pro", "free"],
-    "pro_plus": ["pro_plus", "pro", "free"],
+    "slot_1": ["slot_1"],
+    "slot_2": ["slot_2", "slot_1"],
+    "slot_3": ["slot_3", "slot_2", "slot_1"],
 }
-DEFAULT_GLOBAL_FALLBACK_CHAIN: list[str] = ["pro_plus", "pro", "free"]
+DEFAULT_GLOBAL_FALLBACK_CHAIN: list[str] = ["slot_3", "slot_2", "slot_1"]
 
 SOURCE_POLICY_MODE_API_FILE = "api_file_authoritative"
 SOURCE_POLICY_MODE_CONFIG = "config_managed"
@@ -48,6 +49,135 @@ _ENCRYPTED_KEY_FILE_ENV_NAMES: tuple[str, ...] = (
     "GEMINI_KEYS_ENCRYPTION_PASSPHRASE",
     "GEMINI_KEYS_PASSPHRASE",
 )
+
+
+def _normalize_slot_token(value: Any, *, default: str = "") -> str:
+    token = re.sub(r"\s+", " ", str(value or "")).strip()
+    token = token.replace(" ", "_")
+    token = _POOL_ID_INVALID_RE.sub("", token)
+    token = token[:_MAX_POOL_ID_LENGTH].strip("_-")
+    if not token:
+        return str(default or "").strip().lower()
+    return token.lower()
+
+
+def _slot_default_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "memberId": "slot_1",
+            "displayName": "Slot 1",
+            "vertexProject": "",
+            "vertexLocation": "",
+            "vertexServiceAccountRef": "",
+            "vertexServiceAccountConfigured": False,
+            "serviceAccountEmail": "",
+        },
+        {
+            "memberId": "slot_2",
+            "displayName": "Slot 2",
+            "vertexProject": "",
+            "vertexLocation": "",
+            "vertexServiceAccountRef": "",
+            "vertexServiceAccountConfigured": False,
+            "serviceAccountEmail": "",
+        },
+        {
+            "memberId": "slot_3",
+            "displayName": "Slot 3",
+            "vertexProject": "",
+            "vertexLocation": "",
+            "vertexServiceAccountRef": "",
+            "vertexServiceAccountConfigured": False,
+            "serviceAccountEmail": "",
+        },
+    ]
+
+
+def _normalize_vertex_account(raw: Any, *, index: int = 0) -> dict[str, Any]:
+    source = dict(raw) if isinstance(raw, dict) else {}
+    member_id = _normalize_slot_token(
+        source.get("memberId") or source.get("slotId") or source.get("id") or f"slot_{index + 1}",
+        default=f"slot_{index + 1}",
+    )
+    display_name = str(source.get("displayName") or source.get("name") or f"Slot {index + 1}").strip() or f"Slot {index + 1}"
+    vertex_project = str(source.get("vertexProject") or source.get("projectId") or "").strip()
+    vertex_location = str(source.get("vertexLocation") or source.get("location") or "").strip()
+    service_account_ref = str(
+        source.get("vertexServiceAccountRef")
+        or source.get("serviceAccountRef")
+        or source.get("credentialRef")
+        or ""
+    ).strip()
+    service_account_email = str(
+        source.get("serviceAccountEmail")
+        or source.get("vertexServiceAccountEmail")
+        or source.get("email")
+        or ""
+    ).strip()
+    return {
+        "memberId": member_id,
+        "displayName": display_name,
+        "vertexProject": vertex_project,
+        "vertexLocation": vertex_location,
+        "vertexServiceAccountRef": service_account_ref,
+        "vertexServiceAccountConfigured": bool(service_account_ref),
+        "serviceAccountEmail": service_account_email,
+    }
+
+
+def _vertex_accounts_from_source(source: dict[str, Any]) -> list[dict[str, Any]]:
+    source_policy = source.get("sourcePolicy") if isinstance(source.get("sourcePolicy"), dict) else {}
+    raw_accounts = []
+    if isinstance(source_policy.get("vertexAccounts"), list):
+        raw_accounts = list(source_policy.get("vertexAccounts") or [])
+    elif isinstance(source.get("vertexAccounts"), list):
+        raw_accounts = list(source.get("vertexAccounts") or [])
+
+    normalized_accounts = [
+        _normalize_vertex_account(item, index=index)
+        for index, item in enumerate(raw_accounts)
+        if isinstance(item, dict)
+    ]
+    if normalized_accounts:
+        return normalized_accounts
+
+    return _slot_default_rows()
+
+
+def _vertex_slot_lookup_tokens(slot: dict[str, Any]) -> set[str]:
+    tokens = {
+        _normalize_slot_token(slot.get("memberId") or ""),
+        _normalize_slot_token(slot.get("displayName") or ""),
+        _normalize_slot_token(slot.get("vertexProject") or ""),
+        _normalize_slot_token(slot.get("vertexLocation") or ""),
+        _normalize_slot_token(slot.get("serviceAccountEmail") or ""),
+        _normalize_slot_token(slot.get("vertexServiceAccountRef") or ""),
+    }
+    return {token for token in tokens if token}
+
+
+def _normalize_vertex_source_policy(raw: Any) -> dict[str, Any]:
+    values = dict(raw) if isinstance(raw, dict) else {}
+    accounts = _vertex_accounts_from_source({"sourcePolicy": values})
+    provider = str(values.get("provider") or SOURCE_POLICY_PROVIDER_VERTEX).strip().lower()
+    if provider not in {SOURCE_POLICY_PROVIDER_GEMINI_API, SOURCE_POLICY_PROVIDER_VERTEX}:
+        provider = SOURCE_POLICY_PROVIDER_VERTEX
+    vertex_pool_strategy = str(values.get("vertexPoolStrategy") or "round_robin_health").strip().lower() or "round_robin_health"
+    selected_region = str(values.get("selectedRegion") or "").strip()
+    vertex_project = str(values.get("vertexProject") or accounts[0].get("vertexProject") or "").strip()
+    vertex_location = str(values.get("vertexLocation") or accounts[0].get("vertexLocation") or "us-central1").strip() or "us-central1"
+    vertex_service_account_ref = str(values.get("vertexServiceAccountRef") or accounts[0].get("vertexServiceAccountRef") or "").strip()
+    return {
+        "provider": SOURCE_POLICY_PROVIDER_VERTEX if provider != SOURCE_POLICY_PROVIDER_GEMINI_API else provider,
+        "vertexPoolStrategy": vertex_pool_strategy,
+        "selectedRegion": selected_region,
+        "vertexProject": vertex_project,
+        "vertexLocation": vertex_location,
+        "vertexServiceAccountRef": vertex_service_account_ref,
+        "vertexAccounts": accounts,
+        "vertexAccountCount": len(accounts),
+        "vertexServiceAccountConfigured": bool(vertex_service_account_ref),
+    }
 
 
 def _derive_encrypted_key_file_key(*, passphrase: str, salt: bytes, iterations: int) -> bytes:
@@ -180,8 +310,12 @@ def write_key_file_text(
 def _normalize_pool_id(value: Any, *, default: str = "") -> str:
     token = str(value or "").strip().lower()
     if token in {"pro_plus", "pro-plus", "proplus", "plus"}:
-        return "pro_plus"
-    if token in {"pro", "free"}:
+        return "slot_3"
+    if token == "pro":
+        return "slot_2"
+    if token == "free":
+        return "slot_1"
+    if token in {"slot_1", "slot_2", "slot_3"}:
         return token
     if not token:
         return str(default or "").strip().lower()
@@ -206,7 +340,7 @@ def _ordered_unique_pools(values: list[Any]) -> list[str]:
 
 
 def normalize_pool_name(value: Any) -> str:
-    return _normalize_pool_id(value, default="free")
+    return _normalize_pool_id(value, default="slot_1")
 
 
 def normalize_plan_key(value: Any) -> str:
@@ -221,8 +355,10 @@ def normalize_plan_key(value: Any) -> str:
 def plan_key_to_pool_hint(plan_key: Any) -> str:
     normalized = normalize_plan_key(plan_key)
     if normalized == "plus":
-        return "pro_plus"
-    return normalized
+        return "slot_3"
+    if normalized == "pro":
+        return "slot_2"
+    return "slot_1"
 
 
 def resolve_default_pool_hint(config: dict[str, Any]) -> str:
@@ -236,62 +372,60 @@ def resolve_default_pool_hint(config: dict[str, Any]) -> str:
     pool_names = list_pool_names(config)
     if pool_names:
         return pool_names[0]
-    return "free"
+    return "slot_1"
 
 
 def resolve_plan_pool_hint(config: dict[str, Any], plan_key: Any) -> str:
     normalized_plan = normalize_plan_key(plan_key)
     plan_pools = config.get("planPools") if isinstance(config.get("planPools"), dict) else {}
-    mapped = _normalize_pool_id(plan_pools.get(normalized_plan), default="")
+    raw_mapped = str(plan_pools.get(normalized_plan) or "").strip()
+    if raw_mapped:
+        raw_token = raw_mapped.lower()
+        if raw_token in {"free", "pro", "plus"}:
+            return raw_token
+    mapped = _normalize_pool_id(raw_mapped, default="")
     if mapped:
         return mapped
     return plan_key_to_pool_hint(normalized_plan)
 
 
 def list_pool_names(config: dict[str, Any]) -> list[str]:
+    source_policy = config.get("sourcePolicy") if isinstance(config.get("sourcePolicy"), dict) else {}
+    accounts = _vertex_accounts_from_source({"sourcePolicy": dict(source_policy or {})})
+    names = _ordered_unique_pools([account.get("memberId") for account in accounts])
+    if names:
+        return names
     pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
-    return _ordered_unique_pools(list(pools.keys()))
+    fallback = _ordered_unique_pools(list(pools.keys()))
+    if fallback:
+        return fallback
+    return list(POOL_NAMES)
 
 
 def default_pool_config() -> dict[str, Any]:
+    accounts = _slot_default_rows()
     return {
         "version": 1,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "pools": {
-            "free": {"keys": []},
-            "pro": {"keys": []},
-            "pro_plus": {"keys": []},
+        "sourcePolicy": {
+            "ttsModelFallbackEnabled": True,
+            "provider": SOURCE_POLICY_PROVIDER_VERTEX,
+            "vertexPoolStrategy": "round_robin_health",
+            "selectedRegion": "",
+            "vertexProject": "",
+            "vertexLocation": "us-central1",
+            "vertexServiceAccountRef": "",
+            "vertexAccounts": accounts,
+            "vertexAccountCount": len(accounts),
+            "vertexServiceAccountConfigured": False,
         },
-        "fallbackChains": {
-            "free": ["free"],
-            "pro": ["pro", "free"],
-            "pro_plus": ["pro_plus", "pro", "free"],
-        },
-        "planPools": {
-            "free": "free",
-            "pro": "pro",
-            "plus": "pro_plus",
-        },
-        "defaultFallbackChain": ["pro_plus", "pro", "free"],
+        "planPools": dict(DEFAULT_PLAN_POOLS),
+        "defaultFallbackChain": list(DEFAULT_GLOBAL_FALLBACK_CHAIN),
         "constraints": {
             "uniqueKeyMembership": True,
         },
-        "sourcePolicy": {
-            "provider": SOURCE_POLICY_PROVIDER_GEMINI_API,
-            "freePoolMode": SOURCE_POLICY_MODE_CONFIG,
-            "freePoolFilePath": "",
-            "freePoolLocked": False,
-            "ttsModelFallbackEnabled": True,
-            "failureMode": SOURCE_POLICY_FAILURE_KEEP_LAST,
-            "lastSyncAt": "",
-            "lastSyncStatus": "uninitialized",
-            "lastSyncHash": "",
-            "fileKeyCount": 0,
-            "vertexProject": "",
-            "vertexLocation": "",
-            "vertexServiceAccountRef": "",
-            "vertexAccessTokenRef": "",
-        },
+        "pools": {},
+        "fallbackChains": {},
     }
 
 
@@ -350,15 +484,21 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
     values = dict(raw) if isinstance(raw, dict) else {}
     provider = str(values.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
     if provider not in {SOURCE_POLICY_PROVIDER_GEMINI_API, SOURCE_POLICY_PROVIDER_VERTEX}:
-        provider = SOURCE_POLICY_PROVIDER_GEMINI_API
+        provider = SOURCE_POLICY_PROVIDER_VERTEX
     mode = str(values.get("freePoolMode") or SOURCE_POLICY_MODE_CONFIG).strip().lower()
     if mode not in {SOURCE_POLICY_MODE_API_FILE, SOURCE_POLICY_MODE_CONFIG}:
         mode = SOURCE_POLICY_MODE_CONFIG
     failure_mode = str(values.get("failureMode") or SOURCE_POLICY_FAILURE_KEEP_LAST).strip().lower()
     if failure_mode != SOURCE_POLICY_FAILURE_KEEP_LAST:
         failure_mode = SOURCE_POLICY_FAILURE_KEEP_LAST
+    accounts = _vertex_accounts_from_source({"sourcePolicy": values})
+    selected_region = str(values.get("selectedRegion") or "").strip()
+    vertex_pool_strategy = str(values.get("vertexPoolStrategy") or "round_robin_health").strip().lower() or "round_robin_health"
+    vertex_project = str(values.get("vertexProject") or "").strip()
+    vertex_location = str(values.get("vertexLocation") or "us-central1").strip() or "us-central1"
+    vertex_service_account_ref = str(values.get("vertexServiceAccountRef") or "").strip()
     return {
-        "provider": provider,
+        "provider": SOURCE_POLICY_PROVIDER_VERTEX if provider != SOURCE_POLICY_PROVIDER_GEMINI_API else provider,
         "freePoolMode": mode,
         "freePoolFilePath": str(values.get("freePoolFilePath") or "").strip(),
         "freePoolLocked": bool(values.get("freePoolLocked", False)),
@@ -368,10 +508,14 @@ def _normalize_source_policy(raw: Any) -> dict[str, Any]:
         "lastSyncStatus": str(values.get("lastSyncStatus") or "uninitialized").strip() or "uninitialized",
         "lastSyncHash": str(values.get("lastSyncHash") or "").strip(),
         "fileKeyCount": max(0, int(values.get("fileKeyCount") or 0)),
-        "vertexProject": str(values.get("vertexProject") or "").strip(),
-        "vertexLocation": str(values.get("vertexLocation") or "").strip(),
-        "vertexServiceAccountRef": str(values.get("vertexServiceAccountRef") or "").strip(),
-        "vertexAccessTokenRef": str(values.get("vertexAccessTokenRef") or "").strip(),
+        "selectedRegion": selected_region,
+        "vertexPoolStrategy": vertex_pool_strategy,
+        "vertexProject": vertex_project,
+        "vertexLocation": vertex_location,
+        "vertexServiceAccountRef": vertex_service_account_ref,
+        "vertexAccounts": accounts,
+        "vertexAccountCount": len(accounts),
+        "vertexServiceAccountConfigured": bool(vertex_service_account_ref or any(str(item.get("vertexServiceAccountRef") or "").strip() for item in accounts)),
     }
 
 
@@ -385,9 +529,9 @@ def _derive_default_fallback_chain(
         if chain:
             return chain
 
-    # Legacy config often used the pro_plus chain as global fallback signal.
-    if isinstance(source_chains.get("pro_plus"), list):
-        chain = _ordered_unique_pools(list(source_chains.get("pro_plus") or []))
+    # Legacy config often used the most expensive slot chain as the global fallback signal.
+    if isinstance(source_chains.get("slot_3"), list):
+        chain = _ordered_unique_pools(list(source_chains.get("slot_3") or []))
         if chain:
             return chain
 
@@ -412,56 +556,47 @@ def _normalize_plan_pools(raw: Any) -> dict[str, str]:
 def normalize_pool_config(raw: Any) -> dict[str, Any]:
     defaults = default_pool_config()
     source = dict(raw) if isinstance(raw, dict) else {}
-    source_pools = source.get("pools") if isinstance(source.get("pools"), dict) else {}
-    source_chains = source.get("fallbackChains") if isinstance(source.get("fallbackChains"), dict) else {}
     source_constraints = source.get("constraints") if isinstance(source.get("constraints"), dict) else {}
     source_policy = source.get("sourcePolicy") if isinstance(source.get("sourcePolicy"), dict) else {}
-
-    has_explicit_pools = "pools" in source and isinstance(source.get("pools"), dict)
-    pool_names = _ordered_unique_pools(list(source_pools.keys()))
-    if not has_explicit_pools:
-        pool_names = list(defaults["pools"].keys())
-
-    pools: dict[str, dict[str, list[str]]] = {}
-    for pool_name in pool_names:
-        pools[pool_name] = {"keys": _normalize_key_list(source_pools.get(pool_name))}
-
-    default_fallback_chain = _derive_default_fallback_chain(
-        source.get("defaultFallbackChain"),
-        source_chains,
-        pool_names,
-    )
-
-    fallback_chains: dict[str, list[str]] = {}
-    for pool_name in pool_names:
-        fallback_chains[pool_name] = _normalize_fallback_chain(
-            source_chains.get(pool_name),
-            default_name=pool_name,
-            default_fallback_chain=default_fallback_chain,
-        )
+    accounts = _vertex_accounts_from_source(source)
+    source_policy_normalized = _normalize_vertex_source_policy(source_policy or defaults.get("sourcePolicy"))
+    plan_pools = _normalize_plan_pools(source.get("planPools") or defaults.get("planPools"))
+    default_fallback_chain = _ordered_unique_pools(list(source.get("defaultFallbackChain") or []))
+    if not default_fallback_chain:
+        default_fallback_chain = list(DEFAULT_GLOBAL_FALLBACK_CHAIN)
 
     normalized = {
         "version": max(1, int(source.get("version") or defaults["version"])),
         "updatedAt": str(source.get("updatedAt") or defaults["updatedAt"]),
-        "pools": pools,
-        "fallbackChains": fallback_chains,
-        "planPools": _normalize_plan_pools(source.get("planPools") or defaults.get("planPools")),
-        "defaultFallbackChain": list(default_fallback_chain),
+        "pools": {},
+        "fallbackChains": {},
+        "planPools": plan_pools,
+        "defaultFallbackChain": default_fallback_chain,
         "constraints": {
             "uniqueKeyMembership": bool(source_constraints.get("uniqueKeyMembership", True)),
         },
-        "sourcePolicy": _normalize_source_policy(source_policy or defaults.get("sourcePolicy")),
+        "sourcePolicy": {
+            **source_policy_normalized,
+            "vertexAccounts": accounts,
+            "vertexAccountCount": len(accounts),
+            "vertexServiceAccountConfigured": bool(
+                str(source_policy_normalized.get("vertexServiceAccountRef") or "").strip()
+                or any(str(account.get("vertexServiceAccountRef") or "").strip() for account in accounts)
+            ),
+        },
     }
     return normalized
 
 
 def duplicate_key_memberships(config: dict[str, Any]) -> dict[str, list[str]]:
-    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
+    accounts = _vertex_accounts_from_source(config)
     key_memberships: dict[str, list[str]] = {}
-    for pool_name in list_pool_names(config):
-        keys = _normalize_key_list((pools.get(pool_name) or {}).get("keys"))
-        for key in keys:
-            key_memberships.setdefault(key, []).append(pool_name)
+    for account in accounts:
+        slot_id = str(account.get("memberId") or "").strip()
+        if not slot_id:
+            continue
+        for token in _vertex_slot_lookup_tokens(account):
+            key_memberships.setdefault(token, []).append(slot_id)
     duplicates: dict[str, list[str]] = {}
     for key, members in key_memberships.items():
         if len(members) > 1:
@@ -479,20 +614,19 @@ def ensure_unique_membership(config: dict[str, Any]) -> None:
     first = next(iter(duplicates.items()))
     key, pools = first
     raise ValueError(
-        f"API key appears in multiple pools: key={key[:12]}..., pools={','.join(pools)}"
+        f"Vertex slot metadata appears in multiple slots: token={key[:12]}..., slots={','.join(pools)}"
     )
 
 
 def flatten_pool_keys(config: dict[str, Any]) -> list[str]:
-    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
     out: list[str] = []
     seen: set[str] = set()
-    for pool_name in list_pool_names(config):
-        for key in _normalize_key_list((pools.get(pool_name) or {}).get("keys")):
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(key)
+    for account in _vertex_accounts_from_source(config):
+        slot_id = str(account.get("memberId") or "").strip()
+        if not slot_id or slot_id in seen:
+            continue
+        seen.add(slot_id)
+        out.append(slot_id)
     return out
 
 
@@ -527,17 +661,14 @@ def resolve_pool_chain(config: dict[str, Any], pool_hint: Any) -> list[str]:
 
 
 def resolve_effective_keys(config: dict[str, Any], pool_hint: Any) -> list[str]:
-    pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
     chain = resolve_pool_chain(config, pool_hint)
     out: list[str] = []
     seen: set[str] = set()
     for pool_name in chain:
-        keys = _normalize_key_list((pools.get(pool_name) or {}).get("keys"))
-        for key in keys:
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(key)
+        if pool_name in seen:
+            continue
+        seen.add(pool_name)
+        out.append(pool_name)
     return out
 
 
@@ -555,73 +686,20 @@ def sync_authoritative_free_pool(
     failure_mode: str = SOURCE_POLICY_FAILURE_KEEP_LAST,
 ) -> tuple[dict[str, Any], bool, list[str]]:
     normalized = normalize_pool_config(config)
-    warnings: list[str] = []
-    changed = False
-
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    free_pool = pools.get("free") if isinstance(pools.get("free"), dict) else {"keys": []}
-    current_free = _normalize_key_list(free_pool.get("keys"))
-    next_file_keys = _normalize_key_list(file_keys)
-
     source_policy = _normalize_source_policy(normalized.get("sourcePolicy"))
     if str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower() == SOURCE_POLICY_PROVIDER_VERTEX:
-        next_policy = dict(source_policy)
-        next_policy["freePoolMode"] = SOURCE_POLICY_MODE_CONFIG
-        next_policy["freePoolLocked"] = False
-        if next_policy != source_policy:
-            normalized["sourcePolicy"] = next_policy
-            changed = True
-        return normalized, changed, warnings
+        return normalized, False, []
 
+    # Legacy compatibility path. The repo no longer manages an API-key file
+    # at runtime, but we keep the function callable for old tests.
+    warnings: list[str] = []
+    changed = False
     next_policy = dict(source_policy)
-    next_policy["freePoolMode"] = SOURCE_POLICY_MODE_API_FILE
-    next_policy["freePoolFilePath"] = str(file_path or "").strip()
-    next_policy["freePoolLocked"] = True
-    next_policy["failureMode"] = SOURCE_POLICY_FAILURE_KEEP_LAST
-
-    has_valid_file_keys = bool(next_file_keys)
-    should_keep_last = (
-        str(failure_mode or SOURCE_POLICY_FAILURE_KEEP_LAST).strip().lower()
-        == SOURCE_POLICY_FAILURE_KEEP_LAST
-    )
-    if has_valid_file_keys:
-        file_hash = _keys_digest(next_file_keys)
-        if current_free != next_file_keys:
-            pools.setdefault("free", {"keys": []})
-            pools["free"]["keys"] = list(next_file_keys)
-            changed = True
-        if (
-            next_policy.get("lastSyncHash") != file_hash
-            or int(next_policy.get("fileKeyCount") or 0) != len(next_file_keys)
-            or str(next_policy.get("lastSyncStatus") or "").strip().lower() != "success"
-        ):
-            next_policy["lastSyncAt"] = datetime.now(timezone.utc).isoformat()
-            next_policy["lastSyncStatus"] = "success"
-            next_policy["lastSyncHash"] = file_hash
-            next_policy["fileKeyCount"] = len(next_file_keys)
-    else:
-        missing_file = file_exists is False
-        warning = (
-            "Authoritative free-pool key file is missing; keeping last good free pool."
-            if missing_file
-            else "Authoritative free-pool key file is empty or invalid; keeping last good free pool."
-        )
-        warnings.append(warning)
-        next_policy["fileKeyCount"] = 0
-        status_token = "warning_missing_file" if missing_file else "warning_empty_or_invalid"
-        if str(next_policy.get("lastSyncStatus") or "").strip().lower() != status_token:
-            next_policy["lastSyncAt"] = datetime.now(timezone.utc).isoformat()
-            next_policy["lastSyncStatus"] = status_token
-        if not should_keep_last and current_free:
-            if "free" in pools:
-                pools["free"]["keys"] = []
-            changed = True
-            next_policy["lastSyncHash"] = ""
-
+    next_policy["freePoolMode"] = SOURCE_POLICY_MODE_CONFIG
+    next_policy["freePoolLocked"] = False
     if next_policy != source_policy:
         normalized["sourcePolicy"] = next_policy
         changed = True
-
     return normalized, changed, warnings
 
 
@@ -633,31 +711,6 @@ def overlay_cached_authoritative_free_pool(
     normalized = normalize_pool_config(config)
     if not isinstance(cached_config, dict):
         return normalized
-
-    source_policy = _normalize_source_policy(normalized.get("sourcePolicy"))
-    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    authoritative_mode = (
-        str(source_policy.get("freePoolMode") or SOURCE_POLICY_MODE_CONFIG).strip().lower()
-        == SOURCE_POLICY_MODE_API_FILE
-    )
-    if provider == SOURCE_POLICY_PROVIDER_VERTEX or not authoritative_mode or not bool(source_policy.get("freePoolLocked")):
-        return normalized
-
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    current_free = _normalize_key_list((pools.get("free") or {}).get("keys"))
-    if current_free:
-        return normalized
-
-    cached_pools = cached_config.get("pools") if isinstance(cached_config.get("pools"), dict) else {}
-    cached_free = _normalize_key_list((cached_pools.get("free") or {}).get("keys"))
-    if not cached_free:
-        return normalized
-
-    next_pools = dict(pools)
-    free_row = dict(next_pools.get("free") or {})
-    free_row["keys"] = list(cached_free)
-    next_pools["free"] = free_row
-    normalized["pools"] = next_pools
     return normalized
 
 
@@ -665,43 +718,14 @@ def scrub_pool_config_for_file(config: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_pool_config(config)
     source_policy = _normalize_source_policy(normalized.get("sourcePolicy"))
     provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    authoritative_mode = (
-        str(source_policy.get("freePoolMode") or SOURCE_POLICY_MODE_CONFIG).strip().lower()
-        == SOURCE_POLICY_MODE_API_FILE
-    )
-    if provider == SOURCE_POLICY_PROVIDER_VERTEX or not authoritative_mode:
-        return normalized
-
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    free_keys = _normalize_key_list((pools.get("free") or {}).get("keys"))
-    if not free_keys:
-        return normalized
-
-    masked_keys: list[str] = []
-    metadata_rows: list[dict[str, Any]] = []
-    for index, key in enumerate(free_keys):
-        placeholder, metadata = _mask_key_for_storage(key)
-        if not placeholder:
-            continue
-        masked_keys.append(placeholder)
-        metadata_rows.append(
-            {
-                "index": index,
-                "fingerprint": str(metadata.get("fingerprint") or ""),
-                "masked": str(metadata.get("masked") or ""),
-            }
-        )
-
     scrubbed = dict(normalized)
-    scrubbed_pools = dict(pools)
-    free_row = dict(scrubbed_pools.get("free") or {})
-    free_row["keys"] = masked_keys
-    if metadata_rows:
-        free_row["keyMetadata"] = metadata_rows
-    scrubbed_pools["free"] = free_row
-    scrubbed["pools"] = scrubbed_pools
-    if metadata_rows:
-        scrubbed["keyMetadata"] = {"free": metadata_rows}
+    source = dict(scrubbed.get("sourcePolicy") or {})
+    source.pop("vertexServiceAccountJson", None)
+    source.pop("serviceAccountJson", None)
+    source.pop("vertexAccessToken", None)
+    source.pop("accessToken", None)
+    source.pop("vertexApiKey", None)
+    scrubbed["sourcePolicy"] = source
     return scrubbed
 
 
@@ -754,16 +778,6 @@ def load_pool_config(
             source = "file"
 
     config = normalize_pool_config(raw_config or default_pool_config())
-
-    if source in {"default", "file"}:
-        fallback_keys = list(bootstrap_free_keys or [])
-        if fallback_keys and not flatten_pool_keys(config):
-            pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
-            pools.setdefault("free", {"keys": []})
-            pools["free"]["keys"] = fallback_keys
-            config["pools"] = pools
-            config["updatedAt"] = datetime.now(timezone.utc).isoformat()
-            source = "bootstrap"
 
     return config, {
         "source": source,

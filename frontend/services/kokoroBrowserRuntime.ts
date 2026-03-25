@@ -34,6 +34,7 @@ interface KokoroEnsureReadyOptions {
   voiceId?: string;
   language?: string;
   speed?: number;
+  skipRuntimePrime?: boolean;
   signal?: AbortSignal;
 }
 

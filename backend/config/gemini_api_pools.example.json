@@ -1,39 +1,58 @@
 {
   "version": 1,
   "updatedAt": "1970-01-01T00:00:00+00:00",
-  "pools": {
-    "free": { "keys": [] },
-    "pro": { "keys": [] },
-    "pro_plus": { "keys": [] }
-  },
-  "fallbackChains": {
-    "free": ["free"],
-    "pro": ["pro", "free"],
-    "pro_plus": ["pro_plus", "pro", "free"]
-  },
+  "pools": {},
+  "fallbackChains": {},
   "planPools": {
-    "free": "free",
-    "pro": "pro",
-    "plus": "pro_plus"
+    "free": "slot_1",
+    "pro": "slot_2",
+    "plus": "slot_3"
   },
-  "defaultFallbackChain": ["pro_plus", "pro", "free"],
+  "defaultFallbackChain": [
+    "slot_3",
+    "slot_2",
+    "slot_1"
+  ],
   "constraints": {
     "uniqueKeyMembership": true
   },
   "sourcePolicy": {
-    "provider": "gemini_api",
-    "freePoolMode": "config_managed",
-    "freePoolFilePath": "",
-    "freePoolLocked": false,
-    "ttsModelFallbackEnabled": true,
-    "failureMode": "keep_last_good",
-    "lastSyncAt": "",
-    "lastSyncStatus": "uninitialized",
-    "lastSyncHash": "",
-    "fileKeyCount": 0,
+    "provider": "vertex",
+    "vertexPoolStrategy": "round_robin_health",
+    "selectedRegion": "us-central1",
     "vertexProject": "",
-    "vertexLocation": "",
+    "vertexLocation": "us-central1",
     "vertexServiceAccountRef": "",
-    "vertexAccessTokenRef": ""
+    "vertexAccountCount": 3,
+    "vertexServiceAccountConfigured": false,
+    "vertexAccounts": [
+      {
+        "memberId": "slot_1",
+        "displayName": "Slot 1",
+        "vertexProject": "",
+        "vertexLocation": "us-central1",
+        "vertexServiceAccountRef": "",
+        "vertexServiceAccountConfigured": false,
+        "serviceAccountEmail": ""
+      },
+      {
+        "memberId": "slot_2",
+        "displayName": "Slot 2",
+        "vertexProject": "",
+        "vertexLocation": "us-central1",
+        "vertexServiceAccountRef": "",
+        "vertexServiceAccountConfigured": false,
+        "serviceAccountEmail": ""
+      },
+      {
+        "memberId": "slot_3",
+        "displayName": "Slot 3",
+        "vertexProject": "",
+        "vertexLocation": "us-central1",
+        "vertexServiceAccountRef": "",
+        "vertexServiceAccountConfigured": false,
+        "serviceAccountEmail": ""
+      }
+    ]
   }
 }

@@ -22,24 +22,21 @@ import {
   kokoroBrowserRuntime,
   shouldUseBrowserKokoroExecution,
 } from '../services/kokoroBrowserRuntime';
-
-const makePrimeStatus = () => ({
-  ok: true,
-  available: true,
-  repoId: 'onnx-community/Kokoro-82M-v1.0-ONNX',
-  revision: 'main',
-  modelPath: '/models/onnx-community/Kokoro-82M-v1.0-ONNX',
-  fileCount: 4,
-  totalBytes: 123,
-  ready: true,
-  missing: [],
-  hash: 'abc',
-  fetchedAt: new Date().toISOString(),
-});
+import { __kokoroBrowserRuntimeTestOnly } from '../services/kokoroBrowserRuntime.impl';
 
 let generateMock: ReturnType<typeof vi.fn>;
 let generateFromIdsMock: ReturnType<typeof vi.fn>;
 let tokenizerMock: ReturnType<typeof vi.fn>;
+
+const toFetchUrl = (input: unknown): string => {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (typeof Request !== 'undefined' && input instanceof Request) return input.url;
+  if (input && typeof input === 'object' && 'url' in (input as Record<string, unknown>)) {
+    return String((input as { url?: unknown }).url || '');
+  }
+  return String(input || '');
+};
 
 describe('kokoroBrowserRuntime', () => {
   afterEach(() => {
@@ -64,10 +61,40 @@ describe('kokoroBrowserRuntime', () => {
     );
     vi.stubGlobal('window', { isSecureContext: true } as any);
     vi.stubGlobal('navigator', { gpu: {}, deviceMemory: 12, hardwareConcurrency: 8 } as any);
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => makePrimeStatus(),
-    })) as any);
+    const cacheStores = new Map<string, Map<string, Response>>();
+    vi.stubGlobal(
+      'caches',
+      {
+        open: vi.fn(async (cacheName: string) => {
+          const normalizedName = String(cacheName || '');
+          const existing = cacheStores.get(normalizedName);
+          const store = existing || new Map<string, Response>();
+          if (!existing) {
+            cacheStores.set(normalizedName, store);
+          }
+          return {
+            match: vi.fn(async (request: unknown) => {
+              const key = toFetchUrl(request);
+              const cached = store.get(key);
+              return cached ? cached.clone() : undefined;
+            }),
+            put: vi.fn(async (request: unknown, response: Response) => {
+              const key = toFetchUrl(request);
+              store.set(key, response.clone());
+            }),
+          };
+        }),
+      } as any,
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => (
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/octet-stream' },
+        })
+      )) as any,
+    );
     fromPretrainedMock.mockResolvedValue({
       voices: {
         af_heart: {},
@@ -91,15 +118,15 @@ describe('kokoroBrowserRuntime', () => {
         // noop
       },
     });
-    await kokoroBrowserRuntime.suspend();
+    await __kokoroBrowserRuntimeTestOnly.reset();
   });
 
-  it('enables browser kokoro for supported studio and preview sessions by default', () => {
+  it('enables browser kokoro for supported Kokoro sessions by default', () => {
     expect(isBrowserKokoroExecutionEnabled()).toBe(true);
     expect(shouldUseBrowserKokoroExecution('KOKORO', 'studio')).toBe(true);
     expect(shouldUseBrowserKokoroExecution('KOKORO', 'preview')).toBe(true);
+    expect(shouldUseBrowserKokoroExecution('KOKORO', 'dubbing')).toBe(true);
     expect(shouldUseBrowserKokoroExecution('GEM', 'studio')).toBe(false);
-    expect(shouldUseBrowserKokoroExecution('KOKORO', 'dubbing')).toBe(false);
   });
 
   it('supports an env opt-out for browser kokoro execution', () => {
@@ -108,7 +135,7 @@ describe('kokoroBrowserRuntime', () => {
     expect(shouldUseBrowserKokoroExecution('KOKORO', 'studio')).toBe(false);
   });
 
-  it('keeps browser kokoro disabled on smaller devices even when the runtime exists', () => {
+  it('keeps browser kokoro disabled when WebGPU is unavailable', () => {
     vi.stubGlobal('navigator', { deviceMemory: 4, hardwareConcurrency: 4 } as any);
     expect(isBrowserKokoroExecutionEnabled()).toBe(false);
     expect(shouldUseBrowserKokoroExecution('KOKORO', 'studio')).toBe(false);
@@ -139,31 +166,41 @@ describe('kokoroBrowserRuntime', () => {
     expect(kokoroBrowserRuntime.getState()).toBe('suspended');
   });
 
-  it('checks local mirror readiness through status endpoint', async () => {
+  it('checks local model assets and primes voice files', async () => {
     const status = await kokoroBrowserRuntime.primeAssets('http://127.0.0.1:7801');
     expect(status.ready).toBe(true);
-    expect((globalThis.fetch as any).mock.calls[0]?.[0]).toContain('/models/kokoro/status');
+    expect(status.runtime?.device).toBe('webgpu');
+    const fetchCalls = (globalThis.fetch as any).mock.calls.map((call: any[]) => toFetchUrl(call?.[0]));
+    expect(fetchCalls.length).toBeGreaterThan(0);
+    expect(fetchCalls.some((entry: string) => entry.includes('/config.json'))).toBe(true);
+    expect(fetchCalls.some((entry: string) => entry.includes('/voices/af_heart.bin'))).toBe(true);
   });
 
-  it('reuses prime status and voice warmup when ensureReady follows primeAssets', async () => {
+  it('reuses model and voice warmup when ensureReady follows primeAssets', async () => {
     await kokoroBrowserRuntime.primeAssets('http://127.0.0.1:7802', 'af_heart');
     await kokoroBrowserRuntime.ensureReady({ backendBaseUrl: 'http://127.0.0.1:7802', voiceId: 'af_heart' });
 
-    const fetchCalls = (globalThis.fetch as any).mock.calls.map((call: any[]) => String(call?.[0] || ''));
-    const statusCalls = fetchCalls.filter((entry: string) => entry.includes('/models/kokoro/status'));
+    const fetchCalls = (globalThis.fetch as any).mock.calls.map((call: any[]) => toFetchUrl(call?.[0]));
+    const configCalls = fetchCalls.filter((entry: string) => entry.includes('/config.json'));
+    const tokenizerCalls = fetchCalls.filter((entry: string) => entry.includes('/tokenizer.json'));
+    const tokenizerConfigCalls = fetchCalls.filter((entry: string) => entry.includes('/tokenizer_config.json'));
+    const modelCalls = fetchCalls.filter((entry: string) => entry.includes('/onnx/model_quantized.onnx'));
     const voiceCalls = fetchCalls.filter((entry: string) => entry.includes('/voices/af_heart.bin'));
 
-    expect(statusCalls).toHaveLength(1);
+    expect(configCalls).toHaveLength(1);
+    expect(tokenizerCalls).toHaveLength(1);
+    expect(tokenizerConfigCalls).toHaveLength(1);
+    expect(modelCalls).toHaveLength(1);
     expect(voiceCalls).toHaveLength(1);
   });
 
-  it('loads kokoro in cpu-only wasm q8 mode even when browser gpu is available', async () => {
+  it('loads kokoro in strict webgpu q8 mode', async () => {
     await kokoroBrowserRuntime.ensureReady({ backendBaseUrl: 'http://127.0.0.1:7800' });
     expect(fromPretrainedMock).toHaveBeenCalledWith(
       'onnx-community/Kokoro-82M-v1.0-ONNX',
       expect.objectContaining({
         dtype: 'q8',
-        device: 'wasm',
+        device: 'webgpu',
       }),
     );
   });

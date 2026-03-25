@@ -168,10 +168,10 @@ ALLOCATOR_CONFIG = _apply_allocator_env_overrides(load_allocator_config())
 TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", ALLOCATOR_CONFIG.routes["tts"][0]).strip()
 if normalize_model_name(TTS_MODEL) not in ALLOCATOR_CONFIG.routes["tts"]:
     TTS_MODEL = ALLOCATOR_CONFIG.routes["tts"][0]
-SERVER_API_KEY = (os.getenv("API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
-SERVER_API_KEYS_RAW = os.getenv("GEMINI_API_KEYS", "")
-GEMINI_API_KEYS_FILE = str(os.getenv("GEMINI_API_KEYS_FILE") or "").strip()
-DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
+SERVER_API_KEY = ""
+SERVER_API_KEYS_RAW = ""
+GEMINI_SLOT_CONFIG_FILE = str(os.getenv("GEMINI_API_POOLS_FILE") or (RUNTIME_ROOT / "config" / "gemini_api_pools.json")).strip()
+DEFAULT_GEMINI_SLOT_CONFIG_FILE = RUNTIME_ROOT / "config" / "gemini_api_pools.json"
 GEMINI_API_POOLS_FILE = (
     str(os.getenv("GEMINI_API_POOLS_FILE") or (RUNTIME_ROOT / "config" / "gemini_api_pools.json")).strip()
 )
@@ -296,18 +296,18 @@ GEMINI_SPEAKER_KEY_AFFINITY_ENABLED = (
 )
 SPEAKER_KEY_AFFINITY_MAX = max(64, int(os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_MAX", "4096")))
 _SPEAKER_KEY_AFFINITY: Dict[str, Dict[str, Any]] = {}
-GEMINI_API_KEY_PATTERN = re.compile(r"^AIza[A-Za-z0-9_-]{30,}$")
-ERROR_CODE_API_KEY_MISSING = "GEMINI_API_KEY_MISSING"
+GEMINI_SLOT_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+ERROR_CODE_SLOT_SET_MISSING = "GEMINI_SLOT_SET_MISSING"
 ERROR_CODE_RUNTIME_SDK_UNAVAILABLE = "GEMINI_RUNTIME_SDK_UNAVAILABLE"
-ERROR_CODE_ALL_KEYS_AUTH_FAILED = "GEMINI_ALL_KEYS_AUTH_FAILED"
-ERROR_CODE_ALL_KEYS_RATE_LIMITED = "GEMINI_ALL_KEYS_RATE_LIMITED"
-ERROR_CODE_KEY_POOL_OVERLOADED = "GEMINI_KEY_POOL_OVERLOADED"
-ERROR_CODE_KEY_POOL_TIMEOUT = "GEMINI_KEY_POOL_TIMEOUT"
+ERROR_CODE_ALL_SLOTS_AUTH_FAILED = "GEMINI_ALL_SLOTS_AUTH_FAILED"
+ERROR_CODE_ALL_SLOTS_RATE_LIMITED = "GEMINI_ALL_SLOTS_RATE_LIMITED"
+ERROR_CODE_SLOT_SET_OVERLOADED = "GEMINI_SLOT_SET_OVERLOADED"
+ERROR_CODE_SLOT_SET_TIMEOUT = "GEMINI_SLOT_SET_TIMEOUT"
 ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT = "GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT"
 ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT = "GEMINI_UPSTREAM_REQUEST_TIMEOUT"
 ERROR_CODE_UPSTREAM_MODEL_FAILED = "GEMINI_UPSTREAM_MODEL_FAILED"
-KEY_POOL_MISSING_SUMMARY = (
-    "Gemini key pool is empty. Configure GEMINI_API_KEYS_FILE (preferred), GEMINI_API_KEYS, or GEMINI_API_KEY."
+SLOT_SET_MISSING_SUMMARY = (
+    "Primary AI slot set is empty. Configure the backend-held service-account slots."
 )
 MAX_PUBLIC_SUMMARY_ITEMS = 3
 MAX_PUBLIC_SUMMARY_CHARS = 220
@@ -465,19 +465,19 @@ _PUBLIC_TTS_ERROR_ALLOWED_KEYS = {
 }
 
 _PUBLIC_TTS_ERROR_MESSAGE_BY_CODE = {
-    ERROR_CODE_API_KEY_MISSING: "Gemini key pool is not configured.",
+    ERROR_CODE_SLOT_SET_MISSING: "Primary AI slot set is not configured.",
     ERROR_CODE_RUNTIME_SDK_UNAVAILABLE: "Gemini runtime dependencies are unavailable.",
-    ERROR_CODE_ALL_KEYS_AUTH_FAILED: "All configured Gemini keys were rejected by upstream authentication.",
-    ERROR_CODE_ALL_KEYS_RATE_LIMITED: "Gemini capacity is temporarily rate limited.",
-    ERROR_CODE_KEY_POOL_OVERLOADED: "Gemini key pool is temporarily overloaded.",
-    ERROR_CODE_KEY_POOL_TIMEOUT: "Gemini key pool timed out while waiting for capacity.",
+    ERROR_CODE_ALL_SLOTS_AUTH_FAILED: "All configured Gemini slots were rejected by upstream authentication.",
+    ERROR_CODE_ALL_SLOTS_RATE_LIMITED: "Gemini capacity is temporarily rate limited.",
+    ERROR_CODE_SLOT_SET_OVERLOADED: "Primary AI slot set is temporarily overloaded.",
+    ERROR_CODE_SLOT_SET_TIMEOUT: "Primary AI slot set timed out while waiting for capacity.",
     ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT: "Gemini allocator timed out while waiting for capacity.",
     ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT: "Gemini upstream request timed out.",
     ERROR_CODE_UPSTREAM_MODEL_FAILED: "Gemini TTS synthesis failed.",
 }
 
 _PUBLIC_TTS_ERROR_MESSAGE_BY_REASON = {
-    "capacity_pressure": "Gemini key pool is temporarily overloaded.",
+    "capacity_pressure": "Primary AI slot set is temporarily overloaded.",
 }
 
 _SENSITIVE_TTS_ERROR_TOKENS = (
@@ -660,7 +660,7 @@ def extract_pcm_bytes(response: object) -> bytes:
     raise ValueError("No audio payload returned by Gemini.")
 
 
-def _is_live_native_audio_model(model_name: str) -> bool:
+def _is_native_audio_model(model_name: str) -> bool:
     token = _normalize_model_name(str(model_name or "")).lower()
     return "native-audio" in token or token.startswith("gemini-live-") or "-live-" in token
 
@@ -893,69 +893,27 @@ def _compute_overall_daily_limit(key_count: int) -> Optional[int]:
 
 
 def _resolve_key_file_path(path_hint: str) -> Path:
-    raw_hint = str(path_hint or "").strip()
-    candidates: list[Path] = []
-    if raw_hint:
-        hint_path = Path(raw_hint).expanduser()
-        if hint_path.is_absolute():
-            candidates.append(hint_path)
-        else:
-            candidates.append(RUNTIME_ROOT / hint_path)
-            candidates.append(WORKSPACE_ROOT / hint_path)
-    else:
-        candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
-
-    first_candidate: Optional[Path] = None
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        marker = str(resolved)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        if first_candidate is None:
-            first_candidate = resolved
-        try:
-            if resolved.exists() and resolved.is_file():
-                return resolved
-        except Exception:
-            continue
-    return first_candidate or DEFAULT_GEMINI_API_KEYS_FILE
+    _ = path_hint
+    return _resolve_api_pools_file_path()
 
 
 def _configured_key_file_path() -> str:
-    return str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
+    return str(_resolve_api_pools_file_path())
 
 
 def _resolved_key_file_path() -> str:
-    return str(_resolve_key_file_path(_configured_key_file_path()))
+    return str(_resolve_api_pools_file_path())
 
 
 def _build_server_api_key_pool() -> list[str]:
-    file_tokens: list[str] = []
-    path_hint = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
-    runtime_keys_raw = str(os.getenv("GEMINI_API_KEYS") or SERVER_API_KEYS_RAW).strip()
-    runtime_single_key = str(os.getenv("GEMINI_API_KEY") or SERVER_API_KEY).strip()
     try:
-        key_file = _resolve_key_file_path(path_hint)
-        if key_file.exists() and key_file.is_file():
-            file_tokens = parse_api_keys(read_runtime_key_file_text_shared(key_file))
+        config, _meta = _load_api_pool_config(force=True)
+        slot_ids = list(resolve_effective_keys_shared(config, resolve_default_runtime_pool_hint(config)))
+        if slot_ids:
+            return slot_ids
     except Exception:
-        file_tokens = []
-    pool: list[str] = []
-    seen = set()
-    for candidate in [*parse_api_keys(runtime_keys_raw), *file_tokens, runtime_single_key]:
-        token = str(candidate or "").strip()
-        if not token or token in seen:
-            continue
-        if not _is_valid_gemini_api_key(token):
-            continue
-        seen.add(token)
-        pool.append(token)
-    return pool
+        pass
+    return ["slot_1", "slot_2", "slot_3"]
 
 
 def _resolve_api_pools_file_path() -> Path:
@@ -1182,137 +1140,19 @@ def _enforce_single_free_runtime_pool(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, list[str]]:
     normalized = normalize_pool_config(config)
-    if not VF_GEMINI_SINGLE_POOL_ENFORCE:
-        return normalized, False, []
-
-    warnings: list[str] = []
-    all_keys = flatten_pool_keys(normalized)
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    direct_free_keys = list((pools.get("free") or {}).get("keys") or [])
-    source_policy = normalized.get("sourcePolicy") if isinstance(normalized.get("sourcePolicy"), dict) else {}
-    provider_token = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    free_pool_locked = provider_token != SOURCE_POLICY_PROVIDER_VERTEX and bool(source_policy.get("freePoolLocked"))
-    if len(pools.keys()) > 1:
-        warnings.append("Single-pool mode forced all Gemini pools to canonical pool 'free'.")
-    effective_keys = list(all_keys)
-    if free_pool_locked:
-        effective_keys = list(direct_free_keys)
-        if len(all_keys) != len(direct_free_keys):
-            warnings.append(
-                "Single-pool mode ignored non-free keys because authoritative free-pool lock is enabled."
-            )
-    elif len(all_keys) != len(direct_free_keys):
-        warnings.append("Single-pool mode collapsed multi-pool key membership into canonical pool 'free'.")
-
-    unique_keys: list[str] = []
-    seen: set[str] = set()
-    for key in effective_keys:
-        token = str(key or "").strip()
-        if not token or token in seen:
-            continue
-        seen.add(token)
-        unique_keys.append(token)
-
-    next_config = dict(normalized)
-    next_config["pools"] = {"free": {"keys": unique_keys}}
-    next_config["fallbackChains"] = {"free": ["free"]}
-    next_config["defaultFallbackChain"] = ["free"]
-    next_config["planPools"] = {"free": "free", "pro": "free", "plus": "free"}
-    constraints = dict(next_config.get("constraints") or {})
-    constraints["uniqueKeyMembership"] = True
-    next_config["constraints"] = constraints
-    next_config["singlePool"] = {
-        "enabled": True,
-        "canonicalPoolId": "free",
-        "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
-    }
-    changed = json.dumps(normalized, sort_keys=True) != json.dumps(next_config, sort_keys=True)
-    return next_config, changed, warnings
+    return normalized, False, []
 
 
 def _rewrite_free_plan_pool_for_vertex(config: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
     normalized = normalize_pool_config(config)
-    source_policy = dict(normalized.get("sourcePolicy") or {})
-    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    if provider != SOURCE_POLICY_PROVIDER_VERTEX:
-        return normalized, False, ""
-
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    if "free" not in pools:
-        pools["free"] = {"keys": []}
-        normalized["pools"] = pools
-
-    pool_names = list_runtime_pool_names(normalized)
-    if not pool_names:
-        pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-        pools["free"] = {"keys": []}
-        normalized["pools"] = pools
-        pool_names = ["free"]
-
-    plan_pools = normalized.get("planPools") if isinstance(normalized.get("planPools"), dict) else {}
-    preferred = [
-        str(plan_pools.get("free") or "").strip(),
-        str(plan_pools.get("pro") or "").strip(),
-        str(plan_pools.get("plus") or "").strip(),
-        "free",
-        *pool_names,
-    ]
-    target_pool = ""
-    for candidate in preferred:
-        if candidate and candidate in pool_names:
-            target_pool = candidate
-            break
-    if not target_pool:
-        target_pool = pool_names[0]
-
-    current_free_pool = str(plan_pools.get("free") or "").strip()
-    if current_free_pool == target_pool:
-        return normalized, False, target_pool
-    next_plan_pools = dict(plan_pools)
-    next_plan_pools["free"] = target_pool
-    normalized["planPools"] = next_plan_pools
-    return normalized, True, target_pool
+    return normalized, False, ""
 
 
 def _sync_authoritative_runtime_free_pool(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, list[str]]:
     normalized = normalize_pool_config(config)
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    has_free_pool = "free" in pools
-    source_policy = dict(normalized.get("sourcePolicy") or {})
-    authoritative_mode = str(source_policy.get("freePoolMode") or "").strip().lower() == "api_file_authoritative"
-    free_pool_locked = bool(source_policy.get("freePoolLocked"))
-    # Preserve legacy/default auto-sync behavior; skip only when free pool was hard-deleted.
-    if not has_free_pool and not authoritative_mode and not free_pool_locked:
-        return normalized, False, []
-
-    configured_file_path = _configured_key_file_path()
-    if configured_file_path:
-        candidate = Path(configured_file_path).expanduser()
-        if candidate.is_absolute():
-            resolved_file_path = candidate.resolve()
-        else:
-            runtime_candidate = (RUNTIME_ROOT / candidate).resolve()
-            resolved_file_path = runtime_candidate if runtime_candidate.exists() else (WORKSPACE_ROOT / candidate).resolve()
-    else:
-        resolved_file_path = DEFAULT_GEMINI_API_KEYS_FILE.resolve()
-    file_exists = False
-    file_keys: list[str] = []
-    try:
-        file_exists = bool(resolved_file_path.exists() and resolved_file_path.is_file())
-        if file_exists:
-            file_keys = parse_api_keys(read_runtime_key_file_text_shared(resolved_file_path))
-    except Exception:
-        file_exists = False
-        file_keys = []
-    return sync_authoritative_free_pool_shared(
-        normalized,
-        file_keys,
-        str(resolved_file_path),
-        file_exists=file_exists,
-        failure_mode="keep_last_good",
-    )
+    return normalized, False, []
 
 
 def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1320,40 +1160,17 @@ def _load_api_pool_config(force: bool = False) -> tuple[dict[str, Any], dict[str
     with _API_POOLS_LOCK:
         if not force and isinstance(_API_POOLS_CACHE, dict):
             return dict(_API_POOLS_CACHE), dict(_API_POOLS_META)
-        cached_config = dict(_API_POOLS_CACHE) if isinstance(_API_POOLS_CACHE, dict) else {}
         file_path = _resolve_api_pools_file_path()
-        bootstrap_keys = list(_SERVER_API_KEY_POOL)
         config, meta = load_pool_config_shared(
             file_path=file_path,
             firestore_db=None,
             prefer_firestore=False,
-            bootstrap_free_keys=bootstrap_keys,
         )
-        source_token = str((meta or {}).get("source") or "").strip().lower()
-        if not flatten_pool_keys(config) and source_token in {"default", "bootstrap"}:
-            legacy_pool = _build_server_api_key_pool()
-            if legacy_pool:
-                config = normalize_pool_config(config)
-                pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
-                pools.setdefault("free", {"keys": []})
-                pools["free"]["keys"] = list(legacy_pool)
-                config["pools"] = pools
-        config = overlay_cached_runtime_free_pool_shared(config, cached_config=cached_config)
+        config = normalize_pool_config(config)
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_runtime_free_pool(config)
         single_pool_warnings: list[str] = []
         config, single_pool_changed, single_pool_warnings = _enforce_single_free_runtime_pool(config)
-        if synced_changed or single_pool_changed:
-            try:
-                config = save_pool_config_shared(
-                    file_path=file_path,
-                    config=config,
-                    firestore_db=None,
-                )
-            except Exception:
-                sync_warnings.append(
-                    "Authoritative free-pool sync could not be persisted; using in-memory pool config."
-                )
         meta = dict(meta if isinstance(meta, dict) else {})
         meta["warnings"] = [*list(sync_warnings), *list(single_pool_warnings)]
         meta["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
@@ -1425,20 +1242,10 @@ def _pool_keys_for_hint(pool_hint: Optional[str]) -> list[str]:
 
 
 def _resolve_request_key_plan(request_key: str, pool_hint: Optional[str] = None) -> tuple[list[str], Optional[str]]:
-    request_token = str(request_key or "").strip()
     primary_pool = _pool_keys_for_hint(pool_hint)
-    meta_source = str((_API_POOLS_META or {}).get("source") or "").strip().lower()
-    if meta_source in {"default", "bootstrap"}:
-        primary_pool = list(_SERVER_API_KEY_POOL)
     if not primary_pool:
         primary_pool = list(_SERVER_API_KEY_POOL)
-    fallback_request_key: Optional[str] = None
-    if request_token and _is_valid_gemini_api_key(request_token) and request_token not in set(primary_pool):
-        fallback_request_key = request_token
-    if not primary_pool and fallback_request_key:
-        primary_pool = [fallback_request_key]
-        fallback_request_key = None
-    return primary_pool, fallback_request_key
+    return primary_pool, None
 
 
 def resolve_request_api_key_pool(request_key: str, pool_hint: Optional[str] = None) -> list[str]:
@@ -1474,15 +1281,9 @@ def _ensure_runtime_pool_or_raise(
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX:
-        project = str(
-            source_policy.get("vertexProject")
-            or _default_vertex_project()
-            or "default"
-        ).strip() or "default"
-        synthetic_key = f"vertex::{project}"
-        primary_key_pool = [synthetic_key]
+        primary_key_pool = _pool_keys_for_hint(pool_hint)
         fallback_request_key = None
-        effective_key_pool = [synthetic_key]
+        effective_key_pool = list(primary_key_pool)
         _RUNTIME_ALLOCATOR.ensure_keys(effective_key_pool)
     else:
         primary_key_pool, fallback_request_key = _resolve_request_key_plan(
@@ -1492,36 +1293,19 @@ def _ensure_runtime_pool_or_raise(
         effective_key_pool = list(primary_key_pool)
         if fallback_request_key:
             effective_key_pool.append(fallback_request_key)
-
-        # When the in-memory server pool is empty, force a refresh before honoring cached config pools.
-        if not _SERVER_API_KEY_POOL and not str(api_key or "").strip():
+        if not effective_key_pool:
             refreshed_pool = list(_refresh_server_api_key_pool())
             if refreshed_pool:
                 primary_key_pool = list(refreshed_pool)
-                fallback_request_key = None
                 effective_key_pool = list(refreshed_pool)
-
-        if not effective_key_pool:
-            _load_api_pool_config(force=True)
-            refreshed_pool = list(_refresh_server_api_key_pool())
-            if refreshed_pool:
-                primary_key_pool, fallback_request_key = _resolve_request_key_plan(
-                    str(api_key or "").strip(),
-                    pool_hint=pool_hint,
-                )
-                if not primary_key_pool:
-                    primary_key_pool = refreshed_pool
-                effective_key_pool = list(primary_key_pool)
-                if fallback_request_key and fallback_request_key not in effective_key_pool:
-                    effective_key_pool.append(fallback_request_key)
 
     if not effective_key_pool:
         raise HTTPException(
             status_code=400,
             detail={
-                "errorCode": ERROR_CODE_API_KEY_MISSING,
-                "error": "Gemini API key is missing.",
-                "summary": KEY_POOL_MISSING_SUMMARY,
+                "errorCode": ERROR_CODE_SLOT_SET_MISSING,
+                "error": "Gemini slot pool is missing.",
+                "summary": SLOT_SET_MISSING_SUMMARY,
                 "trace_id": trace_id,
                 "retryAfterMs": 0,
             },
@@ -2043,13 +1827,13 @@ def _classification_for_error_code(error_code: str) -> str:
     code = str(error_code or "").strip().upper()
     if code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
         return "upstream_timeout"
-    if code in {ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT, ERROR_CODE_KEY_POOL_TIMEOUT}:
+    if code in {ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT, ERROR_CODE_SLOT_SET_TIMEOUT}:
         return "acquire_timeout"
-    if code == ERROR_CODE_KEY_POOL_OVERLOADED:
+    if code == ERROR_CODE_SLOT_SET_OVERLOADED:
         return "capacity_overload"
-    if code == ERROR_CODE_ALL_KEYS_RATE_LIMITED:
+    if code == ERROR_CODE_ALL_SLOTS_RATE_LIMITED:
         return "rate_limited"
-    if code in {ERROR_CODE_ALL_KEYS_AUTH_FAILED, ERROR_CODE_API_KEY_MISSING}:
+    if code in {ERROR_CODE_ALL_SLOTS_AUTH_FAILED, ERROR_CODE_SLOT_SET_MISSING}:
         return "auth"
     if code == ERROR_CODE_RUNTIME_SDK_UNAVAILABLE:
         return "misconfig"
@@ -2239,8 +2023,8 @@ def _build_overload_detail_payload(
     estimated_wait_ms = max(retry_after_ms, int(pressure.get("estimatedWaitMs") or 0))
     key_pool_size = max(0, int(pressure.get("keyPoolSize") or 0))
     return {
-        "error": "Gemini key pool is temporarily overloaded.",
-        "errorCode": ERROR_CODE_KEY_POOL_OVERLOADED,
+        "error": "Gemini slot set is temporarily overloaded.",
+        "errorCode": ERROR_CODE_SLOT_SET_OVERLOADED,
         "classification": "capacity_overload",
         "reason": "capacity_pressure",
         "summary": (
@@ -2371,9 +2155,9 @@ def _classify_terminal_error_code(
             if "no audio payload returned by gemini" not in lowered:
                 saw_non_rate_non_noise = True
     if saw_auth and not saw_rate and not saw_non_rate_non_noise:
-        return ERROR_CODE_ALL_KEYS_AUTH_FAILED
+        return ERROR_CODE_ALL_SLOTS_AUTH_FAILED
     if saw_rate and not saw_auth and not saw_non_rate_non_noise:
-        return ERROR_CODE_ALL_KEYS_RATE_LIMITED
+        return ERROR_CODE_ALL_SLOTS_RATE_LIMITED
     return ERROR_CODE_UPSTREAM_MODEL_FAILED
 
 
@@ -2390,22 +2174,44 @@ def _build_genai_client(
     safe_mode = _normalize_runtime_auth_mode(auth_mode, source_policy=source_policy)
     if safe_mode == SOURCE_POLICY_PROVIDER_VERTEX:
         policy = dict(source_policy or _runtime_source_policy())
+        selected_slot_id = str(policy.get("selectedVertexSlotId") or policy.get("vertexSlotId") or "").strip()
+        accounts = list(policy.get("vertexAccounts") or [])
+        selected_account = None
+        if selected_slot_id:
+            for account in accounts:
+                if not isinstance(account, dict):
+                    continue
+                slot_id = str(account.get("memberId") or account.get("slotId") or account.get("id") or "").strip()
+                if slot_id and slot_id == selected_slot_id:
+                    selected_account = dict(account)
+                    break
+        if selected_account is None and accounts:
+            selected_account = dict(accounts[0]) if isinstance(accounts[0], dict) else None
+        if selected_account is not None:
+            policy = {**policy, **selected_account}
         project = str(policy.get("vertexProject") or _default_vertex_project() or "").strip()
         location = str(policy.get("vertexLocation") or _default_vertex_location()).strip()
         if not project:
             raise RuntimeError("Vertex mode is enabled but sourcePolicy.vertexProject is missing.")
         credentials_path = _resolve_vertex_credentials_path(policy)
-        if credentials_path and Path(credentials_path).exists():
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
-        access_token = _read_vertex_access_token(policy)
+        if not credentials_path:
+            raise RuntimeError("Vertex mode is enabled but a service-account ref is missing.")
+        if not Path(credentials_path).exists():
+            raise RuntimeError(f"Vertex service-account file does not exist: {credentials_path}")
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
         client_kwargs: Dict[str, Any] = {
             "vertexai": True,
             "project": project,
             "location": location,
         }
-        if access_token and google_oauth2_credentials is not None:
+        if google_oauth2_credentials is not None:
             try:
-                client_kwargs["credentials"] = google_oauth2_credentials.Credentials(token=access_token)
+                from google.oauth2 import service_account as google_service_account  # type: ignore
+
+                client_kwargs["credentials"] = google_service_account.Credentials.from_service_account_file(
+                    credentials_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
             except Exception:
                 pass
         if types is not None and hasattr(types, "HttpOptions"):
@@ -3649,9 +3455,9 @@ def _synthesize_pcm_with_key_pool(
                 api_key=lease.key,
                 timeout_ms=request_timeout_ms,
                 auth_mode=auth_mode,
-                source_policy=source_policy,
+                source_policy={**source_policy, "selectedVertexSlotId": str(lease.key or "").strip()},
             )
-            if _is_live_native_audio_model(lease.model_id):
+            if _is_native_audio_model(lease.model_id):
                 pcm_bytes, usage_metadata = _synthesize_live_pcm(
                     client=client,
                     model_id=lease.model_id,
@@ -4224,10 +4030,10 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
         _record_error_classification(error_code)
         status_code = 502
         if error_code in {
-            ERROR_CODE_KEY_POOL_OVERLOADED,
-            ERROR_CODE_KEY_POOL_TIMEOUT,
+            ERROR_CODE_SLOT_SET_OVERLOADED,
+            ERROR_CODE_SLOT_SET_TIMEOUT,
             ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT,
-            ERROR_CODE_ALL_KEYS_RATE_LIMITED,
+            ERROR_CODE_ALL_SLOTS_RATE_LIMITED,
         }:
             status_code = 503
         elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
@@ -4361,30 +4167,9 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
     )
 
 
-@app.get("/v1/admin/api-pool")
-def admin_api_pool(request: Request) -> JSONResponse:
-    _require_runtime_admin(request)
-    config, meta = _load_api_pool_config()
-    key_pool = resolve_request_api_key_pool("", pool_hint=resolve_default_runtime_pool_hint(config))
-    snapshot = _RUNTIME_ALLOCATOR.snapshot(key_pool)
-    payload = dict(snapshot)
-    payload["ok"] = True
-    payload["engine"] = APP_NAME
-    payload["timestampMs"] = int(time.time() * 1000)
-    payload["configuredKeyFilePath"] = _configured_key_file_path()
-    payload["keyFilePath"] = _resolved_key_file_path()
-    payload["effectiveTtsLimits"] = _effective_tts_route_limits()
-    payload["recentErrorClassCounts"] = _recent_error_class_counts()
-    payload["poolConfig"] = _sanitize_runtime_pool_config_for_response(config)
-    payload["poolConfigMeta"] = meta
-    payload["warnings"] = list((meta or {}).get("warnings") or [])
-    payload["sourcePolicy"] = _sanitize_source_policy_for_response(dict(config.get("sourcePolicy") or {}))
-    return JSONResponse(payload)
-
-
-@app.post("/v1/admin/api-pool/reload")
 def admin_api_pool_reload(request: Request) -> JSONResponse:
     _require_runtime_admin(request)
+    raise HTTPException(status_code=405, detail="Gemini pool management has been removed.")
     refreshed_pool = list(_refresh_server_api_key_pool())
     config, _ = _load_api_pool_config(force=True)
     key_pool = list(resolve_request_api_key_pool("", pool_hint=resolve_default_runtime_pool_hint(config)))
@@ -4415,9 +4200,9 @@ def admin_api_pools(request: Request) -> JSONResponse:
     return JSONResponse(_admin_api_pools_payload())
 
 
-@app.put("/v1/admin/api-pools")
 def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Request) -> JSONResponse:
     _require_runtime_admin(request)
+    raise HTTPException(status_code=405, detail="Gemini pool management has been removed.")
     current_config, _current_meta = _load_api_pool_config(force=True)
     current_source_policy = dict(current_config.get("sourcePolicy") or {})
     applied_overrides: list[str] = []
@@ -4577,9 +4362,9 @@ def admin_api_pools_update(payload: ApiPoolsConfigUpdateRequest, request: Reques
     )
 
 
-@app.post("/v1/admin/api-pools/reload")
 def admin_api_pools_reload(request: Request) -> JSONResponse:
     _require_runtime_admin(request)
+    raise HTTPException(status_code=405, detail="Gemini pool management has been removed.")
     config, _ = _load_api_pool_config(force=True)
     key_pool = resolve_request_api_key_pool("", pool_hint=resolve_default_runtime_pool_hint(config))
     if key_pool:
@@ -4696,7 +4481,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
                 api_key=lease.key,
                 timeout_ms=remaining_budget_ms,
                 auth_mode=auth_mode,
-                source_policy=source_policy,
+                source_policy={**source_policy, "selectedVertexSlotId": str(lease.key or "").strip()},
             )
             response = client.models.generate_content(
                 model=lease.model_id,
@@ -4788,10 +4573,10 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
     _record_error_classification(error_code)
     status_code = 502
     if error_code in {
-        ERROR_CODE_KEY_POOL_OVERLOADED,
-        ERROR_CODE_KEY_POOL_TIMEOUT,
+        ERROR_CODE_SLOT_SET_OVERLOADED,
+        ERROR_CODE_SLOT_SET_TIMEOUT,
         ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT,
-        ERROR_CODE_ALL_KEYS_RATE_LIMITED,
+        ERROR_CODE_ALL_SLOTS_RATE_LIMITED,
     }:
         status_code = 503
     elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
@@ -4816,7 +4601,7 @@ def count_tokens(payload: CountTokensRequest) -> JSONResponse:
         pool_hint=None,
     )
     if not effective_key_pool:
-        raise HTTPException(status_code=503, detail="No Gemini API keys available.")
+        raise HTTPException(status_code=503, detail="No Gemini slots available.")
 
     explicit_model_candidates, invalid_model_candidates = _resolve_explicit_model_candidates(
         raw_candidates=payload.modelCandidates,
@@ -4848,7 +4633,7 @@ def count_tokens(payload: CountTokensRequest) -> JSONResponse:
 
     key = str(effective_key_pool[0] or "").strip()
     if not key:
-        raise HTTPException(status_code=503, detail="No Gemini API keys available.")
+        raise HTTPException(status_code=503, detail="No Gemini slots available.")
     model_id = str(model_candidates[0] or "").strip()
 
     try:
@@ -4856,7 +4641,7 @@ def count_tokens(payload: CountTokensRequest) -> JSONResponse:
             api_key=key,
             timeout_ms=20_000,
             auth_mode=auth_mode,
-            source_policy=source_policy,
+            source_policy={**source_policy, "selectedVertexSlotId": key},
         )
         response = client.models.count_tokens(model=model_id, contents=contents)
     except Exception as exc:  # noqa: BLE001

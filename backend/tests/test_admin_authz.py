@@ -577,8 +577,6 @@ def test_admin_can_submit_tts_without_userid_profile(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", True)
-    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_ENABLED", False)
-    monkeypatch.setattr(backend_app, "VF_TTS_POST_LLVC_REQUIRED", False)
     monkeypatch.setattr(
         backend_app,
         "_verify_firebase_id_token",

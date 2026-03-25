@@ -14,7 +14,7 @@ Use this directly to build a new Home page in Figma.
 - Improve:
   - Strong first-fold hierarchy (headline + primary actions)
   - Clear KPI cards (balance, generation usage, runtime health)
-  - Faster task entry (Generate, Video Dub, Novel, Voice Lab)
+  - Faster task entry (Generate, Video Dub, Novel, Voice Cloning)
   - Better empty/idle states and progressive disclosure
 
 ## 2) Frame Setup
@@ -64,7 +64,7 @@ From current app token system:
   - `Studio Voice`
   - `Novel Workspace`
   - `Video Dub`
-  - `Voice Lab`
+  - `Voice Cloning`
 - Each tile:
   - icon
   - one-line description

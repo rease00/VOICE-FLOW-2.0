@@ -1,7 +1,7 @@
 export type KokoroStudioWorkerErrorCode = 'UNSUPPORTED_BROWSER' | 'RUNTIME_ERROR' | 'ABORTED';
 
 export interface KokoroStudioWorkerInitPayload {
-  backendBaseUrl: string;
+  backendBaseUrl?: string;
   voiceId: string;
   language?: string;
   speed?: number;

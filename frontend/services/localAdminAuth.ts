@@ -93,6 +93,7 @@ const LOCAL_ADMIN_UID =
 
 const LOCAL_ADMIN_EMAIL = `${LOCAL_ADMIN_USERNAME}@local.admin`;
 const LOCAL_ADMIN_DEV_LOGIN_ENABLED = truthyEnv(import.meta.env.VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN);
+const LOCAL_ADMIN_LOGIN_EMAIL = String(import.meta.env.VITE_ADMIN_LOGIN_EMAIL || '').trim().toLowerCase();
 
 const LOCAL_ADMIN_PBKDF2_ITERATIONS = parsePositiveInt(
   import.meta.env.VITE_LOCAL_ADMIN_PBKDF2_ITERATIONS,
@@ -178,7 +179,13 @@ export const isLocalAdminConfigured = (): boolean => !localAdminConfigIssue;
 
 export const isLocalAdminUsername = (input: string): boolean => {
   const normalized = String(input || '').trim().toLowerCase();
-  return Boolean(normalized) && normalized === LOCAL_ADMIN_USERNAME;
+  if (!normalized) return false;
+  if (normalized === LOCAL_ADMIN_USERNAME) return true;
+  if (normalized === LOCAL_ADMIN_EMAIL) return true;
+  if (LOCAL_ADMIN_LOGIN_EMAIL && normalized === LOCAL_ADMIN_LOGIN_EMAIL) return true;
+  if (!normalized.includes('@')) return false;
+  const [localPart] = normalized.split('@');
+  return localPart === LOCAL_ADMIN_USERNAME;
 };
 
 export const getLocalAdminUid = (): string => LOCAL_ADMIN_UID;
@@ -222,7 +229,7 @@ export const clearLocalAdminSession = (): void => {
   }
 };
 
-export const createLocalAdminSession = async (): Promise<LocalAdminSessionPayload | null> => {
+export const createLocalAdminSession = async (loginEmail?: string): Promise<LocalAdminSessionPayload | null> => {
   if (localAdminConfigIssue) return null;
   const crypto = getWebCrypto();
   if (!crypto) return null;
@@ -230,9 +237,11 @@ export const createLocalAdminSession = async (): Promise<LocalAdminSessionPayloa
   if (!key) return null;
 
   const now = Date.now();
+  const normalizedLoginEmail = String(loginEmail || '').trim().toLowerCase();
+  const resolvedEmail = normalizedLoginEmail.includes('@') ? normalizedLoginEmail : LOCAL_ADMIN_EMAIL;
   const payload: LocalAdminSessionPayload = {
     uid: LOCAL_ADMIN_UID,
-    email: LOCAL_ADMIN_EMAIL,
+    email: resolvedEmail,
     role: 'user',
     issuedAt: now,
     expiresAt: now + LOCAL_ADMIN_SESSION_TTL_MIN * 60 * 1000,

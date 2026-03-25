@@ -18,7 +18,7 @@ let lastThreadBudget = 1;
 const cancelledRequestIds = new Set<string>();
 
 const createUnsupportedBrowserMessage = (): string => (
-  'Basic browser runtime is unavailable in this environment. Reload the tab, close heavy tabs, and update to the latest Chromium-based browser.'
+  'Basic WebGPU runtime is unavailable in this environment. Enable WebGPU in a secure Chromium-based browser and retry.'
 );
 
 const createRuntimeError = (

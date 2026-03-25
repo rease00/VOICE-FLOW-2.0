@@ -103,7 +103,6 @@ import { getSharedAudioContext as getAudioContext } from '../src/shared/audio/au
 import { hydrateRuntimeStatusSnapshot } from '../src/shared/runtime/runtimeStatusHydration';
 import { BACKEND_ROUTING_APPLIED_EVENT } from '../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
-import { TTS_VOICE_CONVERSION_FALLBACK_EVENT, type TtsVoiceConversionFallbackDetail } from '../src/shared/audio/voiceConversionEvents';
 import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../services/runtimeStatusMapping';
 
 const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
@@ -367,9 +366,7 @@ const pushDubbingTimelineHistory = (
 
 const loadAdminTabContent = () => import('../src/features/admin/components/AdminTabContent');
 const loadNovelTabContent = () => import('../src/features/novel/components/NovelTabContent');
-const loadLabTabContent = () => import('../src/features/lab/components/LabTabContent');
 const loadReaderTabContent = () => import('../src/features/reader/components/ReaderTabContent');
-const loadPodcastTabContent = () => import('../src/features/podcast/components/PodcastTabContent');
 const loadAudioPlayer = () => import('../components/AudioPlayer');
 const LazyBlockScriptEditor = lazy(async () => {
   const module = await import('../components/studio/BlockScriptEditor');
@@ -512,9 +509,7 @@ const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'mediaBackend
 
 const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
 const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
-const LabTabContent = lazy(async () => loadLabTabContent().then((module) => ({ default: module.default })));
 const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
-const PodcastTabContent = lazy(async () => loadPodcastTabContent().then((module) => ({ default: module.PodcastTabContent })));
 const VoiceCloneModal = lazy(async () => import('../src/features/voice-cloning/VoiceCloneModal').then((module) => ({ default: module.VoiceCloneModal })));
 const AudioPlayer = lazy(async () => loadAudioPlayer().then((module) => ({ default: module.AudioPlayer })));
 
@@ -522,7 +517,6 @@ const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   [Tab.ADMIN]: loadAdminTabContent,
   [Tab.NOVEL]: loadNovelTabContent,
   [Tab.READER]: loadReaderTabContent,
-  [Tab.PODCAST]: loadPodcastTabContent,
 };
 
 const loadGeminiService = (() => {
@@ -938,8 +932,6 @@ const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; baseI
 
 const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
   [Tab.STUDIO]: 'Script, cast, and render audio',
-  [Tab.PODCAST]: 'Standard podcast scripting and handoff',
-  [Tab.LAB]: 'Studio workspace',
   [Tab.READER]: 'Narration workspace for novels and comics',
   [Tab.CHARACTERS]: 'Voice roster and cast management',
   [Tab.NOVEL]: 'Long-form drafting and chapter flow',
@@ -1450,7 +1442,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   
   // --- State ---
   const [activeTab, setActiveTab] = useState<Tab>(resolveWorkspaceTabFromUrl);
-  const isStudioWorkspaceTab = activeTab === Tab.STUDIO || activeTab === Tab.LAB;
+  const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (
@@ -1670,6 +1662,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     characterId: string | undefined;
     voiceId: string;
     sourceVoiceLabel: string;
+    sourceVoiceEngine: string;
     sourceVoiceUrl: string;
     sourceVoiceUrlNeedsCleanup: boolean;
     applyGlobally: boolean;
@@ -1687,7 +1680,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [charForm, setCharForm] = useState<CharacterProfile>({
       id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
-  const voiceConversionFallbackToastRef = useRef<Record<string, number>>({});
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const dubAudioRef = useRef<HTMLAudioElement>(null);
@@ -2393,22 +2385,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [resolveVoiceAccessTier, resolveVoiceAgeGroup, resolveVoiceCountry]);
 
   const getStaticVoicesForEngine = useCallback((engine: GenerationSettings['engine']): VoiceOption[] => {
-      if (isGemRuntimeEngine(engine)) {
-          return [
-              ...getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine)),
-              ...clonedVoices.map((voice) =>
-                  withVoiceMeta(
-                      {
-                          ...voice,
-                          country: voice.country || 'Unknown',
-                          ageGroup: voice.ageGroup || 'Unknown',
-                      },
-                      engine
-                  )
-              ),
-          ];
-      }
-      return getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine));
+      const clonedCatalog = clonedVoices.filter((voice) => {
+          const sourceEngine = String(voice.sourceVoiceEngine || '').trim();
+          if (!sourceEngine) return true;
+          return normalizeEngineToken(sourceEngine, engine) === engine;
+      });
+      return [
+          ...getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine)),
+          ...clonedCatalog.map((voice) =>
+              withVoiceMeta(
+                  {
+                      ...voice,
+                      country: voice.country || 'Unknown',
+                      ageGroup: voice.ageGroup || 'Unknown',
+                  },
+                  engine
+              )
+          ),
+      ];
   }, [clonedVoices, isGemRuntimeEngine, withVoiceMeta]);
 
   const mergeVoiceCatalogs = useCallback((primary: VoiceOption[], fallback: VoiceOption[]): VoiceOption[] => {
@@ -2431,7 +2425,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const runtimeBase = runtimeVoices.map((voice) => withVoiceMeta(voice, engine));
           const staticBase = getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine));
           const baseVoices = mergeVoiceCatalogs(runtimeBase, staticBase);
-          const cloneVoices = clonedVoices.map((voice) =>
+          const cloneVoices = clonedVoices.filter((voice) => {
+              const sourceEngine = String(voice.sourceVoiceEngine || '').trim();
+              if (!sourceEngine) return true;
+              return normalizeEngineToken(sourceEngine, engine) === engine;
+          }).map((voice) =>
               withVoiceMeta(
                   {
                       ...voice,
@@ -3384,9 +3382,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (
           isGemRuntimeEngine(engine) &&
           currentStatus.state === 'offline' &&
-          String(currentStatus.detail || '').toLowerCase().includes('key pool')
+          String(currentStatus.detail || '').toLowerCase().includes('slot')
       ) {
-          throw new Error(currentStatus.detail || 'Primary AI key pool is not configured.');
+          throw new Error(currentStatus.detail || 'Primary AI slot set is not configured.');
       }
       if (currentStatus.state === 'offline' && isAuthOrProfileBlockingMessage(currentStatus.detail)) {
           throw new Error(currentStatus.detail || 'Sign in again to enable AI/TTS requests.');
@@ -4401,26 +4399,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       window.addEventListener(TTS_RUNTIME_DIAGNOSTICS_EVENT, handleRuntimeDiagnostics as EventListener);
       return () => window.removeEventListener(TTS_RUNTIME_DIAGNOSTICS_EVENT, handleRuntimeDiagnostics as EventListener);
   }, [emit]);
-
-  useEffect(() => {
-      const handleVoiceConversionFallback = (event: Event) => {
-          const detail = ((event as CustomEvent<TtsVoiceConversionFallbackDetail>).detail || {}) as TtsVoiceConversionFallbackDetail;
-          const voiceId = String(detail.voiceId || '').trim();
-          const voiceName = String(detail.voiceName || '').trim();
-          const error = String(detail.error || '').trim();
-          const dedupeKey = `${voiceId || voiceName || 'unknown'}:${error.slice(0, 120)}`;
-          const now = Date.now();
-          const lastShownAt = voiceConversionFallbackToastRef.current[dedupeKey] || 0;
-          if ((now - lastShownAt) < 15000) return;
-          voiceConversionFallbackToastRef.current[dedupeKey] = now;
-          showToast(
-              `Voice conversion failed for ${voiceName || voiceId || 'the selected voice'}; using original TTS audio.`,
-              'info'
-          );
-      };
-      window.addEventListener(TTS_VOICE_CONVERSION_FALLBACK_EVENT, handleVoiceConversionFallback as EventListener);
-      return () => window.removeEventListener(TTS_VOICE_CONVERSION_FALLBACK_EVENT, handleVoiceConversionFallback as EventListener);
-  }, [showToast]);
 
   useEffect(() => {
       const handleGatewayProgress = (event: Event) => {
@@ -6213,7 +6191,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const preview = resolveVoicePreviewUrl(voice);
       if (preview) return preview;
       if (!voice.isCloned) return '';
-      return String((voice as ClonedVoice).originalSampleUrl || '').trim();
+      const clonedVoice = voice as ClonedVoice;
+      return String(clonedVoice.originalSampleUrl || clonedVoice.referenceAudioUrl || '').trim();
   }, [resolveVoicePreviewUrl]);
 
   const buildVoiceSampleSource = useCallback(async (
@@ -7415,6 +7394,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       characterId?: string,
       applyGlobally = false
   ) => {
+      enableStudioMultiSpeaker();
       const voice = getVoiceById(voiceId);
       const sourceVoiceLabel = voice ? resolveVoiceDisplayLabel(voice) : String(speakerName || 'Selected speaker').trim() || 'Selected speaker';
       openVoiceCloneModal({
@@ -7422,11 +7402,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           speakerName: speakerName ? String(speakerName).trim() : undefined,
           characterId,
           sourceVoiceLabel,
+          sourceVoiceEngine: String(voice?.engine || settings.engine || '').trim(),
           sourceVoiceUrl: '',
           sourceVoiceUrlNeedsCleanup: false,
           applyGlobally,
       });
-  }, [getVoiceById, openVoiceCloneModal, resolveVoiceDisplayLabel]);
+  }, [enableStudioMultiSpeaker, getVoiceById, openVoiceCloneModal, resolveVoiceDisplayLabel, settings.engine]);
 
   // --- Derived State for Gallery ---
   const galleryVoicePool = useMemo(() => {
@@ -7592,12 +7573,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   };
   const activeTabLabel = activeTab === Tab.STUDIO
     ? 'Studio'
-    : activeTab === Tab.PODCAST
-      ? 'Podcast'
-    : activeTab === Tab.LAB
-      ? 'Studio'
-      : activeTab === Tab.READER
-        ? 'Reader'
+    : activeTab === Tab.READER
+      ? 'Reader'
       : activeTab === Tab.CHARACTERS
         ? 'Character'
       : activeTab === Tab.NOVEL
@@ -7622,7 +7599,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [activeTab, hasAdminConsoleAccess]);
   useEffect(() => {
       const activeTabExists = workspaceTabs.some((item) => item.id === activeTab);
-      if (activeTab !== Tab.LAB && !activeTabExists) {
+      if (!activeTabExists) {
           setActiveTab(Tab.STUDIO);
       }
   }, [activeTab, workspaceTabs]);
@@ -8558,9 +8535,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const usesPhoneStudioDock = isStudioWorkspaceTab && isPhone;
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
-  const usesFullBleedLabContent = activeTab === Tab.LAB;
-  const shouldLockLabScroll = usesFullBleedLabContent && !isPhone;
-  const shouldHideAssistantForLab = activeTab === Tab.LAB || activeTab === Tab.READER;
+  const shouldHideAssistantForReader = activeTab === Tab.READER;
   const isDesktopCompactSidebar = isDesktop && sidebarMode === 'compact';
   const mainDesktopPaddingClass = isDesktopCompactSidebar ? 'xl:pl-[4.5rem]' : 'xl:pl-64';
   const topbarDesktopOffsetClass = isDesktopCompactSidebar
@@ -8581,9 +8556,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           : 'pb-52'
       : 'pb-36';
   const workspaceScrollFrameClass =
-    activeTab === Tab.PODCAST
-      ? 'overflow-y-auto px-4 md:px-8 pt-16 md:pt-20 pb-6 md:pb-8'
-      : `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`;
+    `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`;
   const studioFloatingDockWidthClass = isDesktop
     ? 'w-[clamp(17rem,28vw,20.25rem)] max-w-[calc(100vw-2rem)]'
     : 'w-[clamp(15.5rem,31vw,18.25rem)] max-w-[calc(100vw-2rem)]';
@@ -8593,7 +8566,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
-  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForLab && !isStudioWorkspaceTab;
+  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForReader && !isStudioWorkspaceTab;
   const showFloatingAssistantFab = !isPhone;
   const assistantFabSizeClass = isPhone ? 'w-14 h-14' : 'w-16 h-16';
   const assistantPanelSizeClass = isPhone
@@ -8607,7 +8580,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = !shouldHideAssistantForLab && (showFloatingAssistantFab || isChatOpen);
+  const shouldRenderFloatingAssistant = !shouldHideAssistantForReader && (showFloatingAssistantFab || isChatOpen);
 
   return (
     <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
@@ -8794,13 +8767,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`vf-main-scroll flex-1 studio-scrollbar relative ${
-            usesFullBleedLabContent
-              ? `${shouldLockLabScroll ? 'overflow-hidden' : 'overflow-y-auto'} px-0 md:px-0 pt-16 md:pt-20 pb-0`
-              : workspaceScrollFrameClass
-          }`}
+          className={`vf-main-scroll flex-1 studio-scrollbar relative ${workspaceScrollFrameClass}`}
         >
-            <div className={usesFullBleedLabContent ? 'mx-auto w-full h-full max-w-none space-y-0' : `mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
+            <div className={`mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
                 
                 {isStudioWorkspaceTab && (
                     <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
@@ -9893,7 +9862,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       onClose={closeVoiceCloneModal}
                       onCloneCreated={handleVoiceCloneCreated}
                       backendBaseUrl={mediaBackendUrl}
+                      sourceVoiceId={voiceCloneTarget.voiceId}
                       sourceVoiceLabel={voiceCloneTarget.sourceVoiceLabel}
+                      sourceVoiceEngine={voiceCloneTarget.sourceVoiceEngine || settings.engine}
                       sourceVoiceUrl={voiceCloneTarget.sourceVoiceUrl}
                       prepareSourceVoiceUrl={() => buildVoiceSampleSource(
                         voiceCloneTarget.voiceId,
@@ -10054,19 +10025,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
 
-                {activeTab === Tab.PODCAST && (
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading podcast workspace...</SectionCard>}>
-                      <PodcastTabContent
-                        currentEngine={settings.engine}
-                        currentVoiceId={settings.voiceId}
-                        currentLanguage={settings.language}
-                        mediaBackendUrl={mediaBackendUrl}
-                        resolveVoiceCatalog={getEngineVoiceCatalog}
-                        onToast={showToast}
-                      />
-                    </Suspense>
-                )}
-
                 {activeTab === Tab.READER && (
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader workspace...</SectionCard>}>
                       <ReaderTabContent
@@ -10078,14 +10036,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
 
-                {activeTab === Tab.LAB && (
-                    <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading Lab...</SectionCard>}>
-                      <LabTabContent
-                        resolvedTheme={resolvedTheme}
-                        onToast={showToast}
-                      />
-                    </Suspense>
-                )}
                 {activeTab === Tab.ADMIN && hasAdminConsoleAccess && (
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading admin controls...</SectionCard>}>
                       <AdminTabContent
@@ -10139,7 +10089,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
-      {!shouldHideAssistantForLab && isChatOpen && (
+      {!shouldHideAssistantForReader && isChatOpen && (
         <button
           type="button"
           className="fixed inset-0 z-40 bg-transparent"

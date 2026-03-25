@@ -33,8 +33,9 @@ import {
   resolveLiveChunkRequest,
   sleepMs,
 } from "./ttsLongTextService";
+import { getSessionClonedVoices } from "./clonedVoiceSessionStore";
 
-// Gemini helper defaults to local runtime/server key pool; user key is optional override.
+// Gemini helper defaults to the backend-held slot set; user key is optional override.
 export const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
 export { TTS_GATEWAY_AUDIO_CHUNK_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT } from "./ttsGatewayJobService";
 
@@ -194,23 +195,23 @@ const mapGeminiRuntimeErrorCode = (
   const code = String(errorCode || '').trim().toUpperCase();
   const retryHint = formatRetryDelayHint(retryAfterMs);
   if (!code) return null;
-  if (code === 'GEMINI_API_KEY_MISSING') {
-    return 'Gemini runtime key pool is empty. Configure GEMINI_API_KEYS_FILE (recommended), GEMINI_API_KEYS, or GEMINI_API_KEY.';
+  if (code === 'GEMINI_SLOT_SET_MISSING') {
+    return 'Primary AI slot set is empty. Configure the backend-held service-account slots and retry.';
   }
   if (code === 'GEMINI_RUNTIME_SDK_UNAVAILABLE') {
     return 'Gemini runtime dependencies are unavailable. Install runtime requirements and restart services.';
   }
-  if (code === 'GEMINI_ALL_KEYS_AUTH_FAILED') {
-    return 'All Gemini API keys were rejected by upstream auth. Replace invalid keys and retry.';
+  if (code === 'GEMINI_ALL_SLOTS_AUTH_FAILED') {
+    return 'All Gemini service-account slots were rejected by upstream auth. Replace invalid credentials and retry.';
   }
-  if (code === 'GEMINI_ALL_KEYS_RATE_LIMITED') {
+  if (code === 'GEMINI_ALL_SLOTS_RATE_LIMITED') {
     return quotaRuntimeMessage(retryAfterMs);
   }
-  if (code === 'GEMINI_KEY_POOL_OVERLOADED' || code === 'GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT') {
+  if (code === 'GEMINI_SLOT_SET_OVERLOADED' || code === 'GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT') {
     return `Gemini TTS capacity is saturated.${retryHint}`.trim();
   }
-  if (code === 'GEMINI_KEY_POOL_TIMEOUT') {
-    return `Gemini key pool timed out while waiting for an available key.${retryHint}`.trim();
+  if (code === 'GEMINI_SLOT_SET_TIMEOUT') {
+    return `Gemini slot set timed out while waiting for an available slot.${retryHint}`.trim();
   }
   if (code === 'GEMINI_UPSTREAM_REQUEST_TIMEOUT') {
     const normalizedSummary = normalizeRuntimeUserMessage(summary, retryAfterMs);
@@ -772,7 +773,7 @@ export const generateText = async (
       return await callPerplexityChat(messages, perplexityKey);
     }
     
-    // Gemini path: runtime/server key pool by default, with optional personal key override.
+    // Gemini path: backend-held slot set by default, with optional personal key override.
     const forceUserKey = dispatchPlan.useUserGeminiKey;
     const geminiKey = resolveGeminiApiKey(settings);
     if (forceUserKey) {
@@ -2797,6 +2798,111 @@ export const generateSpeech = async (
     }
   };
 
+  const resolveCloneReferenceUrl = (candidateUrl: string): string => {
+    const raw = String(candidateUrl || '').trim();
+    if (!raw) return '';
+    if (/^(?:https?:|blob:|data:)/i.test(raw)) return raw;
+    const backendBase = resolveMediaBackendBaseUrl(settings);
+    if (!backendBase) return raw;
+    return raw.startsWith('/') ? `${backendBase}${raw}` : `${backendBase}/${raw}`;
+  };
+
+  const maybeApplyOpenVoiceClone = async (buffer: AudioBuffer, spokenText: string): Promise<AudioBuffer> => {
+    if (!activeSessionClone || useGeminiBuiltInMultiSpeaker) return buffer;
+
+    const backendBase = resolveMediaBackendBaseUrl(settings);
+    if (!backendBase) return buffer;
+
+    const referenceAudioUrl = resolveCloneReferenceUrl(
+      String(activeSessionClone.referenceAudioUrl || activeSessionClone.originalSampleUrl || '')
+    );
+    if (!referenceAudioUrl) return buffer;
+
+    try {
+      const [sourceAudioBase64, referenceAudioBase64] = await Promise.all([
+        arrayBufferToBase64(await audioBufferToWav(buffer).arrayBuffer()),
+        getCloneBase64(referenceAudioUrl),
+      ]);
+
+      if (!sourceAudioBase64 || !referenceAudioBase64) {
+        return buffer;
+      }
+
+      const sourceVoiceId = String(
+        activeSessionClone.sourceVoiceId ||
+        resolvedVoiceInput ||
+        voiceName ||
+        settings.voiceId ||
+        ''
+      ).trim();
+      const sourceVoiceName = String(
+        activeSessionClone.sourceVoiceName ||
+        sourceVoiceId ||
+        resolvedVoiceInput ||
+        voiceName ||
+        settings.voiceId ||
+        ''
+      ).trim();
+      const referenceAudioName = String(activeSessionClone.referenceAudioName || 'reference.wav').trim() || 'reference.wav';
+      const sourceAudioName = `${sourceVoiceName || sourceVoiceId || 'source'}.wav`;
+      const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${traceId}-openvoice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const response = await authFetch(
+        `${backendBase}/voice-clone/openvoice`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true',
+          },
+          body: JSON.stringify({
+            mode: 'tts_then_vc',
+            runKind: 'warm',
+            durationSec: Math.max(1, Math.ceil(buffer.duration || 1)),
+            language: lang.toUpperCase(),
+            text: String(spokenText || '').trim(),
+            sourceVoiceId,
+            sourceVoiceName,
+            sourceVoiceEngine: String(activeSessionClone.sourceVoiceEngine || settings.engine || '').trim(),
+            referenceAudioBase64,
+            referenceAudioName,
+            referenceAudioUrl,
+            sourceAudioBase64,
+            sourceAudioName,
+            speed: settings.speed,
+            requestId,
+            traceId,
+            regionHint: '',
+            regionSource: 'studio',
+            costMultiplier: 1,
+          }),
+        },
+        { requireAuth: true }
+      );
+
+      if (!response.ok) {
+        const detail = await parseRuntimeError(response);
+        throw new Error(detail || `OpenVoice clone failed (${response.status}).`);
+      }
+
+      const payload = await response.json().catch(() => null) as any;
+      const finalBase64 = String(payload?.audioBase64 || '').trim();
+      if (!finalBase64) {
+        throw new Error('OpenVoice clone returned no audio.');
+      }
+
+      const finalBuffer = await ctx.decodeAudioData(base64ToArrayBuffer(finalBase64));
+      return finalBuffer;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error || '');
+      if (detail) {
+        console.warn('OpenVoice post-clone failed; using base TTS audio.', detail);
+      }
+      return buffer;
+    }
+  };
+
   const maybeSynthesizePrimaryLongText = async (
     engine: 'GEM' | 'NEURAL2' | 'KOKORO',
     candidateText: string,
@@ -2868,11 +2974,45 @@ export const generateSpeech = async (
     return mergeChunkBuffersWithCrossfade(ctx, buffers, profile.joinCrossfadeMs);
   };
   
-  // Load cloned voices
-  let availableClones: ClonedVoice[] = [];
-  try { 
-    availableClones = JSON.parse(localStorage.getItem('vf_clones') || '[]'); 
-  } catch (e) {}
+  const availableClones = getSessionClonedVoices();
+  const normalizeCloneLookupToken = (value: string | undefined): string => String(value || '').trim().toLowerCase();
+  const resolveSessionClonedVoice = (candidateId?: string, candidateName?: string): ClonedVoice | undefined => {
+    const tokens = [
+      candidateId,
+      candidateName,
+    ]
+      .map((item) => normalizeCloneLookupToken(item))
+      .filter(Boolean);
+    if (tokens.length === 0) return undefined;
+    return availableClones.find((voice) => {
+      const candidates = [
+        voice.id,
+        voice.name,
+        voice.geminiVoiceName,
+      ]
+        .map((item) => normalizeCloneLookupToken(item))
+        .filter(Boolean);
+      return tokens.some((token) => candidates.includes(token));
+    });
+  };
+  const isSessionCloneVoiceId = (candidate?: string): boolean => {
+    const token = normalizeCloneLookupToken(candidate);
+    if (!token) return false;
+    return availableClones.some((voice) => {
+      const identityTokens = [voice.id, voice.name, voice.geminiVoiceName]
+        .map((item) => normalizeCloneLookupToken(item))
+        .filter(Boolean);
+      return identityTokens.includes(token);
+    });
+  };
+  const activeSessionClone = resolveSessionClonedVoice(settings.voiceId, voiceName);
+  const resolvedVoiceInput = String(
+    activeSessionClone?.sourceVoiceId ||
+    activeSessionClone?.sourceVoiceName ||
+    voiceName ||
+    settings.voiceId ||
+    ''
+  ).trim();
 
   const resolveGeminiVoiceName = (candidate: string | undefined, fallback = 'Fenrir'): string => {
     let resolved = String(candidate || '').trim();
@@ -2954,7 +3094,7 @@ export const generateSpeech = async (
       .filter(Boolean)
   );
   const hasTrueMultiSpeakerScript = multiSpeakerEnabled && isMultiSpeaker && speakersList.length > 1;
-  const defaultGeminiVoice = resolveGeminiVoiceName(voiceName || settings.voiceId || 'Fenrir', 'Fenrir');
+  const defaultGeminiVoice = resolveGeminiVoiceName(resolvedVoiceInput || 'Fenrir', 'Fenrir');
   const geminiStudioPairGroupsPlan = (() => {
     if (!usesGemRuntime) return null;
     if (!multiSpeakerEnabled) return null;
@@ -2979,6 +3119,12 @@ export const generateSpeech = async (
     }
 
     if (speakerOrder.length < 2) return null;
+
+    const hasCloneBoundSpeaker = speakerOrder.some((speaker) => {
+      const mappedId = resolveSpeakerMappedVoiceId(settings.speakerMapping, speaker);
+      return isSessionCloneVoiceId(mappedId);
+    });
+    if (hasCloneBoundSpeaker) return null;
 
     const initialVoices = speakerOrder.map((speaker) => resolveGeminiVoiceForSpeaker(speaker, defaultGeminiVoice));
     const resolvedVoices = speakerOrder.length === 2
@@ -3308,7 +3454,7 @@ export const generateSpeech = async (
           speaker: speakerHint || undefined,
         },
         'Gemini runtime synthesis'
-      );
+      ).then((buffer) => maybeApplyOpenVoiceClone(buffer, processedText));
     } catch (runtimeError: any) {
       let finalRuntimeError: any = runtimeError;
       const runtimeDetail = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
@@ -3345,8 +3491,7 @@ export const generateSpeech = async (
   if (activeEngine === 'KOKORO') {
     if (context === 'studio') {
       try {
-        const backendBase = resolveMediaBackendBaseUrl(settings);
-        const targetVoiceId = String(settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
+        const targetVoiceId = String(resolvedVoiceInput || settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
         const jobId = `kokoro-browser-${traceId}`;
         const startedAt = Date.now();
         let firstChunkAtMs = 0;
@@ -3380,7 +3525,7 @@ export const generateSpeech = async (
           engine: 'KOKORO',
           queueAgeMs: 0,
           queueDepth: 0,
-          stage: 'Preparing isolated Basic browser worker...',
+          stage: 'Preparing isolated Basic WebGPU worker...',
           progressPct: 10,
         });
 
@@ -3390,7 +3535,6 @@ export const generateSpeech = async (
             voiceId: targetVoiceId,
             language: lang,
             speed: settings.speed,
-            backendBaseUrl: backendBase,
           },
           {
             ...(signal ? { signal } : {}),
@@ -3440,7 +3584,7 @@ export const generateSpeech = async (
           Math.max(1, synthResult.sampleRate)
         );
         mergedBuffer.copyToChannel(synthResult.mergedAudio, 0);
-        return mergedBuffer;
+        return await maybeApplyOpenVoiceClone(mergedBuffer, processedText);
       } catch (error: any) {
         if (error?.name === 'AbortError') {
           throw error;
@@ -3450,7 +3594,7 @@ export const generateSpeech = async (
           throw new Error(message);
         }
         throw new Error(
-          'Basic browser worker failed. Reload the tab, close heavy tabs, and update to the latest Chromium-based browser.',
+          'Basic WebGPU worker failed. Reload the tab, close heavy tabs, verify WebGPU is enabled, and retry.',
         );
       }
     }
@@ -3459,8 +3603,7 @@ export const generateSpeech = async (
     if (useBrowserKokoro) {
       try {
         const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-        const backendBase = resolveMediaBackendBaseUrl(settings);
-        const targetVoiceId = String(settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
+        const targetVoiceId = String(resolvedVoiceInput || settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
         const jobId = `kokoro-browser-${traceId}`;
         const startedAt = Date.now();
         let firstChunkAtMs = 0;
@@ -3503,7 +3646,7 @@ export const generateSpeech = async (
           engine: 'KOKORO',
           queueAgeMs: 0,
           queueDepth: 0,
-          stage: 'Preparing local ONNX CPU runtime...',
+          stage: 'Preparing local ONNX WebGPU runtime...',
           progressPct: 10,
         });
 
@@ -3512,7 +3655,6 @@ export const generateSpeech = async (
           voiceId: targetVoiceId,
           language: lang,
           speed: settings.speed,
-          backendBaseUrl: backendBase,
           ...(signal ? { signal } : {}),
           onProgress: (progress, stage) => {
             emitGatewayProgress({
@@ -3562,56 +3704,16 @@ export const generateSpeech = async (
         );
         mergedBuffer.copyToChannel(synthResult.mergedAudio, 0);
         kokoroBrowserRuntime.scheduleSuspend(settings.kokoroStandbyIdleMs || 120000);
-        return mergedBuffer;
+        return await maybeApplyOpenVoiceClone(mergedBuffer, processedText);
       } catch (error: any) {
         if (error?.name === 'AbortError') {
           throw error;
         }
-        throw new Error(error?.message || 'Kokoro local ONNX CPU runtime failed.');
+        throw new Error(error?.message || 'Kokoro local ONNX WebGPU runtime failed.');
       }
     }
 
-    const runtimeUrl = normalizeRuntimeUrl(settings.kokoroTtsServiceUrl, 'http://127.0.0.1:7820');
-    const targetVoiceId = String(settings.voiceId || voiceName || 'hf_alpha').trim() || 'hf_alpha';
-    const synthKokoroChunk = async (chunkText: string, attempt: number): Promise<AudioBuffer> => {
-      const attemptSpeed = attempt > 1 ? 1.0 : settings.speed;
-      const attemptEmotion = attempt >= 3 ? undefined : settings.emotion;
-      const attemptStyle = attempt >= 3 ? undefined : settings.style;
-      const normalizedRequest = normalizeSynthesisRequest({
-        engine: 'KOKORO',
-        text: chunkText,
-        voiceId: targetVoiceId,
-        language: lang,
-        speed: attemptSpeed,
-        emotion: attemptEmotion,
-        style: attemptStyle,
-        traceId,
-      });
-      return await synthesizeViaBackendGateway(
-        'KOKORO',
-        runtimeUrl,
-        '/synthesize',
-        {
-          text: normalizedRequest.text,
-          voiceId: normalizedRequest.voice_id,
-          voice_id: normalizedRequest.voice_id,
-          language: normalizedRequest.language,
-          speed: normalizedRequest.speed,
-          emotion: normalizedRequest.emotion,
-          style: normalizedRequest.style,
-          trace_id: normalizedRequest.trace_id,
-        },
-        'Kokoro runtime synthesis'
-      );
-    };
-
-    const longTextBuffer = await maybeSynthesizePrimaryLongText(
-      'KOKORO',
-      processedText,
-      async (chunkText, attempt) => synthKokoroChunk(chunkText, attempt)
-    );
-    if (longTextBuffer) return longTextBuffer;
-    return await synthKokoroChunk(processedText, 1);
+    throw new Error('Kokoro requires WebGPU in this build. Enable WebGPU and retry.');
   }
 
   // --- F5-TTS ENGINE (BACKEND) ---
@@ -3624,28 +3726,14 @@ export const generateSpeech = async (
           if (!url.includes('/v1/audio/speech')) url += '/v1/audio/speech';
 
           // Determine the voice
-          let targetVoiceId = voiceName || settings.voiceId;
+          let targetVoiceId = resolvedVoiceInput || voiceName || settings.voiceId;
           let voicePayload: any = targetVoiceId;
 
-          // F5 Optimization: Check if it is a cloned voice
-          const isClone = availableClones.find(v => v.id === targetVoiceId);
-          
-          if (isClone && isClone.originalSampleUrl) {
-             // Convert sample to base64 to support "Max Features" (Cloning)
-             const base64Ref = await getCloneBase64(isClone.originalSampleUrl);
-             if (base64Ref) {
-                 // HACK: Some API wrappers allow passing base64 as voice name, 
-                 // or we might need to adjust depending on the specific wrapper.
-                 // Assuming standard "openedai-speech" behavior or compatible fork.
-                 voicePayload = `base64:${base64Ref}`;
-             }
-          } else {
-              // Map default presets
-              if (!F5_VOICES.find(v => v.id === targetVoiceId)) {
-                   // If user selects a Gemini voice, map to a default F5 voice
-                   const geminiVoice = VOICES.find(v => v.id === targetVoiceId);
-                   voicePayload = (geminiVoice?.gender === 'Female') ? 'f5_female' : 'f5_male';
-              }
+          // Map default presets
+          if (!F5_VOICES.find(v => v.id === targetVoiceId)) {
+               // If user selects a Gemini voice, map to a default F5 voice
+               const geminiVoice = VOICES.find(v => v.id === targetVoiceId);
+               voicePayload = (geminiVoice?.gender === 'Female') ? 'f5_female' : 'f5_male';
           }
 
           // F5 is sensitive to punctuation, do NOT strip it aggressively
@@ -3686,12 +3774,12 @@ export const generateSpeech = async (
                // Assume raw PCM 16-bit 24khz/44.1khz if 'enableWebGpu' flag is effectively 'Enable Raw PCM'
                const int16 = new Int16Array(arrayBuffer);
                // F5 usually defaults to 24000 or 44100. We guess 24000 for speech models.
-               return pcm16ToAudioBuffer(int16, ctx, 24000, 1);
+               return await maybeApplyOpenVoiceClone(pcm16ToAudioBuffer(int16, ctx, 24000, 1), processedText);
           }
 
           // Standard Decoding (WAV/MP3)
           try {
-            return await ctx.decodeAudioData(arrayBuffer);
+            return await maybeApplyOpenVoiceClone(await ctx.decodeAudioData(arrayBuffer), processedText);
           } catch (decodeErr: any) {
             throw new Error(
               `Failed to decode F5 audio response. ` +
@@ -3718,7 +3806,7 @@ export const generateSpeech = async (
       
       // FIX FOR "KeyError: 'v1'"
       // Ensure we don't send Gemini Voice IDs to OpenAI/Compatible Backend
-      let targetVoice = voiceName || settings.voiceId || 'alloy';
+      let targetVoice = resolvedVoiceInput || voiceName || settings.voiceId || 'alloy';
       
       // Check if this is a Gemini voice ID (v1-v30)
       const isGeminiVoice = VOICES.some(v => v.id === targetVoice);
@@ -3769,7 +3857,7 @@ export const generateSpeech = async (
       if (arrayBuffer.byteLength < 100) throw new Error("Empty audio response.");
       
       try {
-        return await ctx.decodeAudioData(arrayBuffer);
+        return await maybeApplyOpenVoiceClone(await ctx.decodeAudioData(arrayBuffer), processedText);
       } catch (decodeErr: any) {
         throw new Error(
           `Failed to decode OpenAI/F5 audio response. ` +
@@ -3793,14 +3881,14 @@ export const generateSpeech = async (
       let url = runtimeSettings.backendUrl.replace(/\/$/, '');
       if (!url.endsWith('/tts') && !url.endsWith('/api/tts')) url += '/tts';
       
-      let speakerId = voiceName;
+      let speakerId = resolvedVoiceInput || voiceName;
       
       // If voiceName is a Gemini name (or present in our list of known Gemini voices), 
       // we should prefer the stored Chatterbox ID if available, unless speakerId is explicitly set.
-      const isGeminiName = VOICES.some(v => v.geminiVoiceName === voiceName || v.id === voiceName) || VALID_VOICE_NAMES.includes(voiceName.toLowerCase());
+      const isGeminiName = VOICES.some(v => v.geminiVoiceName === speakerId || v.id === speakerId) || VALID_VOICE_NAMES.includes(String(speakerId || '').toLowerCase());
       
       if (!speakerId || isGeminiName) {
-        speakerId = runtimeSettings.chatterboxId || settings.voiceId || '';
+        speakerId = runtimeSettings.chatterboxId || resolvedVoiceInput || settings.voiceId || '';
       }
       
       // Fallback if empty
@@ -3838,7 +3926,7 @@ export const generateSpeech = async (
       if (arrayBuffer.byteLength < 100) throw new Error("Empty audio response.");
       
       try {
-        return await ctx.decodeAudioData(arrayBuffer);
+        return await maybeApplyOpenVoiceClone(await ctx.decodeAudioData(arrayBuffer), processedText);
       } catch (e) {
         // Check for JSON error
         try {
@@ -3851,7 +3939,7 @@ export const generateSpeech = async (
         // RAW PCM FALLBACK
         if (arrayBuffer.byteLength % 2 !== 0) throw new Error("Invalid PCM length.");
         const int16 = new Int16Array(arrayBuffer);
-        return pcm16ToAudioBuffer(int16, ctx, 24000, 1);
+        return await maybeApplyOpenVoiceClone(pcm16ToAudioBuffer(int16, ctx, 24000, 1), processedText);
       }
       
     } catch (err: any) {
@@ -3927,7 +4015,7 @@ export const generateSpeech = async (
         const audioBytes = decode(base64Audio);
         const int16Data = new Int16Array(audioBytes.buffer);
         
-        return pcm16ToAudioBuffer(int16Data, ctx, 24000, 1);
+        return await maybeApplyOpenVoiceClone(pcm16ToAudioBuffer(int16Data, ctx, 24000, 1), textToSpeak);
         
       } catch (error: any) {
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");

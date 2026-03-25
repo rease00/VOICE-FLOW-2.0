@@ -82,7 +82,7 @@ describe('assistant dispatch plan', () => {
     expect(plan.useRuntimeGemini).toBe(false);
   });
 
-  it('uses runtime key pool for GEMINI when personal key toggle is OFF', () => {
+  it('uses runtime slot set for GEMINI when personal key toggle is OFF', () => {
     const plan = resolveAssistantTextDispatchPlan({
       ...baseSettings(),
       helperProvider: 'GEMINI',

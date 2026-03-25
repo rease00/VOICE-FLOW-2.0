@@ -43,8 +43,8 @@ export const toUserMessage = (errorLike: unknown, fallback: string): string => {
   if (TIMEOUT_PATTERNS.some((token) => lowered.includes(token))) {
     return 'The request took too long. Please retry in a few moments.';
   }
-  if (lowered.includes('key pool')) {
-    return 'Primary AI key pool is not ready. Retry or adjust runtime settings.';
+  if (lowered.includes('slot set')) {
+    return 'Primary AI slot set is not ready. Retry or adjust runtime settings.';
   }
   if (AUTH_PATTERNS.some((token) => lowered.includes(token))) {
     return 'Authentication failed. Verify credentials and try again.';

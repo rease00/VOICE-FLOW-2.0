@@ -6,7 +6,6 @@ describe('workspace tabs reader contract', () => {
     const tabs = buildWorkspaceTabs(false);
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
-      WorkspaceTab.PODCAST,
       WorkspaceTab.READER,
       WorkspaceTab.NOVEL,
       WorkspaceTab.CHARACTERS,
@@ -15,15 +14,14 @@ describe('workspace tabs reader contract', () => {
     expect(tabs.some((item) => item.id === WorkspaceTab.READER && item.label === 'Reader')).toBe(true);
   });
 
-  it('includes Podcast immediately after Studio and excludes Lab/Admin from main navigation', () => {
+  it('keeps Reader immediately after Studio and excludes Admin from main navigation', () => {
     const tabs = buildWorkspaceTabs(false);
     const studioIndex = tabs.findIndex((item) => item.id === WorkspaceTab.STUDIO);
-    const podcastIndex = tabs.findIndex((item) => item.id === WorkspaceTab.PODCAST);
+    const readerIndex = tabs.findIndex((item) => item.id === WorkspaceTab.READER);
 
-    expect(podcastIndex).toBeGreaterThanOrEqual(0);
-    expect(podcastIndex).toBe(studioIndex + 1);
-    expect(tabs[podcastIndex]?.label).toBe('Podcast');
-    expect(tabs.some((item) => item.id === WorkspaceTab.LAB)).toBe(false);
+    expect(readerIndex).toBeGreaterThanOrEqual(0);
+    expect(readerIndex).toBe(studioIndex + 1);
+    expect(tabs[readerIndex]?.label).toBe('Reader');
     expect(tabs.some((item) => item.id === WorkspaceTab.ADMIN)).toBe(false);
   });
 

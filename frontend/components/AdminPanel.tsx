@@ -36,7 +36,6 @@ import {
   fetchAdminRbacUsers,
   fetchAdminTtsGatewayStatus,
   fetchAdminTtsQueueMetrics,
-  fetchAdminLabRuntimeDefaults,
   fetchAlertDestinations,
   fetchAlertEvents,
   fetchAlertPolicies,
@@ -48,15 +47,10 @@ import {
   fetchAdminAccountingRecords,
   fetchAdminAccountingMonitorRuns,
   fetchDailyUsageResetStatus,
-  fetchGeminiPools,
-  type GeminiPoolAllocatorSnapshot,
-  type GeminiPoolModelStatus,
-  type GeminiPoolUsageEntry,
-  fetchGeminiPoolsUsage,
-  type GeminiPoolConfig,
-  type GeminiPoolKeyStatus,
-  type GeminiPoolStatusPayload,
-  type GeminiPoolsUsagePayload,
+  fetchGeminiSlotStatus,
+  fetchGeminiSlotUsage,
+  type GeminiSlotStatusPayload,
+  type GeminiSlotUsagePayload,
   getAdminUnlockToken,
   issueAdminSessionUnlock,
   patchAlertDestination,
@@ -64,8 +58,6 @@ import {
   assignAdminRbacUser,
   createAlertDestination,
   createAlertPolicy,
-  updateGeminiPools,
-  reloadGeminiPools,
   resetDailyUsageAll,
   ackAlertEvent,
   resolveAlertEvent,
@@ -74,7 +66,6 @@ import {
   fetchOpsGuardianStatus,
   type OpsGuardianApprovalsPayload,
   type OpsGuardianStatusPayload,
-  type AdminLabRuntimeDefaults,
   fetchSchedulerRuns,
   fetchSchedulerTasks,
   createSchedulerTask,
@@ -85,7 +76,6 @@ import {
   type ScheduledTaskRun,
   verifyAdminSessionUnlock,
   verifyAdminAuditChain,
-  updateAdminLabRuntimeDefaults,
   fetchAdminSupportConversations,
   fetchAdminSupportConversationById,
   replyAdminSupportConversation,
@@ -116,19 +106,6 @@ import {
   type AdminDataSection,
   type OpsTab,
 } from '../src/features/admin/model/loadPlan';
-import {
-  applyKeysToPoolInConfig,
-  applySelectedPoolToAllPlans,
-  classifyGeminiPoolKeyTone,
-  createPoolInConfig,
-  deletePoolFromConfig,
-  normalizePoolIdInput,
-  parseGeminiKeysInput,
-  setSourcePolicyProvider,
-  setPlanPoolInConfig,
-  setTtsModelFallbackEnabled,
-  setVertexSourcePolicyFields,
-} from '../src/features/admin/pools/geminiPools';
 
 type ToastKind = 'success' | 'error' | 'info';
 type CouponKind = 'wallet_credit' | 'subscription_discount';
@@ -240,6 +217,89 @@ const csvEscape = (value: unknown): string => {
   return `"${text.replaceAll('"', '""')}"`;
 };
 
+type GeminiSlotStatusTone = 'ok' | 'warn' | 'bad' | 'neutral';
+type GeminiSlotDisplay = {
+  slotId: string;
+  label: string;
+  status: string;
+  healthy: boolean;
+  healthReason: string;
+  lastUsedAt: string;
+  lastFailureAt: string;
+  quarantinedUntil: string;
+  requests: number;
+  tokens: number;
+  failures: number;
+  inFlight: number;
+  source: string;
+};
+
+const toGeminiSlotDisplay = (slot: Record<string, unknown> | null | undefined, index: number): GeminiSlotDisplay => {
+  const health = (slot?.health && typeof slot.health === 'object') ? (slot.health as Record<string, unknown>) : {};
+  const usage = (slot?.usage && typeof slot.usage === 'object') ? (slot.usage as Record<string, unknown>) : {};
+  const slotId = String(slot?.slotId || slot?.id || slot?.name || `slot-${index + 1}`).trim();
+  const label = String(slot?.label || slotId || `Slot ${index + 1}`).trim();
+  const status = String(slot?.status || health.status || (Boolean(health.healthy) ? 'healthy' : 'unknown')).trim();
+  const healthReason = String(health.reason || slot?.lastFailureReason || '').trim();
+  return {
+    slotId: slotId || `slot-${index + 1}`,
+    label: label || `Slot ${index + 1}`,
+    status: status || 'unknown',
+    healthy: Boolean(health.healthy),
+    healthReason,
+    lastUsedAt: String(slot?.lastUsedAt || usage.lastUsedAt || '').trim(),
+    lastFailureAt: String(slot?.lastFailureAt || usage.lastFailureAt || '').trim(),
+    quarantinedUntil: String(slot?.quarantinedUntil || '').trim(),
+    requests: asNumber(usage.requests),
+    tokens: asNumber(usage.tokens),
+    failures: asNumber(usage.failures),
+    inFlight: asNumber(slot?.inFlight),
+    source: String(slot?.source || slot?.origin || slot?.backend || '').trim(),
+  };
+};
+
+const extractGeminiSlots = (
+  payload: GeminiSlotStatusPayload | GeminiSlotUsagePayload | null | undefined
+): GeminiSlotDisplay[] => {
+  const rawSlots = [
+    ...(Array.isArray(payload?.slots) ? payload.slots : []),
+    ...(Array.isArray((payload?.backend as Record<string, unknown> | undefined)?.slots)
+      ? ((payload?.backend as Record<string, unknown> | undefined)?.slots as Record<string, unknown>[])
+      : []),
+    ...(Array.isArray((payload?.runtime as Record<string, unknown> | undefined)?.slots)
+      ? ((payload?.runtime as Record<string, unknown> | undefined)?.slots as Record<string, unknown>[])
+      : []),
+  ];
+  const preferred = rawSlots.slice(0, 3).map((slot, index) => toGeminiSlotDisplay(slot, index));
+  if (preferred.length > 0) {
+    return preferred;
+  }
+  return [0, 1, 2].map((index) => ({
+    slotId: `slot-${index + 1}`,
+    label: `Slot ${index + 1}`,
+    status: 'unknown',
+    healthy: false,
+    healthReason: '',
+    lastUsedAt: '',
+    lastFailureAt: '',
+    quarantinedUntil: '',
+    requests: 0,
+    tokens: 0,
+    failures: 0,
+    inFlight: 0,
+    source: '',
+  }));
+};
+
+const geminiSlotTone = (slot: GeminiSlotDisplay): GeminiSlotStatusTone => {
+  const status = slot.status.trim().toLowerCase();
+  const reason = slot.healthReason.trim().toLowerCase();
+  if (!slot.healthy || status === 'auth_issue' || status === 'error' || reason === 'auth_issue') return 'bad';
+  if (status === 'rate_limited' || status === 'quarantined' || slot.failures > 0) return 'warn';
+  if (status === 'healthy' || status === 'ready' || slot.requests > 0 || slot.tokens > 0) return 'ok';
+  return 'neutral';
+};
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   mediaBackendUrl,
   onToast,
@@ -286,18 +346,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [rbacSearch, setRbacSearch] = useState('');
   const [isLoadingRbac, setIsLoadingRbac] = useState(false);
 
-  const [geminiPoolStatus, setGeminiPoolStatus] = useState<GeminiPoolStatusPayload | null>(null);
-  const [geminiPoolsUsage, setGeminiPoolsUsage] = useState<GeminiPoolsUsagePayload | null>(null);
-  const [geminiPoolEditor, setGeminiPoolEditor] = useState<GeminiPoolConfig | null>(null);
-  const [selectedGeminiPool, setSelectedGeminiPool] = useState('free');
-  const [newGeminiPoolName, setNewGeminiPoolName] = useState('');
-  const [newGeminiPoolKeyInput, setNewGeminiPoolKeyInput] = useState('');
-  const [geminiGlobalKeyInput, setGeminiGlobalKeyInput] = useState('');
-  const [vertexServiceAccountJsonInput, setVertexServiceAccountJsonInput] = useState('');
-  const [vertexAccessTokenInput, setVertexAccessTokenInput] = useState('');
-  const [isSavingGeminiPools, setIsSavingGeminiPools] = useState(false);
+  const [geminiSlotStatus, setGeminiSlotStatus] = useState<GeminiSlotStatusPayload | null>(null);
+  const [geminiSlotUsage, setGeminiSlotUsage] = useState<GeminiSlotUsagePayload | null>(null);
   const [isLoadingGeminiPool, setIsLoadingGeminiPool] = useState(false);
-  const [isReloadingGeminiPool, setIsReloadingGeminiPool] = useState(false);
 
   const [dailyUsageResetStatus, setDailyUsageResetStatus] = useState<DailyUsageResetStatusPayload | null>(null);
   const [lastDailyDryRun, setLastDailyDryRun] = useState<DailyUsageResetSummary | null>(null);
@@ -324,7 +375,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [opsApprovals, setOpsApprovals] = useState<OpsGuardianApprovalsPayload | null>(null);
   const [opsGateway, setOpsGateway] = useState<Record<string, unknown> | null>(null);
   const [opsQueue, setOpsQueue] = useState<Record<string, unknown> | null>(null);
-  const [labRuntimeDefaults, setLabRuntimeDefaults] = useState<AdminLabRuntimeDefaults | null>(null);
   const [isLoadingOps, setIsLoadingOps] = useState(false);
 
   const [alertPolicies, setAlertPolicies] = useState<AlertPolicy[]>([]);
@@ -561,58 +611,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const reloadOpsSafely = async () => {
     setIsLoadingOps(true);
     try {
-      const [usage, guardian, approvals, gateway, queue, labRuntime] = await Promise.allSettled([
+      const [usage, guardian, approvals, gateway, queue] = await Promise.allSettled([
         fetchAdminIntegrationsUsage(mediaBackendUrl),
         fetchOpsGuardianStatus(mediaBackendUrl, true),
         fetchOpsGuardianApprovals(mediaBackendUrl, 'pending'),
         fetchAdminTtsGatewayStatus(mediaBackendUrl),
         fetchAdminTtsQueueMetrics(mediaBackendUrl),
-        fetchAdminLabRuntimeDefaults(mediaBackendUrl),
       ]);
       if (usage.status === 'fulfilled') setOpsUsage(usage.value as unknown as Record<string, unknown>);
       if (guardian.status === 'fulfilled') setOpsGuardian(guardian.value);
       if (approvals.status === 'fulfilled') setOpsApprovals(approvals.value);
       if (gateway.status === 'fulfilled') setOpsGateway(gateway.value as Record<string, unknown>);
       if (queue.status === 'fulfilled') setOpsQueue(queue.value as Record<string, unknown>);
-      if (labRuntime.status === 'fulfilled') setLabRuntimeDefaults(labRuntime.value);
-      const failures = [usage, guardian, approvals, gateway, queue, labRuntime].filter(
+      const failures = [usage, guardian, approvals, gateway, queue].filter(
         (result) => result.status === 'rejected'
       ) as PromiseRejectedResult[];
       if (failures.length > 0) {
-        const fallback = failures.length === 6
+        const fallback = failures.length === 5
           ? 'Failed to load ops telemetry.'
-          : `Some ops telemetry endpoints failed (${failures.length}/6).`;
+          : `Some ops telemetry endpoints failed (${failures.length}/5).`;
         notifyError(failures[0]?.reason, fallback);
       }
-      if ([usage, guardian, approvals, gateway, queue, labRuntime].some((result) => result.status === 'fulfilled')) {
+      if ([usage, guardian, approvals, gateway, queue].some((result) => result.status === 'fulfilled')) {
         markAdminSectionLoaded('ops');
       }
     } catch (error: unknown) {
       notifyError(error, 'Failed to load ops telemetry.');
     } finally {
       setIsLoadingOps(false);
-    }
-  };
-
-  const handleSaveLabRuntimeDefaults = async (patch: Partial<AdminLabRuntimeDefaults>) => {
-    if (!canOpsMutate) {
-      onToast('Missing ops.mutate permission.', 'info');
-      return;
-    }
-    try {
-      await withSaving('lab_runtime_defaults', async () => {
-        const nextDefaults = await updateAdminLabRuntimeDefaults(
-          {
-            ...(labRuntimeDefaults || {}),
-            ...patch,
-          },
-          mediaBackendUrl
-        );
-        setLabRuntimeDefaults(nextDefaults);
-        onToast('Lab runtime defaults updated.', 'success');
-      });
-    } catch (error: unknown) {
-      notifyError(error, 'Failed to update Lab runtime defaults.');
     }
   };
 
@@ -921,225 +947,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const reloadGeminiPoolStatusSafely = async () => {
+  const reloadGeminiSlotStatusSafely = async () => {
     setIsLoadingGeminiPool(true);
     try {
       const [payload, usagePayload] = await Promise.all([
-        fetchGeminiPools(mediaBackendUrl),
-        fetchGeminiPoolsUsage(mediaBackendUrl),
+        fetchGeminiSlotStatus(mediaBackendUrl),
+        fetchGeminiSlotUsage(mediaBackendUrl),
       ]);
-      setGeminiPoolStatus(payload);
-      setGeminiPoolsUsage(usagePayload);
-      setGeminiPoolEditor(payload?.config || null);
-      const poolNames = Object.keys(payload?.config?.pools || {});
-      if (poolNames.length > 0 && !poolNames.includes(selectedGeminiPool)) {
-        setSelectedGeminiPool(poolNames[0] || '');
-      }
+      setGeminiSlotStatus(payload);
+      setGeminiSlotUsage(usagePayload);
       markAdminSectionLoaded('geminiPools');
     } catch (error: unknown) {
-      notifyError(error, 'Failed to load primary AI pool status.');
+      notifyError(error, 'Failed to load service-account slot status.');
     } finally {
       setIsLoadingGeminiPool(false);
-    }
-  };
-
-  const handleReloadGeminiPool = async () => {
-    setIsReloadingGeminiPool(true);
-    try {
-      const payload = await reloadGeminiPools(mediaBackendUrl);
-      setGeminiPoolStatus(payload);
-      setGeminiPoolEditor(payload?.config || null);
-      const usagePayload = await fetchGeminiPoolsUsage(mediaBackendUrl);
-      setGeminiPoolsUsage(usagePayload);
-      onToast(sanitizeUiText(payload?.detail || 'Primary AI key pool reloaded.'), 'success');
-    } catch (error: unknown) {
-      notifyError(error, 'Failed to reload primary AI pool.');
-    } finally {
-      setIsReloadingGeminiPool(false);
-    }
-  };
-
-  const updateGeminiPoolEditorConfig = (mutator: (previous: GeminiPoolConfig) => GeminiPoolConfig) => {
-    setGeminiPoolEditor((previous) => {
-      const base: GeminiPoolConfig = previous || { pools: {}, fallbackChains: {}, planPools: { free: 'free', pro: 'free', plus: 'free' }, defaultFallbackChain: ['free'], constraints: { uniqueKeyMembership: true } };
-      return mutator(base);
-    });
-  };
-
-  const handleCreateGeminiPool = () => {
-    const normalized = normalizePoolIdInput(newGeminiPoolName);
-    if (!normalized) {
-      onToast('Pool name must use lowercase letters, numbers, "_" or "-".', 'error');
-      return;
-    }
-    updateGeminiPoolEditorConfig((previous) => {
-      return createPoolInConfig(previous, normalized) as GeminiPoolConfig;
-    });
-    setSelectedGeminiPool(normalized);
-    setNewGeminiPoolName('');
-  };
-
-  const handleDeleteGeminiPool = (poolName: string) => {
-    const safePool = String(poolName || '').trim();
-    if (!safePool) return;
-    if (!window.confirm(`Delete pool "${safePool}"? This will remove all keys in this pool.`)) return;
-    updateGeminiPoolEditorConfig((previous) => deletePoolFromConfig(previous, safePool) as GeminiPoolConfig);
-    setSelectedGeminiPool((previous) => (previous === safePool ? '' : previous));
-  };
-
-  const handleAddGeminiPoolKey = (poolName: string) => {
-    const key = String(newGeminiPoolKeyInput || '').trim();
-    if (!key) return;
-    updateGeminiPoolEditorConfig((previous) => {
-      const pools = { ...(previous.pools || {}) };
-      const current = pools[poolName] || { keys: [] as string[] };
-      const keys = Array.isArray(current.keys) ? [...current.keys] : [];
-      if (!keys.includes(key)) keys.push(key);
-      pools[poolName] = { keys };
-      return { ...previous, pools };
-    });
-    setNewGeminiPoolKeyInput('');
-  };
-
-  const handleDeleteGeminiPoolKey = (poolName: string, key: string) => {
-    const safeKey = String(key || '').trim();
-    if (!safeKey) return;
-    updateGeminiPoolEditorConfig((previous) => {
-      const pools = { ...(previous.pools || {}) };
-      const current = pools[poolName] || { keys: [] as string[] };
-      const keys = (Array.isArray(current.keys) ? current.keys : []).filter((item) => String(item || '').trim() !== safeKey);
-      pools[poolName] = { keys };
-      return { ...previous, pools };
-    });
-  };
-
-  const handleDeleteAuthIssueGeminiPoolKeys = (poolName: string, keysForRemoval: string[]) => {
-    const safePool = String(poolName || '').trim();
-    if (!safePool) return;
-    const normalizedKeys = Array.from(new Set(
-      (Array.isArray(keysForRemoval) ? keysForRemoval : [])
-        .map((item) => String(item || '').trim())
-        .filter(Boolean)
-    ));
-    if (normalizedKeys.length === 0) {
-      onToast('No auth_issue keys found in this pool.', 'info');
-      return;
-    }
-    const confirmed = window.confirm(
-      `Delete ${normalizedKeys.length} auth_issue key${normalizedKeys.length === 1 ? '' : 's'} from "${safePool}"?`
-    );
-    if (!confirmed) return;
-    updateGeminiPoolEditorConfig((previous) => {
-      const pools = { ...(previous.pools || {}) };
-      const current = pools[safePool] || { keys: [] as string[] };
-      const currentKeys = Array.isArray(current.keys) ? current.keys : [];
-      const removals = new Set(normalizedKeys);
-      const nextKeys = currentKeys.filter((item) => !removals.has(String(item || '').trim()));
-      pools[safePool] = { keys: nextKeys };
-      return { ...previous, pools };
-    });
-    onToast(
-      `Removed ${normalizedKeys.length} auth_issue key${normalizedKeys.length === 1 ? '' : 's'} from ${safePool}. Save pools to apply.`,
-      'success'
-    );
-  };
-
-  const handlePlanPoolChange = (planKey: 'free' | 'pro' | 'plus', poolName: string) => {
-    updateGeminiPoolEditorConfig((previous) => setPlanPoolInConfig(previous, planKey, poolName) as GeminiPoolConfig);
-  };
-
-  const handleApplyGeminiGlobalKeys = () => {
-    const parsedKeys = parseGeminiKeysInput(geminiGlobalKeyInput);
-    if (!selectedPoolName) {
-      onToast('Select a pool first.', 'info');
-      return;
-    }
-    if (parsedKeys.length === 0) {
-      onToast('No valid API keys found in input.', 'info');
-      return;
-    }
-    updateGeminiPoolEditorConfig((previous) => applyKeysToPoolInConfig(previous, selectedPoolName, parsedKeys) as GeminiPoolConfig);
-    onToast(`Added ${parsedKeys.length} key${parsedKeys.length === 1 ? '' : 's'} to ${selectedPoolName}.`, 'success');
-    setGeminiGlobalKeyInput('');
-  };
-
-  const handleApplySelectedPoolToAllPlans = () => {
-    if (!selectedPoolName) {
-      onToast('Select a pool first.', 'info');
-      return;
-    }
-    updateGeminiPoolEditorConfig((previous) => applySelectedPoolToAllPlans(previous, selectedPoolName) as GeminiPoolConfig);
-    onToast(`Mapped free/pro/plus to ${selectedPoolName}.`, 'success');
-  };
-
-  const handleGeminiSourceProviderChange = (provider: 'gemini_api' | 'vertex') => {
-    updateGeminiPoolEditorConfig((previous) => {
-      let next = setSourcePolicyProvider(previous, provider) as GeminiPoolConfig;
-      if (provider === 'vertex') {
-        const poolNames = Object.keys(next.pools || {});
-        const preferredPool = (selectedPoolName && selectedPoolName !== 'free')
-          ? selectedPoolName
-          : poolNames.find((poolName) => poolName !== 'free') || selectedPoolName || poolNames[0] || 'free';
-        if (preferredPool) {
-          next = setPlanPoolInConfig(next, 'free', preferredPool) as GeminiPoolConfig;
-        }
-      }
-      return next;
-    });
-  };
-
-  const handleVertexOnlyToggle = (enabled: boolean) => {
-    handleGeminiSourceProviderChange(enabled ? 'vertex' : 'gemini_api');
-  };
-
-  const handleVertexSourceFieldChange = (field: 'vertexProject' | 'vertexLocation', value: string) => {
-    updateGeminiPoolEditorConfig((previous) => {
-      if (field === 'vertexProject') {
-        return setVertexSourcePolicyFields(previous, { vertexProject: value }) as GeminiPoolConfig;
-      }
-      return setVertexSourcePolicyFields(previous, { vertexLocation: value }) as GeminiPoolConfig;
-    });
-  };
-
-  const handleTtsModelFallbackChange = (enabled: boolean) => {
-    updateGeminiPoolEditorConfig((previous) => (
-      setTtsModelFallbackEnabled(previous, enabled) as GeminiPoolConfig
-    ));
-  };
-
-  const handleSaveGeminiPools = async () => {
-    if (!geminiPoolEditor) {
-      onToast('No pool changes to save.', 'info');
-      return;
-    }
-    setIsSavingGeminiPools(true);
-    try {
-      let payloadInput = geminiPoolEditor;
-      const provider = String(geminiPoolEditor.sourcePolicy?.provider || 'gemini_api').trim().toLowerCase();
-      if (provider === 'vertex' && selectedPoolName) {
-        payloadInput = setPlanPoolInConfig(payloadInput, 'free', selectedPoolName) as GeminiPoolConfig;
-      }
-      const serviceAccountJson = String(vertexServiceAccountJsonInput || '').trim();
-      if (serviceAccountJson) {
-        payloadInput = setVertexSourcePolicyFields(payloadInput, { vertexServiceAccountJson: serviceAccountJson }) as GeminiPoolConfig;
-      }
-      const vertexAccessToken = String(vertexAccessTokenInput || '').trim();
-      if (vertexAccessToken) {
-        payloadInput = setVertexSourcePolicyFields(payloadInput, { vertexAccessToken }) as GeminiPoolConfig;
-      }
-      const payload = await updateGeminiPools(payloadInput, mediaBackendUrl);
-      setGeminiPoolStatus(payload);
-      setGeminiPoolEditor(payload?.config || null);
-      const usagePayload = await fetchGeminiPoolsUsage(mediaBackendUrl);
-      setGeminiPoolsUsage(usagePayload);
-      await handleReloadGeminiPool();
-      setVertexServiceAccountJsonInput('');
-      setVertexAccessTokenInput('');
-      onToast('Primary AI pool config saved and reloaded.', 'success');
-    } catch (error: unknown) {
-      notifyError(error, 'Failed to save primary AI pools.');
-    } finally {
-      setIsSavingGeminiPools(false);
     }
   };
 
@@ -1231,7 +1052,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             await reloadRbacSafely(rbacSearch);
             break;
           case 'geminiPools':
-            await reloadGeminiPoolStatusSafely();
+            await reloadGeminiSlotStatusSafely();
             break;
           case 'dailyReset':
             await reloadDailyUsageResetStatusSafely();
@@ -1720,105 +1541,59 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     () => coupons.filter((coupon) => normalizeType(coupon.couponType) === couponTab),
     [coupons, couponTab]
   );
-  const backendPool = geminiPoolStatus?.backend?.pool || {};
-  const runtimePool = geminiPoolStatus?.runtime?.pool || {};
-  const sourceDiag = geminiPoolStatus?.backend?.source || {};
-  const geminiConfig = geminiPoolEditor || geminiPoolStatus?.config || null;
-  const geminiPoolNames = Object.keys(geminiConfig?.pools || {});
-  const selectedPoolName = geminiPoolNames.includes(selectedGeminiPool)
-    ? selectedGeminiPool
-    : (geminiPoolNames[0] || '');
-  const selectedPoolKeys = Array.isArray(geminiConfig?.pools?.[selectedPoolName]?.keys)
-    ? (geminiConfig?.pools?.[selectedPoolName]?.keys as string[])
-    : [];
-  const selectedPoolKeyMetadata = Array.isArray((geminiConfig?.pools?.[selectedPoolName] as { keyMetadata?: unknown } | undefined)?.keyMetadata)
-    ? ((geminiConfig?.pools?.[selectedPoolName] as { keyMetadata?: unknown } | undefined)?.keyMetadata as Array<Record<string, unknown>>)
-    : [];
-  const backendUsageByPool = (geminiPoolsUsage?.backend?.usage || {}) as Record<string, GeminiPoolUsageEntry>;
-  const runtimeUsageByPool = (geminiPoolsUsage?.runtime?.usage || {}) as Record<string, GeminiPoolUsageEntry>;
-  const selectedBackendUsage = (backendUsageByPool?.[selectedPoolName] || {}) as GeminiPoolUsageEntry;
-  const selectedRuntimeUsage = (runtimeUsageByPool?.[selectedPoolName] || {}) as GeminiPoolUsageEntry;
-  const selectedBackendSnapshot = (selectedBackendUsage?.direct || {}) as GeminiPoolAllocatorSnapshot;
-  const selectedRuntimeSnapshot = (selectedRuntimeUsage?.direct || {}) as GeminiPoolAllocatorSnapshot;
-  const selectedBackendKeyStatuses = Array.isArray(selectedBackendSnapshot?.keys)
-    ? (selectedBackendSnapshot.keys as GeminiPoolKeyStatus[])
-    : [];
-  const selectedRuntimeKeyStatuses = Array.isArray(selectedRuntimeSnapshot?.keys)
-    ? (selectedRuntimeSnapshot.keys as GeminiPoolKeyStatus[])
-    : [];
-  const selectedBackendModels = Array.isArray(selectedBackendSnapshot?.models)
-    ? (selectedBackendSnapshot.models as GeminiPoolModelStatus[])
-    : [];
-  const selectedRuntimeModels = Array.isArray(selectedRuntimeSnapshot?.models)
-    ? (selectedRuntimeSnapshot.models as GeminiPoolModelStatus[])
-    : [];
-  const poolModelPressureLabel = (models: GeminiPoolModelStatus[]): string => {
-    if (!models.length) return '-';
-    const pressured = models.filter((model) => {
-      const status = String(model.status || '').trim().toLowerCase();
-      const atCapacity = asNumber(model.pool?.atCapacityKeys) > 0;
-      const rpmRemaining = asNumber(model.remaining?.rpm);
-      const tpmRemaining = asNumber(model.remaining?.tpm);
-      return atCapacity || status === 'rate_limited' || status === 'auth_issue' || rpmRemaining <= 0 || tpmRemaining <= 0;
-    });
-    if (!pressured.length) return 'Normal';
-    return pressured
-      .slice(0, 3)
-      .map((model) => {
-        const modelId = String(model.model || 'model');
-        const atCapacity = asNumber(model.pool?.atCapacityKeys);
-        const keyCount = asNumber(model.pool?.keyCount);
-        if (keyCount > 0) return `${modelId} ${atCapacity}/${keyCount}`;
-        return modelId;
-      })
-      .join(' | ');
-  };
-  const keyDriftWarnings = (backendStatus: GeminiPoolKeyStatus | null, runtimeStatus: GeminiPoolKeyStatus | null): string[] => {
-    const warnings: string[] = [];
-    if (!backendStatus && !runtimeStatus) return warnings;
-    if (!backendStatus || !runtimeStatus) {
-      warnings.push('missing_snapshot');
-      return warnings;
-    }
-    const backendState = String(backendStatus.status || '').trim().toLowerCase();
-    const runtimeState = String(runtimeStatus.status || '').trim().toLowerCase();
-    if (backendState && runtimeState && backendState !== runtimeState) warnings.push('status');
-    const backendReason = String(backendStatus.health?.reason || '').trim().toLowerCase();
-    const runtimeReason = String(runtimeStatus.health?.reason || '').trim().toLowerCase();
-    if (backendReason && runtimeReason && backendReason !== runtimeReason) warnings.push('health');
-    if (asNumber(backendStatus.inFlight) !== asNumber(runtimeStatus.inFlight)) warnings.push('inflight');
-    if (asNumber(backendStatus.usage?.requests) !== asNumber(runtimeStatus.usage?.requests)) warnings.push('requests');
-    return warnings;
-  };
-  const keyPressureLabel = (status: GeminiPoolKeyStatus | null): string => {
-    if (!status || !Array.isArray(status.models) || status.models.length === 0) return '-';
-    return poolModelPressureLabel(status.models as GeminiPoolModelStatus[]);
-  };
-  const hasAuthIssueInKeyStatus = (status: GeminiPoolKeyStatus | null): boolean => {
-    if (!status) return false;
-    const statusToken = String(status.status || '').trim().toLowerCase();
-    const healthToken = String(status.health?.reason || '').trim().toLowerCase();
-    if (statusToken === 'auth_issue' || healthToken === 'auth_issue') return true;
-    if (!Array.isArray(status.models)) return false;
-    return status.models.some((model) => String((model as GeminiPoolModelStatus).status || '').trim().toLowerCase() === 'auth_issue');
-  };
-  const selectedPoolRows = selectedPoolKeys.map((key, index) => {
-    const keyToken = String(key || '').trim();
-    const metadata = selectedPoolKeyMetadata[index] || {};
-    const maskedLabel = String(metadata.masked || '').trim();
-    const fingerprint = String(metadata.fingerprint || '').trim();
-    const backendStatus = selectedBackendKeyStatuses[index] || null;
-    const runtimeStatus = selectedRuntimeKeyStatuses[index] || null;
-    const driftWarnings = keyDriftWarnings(backendStatus, runtimeStatus);
-    return {
-      keyToken,
-      keyLabel: maskedLabel || keyToken,
-      fingerprint,
-      backendStatus,
-      runtimeStatus,
-      driftWarnings,
+  const geminiSlotRows = useMemo(() => {
+    const statusSlots = extractGeminiSlots(geminiSlotStatus);
+    const usageSlots = extractGeminiSlots(geminiSlotUsage);
+    const fallbackSlot: GeminiSlotDisplay = {
+      slotId: 'slot-1',
+      label: 'Slot 1',
+      status: 'unknown',
+      healthy: false,
+      healthReason: '',
+      lastUsedAt: '',
+      lastFailureAt: '',
+      quarantinedUntil: '',
+      requests: 0,
+      tokens: 0,
+      failures: 0,
+      inFlight: 0,
+      source: '',
     };
-  });
+    return Array.from({ length: 3 }, (_, index) => {
+      const statusSlot = statusSlots[index] || statusSlots[0] || fallbackSlot;
+      const usageSlot = usageSlots[index] || usageSlots[0] || statusSlot;
+      return {
+        ...statusSlot,
+        label: statusSlot.label || `Slot ${index + 1}`,
+        slotId: statusSlot.slotId || `slot-${index + 1}`,
+        status: statusSlot.status || usageSlot.status || 'unknown',
+        healthy: statusSlot.healthy || usageSlot.healthy || false,
+        healthReason: statusSlot.healthReason || usageSlot.healthReason || '',
+        lastUsedAt: usageSlot.lastUsedAt || statusSlot.lastUsedAt || '',
+        lastFailureAt: usageSlot.lastFailureAt || statusSlot.lastFailureAt || '',
+        quarantinedUntil: statusSlot.quarantinedUntil || usageSlot.quarantinedUntil || '',
+        requests: Math.max(statusSlot.requests || 0, usageSlot.requests || 0),
+        tokens: Math.max(statusSlot.tokens || 0, usageSlot.tokens || 0),
+        failures: Math.max(statusSlot.failures || 0, usageSlot.failures || 0),
+        inFlight: Math.max(statusSlot.inFlight || 0, usageSlot.inFlight || 0),
+        source: statusSlot.source || usageSlot.source || '',
+      } as GeminiSlotDisplay;
+    });
+  }, [geminiSlotStatus, geminiSlotUsage]);
+  const geminiWarnings = [
+    ...(Array.isArray(geminiSlotStatus?.warnings) ? geminiSlotStatus.warnings : []),
+  ];
+  const geminiSlotSummary = geminiSlotRows.reduce(
+    (summary, slot) => {
+      const tone = geminiSlotTone(slot);
+      summary.total += 1;
+      summary.healthy += slot.healthy ? 1 : 0;
+      summary.warnings += tone === 'warn' ? 1 : 0;
+      summary.bad += tone === 'bad' ? 1 : 0;
+      return summary;
+    },
+    { total: 0, healthy: 0, warnings: 0, bad: 0 }
+  );
   const filteredSupportConversations = useMemo(() => {
     const needle = supportSearch.trim().toLowerCase();
     if (!needle) return supportConversations;
@@ -1868,32 +1643,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     void loadSupportConversationDetailSafely(nextConversation.conversationId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminMainTab, canSupportRead, activeSupportConversations, selectedSupportConversationId]);
-  const selectedPoolAuthIssueKeys = Array.from(new Set(
-    selectedPoolRows
-      .filter((row) => hasAuthIssueInKeyStatus(row.backendStatus) || hasAuthIssueInKeyStatus(row.runtimeStatus))
-      .map((row) => String(row.keyToken || '').trim())
-      .filter(Boolean)
-  ));
-  const geminiSourcePolicy = (geminiConfig?.sourcePolicy || {}) as Record<string, unknown>;
-  const geminiSourceProvider = String(geminiSourcePolicy.provider || 'gemini_api').trim().toLowerCase() === 'vertex'
-    ? 'vertex'
-    : 'gemini_api';
-  const ttsModelFallbackEnabled = Boolean(geminiSourcePolicy.ttsModelFallbackEnabled);
-  const vertexProject = String(geminiSourcePolicy.vertexProject || '');
-  const vertexLocation = String(geminiSourcePolicy.vertexLocation || '');
-  const vertexServiceAccountRef = String(geminiSourcePolicy.vertexServiceAccountRef || '');
-  const vertexServiceAccountConfigured = Boolean(geminiSourcePolicy.vertexServiceAccountConfigured || vertexServiceAccountRef);
-  const vertexAccessTokenRef = String(geminiSourcePolicy.vertexAccessTokenRef || '');
-  const vertexAccessTokenConfigured = Boolean(geminiSourcePolicy.vertexAccessTokenConfigured || vertexAccessTokenRef);
-  const vertexOnlyEnabled = geminiSourceProvider === 'vertex';
-  const parsedGlobalGeminiKeys = parseGeminiKeysInput(geminiGlobalKeyInput);
-  const geminiWarnings = [
-    ...(Array.isArray(geminiPoolStatus?.warnings) ? geminiPoolStatus.warnings : []),
-  ];
-  const duplicateKeysValidation = geminiPoolStatus?.validation?.duplicateKeys || {};
-  const hasDuplicateKeys = Object.keys(duplicateKeysValidation || {}).length > 0;
-  const selectedPoolDriftWarnings = selectedPoolRows
-    .flatMap((row) => row.driftWarnings.map((token) => `${row.fingerprint || row.keyLabel}:${token}`));
   const lastRun = dailyUsageResetStatus?.lastRun;
 
   const handleExportAuditCsv = () => {
@@ -2896,34 +2645,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       <section className={`${adminMainTab === 'pools' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-sm font-bold text-gray-800"><Key size={16} className="text-indigo-600" />Primary AI Pool</div>
-          <div className="inline-flex items-center gap-2">
-            {canOpsMutate && (
-              <button
-                onClick={() => { void handleSaveGeminiPools(); }}
-                disabled={isSavingGeminiPools || isReloadingGeminiPool}
-                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 disabled:opacity-60"
-              >
-                {isSavingGeminiPools ? <Loader2 size={13} className="animate-spin" /> : null}
-                Save Pools
-              </button>
-            )}
-            {canOpsMutate && (
-              <button onClick={() => { void handleReloadGeminiPool(); }} disabled={isReloadingGeminiPool} className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-60">
-                {isReloadingGeminiPool ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-                Reload
-              </button>
-            )}
+          <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
+            <Key size={16} className="text-indigo-600" />
+            GCP Slot Health
           </div>
         </div>
-        {!canOpsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div> : isLoadingGeminiPool ? <div className="text-xs text-gray-500">Loading primary AI pool status...</div> : (
+        {!canOpsRead ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `ops.read` permission.</div>
+        ) : isLoadingGeminiPool ? (
+          <div className="text-xs text-gray-500">Loading service-account slot status...</div>
+        ) : (
           <div className="space-y-3 text-xs">
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Backend</div><div>Keys: <strong>{asNumber((backendPool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((backendPool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((backendPool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((backendPool as Record<string, unknown>).unhealthyKeys)}</strong></div><div>In-flight: <strong>{asNumber((selectedBackendSnapshot.pool as Record<string, unknown> | undefined)?.inFlightTotal)}</strong></div><div>Model pressure: <strong>{poolModelPressureLabel(selectedBackendModels)}</strong></div></div>
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Runtime</div><div>Keys: <strong>{asNumber((runtimePool as Record<string, unknown>).keyCount)}</strong></div><div>Healthy: <strong>{asNumber((runtimePool as Record<string, unknown>).healthyKeys)}</strong></div><div>At limit: <strong>{asNumber((runtimePool as Record<string, unknown>).atLimitKeys)}</strong></div><div>Unhealthy: <strong>{asNumber((runtimePool as Record<string, unknown>).unhealthyKeys)}</strong></div><div>In-flight: <strong>{asNumber((selectedRuntimeSnapshot.pool as Record<string, unknown> | undefined)?.inFlightTotal)}</strong></div><div>Model pressure: <strong>{poolModelPressureLabel(selectedRuntimeModels)}</strong></div></div>
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Sources</div><div>File exists: <strong>{(sourceDiag as Record<string, unknown>).fileExists ? 'Yes' : 'No'}</strong></div><div>File keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).fileKeyCount)}</strong></div><div>Env keys: <strong>{asNumber((sourceDiag as Record<string, unknown>).envPoolKeyCount)}</strong></div></div>
-            </div>
-
             {geminiWarnings.length > 0 && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
                 {geminiWarnings.map((warning, index) => (
@@ -2931,324 +2663,77 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 ))}
               </div>
             )}
-            {hasDuplicateKeys && (
-              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-red-800">
-                Duplicate key membership detected. Remove duplicate keys from multiple pools before saving.
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Slot Summary</div>
+                <div>Total slots: <strong>{geminiSlotSummary.total}</strong></div>
+                <div>Healthy: <strong>{geminiSlotSummary.healthy}</strong></div>
+                <div>Warnings: <strong>{geminiSlotSummary.warnings}</strong></div>
+                <div>Critical: <strong>{geminiSlotSummary.bad}</strong></div>
               </div>
-            )}
-            {selectedPoolDriftWarnings.length > 0 && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
-                <div className="mb-1 font-semibold">Backend/Runtime drift warnings</div>
-                {selectedPoolDriftWarnings.slice(0, 16).map((item) => (
-                  <div key={`drift-${item}`}>{sanitizeUiText(item)}</div>
-                ))}
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Backend Snapshot</div>
+                <div>Slots: <strong>{Array.isArray(geminiSlotStatus?.backend?.slots) ? geminiSlotStatus.backend.slots.length : asNumber((geminiSlotStatus?.backend as Record<string, unknown> | undefined)?.slotCount)}</strong></div>
+                <div>Last update: <strong>{formatDate(geminiSlotStatus?.backend?.lastCheckedAt as string || geminiSlotStatus?.backend?.updatedAt as string || geminiSlotStatus?.updatedAt as string || '')}</strong></div>
+                <div>Status: <strong>{String(geminiSlotStatus?.backend?.ok === false ? 'degraded' : 'ok')}</strong></div>
               </div>
-            )}
-
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-              <div className="mb-2 font-semibold text-gray-800">Source Provider</div>
-              <div className="grid gap-2 md:grid-cols-4">
-                <label className="space-y-1">
-                  <div className="text-[11px] font-semibold uppercase text-gray-600">Provider</div>
-                  <select
-                    value={geminiSourceProvider}
-                    onChange={(event) => handleGeminiSourceProviderChange(event.target.value === 'vertex' ? 'vertex' : 'gemini_api')}
-                    disabled={!canOpsMutate}
-                    className="h-8 w-full rounded border border-gray-200 px-2"
-                  >
-                    <option value="gemini_api">Gemini API Key Pools</option>
-                    <option value="vertex">Vertex AI</option>
-                  </select>
-                </label>
-                <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
-                  <div className="mb-1 font-semibold uppercase text-gray-600">Vertex only</div>
-                  <button
-                    onClick={() => handleVertexOnlyToggle(!vertexOnlyEnabled)}
-                    disabled={!canOpsMutate}
-                    className={`rounded border px-2 py-1 text-[11px] font-semibold ${vertexOnlyEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-600'} disabled:opacity-60`}
-                  >
-                    {vertexOnlyEnabled ? 'ON' : 'OFF'}
-                  </button>
-                  <div className="mt-1">ON = use Vertex only, ignore free API-key pool.</div>
-                </div>
-                <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
-                  <div>Service account: <strong>{vertexServiceAccountConfigured ? 'Configured' : 'Not configured'}</strong></div>
-                  <div className="truncate">Ref: {vertexServiceAccountRef || '-'}</div>
-                  <div className="mt-1">Access token: <strong>{vertexAccessTokenConfigured ? 'Configured' : 'Not configured'}</strong></div>
-                </div>
-                <div className="rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600">
-                  <div>Current free pool: <strong>{String(geminiConfig?.planPools?.free || '-')}</strong></div>
-                  <div>Selected pool: <strong>{selectedPoolName || '-'}</strong></div>
-                </div>
-              </div>
-              <label className="mt-2 flex items-start gap-3 rounded border border-gray-200 bg-white p-3 text-[11px] text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={ttsModelFallbackEnabled}
-                  onChange={(event) => handleTtsModelFallbackChange(event.target.checked)}
-                  disabled={!canOpsMutate}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <div className="space-y-1">
-                  <div className="font-semibold text-gray-800">Enable Prime TTS model fallback</div>
-                  <div>
-                    Current mode: <strong>{ttsModelFallbackEnabled ? 'Fallback enabled' : 'Strict primary model only'}</strong>
-                  </div>
-                  <div className="text-gray-600">
-                    Off means each Prime-backed engine uses only its configured primary TTS model. On allows the runtime to try alternate configured Prime TTS models when the primary model is unavailable.
-                  </div>
-                </div>
-              </label>
-              {geminiSourceProvider === 'vertex' && (
-                <div className="mt-2 grid gap-2 md:grid-cols-2">
-                  <label className="space-y-1">
-                    <div className="text-[11px] font-semibold uppercase text-gray-600">Vertex Project</div>
-                    <input
-                      value={vertexProject}
-                      onChange={(event) => handleVertexSourceFieldChange('vertexProject', event.target.value)}
-                      disabled={!canOpsMutate}
-                      className="h-8 w-full rounded border border-gray-200 px-2"
-                      placeholder="gcp-project-id"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <div className="text-[11px] font-semibold uppercase text-gray-600">Vertex Location</div>
-                    <input
-                      value={vertexLocation}
-                      onChange={(event) => handleVertexSourceFieldChange('vertexLocation', event.target.value)}
-                      disabled={!canOpsMutate}
-                      className="h-8 w-full rounded border border-gray-200 px-2"
-                      placeholder="us-central1"
-                    />
-                  </label>
-                  <label className="space-y-1 md:col-span-2">
-                    <div className="text-[11px] font-semibold uppercase text-gray-600">Service Account JSON (write-only)</div>
-                    <textarea
-                      value={vertexServiceAccountJsonInput}
-                      onChange={(event) => setVertexServiceAccountJsonInput(event.target.value)}
-                      disabled={!canOpsMutate}
-                      rows={4}
-                      placeholder='{"type":"service_account", ...}'
-                      className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-[11px]"
-                    />
-                  </label>
-                  <label className="space-y-1 md:col-span-2">
-                    <div className="text-[11px] font-semibold uppercase text-gray-600">Vertex Access Token (write-only)</div>
-                    <input
-                      value={vertexAccessTokenInput}
-                      onChange={(event) => setVertexAccessTokenInput(event.target.value)}
-                      disabled={!canOpsMutate}
-                      className="h-8 w-full rounded border border-gray-200 px-2 font-mono text-[11px]"
-                      placeholder="AQ..."
-                    />
-                  </label>
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-              <div className="mb-2 font-semibold text-gray-800">Plan Pool Mapping</div>
-              <div className="grid gap-2 md:grid-cols-3">
-                {(['free', 'pro', 'plus'] as const).map((planKey) => (
-                  <label key={`plan-pool-${planKey}`} className="space-y-1">
-                    <div className="text-[11px] font-semibold uppercase text-gray-600">{planKey}</div>
-                    <select
-                      value={String(geminiConfig?.planPools?.[planKey] || '')}
-                      onChange={(event) => handlePlanPoolChange(planKey, event.target.value)}
-                      disabled={!canOpsMutate}
-                      className="h-8 w-full rounded border border-gray-200 px-2"
-                    >
-                      <option value="">(fallback only)</option>
-                      {geminiPoolNames.map((poolName) => (
-                        <option key={`plan-pool-option-${planKey}-${poolName}`} value={poolName}>{poolName}</option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={handleApplySelectedPoolToAllPlans}
-                  disabled={!canOpsMutate || !selectedPoolName}
-                  className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
-                >
-                  Use selected pool for all plans
-                </button>
-                <div className="text-gray-500">Sets free/pro/plus in one click.</div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-1 font-semibold text-gray-800">Runtime Snapshot</div>
+                <div>Slots: <strong>{Array.isArray(geminiSlotStatus?.runtime?.slots) ? geminiSlotStatus.runtime.slots.length : asNumber((geminiSlotStatus?.runtime as Record<string, unknown> | undefined)?.slotCount)}</strong></div>
+                <div>Last update: <strong>{formatDate(geminiSlotStatus?.runtime?.lastCheckedAt as string || geminiSlotStatus?.runtime?.updatedAt as string || '')}</strong></div>
+                <div>Status: <strong>{String(geminiSlotStatus?.runtime?.ok === false ? 'degraded' : 'ok')}</strong></div>
               </div>
             </div>
-
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <input
-                  value={newGeminiPoolName}
-                  onChange={(event) => setNewGeminiPoolName(event.target.value)}
-                  placeholder="new pool name"
-                  disabled={!canOpsMutate}
-                  className="h-8 rounded border border-gray-200 px-2"
-                />
-                <button
-                  onClick={handleCreateGeminiPool}
-                  disabled={!canOpsMutate}
-                  className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700 disabled:opacity-60"
-                >
-                  Create Pool
-                </button>
-                <div className="text-gray-500">Pools: {geminiPoolNames.join(', ') || '-'}</div>
-              </div>
-
-              <div className="mb-2 rounded border border-gray-200 bg-white p-2">
-                <div className="mb-1 font-semibold text-gray-800">Paste API keys</div>
-                <textarea
-                  value={geminiGlobalKeyInput}
-                  onChange={(event) => setGeminiGlobalKeyInput(event.target.value)}
-                  disabled={!canOpsMutate}
-                  rows={3}
-                  placeholder="AIza...\nAIza..."
-                  className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-[11px]"
-                />
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={handleApplyGeminiGlobalKeys}
-                    disabled={!canOpsMutate || !selectedPoolName}
-                    className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 disabled:opacity-60"
-                  >
-                    Apply to selected pool
-                  </button>
-                  <div className="text-gray-500">Parsed keys: {parsedGlobalGeminiKeys.length}</div>
-                </div>
-              </div>
-
-              {geminiPoolNames.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1">
-                  {geminiPoolNames.map((poolName) => (
-                    <button
-                      key={`pool-pill-${poolName}`}
-                      onClick={() => setSelectedGeminiPool(poolName)}
-                      className={`rounded border px-2 py-1 text-[11px] font-semibold ${poolName === selectedPoolName ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}
-                    >
-                      {poolName}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {selectedPoolName && (
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      value={newGeminiPoolKeyInput}
-                      onChange={(event) => setNewGeminiPoolKeyInput(event.target.value)}
-                      placeholder={`Add key to ${selectedPoolName}`}
-                      disabled={!canOpsMutate}
-                      className="h-8 min-w-[18rem] rounded border border-gray-200 px-2"
-                    />
-                    <button
-                      onClick={() => handleAddGeminiPoolKey(selectedPoolName)}
-                      disabled={!canOpsMutate}
-                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 disabled:opacity-60"
-                    >
-                      Add Key
-                    </button>
-                    <button
-                      onClick={() => handleDeleteGeminiPool(selectedPoolName)}
-                      disabled={!canOpsMutate}
-                      className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 disabled:opacity-60"
-                    >
-                      Delete Pool
-                    </button>
-                    <button
-                      onClick={() => handleDeleteAuthIssueGeminiPoolKeys(selectedPoolName, selectedPoolAuthIssueKeys)}
-                      disabled={!canOpsMutate || selectedPoolAuthIssueKeys.length === 0}
-                      className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700 disabled:opacity-60"
-                    >
-                      Delete auth issues
-                    </button>
-                    <div className="text-[11px] text-gray-500">
-                      auth_issue keys: {selectedPoolAuthIssueKeys.length}
-                    </div>
-                  </div>
-
-                  <div className="max-h-64 overflow-auto rounded border border-gray-200 bg-white">
-                    <table className="min-w-full text-[11px]">
-                      <thead className="sticky top-0 bg-gray-50 text-gray-600">
-                        <tr>
-                          <th className="px-2 py-2 text-left">#</th>
-                          <th className="px-2 py-2 text-left">API key</th>
-                          <th className="px-2 py-2 text-left">Backend snapshot</th>
-                          <th className="px-2 py-2 text-left">Runtime snapshot</th>
-                          <th className="px-2 py-2 text-left">Drift</th>
-                          <th className="px-2 py-2 text-left">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedPoolRows.length === 0 && (
-                          <tr>
-                            <td className="px-2 py-3 text-gray-500" colSpan={7}>No keys in this pool.</td>
-                          </tr>
-                        )}
-                        {selectedPoolRows.map((row, index) => {
-                          const backendTone = classifyGeminiPoolKeyTone(row.backendStatus);
-                          const runtimeTone = classifyGeminiPoolKeyTone(row.runtimeStatus);
-                          const tone = backendTone === 'bad' || runtimeTone === 'bad'
-                            ? 'bad'
-                            : backendTone === 'warn' || runtimeTone === 'warn'
-                              ? 'warn'
-                              : 'neutral';
-                          const rowClass = tone === 'bad'
-                            ? 'bg-red-50 text-red-800'
-                            : tone === 'warn'
-                              ? 'bg-amber-50 text-amber-800'
-                              : '';
-                          const renderSnapshotCell = (status: GeminiPoolKeyStatus | null) => (
-                            <div className="space-y-0.5 text-[10px] leading-tight">
-                              <div>Status: <strong>{String(status?.status || 'unknown')}</strong></div>
-                              <div>Health: <strong>{String(status?.health?.reason || '-')}</strong></div>
-                              <div>In-flight: <strong>{asNumber(status?.inFlight)}</strong></div>
-                              <div>RPM used: <strong>{asNumber(status?.usage?.requests)}</strong></div>
-                              <div>TPM used: <strong>{asNumber(status?.usage?.tokens)}</strong></div>
-                              <div>RPM remaining: <strong>{asNumber(status?.models?.[0]?.remaining?.rpm)}</strong></div>
-                              <div>TPM remaining: <strong>{asNumber(status?.models?.[0]?.remaining?.tpm)}</strong></div>
-                              <div>Model pressure: <strong>{keyPressureLabel(status)}</strong></div>
-                            </div>
-                          );
-                          return (
-                            <tr key={`pool-key-${selectedPoolName}-${index}`} className={`border-t border-gray-100 ${rowClass}`}>
-                              <td className="px-2 py-2">{index + 1}</td>
-                              <td className="px-2 py-2 font-mono">
-                                <div>{row.keyLabel}</div>
-                                {row.fingerprint ? <div className="text-[10px] text-gray-500">fp:{row.fingerprint}</div> : null}
-                              </td>
-                              <td className="px-2 py-2 align-top">{renderSnapshotCell(row.backendStatus)}</td>
-                              <td className="px-2 py-2 align-top">{renderSnapshotCell(row.runtimeStatus)}</td>
-                              <td className="px-2 py-2 align-top">
-                                {row.driftWarnings.length > 0 ? (
-                                  <div className="space-y-0.5 text-[10px]">
-                                    {row.driftWarnings.map((token) => (
-                                      <div key={`drift-token-${row.fingerprint}-${token}`}>{token}</div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span className="text-[10px] text-gray-500">none</span>
-                                )}
-                              </td>
-                              <td className="px-2 py-2">
-                                <button
-                                  onClick={() => handleDeleteGeminiPoolKey(selectedPoolName, row.keyToken)}
-                                  disabled={!canOpsMutate}
-                                  className="rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700 disabled:opacity-60"
-                                >
-                                  Delete key
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+            <div className="overflow-hidden rounded-xl border border-gray-100 bg-white">
+              <table className="min-w-full text-[11px]">
+                <thead className="bg-gray-50 text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Slot</th>
+                    <th className="px-3 py-2 text-left">Health</th>
+                    <th className="px-3 py-2 text-left">Usage</th>
+                    <th className="px-3 py-2 text-left">Last Used</th>
+                    <th className="px-3 py-2 text-left">Quarantine</th>
+                    <th className="px-3 py-2 text-left">Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {geminiSlotRows.map((slot) => {
+                    const tone = geminiSlotTone(slot);
+                    const rowClass = tone === 'bad'
+                      ? 'bg-red-50 text-red-800'
+                      : tone === 'warn'
+                        ? 'bg-amber-50 text-amber-800'
+                        : tone === 'ok'
+                          ? 'bg-emerald-50 text-emerald-800'
+                          : '';
+                    return (
+                      <tr key={slot.slotId} className={`border-t border-gray-100 ${rowClass}`}>
+                        <td className="px-3 py-2">
+                          <div className="font-semibold text-gray-900">{slot.label}</div>
+                          <div className="text-[10px] text-gray-500">{slot.slotId}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div>Status: <strong>{slot.status || 'unknown'}</strong></div>
+                          <div>Healthy: <strong>{slot.healthy ? 'Yes' : 'No'}</strong></div>
+                          <div>Reason: <strong>{slot.healthReason || '-'}</strong></div>
+                          <div>In-flight: <strong>{slot.inFlight}</strong></div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div>Requests: <strong>{slot.requests.toLocaleString()}</strong></div>
+                          <div>Tokens: <strong>{slot.tokens.toLocaleString()}</strong></div>
+                          <div>Failures: <strong>{slot.failures.toLocaleString()}</strong></div>
+                        </td>
+                        <td className="px-3 py-2">{formatDate(slot.lastUsedAt)}</td>
+                        <td className="px-3 py-2">
+                          <div>{slot.quarantinedUntil ? formatDate(slot.quarantinedUntil) : '-'}</div>
+                          <div className="text-[10px] text-gray-500">{tone === 'bad' ? 'critical' : tone === 'warn' ? 'watch' : 'normal'}</div>
+                        </td>
+                        <td className="px-3 py-2">{slot.source || '-'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
@@ -3284,77 +2769,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Pending approvals</div><div className="text-lg font-bold text-gray-900">{asNumber(opsApprovals?.count || opsGuardian?.pendingApprovalCount).toLocaleString()}</div></div>
                 </div>
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="mb-1 font-semibold text-gray-800">Daily reset</div><div>Last run: <strong>{lastRun?.ranAt ? formatDate(lastRun.ranAt) : 'Never'}</strong></div><div>Dry run users: <strong>{asNumber(lastDailyDryRun?.usersAffected).toLocaleString()}</strong></div>{canOpsMutate && <div className="mt-2 flex gap-2"><button onClick={() => { void handleDryRunDailyReset(); }} className="rounded border border-gray-200 px-2 py-1 text-[10px] font-semibold text-gray-700">{isDryRunningDailyReset ? 'Running...' : 'Dry Run'}</button><button onClick={() => { void handleExecuteDailyReset(); }} className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-semibold text-red-700">{isExecutingDailyReset ? 'Running...' : 'Reset Daily'}</button></div>}</div>
-                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <div className="font-semibold text-gray-800">Lab runtime defaults</div>
-                    <div className="text-[10px] text-gray-500">{labRuntimeDefaults?.updatedAt ? formatDate(labRuntimeDefaults.updatedAt) : 'system defaults'}</div>
-                  </div>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    <label className="grid gap-1">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Browser acceleration</span>
-                      <select
-                        value={labRuntimeDefaults?.browserAccelerationDefault || 'webgpu_preferred'}
-                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ browserAccelerationDefault: event.target.value as AdminLabRuntimeDefaults['browserAccelerationDefault'] }); }}
-                        disabled={!canOpsMutate}
-                        className="h-8 rounded border border-gray-200 px-2 text-xs"
-                      >
-                        <option value="webgpu_preferred">WebGPU preferred</option>
-                        <option value="cpu_only">CPU only</option>
-                      </select>
-                    </label>
-                    <label className="grid gap-1">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Backend hardware</span>
-                      <select
-                        value={labRuntimeDefaults?.backendHardwareDefault || 'gpu_preferred'}
-                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ backendHardwareDefault: event.target.value as AdminLabRuntimeDefaults['backendHardwareDefault'] }); }}
-                        disabled={!canOpsMutate}
-                        className="h-8 rounded border border-gray-200 px-2 text-xs"
-                      >
-                        <option value="gpu_preferred">GPU preferred</option>
-                        <option value="cpu_only">CPU only</option>
-                      </select>
-                    </label>
-                    <label className="grid gap-1">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Separator backend</span>
-                      <select
-                        value={labRuntimeDefaults?.separatorBackendDefault || 'gpu_preferred'}
-                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ separatorBackendDefault: event.target.value as AdminLabRuntimeDefaults['separatorBackendDefault'] }); }}
-                        disabled={!canOpsMutate}
-                        className="h-8 rounded border border-gray-200 px-2 text-xs"
-                      >
-                        <option value="gpu_preferred">GPU preferred</option>
-                        <option value="cpu_only">CPU only</option>
-                      </select>
-                    </label>
-                    <label className="grid gap-1">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Lab performance mode</span>
-                      <select
-                        value={labRuntimeDefaults?.labPerformanceMode || 'conservative'}
-                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ labPerformanceMode: event.target.value as AdminLabRuntimeDefaults['labPerformanceMode'] }); }}
-                        disabled={!canOpsMutate}
-                        className="h-8 rounded border border-gray-200 px-2 text-xs"
-                      >
-                        <option value="conservative">Conservative</option>
-                        <option value="balanced">Balanced</option>
-                      </select>
-                    </label>
-                    <label className="grid gap-1">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Export strategy</span>
-                      <select
-                        value={labRuntimeDefaults?.exportStrategyDefault || 'browser_first'}
-                        onChange={(event) => { void handleSaveLabRuntimeDefaults({ exportStrategyDefault: event.target.value as AdminLabRuntimeDefaults['exportStrategyDefault'] }); }}
-                        disabled={!canOpsMutate}
-                        className="h-8 rounded border border-gray-200 px-2 text-xs"
-                      >
-                        <option value="browser_first">Browser first</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div className="mt-2 flex items-center justify-between rounded border border-dashed border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-600">
-                    <span>User override</span>
-                    <strong>{labRuntimeDefaults?.allowUserOverride ? 'Enabled' : 'Disabled'}</strong>
-                  </div>
-                </div>
               </>
             )}
           </div>

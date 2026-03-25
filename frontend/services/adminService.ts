@@ -142,250 +142,84 @@ export interface AdminSessionUnlockStatusPayload {
   status?: AdminSessionUnlockStatus;
 }
 
-export interface GeminiPoolStatusPayload {
+export interface GeminiServiceAccountSlotHealth {
+  healthy?: boolean;
+  status?: string;
+  reason?: string;
+  lastCheckedAt?: string;
+}
+
+export interface GeminiServiceAccountSlotUsage {
+  requests?: number;
+  tokens?: number;
+  failures?: number;
+  lastUsedAt?: string;
+  lastFailureAt?: string;
+}
+
+export interface GeminiServiceAccountSlot {
+  slotId?: string;
+  label?: string;
+  status?: string;
+  health?: GeminiServiceAccountSlotHealth;
+  usage?: GeminiServiceAccountSlotUsage;
+  inFlight?: number;
+  lastUsedAt?: string;
+  lastFailureAt?: string;
+  lastFailureReason?: string;
+  quarantinedUntil?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface GeminiSlotStatusPayload {
   ok: boolean;
-  config?: GeminiPoolConfig;
-  validation?: GeminiPoolValidation;
+  detail?: string;
   warnings?: string[];
-  sourcePolicy?: GeminiSourcePolicy;
-  poolSummaries?: Record<string, GeminiPoolSummary>;
+  updatedAt?: string;
+  slots?: GeminiServiceAccountSlot[];
   backend?: {
     ok?: boolean;
-    pool?: {
-      keyCount?: number;
-      healthyKeys?: number;
-      unhealthyKeys?: number;
-      atLimitKeys?: number;
-    };
-    keys?: GeminiPoolKeyStatus[];
-    poolSummaries?: Record<string, GeminiPoolSummary>;
-    source?: {
-      configuredFilePath?: string;
-      filePath?: string;
-      fileExists?: boolean;
-      fileKeyCount?: number;
-      envPoolKeyCount?: number;
-      singleKeyPresent?: boolean;
-    };
+    updatedAt?: string;
+    lastCheckedAt?: string;
+    slotCount?: number;
+    slots?: GeminiServiceAccountSlot[];
     [key: string]: unknown;
   };
   runtime?: {
     ok?: boolean;
-    configuredKeyFilePath?: string;
-    keyFilePath?: string;
-    pool?: {
-      keyCount?: number;
-      healthyKeys?: number;
-      unhealthyKeys?: number;
-      atLimitKeys?: number;
-    };
+    updatedAt?: string;
+    lastCheckedAt?: string;
+    slotCount?: number;
+    slots?: GeminiServiceAccountSlot[];
     [key: string]: unknown;
   };
-  runtimeReload?: Record<string, unknown>;
-  detail?: string;
-  createdPools?: string[];
-  deletedPools?: string[];
-  planPoolChanges?: Record<string, { before?: string; after?: string }>;
-  keyDiffByPool?: Record<string, { beforeCount?: number; afterCount?: number; addedCount?: number; removedCount?: number }>;
-}
-
-export type GeminiSourceProvider = 'gemini_api' | 'vertex';
-
-export interface GeminiSourcePolicy {
-  provider?: GeminiSourceProvider;
-  freePoolMode?: 'api_file_authoritative' | 'config_managed' | string;
-  freePoolFilePath?: string;
-  freePoolLocked?: boolean;
-  ttsModelFallbackEnabled?: boolean;
-  failureMode?: string;
-  lastSyncAt?: string;
-  lastSyncStatus?: string;
-  lastSyncHash?: string;
-  fileKeyCount?: number;
-  vertexProject?: string;
-  vertexLocation?: string;
-  vertexServiceAccountRef?: string;
-  vertexServiceAccountConfigured?: boolean;
-  vertexServiceAccountJson?: string;
-  vertexAccessTokenRef?: string;
-  vertexAccessTokenConfigured?: boolean;
-  vertexAccessToken?: string;
   [key: string]: unknown;
 }
 
-export interface GeminiPoolConfig {
-  version?: number;
-  updatedAt?: string;
-  pools?: Record<string, {
-    keys?: string[];
-    keyMetadata?: Array<{
-      index?: number;
-      fingerprint?: string;
-      masked?: string;
-    }>;
-  }>;
-  fallbackChains?: Record<string, string[]>;
-  planPools?: {
-    free?: string;
-    pro?: string;
-    plus?: string;
-  };
-  defaultFallbackChain?: string[];
-  constraints?: {
-    uniqueKeyMembership?: boolean;
-  };
-  sourcePolicy?: GeminiSourcePolicy;
-  keyMetadata?: Record<string, Array<{
-    index?: number;
-    fingerprint?: string;
-    masked?: string;
-  }>>;
-  singlePool?: {
-    enabled?: boolean;
-    canonicalPoolId?: string;
-    effectivePlanPools?: {
-      free?: string;
-      pro?: string;
-      plus?: string;
-    };
-  };
-}
-
-export interface GeminiPoolValidation {
-  uniqueKeyMembership?: boolean;
-  duplicateKeys?: Record<string, string[]>;
-  missingPlanPools?: Record<string, string>;
-  missingDefaultFallbackPools?: string[];
-  isValid?: boolean;
-}
-
-export interface GeminiPoolSummary {
-  pool?: string;
-  directKeyCount?: number;
-  effectiveKeyCount?: number;
-  chain?: string[];
-  effectiveChain?: string[];
-  allocator?: {
-    keyCount?: number;
-    healthyKeys?: number;
-    unhealthyKeys?: number;
-    atLimitKeys?: number;
-    inFlightTotal?: number;
-    nextResetInMs?: number;
-  };
-}
-
-export interface GeminiModelWindowUsage {
-  requests?: number;
-  tokens?: number;
-  inFlightRequests?: number;
-  inFlightTokens?: number;
-  successes?: number;
-  failures?: number;
-  rateLimited?: number;
-}
-
-export interface GeminiModelRemainingCapacity {
-  rpm?: number;
-  tpm?: number;
-  atLimit?: boolean;
-}
-
-export interface GeminiModelWindowMeta {
-  startedAtMs?: number;
-  resetsInMs?: number;
-}
-
-export interface GeminiPoolModelStatus {
-  model?: string;
-  status?: string;
-  readyInMs?: number;
-  rpm?: number;
-  tpm?: number;
-  enabledFor?: string[];
-  routed?: boolean;
-  usage?: GeminiModelWindowUsage;
-  remaining?: GeminiModelRemainingCapacity;
-  window?: GeminiModelWindowMeta;
-  pool?: {
-    keyCount?: number;
-    atCapacityKeys?: number;
-    availableKeys?: number;
-    nextResetInMs?: number;
-  };
-}
-
-export interface GeminiPoolKeyStatus {
-  index?: number;
-  fingerprint?: string;
-  status?: string;
-  inFlight?: number;
-  readyInMs?: number;
-  rateLimitStrikes?: number;
-  usage?: GeminiModelWindowUsage;
-  limit?: {
-    dailyLimit?: number | null;
-    remaining?: number | null;
-    atLimit?: boolean;
-  };
-  health?: {
-    healthy?: boolean;
-    reason?: string;
-  };
-  models?: GeminiPoolModelStatus[];
-  [key: string]: unknown;
-}
-
-export interface GeminiPoolAllocatorSnapshot {
-  ok?: boolean;
-  window?: {
-    type?: string;
-    seconds?: number;
-    timestampMs?: number;
-  };
-  allocator?: {
-    version?: number;
-    defaultWaitTimeoutMs?: number;
-    windowSeconds?: number;
-  };
-  pool?: {
-    keyCount?: number;
-    healthyKeys?: number;
-    unhealthyKeys?: number;
-    atLimitKeys?: number;
-    inFlightTotal?: number;
-    keyDailyLimit?: number | null;
-    overallDailyLimit?: number | null;
-    overallUsed?: number | null;
-    overallRemaining?: number | null;
-    overallAtLimit?: boolean;
-    rotationMode?: string;
-    nextIndex?: number;
-  };
-  keys?: GeminiPoolKeyStatus[];
-  models?: GeminiPoolModelStatus[];
-}
-
-export interface GeminiPoolUsageEntry {
-  pool?: string;
-  directKeyCount?: number;
-  effectiveKeyCount?: number;
-  effectiveChain?: string[];
-  direct?: GeminiPoolAllocatorSnapshot;
-  effective?: GeminiPoolAllocatorSnapshot;
-}
-
-export interface GeminiPoolUsageResponseBlock {
-  ok?: boolean;
-  usage?: Record<string, GeminiPoolUsageEntry>;
-  endpoint?: string;
-  [key: string]: unknown;
-}
-
-export interface GeminiPoolsUsagePayload {
+export interface GeminiSlotUsagePayload {
   ok: boolean;
-  backend?: GeminiPoolUsageResponseBlock;
-  runtime?: GeminiPoolUsageResponseBlock;
+  updatedAt?: string;
+  slots?: GeminiServiceAccountSlot[];
+  backend?: {
+    ok?: boolean;
+    updatedAt?: string;
+    lastCheckedAt?: string;
+    slotCount?: number;
+    slots?: GeminiServiceAccountSlot[];
+    usage?: Record<string, GeminiServiceAccountSlot>;
+    [key: string]: unknown;
+  };
+  runtime?: {
+    ok?: boolean;
+    updatedAt?: string;
+    lastCheckedAt?: string;
+    slotCount?: number;
+    slots?: GeminiServiceAccountSlot[];
+    usage?: Record<string, GeminiServiceAccountSlot>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
 }
 
 export interface DailyUsageResetSummary {
@@ -830,17 +664,6 @@ export interface SupportAiPolicy {
   updatedBy?: string;
 }
 
-export interface AdminLabRuntimeDefaults {
-  browserAccelerationDefault: 'webgpu_preferred' | 'cpu_only';
-  backendHardwareDefault: 'gpu_preferred' | 'cpu_only';
-  separatorBackendDefault: 'gpu_preferred' | 'cpu_only';
-  labPerformanceMode: 'conservative' | 'balanced';
-  exportStrategyDefault: 'browser_first';
-  allowUserOverride: boolean;
-  updatedAt?: string;
-  updatedBy?: string;
-}
-
 export const fetchAdminUsers = async (
   baseUrl?: string,
   options?: { q?: string; limit?: number }
@@ -1029,55 +852,16 @@ export const patchAdminCoupon = async (
   return payload?.coupon as AdminCoupon;
 };
 
-export const fetchGeminiPoolStatus = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/gemini/pool/status`,
-    undefined,
-    { requireAuth: true }
-  ))
-);
-
-export const reloadGeminiPool = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/gemini/pool/reload`,
-    { method: 'POST' },
-    { requireAuth: true }
-  ))
-);
-
-export const fetchGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
+export const fetchGeminiSlotStatus = async (baseUrl?: string): Promise<GeminiSlotStatusPayload> => (
+  readJsonOrThrow<GeminiSlotStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pools`,
     undefined,
     { requireAuth: true }
   ))
 );
 
-export const reloadGeminiPools = async (baseUrl?: string): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/gemini/pools/reload`,
-    { method: 'POST' },
-    { requireAuth: true }
-  ))
-);
-
-export const updateGeminiPools = async (
-  input: GeminiPoolConfig,
-  baseUrl?: string
-): Promise<GeminiPoolStatusPayload> => (
-  readJsonOrThrow<GeminiPoolStatusPayload>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/gemini/pools`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    },
-    { requireAuth: true }
-  ))
-);
-
-export const fetchGeminiPoolsUsage = async (baseUrl?: string): Promise<GeminiPoolsUsagePayload> => (
-  readJsonOrThrow<GeminiPoolsUsagePayload>(await adminAuthFetch(
+export const fetchGeminiSlotUsage = async (baseUrl?: string): Promise<GeminiSlotUsagePayload> => (
+  readJsonOrThrow<GeminiSlotUsagePayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/gemini/pools/usage`,
     undefined,
     { requireAuth: true }
@@ -1977,27 +1761,3 @@ export const patchAdminSupportAiPolicy = async (
   return payload.policy;
 };
 
-export const fetchAdminLabRuntimeDefaults = async (baseUrl?: string): Promise<AdminLabRuntimeDefaults> => {
-  const payload = await readJsonOrThrow<{ defaults: AdminLabRuntimeDefaults }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/lab/runtime-defaults`,
-    undefined,
-    { requireAuth: true }
-  ));
-  return payload.defaults;
-};
-
-export const updateAdminLabRuntimeDefaults = async (
-  patch: Partial<AdminLabRuntimeDefaults>,
-  baseUrl?: string
-): Promise<AdminLabRuntimeDefaults> => {
-  const payload = await readJsonOrThrow<{ defaults: AdminLabRuntimeDefaults }>(await adminAuthFetch(
-    `${toBaseUrl(baseUrl)}/admin/lab/runtime-defaults`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    },
-    { requireAuth: true }
-  ));
-  return payload.defaults;
-};

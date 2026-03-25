@@ -15,7 +15,9 @@ interface VoiceCloneModalProps {
   onClose: () => void;
   onCloneCreated: (voice: ClonedVoice) => void;
   backendBaseUrl?: string;
+  sourceVoiceId?: string;
   sourceVoiceLabel?: string;
+  sourceVoiceEngine?: string;
   sourceVoiceUrl?: string;
   prepareSourceVoiceUrl?: () => Promise<{ url: string; needsCleanup: boolean }>;
 }
@@ -50,6 +52,9 @@ const buildClonedVoice = (
     accent: string;
     description: string;
     originalSampleUrl: string;
+    sourceVoiceId: string;
+    sourceVoiceName: string;
+    sourceVoiceEngine: string;
   }
 ): ClonedVoice => {
   const clonedVoice = response.clonedVoice;
@@ -58,9 +63,14 @@ const buildClonedVoice = (
   const previewUrl = String(clonedVoice?.previewUrl || response.artifact?.downloadUrl || fallback.originalSampleUrl || '').trim();
   const originalSampleUrl = String(clonedVoice?.originalSampleUrl || response.artifact?.downloadUrl || fallback.originalSampleUrl || '').trim();
   const referenceText = String(clonedVoice?.referenceText || '').trim();
+  const sourceVoiceId = String(clonedVoice?.sourceVoiceId || response.sourceVoiceId || fallback.sourceVoiceId || '').trim();
+  const sourceVoiceName = String(clonedVoice?.sourceVoiceName || response.sourceVoiceName || fallback.sourceVoiceName || fallback.name || '').trim();
+  const sourceVoiceEngine = String(clonedVoice?.sourceVoiceEngine || response.sourceVoiceEngine || fallback.sourceVoiceEngine || '').trim();
+  const referenceAudioUrl = String(clonedVoice?.referenceAudioUrl || response.referenceAudioUrl || '').trim();
+  const referenceAudioName = String(clonedVoice?.referenceAudioName || response.referenceAudioName || '').trim();
   const createdAt = clonedVoice?.dateCreated;
 
-  return {
+  const voice: ClonedVoice = {
     id: String(clonedVoice?.id || fallback.id),
     name: String(clonedVoice?.name || fallback.name),
     gender: (clonedVoice?.gender || fallback.gender) as ClonedVoice['gender'],
@@ -78,8 +88,16 @@ const buildClonedVoice = (
     originalSampleUrl: originalSampleUrl || '',
     ...(country ? { country } : {}),
     ...(ageGroup ? { ageGroup } : {}),
+    ...(sourceVoiceId ? { sourceVoiceId } : {}),
+    ...(sourceVoiceName ? { sourceVoiceName } : {}),
+    ...(referenceAudioUrl ? { referenceAudioUrl } : {}),
+    ...(referenceAudioName ? { referenceAudioName } : {}),
     ...(referenceText ? { referenceText } : {}),
   };
+  if (sourceVoiceEngine) {
+    voice.sourceVoiceEngine = sourceVoiceEngine;
+  }
+  return voice;
 };
 
 export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
@@ -87,7 +105,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   onClose,
   onCloneCreated,
   backendBaseUrl,
+  sourceVoiceId,
   sourceVoiceLabel,
+  sourceVoiceEngine,
   sourceVoiceUrl,
   prepareSourceVoiceUrl,
 }) => {
@@ -174,6 +194,10 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
         referenceAudioName: referenceFile.name || 'reference.wav',
         sourceAudioBase64,
         sourceAudioName: `${currentSourceLabel || 'speaker'}.wav`,
+        sourceVoiceId: String(sourceVoiceId || '').trim(),
+        sourceVoiceName: currentSourceLabel,
+        sourceVoiceEngine: String(sourceVoiceEngine || '').trim(),
+        referenceAudioUrl: '',
         speed: 1,
         requestId,
         traceId: requestId,
@@ -200,6 +224,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
         accent: 'Neutral',
         description: `Converted from ${currentSourceLabel}`,
         originalSampleUrl: resultSampleUrl || currentSourceUrl,
+        sourceVoiceId: String(sourceVoiceId || '').trim(),
+        sourceVoiceName: currentSourceLabel,
+        sourceVoiceEngine: String(sourceVoiceEngine || '').trim(),
       });
 
       setResultVoice({

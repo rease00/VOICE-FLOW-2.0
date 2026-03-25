@@ -828,15 +828,6 @@ async function stubReaderRecoveryFlow(page: Parameters<typeof test>[0]['page']) 
   );
 }
 
-async function importLabAudio(page: Parameters<typeof test>[0]['page'], fileName = 'lab-demo.wav') {
-  const audioInput = page.locator('input[type="file"][accept*="audio"]').first();
-  await audioInput.setInputFiles({
-    name: fileName,
-    mimeType: 'audio/wav',
-    buffer: buildLabWavBuffer(),
-  });
-}
-
 async function openWorkspaceTab(page: Parameters<typeof test>[0]['page'], label: string) {
   const openMenuButton = page.getByRole('button', { name: 'Open navigation menu' });
   const navigationButtons = page.getByRole('button', { name: new RegExp(`^${label}$`) });
@@ -936,39 +927,6 @@ async function clickSidebarShop(page: Parameters<typeof test>[0]['page']) {
     if (node instanceof HTMLButtonElement) node.click();
   });
 }
-
-async function clickLabRailButton(page: Parameters<typeof test>[0]['page'], label: string) {
-  const railButton = page.getByTestId('lab-rail').getByRole('button', { name: new RegExp(`^${label}$`) }).first();
-  await expect(railButton).toBeVisible();
-  await railButton.scrollIntoViewIfNeeded().catch(() => undefined);
-  try {
-    await railButton.click({ timeout: 2000 });
-  } catch {
-    await railButton.click({ force: true, timeout: 2000 });
-  }
-}
-
-async function ensureLabRailPanelOpen(page: Parameters<typeof test>[0]['page'], label: string) {
-  const panelHeader = page.getByTestId('lab-panel').getByText(label, { exact: true }).first();
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await clickLabRailButton(page, label);
-    if (await panelHeader.isVisible().catch(() => false)) return;
-    const railButton = page.getByTestId('lab-rail').getByRole('button', { name: new RegExp(`^${label}$`) }).first();
-    await railButton.evaluate((node) => {
-      if (node instanceof HTMLButtonElement) node.click();
-    }).catch(() => undefined);
-    await page.waitForTimeout(120);
-    if (await panelHeader.isVisible().catch(() => false)) return;
-  }
-  await expect(panelHeader).toBeVisible();
-}
-
-const parseClipCount = (input: string | null | undefined): number => {
-  const match = String(input || '').match(/(\d+)\s+clips/i);
-  if (!match) return 0;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
 
 interface StudioSmokeCredentials {
   email: string;
@@ -1472,7 +1430,7 @@ test('workspace routes render core production tabs without boundary crashes', as
 
   const routes = [
     { tab: 'STUDIO', marker: /Generate Audio/i },
-    { tab: 'PODCAST', marker: /Podcast Live/i },
+    { tab: 'READER', marker: /Reader/i },
     { tab: 'NOVEL', marker: /Novel Workspace/i },
     { tab: 'CHARACTERS', marker: /Character & Voice Studio/i },
     { tab: 'HISTORY', marker: /Generation History/i },
@@ -1486,27 +1444,16 @@ test('workspace routes render core production tabs without boundary crashes', as
   }
 });
 
-test('podcast tab renders wireframe layout labels and editable cast rows', async ({ page }) => {
+test('removed tab tokens fall back to studio', async ({ page }) => {
   await ensureWorkspaceAuthenticatedOrSkip(page);
 
   await page.goto('/?vf-screen=main&vf-tab=PODCAST');
+  await expect(page.getByText(/Generate Audio/i).first()).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get('vf-tab')).toBe('STUDIO');
 
-  await expect(page.getByTestId('podcast-tab-content')).toBeVisible();
-  await expect(page.getByText('TOPIC', { exact: true })).toBeVisible();
-  await expect(page.getByText('SCRIPT', { exact: true })).toBeVisible();
-  await expect(page.getByText('PLAYER', { exact: true })).toBeVisible();
-  await expect(page.getByText('CHARACTER', { exact: true })).toBeVisible();
-  await expect(page.getByText('NAME', { exact: true })).toBeVisible();
-  await expect(page.getByText('VOICES', { exact: true })).toBeVisible();
-
-  const firstCastRow = page.getByTestId('podcast-cast-row-0');
-  await expect(firstCastRow).toBeVisible();
-  const characterInput = firstCastRow.getByPlaceholder('Character');
-  await characterInput.fill('LEAD');
-  await expect(characterInput).toHaveValue('LEAD');
-  await expect(firstCastRow.locator('select')).toBeVisible();
-
-  await expect(page.getByText('Interface Error')).toHaveCount(0);
+  await page.goto('/?vf-screen=main&vf-tab=LAB');
+  await expect(page.getByText(/Generate Audio/i).first()).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get('vf-tab')).toBe('STUDIO');
 });
 
 test('workspace navigation keeps all non-admin tabs reachable and URL-synced', async ({ page }) => {
@@ -1518,7 +1465,6 @@ test('workspace navigation keeps all non-admin tabs reachable and URL-synced', a
 
   const tabs: Array<{ label: string; query: string }> = [
     { label: 'Studio', query: 'STUDIO' },
-    { label: 'Podcast', query: 'PODCAST' },
     { label: 'Reader', query: 'READER' },
     { label: 'Novel', query: 'NOVEL' },
     { label: 'Character', query: 'CHARACTERS' },
@@ -2041,228 +1987,3 @@ test.describe('reader smoke', () => {
   });
 });
 
-test.describe('lab smoke', () => {
-  test.beforeEach(async ({ page }) => {
-    await ensureWorkspaceAuthenticatedOrSkip(page);
-  });
-
-  test('lab shell supports responsive audio import and inspector flows', async ({ page }, testInfo) => {
-    await page.goto('/?vf-screen=main&vf-tab=LAB');
-    await expect(page.getByTestId('lab-shell')).toBeVisible();
-    if (testInfo.project.name === 'chromium-mobile') {
-      await expect(page.getByTestId('lab-mobile-inspector')).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Export' }).first()).toBeVisible();
-    } else {
-      await expect(page.getByTestId('lab-topbar')).toBeVisible();
-      await expect(page.getByTestId('lab-topbar').locator('div').filter({ hasText: /\d{2}\s[A-Za-z]{3}\s\d{4}/ }).first()).toBeVisible();
-      await expect(page.getByTestId('lab-rail')).toBeVisible();
-      await expect(page.getByTestId('lab-panel')).toBeVisible();
-      await expect(page.getByTestId('lab-topbar').getByRole('button', { name: 'Export' })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Export WebM' }).first()).toBeVisible();
-    }
-
-    await importLabAudio(page);
-
-    await expect(page.getByTestId('lab-timeline-scroll')).toBeVisible();
-
-    if (testInfo.project.name === 'chromium-mobile') {
-      await expect(page.getByTestId('lab-mobile-inspector')).toBeVisible();
-    }
-  });
-
-  test('lab timeline supports transitions pack and custom ratio persistence', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === 'chromium-mobile', 'Detailed transition flow is desktop/tablet focused.');
-    test.setTimeout(60_000);
-
-    await page.goto('/?vf-screen=main&vf-tab=LAB');
-    await expect(page.getByTestId('lab-shell')).toBeVisible();
-
-    await importLabAudio(page, 'lab-demo-a.wav');
-    await importLabAudio(page, 'lab-demo-b.wav');
-    await expect(page.getByText(/2 clips \|/i)).toBeVisible();
-
-    const transitionMarker = page.getByRole('button', { name: /Transition .* to .*/ }).first();
-    await transitionMarker.click();
-    await expect(transitionMarker).toContainText(/Crossfade|Add/i);
-    if (testInfo.project.name === 'chromium-tablet') {
-      const tabletInspector = page.getByTestId('lab-tablet-inspector');
-      const inspectorVisible = await tabletInspector.isVisible().catch(() => false);
-      if (!inspectorVisible) {
-        await page.getByRole('button', { name: 'Inspector' }).first().click({ force: true });
-      }
-      await expect(tabletInspector).toBeVisible();
-    }
-    const inspector = testInfo.project.name === 'chromium-tablet'
-      ? page.getByTestId('lab-tablet-inspector')
-      : page.getByTestId('lab-inspector');
-
-    for (const kind of ['Cut', 'Crossfade', 'Fade', 'Wipe', 'Slide'] as const) {
-      await inspector.getByRole('button', { name: new RegExp(`^${kind}$`) }).first().click();
-      await expect(transitionMarker).toContainText(kind);
-    }
-
-    if (testInfo.project.name === 'chromium-tablet') {
-      await page.getByTestId('lab-tablet-inspector').getByRole('button', { name: 'Close' }).click({ force: true });
-    }
-
-    const applyCustomRatio = async () => {
-      await ensureLabRailPanelOpen(page, 'Canvas');
-      const panel = page.getByTestId('lab-panel');
-      await expect(panel.getByText('Canvas', { exact: true }).first()).toBeVisible();
-      await expect(panel.locator('input[type="number"]').nth(0)).toBeVisible();
-      await expect(panel.locator('input[type="number"]').nth(1)).toBeVisible();
-      await panel.locator('input[type="number"]').nth(0).fill('1300');
-      await panel.locator('input[type="number"]').nth(1).fill('730');
-      await panel.getByRole('button', { name: 'Apply custom ratio' }).click({ force: true });
-      await expect(panel.getByText('Active 1300x730')).toBeVisible();
-    };
-
-    await applyCustomRatio();
-
-    await page.reload();
-    await expect(page.getByTestId('lab-shell')).toBeVisible();
-    await ensureLabRailPanelOpen(page, 'Canvas');
-    await expect(page.getByTestId('lab-panel').getByText('Active 1300x730')).toBeVisible();
-  });
-
-  test('lab panel audit exercises every panel and core option paths', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === 'chromium-mobile', 'Rail panel audit uses desktop/tablet layout.');
-    test.setTimeout(60_000);
-
-    await page.goto('/?vf-screen=main&vf-tab=LAB');
-    await expect(page.getByTestId('lab-shell')).toBeVisible();
-    await importLabAudio(page, 'lab-audit.wav');
-
-    const panel = page.getByTestId('lab-panel');
-    const timelineSummary = page.getByText(/\d+\s+clips\s+\|/i).first();
-
-    for (const panelLabel of ['Media', 'Canvas', 'Text', 'Audio', 'Videos', 'Images', 'Elements', 'Record', 'TTS'] as const) {
-      await ensureLabRailPanelOpen(page, panelLabel);
-      await expect(panel.getByText(panelLabel, { exact: true }).first()).toBeVisible();
-    }
-
-    await ensureLabRailPanelOpen(page, 'Text');
-    const beforeTextInsertCount = parseClipCount(await timelineSummary.textContent());
-    await panel.getByRole('button', { name: /title/i }).first().click({ force: true });
-    await expect.poll(async () => parseClipCount(await timelineSummary.textContent())).toBe(beforeTextInsertCount + 1);
-
-    await ensureLabRailPanelOpen(page, 'Elements');
-    const stickerButton = page.getByTestId('lab-elements-stickers').getByRole('button', { name: 'NEW EPISODE' });
-    await expect(stickerButton).toBeVisible();
-    await stickerButton.scrollIntoViewIfNeeded().catch(() => undefined);
-    await stickerButton.click();
-    await expect(page.getByTestId('lab-timeline-scroll').getByText('NEW EPISODE').first()).toBeVisible();
-
-    const emojiButton = page.getByTestId('lab-elements-emoji').locator('button').first();
-    await expect(emojiButton).toBeVisible();
-    await emojiButton.scrollIntoViewIfNeeded().catch(() => undefined);
-    await emojiButton.click();
-    await expect(page.getByTestId('lab-timeline-scroll').getByText(/\u2728|\ud83d\udd25|\ud83d\udc4f|\ud83d\ude0d|\ud83d\ude02|\ud83d\ude80|\ud83c\udf89|\ud83d\udca5/).first()).toBeVisible();
-
-    await page.getByTestId('lab-elements-gifs').getByRole('button', { name: 'Celebration loop' }).click({ force: true });
-    await expect(panel.getByText('Images', { exact: true }).first()).toBeVisible();
-    await expect(panel.getByPlaceholder('Search images...')).toBeVisible();
-
-    await ensureLabRailPanelOpen(page, 'Audio');
-    await expect(panel.getByPlaceholder('Search music...')).toBeVisible();
-
-    await ensureLabRailPanelOpen(page, 'Videos');
-    await expect(panel.getByPlaceholder('Search videos...')).toBeVisible();
-
-    await ensureLabRailPanelOpen(page, 'Canvas');
-    await panel.locator('input[type="number"]').nth(0).fill('720');
-    await panel.locator('input[type="number"]').nth(1).fill('1280');
-    await panel.getByRole('button', { name: 'Apply custom ratio' }).click({ force: true });
-    await expect(panel.getByText('Active 720x1280')).toBeVisible();
-
-    await ensureLabRailPanelOpen(page, 'Record');
-    await expect(panel.getByRole('button', { name: 'Check microphone' })).toBeVisible();
-
-    await ensureLabRailPanelOpen(page, 'TTS');
-    await expect(panel.getByRole('button', { name: 'Generate narration clip' })).toBeVisible();
-
-    await expect(page.getByText('Interface Error')).toHaveCount(0);
-  });
-
-  test('lab timeline toolbar actions keep split/duplicate/refresh/snap/inspector/export/delete paths functional', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === 'chromium-mobile', 'Toolbar action strip is desktop/tablet focused.');
-    test.setTimeout(60_000);
-
-    await page.goto('/?vf-screen=main&vf-tab=LAB');
-    await expect(page.getByTestId('lab-shell')).toBeVisible();
-    await importLabAudio(page, 'lab-toolbar-a.wav');
-    await importLabAudio(page, 'lab-toolbar-b.wav');
-
-    const timelineSummary = page.getByText(/\d+\s+clips\s+\|/i).first();
-    const readClipCount = async () => parseClipCount(await timelineSummary.textContent());
-    await expect.poll(readClipCount).toBe(2);
-
-    const timeline = page.getByTestId('lab-timeline-scroll');
-    const selectableClip = timeline.getByRole('button', { name: /lab-toolbar-(a|b)\.wav/i }).first();
-    await selectableClip.click({ force: true });
-
-    const splitButton = page.getByRole('button', { name: 'Split' }).first();
-    const duplicateButton = page.getByRole('button', { name: 'Duplicate' }).first();
-    const deleteClipButton = page.getByRole('button', { name: 'Delete clip' }).first();
-    const refreshButton = page.getByRole('button', { name: 'Refresh' }).first();
-    const snapButton = page.getByRole('button', { name: /Snap/i }).first();
-
-    await expect(splitButton).toBeEnabled();
-    await expect(duplicateButton).toBeEnabled();
-    await expect(deleteClipButton).toBeEnabled();
-    await expect(page.getByRole('button', { name: 'Export WAV' }).first()).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Export WebM' }).first()).toBeVisible();
-
-    const baselineCount = await readClipCount();
-    await duplicateButton.click({ force: true });
-    await expect.poll(readClipCount).toBe(baselineCount + 1);
-
-    await page.keyboard.press('ArrowRight');
-    await page.keyboard.press('ArrowRight');
-    await page.keyboard.press('ArrowRight');
-    await splitButton.click({ force: true });
-    await expect.poll(readClipCount).toBeGreaterThanOrEqual(baselineCount + 1);
-
-    const snapBefore = String((await snapButton.textContent()) || '').trim();
-    await snapButton.click({ force: true });
-    await expect(snapButton).not.toHaveText(snapBefore);
-    await snapButton.click({ force: true });
-
-    if (await refreshButton.isEnabled().catch(() => false)) {
-      await refreshButton.click({ force: true });
-    } else {
-      await expect(refreshButton).toBeVisible();
-    }
-
-    if (testInfo.project.name === 'chromium-tablet') {
-      const inspectorButton = page.getByRole('button', { name: 'Inspector' }).first();
-      await inspectorButton.click({ force: true });
-      await expect(page.getByTestId('lab-tablet-inspector')).toBeVisible();
-      await page.getByTestId('lab-tablet-inspector').getByRole('button', { name: 'Close' }).click({ force: true });
-    } else {
-      await expect(page.getByTestId('lab-inspector')).toBeVisible();
-    }
-
-    await deleteClipButton.click({ force: true });
-    await expect.poll(readClipCount).toBeGreaterThanOrEqual(baselineCount);
-
-    await expect(page.getByText('Interface Error')).toHaveCount(0);
-  });
-
-  test('lab mobile tools exposes all panel groups', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== 'chromium-mobile', 'Mobile panel overlay is mobile-only.');
-    await page.goto('/?vf-screen=main&vf-tab=LAB');
-    await expect(page.getByTestId('lab-shell')).toBeVisible();
-
-    const mobileInspector = page.getByTestId('lab-mobile-inspector');
-    await mobileInspector.getByRole('button', { name: /Open mobile tools|Collapse mobile tools/i }).click({ force: true });
-    await expect(mobileInspector.getByText('Mobile tools')).toBeVisible();
-
-    for (const panelLabel of ['Media', 'Canvas', 'Text', 'Audio', 'Videos', 'Images', 'Elements', 'Record', 'TTS'] as const) {
-      await mobileInspector.getByRole('button', { name: new RegExp(`^${panelLabel}$`) }).first().click({ force: true });
-      await expect(mobileInspector.getByText(panelLabel, { exact: true }).first()).toBeVisible();
-    }
-
-    await expect(page.getByText('Interface Error')).toHaveCount(0);
-  });
-});

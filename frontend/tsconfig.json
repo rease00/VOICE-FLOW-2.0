@@ -37,8 +37,5 @@
     "src",
     "index.tsx",
     "vite.config.ts"
-  ],
-  "exclude": [
-    "src/features/lab/**/*"
   ]
 }

@@ -524,7 +524,7 @@ export const NOTIFICATION_CATALOG: Record<NotificationEventCode, NotificationCat
   'admin.pool.reload.success': entry(
     'admin.pool.reload.success',
     'Primary AI Pool Reloaded',
-    'Primary AI key pool reloaded.',
+    'Primary AI slot set reloaded.',
     'success',
     'system',
     'toast',

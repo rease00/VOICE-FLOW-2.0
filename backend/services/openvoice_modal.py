@@ -105,8 +105,12 @@ class OpenVoiceBenchmarkRequest(BaseModel):
     durationSec: int = Field(default=15, ge=1, le=600)
     language: str = "EN"
     text: str = ""
+    sourceVoiceId: str = ""
+    sourceVoiceName: str = ""
+    sourceVoiceEngine: str = ""
     referenceAudioBase64: str = ""
     referenceAudioName: str = ""
+    referenceAudioUrl: str = ""
     sourceAudioBase64: str = ""
     sourceAudioName: str = ""
     speed: float = 1.0

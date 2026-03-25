@@ -23,16 +23,6 @@ def _reset_runtime_status_cache() -> None:
     yield
     backend_app._invalidate_tts_status_cache()
 
-
-@pytest.fixture(autouse=True)
-def _reset_podcast_standard_jobs() -> None:
-    with backend_app.PODCAST_STANDARD_JOB_LOCK:
-        backend_app.PODCAST_STANDARD_JOBS.clear()
-    yield
-    with backend_app.PODCAST_STANDARD_JOB_LOCK:
-        backend_app.PODCAST_STANDARD_JOBS.clear()
-
-
 def test_tts_engines_status_contract(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "_probe_runtime_health", lambda _url, timeout_sec=3.0: (True, "online"))
     monkeypatch.setattr(backend_app, "_probe_runtime_capabilities", lambda _engine, timeout_sec=3.0: {"ready": True})
@@ -180,18 +170,6 @@ def test_frontend_gateway_routes_are_registered() -> None:
         ("GET", "/tts/jobs/{job_id}"),
         ("GET", "/tts/jobs/{job_id}/audio"),
         ("GET", "/tts/jobs/{job_id}/chunks/{chunk_index}"),
-        ("POST", "/podcast/live/jobs"),
-        ("GET", "/podcast/live/jobs/{job_id}"),
-        ("GET", "/podcast/live/jobs/{job_id}/audio"),
-        ("GET", "/podcast/live/jobs/{job_id}/chunks/{chunk_index}"),
-        ("GET", "/podcast/live/jobs/{job_id}/artifacts/{artifact_kind}"),
-        ("DELETE", "/podcast/live/jobs/{job_id}"),
-        ("POST", "/podcast/standard/jobs"),
-        ("GET", "/podcast/standard/jobs/{job_id}"),
-        ("GET", "/podcast/standard/jobs/{job_id}/audio"),
-        ("GET", "/podcast/standard/jobs/{job_id}/chunks/{chunk_index}"),
-        ("GET", "/podcast/standard/jobs/{job_id}/artifacts/{artifact_kind}"),
-        ("DELETE", "/podcast/standard/jobs/{job_id}"),
         ("DELETE", "/tts/jobs/{job_id}"),
     }
 
@@ -210,244 +188,19 @@ def test_frontend_gateway_routes_are_registered() -> None:
     assert not missing, f"Missing frontend gateway route bindings: {missing}"
 
 
-def test_podcast_live_job_create_alias_builds_live_native_request(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    def _fake_submit(payload, request, *, sync_wait_ms: int):
-        captured["payload"] = payload
-        captured["wait_ms"] = sync_wait_ms
-        return backend_app.JSONResponse({"ok": True, "accepted": True, "jobId": "podcast_live_job"})
-
-    monkeypatch.setattr(backend_app, "_submit_tts_job", _fake_submit)
-
-    response = client.post(
+def test_removed_podcast_and_lab_routes_return_404() -> None:
+    removed_routes = [
         "/podcast/live/jobs",
-        json={
-            "topic": "Should AI podcasts sound live?",
-            "durationSec": 180,
-            "speakerCount": 2,
-            "language": "hi",
-            "seedScript": "HOST (Curious): Namaste, aaj ka topic AI podcast pacing hai.",
-            "directorModel": "gemini-3.1-flash-lite-preview",
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the discussion."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test claims."},
-            ],
-            "pacingStyle": "fast-paced debate",
-        },
-        headers={"x-dev-uid": "podcast_user"},
-    )
-
-    assert response.status_code == 200
-    payload = captured["payload"]
-    assert isinstance(payload, backend_app.TtsSynthesizeRequest)
-    assert payload.engine == "GEM"
-    assert payload.mode == "live_native"
-    assert payload.text == "Should AI podcasts sound live?"
-    assert payload.liveNative is not None
-    assert payload.liveNative.topic == "Should AI podcasts sound live?"
-    assert payload.liveNative.speakerCount == 2
-    assert payload.liveNative.durationSec == 180
-    assert payload.liveNative.language == "hi"
-    assert payload.liveNative.seedScript == "HOST (Curious): Namaste, aaj ka topic AI podcast pacing hai."
-    assert payload.liveNative.directorModel == "gemini-3.1-flash-lite-preview"
-    assert payload.language == "hi"
-    assert payload.liveNative.nativeAudioModel == "gemini-2.5-flash-native-audio-latest"
-    assert captured["wait_ms"] == 0
-
-
-def test_podcast_live_job_create_rejects_duration_above_30_minutes() -> None:
-    response = client.post(
-        "/podcast/live/jobs",
-        json={
-            "topic": "Too long",
-            "durationSec": 1801,
-            "speakerCount": 2,
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
-            ],
-        },
-        headers={"x-dev-uid": "podcast_user"},
-    )
-
-    assert response.status_code == 400
-    assert "1800" in str(response.json()["detail"])
-
-
-def test_podcast_standard_job_create_returns_queued_job(monkeypatch) -> None:
-    started: dict[str, object] = {}
-
-    class _FakeThread:
-        def __init__(self, *, target=None, args=(), kwargs=None, name=None, daemon=None):
-            started["target"] = target
-            started["args"] = args
-            started["kwargs"] = kwargs or {}
-            started["name"] = name
-            started["daemon"] = daemon
-
-        def start(self):
-            started["started"] = True
-
-    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda request, uid: {"userId": uid})
-    monkeypatch.setattr(backend_app.threading, "Thread", _FakeThread)
-
-    response = client.post(
         "/podcast/standard/jobs",
-        json={
-            "topic": "How should AI podcasts keep continuity?",
-            "durationSec": 3600,
-            "speakerCount": 4,
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the show."},
-                {"id": "cohost", "name": "COHOST", "role": "witty", "voice": "Aoede", "persona": "Keep it lively."},
-                {"id": "expert", "name": "EXPERT", "role": "authority", "voice": "Charon", "persona": "Explain clearly."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test ideas."},
-            ],
-            "pacingStyle": "conversational deep dive",
-        },
-        headers={"x-dev-uid": "podcast_user"},
-    )
-
-    assert response.status_code == 202
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["accepted"] is True
-    assert payload["mode"] == "podcast_standard"
-    assert payload["podcastMode"] == "standard"
-    assert payload["engine"] == backend_app._normalize_podcast_standard_engine("")
-    assert payload["status"] == "queued"
-    assert payload["liveOrchestration"]["speakerCount"] == 4
-    assert started["started"] is True
-    assert started["target"] == backend_app._process_podcast_standard_job
-
-
-def test_podcast_standard_job_create_reuses_same_owner_request_id(monkeypatch) -> None:
-    started = {"count": 0}
-
-    class _FakeThread:
-        def __init__(self, *, target=None, args=(), kwargs=None, name=None, daemon=None):
-            self._target = target
-            self._args = args
-            self._kwargs = kwargs or {}
-            self._name = name
-            self._daemon = daemon
-
-        def start(self):
-            started["count"] += 1
-
-    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda request, uid: {"userId": uid})
-    monkeypatch.setattr(backend_app.threading, "Thread", _FakeThread)
-    with backend_app.PODCAST_STANDARD_JOB_LOCK:
-        backend_app.PODCAST_STANDARD_JOBS.clear()
-
-    request_id = f"podcast_standard_reuse_req_{uuid.uuid4().hex}"
-    first = client.post(
-        "/podcast/standard/jobs",
-        json={
-            "request_id": request_id,
-            "topic": "First standard topic",
-            "durationSec": 1200,
-            "speakerCount": 3,
-            "language": "en",
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead the show."},
-                {"id": "expert", "name": "EXPERT", "role": "authority", "voice": "Charon", "persona": "Explain clearly."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Pressure test ideas."},
-            ],
-            "pacingStyle": "conversational deep dive",
-        },
-        headers={"x-dev-uid": "podcast_user_owner"},
-    )
-    second = client.post(
-        "/podcast/standard/jobs",
-        json={
-            "request_id": request_id,
-            "topic": "Second topic should not overwrite",
-            "durationSec": 600,
-            "speakerCount": 2,
-            "language": "hi",
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
-            ],
-            "pacingStyle": "fast-paced debate",
-        },
-        headers={"x-dev-uid": "podcast_user_owner"},
-    )
-
-    assert first.status_code == 202
-    assert second.status_code == 200
-    second_payload = second.json()
-    assert second_payload["accepted"] is False
-    assert second_payload["reused"] is True
-    assert second_payload["jobId"] == request_id
-    assert started["count"] == 1
-    stored = backend_app._podcast_standard_job_get(request_id) or {}
-    assert str(stored.get("uid") or "") == "podcast_user_owner"
-    assert str(stored.get("text") or "") == "First standard topic"
-
-
-def test_podcast_standard_job_create_rejects_cross_user_request_id_collision(monkeypatch) -> None:
-    started = {"count": 0}
-
-    class _FakeThread:
-        def __init__(self, *, target=None, args=(), kwargs=None, name=None, daemon=None):
-            self._target = target
-            self._args = args
-            self._kwargs = kwargs or {}
-            self._name = name
-            self._daemon = daemon
-
-        def start(self):
-            started["count"] += 1
-
-    monkeypatch.setattr(backend_app, "_require_user_id_ready", lambda request, uid: {"userId": uid})
-    monkeypatch.setattr(backend_app.threading, "Thread", _FakeThread)
-    with backend_app.PODCAST_STANDARD_JOB_LOCK:
-        backend_app.PODCAST_STANDARD_JOBS.clear()
-
-    request_id = f"podcast_standard_owner_conflict_req_{uuid.uuid4().hex}"
-    first = client.post(
-        "/podcast/standard/jobs",
-        json={
-            "request_id": request_id,
-            "topic": "Owner A topic",
-            "durationSec": 900,
-            "speakerCount": 2,
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
-            ],
-            "pacingStyle": "conversational",
-        },
-        headers={"x-dev-uid": "podcast_user_a"},
-    )
-    second = client.post(
-        "/podcast/standard/jobs",
-        json={
-            "request_id": request_id,
-            "topic": "Owner B takeover attempt",
-            "durationSec": 900,
-            "speakerCount": 2,
-            "cast": [
-                {"id": "host", "name": "HOST", "role": "anchor", "voice": "Puck", "persona": "Lead."},
-                {"id": "guest", "name": "GUEST", "role": "skeptic", "voice": "Kore", "persona": "Challenge."},
-            ],
-            "pacingStyle": "conversational",
-        },
-        headers={"x-dev-uid": "podcast_user_b"},
-    )
-
-    assert first.status_code == 202
-    assert second.status_code == 409
-    detail = second.json().get("detail") or {}
-    assert detail.get("errorCode") == backend_app.REQUEST_ID_CONFLICT
-    assert detail.get("reason") == "request_id_owner_conflict"
-    assert detail.get("jobId") == request_id
-    assert started["count"] == 1
-    stored = backend_app._podcast_standard_job_get(request_id) or {}
-    assert str(stored.get("uid") or "") == "podcast_user_a"
+        "/lab/runtime-defaults",
+        "/admin/lab/runtime-defaults",
+        "/lab/catalog/search",
+        "/lab/separation/jobs",
+        "/lab/export/jobs",
+    ]
+    for path in removed_routes:
+        response = client.get(path, headers={"x-dev-uid": "route_check_user"})
+        assert response.status_code == 404
 
 
 def test_tts_engines_status_reports_not_configured_when_gemini_keys_missing(monkeypatch) -> None:
@@ -470,7 +223,7 @@ def test_tts_engines_status_reports_not_configured_when_gemini_keys_missing(monk
     engine = payload["engines"]["GEM"]
     assert engine["state"] == "not_configured"
     assert engine["ready"] is False
-    assert "key pool" in str(engine["detail"]).lower()
+    assert "slot" in str(engine["detail"]).lower()
 
 
 def test_probe_runtime_health_treats_explicit_unhealthy_payload_as_offline(monkeypatch) -> None:

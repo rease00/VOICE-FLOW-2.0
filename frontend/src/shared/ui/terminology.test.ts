@@ -8,9 +8,9 @@ describe('sanitizeUiText', () => {
     expect(sanitizeUiText('GEM ready.')).toBe('Prime ready.');
   });
 
-  it('replaces runtime and key-pool phrases', () => {
-    expect(sanitizeUiText('Gemini runtime key pool is empty.')).toBe('Prime Runtime key pool is empty.');
-    expect(sanitizeUiText('Loading Gemini pool status...')).toBe('Loading Primary AI pool status...');
+  it('replaces runtime and slot-set phrases', () => {
+    expect(sanitizeUiText('Gemini runtime slot set is empty.')).toBe('Prime Runtime slot set is empty.');
+    expect(sanitizeUiText('Loading Gemini pool status...')).toBe('Loading Primary AI slot set status...');
     expect(sanitizeUiText('Kokoro Runtime ready')).toBe('Basic Runtime ready');
     expect(sanitizeUiText('Neural2 runtime online')).toBe('Vector Runtime online');
   });

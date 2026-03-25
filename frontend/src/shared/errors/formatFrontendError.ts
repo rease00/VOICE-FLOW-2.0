@@ -130,7 +130,7 @@ const MEDIA_PATTERNS = [
 
 const RUNTIME_PATTERNS = [
   'runtime',
-  'key pool',
+  'slot set',
   'x-admin-unlock',
   'admin-unlock',
   'admin session unlock',
@@ -168,7 +168,7 @@ const SENSITIVE_TECHNICAL_PATTERNS = [
   'billing portal url is missing',
   'x-admin-unlock',
   'admin-unlock',
-  'key pool',
+  'slot set',
   'upstream_model_failed',
   'upstream model failed',
 ];

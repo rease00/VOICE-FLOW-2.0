@@ -81,7 +81,7 @@ describe('generateSpeech studio kokoro worker path', () => {
     synthesizeKokoroStudioInWorkerMock.mockImplementation(async (_payload: unknown, options: any) => {
       options?.onProgress?.({
         progressPct: 46,
-        stage: 'Streaming Kokoro CPU audio...',
+        stage: 'Streaming Kokoro WebGPU audio...',
         threadBudget: 2,
       });
       options?.onChunk?.({
@@ -136,5 +136,40 @@ describe('generateSpeech studio kokoro worker path', () => {
     received.forEach((value, index) => {
       expect(value).toBeCloseTo(expected[index] || 0, 5);
     });
+  });
+
+  it('fails fast without backend fallback when browser kokoro execution is disabled', async () => {
+    vi.stubEnv('VITE_ENABLE_BROWSER_KOKORO', 'false');
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy as any);
+    const { generateSpeech } = await import('../services/geminiService');
+    const settings = {
+      voiceId: 'af_heart',
+      speed: 1,
+      pitch: 'Medium',
+      language: 'en',
+      engine: 'KOKORO',
+      helperProvider: 'GEMINI',
+      mediaBackendUrl: 'http://127.0.0.1:7800',
+      kokoroTtsServiceUrl: 'http://127.0.0.1:7820',
+    } as any;
+
+    await expect(
+      generateSpeech(
+        'Hello world',
+        'af_heart',
+        settings,
+        'speech',
+        undefined,
+        { context: 'dubbing', preferLiveChunks: true, preferBrowserKokoro: true },
+      ),
+    ).rejects.toThrow(/requires WebGPU/i);
+
+    expect(synthesizeKokoroStudioInWorkerMock).not.toHaveBeenCalled();
+    expect(loadKokoroBrowserRuntimeModuleMock).not.toHaveBeenCalled();
+    const attemptedKokoroBackendRoute = fetchSpy.mock.calls.some((call: any[]) =>
+      String(call?.[0] || '').includes('/api/kokoro/synthesize'),
+    );
+    expect(attemptedKokoroBackendRoute).toBe(false);
   });
 });

@@ -6,7 +6,6 @@ describe('workspace tab contract reader v2', () => {
     const tabs = buildWorkspaceTabs(false);
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
-      WorkspaceTab.PODCAST,
       WorkspaceTab.READER,
       WorkspaceTab.NOVEL,
       WorkspaceTab.CHARACTERS,

@@ -94,26 +94,10 @@ const main = async () => {
     }),
   ];
 
-  const runtimeAdminHeaders = {
-    Accept: 'application/json',
-    ...(runtimeAdminToken ? { 'x-admin-token': runtimeAdminToken } : {}),
-  };
-
-  if (REQUIRE_RUNTIME_ADMIN_TOKEN && !runtimeAdminToken) {
-    report.summary.failed += 1;
-    report.summary.warnings.push('GEMINI_RUNTIME_ADMIN_TOKEN (or AUDIT_RUNTIME_ADMIN_TOKEN) is missing.');
-  }
-
-  checks.push(
-    fetchCheck('runtime_admin_api_pool', `${GEMINI_RUNTIME_URL}/v1/admin/api-pool`, {
-      method: 'GET',
-      headers: runtimeAdminHeaders,
-    }),
-  );
   checks.push(
     fetchCheck('runtime_admin_api_pools', `${GEMINI_RUNTIME_URL}/v1/admin/api-pools`, {
       method: 'GET',
-      headers: runtimeAdminHeaders,
+      headers: runtimeAdminToken ? { Accept: 'application/json', 'x-admin-token': runtimeAdminToken } : { Accept: 'application/json' },
     }),
   );
 

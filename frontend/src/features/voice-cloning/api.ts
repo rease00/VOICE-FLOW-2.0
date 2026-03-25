@@ -4,7 +4,7 @@ import type {
   OpenVoiceBenchmarkRequest,
   OpenVoiceBenchmarkResponse,
   OpenVoiceBenchmarkStatusResponse,
-} from '../lab/openvoice-benchmark/api';
+} from './openvoiceTypes';
 
 export type OpenVoiceCloneRequest = Omit<OpenVoiceBenchmarkRequest, 'mode' | 'runKind'> & {
   mode?: 'vc';

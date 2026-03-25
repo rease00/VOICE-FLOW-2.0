@@ -86,6 +86,7 @@ from shared.gemini_api_pools import (
     resolve_plan_pool_hint as resolve_gemini_plan_pool_hint,
     save_pool_config as save_pool_config_shared,
     sync_authoritative_free_pool as sync_authoritative_free_pool_shared,
+    _vertex_accounts_from_source,
     write_key_file_text as write_gemini_key_file_text_shared,
 )
 from shared.gemini_multi_speaker import normalize_multi_speaker_line_map as normalize_multi_speaker_line_map_shared
@@ -124,6 +125,22 @@ from services.errors.codes import (
     extract_error_code,
 )
 from services.http.runtime_client import RuntimeHttpClient, RuntimeHttpError
+from services.openvoice_modal import (
+    OPENVOICE_ARTIFACT_ROOT,
+    OPENVOICE_GPU_RATE_PER_SEC_USD,
+    OpenVoiceBenchmarkRequest,
+    OpenVoiceModalClient,
+    build_openvoice_artifact_signature,
+    build_openvoice_artifact_url as build_openvoice_artifact_url,
+    compute_openvoice_gpu_cost_usd,
+    decode_openvoice_audio_base64,
+    encode_openvoice_audio_base64,
+    normalize_openvoice_mode,
+    normalize_openvoice_language,
+    normalize_openvoice_run_kind,
+    save_openvoice_artifact,
+    verify_openvoice_artifact_signature,
+)
 from services.queue.redis_queue import TtsJobQueue, normalize_lane
 
 load_backend_env_files(Path(__file__).resolve())
@@ -154,42 +171,16 @@ WHISPER_MODEL_SIZE = os.getenv("VF_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("VF_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE = os.getenv("VF_WHISPER_COMPUTE", "int8")
 WHISPER_BEAM_SIZE = max(1, int((os.getenv("VF_WHISPER_BEAM_SIZE") or "5").strip() or "5"))
-LLVC_DEVICE = os.getenv("VF_VOICE_TRANSFER_DEVICE", "cpu:0")
 ENABLE_LLVC_FALLBACK = (
     (os.getenv("VF_ENABLE_LLVC_FALLBACK") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 LLVC_FALLBACK_MODEL_ID = "vf_low_cpu_timbre"
-VOICE_CONVERSION_POLICIES = {"AUTO_RELIABLE", "VOICE_TRANSFER_ONLY"}
 SEPARATION_MODEL = (os.getenv("VF_SOURCE_SEPARATION_MODEL") or "htdemucs_ft").strip() or "htdemucs_ft"
 SEPARATION_DEVICE = (os.getenv("VF_SOURCE_SEPARATION_DEVICE") or "cpu").strip() or "cpu"
 SEPARATION_TIMEOUT_SEC = max(60, int((os.getenv("VF_SOURCE_SEPARATION_TIMEOUT_SEC") or "1200").strip() or "1200"))
 SEPARATION_SAMPLE_RATE = max(16000, int((os.getenv("VF_SOURCE_SEPARATION_SAMPLE_RATE") or "44100").strip() or "44100"))
 SEPARATION_CACHE_DIR = ARTIFACTS_DIR / "source-separation-cache"
-LAB_SEPARATION_ROOT_DIR = OUTPUT_ROOT_DIR / "lab-separation"
-LAB_EXPORT_ROOT_DIR = OUTPUT_ROOT_DIR / "lab-exports"
-LAB_REMOTE_ASSETS_DIR = OUTPUT_ROOT_DIR / "lab-remote-assets"
-LAB_SEPARATION_UPLOAD_MAX_BYTES = max(
-    8 * 1024 * 1024,
-    int((os.getenv("VF_LAB_SEPARATION_UPLOAD_MAX_BYTES") or str(512 * 1024 * 1024)).strip() or str(512 * 1024 * 1024)),
-)
-LAB_EXPORT_UPLOAD_MAX_BYTES = max(
-    8 * 1024 * 1024,
-    int((os.getenv("VF_LAB_EXPORT_UPLOAD_MAX_BYTES") or str(512 * 1024 * 1024)).strip() or str(512 * 1024 * 1024)),
-)
-LAB_SEPARATION_MAX_ACTIVE_AND_QUEUED = max(
-    1,
-    int((os.getenv("VF_LAB_SEPARATION_MAX_ACTIVE_AND_QUEUED") or "2").strip() or "2"),
-)
-LAB_EXPORT_MAX_ACTIVE_AND_QUEUED = max(
-    1,
-    int((os.getenv("VF_LAB_EXPORT_MAX_ACTIVE_AND_QUEUED") or "2").strip() or "2"),
-)
-LAB_CATALOG_IMPORT_MAX_BYTES = max(
-    8 * 1024 * 1024,
-    int((os.getenv("VF_LAB_CATALOG_IMPORT_MAX_BYTES") or str(256 * 1024 * 1024)).strip() or str(256 * 1024 * 1024)),
-)
-LAB_CATALOG_PAGE_SIZE = max(1, min(24, int((os.getenv("VF_LAB_CATALOG_PAGE_SIZE") or "12").strip() or "12")))
 
 
 def _parse_comma_env_tokens(raw_value: object) -> set[str]:
@@ -445,40 +436,11 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
 GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
 KOKORO_RUNTIME_URL = (os.getenv("VF_KOKORO_RUNTIME_URL") or "http://127.0.0.1:7820").strip().rstrip("/")
 LLVC_RUNTIME_URL = (os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
-_raw_llvc_runtime_urls = [
-    str(item or "").strip().rstrip("/")
-    for item in str(os.getenv("VF_VOICE_TRANSFER_RUNTIME_URLS") or "").split(",")
-]
-_raw_llvc_runtime_urls = [item for item in _raw_llvc_runtime_urls if item]
-if not _raw_llvc_runtime_urls:
-    _raw_llvc_runtime_urls = [LLVC_RUNTIME_URL]
-VF_LLVC_RUNTIME_URLS: tuple[str, ...] = tuple(dict.fromkeys(_raw_llvc_runtime_urls))
 GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
-# VC/post-TTS voice-transfer conversion was removed. Keep flags hard-disabled for safety.
-VF_TTS_POST_LLVC_ENABLED = False
-VF_TTS_POST_LLVC_REQUIRED = False
-VF_TTS_POST_LLVC_TIMEOUT_SEC = max(
-    15,
-    int((os.getenv("VF_TTS_POST_VOICE_TRANSFER_TIMEOUT_SEC") or "180").strip() or "180"),
-)
-VF_TTS_POST_LLVC_PRESET = (
-    str(os.getenv("VF_TTS_POST_VOICE_TRANSFER_PRESET") or "auto_cpu").strip()
-    or "auto_cpu"
-)
-VF_TTS_POST_LLVC_BACKEND_MODE = str(os.getenv("VF_TTS_POST_VOICE_TRANSFER_BACKEND_MODE") or "onnx").strip() or "onnx"
-VF_TTS_POST_LLVC_AUTO_HQ_MAX_MS = max(
-    1000,
-    int((os.getenv("VF_TTS_POST_VOICE_TRANSFER_AUTO_HQ_MAX_MS") or "8000").strip() or "8000"),
-)
 VF_LLVC_PRESET_DEFAULT = (
     str(os.getenv("VF_VOICE_TRANSFER_PRESET_DEFAULT") or "voice_transfer_hq_cpu").strip()
     or "voice_transfer_hq_cpu"
 )
-VF_LLVC_STREAM_DEFAULT = (
-    (os.getenv("VF_VOICE_TRANSFER_STREAM_DEFAULT") or "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-VF_LLVC_CHUNK_FACTOR = max(1, int((os.getenv("VF_VOICE_TRANSFER_CHUNK_FACTOR") or "2").strip() or "2"))
 VF_TTS_LIVE_STREAM_ENABLED = (
     (os.getenv("VF_TTS_LIVE_STREAM_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -553,131 +515,6 @@ VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS = max(
     1,
     int((os.getenv("VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS") or "20000").strip() or "20000"),
 )
-VF_TTS_LIVE_NATIVE_ENABLED = (
-    (os.getenv("VF_TTS_LIVE_NATIVE_ENABLED") or "1").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-VF_TTS_LIVE_NATIVE_MODEL = (
-    str(
-        os.getenv(
-            "VF_TTS_LIVE_NATIVE_MODEL",
-            os.getenv("VF_READER_NATIVE_AUDIO_MODEL")
-            or "gemini-2.5-flash-native-audio-latest",
-        )
-    ).strip()
-    or "gemini-2.5-flash-native-audio-latest"
-)
-VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL = (
-    str(os.getenv("VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip()
-    or VF_AI_TEXT_DEFAULT_MODEL
-)
-VF_PODCAST_STANDARD_SCRIPT_MODEL = (
-    str(os.getenv("VF_PODCAST_STANDARD_SCRIPT_MODEL") or VF_AI_TEXT_DEFAULT_MODEL).strip()
-    or VF_AI_TEXT_DEFAULT_MODEL
-)
-VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES = [
-    VF_PODCAST_STANDARD_SCRIPT_MODEL,
-    "gemini-3.1-flash-lite-preview",
-    "gemini-2.5-flash",
-    "gemini-3-flash",
-    "gemini-2.5-flash-lite",
-]
-VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES = list(
-    dict.fromkeys(
-        str(candidate).strip()
-        for candidate in VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES
-        if str(candidate).strip()
-    )
-)
-VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES = [
-    "gemini-2.5-flash-preview-tts",
-    "gemini-2.5-flash-lite-preview-tts",
-]
-VF_PODCAST_STANDARD_MAX_SPEAKERS = 6
-VF_PODCAST_STANDARD_MAX_DURATION_SEC = 3600
-VF_PODCAST_STANDARD_SCRIPT_WINDOW_CHARS = 3000
-VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC = max(
-    45,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC") or "180").strip() or "180"),
-)
-VF_TTS_LIVE_NATIVE_MAX_TURNS = max(
-    4,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_MAX_TURNS") or "120").strip() or "120"),
-)
-VF_TTS_LIVE_NATIVE_TRANSCRIPT_WINDOW_TURNS = max(
-    2,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_TRANSCRIPT_WINDOW_TURNS") or "8").strip() or "8"),
-)
-VF_TTS_LIVE_NATIVE_MAX_TEXT_CHARS_PER_TURN = max(
-    80,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_MAX_TEXT_CHARS_PER_TURN") or "360").strip() or "360"),
-)
-VF_TTS_LIVE_NATIVE_SESSION_MAX_SEC = max(
-    120,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_SESSION_MAX_SEC") or "840").strip() or "840"),
-)
-VF_TTS_LIVE_NATIVE_CONNECTION_MAX_SEC = max(
-    60,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_CONNECTION_MAX_SEC") or "570").strip() or "570"),
-)
-VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC = max(
-    5,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC") or "20").strip() or "20"),
-)
-VF_TTS_LIVE_NATIVE_FIRST_CHUNK_TEXT_TIMEOUT_SEC = max(
-    2,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_FIRST_CHUNK_TEXT_TIMEOUT_SEC") or "12").strip() or "12"),
-)
-VF_TTS_LIVE_NATIVE_FIRST_CHUNK_SYNTH_TIMEOUT_SEC = max(
-    2,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_FIRST_CHUNK_SYNTH_TIMEOUT_SEC") or "20").strip() or "20"),
-)
-VF_TTS_LIVE_NATIVE_POST_DEADLINE_TIMEOUT_SEC = max(
-    2,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_POST_DEADLINE_TIMEOUT_SEC") or "3").strip() or "3"),
-)
-VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS = max(
-    0,
-    int((os.getenv("VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS") or "1").strip() or "1"),
-)
-VF_TTS_LIVE_NATIVE_STRATEGY = (
-    str(os.getenv("VF_TTS_LIVE_NATIVE_STRATEGY") or "resume_then_fallback").strip().lower()
-    or "resume_then_fallback"
-)
-VF_TTS_LIVE_NATIVE_FALLBACK_MODE = (
-    str(os.getenv("VF_TTS_LIVE_NATIVE_FALLBACK_MODE") or "native_audio_only").strip().lower()
-    or "native_audio_only"
-)
-_vf_tts_live_native_model_candidates_raw = str(
-    os.getenv("VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES") or ""
-).strip()
-if _vf_tts_live_native_model_candidates_raw:
-    VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = list(
-        dict.fromkeys(
-            str(item).strip()
-            for item in _vf_tts_live_native_model_candidates_raw.split(",")
-            if str(item).strip()
-        )
-    )
-else:
-    VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = [
-        VF_TTS_LIVE_NATIVE_MODEL,
-        "gemini-2.5-flash-native-audio-latest",
-        "gemini-2.5-flash-native-audio-preview-12-2025",
-        "gemini-2.5-flash-native-audio-preview-09-2025",
-    ]
-VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = list(
-    dict.fromkeys(
-        str(item).strip()
-        for item in VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES
-        if str(item).strip()
-    )
-)
-if VF_TTS_LIVE_NATIVE_MODEL not in VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES:
-    VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES = [
-        VF_TTS_LIVE_NATIVE_MODEL,
-        *VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES,
-    ]
 VF_DUB_LIVE_PLAY_ENABLED = (
     (os.getenv("VF_DUB_LIVE_PLAY_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -1006,8 +843,8 @@ VF_AUDIO_GENERATION_AUDIT_PREVIEW_CHARS = max(
     40,
     int((os.getenv("VF_AUDIO_GENERATION_AUDIT_PREVIEW_CHARS") or "220").strip() or "220"),
 )
-GEMINI_API_KEYS_FILE = str(os.getenv("GEMINI_API_KEYS_FILE") or "").strip()
-DEFAULT_GEMINI_API_KEYS_FILE = WORKSPACE_ROOT / "API.txt"
+GEMINI_SLOT_CONFIG_FILE = str(os.getenv("GEMINI_API_POOLS_FILE") or (APP_ROOT / "config" / "gemini_api_pools.json")).strip()
+DEFAULT_GEMINI_SLOT_CONFIG_FILE = APP_ROOT / "config" / "gemini_api_pools.json"
 GEMINI_API_POOLS_FILE = str(
     os.getenv("GEMINI_API_POOLS_FILE") or (APP_ROOT / "config" / "gemini_api_pools.json")
 ).strip()
@@ -1015,6 +852,7 @@ GEMINI_API_POOLS_PREFER_FIRESTORE = (
     (os.getenv("VF_GEMINI_API_POOLS_PREFER_FIRESTORE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+GEMINI_SLOT_IDS: tuple[str, ...] = ("slot_1", "slot_2", "slot_3")
 GEMINI_VERTEX_SECRET_DIR = (PROJECT_ROOT / ".runtime" / "secrets" / "gemini").resolve()
 GEMINI_VERTEX_SERVICE_ACCOUNT_FILE = str(
     os.getenv("VF_GEMINI_VERTEX_SERVICE_ACCOUNT_FILE")
@@ -1204,15 +1042,9 @@ ENGINE_DISPLAY_NAMES = {
     engine: str(meta.get("label") or engine).strip().upper() or engine
     for engine, meta in ENGINE_TIER_REGISTRY.items()
 }
-CONVERSION_POLICY_DISPLAY_NAMES = {
-    "AUTO_RELIABLE": "AUTO_RELIABLE",
-    "VOICE_TRANSFER_ONLY": "VOICE_TRANSFER_ONLY",
-}
 EXECUTED_ENGINE_DISPLAY_NAMES = {
     **ENGINE_DISPLAY_NAMES,
-    "LLVC_FALLBACK": "Voice Transfer Fallback",
     "VOICE_TRANSFER": "Voice Transfer",
-    "VOICE_TRANSFER": "VOICE_TRANSFER",
 }
 
 RUNTIME_LOG_FILES = {
@@ -1350,7 +1182,7 @@ VF_TTS_RUNTIME_TIMEOUT_SEC = max(
     int((os.getenv("VF_TTS_RUNTIME_TIMEOUT_SEC") or "240").strip() or "240"),
 )
 VF_GEMINI_AUTO_ROTATE_ON_POOL_EXHAUSTED = str(
-    os.getenv("VF_GEMINI_AUTO_ROTATE_ON_POOL_EXHAUSTED") or "1"
+    os.getenv("VF_GEMINI_AUTO_ROTATE_ON_POOL_EXHAUSTED") or "0"
 ).strip().lower() not in {"0", "false", "no", "off"}
 VF_GEMINI_AUTO_ROTATE_COOLDOWN_MS = max(
     0,
@@ -1609,7 +1441,6 @@ SUPPORT_CONVERSATIONS_COLLECTION = "support_conversations"
 SUPPORT_MESSAGES_COLLECTION = "support_messages"
 SUPPORT_AI_RUNS_COLLECTION = "support_ai_runs"
 SUPPORT_AI_POLICY_COLLECTION = "support_ai_policy"
-LAB_RUNTIME_DEFAULTS_COLLECTION = "lab_runtime_defaults"
 ADMIN_SESSION_UNLOCK_COLLECTION = "admin_session_unlock"
 NOTIFICATION_INBOX_COLLECTION = "notification_inbox"
 NOTIFICATION_PREFERENCES_COLLECTION = "notification_preferences"
@@ -1803,11 +1634,6 @@ def _engine_display_name(engine: str) -> str:
 
 def _is_gem_runtime_engine(engine: str) -> bool:
     return str(engine or "").strip().upper() in GEM_RUNTIME_ENGINE_KEYS
-
-
-def _conversion_policy_display_name(policy: str) -> str:
-    key = str(policy or "").strip().upper()
-    return CONVERSION_POLICY_DISPLAY_NAMES.get(key, key)
 
 
 def _executed_engine_display_name(engine_executed: str) -> str:
@@ -2050,18 +1876,6 @@ def _voice_lookup_candidates(value: str) -> list[str]:
             out.append(candidate)
             seen.add(candidate)
     return out
-
-
-def _next_llvc_runtime_url() -> str:
-    if not VF_LLVC_RUNTIME_URLS:
-        return LLVC_RUNTIME_URL
-    if len(VF_LLVC_RUNTIME_URLS) == 1:
-        return VF_LLVC_RUNTIME_URLS[0]
-    global _LLVC_RUNTIME_POOL_CURSOR
-    with _LLVC_RUNTIME_POOL_LOCK:
-        index = int(_LLVC_RUNTIME_POOL_CURSOR % len(VF_LLVC_RUNTIME_URLS))
-        _LLVC_RUNTIME_POOL_CURSOR += 1
-    return VF_LLVC_RUNTIME_URLS[index]
 
 
 def _resolve_gem_runtime_voice_name(value: str, fallback: str = "Fenrir") -> str:
@@ -2335,19 +2149,6 @@ def _resolve_mapped_model_name(engine: str, voice_id: str, *, voice_name: str = 
     if not resolved_model_name:
         return None, profile_id
     return resolved_model_name, profile_id
-
-
-def _post_tts_llvc_pitch_shift_for_profile(profile: Optional[dict[str, Any]]) -> int:
-    if not isinstance(profile, dict):
-        return 0
-    age_group = str(profile.get("ageGroup") or "").strip().lower()
-    gender = str(profile.get("gender") or "").strip().lower()
-
-    if "child" in age_group or "boy" in age_group or "girl" in age_group:
-        return 4 if gender == "female" else 3
-    if "elder" in age_group or "old" in age_group or "senior" in age_group:
-        return -2 if gender == "female" else -3
-    return 0
 
 
 def _llvc_runtime_model_snapshot(*, force_refresh: bool = False) -> tuple[set[str], bool]:
@@ -3185,6 +2986,92 @@ def _mix_audio_arrays(speech: Any, background: Optional[Any]) -> Any:
         return speech
 
 
+class KokoroModalClient:
+    def __init__(self, base_url: str | None = None, *, timeout_sec: float = 90.0) -> None:
+        resolved_base_url = str(base_url or KOKORO_RUNTIME_URL).strip().rstrip("/")
+        self.base_url = resolved_base_url
+        self.timeout_sec = max(3.0, float(timeout_sec or 90.0))
+        self._session = requests.Session()
+        self._session.headers.update({"user-agent": "voiceflow-kokoro-modal-client/1.0"})
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: Optional[dict[str, Any]] = None,
+        timeout_sec: Optional[float] = None,
+    ) -> dict[str, Any]:
+        if not self.base_url:
+            raise RuntimeError("Kokoro runtime is not configured. Set VF_KOKORO_RUNTIME_URL.")
+        url = f"{self.base_url}{path}"
+        try:
+            response = self._session.request(
+                method.upper(),
+                url,
+                json=json_payload or {},
+                timeout=float(timeout_sec or self.timeout_sec),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Kokoro runtime unreachable: {exc}") from exc
+        if not response.ok:
+            detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
+            raise RuntimeError(f"Kokoro runtime {path} failed: {detail}")
+        try:
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Kokoro runtime {path} returned invalid JSON: {exc}") from exc
+        return payload if isinstance(payload, dict) else {"value": payload}
+
+    def health(self) -> dict[str, Any]:
+        return self._request_json("GET", "/health")
+
+    def capabilities(self) -> dict[str, Any]:
+        return self._request_json("GET", "/v1/capabilities")
+
+    def synthesize(
+        self,
+        *,
+        text: str,
+        voice_id: str,
+        speed: float = 1.0,
+        language: str = "en",
+        trace_id: str = "",
+        **kwargs: Any,
+    ) -> tuple[bytes, dict[str, Any]]:
+        if not self.base_url:
+            raise RuntimeError("Kokoro runtime is not configured. Set VF_KOKORO_RUNTIME_URL.")
+        payload: dict[str, Any] = {
+            "text": str(text or ""),
+            "voiceId": str(voice_id or ""),
+            "voice_id": str(voice_id or ""),
+            "speed": float(speed or 1.0),
+            "language": str(language or "en"),
+            "trace_id": str(trace_id or ""),
+        }
+        payload.update({key: value for key, value in kwargs.items() if value is not None})
+        try:
+            response = self._session.request(
+                "POST",
+                f"{self.base_url}/synthesize",
+                json=payload,
+                timeout=float(self.timeout_sec),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Kokoro runtime unreachable: {exc}") from exc
+        if not response.ok:
+            detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
+            raise RuntimeError(f"Kokoro runtime /synthesize failed: {detail}")
+        audio_bytes = bytes(response.content or b"")
+        meta = {
+            "contentType": str(response.headers.get("content-type") or "audio/wav"),
+            "headers": {str(key): str(value) for key, value in dict(response.headers or {}).items()},
+            "traceId": str(response.headers.get("x-voiceflow-trace-id") or trace_id or ""),
+            "provider": "kokoro-modal",
+        }
+        return audio_bytes, meta
+
+
 class LlvcRuntime:
     def __init__(self) -> None:
         self.base_url = LLVC_RUNTIME_URL
@@ -3284,60 +3171,6 @@ class LlvcRuntime:
             except Exception:
                 pass
         return dict(self._health_payload)
-
-    def convert_file(self, input_wav: str, output_wav: str, **kwargs: Any) -> dict[str, str]:
-        model_name = str(kwargs.get("model_name") or "").strip()
-        if not model_name:
-            raise RuntimeError("llvc_model_required")
-        preset = _normalize_llvc_preset(str(kwargs.get("preset") or VF_TTS_POST_LLVC_PRESET))
-        request_form = {
-            "model_name": model_name,
-            "preset": preset,
-            "pitch_shift": str(int(kwargs.get("pitch_shift") or 0)),
-            "index_rate": str(float(kwargs.get("index_rate") or 0.5)),
-            "filter_radius": str(int(kwargs.get("filter_radius") or 3)),
-            "rms_mix_rate": str(float(kwargs.get("rms_mix_rate") or 1.0)),
-            "protect": str(float(kwargs.get("protect") or 0.33)),
-            "f0_method": str(kwargs.get("f0_method") or "rmvpe"),
-        }
-        with Path(input_wav).open("rb") as handle:
-            response = requests.post(
-                f"{self.base_url}/v1/convert",
-                files={"file": ("source.wav", handle, "audio/wav")},
-                data=request_form,
-                timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
-            )
-        if not response.ok:
-            detail = (response.text or "").strip()
-            if detail:
-                detail = detail[:4000]
-            else:
-                detail = f"HTTP {response.status_code}"
-            raise RuntimeError(f"voice-transfer-runtime /v1/convert failed: {detail}")
-        Path(output_wav).write_bytes(bytes(response.content or b""))
-        headers: dict[str, str] = {}
-        for key in (
-            "x-vf-voice-transfer-model-resolved",
-            "x-vf-voice-transfer-backend-mode",
-            "x-vf-voice-transfer-index-used",
-            "x-vf-voice-transfer-f0-method",
-            "x-vf-voice-transfer-preset",
-            "x-vf-voice-transfer-preset-requested",
-            "x-vf-voice-transfer-input-duration-ms",
-            "x-vf-voice-transfer-model",
-            "x-vf-voice-transfer-model-resolved",
-            "x-vf-voice-transfer-backend-mode",
-            "x-vf-voice-transfer-index-used",
-            "x-vf-voice-transfer-f0-method",
-            "x-vf-voice-transfer-preset",
-            "x-vf-voice-transfer-preset-requested",
-            "x-vf-voice-transfer-input-duration-ms",
-            "x-vf-voice-transfer-model",
-        ):
-            raw_value = str(response.headers.get(key) or "").strip()
-            if raw_value:
-                headers[key.lower()] = raw_value
-        return headers
 
 
 class WhisperRuntime:
@@ -3747,10 +3580,6 @@ _INMEMORY_SUPPORT_CONVERSATIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_MESSAGES: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_POLICY: dict[str, Any] = {}
-_INMEMORY_LAB_RUNTIME_DEFAULTS: dict[str, Any] = {}
-_INMEMORY_LAB_CATALOG_IMPORTS: dict[str, dict[str, Any]] = {}
-_INMEMORY_LAB_SEPARATION_JOBS: dict[str, dict[str, Any]] = {}
-_INMEMORY_LAB_EXPORT_JOBS: dict[str, dict[str, Any]] = {}
 _INMEMORY_ADMIN_SESSION_UNLOCK: dict[str, dict[str, Any]] = {}
 _INMEMORY_NOTIFICATION_INBOX: dict[str, dict[str, dict[str, Any]]] = {}
 _INMEMORY_NOTIFICATION_PREFERENCES: dict[str, dict[str, Any]] = {}
@@ -3764,11 +3593,6 @@ _INMEMORY_READER_TRANSLATIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_CATALOG_CACHE: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_SESSIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_LOCK = threading.RLock()
-_LAB_SEPARATION_JOBS_LOCK = threading.RLock()
-_LAB_SEPARATION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vf-lab-separation")
-_LAB_EXPORT_JOBS_LOCK = threading.RLock()
-_LAB_EXPORT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vf-lab-export")
-_LAB_EXPORT_ACTIVE_PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 _READER_HYDRATION_LOCK = threading.Lock()
 _READER_HYDRATION_ACTIVE: set[str] = set()
 _READER_SESSION_FILE_LOCKS_GUARD = threading.Lock()
@@ -3816,9 +3640,6 @@ _TTS_ENGINE_QUEUED_JOB_IDS: dict[str, set[str]] = {
 }
 _TTS_ENGINE_ENQUEUED_AT_MS: dict[str, int] = {}
 _TTS_ENGINE_METRICS_LOCK = threading.Lock()
-_TTS_LIVE_LLVC_SEMAPHORE = threading.Semaphore(max(1, int(VF_TTS_LIVE_LLVC_GLOBAL_CONCURRENCY)))
-_LLVC_RUNTIME_POOL_LOCK = threading.Lock()
-_LLVC_RUNTIME_POOL_CURSOR = 0
 _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
     "enqueueToStartMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "runtimeLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
@@ -3826,10 +3647,6 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
     "liveFirstChunkLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "liveChunkCount": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "liveChunkLlvcLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-    "liveNativeTurnLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-    "liveNativeResumeCount": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-    "liveNativeFallbackCount": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-    "liveNativeChunkGapCount": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "terminalEvents": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "runtimeLatencyByEngine": {
         "GEM": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
@@ -3846,6 +3663,383 @@ _REQUESTS_PUT_BASE = requests.put
 _REQUESTS_PATCH_BASE = requests.patch
 _REQUESTS_DELETE_BASE = requests.delete
 _RUNTIME_HTTP_CLIENT = RuntimeHttpClient(pool_connections=64, pool_maxsize=64)
+KOKORO_MODAL_CLIENT = KokoroModalClient()
+OPENVOICE_MODAL_CLIENT = OpenVoiceModalClient()
+
+
+class _UnifiedTtsProviderClient:
+    def synthesize_chunk(self, session: Any, chunk: Any, *, config: Optional[dict[str, Any]] = None) -> tuple[bytes, str, dict[str, Any]]:
+        _ = session, chunk, config
+        raise RuntimeError("Unified TTS provider client is not configured.")
+
+
+class _UnifiedTtsService:
+    def __init__(self) -> None:
+        self.provider_client = _UnifiedTtsProviderClient()
+
+
+_UNIFIED_TTS_SERVICE = _UnifiedTtsService()
+
+OPENVOICE_CPU_RATE_PER_SEC_USD = 0.00003
+
+
+def _openvoice_artifact_payload(artifact: Any) -> dict[str, Any]:
+    artifact_id = str(getattr(artifact, "artifact_id", "") or "").strip()
+    file_name = str(getattr(artifact, "file_name", "") or "").strip() or f"{artifact_id or 'openvoice'}.wav"
+    content_type = str(getattr(artifact, "content_type", "") or "audio/wav").strip() or "audio/wav"
+    size_bytes = int(getattr(artifact, "size_bytes", 0) or 0)
+    return {
+        "artifactId": artifact_id,
+        "fileName": file_name,
+        "contentType": content_type,
+        "downloadUrl": build_openvoice_artifact_url(artifact_id) if artifact_id else "",
+        "sizeBytes": max(0, size_bytes),
+    }
+
+
+def _openvoice_clone_voice_payload(
+    *,
+    request_id: str,
+    source_voice_id: str,
+    source_voice_name: str,
+    source_voice_engine: str,
+    reference_audio_url: str,
+    reference_audio_name: str,
+    result_artifact_url: str,
+    description: str,
+    reference_text: str,
+    runtime_payload: dict[str, Any],
+) -> dict[str, Any]:
+    cloned_voice = runtime_payload.get("clonedVoice") if isinstance(runtime_payload.get("clonedVoice"), dict) else {}
+    now_ms = int(time.time() * 1000)
+    source_label = str(source_voice_name or cloned_voice.get("sourceVoiceName") or cloned_voice.get("geminiVoiceName") or source_voice_id or request_id).strip()
+    source_engine = str(source_voice_engine or cloned_voice.get("sourceVoiceEngine") or "").strip()
+    return {
+        "id": str(cloned_voice.get("id") or request_id or source_label).strip() or request_id,
+        "name": str(cloned_voice.get("name") or source_label or request_id).strip() or request_id,
+        "gender": str(cloned_voice.get("gender") or "Unknown").strip() or "Unknown",
+        "accent": str(cloned_voice.get("accent") or "Neutral").strip() or "Neutral",
+        "geminiVoiceName": str(cloned_voice.get("geminiVoiceName") or source_label or request_id).strip() or request_id,
+        "engine": str(cloned_voice.get("engine") or source_engine or "GEM").strip() or "GEM",
+        "source": str(cloned_voice.get("source") or "openvoice").strip() or "openvoice",
+        "isDownloaded": bool(cloned_voice.get("isDownloaded", True)),
+        "isCloned": True,
+        "previewUrl": str(cloned_voice.get("previewUrl") or result_artifact_url or "").strip(),
+        "accessTier": str(cloned_voice.get("accessTier") or "pro").strip() or "pro",
+        "isPlanRestricted": bool(cloned_voice.get("isPlanRestricted", False)),
+        "dateCreated": int(cloned_voice.get("dateCreated") or now_ms),
+        "description": str(cloned_voice.get("description") or description).strip() or description,
+        "originalSampleUrl": str(cloned_voice.get("originalSampleUrl") or result_artifact_url or "").strip(),
+        "referenceAudioUrl": str(cloned_voice.get("referenceAudioUrl") or reference_audio_url or "").strip(),
+        "referenceAudioName": str(cloned_voice.get("referenceAudioName") or reference_audio_name or "").strip(),
+        "sourceVoiceId": str(cloned_voice.get("sourceVoiceId") or source_voice_id or "").strip(),
+        "sourceVoiceName": str(cloned_voice.get("sourceVoiceName") or source_label or "").strip(),
+        "sourceVoiceEngine": source_engine,
+        "referenceText": str(cloned_voice.get("referenceText") or reference_text or "").strip(),
+    }
+
+
+def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request: Request) -> dict[str, Any]:
+    uid = _require_request_uid(request)
+    safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    mode = normalize_openvoice_mode(safe_payload.get("mode") or payload.mode)
+    run_kind = normalize_openvoice_run_kind(safe_payload.get("runKind") or payload.runKind)
+    request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"ov_{uuid.uuid4().hex[:12]}"
+    trace_id = str(safe_payload.get("traceId") or payload.traceId or request_id).strip() or request_id
+    language = normalize_openvoice_language(safe_payload.get("language") or payload.language or "EN")
+    text = str(safe_payload.get("text") or payload.text or "").strip()
+    duration_sec = max(1, int(safe_payload.get("durationSec") or payload.durationSec or 15))
+    speed = float(safe_payload.get("speed") or payload.speed or 1.0)
+    source_voice_id = str(safe_payload.get("sourceVoiceId") or payload.sourceVoiceId or "").strip()
+    source_voice_name = str(safe_payload.get("sourceVoiceName") or payload.sourceVoiceName or "").strip()
+    source_voice_engine = str(safe_payload.get("sourceVoiceEngine") or payload.sourceVoiceEngine or "").strip()
+    reference_audio_name = str(safe_payload.get("referenceAudioName") or payload.referenceAudioName or "reference.wav").strip() or "reference.wav"
+    source_audio_name = str(safe_payload.get("sourceAudioName") or payload.sourceAudioName or "source.wav").strip() or "source.wav"
+    reference_audio_url = str(safe_payload.get("referenceAudioUrl") or payload.referenceAudioUrl or "").strip()
+    reference_audio_bytes = decode_openvoice_audio_base64(safe_payload.get("referenceAudioBase64") or payload.referenceAudioBase64 or "")
+    source_audio_bytes = decode_openvoice_audio_base64(safe_payload.get("sourceAudioBase64") or payload.sourceAudioBase64 or "")
+    cost_multiplier = max(0.0, float(safe_payload.get("costMultiplier") or payload.costMultiplier or 1.0))
+    region_hint = str(safe_payload.get("regionHint") or payload.regionHint or "").strip()
+    region_source = str(safe_payload.get("regionSource") or payload.regionSource or "").strip()
+    notes: list[str] = []
+
+    if not reference_audio_bytes and not reference_audio_url:
+      raise HTTPException(status_code=400, detail="Reference audio is required.")
+
+    source_tts_elapsed_ms = 0
+    vc_elapsed_ms = 0
+    source_audio_generated = False
+    source_audio_base64 = encode_openvoice_audio_base64(source_audio_bytes)
+    if not source_audio_base64 and text:
+        synth_start = time.perf_counter()
+        try:
+            source_audio_bytes, _ = KOKORO_MODAL_CLIENT.synthesize(
+                text=text,
+                voice_id=source_voice_id or source_voice_name or "Fenrir",
+                speed=speed,
+                language=language.lower(),
+                trace_id=trace_id,
+                requestId=request_id,
+                request_id=request_id,
+                sourceVoiceId=source_voice_id,
+                sourceVoiceName=source_voice_name,
+                sourceVoiceEngine=source_voice_engine,
+                durationSec=duration_sec,
+                uid=uid,
+            )
+            source_audio_generated = True
+            source_tts_elapsed_ms = max(1, int((time.perf_counter() - synth_start) * 1000))
+            source_audio_base64 = encode_openvoice_audio_base64(source_audio_bytes)
+            notes.append("source_audio_synthesized_with_kokoro")
+        except Exception as exc:  # noqa: BLE001
+            if mode in {"vc", "tts_then_vc"}:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise
+
+    if not source_audio_base64:
+        raise HTTPException(status_code=400, detail="Source audio could not be prepared.")
+
+    if mode in {"vc", "tts_then_vc"} and not reference_audio_bytes:
+        raise HTTPException(status_code=400, detail="Reference audio is required for voice conversion.")
+
+    if mode in {"vc", "tts_then_vc"}:
+        vc_start = time.perf_counter()
+        vc_payload = {
+            "mode": "vc",
+            "runKind": "warm",
+            "durationSec": duration_sec,
+            "language": language,
+            "text": text,
+            "sourceVoiceId": source_voice_id,
+            "sourceVoiceName": source_voice_name,
+            "sourceVoiceEngine": source_voice_engine,
+            "referenceAudioBase64": encode_openvoice_audio_base64(reference_audio_bytes),
+            "referenceAudioName": reference_audio_name,
+            "referenceAudioUrl": reference_audio_url,
+            "sourceAudioBase64": source_audio_base64,
+            "sourceAudioName": source_audio_name,
+            "speed": speed,
+            "requestId": request_id,
+            "traceId": trace_id,
+            "regionHint": region_hint,
+            "regionSource": region_source,
+            "costMultiplier": cost_multiplier,
+            "uid": uid,
+        }
+        try:
+            runtime_payload = OPENVOICE_MODAL_CLIENT.vc(vc_payload, timeout_sec=OPENVOICE_MODAL_CLIENT.timeout_sec if hasattr(OPENVOICE_MODAL_CLIENT, "timeout_sec") else None)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        vc_elapsed_ms = max(1, int((time.perf_counter() - vc_start) * 1000))
+        final_audio_base64 = str(runtime_payload.get("audioBase64") or "").strip()
+        if not final_audio_base64:
+            raise HTTPException(status_code=502, detail="OpenVoice runtime did not return audio.")
+        final_audio_bytes = decode_openvoice_audio_base64(final_audio_base64)
+        if not final_audio_bytes:
+            raise HTTPException(status_code=502, detail="OpenVoice runtime returned empty audio.")
+        runtime_timings = runtime_payload.get("timings") if isinstance(runtime_payload.get("timings"), dict) else {}
+    else:
+        runtime_payload = {
+            "ok": True,
+            "status": "completed",
+            "mode": "tts",
+            "runKind": run_kind,
+            "requestId": request_id,
+            "traceId": trace_id,
+            "language": language,
+            "textChars": len(text),
+            "targetDurationSec": duration_sec,
+            "timings": {},
+            "cost": {},
+            "runtime": {},
+            "notes": [],
+        }
+        final_audio_bytes = bytes(source_audio_bytes)
+        runtime_timings = {}
+
+    reference_artifact = save_openvoice_artifact(
+        reference_audio_bytes,
+        f"{request_id}-reference",
+    ) if reference_audio_bytes else None
+    result_artifact = save_openvoice_artifact(final_audio_bytes, request_id)
+    result_artifact_payload = _openvoice_artifact_payload(result_artifact)
+    reference_audio_url = build_openvoice_artifact_url(reference_artifact.artifact_id) if reference_artifact else reference_audio_url
+    result_download_url = str(result_artifact_payload.get("downloadUrl") or "").strip()
+
+    runtime_cost = runtime_payload.get("cost") if isinstance(runtime_payload.get("cost"), dict) else {}
+    cpu_rate = float(runtime_cost.get("cpuRatePerSecondUsd") or OPENVOICE_CPU_RATE_PER_SEC_USD)
+    gpu_rate = float(runtime_cost.get("gpuRatePerSecondUsd") or OPENVOICE_GPU_RATE_PER_SEC_USD)
+    cpu_seconds = float(runtime_timings.get("cpuSeconds") or (source_tts_elapsed_ms / 1000.0) or (0.001 if source_audio_generated else 0.0))
+    gpu_seconds = float(runtime_timings.get("gpuSeconds") or (vc_elapsed_ms / 1000.0) or (0.001 if mode in {"vc", "tts_then_vc"} else 0.0))
+    cpu_seconds = max(0.001 if source_audio_generated else 0.0, cpu_seconds)
+    gpu_seconds = max(0.001 if mode in {"vc", "tts_then_vc"} else 0.0, gpu_seconds)
+    cpu_cost_usd = max(0.0, cpu_seconds * cpu_rate * cost_multiplier)
+    gpu_cost_usd = max(0.0, compute_openvoice_gpu_cost_usd(gpu_seconds, cost_multiplier))
+    estimated_cost_usd = cpu_cost_usd + gpu_cost_usd
+    timings = {
+        **runtime_timings,
+        "loadMs": int(runtime_timings.get("loadMs") or 0),
+        "ttsMs": max(0, int(runtime_timings.get("ttsMs") or source_tts_elapsed_ms or (1 if source_audio_generated else 0))),
+        "vcMs": max(0, int(runtime_timings.get("vcMs") or vc_elapsed_ms or (1 if mode in {"vc", "tts_then_vc"} else 0))),
+        "queueWaitMs": int(runtime_timings.get("queueWaitMs") or 0),
+        "firstAudioMs": int(runtime_timings.get("firstAudioMs") or max(1, int(runtime_timings.get("ttsMs") or source_tts_elapsed_ms or vc_elapsed_ms or 1))),
+        "totalMs": int(runtime_timings.get("totalMs") or max(1, (source_tts_elapsed_ms or 0) + (vc_elapsed_ms or 0))),
+        "cpuSeconds": round(cpu_seconds, 6),
+        "gpuSeconds": round(gpu_seconds, 6),
+    }
+    cost = {
+        **runtime_cost,
+        "cpuRatePerSecondUsd": cpu_rate,
+        "gpuRatePerSecondUsd": gpu_rate,
+        "costMultiplier": cost_multiplier,
+        "cpuCostUsd": round(cpu_cost_usd, 6),
+        "gpuCostUsd": round(gpu_cost_usd, 6),
+        "estimatedCostUsd": round(estimated_cost_usd, 6),
+        "estimatedOneHourUsd": round((cpu_rate + gpu_rate) * 3600.0 * cost_multiplier, 6),
+        "estimatedOneDayUsd": round((cpu_rate + gpu_rate) * 86400.0 * cost_multiplier, 6),
+    }
+    runtime = {
+        **(runtime_payload.get("runtime") if isinstance(runtime_payload.get("runtime"), dict) else {}),
+        "device": str(
+            (runtime_payload.get("runtime") or {}).get("device")
+            or runtime_payload.get("device")
+            or "modal"
+        ),
+        "warmStartObserved": True,
+        "referenceCacheEntries": int((runtime_payload.get("runtime") or {}).get("referenceCacheEntries") or (1 if reference_audio_bytes else 0)),
+        "sourceCacheEntries": int((runtime_payload.get("runtime") or {}).get("sourceCacheEntries") or (1 if source_audio_bytes else 0)),
+        "loadedLanguages": list((runtime_payload.get("runtime") or {}).get("loadedLanguages") or [language.lower()]),
+        "vcProvider": str((runtime_payload.get("runtime") or {}).get("vcProvider") or "openvoice-modal").strip() or "openvoice-modal",
+    }
+    notes = [*list(runtime_payload.get("notes") or []), *notes]
+    cloned_voice = _openvoice_clone_voice_payload(
+        request_id=request_id,
+        source_voice_id=source_voice_id,
+        source_voice_name=source_voice_name or text or request_id,
+        source_voice_engine=source_voice_engine,
+        reference_audio_url=build_openvoice_artifact_url(reference_artifact.artifact_id) if reference_artifact else reference_audio_url,
+        reference_audio_name=reference_audio_name,
+        result_artifact_url=result_download_url,
+        description=f"Converted from {source_voice_name or source_voice_id or 'reference audio'}",
+        reference_text=text,
+        runtime_payload={
+            **runtime_payload,
+            "clonedVoice": {
+                **(runtime_payload.get("clonedVoice") if isinstance(runtime_payload.get("clonedVoice"), dict) else {}),
+                "id": request_id,
+                "name": source_voice_name or text or request_id,
+                "geminiVoiceName": source_voice_name or text or request_id,
+                "engine": source_voice_engine or "GEM",
+                "source": "openvoice",
+                "isDownloaded": True,
+                "isCloned": True,
+                "previewUrl": result_download_url,
+                "accessTier": "pro",
+                "isPlanRestricted": False,
+                "dateCreated": int(time.time() * 1000),
+                "description": f"Converted from {source_voice_name or source_voice_id or 'reference audio'}",
+                "originalSampleUrl": result_download_url,
+                "referenceAudioUrl": build_openvoice_artifact_url(reference_artifact.artifact_id) if reference_artifact else reference_audio_url,
+                "referenceAudioName": reference_audio_name,
+                "sourceVoiceId": source_voice_id,
+                "sourceVoiceName": source_voice_name or text or request_id,
+                "sourceVoiceEngine": source_voice_engine,
+                "referenceText": text,
+            },
+        },
+    )
+    return {
+        "ok": True,
+        "status": str(runtime_payload.get("status") or "completed"),
+        "mode": mode,
+        "runKind": run_kind,
+        "requestId": request_id,
+        "traceId": trace_id,
+        "language": language,
+        "textChars": len(text),
+        "targetDurationSec": duration_sec,
+        "timings": timings,
+        "cost": cost,
+        "runtime": runtime,
+        "artifact": result_artifact_payload,
+        "audioBase64": encode_openvoice_audio_base64(final_audio_bytes),
+        "notes": notes,
+        "message": str(runtime_payload.get("message") or "").strip(),
+        "clonedVoice": cloned_voice,
+        "sourceVoiceId": source_voice_id,
+        "sourceVoiceName": source_voice_name,
+        "sourceVoiceEngine": source_voice_engine,
+        "referenceAudioUrl": reference_artifact and build_openvoice_artifact_url(reference_artifact.artifact_id) or reference_audio_url,
+        "referenceAudioName": reference_audio_name,
+        "sourceAudioName": source_audio_name,
+    }
+
+
+@app.get("/voice-clone/openvoice/status")
+async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
+    try:
+        health = OPENVOICE_MODAL_CLIENT.health()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "state": "offline",
+                "detail": str(exc),
+                "device": "",
+                "warm": False,
+                "engine": "SEED_VC",
+                "supportsVC": False,
+                "ready": False,
+                "health": "",
+                "capabilities": {},
+            },
+        )
+    try:
+        capabilities = OPENVOICE_MODAL_CLIENT.capabilities()
+    except Exception:
+        capabilities = {}
+    supports_vc = bool(capabilities.get("supportsVC", capabilities.get("ok", False)))
+    ready = bool(health.get("ok", True)) and supports_vc
+    return JSONResponse(
+        content={
+            "ok": True,
+            "state": str(health.get("state") or ("online" if ready else "offline")),
+            "detail": str(health.get("detail") or capabilities.get("detail") or "OpenVoice runtime ready."),
+            "device": str(health.get("device") or capabilities.get("device") or ""),
+            "warm": bool(health.get("warm", True)),
+            "engine": str(health.get("engine") or capabilities.get("engine") or "SEED_VC"),
+            "supportsVC": supports_vc,
+            "ready": ready,
+            "health": json.dumps(health),
+            "capabilities": capabilities,
+        }
+    )
+
+
+@app.post("/voice-clone/openvoice")
+def voice_clone_openvoice(payload: OpenVoiceBenchmarkRequest, request: Request) -> JSONResponse:
+    payload_data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    payload_data.update({"mode": "vc", "runKind": "warm"})
+    forced_payload = OpenVoiceBenchmarkRequest(**payload_data)
+    return JSONResponse(content=_openvoice_benchmark_payload(forced_payload, request=request))
+
+
+@app.get("/voice-lab/openvoice/artifacts/{artifact_id}")
+async def voice_lab_openvoice_artifact(
+    artifact_id: str,
+    request: Request,
+    sig: str = Query(default=""),
+) -> FileResponse:
+    safe_artifact_id = str(artifact_id or "").strip()
+    if not safe_artifact_id:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    if not verify_openvoice_artifact_signature(safe_artifact_id, sig):
+        raise HTTPException(status_code=403, detail="Invalid artifact signature.")
+    artifact_path = (OPENVOICE_ARTIFACT_ROOT / f"{safe_artifact_id}.wav").resolve()
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    return FileResponse(str(artifact_path), media_type="audio/wav", filename=artifact_path.name)
 
 
 def _runtime_http_session() -> requests.Session:
@@ -7777,8 +7971,6 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
 
 DUBBING_JOBS: dict[str, dict[str, Any]] = {}
 DUBBING_JOB_LOCK = threading.Lock()
-PODCAST_STANDARD_JOBS: dict[str, dict[str, Any]] = {}
-PODCAST_STANDARD_JOB_LOCK = threading.Lock()
 
 AI_OPS_LOCK = threading.Lock()
 AI_OPS_STATE: dict[str, Any] = {
@@ -8003,45 +8195,6 @@ class SupportAiPolicyPatchRequest(BaseModel):
     requireHumanForTags: Optional[list[str]] = None
 
 
-class LabRuntimeDefaultsUpdateRequest(BaseModel):
-    browserAccelerationDefault: Optional[str] = None
-    backendHardwareDefault: Optional[str] = None
-    separatorBackendDefault: Optional[str] = None
-    labPerformanceMode: Optional[str] = None
-    exportStrategyDefault: Optional[str] = None
-    allowUserOverride: Optional[bool] = None
-
-
-class LabExportCreateRequest(BaseModel):
-    format: str = "mp4"
-    sourceMediaType: Optional[str] = None
-    browserMode: Optional[str] = None
-
-
-class LabCatalogItemImportRequest(BaseModel):
-    id: str
-    provider: str
-    kind: str
-    title: str
-    thumbUrl: Optional[str] = None
-    previewUrl: Optional[str] = None
-    downloadUrl: str
-    durationSec: Optional[float] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    license: Optional[str] = None
-    creator: Optional[str] = None
-    attributionUrl: Optional[str] = None
-    tags: list[str] = Field(default_factory=list)
-    externalUrl: Optional[str] = None
-    commercialUseStatus: Optional[str] = None
-    commercialUseReason: Optional[str] = None
-
-
-class LabCatalogImportRequest(BaseModel):
-    item: LabCatalogItemImportRequest
-
-
 class NotificationPreferencesPatchRequest(BaseModel):
     emailAsyncJobs: Optional[bool] = None
     emailBilling: Optional[bool] = None
@@ -8123,101 +8276,9 @@ class AccountingMonitorRunRequest(BaseModel):
     dryRun: bool = False
 
 
-class GeminiApiPoolsUpdateRequest(BaseModel):
-    version: Optional[int] = None
-    pools: dict[str, Any]
-    fallbackChains: Optional[dict[str, Any]] = None
-    planPools: Optional[dict[str, Any]] = None
-    defaultFallbackChain: Optional[list[Any]] = None
-    constraints: Optional[dict[str, Any]] = None
-    sourcePolicy: Optional[dict[str, Any]] = None
-
-
-class GeminiApiPoolRotateRequest(BaseModel):
-    steps: int = Field(default=1, ge=1, le=10_000)
-
-
-class LiveNativeCastMemberRequest(BaseModel):
-    id: Optional[str] = None
-    name: Optional[str] = None
-    role: Optional[str] = None
-    voice: Optional[str] = None
-    persona: Optional[str] = None
-
-
-class LiveNativeLimitsRequest(BaseModel):
-    sessionMaxSec: Optional[int] = None
-    connectionMaxSec: Optional[int] = None
-    perTurnTimeoutSec: Optional[int] = None
-
-
-class LiveNativeRecoveryRequest(BaseModel):
-    strategy: Optional[str] = None
-    maxResumeAttempts: Optional[int] = None
-    fallbackMode: Optional[str] = None
-
-
-class LiveNativeOutputRequest(BaseModel):
-    autoSave: Optional[bool] = None
-    audioFormat: Optional[str] = None
-    includeTranscript: Optional[bool] = None
-
-
-class LiveNativeConfigRequest(BaseModel):
-    topic: Optional[str] = None
-    durationSec: Optional[int] = None
-    speakerCount: Optional[int] = None
-    cast: Optional[list[LiveNativeCastMemberRequest]] = None
-    limits: Optional[LiveNativeLimitsRequest] = None
-    recovery: Optional[LiveNativeRecoveryRequest] = None
-    output: Optional[LiveNativeOutputRequest] = None
-    pacingStyle: Optional[str] = None
-    nativeAudioModel: Optional[str] = None
-    directorModel: Optional[str] = None
-    language: Optional[str] = None
-    seedScript: Optional[str] = None
-
-
-class PodcastLiveJobRequest(BaseModel):
-    topic: str
-    durationSec: Optional[int] = None
-    speakerCount: Optional[int] = None
-    cast: Optional[list[LiveNativeCastMemberRequest]] = None
-    limits: Optional[LiveNativeLimitsRequest] = None
-    recovery: Optional[LiveNativeRecoveryRequest] = None
-    output: Optional[LiveNativeOutputRequest] = None
-    pacingStyle: Optional[str] = None
-    language: Optional[str] = None
-    seedScript: Optional[str] = None
-    directorModel: Optional[str] = None
-    request_id: Optional[str] = None
-    trace_id: Optional[str] = None
-    stream: Optional[bool] = True
-
-
-class PodcastStandardJobRequest(BaseModel):
-    topic: str
-    engine: Optional[str] = None
-    durationSec: Optional[int] = None
-    speakerCount: Optional[int] = None
-    cast: Optional[list[LiveNativeCastMemberRequest]] = None
-    pacingStyle: Optional[str] = None
-    seedScript: Optional[str] = None
-    language: Optional[str] = None
-    request_id: Optional[str] = None
-    trace_id: Optional[str] = None
-    autoSave: Optional[bool] = True
-    includeTranscript: Optional[bool] = True
-    audioFormat: Optional[str] = "wav"
-    scriptWindowChars: Optional[int] = None
-    directorModel: Optional[str] = None
-
-
 class TtsSynthesizeRequest(BaseModel):
     engine: str = "GEM"
     text: str
-    mode: Optional[str] = None
-    liveNative: Optional[LiveNativeConfigRequest] = None
     model: Optional[str] = None
     modelCandidates: Optional[list[str]] = None
     voiceName: Optional[str] = None
@@ -9541,7 +9602,7 @@ def _ai_ops_gemini_pool_snapshot() -> dict[str, Any]:
     models = snapshot.get("models") if isinstance(snapshot.get("models"), list) else []
     advisories: list[str] = []
     if int(pool.get("atLimitKeys", 0)) >= max(1, int(pool.get("keyCount", 0))):
-        advisories.append("Gemini key pool is at capacity.")
+        advisories.append("Primary AI slot set is at capacity.")
     if int(pool.get("unhealthyKeys", 0)) > 0:
         advisories.append("Some Gemini keys are unhealthy or rate-limited.")
     return {
@@ -9645,7 +9706,7 @@ def _ai_ops_detect_issues(
                 "id": "gemini_pool_missing",
                 "type": "gemini_pool",
                 "severity": "minor",
-                "message": "Gemini key pool is not configured for backend fallback.",
+                "message": "Primary AI slot set is not configured for backend fallback.",
                 "action": None,
                 "payload": {},
             }
@@ -9661,7 +9722,7 @@ def _ai_ops_detect_issues(
                     "id": "gemini_pool_at_capacity",
                     "type": "gemini_pool",
                     "severity": "minor",
-                    "message": "Gemini key pool is fully at capacity.",
+                    "message": "Primary AI slot set is fully at capacity.",
                     "action": "refresh_gemini_pool",
                     "payload": {},
                 }
@@ -13357,17 +13418,6 @@ def _credit_paid_vf(
     return _apply(transaction)
 
 
-def _normalize_conversion_policy(raw_policy: str, default: str = "AUTO_RELIABLE") -> str:
-    token = str(raw_policy or "").strip().upper().replace("-", "_")
-    if token == "AUTO_ROUTE":
-        token = "AUTO_RELIABLE"
-    if token == "LLVC_ONLY":
-        token = "VOICE_TRANSFER_ONLY"
-    if token not in VOICE_CONVERSION_POLICIES:
-        return default
-    return token
-
-
 def _normalize_dubbing_processing_profile(raw_profile: str, default: str = "cpu_quality") -> str:
     token = str(raw_profile or "").strip().lower().replace("-", "_")
     if token not in {"cpu_quality", "cpu_balanced", "cpu_fast"}:
@@ -13707,7 +13757,7 @@ def _runtime_not_configured_detail(engine: str, capability_payload: Any) -> Opti
     api_key_configured = bool(metadata.get("apiKeyConfigured"))
     if api_key_configured:
         return None
-    return "Gemini key pool is not configured."
+    return "Primary AI slot set is not configured."
 
 
 def _wait_for_runtime_online(
@@ -13940,434 +13990,6 @@ def _ensure_source_separation(
     return speech_path, background_path, cache_key
 
 
-def _normalize_lab_separation_stem_kind(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe in {"vocals", "voice", "speech"}:
-        return "vocals"
-    if safe in {"instrumental", "music", "background", "bg"}:
-        return "instrumental"
-    raise HTTPException(status_code=400, detail="stemKind must be one of: vocals, instrumental.")
-
-
-def _lab_separation_artifact_path(job_id: str, stem_kind: str) -> Path:
-    safe_job_id = str(job_id or "").strip()
-    safe_stem_kind = _normalize_lab_separation_stem_kind(stem_kind)
-    filename = "vocals.wav" if safe_stem_kind == "vocals" else "instrumental.wav"
-    return LAB_SEPARATION_ROOT_DIR / safe_job_id / filename
-
-
-def _lab_separation_queue_depth() -> int:
-    with _LAB_SEPARATION_JOBS_LOCK:
-        return sum(
-            1
-            for item in _INMEMORY_LAB_SEPARATION_JOBS.values()
-            if str((item or {}).get("status") or "").strip().lower() in {"queued", "running"}
-        )
-
-
-def _lab_separation_get_job(job_id: str) -> Optional[dict[str, Any]]:
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        return None
-    with _LAB_SEPARATION_JOBS_LOCK:
-        row = _INMEMORY_LAB_SEPARATION_JOBS.get(safe_job_id)
-        return dict(row) if isinstance(row, dict) else None
-
-
-def _lab_separation_set_job(job_id: str, row: dict[str, Any]) -> dict[str, Any]:
-    safe_job_id = str(job_id or "").strip()
-    payload = dict(row or {})
-    payload["id"] = safe_job_id
-    with _LAB_SEPARATION_JOBS_LOCK:
-        _INMEMORY_LAB_SEPARATION_JOBS[safe_job_id] = payload
-    return dict(payload)
-
-
-def _lab_separation_patch_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    current = _lab_separation_get_job(job_id) or {"id": str(job_id or "").strip()}
-    current.update(dict(patch or {}))
-    current["updatedAt"] = _utc_now().isoformat()
-    return _lab_separation_set_job(job_id, current)
-
-
-def _lab_separation_can_access(job: dict[str, Any], *, uid: str, is_admin: bool) -> bool:
-    if is_admin:
-        return True
-    return str(job.get("ownerUid") or "").strip() == str(uid or "").strip()
-
-
-def _lab_separation_status_payload(job: dict[str, Any]) -> dict[str, Any]:
-    safe_job = dict(job or {})
-    safe_job_id = str(safe_job.get("id") or "").strip()
-    artifacts = {
-        "vocals": {
-            "stemKind": "vocals",
-            "ready": _lab_separation_artifact_path(safe_job_id, "vocals").exists(),
-            "downloadUrl": f"/lab/separation/jobs/{safe_job_id}/artifacts/vocals",
-        },
-        "instrumental": {
-            "stemKind": "instrumental",
-            "ready": _lab_separation_artifact_path(safe_job_id, "instrumental").exists(),
-            "downloadUrl": f"/lab/separation/jobs/{safe_job_id}/artifacts/instrumental",
-        },
-    }
-    return {
-        "id": safe_job_id,
-        "status": str(safe_job.get("status") or "queued"),
-        "progress": max(0, min(100, int(safe_job.get("progress") or 0))),
-        "message": str(safe_job.get("message") or "").strip(),
-        "error": str(safe_job.get("error") or "").strip() or None,
-        "queueDepthAtSubmit": max(0, int(safe_job.get("queueDepthAtSubmit") or 0)),
-        "backendMode": str(safe_job.get("backendMode") or "").strip() or None,
-        "modelName": str(safe_job.get("modelName") or "").strip() or None,
-        "createdAt": str(safe_job.get("createdAt") or ""),
-        "updatedAt": str(safe_job.get("updatedAt") or ""),
-        "startedAt": str(safe_job.get("startedAt") or "") or None,
-        "finishedAt": str(safe_job.get("finishedAt") or "") or None,
-        "artifacts": artifacts,
-    }
-
-
-def _lab_separation_run_job(job_id: str) -> None:
-    job = _lab_separation_get_job(job_id)
-    if not isinstance(job, dict):
-        return
-    try:
-        started_at = _utc_now().isoformat()
-        _lab_separation_patch_job(
-            job_id,
-            {
-                "status": "running",
-                "progress": 30,
-                "message": "Running Demucs HQ separation on the backend queue...",
-                "startedAt": started_at,
-            },
-        )
-        source_path = Path(str(job.get("sourcePath") or "")).resolve()
-        model_name = str(job.get("modelName") or "").strip() or SEPARATION_MODEL
-        backend_mode = _normalize_lab_backend_hardware(job.get("backendMode"))
-        speech_path, background_path, cache_key = _ensure_source_separation(
-            source_path,
-            model_name,
-            device_preference=backend_mode,
-        )
-        job_dir = LAB_SEPARATION_ROOT_DIR / str(job.get("id") or "").strip()
-        job_dir.mkdir(parents=True, exist_ok=True)
-        vocals_path = job_dir / "vocals.wav"
-        instrumental_path = job_dir / "instrumental.wav"
-        shutil.copyfile(speech_path, vocals_path)
-        shutil.copyfile(background_path, instrumental_path)
-        _lab_separation_patch_job(
-            job_id,
-            {
-                "status": "completed",
-                "progress": 100,
-                "message": "Demucs HQ separation completed.",
-                "finishedAt": _utc_now().isoformat(),
-                "cacheKey": cache_key,
-                "error": "",
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        _lab_separation_patch_job(
-            job_id,
-            {
-                "status": "failed",
-                "progress": 0,
-                "message": "Demucs HQ separation failed.",
-                "error": str(exc)[:4000],
-                "finishedAt": _utc_now().isoformat(),
-            },
-        )
-
-
-async def _lab_separation_create_job(
-    upload: UploadFile,
-    *,
-    owner_uid: str,
-    model_name: str = "",
-) -> dict[str, Any]:
-    safe_owner_uid = str(owner_uid or "").strip()
-    if not safe_owner_uid:
-        raise HTTPException(status_code=401, detail="Missing user uid.")
-    queue_depth = _lab_separation_queue_depth()
-    if queue_depth >= LAB_SEPARATION_MAX_ACTIVE_AND_QUEUED:
-        raise HTTPException(
-            status_code=503,
-            detail="Lab separation queue is full for this 2 vCPU deployment. Retry in a moment.",
-        )
-    safe_model_name = str(model_name or "").strip() or SEPARATION_MODEL
-    runtime_defaults = _lab_runtime_defaults_get()
-    safe_filename = _safe_upload_name(upload.filename, "lab_source.wav")
-    job_id = f"labsep_{uuid.uuid4().hex[:16]}"
-    job_dir = LAB_SEPARATION_ROOT_DIR / job_id
-    ext = Path(safe_filename).suffix or ".wav"
-    source_path = job_dir / f"source{ext}"
-    total_bytes = await _write_upload_file_chunked(
-        upload,
-        source_path,
-        max_bytes=LAB_SEPARATION_UPLOAD_MAX_BYTES,
-    )
-    created_at = _utc_now().isoformat()
-    row = {
-        "id": job_id,
-        "ownerUid": safe_owner_uid,
-        "status": "queued",
-        "progress": 10,
-        "message": "Queued for Demucs HQ separation.",
-        "error": "",
-        "sourcePath": str(source_path),
-        "originalFilename": safe_filename,
-        "sizeBytes": total_bytes,
-        "modelName": safe_model_name,
-        "backendMode": _normalize_lab_backend_hardware(runtime_defaults.get("separatorBackendDefault")),
-        "queueDepthAtSubmit": queue_depth + 1,
-        "createdAt": created_at,
-        "updatedAt": created_at,
-        "startedAt": "",
-        "finishedAt": "",
-    }
-    _lab_separation_set_job(job_id, row)
-    _LAB_SEPARATION_EXECUTOR.submit(_lab_separation_run_job, job_id)
-    return _lab_separation_get_job(job_id) or row
-
-
-def _normalize_lab_export_format(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe in {"wav", "webm", "mp4"}:
-        return safe
-    raise HTTPException(status_code=400, detail="format must be one of: wav, webm, mp4.")
-
-
-def _lab_export_artifact_path(job_id: str, export_format: str) -> Path:
-    safe_job_id = str(job_id or "").strip()
-    safe_format = _normalize_lab_export_format(export_format)
-    return LAB_EXPORT_ROOT_DIR / safe_job_id / f"artifact.{safe_format}"
-
-
-def _lab_export_queue_depth() -> int:
-    with _LAB_EXPORT_JOBS_LOCK:
-        return sum(
-            1
-            for item in _INMEMORY_LAB_EXPORT_JOBS.values()
-            if str((item or {}).get("status") or "").strip().lower() in {"queued", "running"}
-        )
-
-
-def _lab_export_get_job(job_id: str) -> Optional[dict[str, Any]]:
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        return None
-    with _LAB_EXPORT_JOBS_LOCK:
-        row = _INMEMORY_LAB_EXPORT_JOBS.get(safe_job_id)
-        return dict(row) if isinstance(row, dict) else None
-
-
-def _lab_export_set_job(job_id: str, row: dict[str, Any]) -> dict[str, Any]:
-    safe_job_id = str(job_id or "").strip()
-    payload = dict(row or {})
-    payload["id"] = safe_job_id
-    with _LAB_EXPORT_JOBS_LOCK:
-        _INMEMORY_LAB_EXPORT_JOBS[safe_job_id] = payload
-    return dict(payload)
-
-
-def _lab_export_patch_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    current = _lab_export_get_job(job_id) or {"id": str(job_id or "").strip()}
-    current.update(dict(patch or {}))
-    current["updatedAt"] = _utc_now().isoformat()
-    return _lab_export_set_job(job_id, current)
-
-
-def _lab_export_can_access(job: dict[str, Any], *, uid: str, is_admin: bool) -> bool:
-    if is_admin:
-        return True
-    return str(job.get("ownerUid") or "").strip() == str(uid or "").strip()
-
-
-def _lab_export_status_payload(job: dict[str, Any]) -> dict[str, Any]:
-    safe_job = dict(job or {})
-    safe_job_id = str(safe_job.get("id") or "").strip()
-    export_format = _normalize_lab_export_format(safe_job.get("format") or "mp4")
-    artifact_path = _lab_export_artifact_path(safe_job_id, export_format)
-    return {
-        "id": safe_job_id,
-        "status": str(safe_job.get("status") or "queued"),
-        "progress": max(0, min(100, int(safe_job.get("progress") or 0))),
-        "message": str(safe_job.get("message") or "").strip(),
-        "format": export_format,
-        "queueDepthAtSubmit": max(0, int(safe_job.get("queueDepthAtSubmit") or 0)),
-        "backendMode": str(safe_job.get("backendMode") or "").strip() or None,
-        "createdAt": str(safe_job.get("createdAt") or ""),
-        "updatedAt": str(safe_job.get("updatedAt") or ""),
-        "startedAt": str(safe_job.get("startedAt") or "") or None,
-        "finishedAt": str(safe_job.get("finishedAt") or "") or None,
-        "artifactUrl": f"/lab/export/jobs/{safe_job_id}/artifact" if artifact_path.exists() else None,
-        "error": str(safe_job.get("error") or "").strip() or None,
-    }
-
-
-def _run_ffmpeg_for_lab_export(job_id: str, args: list[str]) -> None:
-    process = subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    with _LAB_EXPORT_JOBS_LOCK:
-        _LAB_EXPORT_ACTIVE_PROCESSES[job_id] = process
-    stdout, stderr = process.communicate()
-    with _LAB_EXPORT_JOBS_LOCK:
-        _LAB_EXPORT_ACTIVE_PROCESSES.pop(job_id, None)
-    if process.returncode != 0:
-        detail = (stderr or stdout or "FFmpeg export failed.").strip()
-        raise RuntimeError(detail[:4000])
-
-
-def _lab_export_run_job(job_id: str) -> None:
-    job = _lab_export_get_job(job_id)
-    if not isinstance(job, dict):
-        return
-    try:
-        if str(job.get("status") or "").strip().lower() == "cancelled":
-            return
-        _lab_export_patch_job(
-            job_id,
-            {
-                "status": "running",
-                "progress": 35,
-                "message": "Normalizing Lab export on the backend queue...",
-                "startedAt": _utc_now().isoformat(),
-            },
-        )
-        source_path = Path(str(job.get("sourcePath") or "")).resolve()
-        export_format = _normalize_lab_export_format(job.get("format") or "mp4")
-        artifact_path = _lab_export_artifact_path(job_id, export_format)
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        if export_format == "webm":
-            shutil.copyfile(source_path, artifact_path)
-        else:
-            ffmpeg = _get_ffmpeg_path()
-            command = [ffmpeg, "-y", "-i", str(source_path)]
-            if export_format == "mp4":
-                command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "192k", str(artifact_path)])
-            else:
-                command.extend(["-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", str(artifact_path)])
-            _run_ffmpeg_for_lab_export(job_id, command)
-        current = _lab_export_get_job(job_id) or {}
-        if str(current.get("status") or "").strip().lower() == "cancelled":
-            try:
-                artifact_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return
-        _lab_export_patch_job(
-            job_id,
-            {
-                "status": "completed",
-                "progress": 100,
-                "message": f"Lab {export_format.upper()} export completed.",
-                "finishedAt": _utc_now().isoformat(),
-                "error": "",
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        current = _lab_export_get_job(job_id) or {}
-        if str(current.get("status") or "").strip().lower() == "cancelled":
-            return
-        _lab_export_patch_job(
-            job_id,
-            {
-                "status": "failed",
-                "progress": 0,
-                "message": "Lab export failed.",
-                "finishedAt": _utc_now().isoformat(),
-                "error": str(exc)[:4000],
-            },
-        )
-
-
-async def _lab_export_create_job(
-    upload: UploadFile,
-    *,
-    owner_uid: str,
-    export_format: str,
-    source_media_type: str = "",
-    browser_mode: str = "",
-) -> dict[str, Any]:
-    safe_owner_uid = str(owner_uid or "").strip()
-    if not safe_owner_uid:
-        raise HTTPException(status_code=401, detail="Missing user uid.")
-    queue_depth = _lab_export_queue_depth()
-    if queue_depth >= LAB_EXPORT_MAX_ACTIVE_AND_QUEUED:
-        raise HTTPException(
-            status_code=503,
-            detail="Lab export queue is full for this 2 vCPU deployment. Retry in a moment.",
-        )
-    safe_format = _normalize_lab_export_format(export_format)
-    safe_filename = _safe_upload_name(upload.filename, f"lab_export_source.{safe_format}")
-    job_id = f"labexp_{uuid.uuid4().hex[:16]}"
-    job_dir = LAB_EXPORT_ROOT_DIR / job_id
-    ext = Path(safe_filename).suffix or (".wav" if safe_format == "wav" else ".webm")
-    source_path = job_dir / f"source{ext}"
-    total_bytes = await _write_upload_file_chunked(
-        upload,
-        source_path,
-        max_bytes=LAB_EXPORT_UPLOAD_MAX_BYTES,
-    )
-    runtime_defaults = _lab_runtime_defaults_get()
-    created_at = _utc_now().isoformat()
-    row = {
-        "id": job_id,
-        "ownerUid": safe_owner_uid,
-        "status": "queued",
-        "progress": 12,
-        "message": f"Queued for {safe_format.upper()} export.",
-        "error": "",
-        "format": safe_format,
-        "sourcePath": str(source_path),
-        "originalFilename": safe_filename,
-        "sizeBytes": total_bytes,
-        "sourceMediaType": str(source_media_type or upload.content_type or "").strip(),
-        "browserMode": str(browser_mode or "").strip(),
-        "backendMode": _normalize_lab_backend_hardware(runtime_defaults.get("backendHardwareDefault")),
-        "queueDepthAtSubmit": queue_depth + 1,
-        "createdAt": created_at,
-        "updatedAt": created_at,
-        "startedAt": "",
-        "finishedAt": "",
-    }
-    _lab_export_set_job(job_id, row)
-    _LAB_EXPORT_EXECUTOR.submit(_lab_export_run_job, job_id)
-    return _lab_export_get_job(job_id) or row
-
-
-def _lab_export_cancel_job(job_id: str) -> Optional[dict[str, Any]]:
-    current = _lab_export_get_job(job_id)
-    if not isinstance(current, dict):
-        return None
-    status = str(current.get("status") or "").strip().lower()
-    if status in {"completed", "failed", "cancelled"}:
-        return current
-    with _LAB_EXPORT_JOBS_LOCK:
-        process = _LAB_EXPORT_ACTIVE_PROCESSES.get(job_id)
-    if process is not None:
-        try:
-            process.kill()
-        except Exception:
-            pass
-    return _lab_export_patch_job(
-        job_id,
-        {
-            "status": "cancelled",
-            "progress": 0,
-            "message": "Lab export cancelled.",
-            "finishedAt": _utc_now().isoformat(),
-            "error": "",
-        },
-    )
-
-
 def _normalize_novel_source(raw_source: str) -> str:
     source = (raw_source or "").strip().lower()
     if source not in NOVEL_IDEA_ALLOWED_HOSTS:
@@ -14497,94 +14119,33 @@ def _extract_text_with_local_ocr(media_bytes: bytes) -> str:
 
 
 def _resolve_gemini_keys_file_path(path_hint: str) -> Path:
-    raw_hint = str(path_hint or "").strip()
-    candidates: list[Path] = []
-    if raw_hint:
-        hint_path = Path(raw_hint).expanduser()
-        if hint_path.is_absolute():
-            candidates.append(hint_path)
-        else:
-            candidates.append(APP_ROOT / hint_path)
-            candidates.append(WORKSPACE_ROOT / hint_path)
-    else:
-        candidates.append(DEFAULT_GEMINI_API_KEYS_FILE)
-
-    first_candidate: Optional[Path] = None
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        marker = str(resolved)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        if first_candidate is None:
-            first_candidate = resolved
-        try:
-            if resolved.exists() and resolved.is_file():
-                return resolved
-        except Exception:
-            continue
-    return first_candidate or DEFAULT_GEMINI_API_KEYS_FILE
+    _ = path_hint
+    return _resolve_gemini_api_pools_file_path()
 
 
 def _read_gemini_keys_from_file(path_hint: str) -> list[str]:
-    target = _resolve_gemini_keys_file_path(path_hint)
-    try:
-        if not target.exists() or not target.is_file():
-            return []
-        raw = read_gemini_key_file_text_shared(target)
-    except Exception:
-        return []
-    return parse_api_keys_shared(raw)
+    _ = path_hint
+    return []
 
 
 def _gemini_pool_source_diagnostics() -> dict[str, Any]:
-    configured_file_path = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
-    resolved_file_path = _resolve_gemini_keys_file_path(configured_file_path)
     pools_file_path = _resolve_gemini_api_pools_file_path()
-    file_item_count = 0
-    file_exists = False
-    if str(resolved_file_path):
-        file_exists = resolved_file_path.exists() and resolved_file_path.is_file()
-        if file_exists:
-            file_item_count = len(_read_gemini_keys_from_file(str(resolved_file_path)))
-    env_pool_count = len(parse_api_keys_shared(str(os.getenv("GEMINI_API_KEYS") or "").strip()))
-    single_key_present = bool(str(os.getenv("GEMINI_API_KEY") or "").strip() or str(os.getenv("API_KEY") or "").strip())
+    config, _meta = _load_gemini_api_pools()
+    source_policy = dict(config.get("sourcePolicy") or {})
     return {
-        "configuredFilePath": configured_file_path,
-        "filePath": str(resolved_file_path),
-        "fileExists": file_exists,
-        "fileKeyCount": file_item_count,
-        "envPoolKeyCount": env_pool_count,
-        "singleKeyPresent": single_key_present,
+        "configuredFilePath": str(pools_file_path),
+        "filePath": str(pools_file_path),
+        "fileExists": bool(pools_file_path.exists() and pools_file_path.is_file()),
+        "fileKeyCount": len(_vertex_accounts_from_source({"sourcePolicy": source_policy})),
+        "envPoolKeyCount": 0,
+        "singleKeyPresent": False,
         "poolsFilePath": str(pools_file_path),
         "poolsFileExists": bool(pools_file_path.exists() and pools_file_path.is_file()),
     }
 
 
 def _legacy_gemini_key_pool() -> list[str]:
-    raw_pool = str(os.getenv("GEMINI_API_KEYS") or "").strip()
-    file_pool = _read_gemini_keys_from_file(str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip())
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for token in [
-        *parse_api_keys_shared(raw_pool),
-        *file_pool,
-        os.getenv("VF_GEMINI_API_KEY") or "",
-        os.getenv("GEMINI_API_KEY") or "",
-        os.getenv("API_KEY") or "",
-    ]:
-        key = str(token or "").strip()
-        if not key or key in seen:
-            continue
-        if not parse_api_keys_shared(key):
-            continue
-        seen.add(key)
-        candidates.append(key)
-    return candidates
+    return []
 
 
 def _resolve_gemini_api_pools_file_path() -> Path:
@@ -14601,48 +14162,18 @@ def _resolve_gemini_api_pools_file_path() -> Path:
 
 
 def _write_gemini_keys_to_file(path_hint: str | Path, keys: list[str]) -> Path:
-    target = _resolve_gemini_keys_file_path(str(path_hint or "").strip())
-    safe_keys = [str(item or "").strip() for item in keys if str(item or "").strip()]
-    payload = "\n".join(safe_keys)
-    if payload:
-        payload = f"{payload}\n"
-    encrypt_keys_file = (
-        str(os.getenv("GEMINI_KEYS_FILE_ENCRYPTION") or "0").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
-    if not encrypt_keys_file:
-        try:
-            if target.exists() and target.is_file():
-                existing_text = target.read_text(encoding="utf-8", errors="ignore")
-                encrypt_keys_file = is_encrypted_gemini_key_file_text_shared(existing_text)
-        except Exception:
-            encrypt_keys_file = False
-    write_gemini_key_file_text_shared(
-        target,
-        payload,
-        encrypt=encrypt_keys_file,
-    )
-    return target
+    _ = path_hint, keys
+    return _resolve_gemini_api_pools_file_path()
 
 
 def _rotate_gemini_key_order(keys: list[str], *, steps: int = 1) -> tuple[list[str], int]:
-    safe_keys = [str(item or "").strip() for item in keys if str(item or "").strip()]
-    size = len(safe_keys)
-    if size <= 1:
-        return list(safe_keys), 0
-    normalized_steps = max(1, int(steps or 1)) % size
-    if normalized_steps == 0:
-        normalized_steps = 1
-    return [*safe_keys[normalized_steps:], *safe_keys[:normalized_steps]], normalized_steps
+    _ = keys, steps
+    return [], 0
 
 
 def _resolve_authoritative_gemini_free_pool_file_path(config: Optional[dict[str, Any]] = None) -> Path:
-    source_policy = dict((config or {}).get("sourcePolicy") or {})
-    path_hint = (
-        str(source_policy.get("freePoolFilePath") or "").strip()
-        or str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
-    )
-    return _resolve_gemini_keys_file_path(path_hint)
+    _ = config
+    return _resolve_gemini_api_pools_file_path()
 
 
 def _resolve_vertex_service_account_store_path(path_hint: str) -> Path:
@@ -14878,140 +14409,21 @@ def _sanitize_runtime_gemini_admin_payload(payload: dict[str, Any]) -> dict[str,
 
 def _rewrite_free_plan_pool_for_vertex(config: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
     normalized = normalize_gemini_pool_config(config)
-    source_policy = dict(normalized.get("sourcePolicy") or {})
-    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    if provider != SOURCE_POLICY_PROVIDER_VERTEX:
-        return normalized, False, ""
-
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    if "free" not in pools:
-        pools["free"] = {"keys": []}
-        normalized["pools"] = pools
-
-    pool_names = list_gemini_pool_names(normalized)
-    if not pool_names:
-        pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-        pools["free"] = {"keys": []}
-        normalized["pools"] = pools
-        pool_names = ["free"]
-
-    plan_pools = normalized.get("planPools") if isinstance(normalized.get("planPools"), dict) else {}
-    preferred = [
-        str(plan_pools.get("free") or "").strip(),
-        str(plan_pools.get("pro") or "").strip(),
-        str(plan_pools.get("plus") or "").strip(),
-        "free",
-        *pool_names,
-    ]
-    target_pool = ""
-    for candidate in preferred:
-        if candidate and candidate in pool_names:
-            target_pool = candidate
-            break
-    if not target_pool:
-        target_pool = pool_names[0]
-
-    current_free_pool = str(plan_pools.get("free") or "").strip()
-    if current_free_pool == target_pool:
-        return normalized, False, target_pool
-    next_plan_pools = dict(plan_pools)
-    next_plan_pools["free"] = target_pool
-    normalized["planPools"] = next_plan_pools
-    return normalized, True, target_pool
+    return normalized, False, ""
 
 
 def _sync_authoritative_gemini_free_pool(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, list[str]]:
     normalized = normalize_gemini_pool_config(config)
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    has_free_pool = "free" in pools
-    source_policy = dict(normalized.get("sourcePolicy") or {})
-    authoritative_mode = str(source_policy.get("freePoolMode") or "").strip().lower() == "api_file_authoritative"
-    free_pool_locked = bool(source_policy.get("freePoolLocked"))
-    # Allow legacy/default configs to auto-sync free pool from API file.
-    # Explicitly skip only when free pool has been hard-deleted and lock mode was disabled.
-    if not has_free_pool and not authoritative_mode and not free_pool_locked:
-        return normalized, False, []
-
-    configured_file_path = str(os.getenv("GEMINI_API_KEYS_FILE") or GEMINI_API_KEYS_FILE).strip()
-    if configured_file_path:
-        candidate = Path(configured_file_path).expanduser()
-        if candidate.is_absolute():
-            resolved_file_path = candidate.resolve()
-        else:
-            app_candidate = (APP_ROOT / candidate).resolve()
-            resolved_file_path = app_candidate if app_candidate.exists() else (WORKSPACE_ROOT / candidate).resolve()
-    else:
-        resolved_file_path = DEFAULT_GEMINI_API_KEYS_FILE.resolve()
-    file_exists = False
-    file_keys: list[str] = []
-    try:
-        file_exists = bool(resolved_file_path.exists() and resolved_file_path.is_file())
-        if file_exists:
-            file_keys = _read_gemini_keys_from_file(str(resolved_file_path))
-    except Exception:
-        file_exists = False
-        file_keys = []
-    return sync_authoritative_free_pool_shared(
-        normalized,
-        file_keys,
-        str(resolved_file_path),
-        file_exists=file_exists,
-        failure_mode="keep_last_good",
-    )
+    return normalized, False, []
 
 
 def _enforce_single_free_gemini_pool(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, list[str]]:
     normalized = normalize_gemini_pool_config(config)
-    if not VF_GEMINI_SINGLE_POOL_ENFORCE:
-        return normalized, False, []
-
-    warnings: list[str] = []
-    all_keys = flatten_pool_keys(normalized)
-    pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    direct_free_keys = list((pools.get("free") or {}).get("keys") or [])
-    source_policy = normalized.get("sourcePolicy") if isinstance(normalized.get("sourcePolicy"), dict) else {}
-    provider_token = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    free_pool_locked = provider_token != SOURCE_POLICY_PROVIDER_VERTEX and bool(source_policy.get("freePoolLocked"))
-    if len(pools.keys()) > 1:
-        warnings.append("Single-pool mode forced all Gemini pools to canonical pool 'free'.")
-    effective_keys = list(all_keys)
-    if free_pool_locked:
-        effective_keys = list(direct_free_keys)
-        if len(all_keys) != len(direct_free_keys):
-            warnings.append(
-                "Single-pool mode ignored non-free keys because authoritative free-pool lock is enabled."
-            )
-    elif len(all_keys) != len(direct_free_keys):
-        warnings.append("Single-pool mode collapsed multi-pool key membership into canonical pool 'free'.")
-
-    unique_keys: list[str] = []
-    seen: set[str] = set()
-    for key in effective_keys:
-        token = str(key or "").strip()
-        if not token or token in seen:
-            continue
-        seen.add(token)
-        unique_keys.append(token)
-
-    next_config = dict(normalized)
-    next_config["pools"] = {"free": {"keys": unique_keys}}
-    next_config["fallbackChains"] = {"free": ["free"]}
-    next_config["defaultFallbackChain"] = ["free"]
-    next_config["planPools"] = {"free": "free", "pro": "free", "plus": "free"}
-    constraints = dict(next_config.get("constraints") or {})
-    constraints["uniqueKeyMembership"] = True
-    next_config["constraints"] = constraints
-    next_config["singlePool"] = {
-        "enabled": True,
-        "canonicalPoolId": "free",
-        "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
-    }
-    changed = json.dumps(normalized, sort_keys=True) != json.dumps(next_config, sort_keys=True)
-    return next_config, changed, warnings
+    return normalized, False, []
 
 
 def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -15020,39 +14432,17 @@ def _load_gemini_api_pools(force: bool = False) -> tuple[dict[str, Any], dict[st
         if not force and isinstance(_GEMINI_POOLS_CACHE, dict):
             return dict(_GEMINI_POOLS_CACHE), dict(_GEMINI_POOLS_META)
 
-        cached_config = dict(_GEMINI_POOLS_CACHE) if isinstance(_GEMINI_POOLS_CACHE, dict) else {}
         file_path = _resolve_gemini_api_pools_file_path()
-        bootstrap_keys = _legacy_gemini_key_pool()
-        firestore_db = _FIRESTORE_DB if GEMINI_API_POOLS_PREFER_FIRESTORE else None
         config, meta = load_pool_config_shared(
             file_path=file_path,
-            firestore_db=firestore_db,
+            firestore_db=_FIRESTORE_DB if GEMINI_API_POOLS_PREFER_FIRESTORE else None,
             prefer_firestore=GEMINI_API_POOLS_PREFER_FIRESTORE,
-            bootstrap_free_keys=bootstrap_keys,
         )
-        source_token = str((meta or {}).get("source") or "").strip().lower()
-        if not flatten_pool_keys(config) and bootstrap_keys and source_token in {"default", "bootstrap"}:
-            config = normalize_gemini_pool_config(config)
-            pools = config.get("pools") if isinstance(config.get("pools"), dict) else {}
-            pools.setdefault("free", {"keys": []})
-            pools["free"]["keys"] = list(bootstrap_keys)
-            config["pools"] = pools
-        config = overlay_cached_gemini_free_pool_shared(config, cached_config=cached_config)
+        config = normalize_gemini_pool_config(config)
         sync_warnings: list[str] = []
         config, synced_changed, sync_warnings = _sync_authoritative_gemini_free_pool(config)
         single_pool_warnings: list[str] = []
         config, single_pool_changed, single_pool_warnings = _enforce_single_free_gemini_pool(config)
-        if synced_changed or single_pool_changed:
-            try:
-                config = save_pool_config_shared(
-                    file_path=file_path,
-                    config=config,
-                    firestore_db=firestore_db,
-                )
-            except Exception:
-                sync_warnings.append(
-                    "Authoritative free-pool sync could not be persisted; using in-memory pool config."
-                )
         meta = dict(meta if isinstance(meta, dict) else {})
         meta["warnings"] = [*list(sync_warnings), *list(single_pool_warnings)]
         meta["sourcePolicy"] = dict(config.get("sourcePolicy") or {})
@@ -15093,115 +14483,20 @@ def _save_gemini_api_pools(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rotate_gemini_free_pool_once(*, steps: int = 1) -> dict[str, Any]:
-    global _GEMINI_POOLS_CACHE, _GEMINI_POOLS_META
-
-    current_config, current_meta = _load_gemini_api_pools(force=True)
-    source_policy = dict(current_config.get("sourcePolicy") or {})
-    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    if provider == SOURCE_POLICY_PROVIDER_VERTEX:
-        raise RuntimeError("Gemini pool rotation is not supported while Vertex mode is active.")
-
-    pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
-    current_free_keys = [str(item or "").strip() for item in list((pools.get("free") or {}).get("keys") or []) if str(item or "").strip()]
-    if len(current_free_keys) < 2:
-        raise RuntimeError("Gemini free pool must contain at least two keys to rotate.")
-
-    authoritative_mode = str(source_policy.get("freePoolMode") or "").strip().lower() == "api_file_authoritative"
-    free_pool_locked = bool(source_policy.get("freePoolLocked"))
-
-    storage_mode = "config_managed"
-    before_keys = list(current_free_keys)
-    rotated_keys: list[str] = []
-    applied_steps = 0
-    updated_config: dict[str, Any]
-    updated_meta: dict[str, Any]
-    target_path = _resolve_gemini_api_pools_file_path()
-
-    if authoritative_mode and free_pool_locked:
-        storage_mode = "api_file_authoritative"
-        target_path = _resolve_authoritative_gemini_free_pool_file_path(current_config)
-        source_keys = _read_gemini_keys_from_file(str(target_path))
-        if len(source_keys) >= 2:
-            before_keys = list(source_keys)
-        rotated_keys, applied_steps = _rotate_gemini_key_order(before_keys, steps=steps)
-        _write_gemini_keys_to_file(target_path, rotated_keys)
-        with _GEMINI_POOLS_LOCK:
-            _GEMINI_POOLS_CACHE = None
-            _GEMINI_POOLS_META = {}
-        updated_config, updated_meta = _load_gemini_api_pools(force=True)
-    else:
-        rotated_keys, applied_steps = _rotate_gemini_key_order(before_keys, steps=steps)
-        next_config = normalize_gemini_pool_config(current_config)
-        next_pools = next_config.get("pools") if isinstance(next_config.get("pools"), dict) else {}
-        next_pools.setdefault("free", {"keys": []})
-        free_row = dict(next_pools.get("free") or {})
-        free_row["keys"] = list(rotated_keys)
-        next_pools["free"] = free_row
-        next_config["pools"] = next_pools
-        updated_config = _save_gemini_api_pools(next_config)
-        updated_meta = dict(_GEMINI_POOLS_META)
-
-    effective_pool = flatten_pool_keys(updated_config)
-    if effective_pool:
-        BACKEND_GEMINI_ALLOCATOR.reset_rotation(next_index=0)
-        BACKEND_GEMINI_ALLOCATOR.ensure_keys(effective_pool)
-
-    backend_snapshot = _backend_gemini_pool_snapshot()
-    runtime_reload = _runtime_gemini_pool_reload()
-    runtime_snapshot = _runtime_gemini_pool_snapshot()
-    updated_public = _sanitize_gemini_pool_config_for_response(updated_config)
-
-    before_head, before_meta = _mask_gemini_key_for_response(before_keys[0] if before_keys else "")
-    after_head, after_meta = _mask_gemini_key_for_response(rotated_keys[0] if rotated_keys else "")
-
-    return {
-        "ok": bool(backend_snapshot.get("ok")) and bool(runtime_reload.get("ok")),
-        "detail": "Gemini free pool rotated and reloaded.",
-        "warnings": list((updated_meta or {}).get("warnings") or []),
-        "rotation": {
-            "storageMode": storage_mode,
-            "stepsRequested": max(1, int(steps or 1)),
-            "stepsApplied": int(applied_steps),
-            "keyCount": len(rotated_keys),
-            "persistedPath": str(target_path),
-            "beforeHead": {
-                "placeholder": before_head,
-                "fingerprint": str(before_meta.get("fingerprint") or ""),
-                "masked": str(before_meta.get("masked") or ""),
-            },
-            "afterHead": {
-                "placeholder": after_head,
-                "fingerprint": str(after_meta.get("fingerprint") or ""),
-                "masked": str(after_meta.get("masked") or ""),
-            },
-        },
-        "config": updated_public,
-        "backend": backend_snapshot,
-        "runtimeReload": runtime_reload,
-        "runtime": runtime_snapshot,
-    }
+    raise RuntimeError("Gemini pool rotation is no longer supported.")
 
 
 def _resolve_gemini_fallback_key_pool() -> list[str]:
     config, meta = _load_gemini_api_pools()
-    source = str((meta or {}).get("source") or "").strip().lower()
-    if source in {"default", "bootstrap"}:
-        legacy = _legacy_gemini_key_pool()
-        if legacy:
-            return legacy
     keys = resolve_effective_pool_keys(config, resolve_default_gemini_pool_hint(config))
-    if keys:
-        return keys
-    return _legacy_gemini_key_pool()
+    return keys or list(GEMINI_SLOT_IDS)
 
 
 def _resolve_gemini_plan_key_pool(plan_key: str) -> list[str]:
     config, _meta = _load_gemini_api_pools()
     pool_hint = resolve_gemini_plan_pool_hint(config, plan_key)
     keys = resolve_effective_pool_keys(config, pool_hint)
-    if keys:
-        return keys
-    return _resolve_gemini_fallback_key_pool()
+    return keys or _resolve_gemini_fallback_key_pool()
 
 
 def _gemini_pools_validation(config: dict[str, Any]) -> dict[str, Any]:
@@ -15306,65 +14601,40 @@ def _gemini_runtime_admin_headers() -> dict[str, str]:
 
 def _runtime_gemini_pool_snapshot(timeout_sec: float = 5.0) -> dict[str, Any]:
     runtime_headers = _gemini_runtime_admin_headers()
-    endpoints = [
-        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools",
-        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool",
-    ]
-    for endpoint in endpoints:
-        try:
-            response = _runtime_http_request(
-                "GET",
-                endpoint,
-                timeout=timeout_sec,
-                headers=runtime_headers or None,
-                retry_attempts=2,
-                retry_backoff_ms=120,
-                retry_status_codes={502, 503, 504},
-            )
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {"detail": response.text[:220]}
-        if not response.ok:
-            continue
-        if not isinstance(payload, dict):
-            payload = {"payload": payload}
-        payload["ok"] = True
-        payload["endpoint"] = endpoint
-        return _sanitize_runtime_gemini_admin_payload(payload)
-    return {"ok": False, "error": "runtime_pool_snapshot_unavailable"}
+    endpoint = f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools"
+    try:
+        response = _runtime_http_request(
+            "GET",
+            endpoint,
+            timeout=timeout_sec,
+            headers=runtime_headers or None,
+            retry_attempts=2,
+            retry_backoff_ms=120,
+            retry_status_codes={502, 503, 504},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {"detail": response.text[:220]}
+    if not response.ok:
+        return {
+            "ok": False,
+            "statusCode": response.status_code,
+            "error": payload.get("detail") if isinstance(payload, dict) else str(payload),
+            "endpoint": endpoint,
+        }
+    if not isinstance(payload, dict):
+        payload = {"payload": payload}
+    payload["ok"] = True
+    payload["endpoint"] = endpoint
+    return _sanitize_runtime_gemini_admin_payload(payload)
 
 
 def _runtime_gemini_pool_reload(timeout_sec: float = 8.0) -> dict[str, Any]:
-    runtime_headers = _gemini_runtime_admin_headers()
-    endpoints = [
-        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pools/reload",
-        f"{GEMINI_RUNTIME_URL}/v1/admin/api-pool/reload",
-    ]
-    for endpoint in endpoints:
-        try:
-            response = _runtime_http_request(
-                "POST",
-                endpoint,
-                timeout=timeout_sec,
-                headers=runtime_headers or None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"runtime_unreachable:{exc}", "endpoint": endpoint}
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {"detail": response.text[:220]}
-        if not response.ok:
-            continue
-        if not isinstance(payload, dict):
-            payload = {"payload": payload}
-        payload["ok"] = True
-        payload["endpoint"] = endpoint
-        return _sanitize_runtime_gemini_admin_payload(payload)
-    return {"ok": False, "error": "runtime_pool_reload_unavailable"}
+    _ = timeout_sec
+    return {"ok": False, "error": "runtime_pool_reload_removed"}
 
 
 def _runtime_gemini_pool_usage(timeout_sec: float = 8.0) -> dict[str, Any]:
@@ -15404,7 +14674,7 @@ def _extract_text_with_gemini_fallback(media_bytes: bytes, mime_type: str, langu
     key_pool = _resolve_gemini_fallback_key_pool()
     if not key_pool:
         raise RuntimeError(
-            "Gemini key pool is empty for AI fallback. Configure GEMINI_API_KEYS_FILE (preferred), GEMINI_API_KEYS, or GEMINI_API_KEY."
+            "Primary AI slot set is empty for AI fallback. Configure the backend-held service-account slots."
         )
     BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
 
@@ -15850,6 +15120,7 @@ class ReaderLegalAckRequest(BaseModel):
 
 
 class ReaderPreferencesPatchRequest(BaseModel):
+    homeTab: Optional[str] = None
     regionId: Optional[str] = None
     targetLanguage: Optional[str] = None
     pageViewMode: Optional[str] = None
@@ -16047,6 +15318,22 @@ def _reader_normalize_audio_engine(raw_value: object, *, default: str = "tts_hd"
         return "tts_hd"
     fallback = str(default or "tts_hd").strip().lower().replace("-", "_")
     return "native_audio_dialog" if fallback in {"native", "native_audio", "native_audio_dialog", "dialog"} else "tts_hd"
+
+
+def _reader_normalize_home_tab(raw_value: object, *, default: str = "novels") -> str:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"novels", "novel"}:
+        return "novels"
+    if token in {"comics", "comic", "manga"}:
+        return "comics"
+    if token in {"library"}:
+        return "library"
+    if token in {"imported", "uploads"}:
+        return "imported"
+    fallback = str(default or "novels").strip().lower().replace("-", "_")
+    if fallback in {"novels", "comics", "library", "imported"}:
+        return fallback
+    return "novels"
 
 
 def _reader_normalize_audio_engine_status(raw_value: object, *, default: str = "active") -> str:
@@ -16904,6 +16191,7 @@ def _reader_legal_ack_set(uid: str, accepted: bool) -> dict[str, Any]:
 def _reader_preferences_default(uid: str) -> dict[str, Any]:
     return {
         "uid": str(uid or "").strip(),
+        "homeTab": "novels",
         "regionId": "english",
         "targetLanguage": "",
         "pageViewMode": "original",
@@ -16928,6 +16216,7 @@ def _reader_preferences_normalize(payload: dict[str, Any], uid: str) -> dict[str
     )
     return {
         "uid": safe_uid,
+        "homeTab": _reader_normalize_home_tab(payload.get("homeTab")),
         "regionId": safe_region_id,
         "targetLanguage": safe_target_language,
         "pageViewMode": safe_page_view_mode,
@@ -16971,6 +16260,7 @@ def _reader_preferences_patch(uid: str, patch: dict[str, Any]) -> dict[str, Any]
     current = _reader_preferences_get(safe_uid)
     next_payload = dict(current)
     for field in (
+        "homeTab",
         "regionId",
         "targetLanguage",
         "pageViewMode",
@@ -17792,12 +17082,57 @@ def _reader_fetch_google_books_catalog(region_id: str, *, search_query: str = ""
     return out
 
 
+def _reader_search_openverse_assets(kind: str, query: str, tag: str, page: int, *, page_size: int = 12) -> list[dict[str, Any]]:
+    safe_kind = "audio" if str(kind or "").strip().lower() == "audio" else "image"
+    params: dict[str, Any] = {
+        "page_size": max(1, min(24, int(page_size))),
+        "page": max(1, int(page or 1)),
+    }
+    safe_query = str(query or "").strip()
+    safe_tag = str(tag or "").strip()
+    if safe_query:
+        params["q"] = safe_query
+    if safe_tag and not safe_query:
+        params["tags"] = safe_tag
+    path = "audio" if safe_kind == "audio" else "images"
+    endpoint = f"{OPENVERSE_API_BASE_URL.rstrip('/')}/{path}"
+    response = requests.get(endpoint, params=params, timeout=12)
+    response.raise_for_status()
+    payload = response.json() or {}
+    items: list[dict[str, Any]] = []
+    for entry in payload.get("results") or []:
+        if not isinstance(entry, dict):
+            continue
+        raw_tags = entry.get("tags")
+        safe_tags = [str(tag_item).strip() for tag_item in list(raw_tags or []) if str(tag_item).strip()] if isinstance(raw_tags, list) else []
+        items.append(
+            {
+                "id": str(entry.get("id") or ""),
+                "provider": "openverse",
+                "kind": safe_kind,
+                "title": str(entry.get("title") or "Untitled asset").strip() or "Untitled asset",
+                "thumbUrl": str(entry.get("thumbnail") or "").strip() or None,
+                "previewUrl": str(entry.get("url") or "").strip() or None,
+                "downloadUrl": str(entry.get("url") or "").strip(),
+                "durationSec": round(float(entry.get("duration") or 0) / 1000.0, 3) if safe_kind == "audio" else None,
+                "width": int(entry.get("width") or 0) or None,
+                "height": int(entry.get("height") or 0) or None,
+                "license": str(entry.get("license_url") or entry.get("license") or "").strip() or None,
+                "creator": str(entry.get("creator") or "").strip() or None,
+                "attributionUrl": str(entry.get("foreign_landing_url") or entry.get("creator_url") or "").strip() or None,
+                "tags": safe_tags,
+                "externalUrl": str(entry.get("detail_url") or entry.get("foreign_landing_url") or "").strip() or None,
+            }
+        )
+    return items
+
+
 def _reader_fetch_openverse_comic_catalog(region_id: str, *, search_query: str = "") -> list[dict[str, Any]]:
     safe_region_id = str(reader_region(region_id).get("id") or "english")
     safe_search = _reader_search_term(search_query)
     query = safe_search or _reader_default_discovery_query(surface="comics", region_id=safe_region_id)
     try:
-        entries = _lab_catalog_search_openverse("image", query, "comic", 1)
+        entries = _reader_search_openverse_assets("image", query, "comic", 1)
     except Exception:
         return []
     out: list[dict[str, Any]] = []
@@ -20013,7 +19348,7 @@ def _reader_create_tts_job(
     )
     live_chunk_profile = _resolve_live_chunk_profile()
     payload = TtsSynthesizeRequest(
-        engine="GEM",
+        engine="NEURAL2",
         text=str(text or "").strip(),
         model=model,
         modelCandidates=model_candidates,
@@ -22457,641 +21792,6 @@ def _support_ai_policy_patch(patch: dict[str, Any], *, updated_by: str) -> dict[
     return next_policy
 
 
-def _lab_runtime_defaults_default() -> dict[str, Any]:
-    return {
-        "browserAccelerationDefault": "webgpu_preferred",
-        "backendHardwareDefault": "gpu_preferred",
-        "separatorBackendDefault": "gpu_preferred",
-        "labPerformanceMode": "conservative",
-        "exportStrategyDefault": "browser_first",
-        "allowUserOverride": False,
-        "updatedAt": _utc_now().isoformat(),
-        "updatedBy": "system",
-    }
-
-
-def _normalize_lab_browser_acceleration(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe == "cpu_only":
-        return "cpu_only"
-    return "webgpu_preferred"
-
-
-def _normalize_lab_backend_hardware(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe == "cpu_only":
-        return "cpu_only"
-    return "gpu_preferred"
-
-
-def _normalize_lab_performance_mode(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe == "balanced":
-        return "balanced"
-    return "conservative"
-
-
-def _normalize_lab_export_strategy(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe == "browser_first":
-        return "browser_first"
-    return "browser_first"
-
-
-def _lab_runtime_defaults_get() -> dict[str, Any]:
-    collection = _firestore_collection(LAB_RUNTIME_DEFAULTS_COLLECTION)
-    if collection is None:
-        with _INMEMORY_LOCK:
-            if not _INMEMORY_LAB_RUNTIME_DEFAULTS:
-                _INMEMORY_LAB_RUNTIME_DEFAULTS.update(_lab_runtime_defaults_default())
-            return dict(_INMEMORY_LAB_RUNTIME_DEFAULTS)
-    try:
-        doc = collection.document("current").get()
-    except Exception:
-        return _lab_runtime_defaults_default()
-    if not doc.exists:
-        payload = _lab_runtime_defaults_default()
-        try:
-            collection.document("current").set(payload, merge=True)
-        except Exception:
-            pass
-        return payload
-    payload = doc.to_dict() or {}
-    merged = _lab_runtime_defaults_default()
-    merged.update(payload)
-    merged["browserAccelerationDefault"] = _normalize_lab_browser_acceleration(merged.get("browserAccelerationDefault"))
-    merged["backendHardwareDefault"] = _normalize_lab_backend_hardware(merged.get("backendHardwareDefault"))
-    merged["separatorBackendDefault"] = _normalize_lab_backend_hardware(merged.get("separatorBackendDefault"))
-    merged["labPerformanceMode"] = _normalize_lab_performance_mode(merged.get("labPerformanceMode"))
-    merged["exportStrategyDefault"] = _normalize_lab_export_strategy(merged.get("exportStrategyDefault"))
-    merged["allowUserOverride"] = bool(merged.get("allowUserOverride"))
-    return merged
-
-
-def _lab_runtime_defaults_put(patch: dict[str, Any], *, updated_by: str) -> dict[str, Any]:
-    current = _lab_runtime_defaults_get()
-    next_defaults = dict(current)
-    if "browserAccelerationDefault" in patch:
-        next_defaults["browserAccelerationDefault"] = _normalize_lab_browser_acceleration(
-            patch.get("browserAccelerationDefault")
-        )
-    if "backendHardwareDefault" in patch:
-        next_defaults["backendHardwareDefault"] = _normalize_lab_backend_hardware(
-            patch.get("backendHardwareDefault")
-        )
-    if "separatorBackendDefault" in patch:
-        next_defaults["separatorBackendDefault"] = _normalize_lab_backend_hardware(
-            patch.get("separatorBackendDefault")
-        )
-    if "labPerformanceMode" in patch:
-        next_defaults["labPerformanceMode"] = _normalize_lab_performance_mode(patch.get("labPerformanceMode"))
-    if "exportStrategyDefault" in patch:
-        next_defaults["exportStrategyDefault"] = _normalize_lab_export_strategy(patch.get("exportStrategyDefault"))
-    if "allowUserOverride" in patch:
-        next_defaults["allowUserOverride"] = bool(patch.get("allowUserOverride"))
-    next_defaults["updatedAt"] = _utc_now().isoformat()
-    next_defaults["updatedBy"] = str(updated_by or "")[:160] or "system"
-
-    collection = _firestore_collection(LAB_RUNTIME_DEFAULTS_COLLECTION)
-    if collection is None:
-        with _INMEMORY_LOCK:
-            _INMEMORY_LAB_RUNTIME_DEFAULTS.clear()
-            _INMEMORY_LAB_RUNTIME_DEFAULTS.update(next_defaults)
-        return next_defaults
-    collection.document("current").set(next_defaults, merge=True)
-    return next_defaults
-
-
-def _normalize_lab_catalog_kind(value: Any) -> str:
-    safe = str(value or "").strip().lower()
-    if safe not in {"audio", "video", "image"}:
-        raise HTTPException(status_code=400, detail="kind must be one of: audio, video, image.")
-    return safe
-
-
-def _normalize_lab_catalog_provider(value: Any, *, allow_all: bool = False) -> str:
-    safe = str(value or "").strip().lower()
-    if allow_all and not safe:
-        return "all"
-    if allow_all and safe == "all":
-        return "all"
-    if safe not in {"openverse", "freesound", "pixabay"}:
-        raise HTTPException(status_code=400, detail="provider must be one of: openverse, freesound, pixabay.")
-    return safe
-
-
-def _lab_catalog_provider_enabled(provider: str, kind: str) -> bool:
-    safe_provider = _normalize_lab_catalog_provider(provider)
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    if VF_COMMERCIAL_MODE:
-        if safe_provider in COMMERCIAL_PROVIDER_BLOCKLIST_DEFAULT and safe_provider not in VF_COMMERCIAL_PROVIDER_ALLOWLIST:
-            return False
-        if safe_provider != "openverse" and safe_provider not in VF_COMMERCIAL_PROVIDER_ALLOWLIST:
-            return False
-    if safe_provider == "openverse":
-        return safe_kind in {"audio", "image"}
-    if safe_provider == "freesound":
-        return safe_kind == "audio" and bool(FREESOUND_API_KEY)
-    if safe_provider == "pixabay":
-        return safe_kind in {"image", "video"} and bool(PIXABAY_API_KEY)
-    return False
-
-
-def _lab_catalog_enabled_providers(kind: str, provider_filter: str = "all") -> list[str]:
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    safe_filter = _normalize_lab_catalog_provider(provider_filter or "all", allow_all=True)
-    provider_map = {
-        "audio": ["openverse", "freesound"],
-        "video": ["pixabay"],
-        "image": ["openverse", "pixabay"],
-    }
-    candidates = provider_map.get(safe_kind, [])
-    if safe_filter != "all":
-        candidates = [provider for provider in candidates if provider == safe_filter]
-    return [provider for provider in candidates if _lab_catalog_provider_enabled(provider, safe_kind)]
-
-
-def _lab_catalog_sanitize_tags(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    tags: list[str] = []
-    for item in value:
-        if isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-        else:
-            name = str(item or "").strip()
-        if name:
-            tags.append(name)
-    return tags[:16]
-
-
-def _lab_catalog_rank_score(item: dict[str, Any], query: str, tag: str) -> tuple[int, int]:
-    safe_query = str(query or "").strip().lower()
-    safe_tag = str(tag or "").strip().lower()
-    haystack = " ".join(
-        [
-            str(item.get("title") or "").lower(),
-            " ".join(str(tag_value or "").lower() for tag_value in item.get("tags") or []),
-            str(item.get("creator") or "").lower(),
-        ]
-    )
-    score = 0
-    if safe_query:
-        if haystack.startswith(safe_query):
-            score += 40
-        if safe_query in haystack:
-            score += 20
-    if safe_tag and safe_tag in haystack:
-        score += 12
-    if item.get("thumbUrl"):
-        score += 4
-    if item.get("durationSec"):
-        score += 2
-    return score, -int(float(item.get("durationSec") or 0))
-
-
-def _lab_catalog_sort(items: list[dict[str, Any]], query: str, tag: str) -> list[dict[str, Any]]:
-    return sorted(items, key=lambda item: _lab_catalog_rank_score(item, query, tag), reverse=True)
-
-
-def _lab_catalog_openverse_path(kind: str) -> str:
-    return "audio" if _normalize_lab_catalog_kind(kind) == "audio" else "images"
-
-
-def _lab_catalog_search_openverse(kind: str, query: str, tag: str, page: int) -> list[dict[str, Any]]:
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    params: dict[str, Any] = {
-        "page_size": LAB_CATALOG_PAGE_SIZE,
-        "page": max(1, int(page or 1)),
-    }
-    safe_query = str(query or "").strip()
-    safe_tag = str(tag or "").strip()
-    if safe_query:
-        params["q"] = safe_query
-    if safe_tag and not safe_query:
-        params["tags"] = safe_tag
-    endpoint = f"{OPENVERSE_API_BASE_URL.rstrip('/')}/{_lab_catalog_openverse_path(safe_kind)}"
-    response = requests.get(endpoint, params=params, timeout=12)
-    response.raise_for_status()
-    payload = response.json() or {}
-    items: list[dict[str, Any]] = []
-    for entry in payload.get("results") or []:
-        if not isinstance(entry, dict):
-            continue
-        items.append(
-            {
-                "id": str(entry.get("id") or ""),
-                "provider": "openverse",
-                "kind": safe_kind,
-                "title": str(entry.get("title") or "Untitled asset").strip() or "Untitled asset",
-                "thumbUrl": str(entry.get("thumbnail") or "").strip() or None,
-                "previewUrl": str(entry.get("url") or "").strip() or None,
-                "downloadUrl": str(entry.get("url") or "").strip(),
-                "durationSec": round(float(entry.get("duration") or 0) / 1000.0, 3) if safe_kind == "audio" else None,
-                "width": int(entry.get("width") or 0) or None,
-                "height": int(entry.get("height") or 0) or None,
-                "license": str(entry.get("license_url") or entry.get("license") or "").strip() or None,
-                "creator": str(entry.get("creator") or "").strip() or None,
-                "attributionUrl": str(entry.get("foreign_landing_url") or entry.get("creator_url") or "").strip() or None,
-                "tags": _lab_catalog_sanitize_tags(entry.get("tags")),
-                "externalUrl": str(entry.get("detail_url") or entry.get("foreign_landing_url") or "").strip() or None,
-            }
-        )
-    return items
-
-
-def _lab_catalog_fetch_openverse_asset(kind: str, asset_id: str) -> Optional[dict[str, Any]]:
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    safe_asset_id = str(asset_id or "").strip()
-    if not safe_asset_id:
-        return None
-    endpoint = f"{OPENVERSE_API_BASE_URL.rstrip('/')}/{_lab_catalog_openverse_path(safe_kind)}/{quote(safe_asset_id)}"
-    response = requests.get(endpoint, timeout=12)
-    response.raise_for_status()
-    payload = response.json() or {}
-    if not isinstance(payload, dict):
-        return None
-    return {
-        "id": str(payload.get("id") or safe_asset_id),
-        "provider": "openverse",
-        "kind": safe_kind,
-        "title": str(payload.get("title") or "Untitled asset").strip() or "Untitled asset",
-        "thumbUrl": str(payload.get("thumbnail") or "").strip() or None,
-        "previewUrl": str(payload.get("url") or "").strip() or None,
-        "downloadUrl": str(payload.get("url") or "").strip(),
-        "durationSec": round(float(payload.get("duration") or 0) / 1000.0, 3) if safe_kind == "audio" else None,
-        "width": int(payload.get("width") or 0) or None,
-        "height": int(payload.get("height") or 0) or None,
-        "license": str(payload.get("license_url") or payload.get("license") or "").strip() or None,
-        "creator": str(payload.get("creator") or "").strip() or None,
-        "attributionUrl": str(payload.get("foreign_landing_url") or payload.get("creator_url") or "").strip() or None,
-        "tags": _lab_catalog_sanitize_tags(payload.get("tags")),
-        "externalUrl": str(payload.get("detail_url") or payload.get("foreign_landing_url") or "").strip() or None,
-    }
-
-
-def _lab_catalog_search_freesound(query: str, tag: str, page: int) -> list[dict[str, Any]]:
-    if not FREESOUND_API_KEY:
-        return []
-    params = {
-        "query": str(query or tag or "").strip() or "music",
-        "page": max(1, int(page or 1)),
-        "page_size": LAB_CATALOG_PAGE_SIZE,
-        "filter": "duration:[1 TO 600]",
-        "fields": "id,name,previews,username,license,duration,images,tags,url",
-    }
-    response = requests.get(
-        "https://freesound.org/apiv2/search/text/",
-        params=params,
-        headers={"Authorization": f"Token {FREESOUND_API_KEY}"},
-        timeout=12,
-    )
-    response.raise_for_status()
-    payload = response.json() or {}
-    items: list[dict[str, Any]] = []
-    for entry in payload.get("results") or []:
-        if not isinstance(entry, dict):
-            continue
-        previews = entry.get("previews") if isinstance(entry.get("previews"), dict) else {}
-        images = entry.get("images") if isinstance(entry.get("images"), dict) else {}
-        preview_url = str(previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3") or "").strip()
-        thumb_url = str(images.get("waveform_m") or images.get("spectral_m") or "").strip()
-        items.append(
-            {
-                "id": str(entry.get("id") or ""),
-                "provider": "freesound",
-                "kind": "audio",
-                "title": str(entry.get("name") or "Untitled sound").strip() or "Untitled sound",
-                "thumbUrl": thumb_url or None,
-                "previewUrl": preview_url or None,
-                "downloadUrl": preview_url,
-                "durationSec": float(entry.get("duration") or 0) or None,
-                "width": None,
-                "height": None,
-                "license": str(entry.get("license") or "").strip() or None,
-                "creator": str(entry.get("username") or "").strip() or None,
-                "attributionUrl": str(entry.get("url") or "").strip() or None,
-                "tags": _lab_catalog_sanitize_tags(entry.get("tags")),
-                "externalUrl": str(entry.get("url") or "").strip() or None,
-            }
-        )
-    return items
-
-
-def _lab_catalog_fetch_freesound_asset(asset_id: str) -> Optional[dict[str, Any]]:
-    safe_asset_id = str(asset_id or "").strip()
-    if not safe_asset_id or not FREESOUND_API_KEY:
-        return None
-    response = requests.get(
-        f"https://freesound.org/apiv2/sounds/{quote(safe_asset_id)}/",
-        params={"fields": "id,name,previews,username,license,duration,images,tags,url"},
-        headers={"Authorization": f"Token {FREESOUND_API_KEY}"},
-        timeout=12,
-    )
-    response.raise_for_status()
-    payload = response.json() or {}
-    if not isinstance(payload, dict):
-        return None
-    previews = payload.get("previews") if isinstance(payload.get("previews"), dict) else {}
-    images = payload.get("images") if isinstance(payload.get("images"), dict) else {}
-    preview_url = str(previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3") or "").strip()
-    return {
-        "id": str(payload.get("id") or safe_asset_id),
-        "provider": "freesound",
-        "kind": "audio",
-        "title": str(payload.get("name") or "Untitled sound").strip() or "Untitled sound",
-        "thumbUrl": str(images.get("waveform_m") or images.get("spectral_m") or "").strip() or None,
-        "previewUrl": preview_url or None,
-        "downloadUrl": preview_url,
-        "durationSec": float(payload.get("duration") or 0) or None,
-        "width": None,
-        "height": None,
-        "license": str(payload.get("license") or "").strip() or None,
-        "creator": str(payload.get("username") or "").strip() or None,
-        "attributionUrl": str(payload.get("url") or "").strip() or None,
-        "tags": _lab_catalog_sanitize_tags(payload.get("tags")),
-        "externalUrl": str(payload.get("url") or "").strip() or None,
-    }
-
-
-def _lab_catalog_search_pixabay(kind: str, query: str, tag: str, page: int) -> list[dict[str, Any]]:
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    if safe_kind not in {"image", "video"} or not PIXABAY_API_KEY:
-        return []
-    params = {
-        "key": PIXABAY_API_KEY,
-        "q": str(query or tag or "").strip() or "nature",
-        "page": max(1, int(page or 1)),
-        "per_page": LAB_CATALOG_PAGE_SIZE,
-        "safesearch": "true",
-    }
-    endpoint = "https://pixabay.com/api/" if safe_kind == "image" else "https://pixabay.com/api/videos/"
-    response = requests.get(endpoint, params=params, timeout=12)
-    response.raise_for_status()
-    payload = response.json() or {}
-    items: list[dict[str, Any]] = []
-    for entry in payload.get("hits") or []:
-        if not isinstance(entry, dict):
-            continue
-        if safe_kind == "image":
-            items.append(
-                {
-                    "id": str(entry.get("id") or ""),
-                    "provider": "pixabay",
-                    "kind": "image",
-                    "title": str(entry.get("tags") or "Pixabay image").split(",")[0].strip() or "Pixabay image",
-                    "thumbUrl": str(entry.get("previewURL") or entry.get("webformatURL") or "").strip() or None,
-                    "previewUrl": str(entry.get("webformatURL") or entry.get("largeImageURL") or "").strip() or None,
-                    "downloadUrl": str(entry.get("largeImageURL") or entry.get("webformatURL") or "").strip(),
-                    "durationSec": None,
-                    "width": int(entry.get("imageWidth") or 0) or None,
-                    "height": int(entry.get("imageHeight") or 0) or None,
-                    "license": "Pixabay License",
-                    "creator": str(entry.get("user") or "").strip() or None,
-                    "attributionUrl": str(entry.get("pageURL") or "").strip() or None,
-                    "tags": [token.strip() for token in str(entry.get("tags") or "").split(",") if token.strip()][:16],
-                    "externalUrl": str(entry.get("pageURL") or "").strip() or None,
-                }
-            )
-            continue
-        videos = entry.get("videos") if isinstance(entry.get("videos"), dict) else {}
-        preferred = None
-        for key in ("medium", "small", "tiny", "large"):
-            candidate = videos.get(key)
-            if isinstance(candidate, dict) and str(candidate.get("url") or "").strip():
-                preferred = candidate
-                break
-        preview_url = str((preferred or {}).get("url") or "").strip()
-        thumb_url = str((preferred or {}).get("thumbnail") or entry.get("videos", {}).get("tiny", {}).get("thumbnail") or "").strip()
-        items.append(
-            {
-                "id": str(entry.get("id") or ""),
-                "provider": "pixabay",
-                "kind": "video",
-                "title": str(entry.get("tags") or "Pixabay video").split(",")[0].strip() or "Pixabay video",
-                "thumbUrl": thumb_url or None,
-                "previewUrl": preview_url or None,
-                "downloadUrl": preview_url,
-                "durationSec": float(entry.get("duration") or 0) or None,
-                "width": int((preferred or {}).get("width") or 0) or None,
-                "height": int((preferred or {}).get("height") or 0) or None,
-                "license": "Pixabay License",
-                "creator": str(entry.get("user") or "").strip() or None,
-                "attributionUrl": str(entry.get("pageURL") or "").strip() or None,
-                "tags": [token.strip() for token in str(entry.get("tags") or "").split(",") if token.strip()][:16],
-                "externalUrl": str(entry.get("pageURL") or "").strip() or None,
-            }
-        )
-    return items
-
-def _lab_catalog_fetch_asset(provider: str, *, kind: str, asset_id: str) -> Optional[dict[str, Any]]:
-    safe_provider = _normalize_lab_catalog_provider(provider)
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    safe_asset_id = str(asset_id or "").strip()
-    if not safe_asset_id:
-        return None
-    if safe_provider == "openverse":
-        item = _lab_catalog_fetch_openverse_asset(safe_kind, safe_asset_id)
-        return _commercial_annotate_item(item) if isinstance(item, dict) else None
-    if safe_provider == "freesound":
-        item = _lab_catalog_fetch_freesound_asset(safe_asset_id)
-        return _commercial_annotate_item(item) if isinstance(item, dict) else None
-    if safe_provider == "pixabay":
-        endpoint = "https://pixabay.com/api/" if safe_kind == "image" else "https://pixabay.com/api/videos/"
-        response = requests.get(endpoint, params={"key": PIXABAY_API_KEY, "id": safe_asset_id}, timeout=12)
-        response.raise_for_status()
-        payload = response.json() or {}
-        hits = payload.get("hits") or []
-        if not hits or not isinstance(hits[0], dict):
-            return None
-        entry = hits[0]
-        if safe_kind == "image":
-            return _commercial_annotate_item({
-                "id": str(entry.get("id") or safe_asset_id),
-                "provider": "pixabay",
-                "kind": "image",
-                "title": str(entry.get("tags") or "Pixabay image").split(",")[0].strip() or "Pixabay image",
-                "thumbUrl": str(entry.get("previewURL") or entry.get("webformatURL") or "").strip() or None,
-                "previewUrl": str(entry.get("webformatURL") or entry.get("largeImageURL") or "").strip() or None,
-                "downloadUrl": str(entry.get("largeImageURL") or entry.get("webformatURL") or "").strip(),
-                "durationSec": None,
-                "width": int(entry.get("imageWidth") or 0) or None,
-                "height": int(entry.get("imageHeight") or 0) or None,
-                "license": "Pixabay License",
-                "creator": str(entry.get("user") or "").strip() or None,
-                "attributionUrl": str(entry.get("pageURL") or "").strip() or None,
-                "tags": [token.strip() for token in str(entry.get("tags") or "").split(",") if token.strip()][:16],
-                "externalUrl": str(entry.get("pageURL") or "").strip() or None,
-            })
-        videos = entry.get("videos") if isinstance(entry.get("videos"), dict) else {}
-        preferred = None
-        for key in ("medium", "small", "tiny", "large"):
-            candidate = videos.get(key)
-            if isinstance(candidate, dict) and str(candidate.get("url") or "").strip():
-                preferred = candidate
-                break
-        return _commercial_annotate_item({
-            "id": str(entry.get("id") or safe_asset_id),
-            "provider": "pixabay",
-            "kind": "video",
-            "title": str(entry.get("tags") or "Pixabay video").split(",")[0].strip() or "Pixabay video",
-            "thumbUrl": str((preferred or {}).get("thumbnail") or "").strip() or None,
-            "previewUrl": str((preferred or {}).get("url") or "").strip() or None,
-            "downloadUrl": str((preferred or {}).get("url") or "").strip(),
-            "durationSec": float(entry.get("duration") or 0) or None,
-            "width": int((preferred or {}).get("width") or 0) or None,
-            "height": int((preferred or {}).get("height") or 0) or None,
-            "license": "Pixabay License",
-            "creator": str(entry.get("user") or "").strip() or None,
-            "attributionUrl": str(entry.get("pageURL") or "").strip() or None,
-            "tags": [token.strip() for token in str(entry.get("tags") or "").split(",") if token.strip()][:16],
-            "externalUrl": str(entry.get("pageURL") or "").strip() or None,
-        })
-    return None
-
-
-def _lab_catalog_search(kind: str, *, query: str = "", tag: str = "", page: int = 1, provider_filter: str = "all") -> dict[str, Any]:
-    safe_kind = _normalize_lab_catalog_kind(kind)
-    safe_query = str(query or "").strip()
-    safe_tag = str(tag or "").strip()
-    safe_page = max(1, int(page or 1))
-    providers = _lab_catalog_enabled_providers(safe_kind, provider_filter)
-    warnings: list[str] = []
-    safe_provider_filter = _normalize_lab_catalog_provider(provider_filter or "all", allow_all=True)
-    if VF_COMMERCIAL_MODE and safe_provider_filter != "all" and safe_provider_filter not in providers:
-        warnings.append(f"{safe_provider_filter.title()} is blocked by strict commercial policy.")
-    if VF_COMMERCIAL_MODE and not providers:
-        warnings.append("No catalog providers are available for this media kind under strict commercial policy.")
-    if safe_kind == "audio" and not FREESOUND_API_KEY:
-        warnings.append("Freesound search is disabled until FREESOUND_API_KEY is configured.")
-    if safe_kind in {"image", "video"} and not PIXABAY_API_KEY and (provider_filter in {"all", "pixabay", ""}):
-        warnings.append("Pixabay search is disabled until PIXABAY_API_KEY is configured.")
-    items: list[dict[str, Any]] = []
-    for provider in providers:
-        try:
-            if provider == "openverse":
-                items.extend(_lab_catalog_search_openverse(safe_kind, safe_query, safe_tag, safe_page))
-            elif provider == "freesound":
-                items.extend(_lab_catalog_search_freesound(safe_query, safe_tag, safe_page))
-            elif provider == "pixabay":
-                items.extend(_lab_catalog_search_pixabay(safe_kind, safe_query, safe_tag, safe_page))
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"{provider.title()} search is temporarily unavailable: {str(exc)[:160]}")
-    ranked = _lab_catalog_sort([_commercial_annotate_item(item) for item in items], safe_query, safe_tag)
-    return {
-        "items": ranked[:LAB_CATALOG_PAGE_SIZE],
-        "warnings": warnings,
-        "nextPage": safe_page + 1 if len(ranked) >= LAB_CATALOG_PAGE_SIZE else None,
-        **_commercial_policy_payload(ranked),
-    }
-
-
-def _lab_catalog_guess_extension(download_url: str, mime_type: str, fallback_kind: str) -> str:
-    parsed = urlparse(str(download_url or "").strip())
-    suffix = Path(parsed.path).suffix
-    if suffix:
-        return suffix
-    guessed = mimetypes.guess_extension(str(mime_type or "").split(";", 1)[0].strip())
-    if guessed:
-        return guessed
-    return ".mp3" if fallback_kind == "audio" else ".mp4" if fallback_kind == "video" else ".jpg"
-
-
-def _lab_catalog_download_to_path(url: str, target_path: Path) -> tuple[int, str]:
-    safe_url = str(url or "").strip()
-    parsed = urlparse(safe_url)
-    if parsed.scheme not in {"https", "http"}:
-        raise HTTPException(status_code=400, detail="Catalog import URL must use http or https.")
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    total_bytes = 0
-    with requests.get(safe_url, stream=True, timeout=(10, 60)) as response:
-        response.raise_for_status()
-        content_type = str(response.headers.get("content-type") or "application/octet-stream").strip()
-        with target_path.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=65536):
-                if not chunk:
-                    continue
-                total_bytes += len(chunk)
-                if total_bytes > LAB_CATALOG_IMPORT_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail="Catalog import is larger than the Lab import limit.")
-                handle.write(chunk)
-    return total_bytes, content_type
-
-
-def _lab_catalog_import_get(import_id: str) -> Optional[dict[str, Any]]:
-    safe_import_id = str(import_id or "").strip()
-    if not safe_import_id:
-        return None
-    with _INMEMORY_LOCK:
-        row = _INMEMORY_LAB_CATALOG_IMPORTS.get(safe_import_id)
-        return dict(row) if isinstance(row, dict) else None
-
-
-def _lab_catalog_import_set(import_id: str, row: dict[str, Any]) -> dict[str, Any]:
-    safe_import_id = str(import_id or "").strip()
-    payload = dict(row or {})
-    payload["id"] = safe_import_id
-    with _INMEMORY_LOCK:
-        _INMEMORY_LAB_CATALOG_IMPORTS[safe_import_id] = payload
-    return dict(payload)
-
-
-def _lab_catalog_import_can_access(row: dict[str, Any], *, uid: str, is_admin: bool) -> bool:
-    if is_admin:
-        return True
-    return str(row.get("ownerUid") or "").strip() == str(uid or "").strip()
-
-
-def _lab_catalog_import_payload(row: dict[str, Any]) -> dict[str, Any]:
-    safe_row = dict(row or {})
-    safe_id = str(safe_row.get("id") or "").strip()
-    item = dict(safe_row.get("item") or {})
-    return {
-        "importId": safe_id,
-        "provider": str(safe_row.get("provider") or item.get("provider") or "").strip(),
-        "item": item,
-        "filename": str(safe_row.get("filename") or "").strip(),
-        "mimeType": str(safe_row.get("mimeType") or "application/octet-stream").strip(),
-        "sizeBytes": int(safe_row.get("sizeBytes") or 0),
-        "contentUrl": f"/lab/catalog/imports/{safe_id}",
-    }
-
-
-def _lab_catalog_import_asset(*, uid: str, item_payload: dict[str, Any]) -> dict[str, Any]:
-    safe_uid = str(uid or "").strip()
-    if not safe_uid:
-        raise HTTPException(status_code=401, detail="Missing user uid.")
-    safe_provider = _normalize_lab_catalog_provider(item_payload.get("provider"))
-    safe_kind = _normalize_lab_catalog_kind(item_payload.get("kind"))
-    safe_asset_id = str(item_payload.get("id") or "").strip()
-    asset = _lab_catalog_fetch_asset(safe_provider, kind=safe_kind, asset_id=safe_asset_id)
-    if not isinstance(asset, dict):
-        raise HTTPException(status_code=404, detail="Catalog asset not found.")
-    asset = _commercial_assert_allowed_for_action(asset, action="lab_catalog_import")
-    download_url = str(asset.get("downloadUrl") or "").strip()
-    if not download_url:
-        raise HTTPException(status_code=400, detail="Catalog asset does not expose an importable download URL.")
-    import_id = f"labcat_{uuid.uuid4().hex[:16]}"
-    extension = _lab_catalog_guess_extension(download_url, str(asset.get("mimeType") or ""), safe_kind)
-    filename = _safe_upload_name(f"{str(asset.get('title') or safe_asset_id).strip() or 'catalog_asset'}{extension}", f"catalog_asset{extension}")
-    target_path = LAB_REMOTE_ASSETS_DIR / import_id / filename
-    size_bytes, mime_type = _lab_catalog_download_to_path(download_url, target_path)
-    row = {
-        "id": import_id,
-        "ownerUid": safe_uid,
-        "provider": safe_provider,
-        "kind": safe_kind,
-        "filename": filename,
-        "mimeType": mime_type or (mimetypes.guess_type(filename)[0] or "application/octet-stream"),
-        "sizeBytes": size_bytes,
-        "path": str(target_path),
-        "createdAt": _utc_now().isoformat(),
-        "item": asset,
-    }
-    _lab_catalog_import_set(import_id, row)
-    return row
-
-
 def _support_conversation_get(conversation_id: str) -> Optional[dict[str, Any]]:
     safe_id = str(conversation_id or "").strip()
     if not safe_id:
@@ -25486,117 +24186,6 @@ def admin_actor(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "actor": actor})
 
 
-@app.get("/lab/runtime-defaults")
-def lab_runtime_defaults() -> JSONResponse:
-    defaults = _lab_runtime_defaults_get()
-    return JSONResponse({"ok": True, "defaults": defaults})
-
-
-@app.get("/admin/lab/runtime-defaults")
-def admin_lab_runtime_defaults(request: Request) -> JSONResponse:
-    _require_permission(request, PERM_OPS_READ)
-    defaults = _lab_runtime_defaults_get()
-    return JSONResponse({"ok": True, "defaults": defaults})
-
-
-@app.put("/admin/lab/runtime-defaults")
-def admin_put_lab_runtime_defaults(payload: LabRuntimeDefaultsUpdateRequest, request: Request) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
-    before = _lab_runtime_defaults_get()
-    after = _lab_runtime_defaults_put(
-        {
-            "browserAccelerationDefault": payload.browserAccelerationDefault
-            if payload.browserAccelerationDefault is not None
-            else before.get("browserAccelerationDefault"),
-            "backendHardwareDefault": payload.backendHardwareDefault
-            if payload.backendHardwareDefault is not None
-            else before.get("backendHardwareDefault"),
-            "separatorBackendDefault": payload.separatorBackendDefault
-            if payload.separatorBackendDefault is not None
-            else before.get("separatorBackendDefault"),
-            "labPerformanceMode": payload.labPerformanceMode
-            if payload.labPerformanceMode is not None
-            else before.get("labPerformanceMode"),
-            "exportStrategyDefault": payload.exportStrategyDefault
-            if payload.exportStrategyDefault is not None
-            else before.get("exportStrategyDefault"),
-            "allowUserOverride": payload.allowUserOverride
-            if payload.allowUserOverride is not None
-            else before.get("allowUserOverride"),
-        },
-        updated_by=actor_uid,
-    )
-    _audit_append_event(
-        action="lab_runtime_defaults_put",
-        resource_type="lab_runtime_defaults",
-        resource_id="current",
-        before=before,
-        after=after,
-        request=request,
-        actor_uid=actor_uid,
-        actor_role=str(actor.get("role") or ""),
-    )
-    return JSONResponse({"ok": True, "defaults": after})
-
-
-@app.get("/lab/catalog/search")
-def lab_catalog_search(
-    kind: str = Query(...),
-    q: str = Query(default=""),
-    tag: str = Query(default=""),
-    page: int = Query(default=1),
-    provider: str = Query(default="all"),
-) -> JSONResponse:
-    result = _lab_catalog_search(kind, query=q, tag=tag, page=page, provider_filter=provider)
-    return JSONResponse({"ok": True, "result": result})
-
-
-@app.get("/lab/catalog/asset")
-def lab_catalog_asset(
-    id: str = Query(...),
-    provider: str = Query(...),
-    kind: str = Query(...),
-) -> JSONResponse:
-    item = _lab_catalog_fetch_asset(provider, kind=kind, asset_id=id)
-    if not isinstance(item, dict):
-        raise HTTPException(status_code=404, detail="Catalog asset not found.")
-    return JSONResponse(
-        {
-            "ok": True,
-            "result": {"items": [item], "warnings": [], "nextPage": None, **_commercial_policy_payload([item])},
-        }
-    )
-
-
-@app.post("/lab/catalog/import")
-def lab_catalog_import(payload: LabCatalogImportRequest, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    imported = _lab_catalog_import_asset(uid=uid, item_payload=payload.item.model_dump())
-    return JSONResponse({"ok": True, "imported": _lab_catalog_import_payload(imported)})
-
-
-@app.get("/lab/catalog/imports/{import_id}")
-def lab_catalog_import_content(import_id: str, request: Request) -> FileResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    row = _lab_catalog_import_get(import_id)
-    if not isinstance(row, dict):
-        raise HTTPException(status_code=404, detail="Imported Lab asset not found.")
-    if not _lab_catalog_import_can_access(row, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this imported asset.")
-    target = Path(str(row.get("path") or "")).resolve()
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Imported Lab asset file not found.")
-    media_type = str(row.get("mimeType") or "").strip() or (mimetypes.guess_type(str(target))[0] or "application/octet-stream")
-    return FileResponse(
-        str(target),
-        media_type=media_type,
-        filename=str(row.get("filename") or target.name),
-        headers={"Cache-Control": "private, max-age=3600"},
-    )
-
-
 @app.get("/admin/support/ai-policy")
 def admin_support_ai_policy(request: Request) -> JSONResponse:
     _require_permission(request, PERM_SUPPORT_AI_REVIEW)
@@ -26401,14 +24990,6 @@ def admin_patch_coupon(coupon_id: str, payload: CouponPatchRequest, request: Req
 def admin_gemini_pools(request: Request) -> JSONResponse:
     _require_permission(request, PERM_OPS_READ)
     config, meta = _load_gemini_api_pools(force=True)
-    config_public = _sanitize_gemini_pool_config_for_response(config)
-    single_pool_marker = dict(config_public.get("singlePool") or {})
-    if not single_pool_marker:
-        single_pool_marker = {
-            "enabled": bool(VF_GEMINI_SINGLE_POOL_ENFORCE),
-            "canonicalPoolId": "free",
-            "effectivePlanPools": {"free": "free", "pro": "free", "plus": "free"},
-        }
     backend_snapshot = _backend_gemini_pool_snapshot()
     runtime_snapshot = _runtime_gemini_pool_snapshot()
     validation = _gemini_pools_validation(config)
@@ -26416,326 +24997,15 @@ def admin_gemini_pools(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "ok": bool(validation.get("isValid")) and bool(runtime_snapshot.get("ok", True)),
-            "config": config_public,
+            "config": _sanitize_gemini_pool_config_for_response(config),
             "meta": meta,
             "validation": validation,
             "warnings": warnings,
             "sourcePolicy": _sanitize_gemini_source_policy_for_response(dict(config.get("sourcePolicy") or {})),
-            "singlePool": single_pool_marker,
             "backend": backend_snapshot,
             "runtime": runtime_snapshot,
         }
     )
-
-
-@app.put("/admin/gemini/pools")
-def admin_gemini_pools_put(payload: GeminiApiPoolsUpdateRequest, request: Request) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
-    current_config, _current_meta = _load_gemini_api_pools(force=True)
-    current_source_policy = dict(current_config.get("sourcePolicy") or {})
-    applied_overrides: list[str] = []
-    local_warnings: list[str] = []
-
-    raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
-    try:
-        raw_payload = _restore_masked_gemini_keys_from_payload(raw_payload, current_config=current_config)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    source_policy_requested = isinstance(raw_payload.get("sourcePolicy"), dict)
-    raw_source_policy = dict(raw_payload.get("sourcePolicy") or {}) if source_policy_requested else {}
-    vertex_service_account_json = str(
-        raw_source_policy.get("vertexServiceAccountJson")
-        or raw_source_policy.get("serviceAccountJson")
-        or ""
-    ).strip()
-    vertex_access_token = str(
-        raw_source_policy.get("vertexAccessToken")
-        or raw_source_policy.get("accessToken")
-        or raw_source_policy.get("vertexApiKey")
-        or ""
-    ).strip()
-    if source_policy_requested:
-        raw_source_policy.pop("vertexServiceAccountJson", None)
-        raw_source_policy.pop("serviceAccountJson", None)
-        raw_source_policy.pop("vertexAccessToken", None)
-        raw_source_policy.pop("accessToken", None)
-        raw_source_policy.pop("vertexApiKey", None)
-        raw_payload["sourcePolicy"] = raw_source_policy
-
-    normalized = normalize_gemini_pool_config(raw_payload)
-    requested_source_policy = dict(normalized.get("sourcePolicy") or {})
-    if source_policy_requested:
-        next_source_policy = dict(current_source_policy)
-        for key in raw_source_policy.keys():
-            if key in requested_source_policy:
-                next_source_policy[key] = requested_source_policy[key]
-        if not next_source_policy:
-            next_source_policy = dict(requested_source_policy)
-        provider = str(next_source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-        if vertex_service_account_json:
-            if provider != SOURCE_POLICY_PROVIDER_VERTEX:
-                provider = SOURCE_POLICY_PROVIDER_VERTEX
-                next_source_policy["provider"] = provider
-                applied_overrides.append("source_policy_provider_set_vertex")
-            path_hint = str(next_source_policy.get("vertexServiceAccountRef") or "").strip()
-            try:
-                persisted_ref, credential_payload = _persist_vertex_service_account_json(
-                    vertex_service_account_json,
-                    path_hint=path_hint,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            next_source_policy["vertexServiceAccountRef"] = persisted_ref
-            if not str(next_source_policy.get("vertexProject") or "").strip():
-                inferred_project = str(credential_payload.get("project_id") or "").strip()
-                if inferred_project:
-                    next_source_policy["vertexProject"] = inferred_project
-                    applied_overrides.append("vertex_project_inferred_from_service_account")
-            if not str(next_source_policy.get("vertexLocation") or "").strip():
-                next_source_policy["vertexLocation"] = _default_vertex_location()
-        if vertex_access_token:
-            if provider != SOURCE_POLICY_PROVIDER_VERTEX:
-                provider = SOURCE_POLICY_PROVIDER_VERTEX
-                next_source_policy["provider"] = provider
-                applied_overrides.append("source_policy_provider_set_vertex")
-            path_hint = str(next_source_policy.get("vertexAccessTokenRef") or "").strip()
-            try:
-                persisted_ref = _persist_vertex_access_token(
-                    vertex_access_token,
-                    path_hint=path_hint,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            next_source_policy["vertexAccessTokenRef"] = persisted_ref
-        if provider == SOURCE_POLICY_PROVIDER_VERTEX:
-            if not str(next_source_policy.get("vertexProject") or "").strip():
-                inferred_project = _default_vertex_project()
-                if inferred_project:
-                    next_source_policy["vertexProject"] = inferred_project
-                    applied_overrides.append("vertex_project_inferred_from_env")
-            if not str(next_source_policy.get("vertexLocation") or "").strip():
-                next_source_policy["vertexLocation"] = _default_vertex_location()
-        normalized["sourcePolicy"] = next_source_policy
-    elif current_source_policy:
-        normalized["sourcePolicy"] = dict(current_source_policy)
-
-    effective_source_policy = dict(normalized.get("sourcePolicy") or {})
-    provider_token = str(
-        effective_source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API
-    ).strip().lower()
-    free_pool_locked = (
-        provider_token != SOURCE_POLICY_PROVIDER_VERTEX
-        and bool(effective_source_policy.get("freePoolLocked"))
-    )
-    normalized_pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    deleting_free_pool = "free" not in normalized_pools
-
-    if free_pool_locked and deleting_free_pool:
-        next_source_policy = dict(effective_source_policy)
-        next_source_policy["freePoolMode"] = "config_managed"
-        next_source_policy["freePoolLocked"] = False
-        normalized["sourcePolicy"] = next_source_policy
-        applied_overrides.append("free_pool_authoritative_mode_disabled")
-        local_warnings.append("Authoritative free-pool mode was disabled because the free pool was deleted.")
-    elif free_pool_locked:
-        current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
-        locked_free_keys = list((current_pools.get("free") or {}).get("keys") or [])
-        normalized_pools.setdefault("free", {"keys": []})
-        normalized_pools["free"]["keys"] = locked_free_keys
-        normalized["pools"] = normalized_pools
-        applied_overrides.append("free_pool_locked_by_api_file")
-        normalized["sourcePolicy"] = dict(effective_source_policy)
-
-    normalized, _sync_changed, sync_warnings = _sync_authoritative_gemini_free_pool(normalized)
-    normalized, vertex_free_changed, vertex_free_pool = _rewrite_free_plan_pool_for_vertex(normalized)
-    if vertex_free_changed:
-        applied_overrides.append(f"vertex_free_plan_pool:{vertex_free_pool}")
-    single_pool_warnings: list[str] = []
-    normalized, single_pool_changed, single_pool_warnings = _enforce_single_free_gemini_pool(normalized)
-    if single_pool_changed:
-        applied_overrides.append("single_pool_enforced:free")
-    validation = _gemini_pools_validation(normalized)
-    if not bool(validation.get("isValid")):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "duplicate_key_membership",
-                "validation": validation,
-            },
-        )
-
-    current_pool_names = set(list_gemini_pool_names(current_config))
-    next_pool_names = set(list_gemini_pool_names(normalized))
-    created_pools = sorted(next_pool_names - current_pool_names)
-    deleted_pools = sorted(current_pool_names - next_pool_names)
-    current_plan_pools = current_config.get("planPools") if isinstance(current_config.get("planPools"), dict) else {}
-    next_plan_pools = normalized.get("planPools") if isinstance(normalized.get("planPools"), dict) else {}
-    plan_pool_changes: dict[str, dict[str, str]] = {}
-    for plan_key in ("free", "pro", "plus"):
-        before_value = str(current_plan_pools.get(plan_key) or "")
-        after_value = str(next_plan_pools.get(plan_key) or "")
-        if before_value != after_value:
-            plan_pool_changes[plan_key] = {"before": before_value, "after": after_value}
-    current_pools = current_config.get("pools") if isinstance(current_config.get("pools"), dict) else {}
-    next_pools = normalized.get("pools") if isinstance(normalized.get("pools"), dict) else {}
-    key_diff_by_pool: dict[str, dict[str, int]] = {}
-    for pool_name in sorted(current_pool_names.union(next_pool_names)):
-        before_keys = set(list((current_pools.get(pool_name) or {}).get("keys") or []))
-        after_keys = set(list((next_pools.get(pool_name) or {}).get("keys") or []))
-        if before_keys == after_keys:
-            continue
-        key_diff_by_pool[pool_name] = {
-            "beforeCount": len(before_keys),
-            "afterCount": len(after_keys),
-            "addedCount": len(after_keys - before_keys),
-            "removedCount": len(before_keys - after_keys),
-        }
-
-    saved = _save_gemini_api_pools(normalized)
-    key_pool = flatten_pool_keys(saved)
-    if key_pool:
-        BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
-    runtime_reload = _runtime_gemini_pool_reload()
-    runtime_snapshot = _runtime_gemini_pool_snapshot()
-    merged_warnings = [*local_warnings, *list(sync_warnings), *list(single_pool_warnings)]
-    saved_public = _sanitize_gemini_pool_config_for_response(saved)
-    response_payload = {
-        "ok": bool(runtime_reload.get("ok")),
-        "detail": "Gemini API pools updated.",
-        "config": saved_public,
-        "validation": _gemini_pools_validation(saved),
-        "warnings": merged_warnings,
-        "sourcePolicy": _sanitize_gemini_source_policy_for_response(dict(saved.get("sourcePolicy") or {})),
-        "appliedOverrides": applied_overrides,
-        "createdPools": created_pools,
-        "deletedPools": deleted_pools,
-        "planPoolChanges": plan_pool_changes,
-        "keyDiffByPool": key_diff_by_pool,
-        "singlePool": dict(saved_public.get("singlePool") or {}),
-        "backend": _backend_gemini_pool_snapshot(),
-        "runtimeReload": runtime_reload,
-        "runtime": runtime_snapshot,
-    }
-    _audit_append_event(
-        action="gemini_pools_update",
-        resource_type="gemini_pool",
-        resource_id="global",
-        after={
-            "appliedOverrides": applied_overrides,
-            "warnings": merged_warnings,
-            "createdPools": created_pools,
-            "deletedPools": deleted_pools,
-            "planPoolChanges": plan_pool_changes,
-            "keyDiffByPool": key_diff_by_pool,
-        },
-        request=request,
-        actor_uid=actor_uid,
-        actor_role=str(actor.get("role") or ""),
-    )
-    return JSONResponse(
-        {
-            **response_payload,
-        }
-    )
-
-
-@app.post("/admin/gemini/pools/reload")
-def admin_gemini_pools_reload(request: Request) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
-    config, meta = _load_gemini_api_pools(force=True)
-    source_policy = dict(config.get("sourcePolicy") or {})
-    provider = str(source_policy.get("provider") or SOURCE_POLICY_PROVIDER_GEMINI_API).strip().lower()
-    key_pool = _resolve_gemini_fallback_key_pool()
-    if not key_pool and provider != SOURCE_POLICY_PROVIDER_VERTEX:
-        raise HTTPException(status_code=400, detail="Gemini key pool is empty.")
-    if key_pool:
-        BACKEND_GEMINI_ALLOCATOR.reset_rotation(next_index=0)
-        BACKEND_GEMINI_ALLOCATOR.ensure_keys(key_pool)
-    backend_snapshot = _backend_gemini_pool_snapshot()
-    runtime_reload = _runtime_gemini_pool_reload()
-    runtime_snapshot = _runtime_gemini_pool_snapshot()
-    payload = {
-        "ok": bool(backend_snapshot.get("ok")) and bool(runtime_reload.get("ok")),
-        "detail": "Gemini API pools reloaded.",
-        "warnings": list((meta or {}).get("warnings") or []),
-        "backend": backend_snapshot,
-        "runtimeReload": runtime_reload,
-        "runtime": runtime_snapshot,
-    }
-    _audit_append_event(
-        action="gemini_pools_reload",
-        resource_type="gemini_pool",
-        resource_id="global",
-        after={"ok": bool(payload.get("ok"))},
-        request=request,
-        actor_uid=actor_uid,
-        actor_role=str(actor.get("role") or ""),
-    )
-    _notification_emit_persisted(
-        actor_uid,
-        event_code="admin.pool.reload.success" if bool(payload.get("ok")) else "admin.pool.reload.failed",
-        title="Primary AI Pool Reloaded" if bool(payload.get("ok")) else "Primary AI Pool Reload Failed",
-        message=str(payload.get("detail") or "Gemini API pools reloaded.").strip() or "Gemini API pools reloaded.",
-        details="\n".join(list(payload.get("warnings") or []))[:1200],
-        severity="success" if bool(payload.get("ok")) else "error",
-        category="system",
-        audience="admin",
-        entity_key="gemini_pool_global",
-        dedupe_key=f"admin.pool.reload::{actor_uid}",
-        action_label="Open Admin",
-        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
-        email_eligible=False,
-        email_pref_key="emailAdminAlerts",
-    )
-    return JSONResponse(
-        {
-            **payload,
-        }
-    )
-
-
-@app.post("/admin/gemini/pools/rotate")
-def admin_gemini_pools_rotate(
-    request: Request,
-    payload: Optional[GeminiApiPoolRotateRequest] = None,
-) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
-    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
-    steps = max(1, int((payload.steps if payload is not None else 1) or 1))
-    rotation_payload = _rotate_gemini_free_pool_once(steps=steps)
-    _audit_append_event(
-        action="gemini_pools_rotate",
-        resource_type="gemini_pool",
-        resource_id="free",
-        after={
-            "ok": bool(rotation_payload.get("ok")),
-            "stepsApplied": int(((rotation_payload.get("rotation") or {}).get("stepsApplied") or 0)),
-            "storageMode": str(((rotation_payload.get("rotation") or {}).get("storageMode") or "")),
-        },
-        request=request,
-        actor_uid=actor_uid,
-        actor_role=str(actor.get("role") or ""),
-    )
-    _notification_emit_persisted(
-        actor_uid,
-        event_code="admin.pool.rotate.success" if bool(rotation_payload.get("ok")) else "admin.pool.rotate.failed",
-        title="Primary AI Pool Rotated" if bool(rotation_payload.get("ok")) else "Primary AI Pool Rotate Failed",
-        message=str(rotation_payload.get("detail") or "Gemini free pool rotated and reloaded.").strip()
-        or "Gemini free pool rotated and reloaded.",
-        details="\n".join(list(rotation_payload.get("warnings") or []))[:1200],
-        severity="success" if bool(rotation_payload.get("ok")) else "error",
-        category="system",
-        audience="admin",
-        entity_key="gemini_pool_free",
-        dedupe_key=f"admin.pool.rotate::{actor_uid}",
-        action_label="Open Admin",
-        action_target={"screen": "main", "tab": "ADMIN", "adminTab": "usage"},
-        email_eligible=False,
-        email_pref_key="emailAdminAlerts",
-    )
-    return JSONResponse(rotation_payload)
 
 
 @app.get("/admin/gemini/pools/usage")
@@ -26754,23 +25024,7 @@ def admin_gemini_pools_usage(request: Request) -> JSONResponse:
 
 @app.get("/admin/gemini/pool/status")
 def admin_gemini_pool_status(request: Request) -> JSONResponse:
-    # Legacy compatibility endpoint.
     return admin_gemini_pools(request)
-
-
-@app.post("/admin/gemini/pool/reload")
-def admin_gemini_pool_reload(request: Request) -> JSONResponse:
-    # Legacy compatibility endpoint.
-    return admin_gemini_pools_reload(request)
-
-
-@app.post("/admin/gemini/pool/rotate")
-def admin_gemini_pool_rotate(
-    request: Request,
-    payload: Optional[GeminiApiPoolRotateRequest] = None,
-) -> JSONResponse:
-    # Legacy compatibility endpoint.
-    return admin_gemini_pools_rotate(request=request, payload=payload)
 
 
 @app.get("/admin/alerts/policies")
@@ -28438,12 +26692,12 @@ _TTS_PUBLIC_ERROR_MESSAGE_BY_CODE = {
     "RUNTIME_UNAVAILABLE": "TTS runtime is temporarily unavailable.",
     "RUNTIME_BAD_RESPONSE": "TTS runtime returned an invalid response.",
     "LIVE_FIRST_CHUNK_SLA_FALLBACK": "Live generation fell back to protect first-chunk latency.",
-    "GEMINI_API_KEY_MISSING": "Gemini key pool is not configured.",
+    "GEMINI_SLOT_SET_MISSING": "Primary AI slot set is not configured.",
     "GEMINI_RUNTIME_SDK_UNAVAILABLE": "Gemini runtime dependencies are unavailable.",
-    "GEMINI_ALL_KEYS_AUTH_FAILED": "All configured Gemini keys were rejected by upstream authentication.",
-    "GEMINI_ALL_KEYS_RATE_LIMITED": "Gemini capacity is temporarily rate limited.",
-    "GEMINI_KEY_POOL_OVERLOADED": "Gemini key pool is temporarily overloaded.",
-    "GEMINI_KEY_POOL_TIMEOUT": "Gemini key pool timed out while waiting for capacity.",
+    "GEMINI_ALL_SLOTS_AUTH_FAILED": "All configured Gemini slots were rejected by upstream authentication.",
+    "GEMINI_ALL_SLOTS_RATE_LIMITED": "Gemini capacity is temporarily rate limited.",
+    "GEMINI_SLOT_SET_OVERLOADED": "Primary AI slot set is temporarily overloaded.",
+    "GEMINI_SLOT_SET_TIMEOUT": "Primary AI slot set timed out while waiting for capacity.",
     "GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT": "Gemini allocator timed out while waiting for capacity.",
     "GEMINI_UPSTREAM_REQUEST_TIMEOUT": "Gemini upstream request timed out.",
     "GEMINI_UPSTREAM_MODEL_FAILED": "Gemini TTS synthesis failed.",
@@ -28646,10 +26900,10 @@ def _runtime_failure_payload_from_exception(
 
 
 _GEMINI_CAPACITY_PRESSURE_ERROR_CODES = {
-    "GEMINI_KEY_POOL_OVERLOADED",
-    "GEMINI_KEY_POOL_TIMEOUT",
+    "GEMINI_SLOT_SET_OVERLOADED",
+    "GEMINI_SLOT_SET_TIMEOUT",
     "GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT",
-    "GEMINI_ALL_KEYS_RATE_LIMITED",
+    "GEMINI_ALL_SLOTS_RATE_LIMITED",
 }
 _GEMINI_UPSTREAM_TIMEOUT_ERROR_CODES = {
     "GEMINI_UPSTREAM_REQUEST_TIMEOUT",
@@ -28696,74 +26950,12 @@ def _maybe_auto_rotate_gemini_pool_for_failure(
     trace_id: str = "",
     job_id: str = "",
 ) -> dict[str, Any]:
-    if not _is_gemini_auto_rotate_eligible_failure(engine, detail):
-        return {"ok": False, "rotated": False, "reason": "not_eligible"}
-
-    now_ms = int(time.time() * 1000)
-    error_code = str(extract_error_code(detail) or "").strip().upper()
-    safe_trace_id = str(trace_id or "").strip()
-    safe_job_id = str(job_id or "").strip()
-
-    with _GEMINI_AUTO_ROTATE_LOCK:
-        last_rotated_at_ms = int(_GEMINI_AUTO_ROTATE_STATE.get("lastRotatedAtMs") or 0)
-        cooldown_remaining_ms = max(0, int(VF_GEMINI_AUTO_ROTATE_COOLDOWN_MS) - max(0, now_ms - last_rotated_at_ms))
-        if cooldown_remaining_ms > 0:
-            return {
-                "ok": False,
-                "rotated": False,
-                "reason": "cooldown_active",
-                "cooldownRemainingMs": cooldown_remaining_ms,
-                "lastRotation": dict(_GEMINI_AUTO_ROTATE_STATE),
-            }
-
-        try:
-            rotation_payload = _rotate_gemini_free_pool_once(steps=1)
-        except Exception as exc:  # noqa: BLE001
-            _GEMINI_AUTO_ROTATE_STATE.update(
-                {
-                    "lastRotatedAtMs": now_ms,
-                    "lastErrorCode": error_code,
-                    "lastTraceId": safe_trace_id,
-                    "lastJobId": safe_job_id,
-                    "lastRotationDetail": str(exc),
-                }
-            )
-            return {
-                "ok": False,
-                "rotated": False,
-                "reason": "rotation_failed",
-                "error": str(exc),
-                "lastRotation": dict(_GEMINI_AUTO_ROTATE_STATE),
-            }
-
-        rotation_meta = (
-            dict(rotation_payload.get("rotation") or {})
-            if isinstance(rotation_payload.get("rotation"), dict)
-            else {}
-        )
-        before_head = dict(rotation_meta.get("beforeHead") or {})
-        after_head = dict(rotation_meta.get("afterHead") or {})
-        detail_text = str(rotation_payload.get("detail") or "Gemini free pool rotated and reloaded.").strip()
-        _GEMINI_AUTO_ROTATE_STATE.update(
-            {
-                "lastRotatedAtMs": now_ms,
-                "lastErrorCode": error_code,
-                "lastTraceId": safe_trace_id,
-                "lastJobId": safe_job_id,
-                "lastBeforeFingerprint": str(before_head.get("fingerprint") or ""),
-                "lastAfterFingerprint": str(after_head.get("fingerprint") or ""),
-                "lastRotationDetail": detail_text,
-            }
-        )
-        return {
-            "ok": bool(rotation_payload.get("ok")),
-            "rotated": True,
-            "reason": "rotated",
-            "detail": detail_text,
-            "rotation": rotation_meta,
-            "warnings": list(rotation_payload.get("warnings") or []),
-            "lastRotation": dict(_GEMINI_AUTO_ROTATE_STATE),
-        }
+    _ = engine, detail, trace_id, job_id
+    return {
+        "ok": False,
+        "rotated": False,
+        "reason": "disabled",
+    }
 
 
 def _runtime_tts_request_with_gemini_failover(
@@ -28776,11 +26968,69 @@ def _runtime_tts_request_with_gemini_failover(
     timeout: Any = None,
     **kwargs: Any,
 ) -> requests.Response:
+    def _fallback_from_unified_provider() -> Optional[requests.Response]:
+        provider = getattr(_UNIFIED_TTS_SERVICE, "provider_client", None)
+        synthesize_chunk = getattr(provider, "synthesize_chunk", None)
+        if not callable(synthesize_chunk):
+            return None
+        request_payload = request_kwargs.get("json")
+        if not isinstance(request_payload, dict):
+            return None
+        text_input = str(request_payload.get("text") or "").strip()
+        if not text_input:
+            return None
+        try:
+            session = type(
+                "UnifiedTtsSession",
+                (),
+                {
+                    "engine": _normalize_engine_name(engine),
+                    "trace_id": str(trace_id or "").strip(),
+                    "job_id": str(job_id or "").strip(),
+                    "url": str(url or "").strip(),
+                },
+            )()
+            chunk = type(
+                "UnifiedTtsChunk",
+                (),
+                {
+                    "seq": 0,
+                    "text": text_input,
+                },
+            )()
+            audio_bytes, media_type, _meta = synthesize_chunk(
+                session,
+                chunk,
+                config=dict(request_payload),
+            )
+            safe_audio = bytes(audio_bytes or b"")
+            if not safe_audio:
+                return None
+            response = requests.Response()
+            response.status_code = 200
+            response._content = safe_audio
+            response.headers = requests.structures.CaseInsensitiveDict(
+                {
+                    "content-type": str(media_type or "audio/wav"),
+                    "x-voiceflow-trace-id": str(trace_id or job_id or "").strip(),
+                }
+            )
+            response.url = str(url or "")
+            return response
+        except Exception:
+            return None
+
     request_kwargs = dict(kwargs)
     if timeout is not None:
         request_kwargs["timeout"] = timeout
 
-    response = _runtime_http_request(method, url, **request_kwargs)
+    try:
+        response = _runtime_http_request(method, url, **request_kwargs)
+    except requests.exceptions.RequestException:
+        fallback_response = _fallback_from_unified_provider()
+        if fallback_response is not None:
+            return fallback_response
+        raise
     if response.ok:
         return response
 
@@ -28805,7 +27055,13 @@ def _runtime_tts_request_with_gemini_failover(
         ),
         flush=True,
     )
-    return _runtime_http_request(method, url, **request_kwargs)
+    try:
+        return _runtime_http_request(method, url, **request_kwargs)
+    except requests.exceptions.RequestException:
+        fallback_response = _fallback_from_unified_provider()
+        if fallback_response is not None:
+            return fallback_response
+        raise
 
 
 def _map_runtime_failure_status(engine: str, status_code: int, detail: Any) -> int:
@@ -28864,6 +27120,12 @@ def _normalize_gem_speaker_voice_entries(
             or fallback_voice
         )
         resolved_voice = _resolve_gem_runtime_voice_name(requested_voice, fallback=fallback_voice)
+        if resolved_voice.strip().lower() == requested_voice.strip().lower():
+            lowered_voice = requested_voice.lower()
+            if "india" in lowered_voice and any(token in lowered_voice for token in ("female", "woman", "girl")):
+                resolved_voice = "Kore"
+            elif "india" in lowered_voice and any(token in lowered_voice for token in ("male", "man", "boy")):
+                resolved_voice = "Fenrir"
         normalized_item = dict(item)
         normalized_item["speaker"] = speaker
         normalized_item["voiceName"] = resolved_voice
@@ -28891,8 +27153,6 @@ def _build_tts_upstream_payload(
     upstream_payload.pop("live_chunk_words", None)
     upstream_payload.pop("post_tts_disable", None)
     upstream_payload.pop("mode", None)
-    upstream_payload.pop("liveNative", None)
-    upstream_payload.pop("live_native", None)
     # Never forward browser-provided API keys through the gateway payload.
     upstream_payload.pop("apiKey", None)
     upstream_payload.pop("api_key", None)
@@ -29004,7 +27264,6 @@ def _tts_job_lane_for_plan(
     plan_key: str,
     *,
     live_stream: bool = False,
-    mode: Any = "",
 ) -> str:
     token = _plan_key_from_name(plan_key)
     lane = "free"
@@ -29012,7 +27271,7 @@ def _tts_job_lane_for_plan(
         lane = "pro_plus"
     elif token in {"pro", "starter", "creator"}:
         lane = "pro"
-    if bool(live_stream) or _normalize_live_native_job_mode(mode) == "live_native":
+    if bool(live_stream):
         if lane == "free":
             lane = "pro"
         elif lane == "pro":
@@ -29268,10 +27527,6 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
         live_first_chunk_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveFirstChunkLatencyMs") or [])]
         live_chunk_count_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkCount") or [])]
         live_chunk_llvc_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveChunkLlvcLatencyMs") or [])]
-        live_native_turn_latency_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveNativeTurnLatencyMs") or [])]
-        live_native_resume_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveNativeResumeCount") or [])]
-        live_native_fallback_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveNativeFallbackCount") or [])]
-        live_native_chunk_gap_samples = [max(0, int(value)) for value in list(_TTS_QUEUE_TELEMETRY.get("liveNativeChunkGapCount") or [])]
         terminal_events = list(_TTS_QUEUE_TELEMETRY["terminalEvents"])
         runtime_by_engine = _TTS_QUEUE_TELEMETRY.get("runtimeLatencyByEngine")
         waits_by_engine = _TTS_QUEUE_TELEMETRY.get("semaphoreWaitByEngine")
@@ -29338,10 +27593,6 @@ def _tts_queue_metrics_snapshot() -> dict[str, Any]:
             "liveFirstChunkLatencyMs": _sample_stats(live_first_chunk_samples),
             "liveChunkCount": _sample_stats(live_chunk_count_samples),
             "liveChunkLlvcLatencyMs": _sample_stats(live_chunk_llvc_samples),
-            "liveNativeTurnLatencyMs": _sample_stats(live_native_turn_latency_samples),
-            "liveNativeResumeCount": _sample_stats(live_native_resume_samples),
-            "liveNativeFallbackCount": _sample_stats(live_native_fallback_samples),
-            "liveNativeChunkGapCount": _sample_stats(live_native_chunk_gap_samples),
             "terminalStatusesByReason": {
                 "byStatus": dict(terminal_by_status),
                 "byReason": dict(terminal_by_reason),
@@ -29390,690 +27641,176 @@ def _mark_job_failed_and_revert_usage(
         _notification_emit_tts_job_terminal(failed_job, status="failed", detail=str(reason or "failed"))
 
 
-_LIVE_NATIVE_CAST_PRESETS: tuple[dict[str, str], ...] = (
-    {
-        "id": "host",
-        "name": "HOST",
-        "role": "anchor",
-        "voice": "Puck",
-        "persona": "Energetic moderator who drives the pace and asks the next speaker directly.",
-    },
-    {
-        "id": "cohost",
-        "name": "COHOST",
-        "role": "witty sidekick",
-        "voice": "Aoede",
-        "persona": "Relatable and slightly sarcastic; keeps responses concise and audience-facing.",
-    },
-    {
-        "id": "expert",
-        "name": "EXPERT",
-        "role": "authority",
-        "voice": "Charon",
-        "persona": "Methodical specialist using plain-language analogies and clear conclusions.",
-    },
-    {
-        "id": "guest",
-        "name": "GUEST",
-        "role": "skeptic",
-        "voice": "Kore",
-        "persona": "Calm contrarian who challenges assumptions with direct questions.",
-    },
-)
-
-_PODCAST_STANDARD_CAST_PRESETS: tuple[dict[str, str], ...] = (
-    *_LIVE_NATIVE_CAST_PRESETS,
-    {
-        "id": "analyst",
-        "name": "ANALYST",
-        "role": "deep dive analyst",
-        "voice": "Leda",
-        "persona": "Adds grounded examples, comparisons, and context without taking over the room.",
-    },
-    {
-        "id": "critic",
-        "name": "CRITIC",
-        "role": "contrarian critic",
-        "voice": "Orus",
-        "persona": "Sharp but concise pushback that keeps the discussion dynamic and practical.",
-    },
-)
-
-
-def _normalize_live_native_job_mode(raw_mode: object) -> str:
-    token = str(raw_mode or "").strip().lower()
-    return "live_native" if token == "live_native" else ""
-
-
-def _normalize_podcast_standard_job_mode(raw_mode: object) -> str:
-    token = str(raw_mode or "").strip().lower()
-    return "podcast_standard" if token == "podcast_standard" else ""
-
-
-def _normalize_podcast_language(raw_language: Any, *, default: str = "en") -> str:
-    token = str(raw_language or "").strip().lower()
-    token = token.replace("_", "-")
-    if token in {"", "auto", "default"}:
-        token = str(default or "en").strip().lower()
-    token = re.sub(r"[^a-z0-9\-]+", "", token).strip("-")
-    return token or "en"
-
-
-def _normalize_model_candidates(
-    candidates: Any,
+def _tts_job_status_payload(
+    job: dict[str, Any],
     *,
-    default: Optional[list[str]] = None,
-) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-
-    def _add(value: Any) -> None:
-        token = str(value or "").strip()
-        if not token:
-            return
-        key = token.lower()
-        if key in seen:
-            return
-        seen.add(key)
-        out.append(token)
-
-    if isinstance(candidates, list):
-        for item in candidates:
-            _add(item)
-    if not out and isinstance(default, list):
-        for item in default:
-            _add(item)
-    return out
-
-
-def _default_live_native_cast(speaker_count: int) -> list[dict[str, str]]:
-    safe_count = max(2, min(4, int(speaker_count)))
-    out: list[dict[str, str]] = []
-    for index in range(safe_count):
-        row = dict(_LIVE_NATIVE_CAST_PRESETS[index])
-        out.append(
-            {
-                "id": str(row.get("id") or f"speaker_{index + 1}"),
-                "name": str(row.get("name") or f"SPEAKER {index + 1}"),
-                "role": str(row.get("role") or "panelist"),
-                "voice": str(row.get("voice") or "Puck"),
-                "persona": str(row.get("persona") or ""),
-            }
-        )
-    return out
-
-
-def _default_podcast_standard_cast(speaker_count: int) -> list[dict[str, str]]:
-    safe_count = max(2, min(VF_PODCAST_STANDARD_MAX_SPEAKERS, int(speaker_count)))
-    out: list[dict[str, str]] = []
-    for index in range(safe_count):
-        preset = dict(_PODCAST_STANDARD_CAST_PRESETS[min(index, len(_PODCAST_STANDARD_CAST_PRESETS) - 1)])
-        out.append(
-            {
-                "id": str(preset.get("id") or f"speaker_{index + 1}"),
-                "name": str(preset.get("name") or f"SPEAKER {index + 1}"),
-                "role": str(preset.get("role") or "panelist"),
-                "voice": str(preset.get("voice") or "Puck"),
-                "persona": str(preset.get("persona") or ""),
-            }
-        )
-    return out
-
-
-def _normalize_live_native_config(raw_config: Any, *, fallback_topic: str) -> dict[str, Any]:
-    source = dict(raw_config or {}) if isinstance(raw_config, dict) else {}
-    topic = str(source.get("topic") or fallback_topic or "").strip()
-    if not topic:
-        topic = "AI and creative technology"
-    language = _normalize_podcast_language(source.get("language"), default="en")
-    seed_script = str(source.get("seedScript") or "").strip()
-    if len(seed_script) > 16_000:
-        seed_script = seed_script[:16_000].strip()
-
-    speaker_count = _safe_bounded_int(
-        source.get("speakerCount"),
-        default=4,
-        min_value=2,
-        max_value=4,
-    )
-    duration_sec = _safe_bounded_int(
-        source.get("durationSec"),
-        default=VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC,
-        min_value=30,
-        max_value=max(30, VF_TTS_QUEUE_JOB_TTL_MS // 1000),
-    )
-    pacing_style = str(source.get("pacingStyle") or "fast-paced debate").strip() or "fast-paced debate"
-
-    raw_cast = source.get("cast")
-    default_cast = _default_live_native_cast(speaker_count)
-    normalized_cast: list[dict[str, str]] = []
-    if isinstance(raw_cast, list):
-        for index, item in enumerate(raw_cast):
-            if len(normalized_cast) >= speaker_count:
-                break
-            if not isinstance(item, dict):
-                continue
-            fallback = default_cast[min(index, len(default_cast) - 1)]
-            speaker_id = str(item.get("id") or fallback.get("id") or f"speaker_{index + 1}").strip().lower()
-            speaker_id = re.sub(r"[^a-z0-9_]+", "_", speaker_id).strip("_") or f"speaker_{index + 1}"
-            normalized_cast.append(
-                {
-                    "id": speaker_id,
-                    "name": str(item.get("name") or fallback.get("name") or speaker_id.upper()).strip() or speaker_id.upper(),
-                    "role": str(item.get("role") or fallback.get("role") or "panelist").strip() or "panelist",
-                    "voice": _resolve_gem_runtime_voice_name(
-                        str(item.get("voice") or fallback.get("voice") or "Puck").strip() or "Puck",
-                        fallback=str(fallback.get("voice") or "Puck").strip() or "Puck",
-                    ),
-                    "persona": str(item.get("persona") or fallback.get("persona") or "").strip(),
-                }
-            )
-    while len(normalized_cast) < speaker_count:
-        normalized_cast.append(dict(default_cast[len(normalized_cast)]))
-    if len(normalized_cast) > speaker_count:
-        normalized_cast = normalized_cast[:speaker_count]
-
-    raw_limits = source.get("limits")
-    limits_source = dict(raw_limits or {}) if isinstance(raw_limits, dict) else {}
-    session_max_sec = _safe_bounded_int(
-        limits_source.get("sessionMaxSec"),
-        default=VF_TTS_LIVE_NATIVE_SESSION_MAX_SEC,
-        min_value=60,
-        max_value=max(120, VF_TTS_QUEUE_JOB_TTL_MS // 1000),
-    )
-    connection_max_sec = _safe_bounded_int(
-        limits_source.get("connectionMaxSec"),
-        default=min(VF_TTS_LIVE_NATIVE_CONNECTION_MAX_SEC, session_max_sec),
-        min_value=30,
-        max_value=session_max_sec,
-    )
-    per_turn_timeout_sec = _safe_bounded_int(
-        limits_source.get("perTurnTimeoutSec"),
-        default=VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC,
-        min_value=5,
-        max_value=120,
-    )
-
-    raw_recovery = source.get("recovery")
-    recovery_source = dict(raw_recovery or {}) if isinstance(raw_recovery, dict) else {}
-    strategy = str(recovery_source.get("strategy") or VF_TTS_LIVE_NATIVE_STRATEGY).strip().lower() or "resume_then_fallback"
-    if strategy not in {"resume_then_fallback"}:
-        strategy = "resume_then_fallback"
-    max_resume_attempts = _safe_bounded_int(
-        recovery_source.get("maxResumeAttempts"),
-        default=VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS,
-        min_value=0,
-        max_value=3,
-    )
-    fallback_mode = str(recovery_source.get("fallbackMode") or VF_TTS_LIVE_NATIVE_FALLBACK_MODE).strip().lower()
-    if fallback_mode not in {"runtime_nonlive_same_cast", "native_audio_only"}:
-        fallback_mode = "native_audio_only"
-
-    raw_output = source.get("output")
-    output_source = dict(raw_output or {}) if isinstance(raw_output, dict) else {}
-    audio_format = str(output_source.get("audioFormat") or "wav").strip().lower() or "wav"
-    if audio_format != "wav":
-        audio_format = "wav"
-
-    return {
-        "topic": topic,
-        "language": language,
-        "seedScript": seed_script,
-        "durationSec": int(duration_sec),
-        "speakerCount": int(speaker_count),
-        "cast": normalized_cast,
-        "limits": {
-            "sessionMaxSec": int(session_max_sec),
-            "connectionMaxSec": int(connection_max_sec),
-            "perTurnTimeoutSec": int(per_turn_timeout_sec),
-        },
-        "recovery": {
-            "strategy": strategy,
-            "maxResumeAttempts": int(max_resume_attempts),
-            "fallbackMode": fallback_mode,
-        },
-        "output": {
-            "autoSave": bool(output_source.get("autoSave", True)),
-            "audioFormat": audio_format,
-            "includeTranscript": bool(output_source.get("includeTranscript", True)),
-        },
-        "pacingStyle": pacing_style,
-        "models": {
-            "nativeAudio": str(source.get("nativeAudioModel") or VF_TTS_LIVE_NATIVE_MODEL).strip() or VF_TTS_LIVE_NATIVE_MODEL,
-            "director": str(source.get("directorModel") or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL).strip() or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL,
-        },
-    }
-
-
-def _normalize_podcast_standard_engine(raw_engine: Any) -> str:
-    token = str(raw_engine or "").strip()
-    if not token:
-        return "NEURAL2"
-    try:
-        normalized = _normalize_engine_name(token)
-    except Exception:  # noqa: BLE001
-        return "NEURAL2"
-    if normalized not in {"NEURAL2", "GEM"}:
-        return "NEURAL2"
-    return normalized
-
-
-def _normalize_podcast_standard_config(raw_config: Any, *, fallback_topic: str) -> dict[str, Any]:
-    source = dict(raw_config or {}) if isinstance(raw_config, dict) else {}
-    engine = _normalize_podcast_standard_engine(source.get("engine"))
-    topic = str(source.get("topic") or fallback_topic or "").strip() or "AI and creative technology"
-    speaker_count = _safe_bounded_int(
-        source.get("speakerCount"),
-        default=4,
-        min_value=2,
-        max_value=VF_PODCAST_STANDARD_MAX_SPEAKERS,
-    )
-    duration_sec = _safe_bounded_int(
-        source.get("durationSec"),
-        default=900,
-        min_value=60,
-        max_value=VF_PODCAST_STANDARD_MAX_DURATION_SEC,
-    )
-    pacing_style = str(source.get("pacingStyle") or "conversational deep dive").strip() or "conversational deep dive"
-    language = _normalize_podcast_language(source.get("language"), default="en")
-    seed_script = str(source.get("seedScript") or "").strip()
-    director_model = str(source.get("directorModel") or VF_PODCAST_STANDARD_SCRIPT_MODEL).strip() or VF_PODCAST_STANDARD_SCRIPT_MODEL
-    script_model_candidates = _normalize_model_candidates(
-        source.get("scriptModelCandidates"),
-        default=[director_model, *list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES)],
-    )
-    tts_model_candidates = _normalize_model_candidates(
-        source.get("ttsModelCandidates"),
-        default=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
-    )
-    script_window_chars = _safe_bounded_int(
-        source.get("scriptWindowChars"),
-        default=VF_PODCAST_STANDARD_SCRIPT_WINDOW_CHARS,
-        min_value=800,
-        max_value=VF_PODCAST_STANDARD_SCRIPT_WINDOW_CHARS,
-    )
-
-    raw_cast = source.get("cast")
-    default_cast = _default_podcast_standard_cast(speaker_count)
-    normalized_cast: list[dict[str, str]] = []
-    if isinstance(raw_cast, list):
-        for index, item in enumerate(raw_cast):
-            if len(normalized_cast) >= speaker_count:
-                break
-            if not isinstance(item, dict):
-                continue
-            fallback = default_cast[min(index, len(default_cast) - 1)]
-            speaker_id = str(item.get("id") or fallback.get("id") or f"speaker_{index + 1}").strip().lower()
-            speaker_id = re.sub(r"[^a-z0-9_]+", "_", speaker_id).strip("_") or f"speaker_{index + 1}"
-            normalized_cast.append(
-                {
-                    "id": speaker_id,
-                    "name": str(item.get("name") or fallback.get("name") or speaker_id.upper()).strip() or speaker_id.upper(),
-                    "role": str(item.get("role") or fallback.get("role") or "panelist").strip() or "panelist",
-                    "voice": _resolve_gem_runtime_voice_name(
-                        str(item.get("voice") or fallback.get("voice") or "Puck").strip() or "Puck",
-                        fallback=str(fallback.get("voice") or "Puck").strip() or "Puck",
-                    ),
-                    "persona": str(item.get("persona") or fallback.get("persona") or "").strip(),
-                }
-            )
-    while len(normalized_cast) < speaker_count:
-        normalized_cast.append(dict(default_cast[len(normalized_cast)]))
-    if len(normalized_cast) > speaker_count:
-        normalized_cast = normalized_cast[:speaker_count]
-
-    target_script_chars = max(script_window_chars, int(duration_sec * 12))
-    estimated_windows = max(1, int(math.ceil(float(target_script_chars) / float(script_window_chars))))
-
-    return {
-        "engine": engine,
-        "topic": topic,
-        "durationSec": int(duration_sec),
-        "speakerCount": int(speaker_count),
-        "cast": normalized_cast,
-        "pacingStyle": pacing_style,
-        "seedScript": seed_script,
-        "language": language,
-        "scriptWindowChars": int(script_window_chars),
-        "targetScriptChars": int(target_script_chars),
-        "estimatedWindows": int(estimated_windows),
-        "output": {
-            "autoSave": bool(source.get("autoSave", True)),
-            "audioFormat": "wav",
-            "includeTranscript": bool(source.get("includeTranscript", True)),
-        },
-        "models": {
-            "script": director_model,
-            "scriptCandidates": script_model_candidates,
-            "ttsCandidates": tts_model_candidates,
-        },
-    }
-
-
-def _validate_live_native_request_shape(raw_config: Any) -> None:
-    if not isinstance(raw_config, dict):
-        raise HTTPException(status_code=400, detail="liveNative config must be an object.")
-    raw_speaker_count = raw_config.get("speakerCount")
-    try:
-        speaker_count = int(raw_speaker_count)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="liveNative.speakerCount must be an integer between 2 and 4.") from exc
-    if speaker_count < 2 or speaker_count > 4:
-        raise HTTPException(status_code=400, detail="liveNative.speakerCount must be between 2 and 4.")
-    if not str(raw_config.get("topic") or "").strip():
-        raise HTTPException(status_code=400, detail="liveNative.topic is required.")
-
-    raw_cast = raw_config.get("cast")
-    if not isinstance(raw_cast, list) or len(raw_cast) < speaker_count:
-        raise HTTPException(status_code=400, detail="liveNative.cast must include one entry per speaker.")
-    required_fields = ("id", "name", "role", "voice")
-    for index in range(speaker_count):
-        item = raw_cast[index]
-        if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail=f"liveNative.cast[{index}] must be an object.")
-        missing = [field for field in required_fields if not str(item.get(field) or "").strip()]
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"liveNative.cast[{index}] is missing required fields: {', '.join(missing)}.",
-            )
-
-    raw_limits = raw_config.get("limits")
-    if isinstance(raw_limits, dict):
-        session_max = raw_limits.get("sessionMaxSec")
-        connection_max = raw_limits.get("connectionMaxSec")
-        per_turn_timeout = raw_limits.get("perTurnTimeoutSec")
-        if session_max is not None:
-            try:
-                session_max_val = int(session_max)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail="liveNative.limits.sessionMaxSec must be an integer.") from exc
-            if session_max_val < 60:
-                raise HTTPException(status_code=400, detail="liveNative.limits.sessionMaxSec must be >= 60.")
-        else:
-            session_max_val = VF_TTS_LIVE_NATIVE_SESSION_MAX_SEC
-        if connection_max is not None:
-            try:
-                connection_val = int(connection_max)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail="liveNative.limits.connectionMaxSec must be an integer.") from exc
-            if connection_val <= 0:
-                raise HTTPException(status_code=400, detail="liveNative.limits.connectionMaxSec must be > 0.")
-            if connection_val > int(session_max_val):
-                raise HTTPException(status_code=400, detail="liveNative.limits.connectionMaxSec cannot exceed sessionMaxSec.")
-        if per_turn_timeout is not None:
-            try:
-                timeout_val = int(per_turn_timeout)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail="liveNative.limits.perTurnTimeoutSec must be an integer.") from exc
-            if timeout_val < 5:
-                raise HTTPException(status_code=400, detail="liveNative.limits.perTurnTimeoutSec must be >= 5.")
-
-
-def _validate_podcast_standard_request_shape(raw_config: Any) -> None:
-    if not isinstance(raw_config, dict):
-        raise HTTPException(status_code=400, detail="podcast standard config must be an object.")
-    if not str(raw_config.get("topic") or "").strip():
-        raise HTTPException(status_code=400, detail="topic is required.")
-    raw_engine = str(raw_config.get("engine") or "").strip()
-    if raw_engine:
-        try:
-            normalized_engine = _normalize_engine_name(raw_engine)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="engine must be NEURAL2 (Vector) or GEM (Prime).") from exc
-        if normalized_engine not in {"NEURAL2", "GEM"}:
-            raise HTTPException(status_code=400, detail="engine must be NEURAL2 (Vector) or GEM (Prime).")
-
-    raw_speaker_count = raw_config.get("speakerCount")
-    try:
-        speaker_count = int(raw_speaker_count)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="speakerCount must be an integer between 2 and 6.") from exc
-    if speaker_count < 2 or speaker_count > VF_PODCAST_STANDARD_MAX_SPEAKERS:
-        raise HTTPException(status_code=400, detail="speakerCount must be between 2 and 6.")
-
-    raw_duration_sec = raw_config.get("durationSec")
-    try:
-        duration_sec = int(raw_duration_sec)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="durationSec must be an integer between 60 and 3600.") from exc
-    if duration_sec < 60 or duration_sec > VF_PODCAST_STANDARD_MAX_DURATION_SEC:
-        raise HTTPException(status_code=400, detail="durationSec must be between 60 and 3600.")
-
-    raw_cast = raw_config.get("cast")
-    if not isinstance(raw_cast, list) or len(raw_cast) < speaker_count:
-        raise HTTPException(status_code=400, detail="cast must include one entry per speaker.")
-    required_fields = ("id", "name", "role", "voice")
-    for index in range(speaker_count):
-        item = raw_cast[index]
-        if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail=f"cast[{index}] must be an object.")
-        missing = [field for field in required_fields if not str(item.get(field) or "").strip()]
-        if missing:
-            raise HTTPException(status_code=400, detail=f"cast[{index}] is missing required fields: {', '.join(missing)}.")
-
-
-def _record_tts_live_native_turn_latency(*, elapsed_ms: int) -> None:
-    safe_elapsed = max(0, int(elapsed_ms))
-    with _TTS_ENGINE_METRICS_LOCK:
-        source = _TTS_QUEUE_TELEMETRY.get("liveNativeTurnLatencyMs")
-        if isinstance(source, deque):
-            source.append(safe_elapsed)
-
-
-def _record_tts_live_native_resume(*, count: int = 1) -> None:
-    safe_count = max(1, int(count))
-    with _TTS_ENGINE_METRICS_LOCK:
-        source = _TTS_QUEUE_TELEMETRY.get("liveNativeResumeCount")
-        if isinstance(source, deque):
-            source.append(safe_count)
-
-
-def _record_tts_live_native_fallback(*, count: int = 1) -> None:
-    safe_count = max(1, int(count))
-    with _TTS_ENGINE_METRICS_LOCK:
-        source = _TTS_QUEUE_TELEMETRY.get("liveNativeFallbackCount")
-        if isinstance(source, deque):
-            source.append(safe_count)
-
-
-def _record_tts_live_native_chunk_gap(*, gap: int) -> None:
-    safe_gap = max(0, int(gap))
-    with _TTS_ENGINE_METRICS_LOCK:
-        source = _TTS_QUEUE_TELEMETRY.get("liveNativeChunkGapCount")
-        if isinstance(source, deque):
-            source.append(safe_gap)
-
-
-def _log_live_native_event(job_id: str, event: str, payload: Optional[dict[str, Any]] = None) -> None:
-    safe_payload = dict(payload or {})
-    safe_payload["event"] = str(event or "").strip() or "unknown"
-    safe_payload["jobId"] = str(job_id or "").strip()
-    safe_payload["ts"] = int(time.time() * 1000)
-    print(f"[tts-live-native] {json.dumps(safe_payload, ensure_ascii=True, separators=(',', ':'))}", flush=True)
-
-
-def _live_native_text_history(turns: list[dict[str, Any]], *, limit_turns: int) -> str:
-    safe_turns = [dict(item) for item in list(turns or []) if isinstance(item, dict)]
-    if not safe_turns:
-        return "No prior discussion yet."
-    recent = safe_turns[-max(1, int(limit_turns)) :]
-    lines: list[str] = []
-    for item in recent:
-        speaker_name = str(item.get("speakerName") or item.get("speakerId") or "Speaker").strip()
-        spoken = str(item.get("text") or "").strip()
-        if not spoken:
-            continue
-        lines.append(f"{speaker_name}: {spoken}")
-    return "\n".join(lines) if lines else "No prior discussion yet."
-
-
-def _live_native_seed_script_window(seed_script: str, *, turn_index: int, max_lines: int = 6) -> str:
-    lines = [
-        re.sub(r"\s+", " ", str(line or "")).strip()
-        for line in str(seed_script or "").splitlines()
-        if str(line or "").strip()
-    ]
-    if not lines:
-        return ""
-    safe_window = max(2, int(max_lines))
-    max_start = max(0, len(lines) - safe_window)
-    start = min(max_start, max(0, int(turn_index)) * 2)
-    window = lines[start : start + safe_window]
-    return "\n".join(window).strip()
-
-
-def _live_native_fallback_turn_text(
-    *,
-    topic: str,
-    speaker_name: str,
-    speaker_role: str,
-    next_speaker_name: str,
-    turn_index: int,
-) -> str:
-    base = (
-        f"{speaker_name} here. Quick point on {topic}: we should balance practical impact with clear evidence."
-    )
-    if turn_index % 3 == 1:
-        base = f"{speaker_name} here... from the {speaker_role} angle, the biggest issue is execution, not theory."
-    if turn_index % 3 == 2:
-        base = f"{speaker_name}: one more thing, listeners need concrete examples before they trust bold claims."
-    return f"{base} {next_speaker_name}, your take?"
-
-
-def _runtime_generate_live_native_turn_text(
-    *,
-    topic: str,
-    pacing_style: str,
-    language: str,
-    speaker: dict[str, Any],
-    next_speaker: dict[str, Any],
-    transcript_window: str,
-    seed_script_hint: str = "",
-    trace_id: str,
-    timeout_sec: int,
-    model: str,
-) -> str:
-    safe_speaker_name = str(speaker.get("name") or speaker.get("id") or "Speaker").strip()
-    safe_speaker_role = str(speaker.get("role") or "panelist").strip()
-    safe_persona = str(speaker.get("persona") or "").strip()
-    safe_next_name = str(next_speaker.get("name") or next_speaker.get("id") or "next speaker").strip()
-
-    system_prompt = (
-        "You are one speaker in a producer-controlled Gemini Native Live podcast panel. "
-        "STRICT RULES: this speaker alone has the token, so never speak for other panelists and never overlap turns. "
-        "Assume the transcript context is synchronized from other speaker streams by the producer bridge. "
-        "Keep replies under three short sentences. "
-        "Use natural speech rhythm and, at most, one subtle non-linguistic cue like [laughs], [sighs], [pause], or [hmm] when helpful. "
-        "Do not output markdown, bullets, or narration."
-    )
-    user_prompt = "\n".join(
-        [
-            f"Topic: {topic}",
-            f"Output language: {language} (keep this turn strictly in this language).",
-            f"Pacing style: {pacing_style}",
-            f"You are: {safe_speaker_name} ({safe_speaker_role}).",
-            f"Persona focus: {safe_persona or 'Stay in character and concise.'}",
-            "Producer orchestration constraints:",
-            "1. One dedicated speaker stream per cast member.",
-            "2. Shared-context bridge injects each completed turn to the other speakers.",
-            "3. Token turn-taking: only the active speaker emits audio now.",
-            (
-                "Director seed-script context (adapt naturally, do not copy verbatim):\n"
-                f"{seed_script_hint}"
-                if str(seed_script_hint or "").strip()
-                else "Director seed-script context: (none provided)"
-            ),
-            f"Conversation so far:\n{transcript_window}",
-            f"Now deliver {safe_speaker_name}'s next turn in 1-3 sentences (<= {VF_TTS_LIVE_NATIVE_MAX_TEXT_CHARS_PER_TURN} chars).",
-            f"Close by directly passing the mic to {safe_next_name}.",
-        ]
-    )
-    request_payload = {
-        "systemPrompt": system_prompt,
-        "userPrompt": user_prompt,
-        "jsonMode": False,
-        "temperature": 0.7,
-        "trace_id": trace_id,
-        "model": model,
-    }
-    response = _runtime_http_request(
-        "POST",
-        f"{GEMINI_RUNTIME_URL}/v1/generate-text",
-        json=request_payload,
-        timeout=max(2, int(timeout_sec)),
-    )
-    if not response.ok:
-        detail = _decode_runtime_error_detail(response)
-        raise RuntimeError(f"generate-text failed ({response.status_code}): {detail}")
-    try:
-        payload = response.json()
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"generate-text returned invalid JSON: {exc}") from exc
-    text = str((payload or {}).get("text") or "").strip()
-    if not text:
-        raise RuntimeError("generate-text returned empty text.")
-    if len(text) > VF_TTS_LIVE_NATIVE_MAX_TEXT_CHARS_PER_TURN:
-        text = text[: VF_TTS_LIVE_NATIVE_MAX_TEXT_CHARS_PER_TURN].rstrip()
-    return text
-
-
-def _tts_live_native_artifact_files(job_id: str) -> dict[str, Path]:
-    root = _tts_live_job_dir(job_id)
-    root.mkdir(parents=True, exist_ok=True)
-    return {
-        "transcript_json": root / "transcript.json",
-        "transcript_txt": root / "transcript.txt",
-        "summary_json": root / "summary.json",
-    }
-
-
-def _persist_tts_live_native_artifacts(
-    *,
-    job_id: str,
-    transcript_turns: list[dict[str, Any]],
-    summary_payload: dict[str, Any],
+    include_result: bool = False,
+    include_chunks: bool = False,
+    chunk_cursor: int = 0,
+    chunk_limit: int = VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
+    include_chunk_audio: bool = True,
 ) -> dict[str, Any]:
-    files = _tts_live_native_artifact_files(job_id)
-    transcript_json = list(transcript_turns or [])
-    transcript_txt_lines: list[str] = []
-    for item in transcript_json:
-        if not isinstance(item, dict):
-            continue
-        speaker_name = str(item.get("speakerName") or item.get("speakerId") or "Speaker").strip()
-        spoken = str(item.get("text") or "").strip()
-        if not spoken:
-            continue
-        transcript_txt_lines.append(f"{speaker_name}: {spoken}")
-
-    files["transcript_json"].write_text(
-        json.dumps({"turns": transcript_json}, ensure_ascii=True, indent=2),
-        encoding="utf-8",
-    )
-    files["transcript_txt"].write_text("\n".join(transcript_txt_lines).strip(), encoding="utf-8")
-    files["summary_json"].write_text(
-        json.dumps(dict(summary_payload or {}), ensure_ascii=True, indent=2),
-        encoding="utf-8",
-    )
-
-    safe_job_id = str(job_id or "").strip()
-    return {
-        "transcriptJson": {
-            "path": str(files["transcript_json"].resolve()),
-            "downloadUrl": f"/tts/jobs/{safe_job_id}/artifacts/transcript_json",
-            "contentType": "application/json",
-        },
-        "transcriptTxt": {
-            "path": str(files["transcript_txt"].resolve()),
-            "downloadUrl": f"/tts/jobs/{safe_job_id}/artifacts/transcript_txt",
-            "contentType": "text/plain",
-        },
-        "summaryJson": {
-            "path": str(files["summary_json"].resolve()),
-            "downloadUrl": f"/tts/jobs/{safe_job_id}/artifacts/summary_json",
-            "contentType": "application/json",
-        },
+    status = str(job.get("status") or "queued").strip().lower() or "queued"
+    now_ms = int(time.time() * 1000)
+    created_at_ms = int(job.get("createdAtMs") or 0)
+    queue_age_ms = max(0, now_ms - created_at_ms) if created_at_ms > 0 else 0
+    queue_depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
+    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "GEM"))
+    payload: dict[str, Any] = {
+        "ok": True,
+        "jobId": str(job.get("jobId") or ""),
+        "requestId": str(job.get("requestId") or ""),
+        "traceId": str(job.get("traceId") or ""),
+        "status": status,
+        "engine": str(job.get("engine") or ""),
+        "lane": str(job.get("lane") or ""),
+        "attempts": int(job.get("attempts") or 0),
+        "maxAttempts": int(job.get("maxAttempts") or VF_TTS_QUEUE_MAX_ATTEMPTS),
+        "createdAtMs": int(job.get("createdAtMs") or 0),
+        "updatedAtMs": int(job.get("updatedAtMs") or 0),
+        "startedAtMs": int(job.get("startedAtMs") or 0),
+        "finishedAtMs": int(job.get("finishedAtMs") or 0),
+        "deadlineAtMs": int(job.get("deadlineAtMs") or 0),
+        "queueAgeMs": int(queue_age_ms),
+        "queueDepthAtRead": int(queue_depth_snapshot.get("total") or 0),
+        "engineConcurrencyAtRead": int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(safe_engine) or 1),
     }
+    if status == "failed":
+        payload["statusCode"] = int(job.get("statusCode") or 500)
+        payload["error"] = job.get("error")
+    if include_result and status == "completed":
+        result = dict(job.get("result") or {}) if isinstance(job.get("result"), dict) else {}
+        if result and not str(result.get("audioBase64") or "").strip():
+            resolved = _resolve_tts_result_audio_bytes(result)
+            if resolved:
+                result["audioBase64"] = base64.b64encode(resolved).decode("ascii")
+        payload["result"] = result
+
+    live_state = job.get("liveState") if isinstance(job.get("liveState"), dict) else {}
+    live_stream_requested = bool(job.get("liveStream"))
+    if isinstance(live_state, dict) and bool(live_state):
+        payload["live"] = {
+            "enabled": bool(live_state.get("enabled")),
+            "playableChunks": int(live_state.get("playableChunks") or 0),
+            "playableDurationMs": int(live_state.get("playableDurationMs") or 0),
+        }
+        payload["chunkCursorNext"] = int(live_state.get("chunkCursorNext") or 0)
+    elif live_stream_requested:
+        payload["live"] = {
+            "enabled": True,
+            "playableChunks": 0,
+            "playableDurationMs": 0,
+        }
+        payload["chunkCursorNext"] = 0
+    if include_chunks and (isinstance(live_state, dict) or live_stream_requested):
+        def _chunk_index_value(chunk_item: dict[str, Any]) -> int:
+            raw_value = chunk_item.get("index")
+            try:
+                return int(raw_value)
+            except Exception:
+                return -1
+
+        safe_cursor = max(0, int(chunk_cursor or 0))
+        safe_limit = _safe_bounded_int(
+            chunk_limit,
+            default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
+            min_value=1,
+            max_value=VF_TTS_LIVE_CHUNK_LIMIT_MAX,
+        )
+        source_chunks = [
+            item
+            for item in list((live_state or {}).get("chunks") or [])
+            if isinstance(item, dict)
+        ]
+        source_chunks = [
+            item
+            for item in source_chunks
+            if _chunk_index_value(item) >= 0
+        ]
+        if not source_chunks:
+            source_chunks = _load_live_chunks_from_artifacts(
+                str(job.get("jobId") or ""),
+                engine=safe_engine,
+                trace_id=str(job.get("traceId") or ""),
+            )
+        if source_chunks and isinstance(payload.get("live"), dict):
+            playable_chunks = max(int(payload["live"].get("playableChunks") or 0), len(source_chunks))
+            playable_duration_ms = int(
+                max(
+                    int(payload["live"].get("playableDurationMs") or 0),
+                    sum(int(item.get("durationMs") or 0) for item in source_chunks),
+                )
+            )
+            payload["live"] = {
+                **payload["live"],
+                "playableChunks": playable_chunks,
+                "playableDurationMs": playable_duration_ms,
+            }
+        source_chunks.sort(key=_chunk_index_value)
+        visible = [
+            item
+            for item in source_chunks
+            if _chunk_index_value(item) >= safe_cursor
+        ][:safe_limit]
+        chunk_payloads: list[dict[str, Any]] = []
+        for item in visible:
+            safe_index = int(item.get("index") or 0)
+            chunk_item = {
+                "index": safe_index,
+                "contentType": str(item.get("contentType") or "audio/wav"),
+                "durationMs": int(item.get("durationMs") or 0),
+                "textChars": int(item.get("textChars") or 0),
+                "engine": str(item.get("engine") or ""),
+                "traceId": str(item.get("traceId") or ""),
+                "downloadUrl": f"/tts/jobs/{str(job.get('jobId') or '')}/chunks/{safe_index}",
+                "speakerId": str(item.get("speakerId") or ""),
+                "turnIndex": int(item.get("turnIndex") or safe_index),
+                "sessionEpoch": int(item.get("sessionEpoch") or 0),
+                "resumeAttempt": int(item.get("resumeAttempt") or 0),
+                "fallbackUsed": bool(item.get("fallbackUsed")),
+            }
+            if include_chunk_audio:
+                chunk_item["audioBase64"] = _load_live_chunk_audio_base64(item)
+            chunk_payloads.append(chunk_item)
+        payload["chunkCursor"] = int(safe_cursor)
+        payload["chunkCursorNext"] = int(safe_cursor + len(chunk_payloads))
+        payload["chunks"] = chunk_payloads
+    return payload
+
+
+def _response_from_completed_tts_job(job: dict[str, Any], gateway_lease: Optional[_TtsGatewayLease]) -> Response:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    content = _resolve_tts_result_audio_bytes(result)
+    if not content:
+        raise HTTPException(status_code=500, detail="Completed TTS job is missing audio payload.")
+
+    media_type = str(result.get("mediaType") or "audio/wav")
+    out_headers: dict[str, str] = {}
+    result_headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    for key, value in result_headers.items():
+        safe_key = str(key or "").strip()
+        if not safe_key:
+            continue
+        out_headers[safe_key] = str(value or "")
+    if gateway_lease is not None:
+        out_headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
+        out_headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
+    return Response(content=content, media_type=media_type, headers=out_headers)
+
+
+def _raise_failed_tts_job(job: dict[str, Any], *, default_headers: Optional[dict[str, str]] = None) -> None:
+    status_code = int(job.get("statusCode") or 500)
+    detail = job.get("error")
+    if detail is None:
+        detail = {"error": "TTS job failed."}
+    headers = dict(default_headers or {})
+    headers.update(
+        _error_headers_for_detail(
+            detail,
+            fallback_code=ENGINE_OVERLOADED,
+        )
+    )
+    raise HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
 def _post_tts_conversion_failure_detail(
@@ -30106,27 +27843,6 @@ def _post_tts_conversion_bypass_status(exc: Exception) -> str:
     return "bypassed_error"
 
 
-def _normalize_llvc_preset(value: str) -> str:
-    token = str(value or "").strip().lower().replace("-", "_")
-    if token in {"voice_transfer_hq_cpu", "llvc_hq_cpu", "cover_hq", "cover", "hq"}:
-        return "voice_transfer_hq_cpu"
-    if token in {"tts_realtime", "live", "realtime"}:
-        return "tts_realtime"
-    if token in {"auto", "auto_cpu", "cpu_auto", "adaptive", "adaptive_cpu"}:
-        return "auto_cpu"
-    fallback = str(VF_LLVC_PRESET_DEFAULT or "").strip().lower().replace("-", "_")
-    if fallback in {"voice_transfer_hq_cpu", "llvc_hq_cpu", "cover_hq", "cover", "hq"}:
-        return "voice_transfer_hq_cpu"
-    if fallback in {"auto", "auto_cpu", "cpu_auto", "adaptive", "adaptive_cpu"}:
-        return "auto_cpu"
-    return "tts_realtime"
-
-
-def _normalize_llvc_backend_mode(value: str) -> str:
-    _ = value
-    return "onnx"
-
-
 def _payload_uses_multi_speaker(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -30135,28 +27851,6 @@ def _payload_uses_multi_speaker(payload: Any) -> bool:
         return True
     speaker_voices = payload.get("speaker_voices")
     return isinstance(speaker_voices, list) and len(speaker_voices) > 1
-
-
-def _resolve_post_tts_llvc_preset(
-    requested_preset: str,
-    *,
-    audio_bytes: bytes,
-    live_stream: bool = False,
-    multi_speaker: bool = False,
-) -> tuple[str, str, int]:
-    normalized_preset = _normalize_llvc_preset(requested_preset)
-    duration_ms = 0
-    if normalized_preset != "auto_cpu":
-        return normalized_preset, normalized_preset, duration_ms
-    try:
-        duration_ms = int((_read_wav_info(audio_bytes) or {}).get("durationMs") or 0)
-    except Exception:
-        duration_ms = 0
-    if live_stream or multi_speaker:
-        return normalized_preset, "tts_realtime", duration_ms
-    if duration_ms >= int(VF_TTS_POST_LLVC_AUTO_HQ_MAX_MS):
-        return normalized_preset, "tts_realtime", duration_ms
-    return normalized_preset, "voice_transfer_hq_cpu", duration_ms
 
 
 def _safe_bounded_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -30911,1164 +28605,6 @@ def _resolve_tts_job_chunk(job: dict[str, Any], chunk_index: int) -> Optional[di
     return None
 
 
-def _convert_tts_audio_with_llvc_runtime(
-    *,
-    audio_bytes: bytes,
-    engine: str,
-    voice_id: str,
-    voice_name: str,
-    live_stream: bool = False,
-    multi_speaker: bool = False,
-) -> tuple[bytes, dict[str, str]]:
-    safe_engine = _normalize_engine_name(engine)
-    requested_token = str(voice_name or voice_id or "").strip()
-    resolved_voice_token = requested_token
-    if _is_gem_runtime_engine(safe_engine):
-        resolved_voice_token = _resolve_gem_runtime_voice_name(requested_token, fallback="Fenrir")
-    model_name, profile_id = _resolve_mapped_model_name(
-        safe_engine,
-        resolved_voice_token or voice_id,
-        voice_name=resolved_voice_token or voice_name,
-    )
-    if not model_name:
-        model_name, profile_id = _resolve_mapped_model_name(
-            safe_engine,
-            voice_id,
-            voice_name=voice_name,
-        )
-    if not model_name:
-        raise RuntimeError(f"No mapped voice-transfer model for {safe_engine}:{resolved_voice_token or voice_id or voice_name}.")
-    profile = _resolve_mapped_profile(
-        safe_engine,
-        resolved_voice_token or voice_id,
-        voice_name=resolved_voice_token or voice_name,
-    )
-    if not isinstance(profile, dict):
-        profile = _resolve_mapped_profile(safe_engine, voice_id, voice_name=voice_name)
-    profile_pitch_shift = _post_tts_llvc_pitch_shift_for_profile(profile)
-    llvc_runtime_url = _next_llvc_runtime_url()
-    requested_preset, selected_preset, audio_duration_ms = _resolve_post_tts_llvc_preset(
-        VF_TTS_POST_LLVC_PRESET,
-        audio_bytes=audio_bytes,
-        live_stream=live_stream,
-        multi_speaker=multi_speaker,
-    )
-    selected_backend_mode = _normalize_llvc_backend_mode(VF_TTS_POST_LLVC_BACKEND_MODE)
-
-    temp_dir = tempfile.mkdtemp(prefix="vf_tts_post_llvc_")
-    input_path = Path(temp_dir) / "tts_input.wav"
-    output_headers: dict[str, str] = {
-        "x-vf-post-tts-profile": str(profile_id or ""),
-        "x-vf-post-tts-model": str(model_name),
-        "x-vf-post-tts-preset": str(selected_preset),
-        "x-vf-post-tts-preset-initial": str(selected_preset),
-        "x-vf-post-tts-preset-requested": str(requested_preset),
-        "x-vf-post-tts-pitch-shift": str(int(profile_pitch_shift)),
-        "x-vf-post-tts-age-group": str(profile.get("ageGroup") or "") if isinstance(profile, dict) else "",
-        "x-vf-post-tts-gender": str(profile.get("gender") or "") if isinstance(profile, dict) else "",
-        "x-vf-post-tts-voice-token": str(resolved_voice_token or voice_id or voice_name),
-        "x-vf-post-tts-engine": str(safe_engine),
-        "x-vf-post-tts-requested-backend-mode": str(selected_backend_mode),
-        "x-vf-post-tts-voice-transfer-endpoint": str(llvc_runtime_url),
-    }
-    if audio_duration_ms > 0:
-        output_headers["x-vf-post-tts-input-duration-ms"] = str(int(audio_duration_ms))
-    try:
-        input_path.write_bytes(audio_bytes)
-        input_payload = input_path.read_bytes()
-        preset_attempts = [str(selected_preset)]
-        if selected_preset != "tts_realtime":
-            preset_attempts.append("tts_realtime")
-        last_error: Optional[Exception] = None
-        for attempt_preset in list(dict.fromkeys(preset_attempts)):
-            acquired = _TTS_LIVE_LLVC_SEMAPHORE.acquire(timeout=max(1.0, float(VF_TTS_POST_LLVC_TIMEOUT_SEC)))
-            if not acquired:
-                raise RuntimeError("Voice-transfer conversion queue timeout.")
-            try:
-                request_form = {
-                    "model_name": str(model_name),
-                    "preset": str(attempt_preset),
-                    "backend_mode": str(selected_backend_mode),
-                    "pitch_shift": str(int(profile_pitch_shift)),
-                }
-                response = requests.post(
-                    f"{llvc_runtime_url}/v1/convert",
-                    files={"file": ("tts_input.wav", input_payload, "audio/wav")},
-                    data=request_form,
-                    timeout=VF_TTS_POST_LLVC_TIMEOUT_SEC,
-                )
-            finally:
-                _TTS_LIVE_LLVC_SEMAPHORE.release()
-            try:
-                if not response.ok:
-                    detail = response.text[:260] if response.text else f"HTTP {response.status_code}"
-                    raise RuntimeError(f"Voice-transfer runtime conversion failed: {detail}")
-                converted_audio = bytes(response.content or b"")
-                _ensure_valid_audible_wav_bytes(
-                    converted_audio,
-                    source_label="Voice-transfer runtime",
-                )
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc if isinstance(exc, Exception) else RuntimeError(str(exc))
-                if attempt_preset != preset_attempts[-1]:
-                    continue
-                raise last_error
-
-            output_headers["x-vf-post-tts-conversion"] = "voice-transfer"
-            response_headers = getattr(response, "headers", {}) or {}
-            runtime_backend_mode = ""
-            runtime_preset = ""
-            if hasattr(response_headers, "get"):
-                runtime_backend_mode = str(response_headers.get("x-vf-voice-transfer-backend-mode") or "").strip()
-                runtime_preset = str(response_headers.get("x-vf-voice-transfer-preset") or "").strip()
-            final_preset = runtime_preset or str(attempt_preset)
-            output_headers["x-vf-post-tts-preset"] = final_preset
-            output_headers["x-vf-post-tts-backend-mode"] = runtime_backend_mode or "w_okada_rvc_onnx"
-            if final_preset != str(selected_preset):
-                output_headers["x-vf-post-tts-preset-fallback-from"] = str(selected_preset)
-            return converted_audio, output_headers
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Voice-transfer runtime conversion failed.")
-    finally:
-        _cleanup_paths(temp_dir)
-
-
-def _process_live_native_tts_job(
-    *,
-    current: dict[str, Any],
-    job_id: str,
-    uid: str,
-    request_id: str,
-    trace_id: str,
-    engine: str,
-    safe_engine: str,
-    text: str,
-    voice_name: str,
-    voice_id: str,
-    plan_name: str,
-    plan_key: str,
-    admin_limit_bypass: bool,
-    idempotency_key: str,
-    runtime_path: str,
-    upstream_url: str,
-    upstream_payload: dict[str, Any],
-    audio_audit_ids: list[str],
-) -> None:
-    if not VF_TTS_LIVE_NATIVE_ENABLED:
-        _mark_job_failed_and_revert_usage(
-            job_id=job_id,
-            uid=uid,
-            request_id=request_id,
-            status_code=409,
-            detail={
-                "error": "Live native mode is disabled.",
-                "reason": "live_native_disabled",
-                "trace_id": trace_id,
-                "jobId": job_id,
-            },
-            error_tag="live_native_disabled",
-        )
-        return
-
-    config = _normalize_live_native_config(current.get("liveNative"), fallback_topic=text)
-    cast = [dict(item) for item in list(config.get("cast") or []) if isinstance(item, dict)]
-    if len(cast) < 2:
-        _mark_job_failed_and_revert_usage(
-            job_id=job_id,
-            uid=uid,
-            request_id=request_id,
-            status_code=400,
-            detail={
-                "error": "Live native cast must include at least 2 speakers.",
-                "reason": "live_native_invalid_cast",
-                "trace_id": trace_id,
-                "jobId": job_id,
-            },
-            error_tag="live_native_invalid_cast",
-        )
-        return
-
-    topic = str(config.get("topic") or text or "").strip() or "AI and creative technology"
-    pacing_style = str(config.get("pacingStyle") or "fast-paced debate").strip() or "fast-paced debate"
-    seed_script = str(config.get("seedScript") or "").strip()
-    target_duration_sec = max(30, int(config.get("durationSec") or VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC))
-    speaker_count = max(2, min(4, int(config.get("speakerCount") or len(cast))))
-    cast = cast[:speaker_count]
-    if len(cast) < speaker_count:
-        cast = _default_live_native_cast(speaker_count)
-
-    limits = dict(config.get("limits") or {})
-    recovery = dict(config.get("recovery") or {})
-    output = dict(config.get("output") or {})
-    models = dict(config.get("models") or {})
-    session_max_sec = max(60, int(limits.get("sessionMaxSec") or VF_TTS_LIVE_NATIVE_SESSION_MAX_SEC))
-    connection_max_sec = max(30, min(session_max_sec, int(limits.get("connectionMaxSec") or VF_TTS_LIVE_NATIVE_CONNECTION_MAX_SEC)))
-    per_turn_timeout_sec = max(5, int(limits.get("perTurnTimeoutSec") or VF_TTS_LIVE_NATIVE_PER_TURN_TIMEOUT_SEC))
-    recovery_strategy = str(recovery.get("strategy") or "resume_then_fallback").strip().lower() or "resume_then_fallback"
-    raw_max_resume_attempts = recovery.get("maxResumeAttempts")
-    try:
-        parsed_max_resume_attempts = (
-            int(raw_max_resume_attempts)
-            if raw_max_resume_attempts is not None
-            else int(VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS)
-        )
-    except Exception:  # noqa: BLE001
-        parsed_max_resume_attempts = int(VF_TTS_LIVE_NATIVE_MAX_RESUME_ATTEMPTS)
-    max_resume_attempts = max(0, min(3, int(parsed_max_resume_attempts)))
-    fallback_mode = (
-        str(recovery.get("fallbackMode") or VF_TTS_LIVE_NATIVE_FALLBACK_MODE).strip().lower()
-        or VF_TTS_LIVE_NATIVE_FALLBACK_MODE
-    )
-    if fallback_mode not in {"runtime_nonlive_same_cast", "native_audio_only"}:
-        fallback_mode = "native_audio_only"
-    include_transcript = bool(output.get("includeTranscript", True))
-    auto_save = bool(output.get("autoSave", True))
-    native_audio_model = str(models.get("nativeAudio") or VF_TTS_LIVE_NATIVE_MODEL).strip() or VF_TTS_LIVE_NATIVE_MODEL
-    director_model = str(models.get("director") or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL).strip() or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL
-    native_audio_model_candidates = list(
-        dict.fromkeys(
-            str(item).strip()
-            for item in [native_audio_model, *VF_TTS_LIVE_NATIVE_MODEL_CANDIDATES]
-            if str(item).strip()
-        )
-    )
-    max_turns = min(
-        VF_TTS_LIVE_NATIVE_MAX_TURNS,
-        max(speaker_count * 2, int(round(target_duration_sec / 8.0)) + speaker_count),
-    )
-    approx_target_chars = max(120, int(target_duration_sec * 12))
-
-    base_upstream_payload = dict(upstream_payload or {})
-    base_upstream_payload.pop("multi_speaker_mode", None)
-    base_upstream_payload.pop("multi_speaker_line_map", None)
-    base_upstream_payload.pop("speaker_voices", None)
-    base_upstream_payload.pop("multi_speaker_max_concurrency", None)
-    base_upstream_payload.pop("multi_speaker_retry_once", None)
-    base_upstream_payload["engine"] = engine
-    language = _normalize_podcast_language(
-        config.get("language") or base_upstream_payload.get("language"),
-        default="en",
-    )
-    base_upstream_payload["language"] = language
-
-    live_started_ms = int(time.time() * 1000)
-    live_first_chunk_target_ms = max(
-        1,
-        int(current.get("liveFirstChunkTargetMs") or VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
-    )
-    first_chunk_deadline_ms = int(live_started_ms + live_first_chunk_target_ms)
-    session_started_ms = live_started_ms
-    connection_epoch_started_ms = live_started_ms
-    session_epoch = 0
-    total_resume_attempts = 0
-    total_fallbacks = 0
-    chunk_gap_count = 0
-    total_text_chars = 0
-    first_chunk_sla_fallback_used = False
-
-    transcript_turns: list[dict[str, Any]] = []
-    chunk_audio_bytes: list[bytes] = []
-    live_chunks_state: list[dict[str, Any]] = []
-    live_state: dict[str, Any] = {
-        "enabled": True,
-        "mode": "live_native",
-        "playableChunks": 0,
-        "playableDurationMs": 0,
-        "chunkCursorNext": 0,
-        "chunks": [],
-    }
-    live_orchestration: dict[str, Any] = {
-        "mode": "live_native",
-        "status": "running",
-        "topic": topic,
-        "language": language,
-        "targetDurationSec": int(target_duration_sec),
-        "speakerCount": int(speaker_count),
-        "activeSpeakerId": "",
-        "activeSpeakerName": "",
-        "turnIndex": 0,
-        "elapsedMs": 0,
-        "sessionEpoch": int(session_epoch),
-        "resumeCount": int(total_resume_attempts),
-        "fallbackCount": int(total_fallbacks),
-        "chunkGapCount": int(chunk_gap_count),
-        "chunkCount": 0,
-        "playableDurationMs": 0,
-        "firstChunkTargetMs": int(live_first_chunk_target_ms),
-        "updatedAtMs": int(live_started_ms),
-    }
-    _TTS_JOB_QUEUE.update(
-        job_id,
-        {
-            "mode": "live_native",
-            "liveStream": True,
-            "liveNativeConfig": config,
-            "liveState": live_state,
-            "liveOrchestration": live_orchestration,
-        },
-    )
-    _log_live_native_event(
-        job_id,
-        "run_start",
-        {
-            "topic": topic,
-            "speakerCount": speaker_count,
-            "targetDurationSec": target_duration_sec,
-            "maxTurns": max_turns,
-            "nativeModel": native_audio_model,
-            "directorModel": director_model,
-            "language": language,
-            "firstChunkTargetMs": int(live_first_chunk_target_ms),
-        },
-    )
-
-    def _job_cancelled() -> bool:
-        latest = _TTS_JOB_QUEUE.get(job_id)
-        if not isinstance(latest, dict):
-            return False
-        return str(latest.get("status") or "").strip().lower() == "cancelled"
-
-    def _mark_cancelled() -> None:
-        _record_tts_terminal_event(
-            job_id=job_id,
-            engine=safe_engine,
-            status="cancelled",
-            reason="cancelled_by_user",
-            status_code=409,
-        )
-        for audit_id in audio_audit_ids:
-            _audio_generation_audit_mark_terminal(
-                audit_id,
-                status="cancelled",
-                failure_code="cancelled_by_user",
-                failure_detail="TTS job was cancelled by the user.",
-                job_id=job_id,
-                request_id=request_id,
-                trace_id=trace_id,
-            )
-
-    def _first_chunk_deadline_exceeded() -> bool:
-        if chunk_audio_bytes:
-            return False
-        return int(time.time() * 1000) >= int(first_chunk_deadline_ms)
-
-    response_trace_id = ""
-    diagnostics_header = ""
-    runtime_model_header = ""
-    runtime_speech_mode_header = ""
-    runtime_usage_totals: dict[str, int] = {"promptTokens": 0, "outputTokens": 0, "totalTokens": 0}
-    media_type = "audio/wav"
-
-    for turn_index in range(max_turns):
-        if _job_cancelled():
-            _mark_cancelled()
-            return
-        now_ms = int(time.time() * 1000)
-        elapsed_ms = max(0, now_ms - live_started_ms)
-        if elapsed_ms >= max(0, target_duration_sec * 1000) and turn_index >= speaker_count:
-            break
-        if total_text_chars >= approx_target_chars and turn_index >= speaker_count:
-            break
-
-        if (now_ms - connection_epoch_started_ms) >= int(connection_max_sec * 1000):
-            session_epoch += 1
-            connection_epoch_started_ms = now_ms
-            _log_live_native_event(job_id, "connection_rotate", {"sessionEpoch": session_epoch, "turnIndex": turn_index})
-        if (now_ms - session_started_ms) >= int(session_max_sec * 1000):
-            session_epoch += 1
-            session_started_ms = now_ms
-            connection_epoch_started_ms = now_ms
-            _log_live_native_event(job_id, "session_rotate", {"sessionEpoch": session_epoch, "turnIndex": turn_index})
-
-        speaker = dict(cast[turn_index % speaker_count])
-        next_speaker = dict(cast[(turn_index + 1) % speaker_count])
-        speaker_id = str(speaker.get("id") or f"speaker_{turn_index % speaker_count}").strip() or f"speaker_{turn_index % speaker_count}"
-        speaker_name = str(speaker.get("name") or speaker_id.upper()).strip() or speaker_id.upper()
-        speaker_role = str(speaker.get("role") or "panelist").strip() or "panelist"
-        speaker_voice = _resolve_gem_runtime_voice_name(
-            str(speaker.get("voice") or voice_name or voice_id or "Puck").strip() or "Puck",
-            fallback=str(voice_name or voice_id or "Puck").strip() or "Puck",
-        )
-        next_speaker_name = str(next_speaker.get("name") or next_speaker.get("id") or "next speaker").strip() or "next speaker"
-
-        live_orchestration = {
-            **live_orchestration,
-            "activeSpeakerId": speaker_id,
-            "activeSpeakerName": speaker_name,
-            "turnIndex": int(turn_index),
-            "elapsedMs": int(elapsed_ms),
-            "sessionEpoch": int(session_epoch),
-            "updatedAtMs": int(now_ms),
-        }
-        _TTS_JOB_QUEUE.update(job_id, {"liveOrchestration": live_orchestration})
-        _log_live_native_event(
-            job_id,
-            "turn_start",
-            {
-                "turnIndex": turn_index,
-                "speakerId": speaker_id,
-                "speakerName": speaker_name,
-                "sessionEpoch": session_epoch,
-            },
-        )
-
-        turn_started_ms = int(time.time() * 1000)
-        transcript_window = _live_native_text_history(
-            transcript_turns,
-            limit_turns=VF_TTS_LIVE_NATIVE_TRANSCRIPT_WINDOW_TURNS,
-        )
-        generation_resume_attempts = 0
-        synthesis_resume_attempts = 0
-        fallback_used = False
-        turn_text = ""
-
-        while True:
-            try:
-                seed_script_hint = _live_native_seed_script_window(seed_script, turn_index=turn_index)
-                generation_timeout_sec = max(2, int(per_turn_timeout_sec))
-                if not chunk_audio_bytes:
-                    generation_timeout_sec = min(
-                        generation_timeout_sec,
-                        int(VF_TTS_LIVE_NATIVE_FIRST_CHUNK_TEXT_TIMEOUT_SEC),
-                    )
-                turn_text = _runtime_generate_live_native_turn_text(
-                    topic=topic,
-                    pacing_style=pacing_style,
-                    language=language,
-                    speaker=speaker,
-                    next_speaker=next_speaker,
-                    transcript_window=transcript_window,
-                    seed_script_hint=seed_script_hint,
-                    trace_id=f"{trace_id}:turn:{turn_index}:gen:{generation_resume_attempts}",
-                    timeout_sec=generation_timeout_sec,
-                    model=director_model,
-                )
-                break
-            except Exception as exc:  # noqa: BLE001
-                allow_resume = generation_resume_attempts < max_resume_attempts and not _first_chunk_deadline_exceeded()
-                if allow_resume:
-                    generation_resume_attempts += 1
-                    total_resume_attempts += 1
-                    session_epoch += 1
-                    connection_epoch_started_ms = int(time.time() * 1000)
-                    _record_tts_live_native_resume()
-                    _log_live_native_event(
-                        job_id,
-                        "resume_attempt",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "generate_text",
-                            "attempt": generation_resume_attempts,
-                            "error": str(exc)[:220],
-                            "sessionEpoch": session_epoch,
-                        },
-                    )
-                    continue
-                if _first_chunk_deadline_exceeded():
-                    _log_live_native_event(
-                        job_id,
-                        "first_chunk_sla_deadline",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "generate_text",
-                            "targetMs": int(live_first_chunk_target_ms),
-                        },
-                    )
-                break
-
-        if not turn_text:
-            if _first_chunk_deadline_exceeded():
-                first_chunk_sla_fallback_used = True
-            fallback_used = True
-            total_fallbacks += 1
-            _record_tts_live_native_fallback()
-            turn_text = _live_native_fallback_turn_text(
-                topic=topic,
-                speaker_name=speaker_name,
-                speaker_role=speaker_role,
-                next_speaker_name=next_speaker_name,
-                turn_index=turn_index,
-            )
-
-        synth_payload = dict(base_upstream_payload)
-        synth_payload["text"] = str(turn_text).strip()
-        synth_payload["voiceName"] = speaker_voice
-        synth_payload["voice_id"] = speaker_voice
-        synth_payload["voiceId"] = speaker_voice
-        synth_payload["model"] = native_audio_model
-        synth_payload["modelCandidates"] = list(native_audio_model_candidates)
-        synth_payload["request_id"] = f"{request_id}:turn:{turn_index}"
-        synth_payload["trace_id"] = f"{trace_id}:turn:{turn_index}:tts"
-
-        chunk_audio = b""
-        chunk_status_code = 500
-        while True:
-            if _job_cancelled():
-                _mark_cancelled()
-                return
-            if _first_chunk_deadline_exceeded() and not fallback_used:
-                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast":
-                    fallback_used = True
-                    first_chunk_sla_fallback_used = True
-                    total_fallbacks += 1
-                    _record_tts_live_native_fallback()
-                    synth_payload.pop("model", None)
-                    synth_payload.pop("modelCandidates", None)
-                    _log_live_native_event(
-                        job_id,
-                        "fallback_used",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "synthesize_sla",
-                            "reason": "live_first_chunk_sla_fallback",
-                            "targetMs": int(live_first_chunk_target_ms),
-                        },
-                    )
-                    continue
-                _mark_job_failed_and_revert_usage(
-                    job_id=job_id,
-                    uid=uid,
-                    request_id=request_id,
-                    status_code=503,
-                    detail={
-                        "error": "Live first chunk exceeded latency target and no fallback path was available.",
-                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
-                        "reason": "live_first_chunk_sla_fallback",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                        "turnIndex": turn_index,
-                        "retryAfterMs": 500,
-                        "timeoutMs": int(live_first_chunk_target_ms),
-                    },
-                    error_tag="live_first_chunk_sla_fallback",
-                )
-                return
-            runtime_started_ms = int(time.time() * 1000)
-            try:
-                runtime_timeout_sec = max(2, int(per_turn_timeout_sec))
-                if not chunk_audio_bytes:
-                    runtime_timeout_sec = min(
-                        runtime_timeout_sec,
-                        int(VF_TTS_LIVE_NATIVE_FIRST_CHUNK_SYNTH_TIMEOUT_SEC),
-                    )
-                    if _first_chunk_deadline_exceeded() or fallback_used:
-                        runtime_timeout_sec = min(
-                            runtime_timeout_sec,
-                            int(VF_TTS_LIVE_NATIVE_POST_DEADLINE_TIMEOUT_SEC),
-                        )
-                runtime_response = _runtime_tts_request_with_gemini_failover(
-                    "POST",
-                    upstream_url,
-                    engine=engine,
-                    trace_id=trace_id,
-                    job_id=job_id,
-                    json=synth_payload,
-                    timeout=runtime_timeout_sec,
-                )
-            except (RuntimeHttpError, requests.exceptions.Timeout, requests.exceptions.RequestException) as exc:
-                runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started_ms)
-                status_code, detail = _runtime_failure_payload_from_exception(
-                    exc if isinstance(exc, Exception) else RuntimeError(str(exc)),
-                    trace_id=trace_id,
-                    job_id=job_id,
-                    context_message="Live native turn synthesis failed",
-                )
-                _record_tts_runtime_latency(
-                    engine=safe_engine,
-                    elapsed_ms=runtime_elapsed,
-                )
-                _admin_usage_record_runtime_call(
-                    engine=engine,
-                    endpoint=runtime_path,
-                    method="POST",
-                    status_code=int(status_code),
-                    elapsed_ms=runtime_elapsed,
-                )
-                allow_resume = synthesis_resume_attempts < max_resume_attempts and not _first_chunk_deadline_exceeded()
-                if allow_resume:
-                    synthesis_resume_attempts += 1
-                    total_resume_attempts += 1
-                    session_epoch += 1
-                    connection_epoch_started_ms = int(time.time() * 1000)
-                    _record_tts_live_native_resume()
-                    _log_live_native_event(
-                        job_id,
-                        "resume_attempt",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "synthesize",
-                            "attempt": synthesis_resume_attempts,
-                            "error": str(detail.get("error") or str(exc))[:220],
-                            "sessionEpoch": session_epoch,
-                        },
-                    )
-                    continue
-                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
-                    fallback_used = True
-                    if _first_chunk_deadline_exceeded():
-                        first_chunk_sla_fallback_used = True
-                    total_fallbacks += 1
-                    _record_tts_live_native_fallback()
-                    synth_payload.pop("model", None)
-                    synth_payload.pop("modelCandidates", None)
-                    _log_live_native_event(
-                        job_id,
-                        "fallback_used",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "synthesize",
-                            "reason": "live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else str(detail.get("reason") or "runtime_unavailable"),
-                            "targetMs": int(live_first_chunk_target_ms),
-                        },
-                    )
-                    continue
-                if _first_chunk_deadline_exceeded():
-                    status_code = 503
-                    detail = {
-                        **dict(detail),
-                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
-                        "reason": "live_first_chunk_sla_fallback",
-                        "retryAfterMs": 500,
-                        "timeoutMs": int(live_first_chunk_target_ms),
-                    }
-                _mark_job_failed_and_revert_usage(
-                    job_id=job_id,
-                    uid=uid,
-                    request_id=request_id,
-                    status_code=int(status_code),
-                    detail=detail,
-                    error_tag=str(detail.get("reason") or "live_native_synthesize_failed"),
-                )
-                return
-            except Exception as exc:  # noqa: BLE001
-                runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started_ms)
-                status_code, detail = _runtime_failure_payload_from_exception(
-                    exc,
-                    trace_id=trace_id,
-                    job_id=job_id,
-                    context_message="Live native turn synthesis returned an invalid response",
-                )
-                _record_tts_runtime_latency(
-                    engine=safe_engine,
-                    elapsed_ms=runtime_elapsed,
-                )
-                _admin_usage_record_runtime_call(
-                    engine=engine,
-                    endpoint=runtime_path,
-                    method="POST",
-                    status_code=int(status_code),
-                    elapsed_ms=runtime_elapsed,
-                )
-                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
-                    fallback_used = True
-                    if _first_chunk_deadline_exceeded():
-                        first_chunk_sla_fallback_used = True
-                    total_fallbacks += 1
-                    _record_tts_live_native_fallback()
-                    synth_payload.pop("model", None)
-                    synth_payload.pop("modelCandidates", None)
-                    _log_live_native_event(
-                        job_id,
-                        "fallback_used",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "synthesize_invalid_response",
-                            "reason": str(detail.get("reason") or "runtime_bad_response"),
-                        },
-                    )
-                    continue
-                _mark_job_failed_and_revert_usage(
-                    job_id=job_id,
-                    uid=uid,
-                    request_id=request_id,
-                    status_code=int(status_code),
-                    detail=detail,
-                    error_tag=str(detail.get("reason") or "live_native_runtime_error"),
-                )
-                return
-
-            runtime_elapsed = max(0, int(time.time() * 1000) - runtime_started_ms)
-            chunk_status_code = int(runtime_response.status_code)
-            _record_tts_runtime_latency(engine=safe_engine, elapsed_ms=runtime_elapsed)
-            _admin_usage_record_runtime_call(
-                engine=engine,
-                endpoint=runtime_path,
-                method="POST",
-                status_code=chunk_status_code,
-                elapsed_ms=runtime_elapsed,
-            )
-            if not runtime_response.ok:
-                detail = _decode_runtime_error_detail(runtime_response)
-                response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
-                if isinstance(detail, dict) and response_trace_id and not detail.get("trace_id"):
-                    detail = {**detail, "trace_id": response_trace_id}
-                allow_resume = synthesis_resume_attempts < max_resume_attempts and not _first_chunk_deadline_exceeded()
-                if allow_resume:
-                    synthesis_resume_attempts += 1
-                    total_resume_attempts += 1
-                    session_epoch += 1
-                    connection_epoch_started_ms = int(time.time() * 1000)
-                    _record_tts_live_native_resume()
-                    _log_live_native_event(
-                        job_id,
-                        "resume_attempt",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "synthesize_http",
-                            "attempt": synthesis_resume_attempts,
-                            "statusCode": chunk_status_code,
-                            "sessionEpoch": session_epoch,
-                        },
-                    )
-                    continue
-                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
-                    fallback_used = True
-                    if _first_chunk_deadline_exceeded():
-                        first_chunk_sla_fallback_used = True
-                    total_fallbacks += 1
-                    _record_tts_live_native_fallback()
-                    synth_payload.pop("model", None)
-                    synth_payload.pop("modelCandidates", None)
-                    _log_live_native_event(
-                        job_id,
-                        "fallback_used",
-                        {
-                            "turnIndex": turn_index,
-                            "stage": "synthesize_http",
-                            "statusCode": chunk_status_code,
-                            "reason": "live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else str((detail or {}).get("reason") or "runtime_error"),
-                        },
-                    )
-                    continue
-                if _first_chunk_deadline_exceeded():
-                    detail = {
-                        **(dict(detail) if isinstance(detail, dict) else {}),
-                        "error": "Live first chunk exceeded latency target and switched to fallback handling.",
-                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK,
-                        "reason": "live_first_chunk_sla_fallback",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                        "turnIndex": turn_index,
-                        "retryAfterMs": 500,
-                        "timeoutMs": int(live_first_chunk_target_ms),
-                    }
-                    mapped_status = 503
-                else:
-                    mapped_status = _map_runtime_failure_status(engine, chunk_status_code, detail)
-                _mark_job_failed_and_revert_usage(
-                    job_id=job_id,
-                    uid=uid,
-                    request_id=request_id,
-                    status_code=int(mapped_status),
-                    detail=detail or {
-                        "error": "Live native synthesis failed.",
-                        "reason": "live_native_runtime_error",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                        "turnIndex": turn_index,
-                    },
-                    error_tag="live_native_runtime_error",
-                )
-                return
-
-            chunk_audio = bytes(runtime_response.content or b"")
-            if len(chunk_audio) < 100:
-                if recovery_strategy == "resume_then_fallback" and fallback_mode == "runtime_nonlive_same_cast" and not fallback_used:
-                    fallback_used = True
-                    if _first_chunk_deadline_exceeded():
-                        first_chunk_sla_fallback_used = True
-                    total_fallbacks += 1
-                    _record_tts_live_native_fallback()
-                    synth_payload.pop("model", None)
-                    synth_payload.pop("modelCandidates", None)
-                    _log_live_native_event(
-                        job_id,
-                        "fallback_used",
-                        {"turnIndex": turn_index, "stage": "synthesize_empty_audio"},
-                    )
-                    continue
-                _mark_job_failed_and_revert_usage(
-                    job_id=job_id,
-                    uid=uid,
-                    request_id=request_id,
-                    status_code=503 if _first_chunk_deadline_exceeded() else 502,
-                    detail={
-                        "error": "Live native turn returned empty audio.",
-                        "errorCode": LIVE_FIRST_CHUNK_SLA_FALLBACK if _first_chunk_deadline_exceeded() else RUNTIME_BAD_RESPONSE,
-                        "reason": "live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else "live_native_empty_audio",
-                        "trace_id": trace_id,
-                        "jobId": job_id,
-                        "turnIndex": turn_index,
-                        "retryAfterMs": 500 if _first_chunk_deadline_exceeded() else 0,
-                        "timeoutMs": int(live_first_chunk_target_ms) if _first_chunk_deadline_exceeded() else 0,
-                    },
-                    error_tag="live_first_chunk_sla_fallback" if _first_chunk_deadline_exceeded() else "live_native_empty_audio",
-                )
-                return
-
-            response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or response_trace_id or "").strip()
-            diagnostics_header = str(runtime_response.headers.get("x-voiceflow-diagnostics") or diagnostics_header or "").strip()
-            runtime_model_header = str(runtime_response.headers.get("x-voiceflow-model") or runtime_model_header or "").strip()
-            runtime_speech_mode_header = str(runtime_response.headers.get("x-voiceflow-speech-mode") or runtime_speech_mode_header or "").strip()
-            usage_header = _parse_runtime_usage_header(runtime_response.headers.get("x-voiceflow-usage"))
-            if usage_header:
-                runtime_usage_totals["promptTokens"] = int(runtime_usage_totals.get("promptTokens") or 0) + int(usage_header.get("promptTokens") or 0)
-                runtime_usage_totals["outputTokens"] = int(runtime_usage_totals.get("outputTokens") or 0) + int(usage_header.get("outputTokens") or 0)
-                runtime_usage_totals["totalTokens"] = int(runtime_usage_totals.get("totalTokens") or 0) + int(usage_header.get("totalTokens") or 0)
-            media_type = str(runtime_response.headers.get("content-type") or media_type or "audio/wav")
-            break
-
-        try:
-            chunk_index = len(chunk_audio_bytes)
-            if chunk_index != len(live_chunks_state):
-                gap = abs(chunk_index - len(live_chunks_state))
-                chunk_gap_count += gap
-                _record_tts_live_native_chunk_gap(gap=gap)
-            chunk_meta = _persist_live_chunk(
-                job_id,
-                chunk_index,
-                chunk_audio,
-                meta={
-                    "textChars": len(str(turn_text).strip()),
-                    "engine": safe_engine,
-                    "traceId": response_trace_id or trace_id,
-                    "speakerId": speaker_id,
-                    "speakerName": speaker_name,
-                    "voiceId": speaker_voice,
-                    "turnIndex": int(turn_index),
-                    "sessionEpoch": int(session_epoch),
-                    "resumeAttempt": int(generation_resume_attempts + synthesis_resume_attempts),
-                    "fallbackUsed": bool(fallback_used),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            _mark_job_failed_and_revert_usage(
-                job_id=job_id,
-                uid=uid,
-                request_id=request_id,
-                status_code=500,
-                detail={
-                    "error": f"Failed to persist live native chunk: {exc}",
-                    "reason": "live_native_chunk_persist_failed",
-                    "trace_id": trace_id,
-                    "jobId": job_id,
-                    "turnIndex": turn_index,
-                },
-                error_tag="live_native_chunk_persist_failed",
-            )
-            return
-
-        live_chunks_state.append(chunk_meta)
-        chunk_audio_bytes.append(chunk_audio)
-        turn_duration_ms = int(chunk_meta.get("durationMs") or 0)
-        playable_duration_ms = sum(int(item.get("durationMs") or 0) for item in live_chunks_state)
-        turn_latency_ms = max(0, int(time.time() * 1000) - turn_started_ms)
-        _record_tts_live_native_turn_latency(elapsed_ms=turn_latency_ms)
-        total_text_chars += len(str(turn_text).strip())
-
-        transcript_turns.append(
-            {
-                "turnIndex": int(turn_index),
-                "speakerId": speaker_id,
-                "speakerName": speaker_name,
-                "speakerRole": speaker_role,
-                "voice": speaker_voice,
-                "text": str(turn_text).strip(),
-                "durationMs": int(turn_duration_ms),
-                "latencyMs": int(turn_latency_ms),
-                "sessionEpoch": int(session_epoch),
-                "resumeAttempt": int(generation_resume_attempts + synthesis_resume_attempts),
-                "fallbackUsed": bool(fallback_used),
-                "createdAt": _safe_now_iso(),
-            }
-        )
-
-        live_state = {
-            **live_state,
-            "enabled": True,
-            "mode": "live_native",
-            "playableChunks": len(live_chunks_state),
-            "playableDurationMs": int(playable_duration_ms),
-            "chunkCursorNext": int(chunk_index + 1),
-            "chunks": list(live_chunks_state),
-        }
-        live_orchestration = {
-            **live_orchestration,
-            "activeSpeakerId": speaker_id,
-            "activeSpeakerName": speaker_name,
-            "turnIndex": int(turn_index),
-            "elapsedMs": max(0, int(time.time() * 1000) - live_started_ms),
-            "sessionEpoch": int(session_epoch),
-            "resumeCount": int(total_resume_attempts),
-            "fallbackCount": int(total_fallbacks),
-            "chunkGapCount": int(chunk_gap_count),
-            "chunkCount": len(live_chunks_state),
-            "playableDurationMs": int(playable_duration_ms),
-            "updatedAtMs": int(time.time() * 1000),
-        }
-        _TTS_JOB_QUEUE.update(job_id, {"liveState": live_state, "liveOrchestration": live_orchestration})
-        _log_live_native_event(
-            job_id,
-            "turn_end",
-            {
-                "turnIndex": turn_index,
-                "speakerId": speaker_id,
-                "resumeAttempt": generation_resume_attempts + synthesis_resume_attempts,
-                "fallbackUsed": bool(fallback_used),
-                "latencyMs": turn_latency_ms,
-                "statusCode": chunk_status_code,
-            },
-        )
-
-    if _job_cancelled():
-        _mark_cancelled()
-        return
-
-    if not chunk_audio_bytes:
-        _mark_job_failed_and_revert_usage(
-            job_id=job_id,
-            uid=uid,
-            request_id=request_id,
-            status_code=500,
-            detail={
-                "error": "Live native synthesis produced no chunks.",
-                "reason": "live_native_no_chunks",
-                "trace_id": trace_id,
-                "jobId": job_id,
-            },
-            error_tag="live_native_no_chunks",
-        )
-        return
-
-    _record_tts_live_chunk_count(chunk_count=len(chunk_audio_bytes))
-    try:
-        synthesized_audio_bytes = _concat_wav_chunks(chunk_audio_bytes)
-    except Exception as exc:
-        _mark_job_failed_and_revert_usage(
-            job_id=job_id,
-            uid=uid,
-            request_id=request_id,
-            status_code=500,
-            detail={
-                "error": f"Failed to merge live native chunks: {exc}",
-                "reason": "live_native_concat_failed",
-                "trace_id": trace_id,
-                "jobId": job_id,
-            },
-            error_tag="live_native_concat_failed",
-        )
-        return
-    if len(synthesized_audio_bytes) < 100:
-        _mark_job_failed_and_revert_usage(
-            job_id=job_id,
-            uid=uid,
-            request_id=request_id,
-            status_code=500,
-            detail={
-                "error": "Live native merged audio is empty.",
-                "reason": "live_native_concat_empty",
-                "trace_id": trace_id,
-                "jobId": job_id,
-            },
-            error_tag="live_native_concat_empty",
-        )
-        return
-
-    quota_headers: dict[str, str] = {}
-    if not admin_limit_bypass:
-        fingerprint = idempotency_key or request_id
-        try:
-            quota_decision = _commit_tts_success_quota(
-                uid,
-                plan_name,
-                plan_key,
-                trace_id,
-                request_fingerprint=fingerprint,
-            )
-        except HTTPException as quota_exc:
-            _mark_job_failed_and_revert_usage(
-                job_id=job_id,
-                uid=uid,
-                request_id=request_id,
-                status_code=quota_exc.status_code,
-                detail=quota_exc.detail,
-                error_tag="success_quota_exceeded",
-            )
-            return
-        quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
-
-    actual_billed_chars = max(0, int(total_text_chars))
-    _reprice_reserved_usage(
-        uid,
-        request_id,
-        engine,
-        actual_billed_chars,
-        bypass_limits=admin_limit_bypass,
-        bypass_reason="admin_request" if admin_limit_bypass else "",
-    )
-    _usage_event_attach_runtime_usage(
-        uid,
-        request_id,
-        runtime_usage_totals,
-        mode="live_native",
-        trace_id=response_trace_id or trace_id,
-    )
-    _finalize_usage(uid, request_id, success=True)
-    _build_tts_history_item(
-        uid=uid,
-        request_id=request_id,
-        trace_id=response_trace_id or trace_id,
-        engine=engine,
-        voice_name=voice_name,
-        voice_id=voice_id,
-        text=topic,
-    )
-
-    completed_headers: dict[str, str] = {"x-vf-request-id": request_id}
-    completed_headers.update(quota_headers)
-    if response_trace_id:
-        completed_headers["x-voiceflow-trace-id"] = response_trace_id
-    if diagnostics_header:
-        completed_headers["x-voiceflow-diagnostics"] = diagnostics_header
-    if runtime_model_header:
-        completed_headers["x-voiceflow-model"] = runtime_model_header
-    if runtime_speech_mode_header:
-        completed_headers["x-voiceflow-speech-mode"] = runtime_speech_mode_header
-    completed_headers["x-vf-live-stream"] = "1"
-    completed_headers["x-vf-live-mode"] = "live_native"
-    completed_headers["x-vf-live-chunks"] = str(len(chunk_audio_bytes))
-    completed_headers["x-vf-live-resume-count"] = str(total_resume_attempts)
-    completed_headers["x-vf-live-fallback-count"] = str(total_fallbacks)
-    completed_headers["x-vf-live-first-chunk-target-ms"] = str(int(live_first_chunk_target_ms))
-
-    result_ref = _persist_tts_result_audio(
-        job_id,
-        synthesized_audio_bytes,
-        str(media_type or "audio/wav"),
-    )
-    completed_job = _TTS_JOB_QUEUE.mark_completed(
-        job_id,
-        audio_bytes=synthesized_audio_bytes,
-        media_type=str(media_type or "audio/wav"),
-        headers=completed_headers,
-        result_ref=result_ref,
-    )
-
-    rendered_duration_ms = sum(int(item.get("durationMs") or 0) for item in live_chunks_state)
-    summary_payload = {
-        "mode": "live_native",
-        "topic": topic,
-        "language": language,
-        "seedScriptUsed": bool(seed_script),
-        "speakerCount": len(cast),
-        "targetDurationSec": target_duration_sec,
-        "renderedDurationMs": int(rendered_duration_ms),
-        "turns": len(transcript_turns),
-        "billedChars": int(actual_billed_chars),
-        "vfRate": float(_engine_rate(engine)),
-        "vfCost": float(actual_billed_chars) * float(_engine_rate(engine)),
-        "resumeCount": int(total_resume_attempts),
-        "fallbackCount": int(total_fallbacks),
-        "chunkGapCount": int(chunk_gap_count),
-        "sessionEpoch": int(session_epoch),
-        "firstChunkTargetMs": int(live_first_chunk_target_ms),
-        "firstChunkSlaFallbackUsed": bool(first_chunk_sla_fallback_used),
-        "recovery": {
-            "strategy": recovery_strategy,
-            "maxResumeAttempts": max_resume_attempts,
-            "fallbackMode": fallback_mode,
-            "firstChunkSlaFallbackUsed": bool(first_chunk_sla_fallback_used),
-        },
-        "limits": {
-            "sessionMaxSec": session_max_sec,
-            "connectionMaxSec": connection_max_sec,
-            "perTurnTimeoutSec": per_turn_timeout_sec,
-        },
-        "models": {
-            "nativeAudio": native_audio_model,
-            "director": director_model,
-            "runtimeModelUsed": runtime_model_header,
-        },
-        "generatedAt": _safe_now_iso(),
-    }
-    artifacts_payload: dict[str, Any] = {
-        "audio": {
-            "path": str(result_ref.get("path") or ""),
-            "downloadUrl": f"/tts/jobs/{job_id}/audio",
-            "contentType": str(media_type or "audio/wav"),
-        }
-    }
-    if auto_save and include_transcript:
-        try:
-            transcript_artifacts = _persist_tts_live_native_artifacts(
-                job_id=job_id,
-                transcript_turns=transcript_turns,
-                summary_payload=summary_payload,
-            )
-            artifacts_payload.update(transcript_artifacts)
-        except Exception as exc:  # noqa: BLE001
-            _log_live_native_event(job_id, "artifact_written", {"ok": False, "error": str(exc)[:220]})
-    _TTS_JOB_QUEUE.update(
-        job_id,
-        {
-            "mode": "live_native",
-            "liveNativeSummary": summary_payload,
-            "liveNativeArtifacts": artifacts_payload,
-            "liveOrchestration": {
-                **live_orchestration,
-                "status": "completed",
-                "activeSpeakerId": "",
-                "activeSpeakerName": "",
-                "updatedAtMs": int(time.time() * 1000),
-                "elapsedMs": max(0, int(time.time() * 1000) - live_started_ms),
-                "chunkCount": len(live_chunks_state),
-                "playableDurationMs": int(rendered_duration_ms),
-            },
-            "liveState": {
-                **live_state,
-                "enabled": True,
-                "mode": "live_native",
-                "playableChunks": len(live_chunks_state),
-                "playableDurationMs": int(rendered_duration_ms),
-                "chunkCursorNext": len(live_chunks_state),
-                "chunks": list(live_chunks_state),
-            },
-        },
-    )
-    _log_live_native_event(
-        job_id,
-        "artifact_written",
-        {
-            "ok": True,
-            "turns": len(transcript_turns),
-            "chunks": len(live_chunks_state),
-            "resumeCount": total_resume_attempts,
-            "fallbackCount": total_fallbacks,
-        },
-    )
-
-    audio_created_at = _safe_now_iso()
-    for audit_id in _audio_generation_audit_ids_from_job(completed_job or current):
-        _audio_generation_audit_mark_terminal(
-            audit_id,
-            status="completed",
-            job_id=str((completed_job or {}).get("jobId") or job_id),
-            request_id=str((completed_job or {}).get("requestId") or request_id),
-            trace_id=response_trace_id or trace_id,
-            audio_created_at=audio_created_at,
-        )
-    _record_tts_terminal_event(
-        job_id=job_id,
-        engine=safe_engine,
-        status="completed",
-        reason="completed",
-        status_code=200,
-    )
-    if isinstance(completed_job, dict):
-        _notification_emit_tts_job_terminal(completed_job, status="completed")
-
-
 def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     job_id = str(job.get("jobId") or "").strip()
     if not job_id:
@@ -32125,7 +28661,6 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     lane = _tts_job_lane_for_plan(
         plan_key,
         live_stream=bool(current.get("liveStream")),
-        mode=current.get("mode"),
     )
 
     if deadline_ms > 0 and int(time.time() * 1000) >= deadline_ms:
@@ -32188,30 +28723,6 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 )
                 return
             _record_tts_engine_active(engine=safe_engine, delta=1)
-
-        mode = _normalize_live_native_job_mode(current.get("mode"))
-        if mode == "live_native":
-            _process_live_native_tts_job(
-                current=current,
-                job_id=job_id,
-                uid=uid,
-                request_id=request_id,
-                trace_id=trace_id,
-                engine=engine,
-                safe_engine=safe_engine,
-                text=text,
-                voice_name=voice_name,
-                voice_id=voice_id,
-                plan_name=plan_name,
-                plan_key=plan_key,
-                admin_limit_bypass=admin_limit_bypass,
-                idempotency_key=idempotency_key,
-                runtime_path=runtime_path,
-                upstream_url=upstream_url,
-                upstream_payload=upstream_payload,
-                audio_audit_ids=audio_audit_ids,
-            )
-            return
 
         live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(current.get("liveStream"))
         if live_stream_requested:
@@ -33100,933 +29611,6 @@ def _get_authorized_tts_job(job_id: str, request: Request) -> tuple[str, str, bo
         raise HTTPException(status_code=403, detail="Not authorized to access this job.")
     return safe_job_id, uid, is_admin, job
 
-
-def _get_authorized_live_native_job(job_id: str, request: Request) -> tuple[str, str, bool, dict[str, Any]]:
-    safe_job_id, uid, is_admin, job = _get_authorized_tts_job(job_id, request)
-    mode = _normalize_live_native_job_mode(job.get("mode"))
-    if mode != "live_native":
-        raise HTTPException(status_code=404, detail="Live podcast job not found.")
-    return safe_job_id, uid, is_admin, job
-
-
-def _podcast_standard_job_get(job_id: str) -> Optional[dict[str, Any]]:
-    with PODCAST_STANDARD_JOB_LOCK:
-        job = PODCAST_STANDARD_JOBS.get(str(job_id or "").strip())
-        return copy.deepcopy(job) if isinstance(job, dict) else None
-
-
-def _podcast_standard_job_set(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    safe_job_id = str(job_id or "").strip()
-    safe_payload = copy.deepcopy(dict(payload or {}))
-    with PODCAST_STANDARD_JOB_LOCK:
-        PODCAST_STANDARD_JOBS[safe_job_id] = safe_payload
-        return copy.deepcopy(safe_payload)
-
-
-def _podcast_standard_job_update(job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    safe_job_id = str(job_id or "").strip()
-    with PODCAST_STANDARD_JOB_LOCK:
-        current = copy.deepcopy(PODCAST_STANDARD_JOBS.get(safe_job_id) or {})
-        current.update(copy.deepcopy(dict(patch or {})))
-        current["updatedAtMs"] = int(time.time() * 1000)
-        PODCAST_STANDARD_JOBS[safe_job_id] = current
-        return copy.deepcopy(current)
-
-
-def _get_authorized_podcast_standard_job(job_id: str, request: Request) -> tuple[str, str, bool, dict[str, Any]]:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _podcast_standard_job_get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Podcast standard job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    return safe_job_id, uid, is_admin, job
-
-
-def _podcast_standard_status_payload(
-    job: dict[str, Any],
-    *,
-    include_result: bool = False,
-    include_chunks: bool = False,
-    chunk_cursor: int = 0,
-    chunk_limit: int = VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
-    include_chunk_audio: bool = True,
-) -> dict[str, Any]:
-    payload = _tts_job_status_payload(
-        job,
-        include_result=include_result,
-        include_chunks=include_chunks,
-        chunk_cursor=chunk_cursor,
-        chunk_limit=chunk_limit,
-        include_chunk_audio=include_chunk_audio,
-    )
-    payload["mode"] = "podcast_standard"
-    payload["podcastMode"] = "standard"
-    orchestration = job.get("liveOrchestration")
-    if isinstance(orchestration, dict):
-        payload["liveOrchestration"] = dict(orchestration)
-    summary = job.get("podcastSummary")
-    if isinstance(summary, dict):
-        payload["liveSummary"] = dict(summary)
-    artifacts = job.get("podcastArtifacts")
-    if isinstance(artifacts, dict):
-        payload["artifacts"] = dict(artifacts)
-    return payload
-
-
-def _podcast_standard_artifact_files(job_id: str) -> dict[str, Path]:
-    root = _tts_live_job_dir(job_id)
-    root.mkdir(parents=True, exist_ok=True)
-    return {
-        "transcript_json": root / "podcast_transcript.json",
-        "transcript_txt": root / "podcast_transcript.txt",
-        "summary_json": root / "podcast_summary.json",
-    }
-
-
-def _persist_podcast_standard_artifacts(
-    *,
-    job_id: str,
-    transcript_turns: list[dict[str, Any]],
-    summary_payload: dict[str, Any],
-    audio_artifact: dict[str, Any],
-) -> dict[str, Any]:
-    files = _podcast_standard_artifact_files(job_id)
-    transcript_json_payload = {"turns": list(transcript_turns or [])}
-    transcript_txt_lines: list[str] = []
-    for item in list(transcript_turns or []):
-        if not isinstance(item, dict):
-            continue
-        speaker_name = str(item.get("speakerName") or item.get("speakerId") or "Speaker").strip()
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        transcript_txt_lines.append(f"{speaker_name}: {text}")
-
-    files["transcript_json"].write_text(json.dumps(transcript_json_payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    files["transcript_txt"].write_text("\n".join(transcript_txt_lines).strip(), encoding="utf-8")
-    files["summary_json"].write_text(json.dumps(dict(summary_payload or {}), ensure_ascii=True, indent=2), encoding="utf-8")
-
-    safe_job_id = str(job_id or "").strip()
-    return {
-        "audio": dict(audio_artifact),
-        "transcriptJson": {
-            "path": str(files["transcript_json"].resolve()),
-            "downloadUrl": f"/podcast/standard/jobs/{safe_job_id}/artifacts/transcript_json",
-            "contentType": "application/json",
-        },
-        "transcriptTxt": {
-            "path": str(files["transcript_txt"].resolve()),
-            "downloadUrl": f"/podcast/standard/jobs/{safe_job_id}/artifacts/transcript_txt",
-            "contentType": "text/plain",
-        },
-        "summaryJson": {
-            "path": str(files["summary_json"].resolve()),
-            "downloadUrl": f"/podcast/standard/jobs/{safe_job_id}/artifacts/summary_json",
-            "contentType": "application/json",
-        },
-    }
-
-
-def _parse_podcast_standard_script(script_text: str, cast: list[dict[str, Any]]) -> dict[str, Any]:
-    allowed_names = {
-        str(item.get("name") or "").strip().lower(): str(item.get("name") or "").strip()
-        for item in list(cast or [])
-        if str(item.get("name") or "").strip()
-    }
-    if not allowed_names:
-        raise RuntimeError("Standard podcast cast is empty.")
-
-    line_map: list[dict[str, Any]] = []
-    transcript_turns: list[dict[str, Any]] = []
-    speaker_voices: list[dict[str, str]] = []
-    speaker_voice_map = {
-        str(item.get("name") or "").strip().lower(): _resolve_gem_runtime_voice_name(
-            str(item.get("voice") or "Puck").strip() or "Puck",
-            fallback="Puck",
-        )
-        for item in list(cast or [])
-        if str(item.get("name") or "").strip()
-    }
-    seen_speakers: set[str] = set()
-    pattern = re.compile(r"^\s*([^:(]+?)\s*(?:\(([^)]+)\))?\s*:\s*(.+?)\s*$")
-
-    for raw_line in str(script_text or "").splitlines():
-        matched = pattern.match(str(raw_line or "").strip())
-        if not matched:
-            continue
-        speaker_raw = re.sub(r"\s+", " ", str(matched.group(1) or "")).strip()
-        emotion = re.sub(r"\s+", " ", str(matched.group(2) or "")).strip()
-        dialogue = re.sub(r"\s+", " ", str(matched.group(3) or "")).strip()
-        if not speaker_raw or not dialogue:
-            continue
-        speaker_key = speaker_raw.lower()
-        canonical_speaker = allowed_names.get(speaker_key)
-        if not canonical_speaker:
-            continue
-        text_value = f"(Tone: {emotion}) {dialogue}".strip() if emotion else dialogue
-        line_map.append(
-            {
-                "lineIndex": len(line_map),
-                "speaker": canonical_speaker,
-                "text": text_value,
-            }
-        )
-        transcript_turns.append(
-            {
-                "speakerId": canonical_speaker.lower(),
-                "speakerName": canonical_speaker,
-                "emotion": emotion or "Neutral",
-                "text": dialogue,
-            }
-        )
-        if speaker_key not in seen_speakers:
-            seen_speakers.add(speaker_key)
-            speaker_voices.append(
-                {
-                    "speaker": canonical_speaker,
-                    "voiceName": str(speaker_voice_map.get(speaker_key) or "Puck"),
-                }
-            )
-
-    if not line_map:
-        raise RuntimeError("Script generation returned no valid speaker lines.")
-    if len(seen_speakers) > VF_PODCAST_STANDARD_MAX_SPEAKERS:
-        raise RuntimeError("Standard podcast script exceeded the 6-speaker limit.")
-
-    rendered_script = "\n".join(
-        f"{str(item.get('speaker') or '').strip()}: {str(item.get('text') or '').strip()}"
-        for item in line_map
-    ).strip()
-    return {
-        "lineMap": line_map,
-        "speakerVoices": speaker_voices,
-        "transcriptTurns": transcript_turns,
-        "renderedScript": rendered_script,
-    }
-
-
-def _runtime_generate_podcast_standard_window(
-    *,
-    topic: str,
-    pacing_style: str,
-    language: str,
-    script_model: str,
-    script_model_candidates: list[str],
-    cast: list[dict[str, Any]],
-    transcript_tail: str,
-    window_chars: int,
-    trace_id: str,
-    window_index: int,
-    estimated_windows: int,
-) -> str:
-    cast_rows = "\n".join(
-        f"- {str(item.get('name') or '').strip()}: role={str(item.get('role') or '').strip()} persona={str(item.get('persona') or '').strip()}"
-        for item in list(cast or [])
-        if str(item.get("name") or "").strip()
-    )
-    system_prompt = (
-        "You are an expert podcast scriptwriter. "
-        "Output only dialogue lines in the exact format Speaker (Emotion): text. "
-        "Use only the provided cast names. "
-        "Emotions must be nuanced and human (for example: curious, skeptical, amused, tense, relieved). "
-        "Include natural non-linguistic cues in dialogue like [laughs], [sighs], [pause], [hmm], [chuckles] sparingly. "
-        "Keep it realistic, conversational, and ready for multi-speaker TTS."
-    )
-    user_prompt = "\n".join(
-        [
-            f"Topic: {topic}",
-            f"Language: {language}",
-            f"Pacing: {pacing_style}",
-            f"Window: {window_index + 1} of about {estimated_windows}",
-            f"Target chars for this window: <= {window_chars}",
-            "Allowed cast:",
-            cast_rows,
-            "Recent conversation context:",
-            transcript_tail or "(starting segment)",
-            "Write the next short podcast segment now.",
-            "Rules:",
-            "1. Use only the allowed cast names.",
-            "2. Each line must include an emotion label in parentheses.",
-            "3. Keep every line concise and podcast-natural.",
-            "4. Add subtle non-linguistic cues naturally (no more than one cue per line).",
-            "5. Keep dialogue realistic, with occasional brief disfluencies when appropriate.",
-            "6. No markdown, bullets, or headings.",
-            "7. No narration outside the dialogue format.",
-        ]
-    )
-    response = _runtime_http_request(
-        "POST",
-        f"{GEMINI_RUNTIME_URL}/v1/generate-text",
-        json={
-            "systemPrompt": system_prompt,
-            "userPrompt": user_prompt,
-            "jsonMode": False,
-            "temperature": 0.85,
-            "trace_id": trace_id,
-            "model": str(script_model or VF_PODCAST_STANDARD_SCRIPT_MODEL),
-            "modelCandidates": _normalize_model_candidates(
-                script_model_candidates,
-                default=[VF_PODCAST_STANDARD_SCRIPT_MODEL, *list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES)],
-            ),
-        },
-        timeout=120,
-    )
-    if not response.ok:
-        detail = _decode_runtime_error_detail(response)
-        raise RuntimeError(f"generate-text failed ({response.status_code}): {detail}")
-    payload = response.json()
-    text = str((payload or {}).get("text") or "").strip()
-    if not text:
-        raise RuntimeError("generate-text returned empty text.")
-    return text
-
-
-def _enqueue_podcast_standard_subjob(
-    *,
-    parent_job: dict[str, Any],
-    window_index: int,
-    script_text: str,
-    line_map: list[dict[str, Any]],
-    speaker_voices: list[dict[str, str]],
-) -> str:
-    uid = str(parent_job.get("uid") or "").strip()
-    trace_id = str(parent_job.get("traceId") or uuid.uuid4().hex).strip() or uuid.uuid4().hex
-    standard_engine = _normalize_podcast_standard_engine(parent_job.get("engine"))
-    admin_limit_bypass = bool(parent_job.get("adminLimitBypass"))
-    run_nonce = str(parent_job.get("runNonce") or "").strip() or uuid.uuid4().hex[:8]
-    request_id = f"{str(parent_job.get('jobId') or '').strip()}_{run_nonce}_window_{window_index + 1}"
-    model_config = (
-        dict((parent_job.get("standardConfig") or {}).get("models") or {})
-        if isinstance(parent_job.get("standardConfig"), dict)
-        else {}
-    )
-    tts_model_candidates = _normalize_model_candidates(
-        model_config.get("ttsCandidates"),
-        default=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
-    )
-    plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
-        uid,
-        len(script_text),
-        trace_id,
-        engine=standard_engine,
-        bypass=admin_limit_bypass,
-    )
-    if not admin_limit_bypass:
-        _precheck_tts_success_quota(uid, plan_name, plan_key, trace_id)
-    _reserve_usage(
-        uid,
-        request_id,
-        standard_engine,
-        len(script_text),
-        bypass_limits=admin_limit_bypass,
-        bypass_reason="admin_request" if admin_limit_bypass else "",
-    )
-    live_chunk_profile = _resolve_live_chunk_profile()
-    payload = TtsSynthesizeRequest(
-        engine=standard_engine,
-        text=script_text,
-        language=str(parent_job.get("language") or "en").strip() or "en",
-        voiceName=str((speaker_voices[0] or {}).get("voiceName") or "Puck"),
-        modelCandidates=tts_model_candidates,
-        speaker_voices=[dict(item) for item in list(speaker_voices or [])],
-        stream=True,
-        live_chunk_chars=int(live_chunk_profile["chunkChars"]),
-        live_chunk_words=int(live_chunk_profile["chunkWords"]),
-        multi_speaker_mode="studio_pair_groups",
-        multi_speaker_max_concurrency=2,
-        multi_speaker_retry_once=True,
-        multi_speaker_line_map=[dict(item) for item in list(line_map or [])],
-        request_id=request_id,
-        trace_id=f"{trace_id}_window_{window_index + 1}",
-    )
-    upstream_payload, voice_id = _build_tts_upstream_payload(
-        payload,
-        engine=standard_engine,
-        text=script_text,
-        request_id=request_id,
-        trace_id=str(payload.trace_id or trace_id),
-        plan_key=plan_key,
-    )
-    resolved_voice_name = str(upstream_payload.get("voiceName") or voice_id or payload.voiceName or "").strip()
-    if int(_TTS_JOB_QUEUE.depth_snapshot().get("total") or 0) >= VF_TTS_QUEUE_MAX_DEPTH:
-        _finalize_usage(uid, request_id, success=False, error_detail="queue_depth_limit")
-        raise RuntimeError("TTS queue depth limit reached.")
-    _ensure_tts_workers_started()
-    _cleanup_expired_live_artifacts()
-    _cleanup_expired_tts_result_artifacts()
-    runtime_base = _runtime_url_for_engine(standard_engine)
-    runtime_path = _runtime_synthesize_path_for_engine(standard_engine)
-    job_payload = {
-        "jobId": request_id,
-        "uid": uid,
-        "userId": str(parent_job.get("userId") or "").strip(),
-        "requestId": request_id,
-        "traceId": str(payload.trace_id or trace_id),
-        "engine": standard_engine,
-        "text": script_text,
-        "voiceId": voice_id,
-        "voiceName": resolved_voice_name,
-        "planName": plan_name,
-        "planKey": plan_key,
-        "adminLimitBypass": bool(admin_limit_bypass),
-        "idempotencyKey": "",
-        "runtimeBase": runtime_base,
-        "runtimePath": runtime_path,
-        "upstreamPayload": upstream_payload,
-        "mode": "",
-        "liveNative": None,
-        "deadlineAtMs": int(time.time() * 1000) + VF_TTS_QUEUE_JOB_TTL_MS,
-        "maxAttempts": VF_TTS_QUEUE_MAX_ATTEMPTS,
-        "liveStream": True,
-        "liveChunkChars": int(live_chunk_profile["chunkChars"]),
-        "liveChunkWords": int(live_chunk_profile["chunkWords"]),
-        "liveFirstChunkChars": int(live_chunk_profile["firstChunkChars"]),
-        "liveFirstChunkWords": int(live_chunk_profile["firstChunkWords"]),
-        "liveFirstChunkTargetMs": int(VF_TTS_LIVE_FIRST_CHUNK_TARGET_MS),
-        "audioAuditId": "",
-        "audioAuditIds": [],
-    }
-    lane = _tts_job_lane_for_plan(
-        plan_key,
-        live_stream=True,
-        mode="",
-    )
-    current_job = _TTS_JOB_QUEUE.enqueue(lane=lane, payload=job_payload)
-    _record_tts_job_enqueued(
-        job_id=request_id,
-        engine=standard_engine,
-        created_at_ms=int((current_job or {}).get("createdAtMs") or int(time.time() * 1000)),
-    )
-    return request_id
-
-
-def _wait_for_podcast_standard_subjob(
-    *,
-    parent_job_id: str,
-    child_job_id: str,
-    window_index: int,
-    next_parent_chunk_index: int,
-) -> dict[str, Any]:
-    child_cursor = 0
-    forwarded_chunk_index = max(0, int(next_parent_chunk_index))
-
-    while True:
-        parent_job = _podcast_standard_job_get(parent_job_id)
-        if not isinstance(parent_job, dict):
-            raise RuntimeError("Podcast standard job disappeared.")
-        parent_status = str(parent_job.get("status") or "").strip().lower()
-        if parent_status == "cancelled":
-            child_job = _TTS_JOB_QUEUE.cancel(child_job_id)
-            if isinstance(child_job, dict):
-                _finalize_usage(str(child_job.get("uid") or ""), str(child_job.get("requestId") or child_job_id), success=False, error_detail="podcast_parent_cancelled")
-            raise RuntimeError("Podcast standard job was cancelled.")
-
-        child_job = _TTS_JOB_QUEUE.get(child_job_id)
-        if not isinstance(child_job, dict):
-            time.sleep(0.25)
-            continue
-
-        live_state = child_job.get("liveState") if isinstance(child_job.get("liveState"), dict) else {}
-        child_chunks = [
-            dict(item)
-            for item in list((live_state or {}).get("chunks") or [])
-            if isinstance(item, dict)
-        ]
-        child_chunks.sort(key=lambda item: int(item.get("index") or 0))
-        new_chunks = [item for item in child_chunks if int(item.get("index") or 0) >= child_cursor]
-        if new_chunks:
-            parent_live_state = dict(parent_job.get("liveState") or {})
-            parent_chunks = [dict(item) for item in list(parent_live_state.get("chunks") or []) if isinstance(item, dict)]
-            parent_orchestration = dict(parent_job.get("liveOrchestration") or {})
-            for item in new_chunks:
-                chunk_path = Path(str(item.get("path") or "")).resolve()
-                if not chunk_path.exists() or not chunk_path.is_file():
-                    continue
-                chunk_audio = chunk_path.read_bytes()
-                chunk_meta = _persist_live_chunk(
-                    parent_job_id,
-                    forwarded_chunk_index,
-                    chunk_audio,
-                    meta={
-                        "textChars": int(item.get("textChars") or 0),
-                        "engine": str(item.get("engine") or child_job.get("engine") or ""),
-                        "traceId": str(item.get("traceId") or child_job.get("traceId") or ""),
-                        "speakerId": str(item.get("speakerId") or ""),
-                        "speakerName": str(item.get("speakerName") or ""),
-                        "turnIndex": int(item.get("turnIndex") or forwarded_chunk_index),
-                        "sessionEpoch": int(window_index),
-                        "resumeAttempt": int(item.get("resumeAttempt") or 0),
-                        "fallbackUsed": bool(item.get("fallbackUsed")),
-                    },
-                )
-                parent_chunks.append(chunk_meta)
-                forwarded_chunk_index += 1
-            child_cursor = max(child_cursor, max(int(item.get("index") or 0) for item in new_chunks) + 1)
-            playable_duration_ms = sum(int(item.get("durationMs") or 0) for item in parent_chunks)
-            parent_live_state = {
-                "enabled": True,
-                "mode": "podcast_standard",
-                "playableChunks": len(parent_chunks),
-                "playableDurationMs": int(playable_duration_ms),
-                "chunkCursorNext": int(len(parent_chunks)),
-                "chunks": parent_chunks,
-            }
-            parent_orchestration.update(
-                {
-                    "mode": "podcast_standard",
-                    "status": "running",
-                    "sessionEpoch": int(window_index),
-                    "chunkCount": len(parent_chunks),
-                    "playableDurationMs": int(playable_duration_ms),
-                    "updatedAtMs": int(time.time() * 1000),
-                }
-            )
-            _podcast_standard_job_update(
-                parent_job_id,
-                {
-                    "liveState": parent_live_state,
-                    "liveOrchestration": parent_orchestration,
-                },
-            )
-
-        status = str(child_job.get("status") or "").strip().lower()
-        if status == "completed":
-            result = child_job.get("result") if isinstance(child_job.get("result"), dict) else {}
-            audio_bytes = _resolve_tts_result_audio_bytes(result)
-            if not audio_bytes:
-                raise RuntimeError("Completed standard podcast sub-job is missing audio.")
-            return {
-                "audioBytes": audio_bytes,
-                "nextParentChunkIndex": forwarded_chunk_index,
-                "billedChars": len(str(child_job.get("text") or "")),
-            }
-        if status == "failed":
-            raise RuntimeError(str(child_job.get("error") or "Standard podcast sub-job failed."))
-        if status == "cancelled":
-            raise RuntimeError("Standard podcast sub-job was cancelled.")
-        time.sleep(0.35)
-
-
-def _process_podcast_standard_job(job_id: str) -> None:
-    job = _podcast_standard_job_get(job_id)
-    if not isinstance(job, dict):
-        return
-    config = dict(job.get("standardConfig") or {})
-    standard_engine = _normalize_podcast_standard_engine(config.get("engine") or job.get("engine"))
-    model_config = dict(config.get("models") or {})
-    script_model = str(model_config.get("script") or VF_PODCAST_STANDARD_SCRIPT_MODEL).strip() or VF_PODCAST_STANDARD_SCRIPT_MODEL
-    script_model_candidates = _normalize_model_candidates(
-        model_config.get("scriptCandidates"),
-        default=[script_model, *list(VF_PODCAST_STANDARD_SCRIPT_MODEL_CANDIDATES)],
-    )
-    tts_model_candidates = _normalize_model_candidates(
-        model_config.get("ttsCandidates"),
-        default=list(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES),
-    )
-    primary_tts_model = str((tts_model_candidates[0] if tts_model_candidates else VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES[0]) or "").strip() or str(VF_PODCAST_STANDARD_TTS_MODEL_CANDIDATES[0])
-    cast = [dict(item) for item in list(config.get("cast") or []) if isinstance(item, dict)]
-    transcript_turns: list[dict[str, Any]] = []
-    final_audio_chunks: list[bytes] = []
-    total_billed_chars = 0
-    next_parent_chunk_index = 0
-    completed_windows = 0
-    target_script_chars = int(config.get("targetScriptChars") or 0)
-    generated_script_chars = 0
-    estimated_windows = int(config.get("estimatedWindows") or 1)
-    seed_script = str(config.get("seedScript") or "").strip()
-    seed_script_consumed = False
-
-    def _mark_failed(message: str) -> None:
-        live_state = dict(job.get("liveState") or {})
-        orchestration = dict(job.get("liveOrchestration") or {})
-        orchestration.update({"status": "failed", "updatedAtMs": int(time.time() * 1000)})
-        _podcast_standard_job_update(
-            job_id,
-            {
-                "status": "failed",
-                "statusCode": 500,
-                "error": message,
-                "finishedAtMs": int(time.time() * 1000),
-                "liveState": live_state,
-                "liveOrchestration": orchestration,
-            },
-        )
-
-    try:
-        _podcast_standard_job_update(
-            job_id,
-            {
-                "status": "running",
-                "startedAtMs": int(time.time() * 1000),
-                "liveOrchestration": {
-                    **dict(job.get("liveOrchestration") or {}),
-                    "mode": "podcast_standard",
-                    "status": "running",
-                    "updatedAtMs": int(time.time() * 1000),
-                },
-            },
-        )
-
-        while generated_script_chars < target_script_chars:
-            snapshot = _podcast_standard_job_get(job_id)
-            if not isinstance(snapshot, dict):
-                return
-            if str(snapshot.get("status") or "").strip().lower() == "cancelled":
-                return
-
-            window_chars = min(
-                int(config.get("scriptWindowChars") or VF_PODCAST_STANDARD_SCRIPT_WINDOW_CHARS),
-                max(800, target_script_chars - generated_script_chars),
-            )
-            transcript_tail = "\n".join(
-                f"{str(item.get('speakerName') or item.get('speakerId') or 'Speaker')}: {str(item.get('text') or '').strip()}"
-                for item in transcript_turns[-12:]
-                if str(item.get("text") or "").strip()
-            ).strip()
-            live_orchestration = dict(snapshot.get("liveOrchestration") or {})
-            live_orchestration.update(
-                {
-                    "mode": "podcast_standard",
-                    "status": "running",
-                    "turnIndex": int(completed_windows),
-                    "elapsedMs": max(0, int(time.time() * 1000) - int(snapshot.get("createdAtMs") or int(time.time() * 1000))),
-                    "updatedAtMs": int(time.time() * 1000),
-                }
-            )
-            _podcast_standard_job_update(job_id, {"liveOrchestration": live_orchestration})
-
-            if not seed_script_consumed and seed_script:
-                raw_script = seed_script
-                if len(raw_script) > window_chars:
-                    truncated = raw_script[:window_chars]
-                    newline_index = truncated.rfind("\n")
-                    if newline_index > 200:
-                        truncated = truncated[:newline_index]
-                    raw_script = truncated.strip()
-                seed_script_consumed = True
-            else:
-                raw_script = _runtime_generate_podcast_standard_window(
-                    topic=str(config.get("topic") or ""),
-                    pacing_style=str(config.get("pacingStyle") or ""),
-                    language=str(config.get("language") or "en"),
-                    script_model=script_model,
-                    script_model_candidates=script_model_candidates,
-                    cast=cast,
-                    transcript_tail=transcript_tail,
-                    window_chars=window_chars,
-                    trace_id=f"{str(snapshot.get('traceId') or job_id)}_script_{completed_windows + 1}",
-                    window_index=completed_windows,
-                    estimated_windows=estimated_windows,
-                )
-            parsed = _parse_podcast_standard_script(raw_script, cast)
-            rendered_script = str(parsed.get("renderedScript") or "").strip()
-            if not rendered_script:
-                raise RuntimeError("Standard podcast script window rendered empty dialogue.")
-
-            child_job_id = _enqueue_podcast_standard_subjob(
-                parent_job=snapshot,
-                window_index=completed_windows,
-                script_text=rendered_script,
-                line_map=[dict(item) for item in list(parsed.get("lineMap") or [])],
-                speaker_voices=[dict(item) for item in list(parsed.get("speakerVoices") or [])],
-            )
-            subjob_result = _wait_for_podcast_standard_subjob(
-                parent_job_id=job_id,
-                child_job_id=child_job_id,
-                window_index=completed_windows,
-                next_parent_chunk_index=next_parent_chunk_index,
-            )
-            next_parent_chunk_index = int(subjob_result.get("nextParentChunkIndex") or next_parent_chunk_index)
-            billed_chars = int(subjob_result.get("billedChars") or len(rendered_script))
-            total_billed_chars += billed_chars
-            final_audio_chunks.append(bytes(subjob_result.get("audioBytes") or b""))
-            generated_script_chars += len(rendered_script)
-            completed_windows += 1
-
-            for item in list(parsed.get("transcriptTurns") or []):
-                if not isinstance(item, dict):
-                    continue
-                transcript_turns.append(
-                    {
-                        **dict(item),
-                        "windowIndex": int(completed_windows - 1),
-                    }
-                )
-
-            if completed_windows >= estimated_windows and generated_script_chars >= target_script_chars:
-                break
-
-        if not final_audio_chunks:
-            raise RuntimeError("Podcast standard generation produced no audio.")
-
-        synthesized_audio = _concat_wav_chunks(final_audio_chunks)
-        if not synthesized_audio:
-            raise RuntimeError("Podcast standard audio merge returned empty output.")
-        audio_ref = _persist_tts_result_audio(job_id, synthesized_audio, "audio/wav")
-        audio_artifact = {
-            "path": str(Path(str(audio_ref.get("path") or "")).resolve()),
-            "downloadUrl": f"/podcast/standard/jobs/{job_id}/audio",
-            "contentType": "audio/wav",
-        }
-        summary_payload = {
-            "podcastMode": "standard",
-            "engine": standard_engine,
-            "topic": str(config.get("topic") or ""),
-            "speakerCount": len(cast),
-            "durationSec": int(config.get("durationSec") or 0),
-            "scriptWindowCount": int(completed_windows),
-            "scriptCharsGenerated": int(generated_script_chars),
-            "billedChars": int(total_billed_chars),
-            "vfRate": float(_engine_rate(standard_engine)),
-            "vfCost": float(total_billed_chars) * float(_engine_rate(standard_engine)),
-            "language": str(config.get("language") or "en"),
-            "scriptModel": script_model,
-            "ttsModel": primary_tts_model,
-        }
-        artifacts = _persist_podcast_standard_artifacts(
-            job_id=job_id,
-            transcript_turns=transcript_turns,
-            summary_payload=summary_payload,
-            audio_artifact=audio_artifact,
-        )
-        live_state = {
-            "enabled": True,
-            "mode": "podcast_standard",
-            "playableChunks": int(next_parent_chunk_index),
-            "playableDurationMs": int(sum(_read_wav_info(chunk).get("durationMs") or 0 for chunk in final_audio_chunks)),
-            "chunkCursorNext": int(next_parent_chunk_index),
-            "chunks": list((_podcast_standard_job_get(job_id) or {}).get("liveState", {}).get("chunks", [])) if isinstance((_podcast_standard_job_get(job_id) or {}).get("liveState"), dict) else [],
-        }
-        orchestration = dict(((_podcast_standard_job_get(job_id) or {}).get("liveOrchestration")) or {})
-        orchestration.update(
-            {
-                "mode": "podcast_standard",
-                "status": "completed",
-                "targetDurationSec": int(config.get("durationSec") or 0),
-                "speakerCount": len(cast),
-                "turnIndex": int(completed_windows),
-                "chunkCount": int(next_parent_chunk_index),
-                "playableDurationMs": int(live_state.get("playableDurationMs") or 0),
-                "updatedAtMs": int(time.time() * 1000),
-            }
-        )
-        _podcast_standard_job_update(
-            job_id,
-            {
-                "status": "completed",
-                "finishedAtMs": int(time.time() * 1000),
-                "result": {
-                    "audioRef": audio_ref,
-                    "mediaType": "audio/wav",
-                    "headers": {
-                        "x-podcast-mode": "standard",
-                        "x-podcast-engine": standard_engine,
-                        "x-podcast-script-model": script_model,
-                        "x-podcast-tts-model": primary_tts_model,
-                    },
-                },
-                "engine": standard_engine,
-                "liveState": live_state,
-                "liveOrchestration": orchestration,
-                "podcastSummary": summary_payload,
-                "podcastArtifacts": artifacts,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        _mark_failed(str(exc))
-
-
-def _tts_job_status_payload(
-    job: dict[str, Any],
-    *,
-    include_result: bool = False,
-    include_chunks: bool = False,
-    chunk_cursor: int = 0,
-    chunk_limit: int = VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
-    include_chunk_audio: bool = True,
-) -> dict[str, Any]:
-    status = str(job.get("status") or "queued").strip().lower() or "queued"
-    now_ms = int(time.time() * 1000)
-    created_at_ms = int(job.get("createdAtMs") or 0)
-    queue_age_ms = max(0, now_ms - created_at_ms) if created_at_ms > 0 else 0
-    queue_depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
-    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "GEM"))
-    payload: dict[str, Any] = {
-        "ok": True,
-        "jobId": str(job.get("jobId") or ""),
-        "requestId": str(job.get("requestId") or ""),
-        "traceId": str(job.get("traceId") or ""),
-        "status": status,
-        "engine": str(job.get("engine") or ""),
-        "lane": str(job.get("lane") or ""),
-        "attempts": int(job.get("attempts") or 0),
-        "maxAttempts": int(job.get("maxAttempts") or VF_TTS_QUEUE_MAX_ATTEMPTS),
-        "createdAtMs": int(job.get("createdAtMs") or 0),
-        "updatedAtMs": int(job.get("updatedAtMs") or 0),
-        "startedAtMs": int(job.get("startedAtMs") or 0),
-        "finishedAtMs": int(job.get("finishedAtMs") or 0),
-        "deadlineAtMs": int(job.get("deadlineAtMs") or 0),
-        "queueAgeMs": int(queue_age_ms),
-        "queueDepthAtRead": int(queue_depth_snapshot.get("total") or 0),
-        "engineConcurrencyAtRead": int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(safe_engine) or 1),
-    }
-    mode = _normalize_live_native_job_mode(job.get("mode"))
-    if mode:
-        payload["mode"] = mode
-    if status == "failed":
-        payload["statusCode"] = int(job.get("statusCode") or 500)
-        payload["error"] = job.get("error")
-    if include_result and status == "completed":
-        result = dict(job.get("result") or {}) if isinstance(job.get("result"), dict) else {}
-        if result and not str(result.get("audioBase64") or "").strip():
-            resolved = _resolve_tts_result_audio_bytes(result)
-            if resolved:
-                result["audioBase64"] = base64.b64encode(resolved).decode("ascii")
-        payload["result"] = result
-
-    live_state = job.get("liveState") if isinstance(job.get("liveState"), dict) else {}
-    live_stream_requested = bool(job.get("liveStream"))
-    if isinstance(live_state, dict) and bool(live_state):
-        payload["live"] = {
-            "enabled": bool(live_state.get("enabled")),
-            "playableChunks": int(live_state.get("playableChunks") or 0),
-            "playableDurationMs": int(live_state.get("playableDurationMs") or 0),
-        }
-        payload["chunkCursorNext"] = int(live_state.get("chunkCursorNext") or 0)
-    elif live_stream_requested:
-        payload["live"] = {
-            "enabled": True,
-            "playableChunks": 0,
-            "playableDurationMs": 0,
-        }
-        payload["chunkCursorNext"] = 0
-    if mode == "live_native":
-        orchestration = job.get("liveOrchestration")
-        if isinstance(orchestration, dict):
-            payload["liveOrchestration"] = dict(orchestration)
-        summary = job.get("liveNativeSummary")
-        if isinstance(summary, dict):
-            payload["liveSummary"] = dict(summary)
-        artifacts = job.get("liveNativeArtifacts")
-        if isinstance(artifacts, dict):
-            payload["artifacts"] = dict(artifacts)
-
-    if include_chunks and (isinstance(live_state, dict) or live_stream_requested):
-        def _chunk_index_value(chunk_item: dict[str, Any]) -> int:
-            raw_value = chunk_item.get("index")
-            try:
-                return int(raw_value)
-            except Exception:
-                return -1
-
-        safe_cursor = max(0, int(chunk_cursor or 0))
-        safe_limit = _safe_bounded_int(
-            chunk_limit,
-            default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT,
-            min_value=1,
-            max_value=VF_TTS_LIVE_CHUNK_LIMIT_MAX,
-        )
-        source_chunks = [
-            item
-            for item in list((live_state or {}).get("chunks") or [])
-            if isinstance(item, dict)
-        ]
-        source_chunks = [
-            item
-            for item in source_chunks
-            if _chunk_index_value(item) >= 0
-        ]
-        if not source_chunks:
-            source_chunks = _load_live_chunks_from_artifacts(
-                str(job.get("jobId") or ""),
-                engine=safe_engine,
-                trace_id=str(job.get("traceId") or ""),
-            )
-        if source_chunks and isinstance(payload.get("live"), dict):
-            playable_chunks = max(int(payload["live"].get("playableChunks") or 0), len(source_chunks))
-            playable_duration_ms = int(
-                max(
-                    int(payload["live"].get("playableDurationMs") or 0),
-                    sum(int(item.get("durationMs") or 0) for item in source_chunks),
-                )
-            )
-            payload["live"] = {
-                **payload["live"],
-                "playableChunks": playable_chunks,
-                "playableDurationMs": playable_duration_ms,
-            }
-        source_chunks.sort(key=_chunk_index_value)
-        visible = [
-            item
-            for item in source_chunks
-            if _chunk_index_value(item) >= safe_cursor
-        ][:safe_limit]
-        chunk_payloads: list[dict[str, Any]] = []
-        for item in visible:
-            safe_index = int(item.get("index") or 0)
-            chunk_item = {
-                "index": safe_index,
-                "contentType": str(item.get("contentType") or "audio/wav"),
-                "durationMs": int(item.get("durationMs") or 0),
-                "textChars": int(item.get("textChars") or 0),
-                "engine": str(item.get("engine") or ""),
-                "traceId": str(item.get("traceId") or ""),
-                "downloadUrl": f"/tts/jobs/{str(job.get('jobId') or '')}/chunks/{safe_index}",
-                "speakerId": str(item.get("speakerId") or ""),
-                "turnIndex": int(item.get("turnIndex") or safe_index),
-                "sessionEpoch": int(item.get("sessionEpoch") or 0),
-                "resumeAttempt": int(item.get("resumeAttempt") or 0),
-                "fallbackUsed": bool(item.get("fallbackUsed")),
-            }
-            if include_chunk_audio:
-                chunk_item["audioBase64"] = _load_live_chunk_audio_base64(item)
-            chunk_payloads.append(chunk_item)
-        payload["chunkCursor"] = int(safe_cursor)
-        payload["chunkCursorNext"] = int(safe_cursor + len(chunk_payloads))
-        payload["chunks"] = chunk_payloads
-    return payload
-
-
-def _response_from_completed_tts_job(job: dict[str, Any], gateway_lease: Optional[_TtsGatewayLease]) -> Response:
-    result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    content = _resolve_tts_result_audio_bytes(result)
-    if not content:
-        raise HTTPException(status_code=500, detail="Completed TTS job is missing audio payload.")
-
-    media_type = str(result.get("mediaType") or "audio/wav")
-    out_headers: dict[str, str] = {}
-    result_headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
-    for key, value in result_headers.items():
-        safe_key = str(key or "").strip()
-        if not safe_key:
-            continue
-        out_headers[safe_key] = str(value or "")
-    if gateway_lease is not None:
-        out_headers["x-vf-gateway-wait-ms"] = str(int(gateway_lease.wait_ms))
-        out_headers["x-vf-gateway-queued"] = "1" if gateway_lease.queued else "0"
-    return Response(content=content, media_type=media_type, headers=out_headers)
-
-
-def _raise_failed_tts_job(job: dict[str, Any], *, default_headers: Optional[dict[str, str]] = None) -> None:
-    status_code = int(job.get("statusCode") or 500)
-    detail = job.get("error")
-    if detail is None:
-        detail = {"error": "TTS job failed."}
-    headers = dict(default_headers or {})
-    headers.update(
-        _error_headers_for_detail(
-            detail,
-            fallback_code=ENGINE_OVERLOADED,
-        )
-    )
-    raise HTTPException(status_code=status_code, detail=detail, headers=headers)
-
-
 def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wait_ms: int) -> Response:
     safe_sync_wait_ms = max(0, min(60_000, int(sync_wait_ms)))
     uid = _require_request_uid(request)
@@ -34034,44 +29618,7 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
     resolved_user_id = _resolve_request_user_id(request, uid)
     raw_text = str(payload.text or "")
     text = raw_text.strip()
-    raw_mode = str(payload.mode or "").strip()
-    requested_mode = _normalize_live_native_job_mode(payload.mode)
-    live_native_requested = requested_mode == "live_native"
     billable_char_count = len(text)
-    if raw_mode and not live_native_requested:
-        raise HTTPException(status_code=400, detail="mode must be 'live_native' when provided.")
-    live_native_config: Optional[dict[str, Any]] = None
-    if live_native_requested:
-        raw_live_native = None
-        if isinstance(payload.liveNative, BaseModel):
-            if hasattr(payload.liveNative, "model_dump"):
-                raw_live_native = payload.liveNative.model_dump(exclude_none=True)  # type: ignore[attr-defined]
-            else:
-                raw_live_native = payload.liveNative.dict(exclude_none=True)
-        elif isinstance(payload.liveNative, dict):
-            raw_live_native = dict(payload.liveNative)
-        _validate_live_native_request_shape(raw_live_native)
-        live_native_config = _normalize_live_native_config(raw_live_native, fallback_topic=text)
-        if not text:
-            text = str((live_native_config or {}).get("topic") or "").strip()
-        live_duration_sec = _safe_bounded_int(
-            (live_native_config or {}).get("durationSec"),
-            default=VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC,
-            min_value=30,
-            max_value=max(30, VF_TTS_QUEUE_JOB_TTL_MS // 1000),
-        )
-        live_speaker_count = _safe_bounded_int(
-            (live_native_config or {}).get("speakerCount"),
-            default=4,
-            min_value=2,
-            max_value=4,
-        )
-        billable_char_count = max(
-            len(text),
-            int(max(120, live_duration_sec * 12) + (live_speaker_count * 240)),
-        )
-    else:
-        billable_char_count = len(text)
     engine = _normalize_engine_name(payload.engine)
     idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
     request_id = str(payload.request_id or idempotency_key or uuid.uuid4().hex).strip()
@@ -34119,16 +29666,6 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
                 _audio_generation_audit_update(audit_id, {"userId": resolved_user_id})
         if not text:
             raise HTTPException(status_code=400, detail="text is required.")
-        if live_native_requested and not VF_TTS_LIVE_NATIVE_ENABLED:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "Live native mode is disabled.",
-                    "reason": "live_native_disabled",
-                    "trace_id": trace_id,
-                    "jobId": request_id,
-                },
-            )
 
         plan_name, plan_key, _guardrails = _enforce_tts_plan_guardrails(
             uid,
@@ -34175,8 +29712,6 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
             runtime_base = _runtime_url_for_engine(engine)
             runtime_path = _runtime_synthesize_path_for_engine(engine)
             live_stream_requested = VF_TTS_LIVE_STREAM_ENABLED and bool(payload.stream)
-            if live_native_requested:
-                live_stream_requested = True
             live_chunk_chars = None
             live_chunk_words = None
             live_first_chunk_chars = None
@@ -34269,7 +29804,6 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
                 lane = _tts_job_lane_for_plan(
                     plan_key,
                     live_stream=bool(live_stream_requested),
-                    mode=requested_mode or "",
                 )
                 job_payload = {
                     "jobId": request_id,
@@ -34288,8 +29822,6 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
                     "runtimeBase": runtime_base,
                     "runtimePath": runtime_path,
                     "upstreamPayload": upstream_payload,
-                    "mode": requested_mode or "",
-                    "liveNative": live_native_config or None,
                     "deadlineAtMs": deadline_at_ms,
                     "maxAttempts": VF_TTS_QUEUE_MAX_ATTEMPTS if safe_sync_wait_ms <= 0 else 1,
                     "liveStream": bool(live_stream_requested),
@@ -34561,51 +30093,6 @@ def tts_job_chunk_download(job_id: str, chunk_index: int, request: Request) -> R
     )
 
 
-@app.get("/tts/jobs/{job_id}/artifacts/{artifact_kind}")
-def tts_job_artifact_download(job_id: str, artifact_kind: str, request: Request) -> Response:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    mode = _normalize_live_native_job_mode(job.get("mode"))
-    if mode != "live_native":
-        raise HTTPException(status_code=404, detail="Artifacts are not available for this job.")
-    artifacts = job.get("liveNativeArtifacts")
-    if not isinstance(artifacts, dict):
-        raise HTTPException(status_code=404, detail="No artifacts found for this job.")
-
-    aliases = {
-        "transcript_json": "transcriptJson",
-        "transcript_txt": "transcriptTxt",
-        "summary_json": "summaryJson",
-        "audio": "audio",
-    }
-    token = str(artifact_kind or "").strip().lower()
-    key = aliases.get(token)
-    if not key:
-        raise HTTPException(status_code=404, detail="Artifact kind is not supported.")
-    artifact = artifacts.get(key)
-    if not isinstance(artifact, dict):
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    path = Path(str(artifact.get("path") or "")).resolve()
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact file not found.")
-    media_type = str(artifact.get("contentType") or "application/octet-stream")
-    suffix = path.suffix if path.suffix else ".bin"
-    return FileResponse(
-        str(path),
-        media_type=media_type,
-        filename=f"{safe_job_id}_{token}{suffix}",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 @app.delete("/tts/jobs/{job_id}")
 def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
@@ -34642,512 +30129,6 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
         )
     _notification_emit_tts_job_terminal(cancelled, status="cancelled", detail="cancelled_by_user")
     return JSONResponse({"ok": True, "job": _tts_job_status_payload(cancelled, include_result=False)})
-
-
-@app.post("/podcast/live/jobs")
-def podcast_live_job_create(payload: PodcastLiveJobRequest, request: Request) -> JSONResponse:
-    raw_duration_sec = payload.durationSec if payload.durationSec is not None else VF_TTS_LIVE_NATIVE_DEFAULT_DURATION_SEC
-    try:
-        safe_duration_sec = int(raw_duration_sec)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="durationSec must be an integer between 60 and 1800.") from exc
-    if safe_duration_sec < 60 or safe_duration_sec > 1800:
-        raise HTTPException(status_code=400, detail="durationSec must be between 60 and 1800.")
-    live_request = TtsSynthesizeRequest(
-        engine="GEM",
-        text=str(payload.topic or "").strip(),
-        mode="live_native",
-        liveNative=LiveNativeConfigRequest(
-            topic=payload.topic,
-            durationSec=safe_duration_sec,
-            speakerCount=payload.speakerCount,
-            cast=payload.cast,
-            limits=payload.limits,
-            recovery=payload.recovery,
-            output=payload.output,
-            pacingStyle=payload.pacingStyle,
-            language=payload.language,
-            seedScript=payload.seedScript,
-            nativeAudioModel=VF_TTS_LIVE_NATIVE_MODEL,
-            directorModel=str(payload.directorModel or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL).strip() or VF_TTS_LIVE_NATIVE_DIRECTOR_MODEL,
-        ),
-        language=str(payload.language or "en").strip() or "en",
-        request_id=payload.request_id,
-        trace_id=payload.trace_id,
-        stream=True,
-    )
-    response = _submit_tts_job(live_request, request, sync_wait_ms=0)
-    if isinstance(response, JSONResponse):
-        return response
-    if isinstance(response, Response):
-        encoded = base64.b64encode(bytes(response.body or b"")).decode("ascii")
-        headers = {str(k): str(v) for k, v in dict(response.headers or {}).items()}
-        return JSONResponse(
-            {
-                "ok": True,
-                "accepted": True,
-                "status": "completed",
-                "result": {
-                    "audioBase64": encoded,
-                    "mediaType": str(response.media_type or "audio/wav"),
-                    "headers": headers,
-                },
-            }
-        )
-    return JSONResponse({"ok": True, "accepted": True}, status_code=202)
-
-
-@app.get("/podcast/live/jobs/{job_id}")
-def podcast_live_job_status(
-    job_id: str,
-    request: Request,
-    includeResult: bool = False,
-    includeChunks: bool = False,
-    chunkCursor: int = 0,
-    chunkLimit: int = Query(default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT, ge=1, le=VF_TTS_LIVE_CHUNK_LIMIT_MAX),
-    includeChunkAudio: bool = True,
-) -> JSONResponse:
-    safe_job_id, _uid, _is_admin, job = _get_authorized_live_native_job(job_id, request)
-    return JSONResponse(
-        _tts_job_status_payload(
-            job,
-            include_result=bool(includeResult),
-            include_chunks=bool(includeChunks),
-            chunk_cursor=max(0, int(chunkCursor or 0)),
-            chunk_limit=int(chunkLimit),
-            include_chunk_audio=bool(includeChunkAudio),
-        )
-    )
-
-
-@app.get("/podcast/live/jobs/{job_id}/audio")
-def podcast_live_job_audio_download(job_id: str, request: Request) -> Response:
-    _safe_job_id, _uid, _is_admin, job = _get_authorized_live_native_job(job_id, request)
-    status = str(job.get("status") or "").strip().lower()
-    if status == "completed":
-        return _response_from_completed_tts_job(job, gateway_lease=None)
-    if status == "failed":
-        _raise_failed_tts_job(job)
-    if status == "cancelled":
-        raise HTTPException(status_code=409, detail="Live podcast job was cancelled.")
-    raise HTTPException(status_code=409, detail="Live podcast audio is not ready yet.")
-
-
-@app.get("/podcast/live/jobs/{job_id}/chunks/{chunk_index}")
-def podcast_live_job_chunk_download(job_id: str, chunk_index: int, request: Request) -> Response:
-    safe_job_id, _uid, _is_admin, job = _get_authorized_live_native_job(job_id, request)
-    chunk_meta = _resolve_tts_job_chunk(job, chunk_index)
-    if not isinstance(chunk_meta, dict):
-        raise HTTPException(status_code=404, detail="Chunk not found.")
-
-    chunk_path = Path(str(chunk_meta.get("path") or "")).resolve()
-    if not chunk_path.exists() or not chunk_path.is_file():
-        raise HTTPException(status_code=404, detail="Chunk file not found.")
-
-    media_type = str(chunk_meta.get("contentType") or "audio/wav")
-    return FileResponse(
-        str(chunk_path),
-        media_type=media_type,
-        filename=f"{safe_job_id}_chunk_{max(0, int(chunk_index)):04d}.wav",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.get("/podcast/live/jobs/{job_id}/artifacts/{artifact_kind}")
-def podcast_live_job_artifact_download(job_id: str, artifact_kind: str, request: Request) -> Response:
-    safe_job_id, _uid, _is_admin, job = _get_authorized_live_native_job(job_id, request)
-    artifacts = job.get("liveNativeArtifacts")
-    if not isinstance(artifacts, dict):
-        raise HTTPException(status_code=404, detail="No artifacts found for this job.")
-
-    aliases = {
-        "transcript_json": "transcriptJson",
-        "transcript_txt": "transcriptTxt",
-        "summary_json": "summaryJson",
-        "audio": "audio",
-    }
-    token = str(artifact_kind or "").strip().lower()
-    key = aliases.get(token)
-    if not key:
-        raise HTTPException(status_code=404, detail="Artifact kind is not supported.")
-    artifact = artifacts.get(key)
-    if not isinstance(artifact, dict):
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    path = Path(str(artifact.get("path") or "")).resolve()
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact file not found.")
-    media_type = str(artifact.get("contentType") or "application/octet-stream")
-    suffix = path.suffix if path.suffix else ".bin"
-    return FileResponse(
-        str(path),
-        media_type=media_type,
-        filename=f"{safe_job_id}_{token}{suffix}",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.delete("/podcast/live/jobs/{job_id}")
-def podcast_live_job_cancel(job_id: str, request: Request) -> JSONResponse:
-    safe_job_id, _uid, _is_admin, _job = _get_authorized_live_native_job(job_id, request)
-    cancelled = _TTS_JOB_QUEUE.cancel(safe_job_id)
-    if not isinstance(cancelled, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    _cleanup_live_artifacts(safe_job_id)
-    _cleanup_tts_result_artifact(safe_job_id)
-    _record_tts_terminal_event(
-        job_id=safe_job_id,
-        engine=str(cancelled.get("engine") or "GEM"),
-        status="cancelled",
-        reason="cancelled_by_user",
-        status_code=409,
-    )
-    for audit_id in _audio_generation_audit_ids_from_job(cancelled):
-        _audio_generation_audit_mark_terminal(
-            audit_id,
-            status="cancelled",
-            failure_code="cancelled_by_user",
-            failure_detail="Live podcast job was cancelled by the user.",
-            job_id=safe_job_id,
-            request_id=str(cancelled.get("requestId") or safe_job_id),
-            trace_id=str(cancelled.get("traceId") or safe_job_id),
-        )
-    _notification_emit_tts_job_terminal(cancelled, status="cancelled", detail="cancelled_by_user")
-    return JSONResponse({"ok": True, "job": _tts_job_status_payload(cancelled, include_result=False)})
-
-
-@app.post("/podcast/standard/jobs")
-def podcast_standard_job_create(payload: PodcastStandardJobRequest, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    resolved_user_id = _resolve_request_user_id_read_only(uid)
-    if not is_admin:
-        profile = _require_user_id_ready(request, uid)
-        profile_user_id = str((profile or {}).get("userId") or "").strip().lower()
-        if profile_user_id:
-            resolved_user_id = profile_user_id
-    elif not resolved_user_id:
-        resolved_user_id = _resolve_request_user_id(request, uid)
-
-    raw_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
-    _validate_podcast_standard_request_shape(raw_payload)
-    normalized = _normalize_podcast_standard_config(raw_payload, fallback_topic=str(payload.topic or "").strip())
-    standard_engine = _normalize_podcast_standard_engine(normalized.get("engine"))
-
-    request_id = str(payload.request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
-    trace_id = str(payload.trace_id or request_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
-    existing_job = _podcast_standard_job_get(request_id)
-    if isinstance(existing_job, dict):
-        owner_uid = str(existing_job.get("uid") or "").strip()
-        if not owner_uid or owner_uid != uid:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "request_id is already associated with a different user.",
-                    "errorCode": REQUEST_ID_CONFLICT,
-                    "reason": "request_id_owner_conflict",
-                    "jobId": request_id,
-                    "trace_id": trace_id,
-                },
-            )
-        status_payload = _podcast_standard_status_payload(existing_job, include_result=False)
-        status_payload["accepted"] = False
-        status_payload["reused"] = True
-        return JSONResponse(status_payload, status_code=200)
-
-    now_ms = int(time.time() * 1000)
-    orchestration = {
-        "mode": "podcast_standard",
-        "status": "queued",
-        "topic": str(normalized.get("topic") or ""),
-        "targetDurationSec": int(normalized.get("durationSec") or 0),
-        "speakerCount": int(normalized.get("speakerCount") or 0),
-        "activeSpeakerId": "",
-        "activeSpeakerName": "",
-        "turnIndex": 0,
-        "elapsedMs": 0,
-        "sessionEpoch": 0,
-        "resumeCount": 0,
-        "fallbackCount": 0,
-        "chunkGapCount": 0,
-        "chunkCount": 0,
-        "playableDurationMs": 0,
-        "updatedAtMs": now_ms,
-    }
-    job_payload = {
-        "jobId": request_id,
-        "requestId": request_id,
-        "traceId": trace_id,
-        "uid": uid,
-        "userId": resolved_user_id,
-        "engine": standard_engine,
-        "text": str(normalized.get("topic") or ""),
-        "language": str(normalized.get("language") or "en"),
-        "mode": "podcast_standard",
-        "status": "queued",
-        "createdAtMs": now_ms,
-        "updatedAtMs": now_ms,
-        "startedAtMs": 0,
-        "finishedAtMs": 0,
-        "statusCode": 202,
-        "deadlineAtMs": now_ms + VF_TTS_QUEUE_JOB_TTL_MS,
-        "liveStream": True,
-        "liveState": {
-            "enabled": True,
-            "mode": "podcast_standard",
-            "playableChunks": 0,
-            "playableDurationMs": 0,
-            "chunkCursorNext": 0,
-            "chunks": [],
-        },
-        "liveOrchestration": orchestration,
-        "standardConfig": normalized,
-        "adminLimitBypass": bool(is_admin),
-    }
-    stored_job = _podcast_standard_job_set(request_id, job_payload)
-    worker = threading.Thread(
-        target=_process_podcast_standard_job,
-        args=(request_id,),
-        name=f"podcast-standard-{request_id[:8]}",
-        daemon=True,
-    )
-    worker.start()
-    status_payload = _podcast_standard_status_payload(stored_job, include_result=False)
-    status_payload["accepted"] = True
-    return JSONResponse(status_payload, status_code=202)
-
-
-@app.get("/podcast/standard/jobs/{job_id}")
-def podcast_standard_job_status(
-    job_id: str,
-    request: Request,
-    includeResult: bool = False,
-    includeChunks: bool = False,
-    chunkCursor: int = 0,
-    chunkLimit: int = Query(default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT, ge=1, le=VF_TTS_LIVE_CHUNK_LIMIT_MAX),
-    includeChunkAudio: bool = True,
-) -> JSONResponse:
-    _safe_job_id, _uid, _is_admin, job = _get_authorized_podcast_standard_job(job_id, request)
-    return JSONResponse(
-        _podcast_standard_status_payload(
-            job,
-            include_result=bool(includeResult),
-            include_chunks=bool(includeChunks),
-            chunk_cursor=max(0, int(chunkCursor or 0)),
-            chunk_limit=int(chunkLimit),
-            include_chunk_audio=bool(includeChunkAudio),
-        )
-    )
-
-
-@app.get("/podcast/standard/jobs/{job_id}/audio")
-def podcast_standard_job_audio_download(job_id: str, request: Request) -> Response:
-    _safe_job_id, _uid, _is_admin, job = _get_authorized_podcast_standard_job(job_id, request)
-    status = str(job.get("status") or "").strip().lower()
-    if status == "completed":
-        return _response_from_completed_tts_job(job, gateway_lease=None)
-    if status == "failed":
-        _raise_failed_tts_job(job)
-    if status == "cancelled":
-        raise HTTPException(status_code=409, detail="Standard podcast job was cancelled.")
-    raise HTTPException(status_code=409, detail="Standard podcast audio is not ready yet.")
-
-
-@app.get("/podcast/standard/jobs/{job_id}/chunks/{chunk_index}")
-def podcast_standard_job_chunk_download(job_id: str, chunk_index: int, request: Request) -> Response:
-    safe_job_id, _uid, _is_admin, job = _get_authorized_podcast_standard_job(job_id, request)
-    chunk_meta = _resolve_tts_job_chunk(job, chunk_index)
-    if not isinstance(chunk_meta, dict):
-        raise HTTPException(status_code=404, detail="Chunk not found.")
-
-    chunk_path = Path(str(chunk_meta.get("path") or "")).resolve()
-    if not chunk_path.exists() or not chunk_path.is_file():
-        raise HTTPException(status_code=404, detail="Chunk file not found.")
-
-    media_type = str(chunk_meta.get("contentType") or "audio/wav")
-    return FileResponse(
-        str(chunk_path),
-        media_type=media_type,
-        filename=f"{safe_job_id}_chunk_{max(0, int(chunk_index)):04d}.wav",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.get("/podcast/standard/jobs/{job_id}/artifacts/{artifact_kind}")
-def podcast_standard_job_artifact_download(job_id: str, artifact_kind: str, request: Request) -> Response:
-    safe_job_id, _uid, _is_admin, job = _get_authorized_podcast_standard_job(job_id, request)
-    artifacts = job.get("podcastArtifacts")
-    if not isinstance(artifacts, dict):
-        raise HTTPException(status_code=404, detail="No artifacts found for this job.")
-
-    aliases = {
-        "transcript_json": "transcriptJson",
-        "transcript_txt": "transcriptTxt",
-        "summary_json": "summaryJson",
-        "audio": "audio",
-    }
-    token = str(artifact_kind or "").strip().lower()
-    key = aliases.get(token)
-    if not key:
-        raise HTTPException(status_code=404, detail="Artifact kind is not supported.")
-    artifact = artifacts.get(key)
-    if not isinstance(artifact, dict):
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    path = Path(str(artifact.get("path") or "")).resolve()
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact file not found.")
-    media_type = str(artifact.get("contentType") or "application/octet-stream")
-    suffix = path.suffix if path.suffix else ".bin"
-    return FileResponse(
-        str(path),
-        media_type=media_type,
-        filename=f"{safe_job_id}_{token}{suffix}",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.delete("/podcast/standard/jobs/{job_id}")
-def podcast_standard_job_cancel(job_id: str, request: Request) -> JSONResponse:
-    safe_job_id, _uid, _is_admin, job = _get_authorized_podcast_standard_job(job_id, request)
-    status = str(job.get("status") or "").strip().lower()
-    if status in {"completed", "failed", "cancelled"}:
-        return JSONResponse({"ok": True, "job": _podcast_standard_status_payload(job, include_result=False)})
-
-    finished_at_ms = int(time.time() * 1000)
-    live_orchestration = dict(job.get("liveOrchestration") or {})
-    live_orchestration.update({"status": "cancelled", "updatedAtMs": finished_at_ms})
-    cancelled = _podcast_standard_job_update(
-        safe_job_id,
-        {
-            "status": "cancelled",
-            "statusCode": 409,
-            "finishedAtMs": finished_at_ms,
-            "error": "cancelled_by_user",
-            "liveOrchestration": live_orchestration,
-        },
-    )
-    _cleanup_live_artifacts(safe_job_id)
-    _cleanup_tts_result_artifact(safe_job_id)
-    return JSONResponse({"ok": True, "job": _podcast_standard_status_payload(cancelled, include_result=False)})
-
-
-@app.post("/lab/separation/jobs")
-async def lab_separation_job_create(
-    request: Request,
-    file: UploadFile = File(...),
-    modelName: str = Form(default=""),
-) -> JSONResponse:
-    uid = _require_request_uid(request)
-    content_type = str(file.content_type or "").strip().lower()
-    if content_type and not (content_type.startswith("audio/") or content_type.startswith("video/")):
-        raise HTTPException(status_code=400, detail="Lab separation accepts audio and video files only.")
-    job = await _lab_separation_create_job(file, owner_uid=uid, model_name=modelName)
-    return JSONResponse({"ok": True, "job": _lab_separation_status_payload(job)}, status_code=202)
-
-
-@app.get("/lab/separation/jobs/{job_id}")
-def lab_separation_job_status(job_id: str, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    job = _lab_separation_get_job(job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _lab_separation_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    return JSONResponse({"ok": True, "job": _lab_separation_status_payload(job)})
-
-
-@app.get("/lab/separation/jobs/{job_id}/artifacts/{stem_kind}")
-def lab_separation_job_artifact(job_id: str, stem_kind: str, request: Request) -> Response:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    job = _lab_separation_get_job(job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _lab_separation_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    safe_stem_kind = _normalize_lab_separation_stem_kind(stem_kind)
-    artifact_path = _lab_separation_artifact_path(job_id, safe_stem_kind)
-    if not artifact_path.exists() or not artifact_path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    suffix = "vocals" if safe_stem_kind == "vocals" else "instrumental"
-    return FileResponse(
-        str(artifact_path),
-        media_type="audio/wav",
-        filename=f"{str(job.get('id') or '').strip()}_{suffix}.wav",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.post("/lab/export/jobs")
-async def lab_export_job_create(
-    request: Request,
-    file: UploadFile = File(...),
-    format: str = Form(default="mp4"),
-    sourceMediaType: str = Form(default=""),
-    browserMode: str = Form(default=""),
-) -> JSONResponse:
-    uid = _require_request_uid(request)
-    job = await _lab_export_create_job(
-        file,
-        owner_uid=uid,
-        export_format=format,
-        source_media_type=sourceMediaType,
-        browser_mode=browserMode,
-    )
-    return JSONResponse({"ok": True, "job": _lab_export_status_payload(job)}, status_code=202)
-
-
-@app.get("/lab/export/jobs/{job_id}")
-def lab_export_job_status(job_id: str, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    job = _lab_export_get_job(job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _lab_export_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    return JSONResponse({"ok": True, "job": _lab_export_status_payload(job)})
-
-
-@app.get("/lab/export/jobs/{job_id}/artifact")
-def lab_export_job_artifact(job_id: str, request: Request) -> Response:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    job = _lab_export_get_job(job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _lab_export_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    export_format = _normalize_lab_export_format(job.get("format") or "mp4")
-    artifact_path = _lab_export_artifact_path(job_id, export_format)
-    if not artifact_path.exists() or not artifact_path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    media_type = "video/mp4"
-    if export_format == "webm":
-        media_type = "video/webm"
-    elif export_format == "wav":
-        media_type = "audio/wav"
-    return FileResponse(
-        str(artifact_path),
-        media_type=media_type,
-        filename=f"{str(job.get('id') or '').strip()}.{export_format}",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.delete("/lab/export/jobs/{job_id}")
-def lab_export_job_cancel(job_id: str, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    job = _lab_export_get_job(job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _lab_export_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to cancel this job.")
-    cancelled = _lab_export_cancel_job(job_id)
-    if not isinstance(cancelled, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return JSONResponse({"ok": True, "job": _lab_export_status_payload(cancelled)})
 
 
 @app.get("/models/kokoro/status")
@@ -35308,7 +30289,7 @@ def _engine_status_entry_uncached(engine: str) -> dict[str, Any]:
     if _is_gem_runtime_engine(normalized_engine) and auth_mode == "gemini_api" and api_key_configured is False:
         state = "not_configured"
         ready = False
-        detail = "Gemini key pool is not configured."
+        detail = "Primary AI slot set is not configured."
     elif bool(healthy) and not ready:
         state = "warming"
 

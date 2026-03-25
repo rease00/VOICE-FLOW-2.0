@@ -1,7 +1,6 @@
 // Lazy-loaded heavy Kokoro browser runtime implementation.
 import { KokoroTTS } from 'kokoro-js';
 import { env as transformersEnv } from '@huggingface/transformers';
-import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { isBrowserKokoroExecutionEnabled } from './kokoroBrowserRuntimeFlags';
 
 export type KokoroBrowserRuntimeState = 'cold' | 'warming' | 'ready' | 'suspended';
@@ -40,6 +39,7 @@ interface KokoroEnsureReadyOptions {
   voiceId?: string;
   language?: string;
   speed?: number;
+  skipRuntimePrime?: boolean;
   signal?: AbortSignal;
 }
 
@@ -58,16 +58,17 @@ interface KokoroSynthesizeLiveResult {
 }
 
 interface KokoroExecutionConfig {
-  device: 'wasm';
-  dtype: 'q8' | 'fp32';
+  device: 'webgpu';
+  dtype: 'q8';
 }
 
-const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
-const MODEL_STATUS_PATH = '/models/kokoro/status';
+const DEFAULT_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+const DEFAULT_MODEL_REVISION = 'main';
+const MODEL_ID = String(import.meta.env.VITE_KOKORO_MODEL_REPO_ID || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
+const MODEL_REVISION = String(import.meta.env.VITE_KOKORO_MODEL_REVISION || DEFAULT_MODEL_REVISION).trim() || DEFAULT_MODEL_REVISION;
 const DEFAULT_VOICE_ID = 'af_heart';
 const DEFAULT_SAMPLE_RATE = 24000;
 const DEFAULT_IDLE_MS = 120_000;
-const PRIME_STATUS_TTL_MS = 60_000;
 const UI_YIELD_TIMEOUT_MS = 16;
 const UI_YIELD_TEXT_THRESHOLD_CHARS = 360;
 const KOKORO_FIRST_CHUNK_TARGET_WORDS = 14;
@@ -98,8 +99,40 @@ const KOKORO_ENGLISH_COMPATIBLE_VOICES = new Map<string, string>([
   ['hm_omega', 'am_fenrir'],
   ['hm_psi', 'am_michael'],
 ]);
-const KOKORO_VOICE_CACHE = 'kokoro-voices';
-const HUGGING_FACE_VOICE_URL_PREFIX = `https://huggingface.co/${MODEL_ID}/resolve/main/voices/`;
+const KOKORO_MODEL_CACHE_VERSION = String(import.meta.env.VITE_KOKORO_MODEL_CACHE_VERSION || 'kokoro-webgpu-q8-v1').trim() || 'kokoro-webgpu-q8-v1';
+const KOKORO_VOICE_CACHE = `kokoro-voices-${KOKORO_MODEL_CACHE_VERSION}`;
+const KOKORO_MODEL_CACHE = `kokoro-model-${KOKORO_MODEL_CACHE_VERSION}`;
+const KOKORO_CORE_MODEL_FILES = [
+  'config.json',
+  'tokenizer.json',
+  'tokenizer_config.json',
+  'onnx/model_quantized.onnx',
+] as const;
+
+const encodeRepoPath = (repoId: string): string => (
+  String(repoId || '')
+    .split('/')
+    .map((token) => encodeURIComponent(token))
+    .join('/')
+);
+
+const trimTrailingSlash = (value: string): string => String(value || '').replace(/\/+$/, '');
+
+const joinUrl = (baseUrl: string, relativePath: string): string => (
+  `${trimTrailingSlash(baseUrl)}/${String(relativePath || '').replace(/^\/+/, '')}`
+);
+
+const DEFAULT_MODEL_ASSET_BASE_URL = `https://huggingface.co/${encodeRepoPath(MODEL_ID)}/resolve/${encodeURIComponent(MODEL_REVISION)}`;
+const MODEL_ASSET_BASE_URL = trimTrailingSlash(
+  String(import.meta.env.VITE_KOKORO_MODEL_ASSET_BASE_URL || '').trim() || DEFAULT_MODEL_ASSET_BASE_URL
+);
+const MODEL_FILE_PATH = 'onnx/model_quantized.onnx';
+const KOKORO_VOICE_ASSET_URL_PREFIX = `${MODEL_ASSET_BASE_URL}/voices/`;
+
+const buildVersionedCacheKey = (url: string): string => {
+  const cacheToken = encodeURIComponent(`${MODEL_ID}@${MODEL_REVISION}:${KOKORO_MODEL_CACHE_VERSION}`);
+  return `${url}${url.includes('?') ? '&' : '?'}vf_kokoro_cache=${cacheToken}`;
+};
 const VIRAMA = '\u094d';
 const ANUSVARA = '\u0902';
 const CHANDRABINDU = '\u0901';
@@ -565,7 +598,8 @@ export const shouldUseBrowserKokoroExecution = (
   if (!isBrowserKokoroExecutionEnabled()) return false;
   const normalizedEngine = String(engine || '').trim().toUpperCase();
   if (normalizedEngine !== 'KOKORO') return false;
-  return context === 'studio' || context === 'preview';
+  void context;
+  return true;
 };
 
 class KokoroBrowserRuntime {
@@ -575,8 +609,8 @@ class KokoroBrowserRuntime {
   private suspendTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUsedAtMs = 0;
   private lastPrimeStatus: KokoroPrimeStatus | null = null;
-  private primeStatusCache: { backendBaseUrl: string; fetchedAtMs: number; status: KokoroPrimeStatus } | null = null;
-  private primeStatusPromise: { backendBaseUrl: string; promise: Promise<KokoroPrimeStatus> } | null = null;
+  private primedModelAssetKeys = new Set<string>();
+  private modelPrimePromises = new Map<string, Promise<void>>();
   private primedVoiceAssetKeys = new Set<string>();
   private voicePrimePromises = new Map<string, Promise<void>>();
   private browserExecutionConfigOverride: KokoroExecutionConfig | null = null;
@@ -599,13 +633,13 @@ class KokoroBrowserRuntime {
     this.suspendTimer = null;
   }
 
-  private configureTransformersEnv(backendBaseUrl?: string): string {
-    const resolvedBackendBase = resolveApiBaseUrl(backendBaseUrl).replace(/\/+$/, '');
-    transformersEnv.allowLocalModels = true;
-    transformersEnv.allowRemoteModels = false;
-    transformersEnv.localModelPath = `${resolvedBackendBase}/models/`;
+  private configureTransformersEnv(_backendBaseUrl?: string): void {
+    transformersEnv.allowLocalModels = false;
+    transformersEnv.allowRemoteModels = true;
+    transformersEnv.remoteHost = `${MODEL_ASSET_BASE_URL}/`;
+    transformersEnv.remotePathTemplate = '';
+    transformersEnv.localModelPath = '/models/';
     transformersEnv.useBrowserCache = true;
-    return resolvedBackendBase;
   }
 
   private touch(): void {
@@ -627,7 +661,10 @@ class KokoroBrowserRuntime {
     if (this.browserExecutionConfigOverride) {
       return this.browserExecutionConfigOverride;
     }
-    return { device: 'wasm', dtype: 'q8' };
+    if (!this.supportsWebGpuExecution()) {
+      throw new Error('Kokoro requires WebGPU support in a secure browser context.');
+    }
+    return { device: 'webgpu', dtype: 'q8' };
   }
 
   private async loadModelWithBestAvailableDevice(): Promise<KokoroTTS> {
@@ -663,63 +700,126 @@ class KokoroBrowserRuntime {
     return available[0] || DEFAULT_VOICE_ID;
   }
 
-  private async fetchPrimeStatus(backendBaseUrl?: string): Promise<KokoroPrimeStatus> {
-    const resolvedBackendBase = resolveApiBaseUrl(backendBaseUrl).replace(/\/+$/, '');
-    const cached = this.primeStatusCache;
-    if (
-      cached
-      && cached.backendBaseUrl === resolvedBackendBase
-      && (Date.now() - cached.fetchedAtMs) < PRIME_STATUS_TTL_MS
-      && cached.status.available
-      && cached.status.ready
-    ) {
-      this.lastPrimeStatus = cached.status;
-      return cached.status;
-    }
-    if (
-      this.primeStatusPromise
-      && this.primeStatusPromise.backendBaseUrl === resolvedBackendBase
-    ) {
-      const status = await this.primeStatusPromise.promise;
-      this.lastPrimeStatus = status;
-      return status;
-    }
-    const pendingPromise = (async () => {
-      const response = await fetch(`${resolvedBackendBase}${MODEL_STATUS_PATH}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-      if (!response.ok) {
-        const detail = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Kokoro model status request failed (${response.status}): ${String(detail || '').slice(0, 240)}`);
-      }
-      const payload = await response.json() as KokoroPrimeStatus;
-      this.primeStatusCache = {
-        backendBaseUrl: resolvedBackendBase,
-        fetchedAtMs: Date.now(),
-        status: payload,
-      };
-      this.lastPrimeStatus = payload;
-      return payload;
-    })();
-    this.primeStatusPromise = {
-      backendBaseUrl: resolvedBackendBase,
-      promise: pendingPromise,
+  private buildPrimeStatus(options: {
+    ok: boolean;
+    available: boolean;
+    ready: boolean;
+    missing: string[];
+    detail: string;
+  }): KokoroPrimeStatus {
+    return {
+      ok: options.ok,
+      available: options.available,
+      repoId: MODEL_ID,
+      revision: MODEL_REVISION,
+      modelPath: MODEL_ASSET_BASE_URL,
+      fileCount: KOKORO_CORE_MODEL_FILES.length,
+      totalBytes: 0,
+      ready: options.ready,
+      missing: options.missing,
+      hash: KOKORO_MODEL_CACHE_VERSION,
+      fetchedAt: new Date().toISOString(),
+      detail: options.detail,
+      runtime: {
+        device: 'webgpu',
+        dtype: 'q8',
+        modelFile: MODEL_FILE_PATH,
+      },
     };
+  }
+
+  private async primeModelAsset(relativePath: string): Promise<void> {
+    const safeRelativePath = String(relativePath || '').trim().replace(/^\/+/, '');
+    if (!safeRelativePath) return;
+    const assetUrl = joinUrl(MODEL_ASSET_BASE_URL, safeRelativePath);
+    const modelAssetKey = `${assetUrl}|${KOKORO_MODEL_CACHE_VERSION}`;
+    if (this.primedModelAssetKeys.has(modelAssetKey)) return;
+    const pendingPrime = this.modelPrimePromises.get(modelAssetKey);
+    if (pendingPrime) {
+      await pendingPrime;
+      return;
+    }
+
+    const cacheKey = buildVersionedCacheKey(assetUrl);
+    const primePromise = (async () => {
+      if (typeof caches !== 'undefined') {
+        const cache = await caches.open(KOKORO_MODEL_CACHE);
+        const cached = await cache.match(cacheKey);
+        if (cached) {
+          this.primedModelAssetKeys.add(modelAssetKey);
+          return;
+        }
+        const response = await fetch(assetUrl, {
+          method: 'GET',
+          headers: { Accept: '*/*' },
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(`Kokoro model asset unavailable for ${safeRelativePath}: ${response.status} ${detail.slice(0, 160)}`);
+        }
+        await cache.put(cacheKey, response.clone());
+      } else {
+        const response = await fetch(assetUrl, {
+          method: 'GET',
+          headers: { Accept: '*/*' },
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(`Kokoro model asset unavailable for ${safeRelativePath}: ${response.status} ${detail.slice(0, 160)}`);
+        }
+      }
+      this.primedModelAssetKeys.add(modelAssetKey);
+    })();
+
+    this.modelPrimePromises.set(modelAssetKey, primePromise);
     try {
-      return await pendingPromise;
+      await primePromise;
     } finally {
-      if (this.primeStatusPromise?.promise === pendingPromise) {
-        this.primeStatusPromise = null;
+      if (this.modelPrimePromises.get(modelAssetKey) === primePromise) {
+        this.modelPrimePromises.delete(modelAssetKey);
       }
     }
   }
 
-  private async primeVoiceAsset(backendBaseUrl: string, voiceId: string): Promise<void> {
+  private async primeCoreModelAssets(): Promise<void> {
+    for (const relativePath of KOKORO_CORE_MODEL_FILES) {
+      await this.primeModelAsset(relativePath);
+    }
+  }
+
+  private async fetchPrimeStatus(): Promise<KokoroPrimeStatus> {
+    try {
+      await this.primeCoreModelAssets();
+      const status = this.buildPrimeStatus({
+        ok: true,
+        available: true,
+        ready: true,
+        missing: [],
+        detail: 'Kokoro WebGPU model assets ready.',
+      });
+      this.lastPrimeStatus = status;
+      return status;
+    } catch (error: unknown) {
+      const detail = error instanceof Error
+        ? error.message
+        : 'Failed to fetch Kokoro WebGPU model assets.';
+      const status = this.buildPrimeStatus({
+        ok: false,
+        available: false,
+        ready: false,
+        missing: [...KOKORO_CORE_MODEL_FILES],
+        detail,
+      });
+      this.lastPrimeStatus = status;
+      return status;
+    }
+  }
+
+  private async primeVoiceAsset(voiceId: string): Promise<void> {
     const safeVoiceId = String(voiceId || '').trim();
     if (!safeVoiceId) return;
 
-    const voiceCacheKey = `${backendBaseUrl}|${safeVoiceId}`;
+    const voiceCacheKey = `${MODEL_ASSET_BASE_URL}|${safeVoiceId}|${KOKORO_MODEL_CACHE_VERSION}`;
     if (this.primedVoiceAssetKeys.has(voiceCacheKey)) return;
     const pendingPrime = this.voicePrimePromises.get(voiceCacheKey);
     if (pendingPrime) {
@@ -727,7 +827,8 @@ class KokoroBrowserRuntime {
       return;
     }
 
-    const cacheKey = `${HUGGING_FACE_VOICE_URL_PREFIX}${encodeURIComponent(safeVoiceId)}.bin`;
+    const voiceUrl = `${KOKORO_VOICE_ASSET_URL_PREFIX}${encodeURIComponent(safeVoiceId)}.bin`;
+    const cacheKey = buildVersionedCacheKey(voiceUrl);
     const primePromise = (async () => {
       if (typeof caches !== 'undefined') {
         const cache = await caches.open(KOKORO_VOICE_CACHE);
@@ -736,7 +837,7 @@ class KokoroBrowserRuntime {
           this.primedVoiceAssetKeys.add(voiceCacheKey);
           return;
         }
-        const response = await fetch(`${backendBaseUrl}/models/${MODEL_ID}/voices/${encodeURIComponent(safeVoiceId)}.bin`, {
+        const response = await fetch(voiceUrl, {
           method: 'GET',
           headers: { Accept: 'application/octet-stream' },
         });
@@ -746,7 +847,7 @@ class KokoroBrowserRuntime {
         }
         await cache.put(cacheKey, response.clone());
       } else {
-        const response = await fetch(`${backendBaseUrl}/models/${MODEL_ID}/voices/${encodeURIComponent(safeVoiceId)}.bin`, {
+        const response = await fetch(voiceUrl, {
           method: 'GET',
           headers: { Accept: 'application/octet-stream' },
         });
@@ -820,33 +921,35 @@ class KokoroBrowserRuntime {
   }
 
   async primeAssets(backendBaseUrl?: string, voiceId?: string): Promise<KokoroPrimeStatus> {
-    const resolvedBackendBase = this.configureTransformersEnv(backendBaseUrl);
-    const status = await this.fetchPrimeStatus(resolvedBackendBase);
+    this.configureTransformersEnv(backendBaseUrl);
+    const status = await this.fetchPrimeStatus();
     if (!status.available || !status.ready) {
       const missing = Array.isArray(status.missing) && status.missing.length > 0
         ? ` Missing: ${status.missing.join(', ')}`
         : '';
-      throw new Error(status.detail || `Kokoro local mirror is not ready.${missing}`);
+      throw new Error(status.detail || `Kokoro WebGPU model assets are not ready.${missing}`);
     }
     const targetVoiceId = canonicalizeVoiceId(voiceId) || DEFAULT_VOICE_ID;
-    await this.primeVoiceAsset(resolvedBackendBase, targetVoiceId);
+    await this.primeVoiceAsset(targetVoiceId);
     return status;
   }
 
   async ensureReady(options: KokoroEnsureReadyOptions = {}): Promise<KokoroTTS> {
     options.signal?.throwIfAborted?.();
     this.clearSuspendTimer();
-    const resolvedBackendBase = this.configureTransformersEnv(options.backendBaseUrl);
+    this.configureTransformersEnv(options.backendBaseUrl);
     const targetVoiceId = canonicalizeVoiceId(options.voiceId) || DEFAULT_VOICE_ID;
-    const status = await this.fetchPrimeStatus(resolvedBackendBase);
-    if (!status.available || !status.ready) {
-      const missing = Array.isArray(status.missing) && status.missing.length > 0
-        ? ` Missing: ${status.missing.join(', ')}`
-        : '';
-      throw new Error(status.detail || `Kokoro local mirror is not ready.${missing}`);
+    if (options.skipRuntimePrime !== true) {
+      const status = await this.fetchPrimeStatus();
+      if (!status.available || !status.ready) {
+        const missing = Array.isArray(status.missing) && status.missing.length > 0
+          ? ` Missing: ${status.missing.join(', ')}`
+          : '';
+        throw new Error(status.detail || `Kokoro WebGPU model assets are not ready.${missing}`);
+      }
     }
     options.signal?.throwIfAborted?.();
-    const voicePrimePromise = this.primeVoiceAsset(resolvedBackendBase, targetVoiceId);
+    const voicePrimePromise = this.primeVoiceAsset(targetVoiceId);
 
     if (this.model) {
       await voicePrimePromise;
@@ -882,9 +985,9 @@ class KokoroBrowserRuntime {
     if (!safeText) throw new Error('Kokoro text is empty.');
     if (options.signal?.aborted) throw abortError();
 
-    const resolvedBackendBase = this.configureTransformersEnv(options.backendBaseUrl);
+    this.configureTransformersEnv(options.backendBaseUrl);
     const tts = await this.ensureReady({
-      backendBaseUrl: resolvedBackendBase,
+      ...(options.backendBaseUrl ? { backendBaseUrl: options.backendBaseUrl } : {}),
       voiceId: options.voiceId,
       speed: options.speed,
       ...(options.language ? { language: options.language } : {}),
@@ -896,7 +999,7 @@ class KokoroBrowserRuntime {
     const prepared = prepareTextForKokoro(safeText);
     const selectedVoice = resolveCompatibleVoiceId(voiceId, options.language, prepared.isHindi);
     const useHindiVoicePath = prepared.isHindi || isHindiLanguageHint(options.language) || HINDI_VOICES.has(selectedVoice);
-    await this.primeVoiceAsset(resolvedBackendBase, selectedVoice);
+    await this.primeVoiceAsset(selectedVoice);
     const textChunks = planSentenceSafeLiveChunks(prepared.preparedText);
 
     const chunks: KokoroLiveChunk[] = [];
@@ -904,7 +1007,7 @@ class KokoroBrowserRuntime {
     const totalChunks = Math.max(1, textChunks.length);
     const shouldYieldBetweenChunks = safeText.length >= UI_YIELD_TEXT_THRESHOLD_CHARS || textChunks.length >= 4;
 
-    options.onProgress?.(12, 'Preparing local ONNX CPU runtime...');
+    options.onProgress?.(12, 'Preparing local ONNX WebGPU runtime...');
 
     for (let index = 0; index < textChunks.length; index += 1) {
       if (options.signal?.aborted) throw abortError();
@@ -926,7 +1029,7 @@ class KokoroBrowserRuntime {
       mergedParts.push(chunkAudio);
       options.onChunk?.(chunk);
       const progress = 18 + Math.round(((index + 1) / totalChunks) * 72);
-      const stage = index === 0 ? 'First live chunk ready.' : 'Streaming Kokoro CPU audio...';
+      const stage = index === 0 ? 'First live chunk ready.' : 'Streaming Kokoro WebGPU audio...';
       options.onProgress?.(Math.max(18, Math.min(96, progress)), stage);
       if (shouldYieldBetweenChunks && index < textChunks.length - 1) {
         await yieldToBrowser();
@@ -979,6 +1082,23 @@ class KokoroBrowserRuntime {
       this.runtimeState = 'suspended';
     }
   }
+
+  async resetForTests(): Promise<void> {
+    await this.suspend();
+    this.runtimeState = 'cold';
+    this.lastUsedAtMs = 0;
+    this.lastPrimeStatus = null;
+    this.primedModelAssetKeys.clear();
+    this.modelPrimePromises.clear();
+    this.primedVoiceAssetKeys.clear();
+    this.voicePrimePromises.clear();
+    this.browserExecutionConfigOverride = null;
+  }
 }
 
 export const kokoroBrowserRuntime = new KokoroBrowserRuntime();
+export const __kokoroBrowserRuntimeTestOnly = {
+  reset: async (): Promise<void> => {
+    await kokoroBrowserRuntime.resetForTests();
+  },
+};

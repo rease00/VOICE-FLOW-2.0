@@ -1,10 +1,10 @@
-const RUNTIME_QUOTA_MESSAGE = 'Usage limit exceeded. Please check your API keys in settings.';
+const RUNTIME_QUOTA_MESSAGE = 'Usage limit exceeded. Please check your AI slot configuration in settings.';
 
 const GEMINI_CAPACITY_PRESSURE_ERROR_CODES = [
-  'GEMINI_KEY_POOL_OVERLOADED',
-  'GEMINI_KEY_POOL_TIMEOUT',
+  'GEMINI_SLOT_SET_OVERLOADED',
+  'GEMINI_SLOT_SET_TIMEOUT',
   'GEMINI_ALLOCATOR_ACQUIRE_TIMEOUT',
-  'GEMINI_ALL_KEYS_RATE_LIMITED',
+  'GEMINI_ALL_SLOTS_RATE_LIMITED',
 ];
 
 const GEMINI_RETRYABLE_TIMEOUT_ERROR_CODES = [
@@ -15,10 +15,10 @@ export const isKnownGeminiPoolMisconfigError = (message: string): boolean => {
   const lower = String(message || '').toLowerCase();
   if (!lower) return false;
   return (
-    lower.includes('gemini_api_key_missing') ||
-    lower.includes('key pool is empty') ||
-    lower.includes('configure gemini_api_keys_file') ||
-    lower.includes('api key is missing')
+    lower.includes('gemini_slot_set_missing') ||
+    lower.includes('slot set is empty') ||
+    lower.includes('configure the backend-held service-account slots') ||
+    lower.includes('slot configuration is missing')
   );
 };
 
@@ -30,10 +30,10 @@ export const isGeminiCapacityPressureError = (message: string): boolean => {
     lower.includes('capacity_pressure') ||
     lower.includes('capacity_overload') ||
     lower.includes('gemini tts capacity is saturated') ||
-    lower.includes('gemini key pool is temporarily overloaded') ||
-    lower.includes('gemini key pool timed out while waiting for an available key') ||
+    lower.includes('gemini slot set is temporarily overloaded') ||
+    lower.includes('gemini slot set timed out while waiting for an available slot') ||
     lower.includes(RUNTIME_QUOTA_MESSAGE.toLowerCase()) ||
-    (lower.includes('availablelanes=0') && lower.includes('keypoolsize='))
+    (lower.includes('availablelanes=0') && lower.includes('slotcount='))
   );
 };
 

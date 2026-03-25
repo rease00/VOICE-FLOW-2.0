@@ -15,7 +15,7 @@ describe('geminiRuntimeErrorUtils', () => {
   });
 
   it('treats Gemini pool misconfiguration as a fail-fast error', () => {
-    const message = 'Gemini runtime key pool is empty. Configure GEMINI_API_KEYS_FILE (recommended), GEMINI_API_KEYS, or GEMINI_API_KEY.';
+    const message = 'Gemini slot set is empty. Configure the backend-held service-account slots and retry.';
 
     expect(isKnownGeminiPoolMisconfigError(message)).toBe(true);
     expect(shouldFailFastOnGeminiRuntimeError(message)).toBe(true);

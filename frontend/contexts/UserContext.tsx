@@ -70,6 +70,11 @@ import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey, writeStorageString } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
+import {
+  addSessionClonedVoice,
+  clearSessionClonedVoices,
+  setSessionClonedVoices,
+} from '../services/clonedVoiceSessionStore';
 
 interface ExtendedUserContextType extends UserContextType {
   syncCast: (cast: string[] | CharacterProfile[]) => void;
@@ -640,6 +645,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     writeStorageJson(STORAGE_KEYS.stats, stats);
   }, [stats]);
 
+  useEffect(() => {
+    setSessionClonedVoices(clonedVoices);
+  }, [clonedVoices]);
+
   const refreshEntitlements = async () => {
     const firebaseUser = firebaseAuth.currentUser;
     const localAdminSession = firebaseUser ? null : await readLocalAdminSession();
@@ -863,7 +872,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (!valid) {
           return { ok: false, error: 'Invalid admin credentials.' };
         }
-        const session = await createLocalAdminSession();
+        const session = await createLocalAdminSession(rawEmail);
         if (!session) {
           return { ok: false, error: 'Could not create local admin session. Check local admin env values.' };
         }
@@ -1276,11 +1285,15 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await signOutUser();
       setHistory([]);
       setClonedVoices([]);
+      clearSessionClonedVoices();
       setDrafts([]);
       setCharacterLibrary(DEFAULT_CHARACTERS);
     },
     clonedVoices,
-    addClonedVoice: (voice) => setClonedVoices((prev) => [voice, ...prev]),
+    addClonedVoice: (voice) => {
+      addSessionClonedVoice(voice);
+      setClonedVoices((prev) => [voice, ...prev.filter((item) => item.id !== voice.id)]);
+    },
     drafts,
     saveDraft: (name, text, settings) =>
       setDrafts((prev) => [{ id: Date.now().toString(), name, text, settings, lastModified: Date.now() }, ...prev]),
