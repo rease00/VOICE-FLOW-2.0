@@ -439,6 +439,7 @@ export interface SignUpActionResult extends AuthActionResult {
 
 export interface UserContextType {
   user: UserProfile;
+  authReady: boolean;
   updateUser: (u: Partial<UserProfile>) => void;
   stats: UserStats;
   updateStats: (newStats: Partial<UserStats>) => void;

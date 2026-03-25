@@ -1,4 +1,4 @@
-{
+﻿{
   "version": "1.0.0",
   "engines": {
     "GEM": {
@@ -6,210 +6,210 @@
         {
           "voice_id": "v1",
           "voice": "Fenrir",
-          "name": "Arjun India Male",
+          "name": "Rohan",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v2",
           "voice": "Kore",
-          "name": "Meera India Female",
+          "name": "Anika",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v3",
           "voice": "Alnilam",
-          "name": "Ethan US Male",
+          "name": "Mason",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v4",
           "voice": "Leda",
-          "name": "Ava US Female",
+          "name": "Harper",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v5",
           "voice": "Iapetus",
-          "name": "Oliver UK Male",
+          "name": "Callum",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v6",
           "voice": "Autonoe",
-          "name": "Emily UK Female",
+          "name": "Imogen",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v7",
           "voice": "Enceladus",
-          "name": "Liam Canada Male",
+          "name": "Declan",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v8",
           "voice": "Erinome",
-          "name": "Sophie Canada Female",
+          "name": "Brooke",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v9",
           "voice": "Puck",
-          "name": "Noah Australia Male",
+          "name": "Brodie",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v10",
           "voice": "Charon",
-          "name": "Isla Australia Female",
+          "name": "Tahlia",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v11",
           "voice": "Achernar",
-          "name": "Kenji Japan Male",
+          "name": "Daichi",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v12",
           "voice": "Despina",
-          "name": "Yui Japan Female",
+          "name": "Aoi",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v13",
           "voice": "Algenib",
-          "name": "Lucas Brazil Male",
+          "name": "Thiago",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v14",
           "voice": "Algieba",
-          "name": "Camila Brazil Female",
+          "name": "Larissa",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v15",
           "voice": "Zephyr",
-          "name": "Mateo Spain Male",
+          "name": "Javier",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v16",
           "voice": "Callirrhoe",
-          "name": "Valentina Spain Female",
+          "name": "Lucia",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v17",
           "voice": "Achird",
-          "name": "Adi India Boy",
+          "name": "Kabir",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v18",
           "voice": "Aoede",
-          "name": "Tara India Girl",
+          "name": "Myra",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v19",
           "voice": "Gacrux",
-          "name": "Raghu India Elder",
+          "name": "Mahesh",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v20",
           "voice": "Laomedeia",
-          "name": "Grace UK Elder",
+          "name": "Margaret",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v21",
           "voice": "Orus",
-          "name": "Noir Novel Artist",
+          "name": "Dylan",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v22",
           "voice": "Pulcherrima",
-          "name": "Lyris Novel Artist",
+          "name": "Sienna",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v23",
           "voice": "Rasalgethi",
-          "name": "Hans Germany Male",
+          "name": "Matthias",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v24",
           "voice": "Sadachbia",
-          "name": "Anna Germany Female",
+          "name": "Greta",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v25",
           "voice": "Sadaltager",
-          "name": "Pierre France Male",
+          "name": "Adrien",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v26",
           "voice": "Schedar",
-          "name": "Claire France Female",
+          "name": "Elodie",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v27",
           "voice": "Sulafat",
-          "name": "Omar UAE Male",
+          "name": "Zayed",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v28",
           "voice": "Umbriel",
-          "name": "Leila UAE Female",
+          "name": "Noora",
           "language": "multilingual",
           "gender": "female"
         },
         {
           "voice_id": "v29",
           "voice": "Vindemiatrix",
-          "name": "Ivan Russia Male",
+          "name": "Nikolai",
           "language": "multilingual",
           "gender": "male"
         },
         {
           "voice_id": "v30",
           "voice": "Zubenelgenubi",
-          "name": "Alina Russia Female",
+          "name": "Svetlana",
           "language": "multilingual",
           "gender": "female"
         }
@@ -299,3 +299,4 @@
     }
   }
 }
+

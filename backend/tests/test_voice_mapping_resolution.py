@@ -7,7 +7,7 @@ def test_resolve_gem_runtime_voice_name_supports_alias_tokens() -> None:
     assert backend_app._resolve_gem_runtime_voice_name("fenrir") == "Fenrir"
     assert backend_app._resolve_gem_runtime_voice_name("fenir") == "Fenrir"
     assert backend_app._resolve_gem_runtime_voice_name("\"Fenrir\"") == "Fenrir"
-    assert backend_app._resolve_gem_runtime_voice_name(" Arjun India Male ") == "Fenrir"
+    assert backend_app._resolve_gem_runtime_voice_name(" Rohan ") == "Fenrir"
     assert backend_app._resolve_gem_runtime_voice_name("v1") == "Fenrir"
 
 
@@ -30,7 +30,7 @@ def test_resolve_history_voice_fields_uses_canonical_id_and_human_display() -> N
         voice_name="fenir",
     )
     assert voice_id == "Fenrir"
-    assert voice_name == "Arjun India Male"
+    assert voice_name == "Rohan"
 
     fallback_id, fallback_name = backend_app._resolve_history_voice_fields(
         engine="GEM",

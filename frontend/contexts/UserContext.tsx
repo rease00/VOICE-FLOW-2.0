@@ -611,6 +611,7 @@ const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
 const MAX_IN_MEMORY_HISTORY_ITEMS = 30;
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [authReady, setAuthReady] = useState(false);
   const [stats, setStats] = useState<UserStats>(() => {
     const stored = readStorageJson(STORAGE_KEYS.stats);
     if (!stored) return INITIAL_STATS;
@@ -785,48 +786,56 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   useEffect(() => {
+    let isMounted = true;
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
-      if (!firebaseUser) {
-        if (charactersUnsubscribeRef.current) {
-          charactersUnsubscribeRef.current();
-          charactersUnsubscribeRef.current = null;
-        }
-        const localAdminSession = await readLocalAdminSession();
-        if (localAdminSession) {
-          setUser(mapLocalAdminSessionToProfile(localAdminSession));
-          setCharacterLibrary(readStoredCharacterLibrary());
-          await Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
+      try {
+        if (!firebaseUser) {
+          if (charactersUnsubscribeRef.current) {
+            charactersUnsubscribeRef.current();
+            charactersUnsubscribeRef.current = null;
+          }
+          const localAdminSession = await readLocalAdminSession();
+          if (localAdminSession) {
+            setUser(mapLocalAdminSessionToProfile(localAdminSession));
+            setCharacterLibrary(readStoredCharacterLibrary());
+            void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
+            return;
+          }
+          removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+          setUser(BLANK_USER);
+          setCharacterLibrary(DEFAULT_CHARACTERS);
+          setStats(INITIAL_STATS);
+          setHistory([]);
           return;
         }
-        removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-        setUser(BLANK_USER);
-        setCharacterLibrary(DEFAULT_CHARACTERS);
-        setStats(INITIAL_STATS);
-        setHistory([]);
-        return;
-      }
-      clearLocalAdminSession();
-      await firebaseUser.reload().catch(() => undefined);
-      if (requiresEmailVerificationForUser(firebaseUser)) {
-        if (charactersUnsubscribeRef.current) {
-          charactersUnsubscribeRef.current();
-          charactersUnsubscribeRef.current = null;
+        clearLocalAdminSession();
+        await firebaseUser.reload().catch(() => undefined);
+        if (requiresEmailVerificationForUser(firebaseUser)) {
+          if (charactersUnsubscribeRef.current) {
+            charactersUnsubscribeRef.current();
+            charactersUnsubscribeRef.current = null;
+          }
+          await signOut(firebaseAuth).catch(() => undefined);
+          removeStorageKey(STORAGE_KEYS.uidSetupRequired);
+          setUser(BLANK_USER);
+          setCharacterLibrary(DEFAULT_CHARACTERS);
+          setStats(INITIAL_STATS);
+          setHistory([]);
+          return;
         }
-        await signOut(firebaseAuth).catch(() => undefined);
-        removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-        setUser(BLANK_USER);
-        setCharacterLibrary(DEFAULT_CHARACTERS);
-        setStats(INITIAL_STATS);
-        setHistory([]);
-        return;
+        void applyPendingSignupProfile(firebaseUser.uid, firebaseUser.email || '');
+        const profile = await mapFirebaseUserToProfile();
+        setUser(profile);
+        bootstrapCharacterSync(firebaseUser.uid);
+        void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
+      } finally {
+        if (isMounted) {
+          setAuthReady(true);
+        }
       }
-      await applyPendingSignupProfile(firebaseUser.uid, firebaseUser.email || '');
-      const profile = await mapFirebaseUserToProfile();
-      setUser(profile);
-      bootstrapCharacterSync(firebaseUser.uid);
-      await Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
     });
     return () => {
+      isMounted = false;
       unsubscribe();
       if (charactersUnsubscribeRef.current) charactersUnsubscribeRef.current();
     };
@@ -1231,6 +1240,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const contextValue = useMemo<ExtendedUserContextType>(() => ({
     user,
+    authReady,
     updateUser: (partial) => setUser((prev) => ({ ...prev, ...partial })),
     stats,
     updateStats: (partial) =>
@@ -1315,6 +1325,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isAdmin,
     isAuthenticated,
     isSyncing,
+    authReady,
     refreshAdminActor,
     showSubscriptionModal,
     stats,

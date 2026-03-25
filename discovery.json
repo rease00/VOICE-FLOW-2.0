@@ -1,0 +1,152 @@
+{
+  "generated_at": "2026-03-25T09:00:38.735214+00:00",
+  "scope": "all-accessible",
+  "window_days": 30,
+  "status": "ok",
+  "environment": {
+    "active_account": "vertex-express@v-flow-ai-c721d.iam.gserviceaccount.com",
+    "active_project": "v-flow-ai-c721d",
+    "gcloud_available": true
+  },
+  "inventory": {
+    "organizations": [],
+    "folders": [],
+    "projects": [
+      {
+        "createTime": "2026-03-14T14:20:38.881463Z",
+        "labels": {
+          "firebase": "enabled",
+          "firebase-core": "disabled"
+        },
+        "lifecycleState": "ACTIVE",
+        "name": "V Flow AI",
+        "projectId": "v-flow-ai-c721d",
+        "projectNumber": "612625425787"
+      }
+    ]
+  },
+  "billing": {
+    "accounts": [
+      {
+        "currencyCode": "INR",
+        "displayName": "My Billing Account",
+        "masterBillingAccount": "",
+        "name": "billingAccounts/012241-6355CE-4AF5A6",
+        "open": true,
+        "parent": ""
+      }
+    ],
+    "links_by_account": {
+      "012241-6355CE-4AF5A6": [
+        {
+          "billingAccountName": "billingAccounts/012241-6355CE-4AF5A6",
+          "billingEnabled": true,
+          "name": "projects/vflow-ai-3/billingInfo",
+          "projectId": "vflow-ai-3"
+        },
+        {
+          "billingAccountName": "billingAccounts/012241-6355CE-4AF5A6",
+          "billingEnabled": true,
+          "name": "projects/vflow-ai-2/billingInfo",
+          "projectId": "vflow-ai-2"
+        },
+        {
+          "billingAccountName": "billingAccounts/012241-6355CE-4AF5A6",
+          "billingEnabled": true,
+          "name": "projects/v-flow-ai-c721d/billingInfo",
+          "projectId": "v-flow-ai-c721d"
+        }
+      ]
+    },
+    "budgets_by_account": {
+      "012241-6355CE-4AF5A6": [
+        {
+          "amount": {
+            "specifiedAmount": {
+              "currencyCode": "INR",
+              "units": "2000"
+            }
+          },
+          "budgetFilter": {
+            "calendarPeriod": "MONTH",
+            "creditTypesTreatment": "INCLUDE_ALL_CREDITS",
+            "projects": [
+              "projects/612625425787"
+            ]
+          },
+          "displayName": "INR 2000 Monthly Budget",
+          "etag": "1773592526966623",
+          "name": "billingAccounts/012241-6355CE-4AF5A6/budgets/c4d38f4a-47bd-45f9-8f47-a70ad8f3b3bd",
+          "notificationsRule": {},
+          "thresholdRules": [
+            {
+              "spendBasis": "CURRENT_SPEND",
+              "thresholdPercent": 0.5
+            },
+            {
+              "spendBasis": "CURRENT_SPEND",
+              "thresholdPercent": 0.9
+            },
+            {
+              "spendBasis": "CURRENT_SPEND",
+              "thresholdPercent": 1.0
+            },
+            {
+              "spendBasis": "CURRENT_SPEND",
+              "thresholdPercent": 1.5
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "service_usage": {
+    "project_service_counts": [
+      {
+        "project_id": "v-flow-ai-c721d",
+        "enabled_service_count": 61,
+        "high_cost_services": [
+          "aiplatform.googleapis.com",
+          "bigquery.googleapis.com",
+          "compute.googleapis.com",
+          "dataflow.googleapis.com",
+          "run.googleapis.com",
+          "storage.googleapis.com"
+        ]
+      }
+    ]
+  },
+  "iam_posture": {
+    "public_exposures": [],
+    "summary": {
+      "public_exposure_count": 0
+    }
+  },
+  "cost_accounting": {
+    "totals": {
+      "project_count": 1,
+      "linked_project_count": 3,
+      "unlinked_project_count": 0,
+      "billing_account_count": 1,
+      "open_billing_account_count": 1,
+      "monthly_budget_total_usd": 2000.0,
+      "projects_with_high_cost_services": 1
+    },
+    "by_billing_account": [
+      {
+        "billing_account_id": "012241-6355CE-4AF5A6",
+        "display_name": "My Billing Account",
+        "open": true,
+        "linked_project_count": 3,
+        "billing_enabled_project_count": 3,
+        "budget_count": 1,
+        "monthly_budget_total_usd": 2000.0
+      }
+    ]
+  },
+  "anomalies": [],
+  "errors": [],
+  "notes": [
+    "Actual cost/spend values require Cloud Billing export pipelines (for example BigQuery export). This report uses billing-account, budget, service, and coverage signals."
+  ]
+}

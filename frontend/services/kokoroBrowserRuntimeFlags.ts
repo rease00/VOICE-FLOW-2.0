@@ -21,6 +21,28 @@ const hasEligibleBrowserComputeBudget = (): boolean => {
   return deviceMemory >= 8 && hardwareConcurrency >= 6;
 };
 
+export const assertBrowserKokoroExecutionSupported = (): void => {
+  if (typeof window === 'undefined') {
+    throw new Error('Browser Kokoro execution requires a browser environment.');
+  }
+  if (typeof fetch !== 'function') {
+    throw new Error('Browser Kokoro execution requires fetch support.');
+  }
+  if (typeof WebAssembly === 'undefined') {
+    throw new Error('Browser Kokoro execution requires WebAssembly support.');
+  }
+  if (window.isSecureContext === false) {
+    throw new Error('Browser Kokoro execution requires a secure context.');
+  }
+  const envOverride = parseBooleanFlag(import.meta.env.VITE_ENABLE_BROWSER_KOKORO);
+  if (envOverride === false) {
+    throw new Error('Browser Kokoro execution is disabled by configuration.');
+  }
+  if (!hasEligibleBrowserComputeBudget()) {
+    throw new Error('Browser Kokoro execution requires at least 8 GB device memory and 6 CPU threads.');
+  }
+};
+
 export const isBrowserKokoroExecutionEnabled = (): boolean => {
   const envOverride = parseBooleanFlag(import.meta.env.VITE_ENABLE_BROWSER_KOKORO);
   if (envOverride === false) return false;

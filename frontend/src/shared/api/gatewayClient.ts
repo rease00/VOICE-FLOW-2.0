@@ -1,5 +1,6 @@
 import type { GenerationSettings } from '../../../types';
 import type {
+  EngineStatusItem,
   RuntimeLogTailResponse,
   TtsEngineCapabilitiesResponse,
   TtsEngineStatusResponse,
@@ -11,6 +12,7 @@ import type {
   CreateDubbingJobV2Response,
   DubbingJobStatusResponse,
 } from './contracts';
+import { resolveApiBaseUrl, resolveApiUrl } from './config';
 import { requestBlob, requestJson, requestPublicJson } from './httpClient';
 
 export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime';
@@ -18,6 +20,36 @@ export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-run
 const withBaseUrl = (baseUrl?: string): { baseUrl?: string } => (baseUrl ? { baseUrl } : {});
 const removedGatewayFeature = (feature: string): Error =>
   new Error(`${feature} endpoint was removed from this project.`);
+
+const fetchPublicJsonWithTimeout = async <T>(
+  pathOrUrl: string,
+  options?: { baseUrl?: string | undefined; timeoutMs?: number | undefined }
+): Promise<T> => {
+  const timeoutMs = Number(options?.timeoutMs || 0);
+  const controller = Number.isFinite(timeoutMs) && timeoutMs > 0 ? new AbortController() : null;
+  const timer = controller
+    ? globalThis.setTimeout(() => controller.abort(), Math.max(500, Math.floor(timeoutMs)))
+    : null;
+  try {
+    const requestInit: RequestInit = {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+    };
+    if (controller) {
+      requestInit.signal = controller.signal;
+    }
+    const response = await fetch(resolveApiUrl(pathOrUrl, options?.baseUrl), requestInit);
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`.trim());
+    }
+    return await response.json() as T;
+  } finally {
+    if (timer !== null) {
+      globalThis.clearTimeout(timer);
+    }
+  }
+};
 
 const decodeBase64ToArrayBuffer = (value: string): ArrayBuffer => {
   const safe = String(value || '').trim();
@@ -30,14 +62,105 @@ const decodeBase64ToArrayBuffer = (value: string): ArrayBuffer => {
   return bytes.buffer;
 };
 
+export interface RoutingBackendCandidate {
+  baseUrl: string;
+  probeOk: boolean;
+  region?: string;
+  capabilities?: {
+    supportsTts?: boolean;
+  };
+  healthUrl?: string;
+  runtimeUrl?: string;
+  latencyMs?: number | null;
+}
+
+export interface RoutingBackendCandidatesResponse {
+  ok: boolean;
+  candidates: RoutingBackendCandidate[];
+  fetchedAt: string;
+}
+
+export interface TtsEngineLatencyResponse extends EngineStatusItem {
+  ok: boolean;
+  engine: GenerationSettings['engine'];
+  gcpPingMs: number;
+  latencyMs: number;
+}
+
 export const fetchTtsEnginesStatus = async (
   engine?: GenerationSettings['engine'],
-  baseUrl?: string
+  baseUrl?: string,
+  options?: { timeoutMs?: number | undefined }
 ): Promise<TtsEngineStatusResponse> => {
   const params = new URLSearchParams();
   if (engine) params.set('engine', engine);
   const path = `/tts/engines/status${params.toString() ? `?${params.toString()}` : ''}`;
-  return requestPublicJson<TtsEngineStatusResponse>(path, undefined, withBaseUrl(baseUrl));
+  return fetchPublicJsonWithTimeout<TtsEngineStatusResponse>(path, {
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+      ? { timeoutMs: options.timeoutMs }
+      : {}),
+  });
+};
+
+export const fetchRoutingBackendCandidates = async (options?: {
+  baseUrl?: string;
+  timeoutMs?: number;
+  force?: boolean;
+}): Promise<RoutingBackendCandidatesResponse> => {
+  const baseUrl = resolveApiBaseUrl(options?.baseUrl);
+  void options?.force;
+  if (!baseUrl) {
+    return {
+      ok: false,
+      candidates: [],
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  const startedAtMs = Date.now();
+  const healthUrl = resolveApiUrl('/health', baseUrl);
+  try {
+    const healthSnapshot = await fetchPublicJsonWithTimeout<Record<string, unknown>>('/health', {
+      baseUrl,
+      ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? { timeoutMs: options.timeoutMs }
+        : {}),
+    });
+    const region = String(
+      healthSnapshot?.selectedRegion ||
+      healthSnapshot?.region ||
+      healthSnapshot?.regionHint ||
+      ''
+    ).trim();
+    return {
+      ok: true,
+      candidates: [{
+        baseUrl,
+        probeOk: true,
+        region,
+        capabilities: { supportsTts: true },
+        healthUrl,
+        runtimeUrl: baseUrl,
+        latencyMs: Math.max(0, Date.now() - startedAtMs),
+      }],
+      fetchedAt: new Date().toISOString(),
+    };
+  } catch {
+    return {
+      ok: false,
+      candidates: [{
+        baseUrl,
+        probeOk: false,
+        region: '',
+        capabilities: { supportsTts: false },
+        healthUrl,
+        runtimeUrl: baseUrl,
+        latencyMs: null,
+      }],
+      fetchedAt: new Date().toISOString(),
+    };
+  }
 };
 
 export const fetchTtsEngineVoices = async (
@@ -71,6 +194,62 @@ export const switchTtsEngine = async (
 
 export const fetchTtsEngineCapabilities = async (baseUrl?: string): Promise<TtsEngineCapabilitiesResponse> => {
   return requestPublicJson<TtsEngineCapabilitiesResponse>('/tts/engines/capabilities', undefined, withBaseUrl(baseUrl));
+};
+
+export const fetchTtsEngineLatency = async (
+  engine: GenerationSettings['engine'],
+  baseUrl?: string,
+  options?: { timeoutMs?: number }
+): Promise<TtsEngineLatencyResponse> => {
+  const params = new URLSearchParams({ engine });
+  const startedAtMs = Date.now();
+  const healthUrl = resolveApiUrl('/health', baseUrl);
+  const runtimeUrl = resolveApiBaseUrl(baseUrl);
+  try {
+    const status = await fetchPublicJsonWithTimeout<TtsEngineStatusResponse>(
+      `/tts/engines/status?${params.toString()}`,
+      {
+        baseUrl,
+        ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+          ? { timeoutMs: options.timeoutMs }
+          : {}),
+      }
+    );
+    const engineItem = status.engines?.[engine];
+    const latencyMs = Math.max(0, Date.now() - startedAtMs);
+    if (!engineItem) {
+      return {
+        ok: false,
+        engine,
+        state: 'offline',
+        detail: 'Runtime status unavailable.',
+        ready: false,
+        healthUrl,
+        runtimeUrl,
+        gcpPingMs: latencyMs,
+        latencyMs,
+      };
+    }
+    return {
+      ok: true,
+      ...engineItem,
+      gcpPingMs: latencyMs,
+      latencyMs,
+    };
+  } catch {
+    const latencyMs = Math.max(0, Date.now() - startedAtMs);
+    return {
+      ok: false,
+      engine,
+      state: 'offline',
+      detail: 'Runtime status unavailable.',
+      ready: false,
+      healthUrl,
+      runtimeUrl,
+      gcpPingMs: latencyMs,
+      latencyMs,
+    };
+  }
 };
 
 export const tailRuntimeLogs = async (

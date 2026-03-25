@@ -1,7 +1,6 @@
 
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import '../src/styles/mainApp.css';
 import { 
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
     Music, Video, 
@@ -13,7 +12,6 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { UploadDropzone } from '../components/ui/UploadDropzone';
-import { VoiceCloneModal } from '../src/features/voice-cloning/VoiceCloneModal';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
 import {
   GenerationSettings,
@@ -105,7 +103,6 @@ import { getSharedAudioContext as getAudioContext } from '../src/shared/audio/au
 import { hydrateRuntimeStatusSnapshot } from '../src/shared/runtime/runtimeStatusHydration';
 import { BACKEND_ROUTING_APPLIED_EVENT } from '../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
-import { base64ToArrayBuffer, fileToBase64 } from '../src/shared/audio/base64';
 import { TTS_VOICE_CONVERSION_FALLBACK_EVENT, type TtsVoiceConversionFallbackDetail } from '../src/shared/audio/voiceConversionEvents';
 import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../services/runtimeStatusMapping';
 
@@ -518,6 +515,7 @@ const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => 
 const LabTabContent = lazy(async () => loadLabTabContent().then((module) => ({ default: module.default })));
 const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
 const PodcastTabContent = lazy(async () => loadPodcastTabContent().then((module) => ({ default: module.PodcastTabContent })));
+const VoiceCloneModal = lazy(async () => import('../src/features/voice-cloning/VoiceCloneModal').then((module) => ({ default: module.VoiceCloneModal })));
 const AudioPlayer = lazy(async () => loadAudioPlayer().then((module) => ({ default: module.AudioPlayer })));
 
 const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
@@ -1667,16 +1665,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [voiceFilterGender, setVoiceFilterGender] = useState<'All' | 'Male' | 'Female'>('All');
   const [voiceFilterAccent, setVoiceFilterAccent] = useState<string>('All');
   const deferredVoiceSearch = useDeferredValue(voiceSearch);
+  type VoiceCloneTarget = {
+    speakerName: string | undefined;
+    characterId: string | undefined;
+    voiceId: string;
+    sourceVoiceLabel: string;
+    sourceVoiceUrl: string;
+    sourceVoiceUrlNeedsCleanup: boolean;
+    applyGlobally: boolean;
+  };
   const [isVoiceCloneModalOpen, setIsVoiceCloneModalOpen] = useState(false);
+  const [voiceCloneTarget, setVoiceCloneTarget] = useState<VoiceCloneTarget | null>(null);
+  const voiceCloneTargetRef = useRef<VoiceCloneTarget | null>(null);
+
+  useEffect(() => {
+      voiceCloneTargetRef.current = voiceCloneTarget;
+  }, [voiceCloneTarget]);
 
   const [characterModalOpen, setCharacterModalOpen] = useState(false);
   const [editingChar, setEditingChar] = useState<CharacterProfile | null>(null);
   const [charForm, setCharForm] = useState<CharacterProfile>({
       id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
-  const [voiceConversionAttachments, setVoiceConversionAttachments] = useState<Record<string, { audioName: string; audioBase64: string }>>({});
-  const [voiceReferenceDraftFile, setVoiceReferenceDraftFile] = useState<File | null>(null);
-  const [isStudioVoiceConversionEnabled, setIsStudioVoiceConversionEnabled] = useState(false);
   const voiceConversionFallbackToastRef = useRef<Record<string, number>>({});
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -6192,7 +6202,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const resolveVoicePreviewUrl = useCallback((voice?: VoiceOption): string => {
       const raw = String(voice?.previewUrl || '').trim();
       if (!raw) return '';
-      if (/^https?:\/\//i.test(raw)) return raw;
+      if (/^(?:https?:|blob:|data:)/i.test(raw)) return raw;
       const base = String(mediaBackendUrl || '').trim().replace(/\/+$/, '');
       if (!base) return raw;
       return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
@@ -6205,6 +6215,58 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (!voice.isCloned) return '';
       return String((voice as ClonedVoice).originalSampleUrl || '').trim();
   }, [resolveVoicePreviewUrl]);
+
+  const buildVoiceSampleSource = useCallback(async (
+      voiceId: string,
+      name: string,
+      engine: GenerationSettings['engine'] = 'GEM'
+  ): Promise<{ url: string; needsCleanup: boolean }> => {
+      const selectedVoice = getVoiceById(voiceId);
+      const fallbackPreviewUrl = resolveVoicePreviewUrl(selectedVoice);
+      const clonedPlaybackUrl = resolveClonedVoicePlaybackUrl(selectedVoice);
+
+      if (clonedPlaybackUrl) {
+          return { url: clonedPlaybackUrl, needsCleanup: false };
+      }
+      if (fallbackPreviewUrl) {
+          return { url: fallbackPreviewUrl, needsCleanup: false };
+      }
+
+      if (engine === 'KOKORO') {
+          await prepareKokoroExecution('preview', voiceId, 1.0);
+      } else {
+          await ensureEngineOnline(engine, { silent: true, syncVoiceId: voiceId, requireAccess: true });
+      }
+
+      const previewSettings: GenerationSettings = {
+          ...settings,
+          engine,
+          voiceId,
+          speed: 1.0,
+          emotion: 'Neutral',
+      };
+
+      const text = `Hello! I am ${name}. I can bring your story to life.`;
+
+      let voiceParam = name;
+      if (isGemRuntimeEngine(engine)) {
+        voiceParam = getVoiceById(voiceId)?.geminiVoiceName || clonedVoices.find((voice) => voice.id === voiceId)?.geminiVoiceName || 'Fenrir';
+      } else {
+        voiceParam = voiceId;
+      }
+
+      const { generateSpeech } = await loadGeminiService();
+      const buffer = await generateSpeech(
+          text,
+          voiceParam,
+          previewSettings,
+          'speech',
+          undefined,
+          { context: 'preview', preferLiveChunks: true }
+      );
+      const blob = audioBufferToWav(buffer);
+      return { url: URL.createObjectURL(blob), needsCleanup: true };
+  }, [clonedVoices, ensureEngineOnline, getVoiceById, isGemRuntimeEngine, prepareKokoroExecution, resolveClonedVoicePlaybackUrl, resolveVoicePreviewUrl, settings]);
 
   const playVoiceSample = async (voiceId: string, name: string, engine: GenerationSettings['engine'] = 'GEM') => {
       // Stop current
@@ -6220,9 +6282,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
 
       setPreviewState({ id: voiceId, status: 'loading' });
-      const selectedVoice = getVoiceById(voiceId);
-      const fallbackPreviewUrl = resolveVoicePreviewUrl(selectedVoice);
-      const clonedPlaybackUrl = resolveClonedVoicePlaybackUrl(selectedVoice);
 
       const playAudioSource = async (sourceUrl: string, revokeOnEnd: boolean): Promise<void> => {
           const audio = new Audio(sourceUrl);
@@ -6267,56 +6326,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       };
 
       try {
-          if (clonedPlaybackUrl) {
-              await playAudioSource(clonedPlaybackUrl, false);
-              return;
-          }
-          if (engine === 'KOKORO') {
-              await prepareKokoroExecution('preview', voiceId, 1.0);
-          } else {
-              await ensureEngineOnline(engine, { silent: true, syncVoiceId: voiceId, requireAccess: true });
-          }
-
-          const previewSettings: GenerationSettings = {
-              ...settings,
-              engine,
-              voiceId,
-              speed: 1.0,
-              emotion: 'Neutral',
-          };
-
-          const text = `Hello! I am ${name}. I can bring your story to life.`;
-          
-          // Use the correct voice name parameter expected by generateSpeech
-          let voiceParam = name;
-          if (isGemRuntimeEngine(engine)) {
-            voiceParam = getVoiceById(voiceId)?.geminiVoiceName || clonedVoices.find(v => v.id === voiceId)?.geminiVoiceName || 'Fenrir';
-          } else {
-            voiceParam = voiceId;
-          }
-
-          const { generateSpeech } = await loadGeminiService();
-          const buffer = await generateSpeech(
-              text,
-              voiceParam,
-              previewSettings,
-              'speech',
-              undefined,
-              { context: 'preview', preferLiveChunks: true }
-          );
-          const blob = audioBufferToWav(buffer);
-          const url = URL.createObjectURL(blob);
-          await playAudioSource(url, true);
+          const sampleSource = await buildVoiceSampleSource(voiceId, name, engine);
+          await playAudioSource(sampleSource.url, sampleSource.needsCleanup);
       } catch (e: any) {
-          if (fallbackPreviewUrl) {
-              try {
-                  await playAudioSource(fallbackPreviewUrl, false);
-                  showToast('Playing speaker reference preview.', 'info');
-                  return;
-              } catch {
-                  // Fall through to primary error handling.
-              }
-          }
           syncRuntimeBlockedStateFromError(engine, e);
           showToast(e.message, 'error');
           setPreviewState(null);
@@ -7330,106 +7342,91 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await handleAssistantRequest(userText);
   };
 
-  const handleVoiceClone = useCallback(() => {
+  const openVoiceCloneModal = useCallback((target: VoiceCloneTarget) => {
+      setVoiceCloneTarget(target);
       setIsVoiceCloneModalOpen(true);
   }, []);
 
-  const handleVoiceCloneCreated = useCallback((voice: ClonedVoice) => {
-      addClonedVoice(voice);
-      setSettings((current) => ({ ...current, voiceId: voice.id }));
-      setCharTab('GALLERY');
-      showToast(`Voice clone ready: ${voice.name}`, 'success');
-  }, [addClonedVoice, setCharTab, setSettings, showToast]);
-
-  const getVoiceConversionAttachmentKey = useCallback((voiceId: string): string => String(voiceId || '').trim().toLowerCase(), []);
-
-  const getVoiceConversionAttachment = useCallback((voiceId?: string) => {
-      const key = getVoiceConversionAttachmentKey(String(voiceId || ''));
-      if (!key) return null;
-      return voiceConversionAttachments[key] || null;
-  }, [getVoiceConversionAttachmentKey, voiceConversionAttachments]);
-
-  const attachVoiceConversionSample = useCallback(async (voiceId: string, file: File | null) => {
-      const normalizedVoiceId = getVoiceConversionAttachmentKey(voiceId);
-      if (!normalizedVoiceId || !file) return;
+  const cleanupVoiceCloneTargetSource = useCallback((target?: VoiceCloneTarget | null) => {
+      if (!target?.sourceVoiceUrlNeedsCleanup) return;
       try {
-          const audioBase64 = await fileToBase64(file);
-          setVoiceConversionAttachments((current) => ({
-              ...current,
-              [normalizedVoiceId]: {
-                  audioName: file.name || 'reference.wav',
-                  audioBase64,
-              },
-          }));
-          setVoiceReferenceDraftFile(file);
-          setIsStudioVoiceConversionEnabled(true);
-          showToast(`Voice sample attached to ${voiceId}.`, 'success');
-      } catch (error) {
-          showToast(error instanceof Error ? error.message : 'Failed to attach voice sample.', 'error');
+          URL.revokeObjectURL(target.sourceVoiceUrl);
+      } catch {
+          // Ignore URL cleanup failures.
       }
-  }, [getVoiceConversionAttachmentKey, showToast]);
+  }, []);
 
-  const clearVoiceConversionSample = useCallback((voiceId: string) => {
-      const normalizedVoiceId = getVoiceConversionAttachmentKey(voiceId);
-      if (!normalizedVoiceId) return;
-      const hadAttachment = Boolean(voiceConversionAttachments[normalizedVoiceId]);
-      setVoiceConversionAttachments((current) => {
-          if (!current[normalizedVoiceId]) return current;
-          const next = { ...current };
-          delete next[normalizedVoiceId];
-          return next;
+  const closeVoiceCloneModal = useCallback(() => {
+      cleanupVoiceCloneTargetSource(voiceCloneTargetRef.current);
+      setIsVoiceCloneModalOpen(false);
+      setVoiceCloneTarget(null);
+  }, [cleanupVoiceCloneTargetSource]);
+
+  const handleVoiceCloneCreated = useCallback((voice: ClonedVoice) => {
+      const target = voiceCloneTargetRef.current;
+      addClonedVoice(voice);
+      setSettings((current) => {
+          const nextMapping = target?.speakerName
+            ? upsertSpeakerVoiceMapping(target.speakerName, voice.id, current.speakerMapping)
+            : current.speakerMapping;
+          return {
+              ...current,
+              ...(target?.applyGlobally ? { voiceId: voice.id } : {}),
+              ...(target?.speakerName ? { speakerMapping: nextMapping } : {}),
+          };
       });
-      setVoiceReferenceDraftFile(null);
-      if (hadAttachment) {
-          showToast(`Voice sample cleared for ${voiceId}.`, 'info');
+
+      if (target?.characterId) {
+          const existingCharacter = characterLibrary.find((character) => character.id === target.characterId);
+          if (existingCharacter) {
+              updateCharacter({
+                  ...existingCharacter,
+                  voiceId: voice.id,
+              });
+          }
+      } else if (target?.speakerName) {
+          const matchingCharacter = characterLibrary.find(
+            (character) => character.name.trim().toLowerCase() === target.speakerName?.trim().toLowerCase()
+          );
+          if (matchingCharacter) {
+              updateCharacter({
+                  ...matchingCharacter,
+                  voiceId: voice.id,
+              });
+          }
       }
-  }, [getVoiceConversionAttachmentKey, showToast, voiceConversionAttachments]);
+
+      closeVoiceCloneModal();
+      showToast(`Voice converted: ${voice.name}`, 'success');
+  }, [addClonedVoice, characterLibrary, closeVoiceCloneModal, setSettings, showToast, updateCharacter, upsertSpeakerVoiceMapping]);
 
   function buildStudioGenerationSettings(baseSettings: GenerationSettings): GenerationSettings {
-      if (!isStudioVoiceConversionEnabled) {
-          return {
-              ...baseSettings,
-              voiceConversionReferences: undefined,
-          };
-      }
-      const attachments = voiceConversionAttachments;
       return {
           ...baseSettings,
-          voiceConversionReferences: Object.keys(attachments).length > 0 ? { ...attachments } : undefined,
+          speakerMapping: {
+              ...(baseSettings.speakerMapping || {}),
+          },
       };
   }
 
-  const currentVoiceConversionAttachment = getVoiceConversionAttachment(charForm.voiceId);
-  const voiceConversionAttachmentCount = useMemo(
-      () => Object.keys(voiceConversionAttachments).length,
-      [voiceConversionAttachments]
-  );
-
-  useEffect(() => {
-      if (!characterModalOpen) {
-          setVoiceReferenceDraftFile(null);
-          return;
-      }
-      if (!currentVoiceConversionAttachment || typeof File === 'undefined') {
-          setVoiceReferenceDraftFile(null);
-          return;
-      }
-      try {
-          setVoiceReferenceDraftFile(new File(
-              [base64ToArrayBuffer(currentVoiceConversionAttachment.audioBase64)],
-              currentVoiceConversionAttachment.audioName || 'reference.wav',
-              { type: 'audio/wav' }
-          ));
-      } catch {
-          setVoiceReferenceDraftFile(null);
-      }
-  }, [characterModalOpen, currentVoiceConversionAttachment]);
-
-  useEffect(() => {
-      if (Object.keys(voiceConversionAttachments).length > 0) {
-          setIsStudioVoiceConversionEnabled(true);
-      }
-  }, [voiceConversionAttachments]);
+  const openVoiceConversionForVoiceId = useCallback((
+      voiceId: string,
+      speakerName?: string,
+      characterId?: string,
+      applyGlobally = false
+  ) => {
+      const voice = getVoiceById(voiceId);
+      const sourceVoiceLabel = voice ? resolveVoiceDisplayLabel(voice) : String(speakerName || 'Selected speaker').trim() || 'Selected speaker';
+      openVoiceCloneModal({
+          voiceId,
+          speakerName: speakerName ? String(speakerName).trim() : undefined,
+          characterId,
+          sourceVoiceLabel,
+          sourceVoiceUrl: '',
+          sourceVoiceUrlNeedsCleanup: false,
+          applyGlobally,
+      });
+  }, [getVoiceById, openVoiceCloneModal, resolveVoiceDisplayLabel]);
 
   // --- Derived State for Gallery ---
   const galleryVoicePool = useMemo(() => {
@@ -7603,7 +7600,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ? 'Reader'
       : activeTab === Tab.CHARACTERS
         ? 'Character'
-        : activeTab === Tab.NOVEL
+      : activeTab === Tab.NOVEL
           ? 'Novel'
           : activeTab === Tab.HISTORY
             ? 'History'
@@ -9076,16 +9073,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
                                                     <button
                                                         type="button"
-                                                        onClick={() => openCharacterModal(characterLibrary.find((char) => char.voiceId === settings.voiceId) || undefined, settings.voiceId)}
+                                                        onClick={() => openVoiceConversionForVoiceId(
+                                                          settings.voiceId,
+                                                          characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
+                                                          characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id,
+                                                          true
+                                                        )}
                                                         className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
                                                           isDarkUi
                                                             ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
                                                             : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
                                                         }`}
-                                                        title="Attach a voice reference for the selected voice"
-                                                        aria-label="Attach a voice reference for the selected voice"
+                                                        title="Convert this speaker with reference audio"
+                                                        aria-label="Convert this speaker with reference audio"
                                                     >
-                                                        <UploadCloud size={12} />
+                                                        <Mic2 size={12} />
                                                     </button>
                                                 </div>
                                             </div>
@@ -9095,7 +9097,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                    <div className="mb-4 flex items-center justify-between">
 	                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speaker</h3>
                                             <div className="flex items-center gap-2">
-	                                            <span className={`text-xs font-bold ${
+                                                <span className={`text-xs font-bold ${
                                                         settings.engine === 'KOKORO'
                                                           ? 'text-cyan-600'
                                                           : settings.engine === 'NEURAL2'
@@ -9107,16 +9109,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
                                                     <button
                                                         type="button"
-                                                        onClick={() => openCharacterModal(characterLibrary.find((char) => char.voiceId === settings.voiceId) || undefined, settings.voiceId)}
+                                                        onClick={() => openVoiceConversionForVoiceId(
+                                                          settings.voiceId,
+                                                          characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
+                                                          characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id,
+                                                          true
+                                                        )}
                                                         className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
                                                           isDarkUi
                                                             ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
                                                             : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
                                                         }`}
-                                                    title="Attach a voice reference for the selected voice"
-                                                    aria-label="Attach a voice reference for the selected voice"
+                                                    title="Convert this speaker with reference audio"
+                                                    aria-label="Convert this speaker with reference audio"
                                                 >
-                                                    <UploadCloud size={12} />
+                                                    <Mic2 size={12} />
                                                 </button>
 	                                    </div>
                                     </div>
@@ -9420,7 +9427,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         {castSpeakers.map(speaker => {
                                             const char = characterLibrary.find(c => c.name.toLowerCase() === speaker.toLowerCase()) || null;
                                             const selectedVoiceId = char?.voiceId || resolveMappedVoiceForSpeaker(speaker) || castFreeVoiceOptions[0]?.id || castVoiceOptions[0]?.id || '';
-                                            const selectedVoiceConversionAttachment = selectedVoiceId ? getVoiceConversionAttachment(selectedVoiceId) : null;
                                             return (
                                                 <div key={speaker} className={`flex items-center justify-between gap-2 p-2 rounded-lg border shadow-sm ${
                                                     isDarkUi
@@ -9429,29 +9435,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 }`}>
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className={`truncate text-xs font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>{speaker}</span>
-                                                        {selectedVoiceConversionAttachment && (
-                                                            <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide ${
-                                                                isDarkUi
-                                                                    ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200'
-                                                                    : 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700'
-                                                            }`}>
-                                                                Ref
-                                                            </span>
-                                                        )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             type="button"
-                                                            onClick={() => openCharacterModal(char || undefined, selectedVoiceId)}
+                                                            onClick={() => openVoiceConversionForVoiceId(
+                                                              selectedVoiceId,
+                                                              speaker,
+                                                              char?.id,
+                                                              false
+                                                            )}
                                                             className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition ${
                                                               isDarkUi
                                                                 ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
                                                                 : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
                                                             }`}
-                                                            title={`Attach a voice reference for ${speaker}`}
-                                                            aria-label={`Attach a voice reference for ${speaker}`}
+                                                            title={`Convert ${speaker} with reference audio`}
+                                                            aria-label={`Convert ${speaker} with reference audio`}
                                                         >
-                                                            <UploadCloud size={12} />
+                                                            <Mic2 size={12} />
                                                         </button>
                                                         <select 
                                                             className={`max-w-[150px] rounded p-1 text-[10px] font-bold outline-none ${isDarkUi ? 'bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-700'}`}
@@ -9871,15 +9873,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                      </div>
                                  </div>
                              </div>
-                         )}
-                        <VoiceCloneModal
-                          isOpen={isVoiceCloneModalOpen}
-                          onClose={() => setIsVoiceCloneModalOpen(false)}
-                          onCloneCreated={handleVoiceCloneCreated}
-                          backendBaseUrl={mediaBackendUrl}
-                        />
+                        )}
                     </div>
                 )}
+
+                {isVoiceCloneModalOpen && voiceCloneTarget ? (
+                  <Suspense
+                    fallback={
+                      <div className="vf-scrim vf-scrim--modal fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="flex items-center gap-3 rounded-3xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 shadow-2xl">
+                          <Loader2 size={16} className="animate-spin" />
+                          Loading voice conversion...
+                        </div>
+                      </div>
+                    }
+                  >
+                    <VoiceCloneModal
+                      isOpen={isVoiceCloneModalOpen}
+                      onClose={closeVoiceCloneModal}
+                      onCloneCreated={handleVoiceCloneCreated}
+                      backendBaseUrl={mediaBackendUrl}
+                      sourceVoiceLabel={voiceCloneTarget.sourceVoiceLabel}
+                      sourceVoiceUrl={voiceCloneTarget.sourceVoiceUrl}
+                      prepareSourceVoiceUrl={() => buildVoiceSampleSource(
+                        voiceCloneTarget.voiceId,
+                        voiceCloneTarget.sourceVoiceLabel,
+                        getVoiceById(voiceCloneTarget.voiceId)?.engine || settings.engine
+                      )}
+                    />
+                  </Suspense>
+                ) : null}
 
                 {activeTab === Tab.HISTORY && (
                     <div className={`animate-in fade-in rounded-3xl border p-5 md:p-6 ${

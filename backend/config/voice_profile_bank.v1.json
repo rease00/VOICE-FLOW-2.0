@@ -1,9 +1,9 @@
-{
+﻿{
   "version": "1.0.0",
   "profiles": [
     {
       "profileId": "p01_india_m_adult",
-      "displayName": "Arjun India Male",
+      "displayName": "Rohan",
       "country": "India",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -18,7 +18,7 @@
     },
     {
       "profileId": "p02_india_f_adult",
-      "displayName": "Meera India Female",
+      "displayName": "Anika",
       "country": "India",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -33,7 +33,7 @@
     },
     {
       "profileId": "p03_us_m_adult",
-      "displayName": "Ethan US Male",
+      "displayName": "Mason",
       "country": "United States",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -48,7 +48,7 @@
     },
     {
       "profileId": "p04_us_f_adult",
-      "displayName": "Ava US Female",
+      "displayName": "Harper",
       "country": "United States",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -63,7 +63,7 @@
     },
     {
       "profileId": "p05_uk_m_adult",
-      "displayName": "Oliver UK Male",
+      "displayName": "Callum",
       "country": "United Kingdom",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -78,7 +78,7 @@
     },
     {
       "profileId": "p06_uk_f_adult",
-      "displayName": "Emily UK Female",
+      "displayName": "Imogen",
       "country": "United Kingdom",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -93,7 +93,7 @@
     },
     {
       "profileId": "p07_canada_m_adult",
-      "displayName": "Liam Canada Male",
+      "displayName": "Declan",
       "country": "Canada",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -108,7 +108,7 @@
     },
     {
       "profileId": "p08_canada_f_adult",
-      "displayName": "Sophie Canada Female",
+      "displayName": "Brooke",
       "country": "Canada",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -123,7 +123,7 @@
     },
     {
       "profileId": "p09_au_m_adult",
-      "displayName": "Noah Australia Male",
+      "displayName": "Brodie",
       "country": "Australia",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -138,7 +138,7 @@
     },
     {
       "profileId": "p10_au_f_adult",
-      "displayName": "Isla Australia Female",
+      "displayName": "Tahlia",
       "country": "Australia",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -153,7 +153,7 @@
     },
     {
       "profileId": "p11_jp_m_adult",
-      "displayName": "Kenji Japan Male",
+      "displayName": "Daichi",
       "country": "Japan",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -168,7 +168,7 @@
     },
     {
       "profileId": "p12_jp_f_adult",
-      "displayName": "Yui Japan Female",
+      "displayName": "Aoi",
       "country": "Japan",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -183,7 +183,7 @@
     },
     {
       "profileId": "p13_br_m_adult",
-      "displayName": "Lucas Brazil Male",
+      "displayName": "Thiago",
       "country": "Brazil",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -198,7 +198,7 @@
     },
     {
       "profileId": "p14_br_f_adult",
-      "displayName": "Camila Brazil Female",
+      "displayName": "Larissa",
       "country": "Brazil",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -213,7 +213,7 @@
     },
     {
       "profileId": "p15_es_m_adult",
-      "displayName": "Mateo Spain Male",
+      "displayName": "Javier",
       "country": "Spain",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -228,7 +228,7 @@
     },
     {
       "profileId": "p16_es_f_adult",
-      "displayName": "Valentina Spain Female",
+      "displayName": "Lucia",
       "country": "Spain",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -243,7 +243,7 @@
     },
     {
       "profileId": "p17_india_boy",
-      "displayName": "Adi India Boy",
+      "displayName": "Kabir",
       "country": "India",
       "gender": "Male",
       "ageGroup": "Child",
@@ -258,7 +258,7 @@
     },
     {
       "profileId": "p18_india_girl",
-      "displayName": "Tara India Girl",
+      "displayName": "Myra",
       "country": "India",
       "gender": "Female",
       "ageGroup": "Child",
@@ -273,7 +273,7 @@
     },
     {
       "profileId": "p19_india_old_man",
-      "displayName": "Raghu India Elder",
+      "displayName": "Mahesh",
       "country": "India",
       "gender": "Male",
       "ageGroup": "Elderly",
@@ -288,7 +288,7 @@
     },
     {
       "profileId": "p20_uk_old_woman",
-      "displayName": "Grace UK Elder",
+      "displayName": "Margaret",
       "country": "United Kingdom",
       "gender": "Female",
       "ageGroup": "Elderly",
@@ -303,7 +303,7 @@
     },
     {
       "profileId": "p21_novel_artist_m",
-      "displayName": "Noir Novel Artist",
+      "displayName": "Dylan",
       "country": "United States",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -318,7 +318,7 @@
     },
     {
       "profileId": "p22_novel_artist_f",
-      "displayName": "Lyris Novel Artist",
+      "displayName": "Sienna",
       "country": "United States",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -333,7 +333,7 @@
     },
     {
       "profileId": "p23_de_m_adult",
-      "displayName": "Hans Germany Male",
+      "displayName": "Matthias",
       "country": "Germany",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -348,7 +348,7 @@
     },
     {
       "profileId": "p24_de_f_adult",
-      "displayName": "Anna Germany Female",
+      "displayName": "Greta",
       "country": "Germany",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -363,7 +363,7 @@
     },
     {
       "profileId": "p25_fr_m_adult",
-      "displayName": "Pierre France Male",
+      "displayName": "Adrien",
       "country": "France",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -378,7 +378,7 @@
     },
     {
       "profileId": "p26_fr_f_adult",
-      "displayName": "Claire France Female",
+      "displayName": "Elodie",
       "country": "France",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -393,7 +393,7 @@
     },
     {
       "profileId": "p27_ae_m_adult",
-      "displayName": "Omar UAE Male",
+      "displayName": "Zayed",
       "country": "United Arab Emirates",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -408,7 +408,7 @@
     },
     {
       "profileId": "p28_ae_f_adult",
-      "displayName": "Leila UAE Female",
+      "displayName": "Noora",
       "country": "United Arab Emirates",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -423,7 +423,7 @@
     },
     {
       "profileId": "p29_ru_m_adult",
-      "displayName": "Ivan Russia Male",
+      "displayName": "Nikolai",
       "country": "Russia",
       "gender": "Male",
       "ageGroup": "Adult",
@@ -438,7 +438,7 @@
     },
     {
       "profileId": "p30_ru_f_adult",
-      "displayName": "Alina Russia Female",
+      "displayName": "Svetlana",
       "country": "Russia",
       "gender": "Female",
       "ageGroup": "Adult",
@@ -453,3 +453,4 @@
     }
   ]
 }
+
