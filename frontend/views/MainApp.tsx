@@ -104,6 +104,7 @@ import { hydrateRuntimeStatusSnapshot } from '../src/shared/runtime/runtimeStatu
 import { BACKEND_ROUTING_APPLIED_EVENT } from '../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
 import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../services/runtimeStatusMapping';
+import { createSynthesisTraceId } from '../services/synthesisContractService';
 
 const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
 const STUDIO_SPEECH_GAIN_MIN = 0.05;
@@ -965,9 +966,9 @@ const resolveAdminOpsTabFromUrl = (): AdminOpsTab => {
     : 'usage';
 };
 
-const normalizePlanToken = (planName: unknown): 'free' | 'launch' | 'starter' | 'creator' | 'pro' | 'scale' => {
+const normalizePlanToken = (planName: unknown): 'free' | 'launcher' | 'starter' | 'creator' | 'pro' | 'scale' => {
   const token = String(planName || '').trim().toLowerCase();
-  if (token === 'launch') return 'launch';
+  if (token === 'launch' || token === 'launcher') return 'launcher';
   if (token === 'starter') return 'starter';
   if (token === 'creator') return 'creator';
   if (token === 'pro') return 'pro';
@@ -982,6 +983,7 @@ const resolveTokenPackDiscountPercent = (
   if (Number.isFinite(entitlementDiscount) && entitlementDiscount > 0) {
     return Math.max(0, Math.round(entitlementDiscount));
   }
+  if (planToken === 'launcher') return 2;
   if (planToken === 'starter') return 5;
   if (planToken === 'creator') return 10;
   if (planToken === 'pro') return 15;
@@ -1834,7 +1836,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ? [...ENGINE_ORDER]
         : entitlementAllowedEngines.length > 0
           ? entitlementAllowedEngines
-          : normalizedPlanToken === 'launch'
+          : normalizedPlanToken === 'launcher'
             ? ['KOKORO', 'NEURAL2']
             : isPaidBillingPlan
             ? [...ENGINE_ORDER]
@@ -5250,8 +5252,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ): Promise<void> => {
       const itemStartedAtMs = Date.now();
       const audioCacheKey = item.audioCacheKey || `studio-queue:${item.id}`;
+      const normalizedQueueEngine = normalizeEngineToken(item.settingsSnapshot.engine, 'GEM');
+      const runRequestId = createSynthesisTraceId(normalizedQueueEngine);
+      const initialKnownJobId = String(item.jobId || '').trim();
       activeStudioQueueItemIdRef.current = item.id;
-      activeGatewayJobIdRef.current = String(item.jobId || '').trim();
+      activeGatewayJobIdRef.current = initialKnownJobId || runRequestId;
       generationRunStartedAtRef.current = itemStartedAtMs;
       generationFirstAudioAtRef.current = 0;
       queueItemTimingRef.current[item.id] = {
@@ -5272,6 +5277,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           ...entry,
                           status: 'running',
                           error: undefined,
+                          jobId: initialKnownJobId || runRequestId,
                           audioCacheKey,
                           startedAt: itemStartedAtMs,
                           firstAudioAt: undefined,
@@ -5284,7 +5290,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
 
       try {
-          const normalizedQueueEngine = normalizeEngineToken(item.settingsSnapshot.engine, 'GEM');
           const runSettings: GenerationSettings = {
               ...item.settingsSnapshot,
               speakerMapping: {
@@ -5293,7 +5298,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           };
           let wavBlob: Blob | null = null;
           let generationOutput: Awaited<ReturnType<typeof performGeneration>> | null = null;
-          let currentJobId = String(item.jobId || '').trim();
+          let currentJobId = initialKnownJobId;
           let retryCount = 0;
 
           while (true) {
@@ -5316,7 +5321,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           item.sourceText,
                           controller.signal,
                           runSettings,
-                          { createObjectUrl: false }
+                          { createObjectUrl: false, requestId: runRequestId }
                       );
                       wavBlob = generationOutput.wavBlob;
                   }
@@ -5333,8 +5338,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       throw attemptError;
                   }
                   retryCount += 1;
+                  const staleJobId = String(currentJobId || activeGatewayJobIdRef.current || '').trim();
+                  if (staleJobId) {
+                      try {
+                          const { cancelTtsJob } = await import('../src/shared/api/gatewayClient');
+                          await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(runSettings) });
+                      } catch {
+                          // Best-effort cancellation before retrying with the same request id.
+                      }
+                  }
                   currentJobId = '';
-                  activeGatewayJobIdRef.current = '';
+                  activeGatewayJobIdRef.current = runRequestId;
                   setLiveAudioChunks([]);
                   seenLiveChunkKeysRef.current.clear();
                   updateStudioQueueState((prev) => {
@@ -5344,7 +5358,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           activeItemId: item.id,
                           items: prev.items.map((entry) => (
                               entry.id === item.id
-                                  ? { ...entry, status: 'running', error: undefined, jobId: undefined }
+                                  ? { ...entry, status: 'running', error: undefined, jobId: runRequestId }
                                   : entry
                           )),
                       };
@@ -5853,7 +5867,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       scriptText: string,
       signal?: AbortSignal,
       settingsOverride?: GenerationSettings,
-      options?: { createObjectUrl?: boolean }
+      options?: { createObjectUrl?: boolean; requestId?: string }
   ) {
       if (!scriptText.trim()) throw new Error("Text is empty");
       const studioSettings = normalizeSettings(settingsOverride ?? buildStudioGenerationSettings(settings));
@@ -5924,7 +5938,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           generationSettings,
           'speech',
           signal,
-          { context: 'studio', preferLiveChunks: true }
+          {
+              context: 'studio',
+              preferLiveChunks: true,
+              ...(options?.requestId ? { requestId: String(options.requestId).trim() } : {}),
+          }
       );
       if (browserKokoro) {
           const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
@@ -6000,11 +6018,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     generationRunStartedAtRef.current = Date.now();
     generationFirstAudioAtRef.current = 0;
     setGenerationTiming(null);
+    const generationRequestId = createSynthesisTraceId(normalizeEngineToken(settings.engine, 'GEM'));
     
     setGeneratedAudioUrlManaged(null);
     setLiveAudioChunks([]);
     seenLiveChunkKeysRef.current.clear();
-    activeGatewayJobIdRef.current = '';
+    activeGatewayJobIdRef.current = generationRequestId;
     
     // Calculate Estimate
     // TTS speed is roughly 14 chars per second for runtime estimate
@@ -6024,7 +6043,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       let retryCount = 0;
       while (!generationResult) {
         try {
-          generationResult = await performGeneration(text, controller.signal);
+          generationResult = await performGeneration(text, controller.signal, undefined, { requestId: generationRequestId });
         } catch (attemptError: any) {
           if (attemptError?.name === 'AbortError') throw attemptError;
           const shouldRetry = (
@@ -6033,7 +6052,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           );
           if (!shouldRetry) throw attemptError;
           retryCount += 1;
-          activeGatewayJobIdRef.current = '';
+          const staleJobId = String(activeGatewayJobIdRef.current || '').trim();
+          if (staleJobId) {
+            try {
+              const { cancelTtsJob } = await import('../src/shared/api/gatewayClient');
+              await cancelTtsJob(staleJobId, { baseUrl: resolveMediaBackendUrl(settings) });
+            } catch {
+              // Best-effort cancellation before retrying with the same request id.
+            }
+          }
+          activeGatewayJobIdRef.current = generationRequestId;
           setLiveAudioChunks([]);
           seenLiveChunkKeysRef.current.clear();
           setProcessingStage('Transient runtime issue detected. Retrying once...');

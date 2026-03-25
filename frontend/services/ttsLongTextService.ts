@@ -5,6 +5,8 @@ export type PrimaryTtsEngine = GenerationSettings['engine'];
 export interface ChunkingProfile {
   hardCharCap: number;
   targetCharCap: number;
+  minWordsPerChunk: number;
+  targetWordsPerChunk: number;
   maxWordsPerChunk: number;
   joinCrossfadeMs: number;
 }
@@ -33,12 +35,32 @@ export interface LongTextPreflightResult {
 export interface LiveChunkRequestProfile {
   liveChunkChars: number;
   liveChunkWords: number;
+  firstChunkChars: number;
+  firstChunkWords: number;
+  fastStartChunkCount: number;
+  fastStartChunkChars: number;
+  fastStartChunkWords: number;
+  liveChunkStageChars: number[];
+  liveChunkStageWords: number[];
 }
 
 export const MAX_WORDS_PER_REQUEST = 5000;
 export const MAX_WORDS_PER_WINDOW = 400;
 export const RETRY_ATTEMPTS_PER_CHUNK = 3;
 export const RETRY_BACKOFF_MS: readonly [number, number] = [500, 1200];
+const GEMINI_POLICY_CHUNK_CHARS = 3000;
+const GEMINI_POLICY_TARGET_CHUNK_CHARS = 2400;
+const GEMINI_POLICY_MIN_CHUNK_WORDS = 300;
+const GEMINI_POLICY_TARGET_CHUNK_WORDS = 400;
+const GEMINI_POLICY_CHUNK_WORDS = 500;
+// Keep Gemini live generation aligned with the backend's low-latency defaults.
+const GEMINI_LIVE_POLICY_STAGE_CHARS = [24, 48, 96, 130, 260, 520] as const;
+const GEMINI_LIVE_POLICY_STAGE_WORDS = [5, 10, 20, 22, 44, 88] as const;
+const GEMINI_LIVE_POLICY_CHUNK_CHARS = 130;
+const GEMINI_LIVE_POLICY_CHUNK_WORDS = 22;
+const GEMINI_LIVE_POLICY_FIRST_CHUNK_CHARS = 24;
+const GEMINI_LIVE_POLICY_FIRST_CHUNK_WORDS = 5;
+const GEMINI_LIVE_POLICY_FAST_START_CHUNK_COUNT = 2;
 const SENTENCE_OVERFLOW_RATIO = 1.35;
 const SENTENCE_OVERFLOW_CHAR_GRACE = 96;
 const SENTENCE_OVERFLOW_WORD_GRACE = 18;
@@ -48,16 +70,58 @@ const QUALITY_CHUNK_PROFILES: Record<
   { hi: ChunkingProfile; default: ChunkingProfile }
 > = {
   KOKORO: {
-    hi: { hardCharCap: 200, targetCharCap: 150, maxWordsPerChunk: 34, joinCrossfadeMs: 24 },
-    default: { hardCharCap: 180, targetCharCap: 140, maxWordsPerChunk: 32, joinCrossfadeMs: 12 },
+    hi: {
+      hardCharCap: 200,
+      targetCharCap: 150,
+      minWordsPerChunk: 1,
+      targetWordsPerChunk: 28,
+      maxWordsPerChunk: 34,
+      joinCrossfadeMs: 24,
+    },
+    default: {
+      hardCharCap: 180,
+      targetCharCap: 140,
+      minWordsPerChunk: 1,
+      targetWordsPerChunk: 26,
+      maxWordsPerChunk: 32,
+      joinCrossfadeMs: 12,
+    },
   },
   GEM: {
-    hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
-    default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
+    hi: {
+      hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
+      targetCharCap: GEMINI_POLICY_TARGET_CHUNK_CHARS,
+      minWordsPerChunk: GEMINI_POLICY_MIN_CHUNK_WORDS,
+      targetWordsPerChunk: GEMINI_POLICY_TARGET_CHUNK_WORDS,
+      maxWordsPerChunk: GEMINI_POLICY_CHUNK_WORDS,
+      joinCrossfadeMs: 8,
+    },
+    default: {
+      hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
+      targetCharCap: GEMINI_POLICY_TARGET_CHUNK_CHARS,
+      minWordsPerChunk: GEMINI_POLICY_MIN_CHUNK_WORDS,
+      targetWordsPerChunk: GEMINI_POLICY_TARGET_CHUNK_WORDS,
+      maxWordsPerChunk: GEMINI_POLICY_CHUNK_WORDS,
+      joinCrossfadeMs: 8,
+    },
   },
   NEURAL2: {
-    hi: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
-    default: { hardCharCap: 360, targetCharCap: 260, maxWordsPerChunk: 56, joinCrossfadeMs: 8 },
+    hi: {
+      hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
+      targetCharCap: GEMINI_POLICY_TARGET_CHUNK_CHARS,
+      minWordsPerChunk: GEMINI_POLICY_MIN_CHUNK_WORDS,
+      targetWordsPerChunk: GEMINI_POLICY_TARGET_CHUNK_WORDS,
+      maxWordsPerChunk: GEMINI_POLICY_CHUNK_WORDS,
+      joinCrossfadeMs: 8,
+    },
+    default: {
+      hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
+      targetCharCap: GEMINI_POLICY_TARGET_CHUNK_CHARS,
+      minWordsPerChunk: GEMINI_POLICY_MIN_CHUNK_WORDS,
+      targetWordsPerChunk: GEMINI_POLICY_TARGET_CHUNK_WORDS,
+      maxWordsPerChunk: GEMINI_POLICY_CHUNK_WORDS,
+      joinCrossfadeMs: 8,
+    },
   },
 };
 
@@ -184,6 +248,71 @@ const splitOversizedByWords = (
   return result;
 };
 
+const mergeSmallChunks = (
+  chunks: LongTextChunk[],
+  profile: ChunkingProfile
+): LongTextChunk[] => {
+  if (chunks.length <= 1 || profile.minWordsPerChunk <= 1) {
+    return chunks.map((chunk, index) => ({ ...chunk, index }));
+  }
+
+  const merged: LongTextChunk[] = [];
+  let index = 0;
+
+  while (index < chunks.length) {
+    let current = { ...chunks[index]! };
+
+    while (
+      current.wordCount < profile.minWordsPerChunk
+      && index + 1 < chunks.length
+    ) {
+      const next = chunks[index + 1];
+      if (!next) break;
+      const candidateText = `${current.text} ${next.text}`.trim();
+      const candidateWordCount = countWords(candidateText);
+      if (
+        candidateText.length > profile.hardCharCap
+        || candidateWordCount > profile.maxWordsPerChunk
+      ) {
+        break;
+      }
+      current = {
+        index: current.index,
+        text: candidateText,
+        charCount: candidateText.length,
+        wordCount: candidateWordCount,
+      };
+      index += 1;
+    }
+
+    merged.push(current);
+    index += 1;
+  }
+
+  if (merged.length >= 2) {
+    const tail = merged[merged.length - 1];
+    const previous = merged[merged.length - 2];
+    if (tail && previous && tail.wordCount < profile.minWordsPerChunk) {
+      const candidateText = `${previous.text} ${tail.text}`.trim();
+      const candidateWordCount = countWords(candidateText);
+      if (
+        candidateText.length <= profile.hardCharCap
+        && candidateWordCount <= profile.maxWordsPerChunk
+      ) {
+        merged[merged.length - 2] = {
+          index: previous.index,
+          text: candidateText,
+          charCount: candidateText.length,
+          wordCount: candidateWordCount,
+        };
+        merged.pop();
+      }
+    }
+  }
+
+  return merged.map((chunk, nextIndex) => ({ ...chunk, index: nextIndex }));
+};
+
 export const buildLongTextChunks = (input: {
   engine: PrimaryTtsEngine;
   language?: string;
@@ -262,7 +391,7 @@ export const buildLongTextChunks = (input: {
 
     const candidate = current ? `${current} ${text}` : text;
     const candidateWords = currentWords + unitWords;
-    if (candidate.length <= profile.targetCharCap && candidateWords <= profile.maxWordsPerChunk) {
+    if (candidate.length <= profile.targetCharCap && candidateWords <= profile.targetWordsPerChunk) {
       current = candidate;
       currentWords = candidateWords;
     } else {
@@ -273,7 +402,7 @@ export const buildLongTextChunks = (input: {
   }
 
   flushCurrent();
-  return chunks;
+  return mergeSmallChunks(chunks, profile);
 };
 
 const splitOversizedByWordLimit = (unit: string, maxWords: number): string[] => {
@@ -423,7 +552,8 @@ export const buildSentenceAlignedWordWindows = (
 
 export const buildSentenceAlignedCharWindows = (
   text: string,
-  maxCharsPerWindow: number
+  maxCharsPerWindow: number,
+  strictCap: boolean = false,
 ): LongTextChunk[] => {
   const safeMaxChars = Math.max(1, Number(maxCharsPerWindow) || 1);
   const normalized = normalizeForSegmentation(text);
@@ -447,7 +577,7 @@ export const buildSentenceAlignedCharWindows = (
     const sentenceWords = countWords(sentence);
     if (
       sentence.length <= safeMaxChars
-      || canKeepUnitIntact(sentence.length, sentenceWords, safeMaxChars, Number.MAX_SAFE_INTEGER)
+      || (!strictCap && canKeepUnitIntact(sentence.length, sentenceWords, safeMaxChars, Number.MAX_SAFE_INTEGER))
     ) {
       granularUnits.push(sentence);
       continue;
@@ -458,7 +588,7 @@ export const buildSentenceAlignedCharWindows = (
       const phraseWords = countWords(phrase);
       if (
         phrase.length <= safeMaxChars
-        || canKeepUnitIntact(phrase.length, phraseWords, safeMaxChars, Number.MAX_SAFE_INTEGER)
+        || (!strictCap && canKeepUnitIntact(phrase.length, phraseWords, safeMaxChars, Number.MAX_SAFE_INTEGER))
       ) {
         granularUnits.push(phrase);
       } else {
@@ -487,7 +617,7 @@ export const buildSentenceAlignedCharWindows = (
     if (!safe) continue;
     if (
       safe.length > safeMaxChars
-      && !canKeepUnitIntact(safe.length, countWords(safe), safeMaxChars, Number.MAX_SAFE_INTEGER)
+      && (strictCap || !canKeepUnitIntact(safe.length, countWords(safe), safeMaxChars, Number.MAX_SAFE_INTEGER))
     ) {
       flushCurrent();
       for (const split of splitOversizedByCharLimit(safe, safeMaxChars)) {
@@ -596,19 +726,52 @@ export const resolveLiveChunkRequest = (
   engine: PrimaryTtsEngine,
   language?: string,
 ): LiveChunkRequestProfile => {
+  if (engine === 'GEM' || engine === 'NEURAL2') {
+    return {
+      liveChunkChars: GEMINI_LIVE_POLICY_CHUNK_CHARS,
+      liveChunkWords: GEMINI_LIVE_POLICY_CHUNK_WORDS,
+      firstChunkChars: GEMINI_LIVE_POLICY_FIRST_CHUNK_CHARS,
+      firstChunkWords: GEMINI_LIVE_POLICY_FIRST_CHUNK_WORDS,
+      fastStartChunkCount: GEMINI_LIVE_POLICY_FAST_START_CHUNK_COUNT,
+      fastStartChunkChars: GEMINI_LIVE_POLICY_FIRST_CHUNK_CHARS,
+      fastStartChunkWords: GEMINI_LIVE_POLICY_FIRST_CHUNK_WORDS,
+      liveChunkStageChars: [...GEMINI_LIVE_POLICY_STAGE_CHARS],
+      liveChunkStageWords: [...GEMINI_LIVE_POLICY_STAGE_WORDS],
+    };
+  }
+
   const profile = getChunkProfile(engine, language);
-  const LIVE_CHUNK_CHARS_MIN = 100;
-  const LIVE_CHUNK_CHARS_TARGET = 150;
-  const LIVE_CHUNK_WORDS_MIN = 16;
-  const LIVE_CHUNK_WORDS_TARGET = 26;
+  const LIVE_CHUNK_CHARS_MIN = 64;
+  const LIVE_CHUNK_CHARS_TARGET = 130;
+  const LIVE_CHUNK_WORDS_MIN = 10;
+  const LIVE_CHUNK_WORDS_TARGET = 22;
+  const LIVE_FIRST_CHUNK_CHARS_TARGET = 90;
+  const LIVE_FIRST_CHUNK_WORDS_TARGET = 14;
+  const liveChunkChars = Math.max(
+    LIVE_CHUNK_CHARS_MIN,
+    Math.min(profile.hardCharCap, LIVE_CHUNK_CHARS_TARGET),
+  );
+  const liveChunkWords = Math.max(
+    LIVE_CHUNK_WORDS_MIN,
+    Math.min(profile.maxWordsPerChunk, LIVE_CHUNK_WORDS_TARGET),
+  );
+  const firstChunkChars = Math.max(
+    LIVE_CHUNK_CHARS_MIN,
+    Math.min(liveChunkChars, LIVE_FIRST_CHUNK_CHARS_TARGET),
+  );
+  const firstChunkWords = Math.max(
+    LIVE_CHUNK_WORDS_MIN,
+    Math.min(liveChunkWords, LIVE_FIRST_CHUNK_WORDS_TARGET),
+  );
   return {
-    liveChunkChars: Math.max(
-      LIVE_CHUNK_CHARS_MIN,
-      Math.min(profile.hardCharCap, LIVE_CHUNK_CHARS_TARGET),
-    ),
-    liveChunkWords: Math.max(
-      LIVE_CHUNK_WORDS_MIN,
-      Math.min(profile.maxWordsPerChunk, LIVE_CHUNK_WORDS_TARGET),
-    ),
+    liveChunkChars,
+    liveChunkWords,
+    firstChunkChars,
+    firstChunkWords,
+    fastStartChunkCount: 0,
+    fastStartChunkChars: liveChunkChars,
+    fastStartChunkWords: liveChunkWords,
+    liveChunkStageChars: [liveChunkChars],
+    liveChunkStageWords: [liveChunkWords],
   };
 };

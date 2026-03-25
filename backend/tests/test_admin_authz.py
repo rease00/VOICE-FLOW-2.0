@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import uuid
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -590,8 +591,13 @@ def test_admin_can_submit_tts_without_userid_profile(monkeypatch) -> None:
     client = TestClient(backend_app.app)
 
     response = client.post(
-        "/tts/synthesize?wait_ms=0",
+        "/tts/v2/jobs",
         headers={"Authorization": "Bearer token_admin_claim"},
-        json={"engine": "GEM", "text": "admin synthesis bypass check"},
+        json={
+            "request_id": f"test_{uuid.uuid4().hex}",
+            "mode": "single_speaker",
+            "engine": "GEM",
+            "text": "admin synthesis bypass check",
+        },
     )
     assert response.status_code == 202

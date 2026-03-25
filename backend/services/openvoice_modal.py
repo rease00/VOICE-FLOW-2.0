@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -20,6 +21,7 @@ OPENVOICE_DEFAULT_TIMEOUT_SEC = max(
 OPENVOICE_DEFAULT_RUNTIME_URL = str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
 OPENVOICE_RUNTIME_TOKEN = str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
 OPENVOICE_ARTIFACT_SECRET = str(os.getenv("VF_OPENVOICE_ARTIFACT_SECRET") or "").strip()
+OPENVOICE_ARTIFACT_EPHEMERAL_SECRET = hashlib.sha256(os.urandom(32)).hexdigest()
 OPENVOICE_ARTIFACT_ROOT = Path(
     str(
         os.getenv(
@@ -29,6 +31,7 @@ OPENVOICE_ARTIFACT_ROOT = Path(
     ).strip()
 ).resolve()
 OPENVOICE_ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+OPENVOICE_ARTIFACT_ID_MAX_LEN = 128
 
 
 class OpenVoiceRuntimeError(RuntimeError):
@@ -73,14 +76,40 @@ def compute_openvoice_gpu_cost_usd(gpu_seconds: float, cost_multiplier: float = 
     return seconds * OPENVOICE_GPU_RATE_PER_SEC_USD * multiplier
 
 
+def normalize_openvoice_artifact_id(value: object, *, fallback: str = "") -> str:
+    token = str(value or "").strip()
+    token = re.sub(r"[^A-Za-z0-9._-]+", "_", token)
+    token = token.strip("._-")
+    if not token:
+        token = str(fallback or "").strip()
+    if not token:
+        return ""
+    return token[:OPENVOICE_ARTIFACT_ID_MAX_LEN]
+
+
+def _resolve_openvoice_artifact_secret(secret: str | None = None) -> str:
+    return str(
+        secret
+        or OPENVOICE_ARTIFACT_SECRET
+        or OPENVOICE_RUNTIME_TOKEN
+        or OPENVOICE_ARTIFACT_EPHEMERAL_SECRET
+    ).strip()
+
+
 def build_openvoice_artifact_signature(artifact_id: str, secret: str | None = None) -> str:
-    safe_secret = str(secret or OPENVOICE_ARTIFACT_SECRET or OPENVOICE_RUNTIME_TOKEN or "voiceflow-openvoice-artifacts").strip()
-    payload = str(artifact_id or "").strip().encode("utf-8")
+    safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
+    if not safe_artifact_id:
+        raise ValueError("artifact_id is required.")
+    safe_secret = _resolve_openvoice_artifact_secret(secret)
+    payload = safe_artifact_id.encode("utf-8")
     return hmac.new(safe_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 def verify_openvoice_artifact_signature(artifact_id: str, signature: str, secret: str | None = None) -> bool:
-    expected = build_openvoice_artifact_signature(artifact_id, secret=secret)
+    safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
+    if not safe_artifact_id:
+        return False
+    expected = build_openvoice_artifact_signature(safe_artifact_id, secret=secret)
     return hmac.compare_digest(expected, str(signature or "").strip())
 
 
@@ -200,8 +229,17 @@ class OpenVoiceModalClient:
 def save_openvoice_artifact(audio_bytes: bytes, artifact_id: str, *, root: Path | None = None) -> OpenVoiceArtifact:
     safe_root = Path(root or OPENVOICE_ARTIFACT_ROOT).resolve()
     safe_root.mkdir(parents=True, exist_ok=True)
-    safe_artifact_id = str(artifact_id or "").strip() or hashlib.sha256(audio_bytes).hexdigest()[:16]
+    safe_artifact_id = normalize_openvoice_artifact_id(
+        artifact_id,
+        fallback=hashlib.sha256(bytes(audio_bytes)).hexdigest()[:16],
+    )
+    if not safe_artifact_id:
+        raise ValueError("artifact_id could not be normalized.")
     artifact_path = (safe_root / f"{safe_artifact_id}.wav").resolve()
+    try:
+        artifact_path.relative_to(safe_root)
+    except ValueError as exc:
+        raise ValueError("artifact_id resolved outside of artifact root.") from exc
     artifact_path.write_bytes(bytes(audio_bytes))
     return OpenVoiceArtifact(
         artifact_id=safe_artifact_id,
@@ -212,7 +250,7 @@ def save_openvoice_artifact(audio_bytes: bytes, artifact_id: str, *, root: Path 
 
 
 def build_openvoice_artifact_url(artifact_id: str, *, base_path: str = "/voice-lab/openvoice/artifacts", secret: str | None = None) -> str:
-    safe_artifact_id = str(artifact_id or "").strip()
+    safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
     if not safe_artifact_id:
         return ""
     signature = build_openvoice_artifact_signature(safe_artifact_id, secret=secret)

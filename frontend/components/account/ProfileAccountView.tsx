@@ -126,6 +126,7 @@ const resolveThemeChoice = (themeChoice: ThemeChoice): boolean => {
 
 const normalizePlanKey = (value: unknown): 'free' | BillingPlanKey => {
   const token = String(value || '').trim().toLowerCase();
+  if (token === 'launcher' || token === 'launch') return 'launcher';
   if (token === 'starter') return 'starter';
   if (token === 'creator') return 'creator';
   if (token === 'pro') return 'pro';
@@ -134,6 +135,7 @@ const normalizePlanKey = (value: unknown): 'free' | BillingPlanKey => {
 };
 
 const toPlanName = (planKey: 'free' | BillingPlanKey): AccountBillingSummary['plan']['name'] => {
+  if (planKey === 'launcher') return 'Launcher';
   if (planKey === 'starter') return 'Starter';
   if (planKey === 'creator') return 'Creator';
   if (planKey === 'pro') return 'Pro';

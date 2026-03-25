@@ -55,12 +55,24 @@ def _load_env_file(path: Path) -> None:
         if not key.replace("_", "A").isalnum() or key[0].isdigit():
             continue
 
+        raw_value = normalized[equals_index + 1 :]
+        parsed_value = _parse_env_value(raw_value)
+
         existing = os.getenv(key)
         if existing is not None and str(existing).strip() != "":
-            continue
+            # Allow .env fallback when a pre-set credential path is stale/missing.
+            if key == "GOOGLE_APPLICATION_CREDENTIALS":
+                candidate = Path(str(existing).strip()).expanduser()
+                if candidate.exists() and candidate.is_file():
+                    continue
+            elif key in {"GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"}:
+                # Prefer workspace/project-local project id over machine-global defaults.
+                if str(parsed_value).strip() == str(existing).strip():
+                    continue
+            else:
+                continue
 
-        raw_value = normalized[equals_index + 1 :]
-        os.environ[key] = _parse_env_value(raw_value)
+        os.environ[key] = parsed_value
 
 
 def _resolve_backend_root(current_file: Path) -> Path:

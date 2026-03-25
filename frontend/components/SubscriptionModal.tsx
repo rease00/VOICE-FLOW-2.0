@@ -34,6 +34,7 @@ const formatInr = (amount: number): string =>
 
 const resolveCurrentPlanCard = (planName: string): PlanCardConfig['id'] | null => {
   const token = String(planName || '').trim().toLowerCase();
+  if (token === 'launcher' || token === 'launch') return 'launcher';
   if (token === 'starter') return 'starter';
   if (token === 'creator') return 'creator';
   if (token === 'pro') return 'pro';
@@ -58,21 +59,30 @@ export const SubscriptionModal: React.FC = () => {
 
   const plans: PlanCardConfig[] = [
     {
+      id: 'launcher',
+      title: 'Launcher',
+      firstCycleInr: 129,
+      recurringInr: 129,
+      description: 'For early-stage creators starting paid production.',
+      bullets: ['30,000 VF monthly cap', 'All engines, 9k chars per generation', 'Starter-grade checkout speed'],
+      actionPlan: 'launcher',
+    },
+    {
       id: 'starter',
       title: 'Starter',
       firstCycleInr: 450,
-      recurringInr: 405,
+      recurringInr: 450,
       description: 'Best for consistent monthly AI audio output.',
-      bullets: ['50,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
+      bullets: ['65,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'starter',
     },
     {
       id: 'creator',
       title: 'Creator',
-      firstCycleInr: 1200,
-      recurringInr: 1080,
+      firstCycleInr: 1499,
+      recurringInr: 1499,
       description: 'For creators publishing regularly at higher volume.',
-      bullets: ['150,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
+      bullets: ['225,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'creator',
       highlight: true,
       ribbon: 'Most Popular',
@@ -80,19 +90,19 @@ export const SubscriptionModal: React.FC = () => {
     {
       id: 'pro',
       title: 'Pro',
-      firstCycleInr: 2400,
-      recurringInr: 2160,
+      firstCycleInr: 2999,
+      recurringInr: 2999,
       description: 'For heavy production workloads and team throughput.',
-      bullets: ['300,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
+      bullets: ['500,000 VF monthly cap', 'All engines, 10k chars per generation', 'Priority support'],
       actionPlan: 'pro',
     },
     {
       id: 'scale',
       title: 'Scale',
-      firstCycleInr: 4300,
-      recurringInr: 3440,
+      firstCycleInr: 4500,
+      recurringInr: 4500,
       description: 'For highest-volume pipelines and release velocity.',
-      bullets: ['600,000 VF monthly cap', 'All engines, 15k chars per generation', 'Early access to all future features'],
+      bullets: ['850,000 VF monthly cap', 'All engines, 15k chars per generation', 'Early access to all future features'],
       actionPlan: 'scale',
       ribbon: 'Early Access',
     },

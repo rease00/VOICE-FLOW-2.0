@@ -1,6 +1,6 @@
 import { isLegalPath, resolveLegalDocument, type LegalDocument } from './legal/legalContent';
 
-export type PublicSurface = 'app' | 'landing' | 'legal';
+export type PublicSurface = 'app' | 'landing' | 'legal' | 'billing';
 
 export interface PublicSurfaceResolution {
   surface: PublicSurface;
@@ -9,6 +9,7 @@ export interface PublicSurfaceResolution {
 
 const LANDING_HOSTS = new Set(['v-flow-ai.com', 'www.v-flow-ai.com']);
 const LANDING_ONLY_PATHS = new Set(['/']);
+const BILLING_PATHS = new Set(['/billing']);
 
 const normalizeHost = (hostname: string): string =>
   String(hostname || '')
@@ -36,6 +37,9 @@ export const resolvePublicSurface = (
 
   const safeHost = normalizeHost(hostname);
   if (LANDING_HOSTS.has(safeHost)) {
+    if (BILLING_PATHS.has(safePath)) {
+      return { surface: 'billing', legalDocument: null };
+    }
     if (LANDING_ONLY_PATHS.has(safePath)) {
       return { surface: 'landing', legalDocument: null };
     }

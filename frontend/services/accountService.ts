@@ -7,8 +7,8 @@ const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
 };
 
-export type BillingPlanName = 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
-export type BillingPlanKey = 'starter' | 'creator' | 'pro' | 'scale';
+export type BillingPlanName = 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
+export type BillingPlanKey = 'launcher' | 'starter' | 'creator' | 'pro' | 'scale';
 export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
 export type TtsEngineKey = 'KOKORO' | 'NEURAL2' | 'GEM';
 
@@ -229,7 +229,7 @@ export const upsertAccountProfile = async (
 };
 
 export const createCheckoutSession = async (
-  plan: BillingPlanKey | 'plus',
+  plan: BillingPlanKey | 'plus' | 'launch',
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string; couponCode?: string }
 ): Promise<{ url: string; sessionId?: string }> => {

@@ -3,6 +3,7 @@ import { AppErrorBoundary } from './errors/AppErrorBoundary';
 import { AppProviders } from './providers/AppProviders';
 import { ScreenRouter } from './router/ScreenRouter';
 import { MarketingLanding } from '../landing/MarketingLanding';
+import { BillingLanding } from '../landing/BillingLanding';
 import { resolvePublicSurface } from '../landing/hostRouting';
 import { LegalCenter } from '../landing/legal/LegalCenter';
 import { applySeoMeta } from '../landing/seo';
@@ -29,6 +30,13 @@ const AppRoot: React.FC = () => {
         description:
           'Create production-ready voice content with VoiceFlow. Start free, scale with your audience, and ship faster.',
         canonicalUrl: 'https://v-flow-ai.com/',
+      });
+    } else if (resolution.surface === 'billing') {
+      applySeoMeta({
+        title: 'VoiceFlow Billing | Plans, Token Packs, and Credits',
+        description:
+          'Manage VoiceFlow subscription plans, direct token packs, and conversion rules in one secure billing center.',
+        canonicalUrl: 'https://v-flow-ai.com/billing',
       });
     } else if (resolution.surface === 'legal') {
       const documentTitle = resolution.legalDocument
@@ -59,6 +67,10 @@ const AppRoot: React.FC = () => {
 
   if (resolution.surface === 'landing') {
     return <MarketingLanding />;
+  }
+
+  if (resolution.surface === 'billing') {
+    return <BillingLanding />;
   }
 
   if (resolution.surface === 'legal') {

@@ -151,7 +151,8 @@ def test_openvoice_benchmark_uses_modal_kokoro_and_openvoice_vc(monkeypatch, tmp
     assert result["cost"]["gpuCostUsd"] > 0
     assert result["cost"]["estimatedCostUsd"] >= result["cost"]["gpuCostUsd"]
     assert result["cost"]["estimatedOneHourUsd"] > result["cost"]["estimatedCostUsd"]
-    assert result["artifact"]["downloadUrl"] == "/artifacts/req-1"
+    assert str(result["artifact"]["downloadUrl"]).startswith("/artifacts/")
+    assert str(result["artifact"]["downloadUrl"]).endswith("_req-1")
     assert backend_app.KOKORO_MODAL_CLIENT.calls[0]["text"] == "Hello modal world."
     assert backend_app.OPENVOICE_MODAL_CLIENT.calls[0]["sourceAudioBase64"] == base64.b64encode(tts_audio).decode("ascii")
 

@@ -13,6 +13,7 @@ interface UseBillingActionsArgs {
 
 type BillingRouteState = 'success' | 'cancel' | 'none';
 type BillingLocationLike = Pick<Location, 'origin' | 'pathname'>;
+const BILLING_PUBLIC_PATH = '/billing';
 
 const resolveBillingLocation = (): BillingLocationLike => ({
   origin: window.location.origin,
@@ -23,9 +24,8 @@ export const buildBillingReturnUrl = (
   state: BillingRouteState,
   location: BillingLocationLike = resolveBillingLocation()
 ): string => {
-  const url = new URL(`${location.origin}${location.pathname}`);
-  url.searchParams.set('vf-screen', 'profile');
-  url.searchParams.set('vf-tab', 'billing');
+  const url = new URL(`${location.origin}${BILLING_PUBLIC_PATH}`);
+  url.searchParams.set('tab', 'subscription');
   if (state === 'success' || state === 'cancel') {
     url.searchParams.set('billing', state);
   } else {

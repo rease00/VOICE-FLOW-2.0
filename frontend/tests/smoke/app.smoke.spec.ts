@@ -491,7 +491,7 @@ async function stubReaderApi(page: Parameters<typeof test>[0]['page'], options?:
           });
         }
 
-        if (rawUrl.includes('/tts/jobs/')) {
+        if (rawUrl.includes('/tts/v2/jobs/')) {
           return new Response(
             JSON.stringify({
               status: 'completed',
@@ -1269,12 +1269,12 @@ async function installStudioTtsRouteHarness(
     await route.continue();
   });
 
-  await page.route('**/tts/jobs**', async (route) => {
+  await page.route('**/tts/v2/jobs**', async (route) => {
     const method = route.request().method().toUpperCase();
     const url = new URL(route.request().url());
     const path = url.pathname;
 
-    if (path === '/tts/jobs' && method === 'POST') {
+    if (path === '/tts/v2/jobs' && method === 'POST') {
       createdJobs += 1;
       const jobId = `studio-smoke-job-${createdJobs}`;
       const shouldFail = remainingFailures > 0;
@@ -1295,24 +1295,33 @@ async function installStudioTtsRouteHarness(
       return;
     }
 
-    if (path.startsWith('/tts/jobs/')) {
+    if (path.startsWith('/tts/v2/jobs/')) {
       const parts = path.split('/').filter(Boolean);
-      const jobId = parts[2] || '';
+      const jobId = parts[3] || '';
       const job = jobs.get(jobId);
       if (!job) {
         await fulfillJson(route, { detail: 'Job not found' }, 404);
         return;
       }
 
-      if (method === 'DELETE') {
+      if (path.endsWith('/cancel') && method === 'POST') {
         job.cancelled = true;
         jobs.set(jobId, job);
         audit.cancels += 1;
-        await fulfillJson(route, { ok: true, job: { jobId, status: 'cancelled' } }, 200);
+        await fulfillJson(route, { ok: true, jobId, requestId: jobId, status: 'cancelled' }, 200);
         return;
       }
 
-      if (method === 'GET') {
+      if (path.endsWith('/result/audio') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'audio/wav' },
+          body: Buffer.from(WAV_BASE64, 'base64'),
+        });
+        return;
+      }
+
+      if (parts.length === 4 && method === 'GET') {
         audit.statusReads += 1;
         let status = 'queued';
         if (job.cancelled) {

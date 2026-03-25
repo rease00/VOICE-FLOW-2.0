@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import time
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -48,7 +49,12 @@ def _submit_tts_and_wait_status(
     headers: dict[str, str],
     timeout_seconds: float = 8.0,
 ) -> tuple[int, object]:
-    submit = client.post("/tts/synthesize", json=payload, headers=headers)
+    safe_payload = dict(payload or {})
+    if not str(safe_payload.get("request_id") or "").strip():
+        safe_payload["request_id"] = f"test_{uuid.uuid4().hex}"
+    if not str(safe_payload.get("mode") or "").strip():
+        safe_payload["mode"] = "single_speaker"
+    submit = client.post("/tts/v2/jobs", json=safe_payload, headers=headers)
     if submit.status_code != 202:
         return submit.status_code, submit
 
@@ -65,7 +71,7 @@ def _submit_tts_and_wait_status(
 
     deadline = time.time() + max(1.0, float(timeout_seconds))
     while time.time() < deadline:
-        poll = client.get(f"/tts/jobs/{job_id}", headers=headers)
+        poll = client.get(f"/tts/v2/jobs/{job_id}", headers=headers)
         if poll.status_code != 200:
             return poll.status_code, poll
         status_payload = poll.json()
@@ -251,16 +257,22 @@ def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     assert "generationRemaining" not in daily_payload
 
 
-def test_tts_synthesize_blocks_gem_for_free_plan(monkeypatch) -> None:
+def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
 
     client = TestClient(backend_app.app)
     response = client.post(
-        "/tts/synthesize",
+        "/tts/v2/jobs",
         headers={"x-dev-uid": "free_gem_block_user"},
-        json={"engine": "GEM", "text": "forbidden on free plan", "voice_id": "Fenrir"},
+        json={
+            "request_id": f"test_{uuid.uuid4().hex}",
+            "mode": "single_speaker",
+            "engine": "GEM",
+            "text": "forbidden on free plan",
+            "voice_id": "Fenrir",
+        },
     )
     assert response.status_code == 403
     detail = response.json().get("detail") or {}
@@ -595,7 +607,7 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
     payload = response.json()["summary"]
     assert payload["plan"]["key"] == "pro"
     assert "dailyGenerationLimit" not in payload["plan"]
-    assert payload["plan"]["pricing"]["discountPercent"] == 10
+    assert payload["plan"]["pricing"]["discountPercent"] == 0
     assert int(payload["plan"]["ttsSuccessRpm"]) == int(
         backend_app._TTS_SUCCESS_LIMITER.quota_for_plan(backend_app._tts_success_bucket_for_plan("pro"))
     )

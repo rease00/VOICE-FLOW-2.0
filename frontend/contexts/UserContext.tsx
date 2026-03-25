@@ -241,6 +241,7 @@ const requiresEmailVerificationForUser = (user: { uid?: string | null; email?: s
 
 const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
   const token = String(value || '').trim().toLowerCase();
+  if (token === 'launcher' || token === 'launch') return 'Launcher';
   if (token === 'starter') return 'Starter';
   if (token === 'creator') return 'Creator';
   if (token === 'pro') return 'Pro';
@@ -250,7 +251,7 @@ const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
 };
 
 const isPaidPlanName = (planName: UserStats['planName']): boolean =>
-  planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
+  planName === 'Launcher' || planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
 
 const normalizeAllowedEngines = (input: unknown): Array<'KOKORO' | 'NEURAL2' | 'GEM'> => {
   if (!Array.isArray(input)) return ['KOKORO', 'NEURAL2'];

@@ -332,7 +332,7 @@ export const fetchTtsJobChunkAudio = async (
   const safeJobId = encodeURIComponent(String(jobId || '').trim());
   const safeChunkIndex = Math.max(0, Math.floor(Number(chunkIndex || 0)));
   const blob = await requestBlob(
-    `/tts/jobs/${safeJobId}/chunks/${safeChunkIndex}`,
+    `/tts/v2/jobs/${safeJobId}/chunks/${safeChunkIndex}/audio`,
     undefined,
     withBaseUrl(baseUrl)
   );
@@ -344,7 +344,7 @@ export const createTtsJob = async (
   options?: { baseUrl?: string }
 ): Promise<TtsJobStatusResponse> => {
   return requestJson<TtsJobStatusResponse>(
-    '/tts/jobs',
+    '/tts/v2/jobs',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -379,8 +379,8 @@ export const getTtsJob = async (
     searchParams.set('includeChunkAudio', options.includeChunkAudio ? '1' : '0');
   }
   const path = searchParams.toString()
-    ? `/tts/jobs/${safeJobId}?${searchParams.toString()}`
-    : `/tts/jobs/${safeJobId}`;
+    ? `/tts/v2/jobs/${safeJobId}?${searchParams.toString()}`
+    : `/tts/v2/jobs/${safeJobId}`;
   return requestJson<TtsJobStatusResponse>(
     path,
     undefined,
@@ -394,8 +394,8 @@ export const cancelTtsJob = async (
 ): Promise<TtsJobStatusResponse> => {
   const safeJobId = encodeURIComponent(String(jobId || '').trim());
   return requestJson<TtsJobStatusResponse>(
-    `/tts/jobs/${safeJobId}`,
-    { method: 'DELETE' },
+    `/tts/v2/jobs/${safeJobId}/cancel`,
+    { method: 'POST' },
     { ...withBaseUrl(options?.baseUrl), requireAuth: true }
   );
 };
@@ -404,18 +404,16 @@ export const fetchTtsJobResult = async (
   jobId: string,
   options?: { baseUrl?: string }
 ): Promise<{ audioBytes: ArrayBuffer; mediaType: string; headers: Record<string, string> }> => {
-  const response = await getTtsJob(jobId, {
-    includeResult: true,
-    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
-  });
-  const audioBase64 = String(response.result?.audioBase64 || '').trim();
-  if (!audioBase64) {
-    throw new Error('TTS job result is missing audio payload.');
-  }
+  const safeJobId = encodeURIComponent(String(jobId || '').trim());
+  const blob = await requestBlob(
+    `/tts/v2/jobs/${safeJobId}/result/audio`,
+    undefined,
+    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+  );
   return {
-    audioBytes: decodeBase64ToArrayBuffer(audioBase64),
-    mediaType: String(response.result?.mediaType || 'audio/wav'),
-    headers: response.result?.headers || {},
+    audioBytes: await blob.arrayBuffer(),
+    mediaType: String(blob.type || 'audio/wav'),
+    headers: {},
   };
 };
 

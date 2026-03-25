@@ -134,16 +134,13 @@ export const extractGatewayJobId = (
   const candidate = (payload && typeof payload === 'object') ? payload as Record<string, unknown> : {};
   const fromPayload = String(
     candidate.jobId ||
-    candidate.requestId ||
     candidate.id ||
     candidate.job_id ||
     ''
   ).trim();
   if (fromPayload) return fromPayload;
   return String(
-    headers?.get('x-vf-job-id') ||
-    headers?.get('x-vf-request-id') ||
-    ''
+    headers?.get('x-vf-job-id') || ''
   ).trim();
 };
 
@@ -190,7 +187,7 @@ export const pollTtsGatewayJobForAudio = async (
       if (!cancelled) {
         cancelled = true;
         try {
-          await client.cancelJob(jobId, baseUrl ? { baseUrl } : undefined);
+          await cancelJobClient(jobId, baseUrl ? { baseUrl } : undefined);
         } catch {
           // Best-effort cancellation.
         }
@@ -200,7 +197,7 @@ export const pollTtsGatewayJobForAudio = async (
 
     let payload;
     try {
-      payload = await client.getJob(jobId, {
+      payload = await getJobClient(jobId, {
         includeResult: false,
         includeChunks: chunkSupportEnabled,
         chunkCursor,
@@ -255,7 +252,14 @@ export const pollTtsGatewayJobForAudio = async (
       } else {
         for (const rawChunk of chunks) {
           if (!rawChunk || typeof rawChunk !== 'object') continue;
-          const index = Number(rawChunk.index);
+          const rawChunkAny = rawChunk as Record<string, unknown>;
+          const index = Number(
+            rawChunkAny.index ??
+            rawChunkAny.serial_index ??
+            rawChunkAny.serialIndex ??
+            rawChunkAny.chunk_id ??
+            rawChunkAny.chunkId
+          );
           if (!Number.isFinite(index) || index < 0) continue;
           const safeIndex = Math.round(index);
           const key = `${jobId}:${safeIndex}`;
@@ -264,7 +268,7 @@ export const pollTtsGatewayJobForAudio = async (
           let audioBase64 = String(rawChunk.audioBase64 || '').trim();
           if (!audioBase64 && chunkDownloadEnabled) {
             try {
-              const chunkBytes = await client.fetchChunkAudio(jobId, safeIndex, baseUrl);
+              const chunkBytes = await fetchChunkAudioClient(jobId, safeIndex, baseUrl);
               audioBase64 = await arrayBufferToBase64(chunkBytes);
             } catch {
               chunkDownloadEnabled = false;
@@ -296,7 +300,14 @@ export const pollTtsGatewayJobForAudio = async (
           chunkCursor = Math.max(chunkCursor, Math.round(responseChunkCursorNext));
         } else if (chunks.length > 0) {
           const maxIndex = chunks.reduce((max, chunk) => {
-            const nextIndex = Number(chunk?.index);
+            const chunkAny = (chunk && typeof chunk === 'object') ? chunk as Record<string, unknown> : {};
+            const nextIndex = Number(
+              chunkAny.index ??
+              chunkAny.serial_index ??
+              chunkAny.serialIndex ??
+              chunkAny.chunk_id ??
+              chunkAny.chunkId
+            );
             if (!Number.isFinite(nextIndex)) return max;
             return Math.max(max, Math.round(nextIndex));
           }, -1);
@@ -326,7 +337,7 @@ export const pollTtsGatewayJobForAudio = async (
           ),
         };
       }
-      const result = await client.fetchResult(jobId, baseUrl ? { baseUrl } : undefined);
+      const result = await fetchResultClient(jobId, baseUrl ? { baseUrl } : undefined);
       return {
         audioBytes: result.audioBytes,
         responseHeaders: toResponseHeadersRecord(result.responseHeaders),
@@ -352,5 +363,13 @@ export const pollTtsGatewayJobForAudio = async (
     await sleepMs(pollDelayMs);
   }
 
+  if (!cancelled) {
+    cancelled = true;
+    try {
+      await cancelJobClient(jobId, baseUrl ? { baseUrl } : undefined);
+    } catch {
+      // Best-effort cancellation on timeout.
+    }
+  }
   throw new Error(`${runtimeLabel} timed out while waiting for queued synthesis.`);
 };

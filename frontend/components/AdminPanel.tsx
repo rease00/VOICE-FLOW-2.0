@@ -125,7 +125,7 @@ interface AdminPanelProps {
   initialOpsTab?: OpsTab;
 }
 
-const planOptions = ['Free', 'Starter', 'Creator', 'Pro', 'Scale'] as const;
+const planOptions = ['Free', 'Launcher', 'Starter', 'Creator', 'Pro', 'Scale'] as const;
 type AdminUserPatch = Parameters<ReturnType<typeof useAdminUsers>['patchAdminUser']>[1];
 type AdminUserDraft = Partial<Pick<AdminUserPatch, 'plan' | 'disabled' | 'paidVfDelta' | 'vffDelta'>>;
 const createCouponPlanDraftRow = (plan = '', percentOff = '20', amountOffInr = '100'): CouponPlanDraftRow => ({

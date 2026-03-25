@@ -166,11 +166,11 @@ def test_frontend_gateway_routes_are_registered() -> None:
         ("GET", "/tts/engines/voices"),
         ("GET", "/tts/voice-mapping/catalog"),
         ("GET", "/runtime/logs/tail"),
-        ("POST", "/tts/jobs"),
-        ("GET", "/tts/jobs/{job_id}"),
-        ("GET", "/tts/jobs/{job_id}/audio"),
-        ("GET", "/tts/jobs/{job_id}/chunks/{chunk_index}"),
-        ("DELETE", "/tts/jobs/{job_id}"),
+        ("POST", "/tts/v2/jobs"),
+        ("GET", "/tts/v2/jobs/{job_id}"),
+        ("POST", "/tts/v2/jobs/{job_id}/cancel"),
+        ("GET", "/tts/v2/jobs/{job_id}/chunks/{chunk_index}/audio"),
+        ("GET", "/tts/v2/jobs/{job_id}/result/audio"),
     }
 
     registered: set[tuple[str, str]] = set()
@@ -186,6 +186,20 @@ def test_frontend_gateway_routes_are_registered() -> None:
 
     missing = sorted(expected - registered)
     assert not missing, f"Missing frontend gateway route bindings: {missing}"
+
+
+def test_legacy_tts_routes_return_410() -> None:
+    routes = [
+        ("POST", "/tts/synthesize"),
+        ("POST", "/tts/jobs"),
+        ("GET", "/tts/jobs/job_legacy"),
+        ("GET", "/tts/jobs/job_legacy/audio"),
+        ("GET", "/tts/jobs/job_legacy/chunks/0"),
+        ("DELETE", "/tts/jobs/job_legacy"),
+    ]
+    for method, path in routes:
+        response = client.request(method, path, headers={"x-dev-uid": "legacy_tts"})
+        assert response.status_code == 410
 
 
 def test_removed_podcast_and_lab_routes_return_404() -> None:

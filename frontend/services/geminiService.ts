@@ -6,7 +6,10 @@ import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisCo
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
 import { authFetch } from "./authHttpClient";
 import { resolveApiBaseUrl } from "../src/shared/api/config";
-import { extractAudioFromVideo as gatewayExtractAudioFromVideo } from "../src/shared/api/gatewayClient";
+import {
+  cancelTtsJob,
+  extractAudioFromVideo as gatewayExtractAudioFromVideo,
+} from "../src/shared/api/gatewayClient";
 import { resolveAssistantProviderRouting } from "../src/shared/settings/assistantProvider";
 import { shouldFailFastOnGeminiRuntimeError } from "./geminiRuntimeErrorUtils";
 import { loadKokoroBrowserRuntimeModule } from "./loadKokoroBrowserRuntime";
@@ -65,6 +68,8 @@ export interface GenerateSpeechOptions {
   context?: 'studio' | 'preview' | 'dubbing';
   preferLiveChunks?: boolean;
   preferBrowserKokoro?: boolean;
+  requestId?: string;
+  traceId?: string;
 }
 
 const resolveGeminiApiKey = (settings: Pick<GenerationSettings, 'geminiApiKey'>): string => {
@@ -2469,7 +2474,10 @@ export const generateSpeech = async (
         ? 'NEURAL2'
         : 'GEM';
   const primaryEngine = isPrimaryTtsEngine(activeEngine) ? activeEngine : null;
-  const traceId = createSynthesisTraceId(runtimeEngine);
+  const configuredTraceId = String(options?.traceId || '').trim();
+  const configuredRequestId = String(options?.requestId || '').trim();
+  const traceId = configuredTraceId || configuredRequestId || createSynthesisTraceId(runtimeEngine);
+  const requestIdBase = configuredRequestId || traceId;
   const context = options?.context;
   
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -2646,6 +2654,13 @@ export const generateSpeech = async (
       live_chunk_chars: liveChunkRequest.liveChunkChars,
       live_chunk_words: liveChunkRequest.liveChunkWords,
     };
+    const requestId = String((livePayload as any)?.request_id || (livePayload as any)?.trace_id || '').trim();
+    if (!requestId) {
+      throw new Error('Gateway request_id is required and cannot be empty.');
+    }
+    (livePayload as any).request_id = requestId;
+    (livePayload as any).trace_id = String((livePayload as any)?.trace_id || requestId).trim() || requestId;
+
     const submitGatewayRequest = async (url: string): Promise<Response> => (
       authFetch(
         url,
@@ -2654,6 +2669,7 @@ export const generateSpeech = async (
           headers: {
             'Content-Type': 'application/json',
             'ngrok-skip-browser-warning': 'true',
+            'Idempotency-Key': requestId,
           },
           body: JSON.stringify(livePayload),
           ...(signal ? { signal } : {}),
@@ -2663,25 +2679,21 @@ export const generateSpeech = async (
     );
 
     let response: Response;
-    let usedFallbackSynthesize = false;
     try {
-      response = await submitGatewayRequest(`${backendBase}/tts/jobs`);
-      if ([404, 405, 422, 501].includes(response.status)) {
-        usedFallbackSynthesize = true;
-        response = await submitGatewayRequest(`${backendBase}/tts/synthesize?wait_ms=0`);
-      }
+      response = await submitGatewayRequest(`${backendBase}/tts/v2/jobs`);
     } catch (gatewayError: unknown) {
+      if (signal?.aborted && requestId) {
+        try {
+          await cancelTtsJob(requestId, { baseUrl: backendBase });
+        } catch {
+          // Best-effort cancellation by deterministic request_id/job_id.
+        }
+      }
+      if (gatewayError instanceof DOMException && gatewayError.name === 'AbortError') {
+        throw gatewayError;
+      }
       const detail = gatewayError instanceof Error ? gatewayError.message : 'Unknown gateway error';
       throw new Error(`Media backend gateway is unreachable at ${backendBase}: ${detail}`);
-    }
-
-    if (!response.ok && [404, 405, 422, 501].includes(response.status) && !usedFallbackSynthesize) {
-      response = await submitGatewayRequest(`${backendBase}/tts/synthesize?wait_ms=0`);
-      usedFallbackSynthesize = true;
-    }
-
-    if ((response.status === 404 || response.status === 501) && usedFallbackSynthesize) {
-      throw new Error(`Media backend gateway does not expose live queue endpoints (${response.status}).`);
     }
 
     if (!response.ok) {
@@ -3358,7 +3370,11 @@ export const generateSpeech = async (
             segSettings, 
             mode, 
             signal,
-            options
+            {
+              ...options,
+              requestId: `${requestIdBase}:seg:${seg.originalIndex}`,
+              traceId: `${requestIdBase}:seg:${seg.originalIndex}`,
+            }
           );
           
           segmentResults.push({ index: seg.originalIndex, buffer: buf });
@@ -3426,6 +3442,7 @@ export const generateSpeech = async (
         emotion: settings.emotion,
         style: settings.style,
         traceId,
+        requestId: requestIdBase,
       });
       return await synthesizeViaBackendGateway(
         runtimeEngine,
@@ -3451,39 +3468,28 @@ export const generateSpeech = async (
           emotion: normalizedRequest.emotion,
           style: normalizedRequest.style,
           trace_id: normalizedRequest.trace_id,
+          request_id: normalizedRequest.request_id,
+          mode: useGeminiBuiltInMultiSpeaker ? 'multi_speaker' : 'single_speaker',
           speaker: speakerHint || undefined,
         },
         'Gemini runtime synthesis'
       ).then((buffer) => maybeApplyOpenVoiceClone(buffer, processedText));
     } catch (runtimeError: any) {
-      let finalRuntimeError: any = runtimeError;
       const runtimeDetail = runtimeError instanceof Error ? runtimeError.message : String(runtimeError);
-      const shouldSkipSegmentedFallback = shouldFailFastOnGeminiRuntimeError(runtimeDetail);
-      if (useGeminiBuiltInMultiSpeaker && !shouldSkipSegmentedFallback) {
-        try {
-          console.warn(
-            'Gemini grouped multi-speaker synthesis failed; falling back to segmented mode.',
-            runtimeError
-          );
-          return await synthesizeViaSegmentedGeneration();
-        } catch (fallbackError: any) {
-          finalRuntimeError = fallbackError;
-          console.warn('Gemini segmented fallback failed after grouped mode error.', fallbackError);
-        }
-      } else if (useGeminiBuiltInMultiSpeaker && shouldSkipSegmentedFallback) {
+      if (useGeminiBuiltInMultiSpeaker && shouldFailFastOnGeminiRuntimeError(runtimeDetail)) {
         console.warn(
           'Gemini grouped multi-speaker synthesis failed with a fail-fast runtime error; skipping segmented fallback.',
           runtimeError
         );
       }
       if (!allowPersonalGeminiBypass) {
-        throw finalRuntimeError;
+        throw runtimeError;
       }
       const configuredApiKey = resolveGeminiApiKey(settings);
       if (!configuredApiKey) {
         throw new Error("Personal Gemini key mode is enabled, but API key is missing.");
       }
-      console.warn('Gemini runtime synthesis failed; personal-key mode enabled, switching to direct Gemini API.', finalRuntimeError);
+      console.warn('Gemini runtime synthesis failed; personal-key mode enabled, switching to direct Gemini API.', runtimeError);
     }
   }
 

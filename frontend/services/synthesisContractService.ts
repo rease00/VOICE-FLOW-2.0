@@ -57,6 +57,7 @@ export const normalizeSynthesisRequest = (input: {
   emotion?: string | undefined;
   style?: string | undefined;
   traceId?: string | undefined;
+  requestId?: string | undefined;
 }): NormalizedSynthesisRequest => {
   const speedBounds = ENGINE_SPEED_BOUNDS[input.engine] || ENGINE_SPEED_BOUNDS.GEM;
   const text = String(input.text || '').replace(/\s+/g, ' ').trim();
@@ -73,6 +74,11 @@ export const normalizeSynthesisRequest = (input: {
   const emotion = normalizeEmotionTag(rawEmotion) || rawEmotion || undefined;
   const style = String(input.style || '').trim() || undefined;
   const trace_id = String(input.traceId || '').trim() || undefined;
+  const request_id = (
+    String(input.requestId || '').trim()
+    || trace_id
+    || createSynthesisTraceId(input.engine)
+  );
 
   return {
     text,
@@ -82,5 +88,6 @@ export const normalizeSynthesisRequest = (input: {
     emotion,
     style,
     trace_id,
+    request_id,
   };
 };

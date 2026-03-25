@@ -51,7 +51,7 @@ export interface AdminUserSummary {
   role?: string;
   permissions?: string[];
   status?: string;
-  plan: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
+  plan: 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
   accountStatus?: string;
   features?: {
     earlyAccess?: boolean;
@@ -682,7 +682,7 @@ export const fetchAdminUsers = async (
 export const patchAdminUser = async (
   uid: string,
   patch: {
-    plan?: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | string;
+    plan?: 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | string;
     paidVfDelta?: number;
     vffDelta?: number;
     disabled?: boolean;

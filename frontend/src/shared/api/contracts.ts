@@ -88,6 +88,11 @@ export interface TtsEngineCapabilitiesResponse {
 
 export interface TtsJobChunkResponse {
   index: number;
+  dialogue_id?: number;
+  turn_id?: number;
+  chunk_id?: number;
+  serial_index?: number;
+  lane?: string;
   contentType?: string;
   durationMs?: number;
   textChars?: number;
@@ -124,6 +129,10 @@ export interface TtsJobStatusResponse {
   statusCode?: number;
   error?: string | Record<string, unknown>;
   queue?: Record<string, unknown>;
+  billing?: {
+    charsProcessed?: number;
+    chunksGenerated?: number;
+  };
   live?: {
     enabled?: boolean;
     mode?: string;

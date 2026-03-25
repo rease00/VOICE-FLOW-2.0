@@ -40,7 +40,7 @@ from bs4 import BeautifulSoup
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 try:
     from PIL import Image  # type: ignore
 except Exception:
@@ -138,10 +138,21 @@ from services.openvoice_modal import (
     normalize_openvoice_mode,
     normalize_openvoice_language,
     normalize_openvoice_run_kind,
+    normalize_openvoice_artifact_id,
     save_openvoice_artifact,
     verify_openvoice_artifact_signature,
 )
 from services.queue.redis_queue import TtsJobQueue, normalize_lane
+from services.tts_v2_engine import (
+    AuthorizationError as TtsV2AuthorizationError,
+    JobNotFoundError as TtsV2JobNotFoundError,
+    PayloadTooLargeError as TtsV2PayloadTooLargeError,
+    RequestConflictError as TtsV2RequestConflictError,
+    RuntimeSynthesisError as TtsV2RuntimeSynthesisError,
+    SynthChunk as TtsV2SynthChunk,
+    TtsV2Engine,
+    V2ValidationError,
+)
 
 load_backend_env_files(Path(__file__).resolve())
 ARTIFACTS_DIR = APP_ROOT / "artifacts"
@@ -573,8 +584,14 @@ VF_USER_PROFILE_FALLBACK_PERSIST = (
     (os.getenv("VF_USER_PROFILE_FALLBACK_PERSIST") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+VF_USER_PROFILE_FAILFAST = (
+    (os.getenv("VF_USER_PROFILE_FAILFAST") or ("0" if ("pytest" in sys.modules or VF_IS_LOCAL_DEV) else "1")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
 STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
+STRIPE_PRICE_LAUNCHER_MAX_INR = (os.getenv("STRIPE_PRICE_LAUNCHER_MAX_INR") or "").strip()
+STRIPE_PRICE_LAUNCHER_RECURRING_INR = (os.getenv("STRIPE_PRICE_LAUNCHER_RECURRING_INR") or "").strip()
 STRIPE_PRICE_STARTER_MAX_INR = (os.getenv("STRIPE_PRICE_STARTER_MAX_INR") or "").strip()
 STRIPE_PRICE_STARTER_RECURRING_INR = (os.getenv("STRIPE_PRICE_STARTER_RECURRING_INR") or "").strip()
 STRIPE_PRICE_CREATOR_MAX_INR = (os.getenv("STRIPE_PRICE_CREATOR_MAX_INR") or "").strip()
@@ -693,7 +710,7 @@ if isinstance(_accounting_fx_rates_json, dict):
 ACCOUNTING_FX_RATES["INR"] = 1.0
 VF_TOKEN_PACK_VALIDITY_MONTHS = max(
     1,
-    int((os.getenv("VF_TOKEN_PACK_VALIDITY_MONTHS") or "6").strip() or "6"),
+    int((os.getenv("VF_TOKEN_PACK_VALIDITY_MONTHS") or "3").strip() or "3"),
 )
 ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
     "KOKORO": {"label": "BASIC", "rate": 0.7},
@@ -730,20 +747,23 @@ FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 1000},
-    "starter": {"plan": "Starter", "monthlyVfLimit": 50000},
-    "creator": {"plan": "Creator", "monthlyVfLimit": 150000},
-    "pro": {"plan": "Pro", "monthlyVfLimit": 300000},
-    "scale": {"plan": "Scale", "monthlyVfLimit": 600000},
+    "launcher": {"plan": "Launcher", "monthlyVfLimit": 30000},
+    "starter": {"plan": "Starter", "monthlyVfLimit": 65000},
+    "creator": {"plan": "Creator", "monthlyVfLimit": 225000},
+    "pro": {"plan": "Pro", "monthlyVfLimit": 500000},
+    "scale": {"plan": "Scale", "monthlyVfLimit": 850000},
 }
-PAID_PLAN_KEYS: tuple[str, ...] = ("starter", "creator", "pro", "scale")
+PAID_PLAN_KEYS: tuple[str, ...] = ("launcher", "starter", "creator", "pro", "scale")
 PLAN_PRICE_POLICY: dict[str, dict[str, int]] = {
-    "starter": {"firstCycleInr": 450, "recurringInr": 405},
-    "creator": {"firstCycleInr": 1200, "recurringInr": 1080},
-    "pro": {"firstCycleInr": 2400, "recurringInr": 2160},
-    "scale": {"firstCycleInr": 4300, "recurringInr": 3440},
+    "launcher": {"firstCycleInr": 129, "recurringInr": 129},
+    "starter": {"firstCycleInr": 450, "recurringInr": 450},
+    "creator": {"firstCycleInr": 1499, "recurringInr": 1499},
+    "pro": {"firstCycleInr": 2999, "recurringInr": 2999},
+    "scale": {"firstCycleInr": 4500, "recurringInr": 4500},
 }
 PLAN_FEATURE_FLAGS: dict[str, dict[str, Any]] = {
     "free": {"allowedEngines": ("KOKORO", "NEURAL2"), "earlyAccess": False},
+    "launcher": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "starter": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "creator": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "pro": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
@@ -751,6 +771,8 @@ PLAN_FEATURE_FLAGS: dict[str, dict[str, Any]] = {
 }
 PLAN_KEY_ALIASES: dict[str, str] = {
     "free": "free",
+    "launch": "launcher",
+    "launcher": "launcher",
     "starter": "starter",
     "creator": "creator",
     "pro": "pro",
@@ -762,6 +784,7 @@ PLAN_KEY_ALIASES: dict[str, str] = {
 }
 TTS_PLAN_GUARDRAILS: dict[str, dict[str, int]] = {
     "free": {"rpm": 5, "maxChars": 8000},
+    "launcher": {"rpm": 5, "maxChars": 9000},
     "starter": {"rpm": 5, "maxChars": 10000},
     "creator": {"rpm": 5, "maxChars": 10000},
     "pro": {"rpm": 5, "maxChars": 10000},
@@ -1434,6 +1457,7 @@ ACCOUNTING_DAILY_ROLLUP_COLLECTION = "accounting_daily_rollup"
 ACCOUNTING_MONITOR_RUNS_COLLECTION = "accounting_monitor_runs"
 USER_PROFILES_COLLECTION = "user_profiles"
 USER_ID_INDEX_COLLECTION = "user_id_index"
+STRIPE_WEBHOOK_EVENTS_COLLECTION = "stripe_webhook_events"
 TEAMS_COLLECTION = "teams"
 TEAM_MEMBERS_COLLECTION = "team_members"
 TEAM_INVITES_COLLECTION = "team_invites"
@@ -3544,6 +3568,8 @@ _FIREBASE_INIT_ERROR: Optional[str] = None
 _FIRESTORE_INIT_ERROR: Optional[str] = None
 _FIREBASE_INIT_LOCK = threading.Lock()
 _FIREBASE_INIT_ATTEMPTED = False
+_FIRESTORE_RETRY_LAST_ATTEMPT_MS = 0
+_FIRESTORE_RETRY_COOLDOWN_MS = 3000
 _INMEMORY_ENTITLEMENTS: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_MONTHLY: dict[str, dict[str, Any]] = {}
 _INMEMORY_USAGE_DAILY: dict[str, dict[str, Any]] = {}
@@ -3554,6 +3580,7 @@ _INMEMORY_WALLET_TRANSACTIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_COUPON_CODE_INDEX: dict[str, str] = {}
 _INMEMORY_COUPON_REDEMPTIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_STRIPE_WEBHOOK_EVENTS: dict[str, dict[str, Any]] = {}
 _INMEMORY_GENERATION_HISTORY: dict[str, dict[str, Any]] = {}
 _INMEMORY_AUDIO_GENERATION_AUDIT: dict[str, dict[str, Any]] = {}
 _INMEMORY_DAILY_USAGE_RESET_STATUS: dict[str, Any] = {}
@@ -3614,6 +3641,16 @@ _TTS_JOB_QUEUE = TtsJobQueue(
     lane_weights=VF_TTS_LANE_WEIGHTS,
     result_ttl_ms=VF_TTS_QUEUE_RESULT_TTL_MS,
     inline_result_max_bytes=VF_TTS_JOB_INLINE_RESULT_MAX_BYTES,
+)
+_TTS_V2_ENGINE = TtsV2Engine(
+    synthesize_fn=lambda payload: _tts_v2_synthesize_chunk(
+        payload,
+        str(payload.get("text") or ""),
+        str(payload.get("_lane_id") or ""),
+    ),
+    output_root=TTS_LIVE_ARTIFACTS_DIR / "v2",
+    redis_url=VF_REDIS_URL,
+    idempotency_ttl_sec=VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS,
 )
 _TTS_JOB_WORKER_LOCK = threading.Lock()
 _TTS_JOB_WORKER_THREADS: list[threading.Thread] = []
@@ -3697,6 +3734,24 @@ def _openvoice_artifact_payload(artifact: Any) -> dict[str, Any]:
     }
 
 
+def _openvoice_artifact_uid_prefix(uid: str) -> str:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return ""
+    return hashlib.sha256(safe_uid.encode("utf-8")).hexdigest()[:12]
+
+
+def _openvoice_scoped_artifact_id(uid: str, request_id: str) -> str:
+    normalized_request_id = normalize_openvoice_artifact_id(
+        request_id,
+        fallback=f"ov_{uuid.uuid4().hex[:12]}",
+    )
+    prefix = _openvoice_artifact_uid_prefix(uid)
+    if not prefix:
+        return normalized_request_id
+    return f"{prefix}_{normalized_request_id}"
+
+
 def _openvoice_clone_voice_payload(
     *,
     request_id: str,
@@ -3745,6 +3800,7 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
     mode = normalize_openvoice_mode(safe_payload.get("mode") or payload.mode)
     run_kind = normalize_openvoice_run_kind(safe_payload.get("runKind") or payload.runKind)
     request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"ov_{uuid.uuid4().hex[:12]}"
+    scoped_request_id = _openvoice_scoped_artifact_id(uid, request_id)
     trace_id = str(safe_payload.get("traceId") or payload.traceId or request_id).strip() or request_id
     language = normalize_openvoice_language(safe_payload.get("language") or payload.language or "EN")
     text = str(safe_payload.get("text") or payload.text or "").strip()
@@ -3859,9 +3915,9 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
 
     reference_artifact = save_openvoice_artifact(
         reference_audio_bytes,
-        f"{request_id}-reference",
+        f"{scoped_request_id}_reference",
     ) if reference_audio_bytes else None
-    result_artifact = save_openvoice_artifact(final_audio_bytes, request_id)
+    result_artifact = save_openvoice_artifact(final_audio_bytes, scoped_request_id)
     result_artifact_payload = _openvoice_artifact_payload(result_artifact)
     reference_audio_url = build_openvoice_artifact_url(reference_artifact.artifact_id) if reference_artifact else reference_audio_url
     result_download_url = str(result_artifact_payload.get("downloadUrl") or "").strip()
@@ -4031,12 +4087,22 @@ async def voice_lab_openvoice_artifact(
     request: Request,
     sig: str = Query(default=""),
 ) -> FileResponse:
-    safe_artifact_id = str(artifact_id or "").strip()
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
     if not safe_artifact_id:
         raise HTTPException(status_code=404, detail="Artifact not found.")
+    if not is_admin:
+        expected_prefix = _openvoice_artifact_uid_prefix(uid)
+        if expected_prefix and not safe_artifact_id.startswith(f"{expected_prefix}_"):
+            raise HTTPException(status_code=403, detail="Not authorized to access this artifact.")
     if not verify_openvoice_artifact_signature(safe_artifact_id, sig):
         raise HTTPException(status_code=403, detail="Invalid artifact signature.")
     artifact_path = (OPENVOICE_ARTIFACT_ROOT / f"{safe_artifact_id}.wav").resolve()
+    try:
+        artifact_path.relative_to(OPENVOICE_ARTIFACT_ROOT.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
     if not artifact_path.exists():
         raise HTTPException(status_code=404, detail="Artifact not found.")
     return FileResponse(str(artifact_path), media_type="audio/wav", filename=artifact_path.name)
@@ -4146,23 +4212,24 @@ def _init_firebase_clients(*, force: bool = False) -> None:
         _FIREBASE_INIT_ATTEMPTED = True
         _FIREBASE_INIT_ERROR = _FIREBASE_SDK_IMPORT_ERROR or "firebase-admin dependency is unavailable."
         return
-    if _FIREBASE_APP is not None:
+    if _FIREBASE_APP is not None and not force:
         return
     if _FIREBASE_INIT_ATTEMPTED and not force:
         return
     with _FIREBASE_INIT_LOCK:
-        if _FIREBASE_APP is not None:
+        if _FIREBASE_APP is not None and not force:
             return
         if _FIREBASE_INIT_ATTEMPTED and not force:
             return
         _FIREBASE_INIT_ATTEMPTED = True
         try:
-            if FIREBASE_SERVICE_ACCOUNT_JSON:
-                cred_payload = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
-                cred = firebase_credentials.Certificate(cred_payload)
-                _FIREBASE_APP = firebase_admin.initialize_app(cred)
-            else:
-                _FIREBASE_APP = firebase_admin.initialize_app()
+            if _FIREBASE_APP is None:
+                if FIREBASE_SERVICE_ACCOUNT_JSON:
+                    cred_payload = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+                    cred = firebase_credentials.Certificate(cred_payload)
+                    _FIREBASE_APP = firebase_admin.initialize_app(cred)
+                else:
+                    _FIREBASE_APP = firebase_admin.initialize_app()
             _FIRESTORE_DB = None
             _FIRESTORE_INIT_ERROR = None
             if VF_FIRESTORE_ENABLE and firebase_firestore is not None:
@@ -4575,7 +4642,7 @@ def _tts_success_bucket_for_plan(plan_key: str) -> str:
         return "scale"
     if normalized in {"pro"}:
         return "pro"
-    if normalized in {"starter", "creator"}:
+    if normalized in {"launcher", "starter", "creator"}:
         return "starter"
     return "free"
 
@@ -4584,7 +4651,7 @@ def _tts_pool_hint_plan_key(plan_key: str) -> str:
     normalized = _plan_key_from_name(plan_key)
     if normalized == "scale":
         return "plus"
-    if normalized in {"pro", "starter", "creator"}:
+    if normalized in {"pro", "launcher", "starter", "creator"}:
         return "pro"
     return "free"
 
@@ -5083,14 +5150,8 @@ def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
     try:
         doc = collection.document(safe_uid).get()
     except Exception:
-        with _INMEMORY_LOCK:
-            row = _INMEMORY_USER_PROFILES.get(safe_uid)
-            return dict(row) if isinstance(row, dict) else None
+        return None
     if not doc.exists:
-        with _INMEMORY_LOCK:
-            row = _INMEMORY_USER_PROFILES.get(safe_uid)
-            if isinstance(row, dict):
-                return dict(row)
         return None
     payload = doc.to_dict() or {}
     payload["uid"] = safe_uid
@@ -5114,23 +5175,9 @@ def _user_profile_find_by_user_id(user_id: str) -> Optional[dict[str, Any]]:
     try:
         index_doc = index_collection.document(safe_user_id).get()
     except Exception:
-        with _INMEMORY_LOCK:
-            row = _INMEMORY_USER_ID_INDEX.get(safe_user_id)
-            if not isinstance(row, dict):
-                return None
-            uid = str(row.get("uid") or "").strip()
-        if not uid:
-            return None
-        return _user_profile_read(uid)
+        return None
     if not index_doc.exists:
-        with _INMEMORY_LOCK:
-            row = _INMEMORY_USER_ID_INDEX.get(safe_user_id)
-            if not isinstance(row, dict):
-                return None
-            uid = str(row.get("uid") or "").strip()
-        if not uid:
-            return None
-        return _user_profile_read(uid)
+        return None
     idx = index_doc.to_dict() or {}
     uid = str(idx.get("uid") or "").strip()
     if not uid:
@@ -5245,6 +5292,15 @@ def _user_profile_upsert(
 
     profiles_collection = _firestore_collection(USER_PROFILES_COLLECTION)
     index_collection = _firestore_collection(USER_ID_INDEX_COLLECTION)
+    fail_fast_unavailable = bool(VF_USER_PROFILE_FAILFAST and VF_FIRESTORE_ENABLE)
+
+    def _raise_profile_store_unavailable(reason: Optional[Exception] = None) -> None:
+        if reason is not None:
+            _log_user_profile_write_error("store_unavailable_failfast", safe_uid, next_user_id, reason)
+        raise HTTPException(
+            status_code=503,
+            detail="Profile service is temporarily unavailable. Please try again in a few minutes.",
+        )
     def _apply_inmemory_upsert(*, reason: Optional[Exception] = None) -> dict[str, Any]:
         if reason is not None:
             _log_user_profile_write_error("inmemory_fallback", safe_uid, next_user_id, reason)
@@ -5275,6 +5331,8 @@ def _user_profile_upsert(
         or _FIRESTORE_DB is None
         or firebase_firestore is None
     ):
+        if fail_fast_unavailable:
+            _raise_profile_store_unavailable()
         return _apply_inmemory_upsert()
 
     profile_ref = _FIRESTORE_DB.collection(USER_PROFILES_COLLECTION).document(safe_uid)
@@ -5340,6 +5398,8 @@ def _user_profile_upsert(
             raise
         except Exception as fallback_exc:
             if _is_user_profile_store_unavailable_error(fallback_exc):
+                if fail_fast_unavailable:
+                    _raise_profile_store_unavailable(fallback_exc)
                 return _apply_inmemory_upsert(reason=fallback_exc)
             _log_user_profile_write_error("fallback_failed", safe_uid, next_user_id, fallback_exc)
             status_code, detail = _classify_user_profile_write_error(fallback_exc)
@@ -5385,6 +5445,8 @@ def _user_profile_upsert(
         if _is_firestore_transaction_wrapper_error(exc):
             return _apply_non_transactional_fallback(exc)
         if _is_user_profile_store_unavailable_error(exc):
+            if fail_fast_unavailable:
+                _raise_profile_store_unavailable(exc)
             return _apply_inmemory_upsert(reason=exc)
         _log_user_profile_write_error("transaction_runtime_error", safe_uid, next_user_id, exc)
         status_code, detail = _classify_user_profile_write_error(exc)
@@ -5393,6 +5455,8 @@ def _user_profile_upsert(
         if _is_firestore_transaction_wrapper_error(exc):
             return _apply_non_transactional_fallback(exc)
         if _is_user_profile_store_unavailable_error(exc):
+            if fail_fast_unavailable:
+                _raise_profile_store_unavailable(exc)
             return _apply_inmemory_upsert(reason=exc)
         _log_user_profile_write_error("transaction_error", safe_uid, next_user_id, exc)
         status_code, detail = _classify_user_profile_write_error(exc)
@@ -5590,6 +5654,33 @@ def _require_admin_uid(request: Request) -> str:
     if _request_is_admin(request, uid):
         return uid
     raise HTTPException(status_code=403, detail="Admin access required.")
+
+
+def _require_admin_unlock_uid(request: Request) -> str:
+    uid = _require_request_uid(request)
+    unlock_permissions = {
+        PERM_USERS_WRITE,
+        PERM_COUPONS_WRITE,
+        PERM_BILLING_WRITE,
+        PERM_OPS_MUTATE,
+        PERM_GUARDIAN_MUTATE,
+        PERM_ALERTS_WRITE,
+        PERM_SCHEDULER_WRITE,
+        PERM_RBAC_WRITE,
+        PERM_TEAMS_WRITE,
+        PERM_SUPPORT_REPLY,
+        PERM_SUPPORT_AI_CONFIG,
+    }
+    try:
+        actor = _resolve_actor(uid, request)
+        if any(_has_permission(actor, perm) for perm in unlock_permissions):
+            request.state.actor = actor
+            return uid
+    except Exception:
+        pass
+    if _request_is_admin(request, uid):
+        return uid
+    raise HTTPException(status_code=403, detail="Admin unlock access required.")
 
 
 def _constant_time_equal(left: str, right: str) -> bool:
@@ -6178,6 +6269,16 @@ def _rbac_list_assignments(limit: int = 100, cursor: str = "", q: str = "") -> t
 def _firestore_collection(name: str) -> Any:
     if _FIRESTORE_DB is None and _FIREBASE_APP is None:
         _init_firebase_clients()
+    if _FIRESTORE_DB is None and _FIREBASE_APP is not None and VF_FIRESTORE_ENABLE:
+        global _FIRESTORE_RETRY_LAST_ATTEMPT_MS
+        now_ms = int(time.time() * 1000)
+        should_retry = (now_ms - int(_FIRESTORE_RETRY_LAST_ATTEMPT_MS or 0)) >= int(_FIRESTORE_RETRY_COOLDOWN_MS)
+        if should_retry:
+            _FIRESTORE_RETRY_LAST_ATTEMPT_MS = now_ms
+            try:
+                _init_firebase_clients(force=True)
+            except Exception:
+                pass
     if _FIRESTORE_DB is None:
         return None
     return _FIRESTORE_DB.collection(name)
@@ -7257,6 +7358,114 @@ def _restore_paid_vf_lots(
     return normalized
 
 
+def _recalculate_token_pack_lots_for_entitlement(
+    entitlement: dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> tuple[dict[str, Any], dict[str, int], bool]:
+    current = now or _utc_now()
+    normalized = dict(_normalize_entitlement_wallet(dict(entitlement or {}), current))
+    raw_lots = normalized.get("paidVfLots") if isinstance(normalized.get("paidVfLots"), list) else []
+    next_lots: list[dict[str, Any]] = []
+    stats = {"tokenLotsSeen": 0, "tokenLotsUpdated": 0, "tokenLotsExpiredRemoved": 0}
+    changed = False
+    for raw_lot in raw_lots:
+        if not isinstance(raw_lot, dict):
+            continue
+        lot = dict(raw_lot)
+        source = str(lot.get("source") or "").strip().lower()
+        if source != "token_pack":
+            next_lots.append(lot)
+            continue
+        stats["tokenLotsSeen"] += 1
+        created_dt = _parse_optional_datetime(str(lot.get("createdAt") or "")) or current
+        next_expiry = _add_months_utc(created_dt, VF_TOKEN_PACK_VALIDITY_MONTHS)
+        if next_expiry <= current:
+            changed = True
+            stats["tokenLotsExpiredRemoved"] += 1
+            continue
+        next_expiry_iso = next_expiry.isoformat()
+        if str(lot.get("expiresAt") or "") != next_expiry_iso:
+            lot["expiresAt"] = next_expiry_iso
+            changed = True
+            stats["tokenLotsUpdated"] += 1
+        next_lots.append(lot)
+
+    if not changed:
+        return normalized, stats, False
+    patched = dict(normalized)
+    patched["paidVfLots"] = next_lots
+    patched = _normalize_entitlement_wallet(patched, current)
+    patched["updatedAt"] = current.isoformat()
+    return patched, stats, True
+
+
+def _recalculate_token_pack_expiry_migration(
+    *,
+    dry_run: bool,
+    requested_by: str,
+) -> dict[str, Any]:
+    now = _utc_now()
+    summary = {
+        "dryRun": bool(dry_run),
+        "requestedBy": str(requested_by or "").strip(),
+        "ranAt": now.isoformat(),
+        "usersScanned": 0,
+        "usersChanged": 0,
+        "tokenLotsSeen": 0,
+        "tokenLotsUpdated": 0,
+        "tokenLotsExpiredRemoved": 0,
+    }
+    collection = _firestore_collection("entitlements")
+    if collection is None or _FIRESTORE_DB is None:
+        with _INMEMORY_LOCK:
+            user_ids = sorted(_INMEMORY_ENTITLEMENTS.keys())
+        for uid in user_ids:
+            with _INMEMORY_LOCK:
+                current_row = dict(_INMEMORY_ENTITLEMENTS.get(uid) or {})
+            if not current_row:
+                continue
+            summary["usersScanned"] += 1
+            patched, stats, changed = _recalculate_token_pack_lots_for_entitlement(current_row, now=now)
+            summary["tokenLotsSeen"] += int(stats.get("tokenLotsSeen") or 0)
+            summary["tokenLotsUpdated"] += int(stats.get("tokenLotsUpdated") or 0)
+            summary["tokenLotsExpiredRemoved"] += int(stats.get("tokenLotsExpiredRemoved") or 0)
+            if changed:
+                summary["usersChanged"] += 1
+                if not dry_run:
+                    with _INMEMORY_LOCK:
+                        _INMEMORY_ENTITLEMENTS[uid] = dict(patched)
+        return summary
+
+    try:
+        docs = list(collection.stream())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to stream entitlements for token-pack migration: {exc}") from exc
+    for doc in docs:
+        uid = str(doc.id or "").strip()
+        current_row = doc.to_dict() or {}
+        if not uid or not isinstance(current_row, dict):
+            continue
+        current_row["uid"] = uid
+        summary["usersScanned"] += 1
+        patched, stats, changed = _recalculate_token_pack_lots_for_entitlement(current_row, now=now)
+        summary["tokenLotsSeen"] += int(stats.get("tokenLotsSeen") or 0)
+        summary["tokenLotsUpdated"] += int(stats.get("tokenLotsUpdated") or 0)
+        summary["tokenLotsExpiredRemoved"] += int(stats.get("tokenLotsExpiredRemoved") or 0)
+        if changed:
+            summary["usersChanged"] += 1
+            if not dry_run:
+                doc.reference.set(
+                    {
+                        "paidVfLots": patched.get("paidVfLots") or [],
+                        "paidVfBalance": _as_positive_number(patched.get("paidVfBalance")),
+                        "updatedAt": patched.get("updatedAt") or now.isoformat(),
+                    },
+                    merge=True,
+                )
+    return summary
+
+
 def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
     current = now or _utc_now()
     month_key = _wallet_month_key(current)
@@ -8289,6 +8498,37 @@ class TtsSynthesizeRequest(BaseModel):
     speaker: Optional[str] = None
     speaker_voices: Optional[list[dict[str, Any]]] = None
     apiKey: Optional[str] = None
+    stream: Optional[bool] = None
+    live_chunk_chars: Optional[int] = None
+    live_chunk_words: Optional[int] = None
+    response_format: Optional[str] = None
+    emotion_ref_id: Optional[str] = None
+    emotion_strength: Optional[float] = None
+    multi_speaker_mode: Optional[str] = None
+    multi_speaker_max_concurrency: Optional[int] = None
+    multi_speaker_retry_once: Optional[bool] = None
+    multi_speaker_line_map: Optional[list[dict[str, Any]]] = None
+    post_tts_disable: Optional[bool] = None
+
+
+class TtsV2CreateJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: Optional[str] = None
+    engine: str = "GEM"
+    mode: str = "single_speaker"
+    text: str
+    model: Optional[str] = None
+    modelCandidates: Optional[list[str]] = None
+    voiceName: Optional[str] = None
+    voice_id: Optional[str] = None
+    voiceId: Optional[str] = None
+    language: Optional[str] = None
+    speed: Optional[float] = None
+    emotion: Optional[str] = None
+    style: Optional[str] = None
+    trace_id: Optional[str] = None
+    speaker: Optional[str] = None
+    speaker_voices: Optional[list[dict[str, Any]]] = None
     stream: Optional[bool] = None
     live_chunk_chars: Optional[int] = None
     live_chunk_words: Optional[int] = None
@@ -11100,6 +11340,10 @@ def _runtime_synthesize_path_for_engine(engine: str) -> str:
 
 def _stripe_plan_price_catalog() -> dict[str, dict[str, str]]:
     return {
+        "launcher": {
+            "first": str(STRIPE_PRICE_LAUNCHER_MAX_INR or "").strip(),
+            "recurring": str(STRIPE_PRICE_LAUNCHER_RECURRING_INR or "").strip(),
+        },
         "starter": {
             "first": str(STRIPE_PRICE_STARTER_MAX_INR or "").strip(),
             "recurring": str(STRIPE_PRICE_STARTER_RECURRING_INR or "").strip(),
@@ -11139,8 +11383,13 @@ def _stripe_plan_prices_configured() -> bool:
     return True
 
 
-def _entitlement_from_price_id(price_id: str) -> dict[str, Any]:
+def _entitlement_from_price_id(price_id: str) -> Optional[dict[str, Any]]:
     token = str(price_id or "").strip()
+    if not token:
+        return {
+            "plan": PLAN_LIMITS["free"]["plan"],
+            "monthlyVfLimit": PLAN_LIMITS["free"]["monthlyVfLimit"],
+        }
     for plan_key in PAID_PLAN_KEYS:
         first = _stripe_price_id_for_plan(plan_key, phase="first")
         recurring = _stripe_price_id_for_plan(plan_key, phase="recurring")
@@ -11149,10 +11398,7 @@ def _entitlement_from_price_id(price_id: str) -> dict[str, Any]:
                 "plan": PLAN_LIMITS[plan_key]["plan"],
                 "monthlyVfLimit": PLAN_LIMITS[plan_key]["monthlyVfLimit"],
             }
-    return {
-        "plan": PLAN_LIMITS["free"]["plan"],
-        "monthlyVfLimit": PLAN_LIMITS["free"]["monthlyVfLimit"],
-    }
+    return None
 
 
 def _resolve_checkout_url_override(candidate: Optional[str], fallback: str) -> str:
@@ -18544,7 +18790,7 @@ def _reader_job_status_summary(uid: str, job_id: str) -> dict[str, Any]:
         "chunkCursorNext": int(payload.get("chunkCursorNext") or 0),
         "playableChunks": int((live or {}).get("playableChunks") or 0),
         "playableDurationMs": int((live or {}).get("playableDurationMs") or 0),
-        "downloadUrl": f"/tts/jobs/{safe_job_id}",
+        "downloadUrl": f"/tts/v2/jobs/{safe_job_id}/result/audio",
     }
 
 
@@ -21289,6 +21535,17 @@ def _sync_entitlement_from_subscription(
         raise HTTPException(status_code=400, detail="Missing uid for entitlement sync.")
     current_entitlement = _normalize_entitlement_wallet(_load_entitlement(safe_uid))
     plan_payload = _entitlement_from_price_id(price_id)
+    if plan_payload is None:
+        fallback_key = _plan_key_from_name(str(current_entitlement.get("plan") or "free"))
+        fallback_cfg = PLAN_LIMITS.get(fallback_key) or PLAN_LIMITS["free"]
+        plan_payload = {
+            "plan": fallback_cfg["plan"],
+            "monthlyVfLimit": int(current_entitlement.get("monthlyVfLimit") or fallback_cfg["monthlyVfLimit"]),
+        }
+        print(
+            f"[billing] unknown_price_id_preserve_plan uid={safe_uid} priceId={str(price_id or '').strip()} fallbackPlan={fallback_key}",
+            flush=True,
+        )
     status = _billing_status_from_subscription(subscription_status)
     transition_policy = _resolve_subscription_plan_transition_policy(current_entitlement, plan_payload)
     payload = {
@@ -23203,7 +23460,7 @@ def _cleanup_entitlements_daily_generation_limit(*, dry_run: bool, requested_by:
 
 @app.post("/admin/session-unlock/issue")
 def admin_session_unlock_issue(request: Request) -> JSONResponse:
-    uid = _require_admin_uid(request)
+    uid = _require_admin_unlock_uid(request)
     issued = _admin_unlock_issue_for_request(request, uid)
     status_payload = _admin_unlock_status_for_request(request, uid)
     _notification_emit_persisted(
@@ -23239,7 +23496,7 @@ def admin_session_unlock_verify(
     payload: AdminSessionUnlockVerifyRequest,
     request: Request,
 ) -> JSONResponse:
-    uid = _require_admin_uid(request)
+    uid = _require_admin_unlock_uid(request)
     verified = _admin_unlock_verify_for_request(
         request,
         uid=uid,
@@ -23276,7 +23533,7 @@ def admin_session_unlock_verify(
 
 @app.get("/admin/session-unlock/status")
 def admin_session_unlock_status(request: Request) -> JSONResponse:
-    uid = _require_admin_uid(request)
+    uid = _require_admin_unlock_uid(request)
     return JSONResponse({"ok": True, "uid": uid, "status": _admin_unlock_status_for_request(request, uid)})
 
 
@@ -23567,24 +23824,23 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
                 _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(user_id_before).delete()
             except Exception:
                 pass
-    else:
-        with _INMEMORY_LOCK:
-            _INMEMORY_ENTITLEMENTS.pop(uid, None)
-            _INMEMORY_USER_PROFILES.pop(uid, None)
-            if user_id_before:
-                _INMEMORY_USER_ID_INDEX.pop(user_id_before, None)
-            for key in [k for k in _INMEMORY_USAGE_MONTHLY.keys() if k.startswith(f"{uid}_")]:
-                _INMEMORY_USAGE_MONTHLY.pop(key, None)
-            for key in [k for k in _INMEMORY_USAGE_DAILY.keys() if k.startswith(f"{uid}_")]:
-                _INMEMORY_USAGE_DAILY.pop(key, None)
-            for key in [k for k in _INMEMORY_USAGE_EVENTS.keys() if k.startswith(f"{uid}_")]:
-                _INMEMORY_USAGE_EVENTS.pop(key, None)
-            for key in [k for k in _INMEMORY_WALLET_DAILY.keys() if k.startswith(f"{uid}_")]:
-                _INMEMORY_WALLET_DAILY.pop(key, None)
-            for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
-                _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
-            _INMEMORY_GENERATION_HISTORY.pop(uid, None)
-            _persist_inmemory_user_profile_store_locked()
+    with _INMEMORY_LOCK:
+        _INMEMORY_ENTITLEMENTS.pop(uid, None)
+        _INMEMORY_USER_PROFILES.pop(uid, None)
+        if user_id_before:
+            _INMEMORY_USER_ID_INDEX.pop(user_id_before, None)
+        for key in [k for k in _INMEMORY_USAGE_MONTHLY.keys() if k.startswith(f"{uid}_")]:
+            _INMEMORY_USAGE_MONTHLY.pop(key, None)
+        for key in [k for k in _INMEMORY_USAGE_DAILY.keys() if k.startswith(f"{uid}_")]:
+            _INMEMORY_USAGE_DAILY.pop(key, None)
+        for key in [k for k in _INMEMORY_USAGE_EVENTS.keys() if k.startswith(f"{uid}_")]:
+            _INMEMORY_USAGE_EVENTS.pop(key, None)
+        for key in [k for k in _INMEMORY_WALLET_DAILY.keys() if k.startswith(f"{uid}_")]:
+            _INMEMORY_WALLET_DAILY.pop(key, None)
+        for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
+            _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
+        _INMEMORY_GENERATION_HISTORY.pop(uid, None)
+        _persist_inmemory_user_profile_store_locked()
     _TTS_SUCCESS_LIMITER.clear_uid(uid)
     _audit_append_event(
         action="admin_user_delete",
@@ -25739,6 +25995,29 @@ def admin_accounting_monitor_run(
     return JSONResponse({"ok": True, **result})
 
 
+@app.post("/admin/billing/token-pack-expiry/recalculate")
+def admin_recalculate_token_pack_expiry(
+    request: Request,
+    dryRun: bool = True,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_BILLING_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    summary = _recalculate_token_pack_expiry_migration(
+        dry_run=bool(dryRun),
+        requested_by=actor_uid,
+    )
+    _audit_append_event(
+        action="admin_token_pack_expiry_recalculate",
+        resource_type="billing",
+        resource_id="token_pack_expiry",
+        after=summary,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, **summary})
+
+
 def _coupon_plan_allowed_for_checkout(coupon: dict[str, Any], plan_token: str) -> bool:
     plan_discounts = _normalize_coupon_plan_discounts(
         coupon.get("planDiscounts"),
@@ -26120,7 +26399,7 @@ def _finalize_subscription_coupon_redemption(
 
     try:
         result = _apply(transaction)
-        if bool(result.get("ok")):
+        if bool(result.get("ok")) and not bool(result.get("alreadyFinalized")):
             reservation = _firestore_collection("coupon_redemptions")
             code_value = ""
             plan_value = ""
@@ -26154,6 +26433,46 @@ def _finalize_subscription_coupon_redemption(
         return {"ok": False, "reason": str(exc)}
 
 
+def _stripe_webhook_event_register(event_id: str, event_type: str) -> bool:
+    safe_event_id = str(event_id or "").strip()
+    if not safe_event_id:
+        return True
+    now_iso = _utc_now().isoformat()
+    row = {
+        "eventId": safe_event_id,
+        "eventType": str(event_type or "").strip(),
+        "receivedAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    collection = _firestore_collection(STRIPE_WEBHOOK_EVENTS_COLLECTION)
+    if collection is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            if safe_event_id in _INMEMORY_STRIPE_WEBHOOK_EVENTS:
+                return False
+            _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(row)
+            return True
+
+    event_ref = _FIRESTORE_DB.collection(STRIPE_WEBHOOK_EVENTS_COLLECTION).document(safe_event_id)
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> bool:
+        doc = event_ref.get(transaction=transaction_obj)
+        if doc.exists:
+            return False
+        transaction_obj.set(event_ref, row, merge=False)
+        return True
+
+    try:
+        return bool(_apply(transaction))
+    except Exception:
+        with _INMEMORY_LOCK:
+            if safe_event_id in _INMEMORY_STRIPE_WEBHOOK_EVENTS:
+                return False
+            _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(row)
+            return True
+
+
 @app.get("/billing/account-summary")
 def billing_account_summary(request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
@@ -26166,7 +26485,7 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
     uid = _require_request_uid(request)
     plan_token = _plan_key_from_name(str(payload.plan or "").strip().lower())
     if plan_token not in set(PAID_PLAN_KEYS):
-        raise HTTPException(status_code=400, detail="Unsupported plan. Use starter, creator, pro, or scale.")
+        raise HTTPException(status_code=400, detail="Unsupported plan. Use launcher, starter, creator, pro, or scale.")
     price_id = _stripe_price_id_for_plan(plan_token, phase="first")
     if not price_id:
         raise HTTPException(status_code=503, detail="Stripe first-cycle price is not configured for selected plan.")
@@ -26201,6 +26520,8 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
             )
             customer_id = str(customer.get("id") or "")
         except Exception as exc:  # noqa: BLE001
+            if reservation_id:
+                _release_subscription_coupon_reservation(reservation_id, reason="customer_create_failed")
             raise HTTPException(status_code=502, detail=f"Failed to create Stripe customer: {exc}") from exc
         _write_entitlement(uid, {"stripeCustomerId": customer_id})
         _link_customer_uid(customer_id, uid)
@@ -26387,7 +26708,10 @@ async def billing_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}") from exc
 
     event_type = str(event.get("type") or "")
+    event_id = str(event.get("id") or "").strip()
     data_obj = (event.get("data") or {}).get("object") or {}
+    if event_id and not _stripe_webhook_event_register(event_id, event_type):
+        return JSONResponse({"ok": True, "duplicate": True, "eventId": event_id})
 
     try:
         if event_type == "checkout.session.completed":
@@ -27758,7 +28082,7 @@ def _tts_job_status_payload(
                 "textChars": int(item.get("textChars") or 0),
                 "engine": str(item.get("engine") or ""),
                 "traceId": str(item.get("traceId") or ""),
-                "downloadUrl": f"/tts/jobs/{str(job.get('jobId') or '')}/chunks/{safe_index}",
+                "downloadUrl": f"/tts/v2/jobs/{str(job.get('jobId') or '')}/chunks/{safe_index}/audio",
                 "speakerId": str(item.get("speakerId") or ""),
                 "turnIndex": int(item.get("turnIndex") or safe_index),
                 "sessionEpoch": int(item.get("sessionEpoch") or 0),
@@ -28156,6 +28480,81 @@ def _build_live_chunk_upstream_payload(*, engine: str, base_payload: dict[str, A
     payload["text"] = str(chunk.get("text") or "").strip()
     payload.pop("multi_speaker_line_map", None)
     return payload
+
+
+def _tts_v2_synthesize_chunk(
+    payload_base: dict[str, Any],
+    text: Optional[str] = None,
+    lane_id: Optional[str] = None,
+) -> dict[str, Any]:
+    safe_text = str(text if text is not None else payload_base.get("text") or "").strip()
+    if not safe_text:
+        raise V2ValidationError("chunk text is empty.")
+    lane_id = str(lane_id if lane_id is not None else payload_base.get("_lane_id") or "").strip()
+    engine = _normalize_engine_name(str(payload_base.get("engine") or "GEM"))
+    runtime_base = _runtime_url_for_engine(engine).rstrip("/")
+    runtime_path = _runtime_synthesize_path_for_engine(engine)
+    upstream_url = f"{runtime_base}{runtime_path}"
+    upstream_payload = dict(payload_base or {})
+    upstream_payload["engine"] = engine
+    upstream_payload["text"] = safe_text
+    upstream_payload.pop("apiKey", None)
+    upstream_payload.pop("api_key", None)
+    upstream_payload.pop("request_id", None)
+    upstream_payload.pop("requestId", None)
+    upstream_payload.pop("idempotencyKey", None)
+    upstream_payload.pop("idempotency_key", None)
+    upstream_payload.pop("stream", None)
+    trace_id = str(upstream_payload.get("trace_id") or upstream_payload.get("traceId") or "").strip()
+
+    try:
+        response = _runtime_tts_request_with_gemini_failover(
+            "POST",
+            upstream_url,
+            engine=engine,
+            trace_id=trace_id,
+            timeout=VF_TTS_RUNTIME_TIMEOUT_SEC,
+            json=upstream_payload,
+            headers={
+                "content-type": "application/json",
+                "ngrok-skip-browser-warning": "true",
+                "x-vf-lane-id": str(lane_id or "").strip(),
+            },
+        )
+    except requests.exceptions.RequestException as exc:
+        raise V2TransientError(f"lane_request_failed: {exc}")
+
+    if not response.ok:
+        detail = _decode_runtime_error_detail(response)
+        status = _map_runtime_failure_status(engine, int(response.status_code), detail)
+        code = str(extract_error_code(detail) or "").strip().upper()
+        if int(response.status_code) == 413 or code in {"PAYLOAD_TOO_LARGE", "INPUT_TOO_LARGE", "REQUEST_TOO_LARGE"}:
+            raise TtsV2PayloadTooLargeError(str(detail))
+        retryable = _is_retryable_runtime_failure(engine, status, detail)
+        raise TtsV2RuntimeSynthesisError(
+            str(detail),
+            status_code=int(status),
+            retryable=bool(retryable),
+            lane_unhealthy=bool(_is_gemini_capacity_pressure_error(detail)),
+            detail=detail,
+        )
+
+    audio_bytes = bytes(response.content or b"")
+    if len(audio_bytes) < 64:
+        raise TtsV2RuntimeSynthesisError("runtime returned empty audio.", status_code=502, retryable=True)
+    media_type = str(response.headers.get("content-type") or "audio/wav")
+    usage = _parse_runtime_usage_header(response.headers.get("x-voiceflow-usage"))
+    usage_tokens = int((usage or {}).get("totalTokens") or 0)
+    headers = {
+        "x-voiceflow-trace-id": str(response.headers.get("x-voiceflow-trace-id") or "").strip(),
+        "x-vf-lane-id": str(lane_id or "").strip(),
+    }
+    return {
+        "audioBytes": audio_bytes,
+        "mediaType": media_type,
+        "headers": headers,
+        "usageTokens": usage_tokens,
+    }
 
 
 def _read_wav_info(wav_bytes: bytes) -> dict[str, int]:
@@ -29971,37 +30370,152 @@ def _submit_tts_job(payload: TtsSynthesizeRequest, request: Request, *, sync_wai
         raise
 
 
+@app.post("/tts/v2/jobs")
+def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    if hasattr(payload, "model_dump"):
+        raw_payload = payload.model_dump(exclude_none=True)  # type: ignore[attr-defined]
+    else:
+        raw_payload = payload.dict(exclude_none=True)
+    raw_payload = dict(raw_payload or {})
+    raw_payload["engine"] = _normalize_engine_name(str(raw_payload.get("engine") or "GEM"))
+    raw_payload["text"] = str(raw_payload.get("text") or "").strip()
+    raw_payload["mode"] = str(raw_payload.get("mode") or "single_speaker").strip().lower() or "single_speaker"
+    trace_id = str(raw_payload.get("trace_id") or raw_payload.get("request_id") or "").strip()
+    _plan_name, _plan_key, _ = _enforce_tts_plan_guardrails(
+        uid,
+        len(str(raw_payload.get("text") or "")),
+        trace_id,
+        engine=str(raw_payload.get("engine") or "GEM"),
+        bypass=is_admin,
+    )
+
+    try:
+        job = _TTS_V2_ENGINE.create_job(
+            uid=uid,
+            is_admin=is_admin,
+            payload=raw_payload,
+            plan_key=str(_plan_key or "free").strip().lower() or "free",
+        )
+        status_payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
+    except V2ValidationError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+    except TtsV2RequestConflictError as exc:
+        raise HTTPException(status_code=409, detail={"error": str(exc), "errorCode": REQUEST_ID_CONFLICT})
+
+    headers = {
+        "x-vf-request-id": str(status_payload.get("requestId") or ""),
+        "x-vf-job-id": str(status_payload.get("jobId") or ""),
+        "x-vf-tts-v2": "1",
+    }
+    if is_admin:
+        headers["x-vf-admin"] = "1"
+    payload_out = dict(status_payload)
+    accepted = str(status_payload.get("status") or "").strip().lower() in {"queued", "running"}
+    payload_out["accepted"] = bool(accepted)
+    return JSONResponse(payload_out, status_code=202 if accepted else 200, headers=headers)
+
+
+@app.get("/tts/v2/jobs/{job_id}")
+def tts_v2_job_status(
+    job_id: str,
+    request: Request,
+    includeResult: bool = False,
+    includeChunks: bool = False,
+    chunkCursor: int = 0,
+    chunkLimit: int = Query(default=2, ge=1, le=32),
+    includeChunkAudio: bool = False,
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    try:
+        job = _TTS_V2_ENGINE.get_job(
+            uid=uid,
+            is_admin=is_admin,
+            job_id=job_id,
+        )
+        payload = _TTS_V2_ENGINE.status_payload(
+            job=job,
+            include_chunks=bool(includeChunks),
+            chunk_cursor=max(0, int(chunkCursor or 0)),
+            chunk_limit=int(chunkLimit),
+            include_chunk_audio=bool(includeChunkAudio),
+            include_result=bool(includeResult),
+        )
+    except TtsV2JobNotFoundError:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    except TtsV2AuthorizationError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
+    return JSONResponse(payload, headers={"x-vf-tts-v2": "1"})
+
+
+@app.post("/tts/v2/jobs/{job_id}/cancel")
+def tts_v2_job_cancel(job_id: str, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    try:
+        job = _TTS_V2_ENGINE.cancel_job(uid=uid, is_admin=is_admin, job_id=job_id)
+        payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
+    except TtsV2JobNotFoundError:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    except TtsV2AuthorizationError:
+        raise HTTPException(status_code=403, detail="Not authorized to cancel this job.")
+    return JSONResponse(payload, headers={"x-vf-tts-v2": "1"})
+
+
+@app.get("/tts/v2/jobs/{job_id}/chunks/{chunk_index}/audio")
+def tts_v2_job_chunk_audio(job_id: str, chunk_index: int, request: Request) -> Response:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    try:
+        audio, media_type = _TTS_V2_ENGINE.get_chunk_audio(
+            uid=uid,
+            is_admin=is_admin,
+            job_id=job_id,
+            chunk_index=max(0, int(chunk_index)),
+        )
+    except TtsV2JobNotFoundError:
+        raise HTTPException(status_code=404, detail="Chunk not found.")
+    except TtsV2AuthorizationError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
+    except TtsV2RuntimeSynthesisError as exc:
+        raise HTTPException(status_code=max(400, int(exc.status_code or 409)), detail=str(exc))
+    return Response(content=audio, media_type=str(media_type or "audio/wav"), headers={"Cache-Control": "no-store", "x-vf-tts-v2": "1"})
+
+
+@app.get("/tts/v2/jobs/{job_id}/result/audio")
+def tts_v2_job_result_audio(job_id: str, request: Request) -> Response:
+    uid = _require_request_uid(request)
+    is_admin = _request_is_admin(request, uid)
+    try:
+        audio, media_type = _TTS_V2_ENGINE.get_result_audio(uid=uid, is_admin=is_admin, job_id=job_id)
+    except TtsV2JobNotFoundError:
+        raise HTTPException(status_code=404, detail="Result not found.")
+    except TtsV2AuthorizationError:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
+    except TtsV2RuntimeSynthesisError as exc:
+        message = str(exc or "").strip().lower()
+        if "cancelled" in message:
+            raise HTTPException(status_code=409, detail="TTS job was cancelled.")
+        raise HTTPException(status_code=max(400, int(exc.status_code or 409)), detail=str(exc))
+    return Response(content=audio, media_type=str(media_type or "audio/wav"), headers={"Cache-Control": "no-store", "x-vf-tts-v2": "1"})
+
+
 @app.post("/tts/synthesize")
 def tts_synthesize(
-    payload: TtsSynthesizeRequest,
     request: Request,
+    payload: Optional[TtsSynthesizeRequest] = None,
     wait_ms: Optional[int] = Query(default=None, ge=0, le=60_000),
 ) -> Response:
-    effective_wait_ms = VF_TTS_QUEUE_SYNC_WAIT_MS if wait_ms is None else int(wait_ms)
-    return _submit_tts_job(payload, request, sync_wait_ms=effective_wait_ms)
+    _ = payload, request, wait_ms
+    raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use /tts/v2/jobs.")
 
 
 @app.post("/tts/jobs")
-def tts_job_create(payload: TtsSynthesizeRequest, request: Request) -> JSONResponse:
-    response = _submit_tts_job(payload, request, sync_wait_ms=0)
-    if isinstance(response, JSONResponse):
-        return response
-    if isinstance(response, Response):
-        encoded = base64.b64encode(bytes(response.body or b"")).decode("ascii")
-        headers = {str(k): str(v) for k, v in dict(response.headers or {}).items()}
-        return JSONResponse(
-            {
-                "ok": True,
-                "accepted": True,
-                "status": "completed",
-                "result": {
-                    "audioBase64": encoded,
-                    "mediaType": str(response.media_type or "audio/wav"),
-                    "headers": headers,
-                },
-            }
-        )
-    return JSONResponse({"ok": True, "accepted": True}, status_code=202)
+def tts_job_create(request: Request, payload: Optional[TtsSynthesizeRequest] = None) -> JSONResponse:
+    _ = payload, request
+    raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use /tts/v2/jobs.")
 
 
 @app.get("/tts/jobs/{job_id}")
@@ -30014,117 +30528,26 @@ def tts_job_status(
     chunkLimit: int = Query(default=VF_TTS_LIVE_CHUNK_LIMIT_DEFAULT, ge=1, le=VF_TTS_LIVE_CHUNK_LIMIT_MAX),
     includeChunkAudio: bool = True,
 ) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-    return JSONResponse(
-        _tts_job_status_payload(
-            job,
-            include_result=bool(includeResult),
-            include_chunks=bool(includeChunks),
-            chunk_cursor=max(0, int(chunkCursor or 0)),
-            chunk_limit=int(chunkLimit),
-            include_chunk_audio=bool(includeChunkAudio),
-        )
-    )
+    _ = job_id, request, includeResult, includeChunks, chunkCursor, chunkLimit, includeChunkAudio
+    raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use /tts/v2/jobs/{job_id}.")
 
 
 @app.get("/tts/jobs/{job_id}/audio")
 def tts_job_audio_download(job_id: str, request: Request) -> Response:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-
-    status = str(job.get("status") or "").strip().lower()
-    if status == "completed":
-        return _response_from_completed_tts_job(job, gateway_lease=None)
-    if status == "failed":
-        _raise_failed_tts_job(job)
-    if status == "cancelled":
-        raise HTTPException(status_code=409, detail="TTS job was cancelled.")
-    raise HTTPException(status_code=409, detail="TTS job audio is not ready yet.")
+    _ = job_id, request
+    raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use /tts/v2/jobs/{job_id}/result/audio.")
 
 
 @app.get("/tts/jobs/{job_id}/chunks/{chunk_index}")
 def tts_job_chunk_download(job_id: str, chunk_index: int, request: Request) -> Response:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to access this job.")
-
-    chunk_meta = _resolve_tts_job_chunk(job, chunk_index)
-    if not isinstance(chunk_meta, dict):
-        raise HTTPException(status_code=404, detail="Chunk not found.")
-
-    chunk_path = Path(str(chunk_meta.get("path") or "")).resolve()
-    if not chunk_path.exists() or not chunk_path.is_file():
-        raise HTTPException(status_code=404, detail="Chunk file not found.")
-
-    media_type = str(chunk_meta.get("contentType") or "audio/wav")
-    return FileResponse(
-        str(chunk_path),
-        media_type=media_type,
-        filename=f"{safe_job_id}_chunk_{max(0, int(chunk_index)):04d}.wav",
-        headers={"Cache-Control": "no-store"},
-    )
+    _ = job_id, chunk_index, request
+    raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use /tts/v2/jobs/{job_id}/chunks/{chunk_index}/audio.")
 
 
 @app.delete("/tts/jobs/{job_id}")
 def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
-    uid = _require_request_uid(request)
-    is_admin = _request_is_admin(request, uid)
-    safe_job_id = str(job_id or "").strip()
-    if not safe_job_id:
-        raise HTTPException(status_code=400, detail="Missing job id.")
-    job = _TTS_JOB_QUEUE.get(safe_job_id)
-    if not isinstance(job, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not _tts_job_can_access(job, uid=uid, is_admin=is_admin):
-        raise HTTPException(status_code=403, detail="Not authorized to cancel this job.")
-    cancelled = _TTS_JOB_QUEUE.cancel(safe_job_id)
-    if not isinstance(cancelled, dict):
-        raise HTTPException(status_code=404, detail="Job not found.")
-    _cleanup_live_artifacts(safe_job_id)
-    _cleanup_tts_result_artifact(safe_job_id)
-    _record_tts_terminal_event(
-        job_id=safe_job_id,
-        engine=str(cancelled.get("engine") or "GEM"),
-        status="cancelled",
-        reason="cancelled_by_user",
-        status_code=409,
-    )
-    for audit_id in _audio_generation_audit_ids_from_job(cancelled):
-        _audio_generation_audit_mark_terminal(
-            audit_id,
-            status="cancelled",
-            failure_code="cancelled_by_user",
-            failure_detail="TTS job was cancelled by the user.",
-            job_id=safe_job_id,
-            request_id=str(cancelled.get("requestId") or safe_job_id),
-            trace_id=str(cancelled.get("traceId") or safe_job_id),
-        )
-    _notification_emit_tts_job_terminal(cancelled, status="cancelled", detail="cancelled_by_user")
-    return JSONResponse({"ok": True, "job": _tts_job_status_payload(cancelled, include_result=False)})
+    _ = job_id, request
+    raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use POST /tts/v2/jobs/{job_id}/cancel.")
 
 
 @app.get("/models/kokoro/status")

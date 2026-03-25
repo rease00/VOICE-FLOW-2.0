@@ -376,7 +376,7 @@ export interface UserWalletStats {
 export interface UserStats {
   generationsUsed: number;
   isPremium: boolean;
-  planName: 'Free' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | 'Plus' | 'Enterprise';
+  planName: 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale' | 'Plus' | 'Enterprise';
   lastResetDate?: string | undefined;
   vfUsage: VfUsageStats;
   wallet: UserWalletStats;
@@ -531,6 +531,7 @@ export interface NormalizedSynthesisRequest {
   emotion?: string | undefined;
   style?: string | undefined;
   trace_id?: string | undefined;
+  request_id?: string | undefined;
 }
 
 export interface DubbingSegment {
