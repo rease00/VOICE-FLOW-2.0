@@ -5,7 +5,7 @@ import '../src/styles/mainApp.css';
 import { 
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
     Music, Video, 
-    Save, Fingerprint, UploadCloud, FileAudio, Loader2, 
+    Save, Fingerprint, UploadCloud, Loader2,
     Download, Menu, Box,
     Plus, Bot, Volume2, Clock, Send, 
     Film, Mic2, Sliders,
@@ -28,7 +28,6 @@ import {
   DubbingClip,
   DubbingClipboard,
   CpuDubbingProfile,
-  LabRailPanelId,
 } from '../types';
 import { useUser } from '../contexts/UserContext';
 import { refreshStudioSpeakerVoices } from '../src/shared/voices/castAssignment';
@@ -942,7 +941,7 @@ const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; baseI
 const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
   [Tab.STUDIO]: 'Script, cast, and render audio',
   [Tab.PODCAST]: 'Standard podcast scripting and handoff',
-  [Tab.LAB]: 'Voice cloning, reference samples, and Seed-VC tools',
+  [Tab.LAB]: 'Studio workspace',
   [Tab.READER]: 'Narration workspace for novels and comics',
   [Tab.CHARACTERS]: 'Voice roster and cast management',
   [Tab.NOVEL]: 'Long-form drafting and chapter flow',
@@ -1676,10 +1675,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
   const [voiceConversionAttachments, setVoiceConversionAttachments] = useState<Record<string, { audioName: string; audioBase64: string }>>({});
-  const [vcTargetVoiceId, setVcTargetVoiceId] = useState<string>(() => settings.voiceId);
-  const [vcReferenceDraftFile, setVcReferenceDraftFile] = useState<File | null>(null);
+  const [voiceReferenceDraftFile, setVoiceReferenceDraftFile] = useState<File | null>(null);
   const [isStudioVoiceConversionEnabled, setIsStudioVoiceConversionEnabled] = useState(false);
-  const [labPanelRequest, setLabPanelRequest] = useState<{ panel: LabRailPanelId; token: number } | null>(null);
   const voiceConversionFallbackToastRef = useRef<Record<string, number>>({});
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -4407,7 +4404,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if ((now - lastShownAt) < 15000) return;
           voiceConversionFallbackToastRef.current[dedupeKey] = now;
           showToast(
-              `Seed-VC VC failed for ${voiceName || voiceId || 'the selected voice'}; using original TTS audio.`,
+              `Voice conversion failed for ${voiceName || voiceId || 'the selected voice'}; using original TTS audio.`,
               'info'
           );
       };
@@ -7340,7 +7337,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleVoiceCloneCreated = useCallback((voice: ClonedVoice) => {
       addClonedVoice(voice);
       setSettings((current) => ({ ...current, voiceId: voice.id }));
-      setVcTargetVoiceId(voice.id);
       setCharTab('GALLERY');
       showToast(`Voice clone ready: ${voice.name}`, 'success');
   }, [addClonedVoice, setCharTab, setSettings, showToast]);
@@ -7365,11 +7361,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   audioBase64,
               },
           }));
-          setVcReferenceDraftFile(file);
+          setVoiceReferenceDraftFile(file);
           setIsStudioVoiceConversionEnabled(true);
-          showToast(`VC sample attached to ${voiceId}.`, 'success');
+          showToast(`Voice sample attached to ${voiceId}.`, 'success');
       } catch (error) {
-          showToast(error instanceof Error ? error.message : 'Failed to attach VC sample.', 'error');
+          showToast(error instanceof Error ? error.message : 'Failed to attach voice sample.', 'error');
       }
   }, [getVoiceConversionAttachmentKey, showToast]);
 
@@ -7383,24 +7379,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           delete next[normalizedVoiceId];
           return next;
       });
-      setVcReferenceDraftFile(null);
+      setVoiceReferenceDraftFile(null);
       if (hadAttachment) {
-          showToast(`VC sample cleared for ${voiceId}.`, 'info');
+          showToast(`Voice sample cleared for ${voiceId}.`, 'info');
       }
   }, [getVoiceConversionAttachmentKey, showToast, voiceConversionAttachments]);
-
-  const openVoiceConversionWorkspace = useCallback((voiceId: string) => {
-      const normalizedVoiceId = String(voiceId || '').trim();
-      if (normalizedVoiceId) {
-          setVcTargetVoiceId(normalizedVoiceId);
-      }
-      setActiveTab(Tab.LAB);
-  }, [setActiveTab]);
-
-  const openOpenVoicePanel = useCallback(() => {
-      setLabPanelRequest({ panel: 'openvoice', token: Date.now() });
-      setActiveTab(Tab.LAB);
-  }, [setActiveTab]);
 
   function buildStudioGenerationSettings(baseSettings: GenerationSettings): GenerationSettings {
       if (!isStudioVoiceConversionEnabled) {
@@ -7416,27 +7399,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       };
   }
 
-  const currentVoiceConversionAttachment = getVoiceConversionAttachment(vcTargetVoiceId);
+  const currentVoiceConversionAttachment = getVoiceConversionAttachment(charForm.voiceId);
   const voiceConversionAttachmentCount = useMemo(
       () => Object.keys(voiceConversionAttachments).length,
       [voiceConversionAttachments]
   );
 
   useEffect(() => {
+      if (!characterModalOpen) {
+          setVoiceReferenceDraftFile(null);
+          return;
+      }
       if (!currentVoiceConversionAttachment || typeof File === 'undefined') {
-          setVcReferenceDraftFile(null);
+          setVoiceReferenceDraftFile(null);
           return;
       }
       try {
-          setVcReferenceDraftFile(new File(
+          setVoiceReferenceDraftFile(new File(
               [base64ToArrayBuffer(currentVoiceConversionAttachment.audioBase64)],
               currentVoiceConversionAttachment.audioName || 'reference.wav',
               { type: 'audio/wav' }
           ));
       } catch {
-          setVcReferenceDraftFile(null);
+          setVoiceReferenceDraftFile(null);
       }
-  }, [currentVoiceConversionAttachment]);
+  }, [characterModalOpen, currentVoiceConversionAttachment]);
 
   useEffect(() => {
       if (Object.keys(voiceConversionAttachments).length > 0) {
@@ -7457,11 +7444,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
       return [...dedup.values()];
   }, [clonedVoices, getEngineVoiceCatalog]);
-
-  const vcSelectedVoice = useMemo(
-      () => getVoiceById(vcTargetVoiceId) || galleryVoicePool.find((voice) => voice.id === vcTargetVoiceId) || null,
-      [galleryVoicePool, getVoiceById, vcTargetVoiceId]
-  );
 
   const filteredVoices = useMemo(() => {
       const normalizedSearch = deferredVoiceSearch.trim().toLowerCase();
@@ -7616,7 +7598,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     : activeTab === Tab.PODCAST
       ? 'Podcast'
     : activeTab === Tab.LAB
-      ? 'VC'
+      ? 'Studio'
       : activeTab === Tab.READER
         ? 'Reader'
       : activeTab === Tab.CHARACTERS
@@ -7629,9 +7611,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               ? 'Admin'
               : 'Studio';
   const activeTabDetail = WORKSPACE_TAB_DETAILS[activeTab] || 'Workspace controls';
-  const contentMaxWidthClass = activeTab === Tab.LAB
-    ? 'max-w-[1480px]'
-    : isStudioWorkspaceTab
+  const contentMaxWidthClass = isStudioWorkspaceTab
       ? 'max-w-[1320px]'
       : activeTab === Tab.READER
         ? 'max-w-[1360px]'
@@ -9096,16 +9076,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
                                                     <button
                                                         type="button"
-                                                        onClick={() => openVoiceConversionWorkspace(settings.voiceId)}
+                                                        onClick={() => openCharacterModal(characterLibrary.find((char) => char.voiceId === settings.voiceId) || undefined, settings.voiceId)}
                                                         className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
                                                           isDarkUi
-                                                            ? 'border-slate-700 bg-slate-900 text-cyan-200 hover:border-cyan-500/30 hover:bg-cyan-500/10'
-                                                            : 'border-gray-200 bg-white text-cyan-600 hover:border-cyan-200 hover:bg-cyan-50'
+                                                            ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                            : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
                                                         }`}
-                                                        title="Open VC workspace for the selected voice"
-                                                        aria-label="Open VC workspace for the selected voice"
+                                                        title="Attach a voice reference for the selected voice"
+                                                        aria-label="Attach a voice reference for the selected voice"
                                                     >
-                                                        <Sparkles size={12} />
+                                                        <UploadCloud size={12} />
                                                     </button>
                                                 </div>
                                             </div>
@@ -9127,16 +9107,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
                                                     <button
                                                         type="button"
-                                                        onClick={() => openVoiceConversionWorkspace(settings.voiceId)}
+                                                        onClick={() => openCharacterModal(characterLibrary.find((char) => char.voiceId === settings.voiceId) || undefined, settings.voiceId)}
                                                         className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
                                                           isDarkUi
-                                                            ? 'border-slate-700 bg-slate-900 text-cyan-200 hover:border-cyan-500/30 hover:bg-cyan-500/10'
-                                                            : 'border-gray-200 bg-white text-cyan-600 hover:border-cyan-200 hover:bg-cyan-50'
+                                                            ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                            : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
                                                         }`}
-                                                    title="Open VC workspace for the selected voice"
-                                                    aria-label="Open VC workspace for the selected voice"
+                                                    title="Attach a voice reference for the selected voice"
+                                                    aria-label="Attach a voice reference for the selected voice"
                                                 >
-                                                    <Sparkles size={12} />
+                                                    <UploadCloud size={12} />
                                                 </button>
 	                                    </div>
                                     </div>
@@ -9455,23 +9435,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                                     ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200'
                                                                     : 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700'
                                                             }`}>
-                                                                VC
+                                                                Ref
                                                             </span>
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             type="button"
-                                                            onClick={() => openVoiceConversionWorkspace(selectedVoiceId)}
+                                                            onClick={() => openCharacterModal(char || undefined, selectedVoiceId)}
                                                             className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition ${
                                                               isDarkUi
-                                                                ? 'border-slate-700 bg-slate-900 text-cyan-200 hover:border-cyan-500/30 hover:bg-cyan-500/10'
-                                                                : 'border-gray-200 bg-white text-cyan-600 hover:border-cyan-200 hover:bg-cyan-50'
+                                                                ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                                : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
                                                             }`}
-                                                            title={`Open VC workspace for ${speaker}`}
-                                                            aria-label={`Open VC workspace for ${speaker}`}
+                                                            title={`Attach a voice reference for ${speaker}`}
+                                                            aria-label={`Attach a voice reference for ${speaker}`}
                                                         >
-                                                            <Sparkles size={12} />
+                                                            <UploadCloud size={12} />
                                                         </button>
                                                         <select 
                                                             className={`max-w-[150px] rounded p-1 text-[10px] font-bold outline-none ${isDarkUi ? 'bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-700'}`}
@@ -9892,6 +9872,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                  </div>
                              </div>
                          )}
+                        <VoiceCloneModal
+                          isOpen={isVoiceCloneModalOpen}
+                          onClose={() => setIsVoiceCloneModalOpen(false)}
+                          onCloneCreated={handleVoiceCloneCreated}
+                          backendBaseUrl={mediaBackendUrl}
+                        />
                     </div>
                 )}
 
@@ -10070,200 +10056,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 )}
 
                 {activeTab === Tab.LAB && (
-                    <div className="space-y-4">
-                      <SectionCard className={`rounded-3xl border p-5 md:p-6 ${isDarkUi ? 'border-slate-800 bg-slate-950/80' : 'border-gray-200 bg-white'}`}>
-                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-2">
-                            <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.22em] ${
-                              isDarkUi ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-700'
-                            }`}>
-                              <Sparkles size={12} />
-                              VC
-                            </div>
-                            <h2 className={`text-xl font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-900'}`}>Voice conversion workspace</h2>
-                            <p className={`max-w-3xl text-sm ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
-                              Manage the active voice's reference sample here, launch Seed-VC cloning, and open the benchmark panel in the restored VC tab.
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setIsStudioVoiceConversionEnabled((current) => !current)}
-                              title={
-                                voiceConversionAttachmentCount > 0
-                                  ? `${voiceConversionAttachmentCount} reference sample${voiceConversionAttachmentCount === 1 ? '' : 's'} ready for post-TTS VC.`
-                                  : 'Enable VC after you attach at least one reference sample.'
-                              }
-                              className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
-                                isStudioVoiceConversionEnabled
-                                  ? isDarkUi
-                                    ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
-                                    : 'border-cyan-300 bg-cyan-50 text-cyan-700'
-                                  : isDarkUi
-                                    ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200'
-                                    : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700'
-                              }`}
-                            >
-                              <FileAudio size={12} />
-                              VC {isStudioVoiceConversionEnabled ? 'On' : 'Off'}
-                              {voiceConversionAttachmentCount > 0 && (
-                                <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-extrabold ${
-                                  isStudioVoiceConversionEnabled
-                                    ? 'bg-white/15 text-current'
-                                    : isDarkUi
-                                      ? 'bg-cyan-500/15 text-cyan-100'
-                                      : 'bg-cyan-100 text-cyan-700'
-                                }`}>
-                                  {voiceConversionAttachmentCount}
-                                </span>
-                              )}
-                            </button>
-                            <Button variant="secondary" onClick={handleVoiceClone} icon={<Sparkles size={16} />} className="shadow-sm">
-                              Clone Voice
-                            </Button>
-                            <Button onClick={openOpenVoicePanel} icon={<Cpu size={16} />} className="shadow-sm">
-                              Seed-VC GPU
-                            </Button>
-                          </div>
-                        </div>
-
-                        <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(18rem,0.9fr)]">
-                          <div className={`rounded-2xl border p-4 ${isDarkUi ? 'border-fuchsia-500/20 bg-fuchsia-500/5' : 'border-fuchsia-100 bg-fuchsia-50/70'}`}>
-                            <div className="mb-3 flex items-start justify-between gap-3">
-                              <div>
-                                <label className={`text-xs font-bold uppercase tracking-wide ${isDarkUi ? 'text-fuchsia-200' : 'text-fuchsia-700'}`}>Voice Conversion</label>
-                                <p className={`mt-1 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
-                                  Upload a clean reference sample for the voice you want to convert or preserve.
-                                </p>
-                              </div>
-                              <span className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${
-                                isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-300' : 'border-gray-200 bg-white text-gray-600'
-                              }`}>
-                                {vcSelectedVoice ? resolveVoiceDisplayLabel(vcSelectedVoice) : 'Selected voice'}
-                              </span>
-                            </div>
-                            <div className="space-y-2">
-                              <label className={`text-[10px] font-bold uppercase tracking-[0.16em] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Target voice</label>
-                              <select
-                                value={vcTargetVoiceId}
-                                onChange={(event) => setVcTargetVoiceId(event.target.value)}
-                                className={`w-full rounded-2xl border px-3 py-2.5 text-sm outline-none transition ${
-                                  isDarkUi
-                                    ? 'border-slate-700 bg-slate-950/80 text-slate-100 focus:border-cyan-400'
-                                    : 'border-gray-200 bg-white text-gray-900 focus:border-cyan-300'
-                                }`}
-                              >
-                                <optgroup label="Free Speakers">
-                                  {galleryVoicePool
-                                    .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'free')
-                                    .map((voice) => (
-                                      <option key={voice.id} value={voice.id}>
-                                        {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)})`}
-                                      </option>
-                                    ))}
-                                </optgroup>
-                                <optgroup label="Pro Speakers">
-                                  {galleryVoicePool
-                                    .filter((voice) => resolveVoiceAccessTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice) === 'pro')
-                                    .map((voice) => (
-                                      <option
-                                        key={voice.id}
-                                        value={voice.id}
-                                        disabled={isVoiceLockedForFreeTier((voice.engine || settings.engine) as GenerationSettings['engine'], voice)}
-                                      >
-                                        {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)}) - Pro`}
-                                      </option>
-                                    ))}
-                                </optgroup>
-                              </select>
-                              <UploadDropzone
-                                accept="audio/*"
-                                file={vcReferenceDraftFile}
-                                label="Upload VC reference sample"
-                                hint="Use a clean sample that matches the selected voice."
-                                dragLabel="Drop VC reference audio"
-                                className={isDarkUi ? 'border-fuchsia-500/20 bg-slate-950 text-slate-100' : 'border-fuchsia-200 bg-white'}
-                                onFilesSelected={(files) => {
-                                  void attachVoiceConversionSample(vcTargetVoiceId, files[0] || null);
-                                }}
-                              />
-                              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                                <span className={isDarkUi ? 'text-slate-300' : 'text-gray-600'}>
-                                  {currentVoiceConversionAttachment
-                                    ? `Attached: ${currentVoiceConversionAttachment.audioName}`
-                                    : 'No VC sample attached for this voice.'}
-                                </span>
-                                {currentVoiceConversionAttachment && (
-                                  <button
-                                    type="button"
-                                    onClick={() => clearVoiceConversionSample(vcTargetVoiceId)}
-                                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
-                                      isDarkUi
-                                        ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-100'
-                                        : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700'
-                                    }`}
-                                  >
-                                    Clear sample
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className={`rounded-2xl border p-4 ${isDarkUi ? 'border-slate-800 bg-slate-950/70' : 'border-gray-200 bg-white'}`}>
-                            <div className="mb-3 flex items-start justify-between gap-3">
-                              <div>
-                                <label className={`text-xs font-bold uppercase tracking-wide ${isDarkUi ? 'text-cyan-200' : 'text-cyan-700'}`}>Benchmark</label>
-                                <p className={`mt-1 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
-                                  Seed-VC remains available in the lab workspace for clone, benchmark, and export flows.
-                                </p>
-                              </div>
-                              <span className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${
-                                isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-300' : 'border-gray-200 bg-white text-gray-600'
-                              }`}>
-                                {voiceConversionAttachmentCount} sample{voiceConversionAttachmentCount === 1 ? '' : 's'}
-                              </span>
-                            </div>
-                            <div className="space-y-3 text-sm">
-                              <p className={isDarkUi ? 'text-slate-300' : 'text-gray-600'}>
-                                Use the VC toggle to gate post-TTS conversion in Studio, then open Seed-VC GPU to benchmark the cloned output.
-                              </p>
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={openOpenVoicePanel}
-                                  className={`inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
-                                    isDarkUi
-                                      ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/15'
-                                      : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
-                                  }`}
-                                >
-                                  <Cpu size={14} />
-                                  Open Seed-VC panel
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </SectionCard>
-
-                      <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading VC...</SectionCard>}>
-                        <LabTabContent
-                          resolvedTheme={resolvedTheme}
-                          onToast={showToast}
-                          panelRequest={labPanelRequest}
-                          onPanelRequestHandled={() => setLabPanelRequest(null)}
-                        />
-                      </Suspense>
-                      <VoiceCloneModal
-                        isOpen={isVoiceCloneModalOpen}
-                        onClose={() => setIsVoiceCloneModalOpen(false)}
-                        onCloneCreated={handleVoiceCloneCreated}
-                        backendBaseUrl={mediaBackendUrl}
+                    <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading Lab...</SectionCard>}>
+                      <LabTabContent
+                        resolvedTheme={resolvedTheme}
+                        onToast={showToast}
                       />
-                    </div>
+                    </Suspense>
                 )}
-
                 {activeTab === Tab.ADMIN && hasAdminConsoleAccess && (
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading admin controls...</SectionCard>}>
                       <AdminTabContent
