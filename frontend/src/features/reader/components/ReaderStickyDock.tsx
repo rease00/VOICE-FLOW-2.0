@@ -1,239 +1,112 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Home, Languages, Pause, Play, Settings2, UploadCloud, Users, Volume2, Wand2, Waves } from 'lucide-react';
-import type { VoiceOption } from '../../../../types';
-import type { ReaderCatalogItem, ReaderSession } from '../../../../types';
-import type { PlaylistItem } from './readerTypes';
+import React from 'react';
+import { ChevronLeft, ChevronRight, Pause, Play, RefreshCw, Upload, X } from 'lucide-react';
 
-interface ReaderPlayerDockProps {
-  dockRef?: React.Ref<HTMLDivElement>;
-  suspendAutoCollapse?: boolean;
-  session: ReaderSession | null;
-  selectedItem: ReaderCatalogItem | null;
-  activeItem: PlaylistItem | null;
-  speechProgressPct: number;
-  isSpeechPlaying: boolean;
-  isSpeechBuffering: boolean;
-  activeQueueIndex: number;
-  playlistLength: number;
-  warningCountdown: string;
-  billingLabel: string;
-  audioEngine: 'tts_hd' | 'native_audio_dialog';
-  audioEngineStatus: string;
-  narratorVoiceId: string;
-  multiSpeakerEnabled: boolean;
-  voiceOptions: VoiceOption[];
-  onTransportToggle: () => void;
+interface ReaderStickyDockProps {
+  title: string;
+  unitLabel: string;
+  progressPct: number;
+  statusLabel: string;
+  isPlaying: boolean;
+  miniMode: boolean;
+  ambiencePreset: string;
+  stylePreset: string;
+  onTogglePlay: () => void;
   onPrev: () => void;
   onNext: () => void;
-  onGoHome: () => void;
-  onOpenImport: () => void;
-  onOpenTranslate: () => void;
-  onOpenSettings: () => void;
-  onOpenDetectedText: () => void;
-  onOpenCast: () => void;
-  onToggleNativeAudio: () => void;
-  onNarratorVoiceChange: (value: string) => void;
-  onToggleMultiSpeaker: () => void;
+  onRefresh: () => void;
+  onExport: () => void;
+  onClose: () => void;
+  onToggleMiniMode: () => void;
+  onAmbiencePresetChange: (value: string) => void;
+  onStylePresetChange: (value: string) => void;
 }
 
-export const ReaderPlayerDock: React.FC<ReaderPlayerDockProps> = ({
-  dockRef,
-  suspendAutoCollapse = false,
-  session,
-  selectedItem,
-  activeItem,
-  speechProgressPct,
-  isSpeechPlaying,
-  isSpeechBuffering,
-  activeQueueIndex,
-  playlistLength,
-  warningCountdown,
-  billingLabel,
-  audioEngine,
-  audioEngineStatus,
-  narratorVoiceId,
-  multiSpeakerEnabled,
-  voiceOptions,
-  onTransportToggle,
+const AMBIENCE_PRESETS = ['none', 'studio', 'forest', 'rain', 'cafe'];
+const STYLE_PRESETS = ['default', 'dramatic', 'calm', 'cinematic'];
+
+export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
+  title,
+  unitLabel,
+  progressPct,
+  statusLabel,
+  isPlaying,
+  miniMode,
+  ambiencePreset,
+  stylePreset,
+  onTogglePlay,
   onPrev,
   onNext,
-  onGoHome,
-  onOpenImport,
-  onOpenTranslate,
-  onOpenSettings,
-  onOpenDetectedText,
-  onOpenCast,
-  onToggleNativeAudio,
-  onNarratorVoiceChange,
-  onToggleMultiSpeaker,
-}) => {
-  const AUTO_COLLAPSE_IDLE_MS = 3000;
-  const title = activeItem?.title || session?.title || selectedItem?.title || 'Reader Dock';
-  const queueLabel = playlistLength > 0 ? `${activeQueueIndex + 1}/${playlistLength}` : 'Idle';
-  const progressWidth = Number.isFinite(speechProgressPct) ? Math.max(0, Math.min(100, speechProgressPct)) : 0;
-  const engineBadgeLabel = audioEngine === 'native_audio_dialog' ? 'Gemini Native' : 'Gemini 2.5 Flash';
-  const engineStatusLabel = audioEngineStatus === 'fallback_to_tts'
-    ? 'Fallback to Gemini 2.5 Flash'
-      : audioEngineStatus === 'unavailable'
-        ? 'Unavailable'
-        : 'Active';
-  const [isCollapsed, setIsCollapsed] = useState<boolean>(true);
-  const collapseTimerRef = useRef<number | null>(null);
+  onRefresh,
+  onExport,
+  onClose,
+  onToggleMiniMode,
+  onAmbiencePresetChange,
+  onStylePresetChange,
+}) => (
+  <footer className={`vf-reader-v2-dock ${miniMode ? 'vf-reader-v2-dock--mini' : ''}`} data-testid="reader-sticky-dock">
+    <div className="vf-reader-v2-dock__transport">
+      <button type="button" aria-label="Previous" onClick={onPrev}>
+        <ChevronLeft size={16} />
+      </button>
+      <button type="button" aria-label="Play pause" onClick={onTogglePlay} className="vf-reader-v2-dock__play">
+        {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+      </button>
+      <button type="button" aria-label="Next" onClick={onNext}>
+        <ChevronRight size={16} />
+      </button>
+    </div>
 
-  const clearCollapseTimer = useCallback(() => {
-    if (collapseTimerRef.current === null) return;
-    window.clearTimeout(collapseTimerRef.current);
-    collapseTimerRef.current = null;
-  }, []);
-
-  const armCollapseTimer = useCallback(() => {
-    clearCollapseTimer();
-    collapseTimerRef.current = window.setTimeout(() => {
-      setIsCollapsed(true);
-    }, AUTO_COLLAPSE_IDLE_MS);
-  }, [AUTO_COLLAPSE_IDLE_MS, clearCollapseTimer]);
-
-  const handleDockActivity = useCallback(() => {
-    if (isCollapsed) return;
-    if (suspendAutoCollapse) {
-      clearCollapseTimer();
-      return;
-    }
-    armCollapseTimer();
-  }, [armCollapseTimer, clearCollapseTimer, isCollapsed, suspendAutoCollapse]);
-
-  const handleCollapsedPrimary = useCallback(() => {
-    setIsCollapsed(false);
-    if (activeItem) onTransportToggle();
-    if (!suspendAutoCollapse) armCollapseTimer();
-  }, [activeItem, armCollapseTimer, onTransportToggle, suspendAutoCollapse]);
-
-  useEffect(() => {
-    if (isCollapsed) return;
-    if (suspendAutoCollapse) {
-      clearCollapseTimer();
-      return;
-    }
-    armCollapseTimer();
-  }, [armCollapseTimer, clearCollapseTimer, isCollapsed, suspendAutoCollapse]);
-
-  useEffect(() => () => clearCollapseTimer(), [clearCollapseTimer]);
-
-  if (isCollapsed) {
-    return (
-      <div ref={dockRef} className="vf-reader-dock vf-reader-dock--collapsed" data-testid="reader-sticky-dock">
-        <button
-          type="button"
-          className="vf-reader-dock__peek-play"
-          aria-label="Expand reader controls"
-          onClick={handleCollapsedPrimary}
-        >
-          {isSpeechPlaying ? <Pause size={20} /> : <Play size={20} />}
-          <span>{isSpeechPlaying ? 'Pause' : 'Play'}</span>
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={dockRef}
-      className="vf-reader-dock"
-      data-testid="reader-sticky-dock"
-      onPointerMove={handleDockActivity}
-      onPointerDown={handleDockActivity}
-      onTouchStart={handleDockActivity}
-      onFocusCapture={handleDockActivity}
-      onKeyDown={handleDockActivity}
-    >
-      <div className="vf-reader-dock__transport-cluster">
-        <button type="button" className="vf-reader-dock__nav" onClick={onGoHome} aria-label="Open Reader home">
-          <Home size={16} />
-        </button>
-
-        <button
-          type="button"
-          className={`vf-reader-dock__transport ${isSpeechPlaying ? 'vf-reader-dock__transport--playing' : ''}${isSpeechBuffering ? ' vf-reader-dock__transport--buffering' : ''}`}
-          onClick={onTransportToggle}
-          disabled={!activeItem}
-          aria-label={isSpeechPlaying ? 'Pause reader audio' : 'Play reader audio'}
-        >
-          {isSpeechPlaying ? <Pause size={18} /> : <Play size={18} />}
-        </button>
-
-        <button type="button" className="vf-reader-dock__nav" onClick={onPrev} disabled={activeQueueIndex <= 0} aria-label="Previous reader item">
-          <ChevronLeft size={16} />
-        </button>
-        <button type="button" className="vf-reader-dock__nav" onClick={onNext} disabled={!playlistLength || activeQueueIndex >= playlistLength - 1} aria-label="Next reader item">
-          <ChevronRight size={16} />
-        </button>
-      </div>
-
-      <div className="vf-reader-dock__copy">
-        <div className="vf-reader-dock__eyebrow">
-          <Volume2 size={13} />
-          Player Dock
+    <div className="vf-reader-v2-dock__copy">
+      <div className="vf-reader-v2-eyebrow">Sticky Player</div>
+      <strong>{title || 'Reader'}</strong>
+      <span className="vf-reader-v2-dock__copy-line">{unitLabel} - {statusLabel}</span>
+      <div className="vf-reader-v2-dock__status">
+        <div className="vf-reader-v2-dock__status-meta">
+          <span>{Math.round(Math.max(0, Math.min(100, progressPct)))}%</span>
         </div>
-        <strong>{title}</strong>
-        <div className="vf-reader-dock__meta">
-          <span>{queueLabel}</span>
-          <span className="vf-reader-dock__engine-badge">{engineBadgeLabel}</span>
-          <span className="vf-reader-dock__engine-status">{engineStatusLabel}</span>
-          {session?.warningActive ? <span>Unsaved cache {warningCountdown}</span> : <span>{billingLabel}</span>}
+        <div className="vf-reader-v2-dock__progress">
+          <div className="vf-reader-v2-dock__progress-fill" style={{ width: `${Math.max(0, Math.min(100, progressPct))}%` }} />
         </div>
-        <div className="vf-reader-dock__progress">
-          <div className="vf-reader-dock__progress-fill" style={{ width: `${progressWidth}%` }} />
-        </div>
-      </div>
-
-      <div className="vf-reader-dock__controls">
-        <button type="button" className="vf-reader-dock__button" onClick={onOpenImport}>
-          <UploadCloud size={12} />
-          Import
-        </button>
-
-        <button type="button" className="vf-reader-dock__button" onClick={onOpenTranslate}>
-          <Languages size={12} />
-          Translate
-        </button>
-
-        <button type="button" className={`vf-reader-dock__button ${multiSpeakerEnabled ? 'vf-reader-dock__button--active' : ''}`} onClick={onToggleMultiSpeaker}>
-          <Users size={12} />
-          Multi {multiSpeakerEnabled ? 'On' : 'Off'}
-        </button>
-
-        {multiSpeakerEnabled ? (
-          <button type="button" className="vf-reader-dock__button" onClick={onOpenCast} disabled={!session}>
-            <Users size={12} />
-            Cast
-          </button>
-        ) : null}
-
-        <button type="button" className="vf-reader-dock__button" onClick={onOpenDetectedText} disabled={!session}>
-          <Wand2 size={12} />
-          AI Text
-        </button>
-
-        <button type="button" className="vf-reader-dock__button" onClick={onOpenSettings}>
-          <Settings2 size={12} />
-          Settings
-        </button>
-
-        <button type="button" className={`vf-reader-dock__button ${audioEngine === 'native_audio_dialog' ? 'vf-reader-dock__button--active' : ''}`} onClick={onToggleNativeAudio}>
-          <Waves size={12} />
-          Native {audioEngine === 'native_audio_dialog' ? 'On' : 'Off'}
-        </button>
-
-        <label className="vf-reader-dock__select" title="Single speaker narrator voice">
-          <select aria-label="Voice narrator" value={narratorVoiceId} onChange={(event) => onNarratorVoiceChange(event.target.value)}>
-            {voiceOptions.map((voice) => (
-              <option key={voice.id} value={voice.id}>
-                {voice.name}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
     </div>
-  );
-};
+
+    <div className="vf-reader-v2-dock__controls">
+      {!miniMode ? (
+        <>
+          <label>
+            <span>Ambience</span>
+            <select value={ambiencePreset} onChange={(event) => onAmbiencePresetChange(event.target.value)}>
+              {AMBIENCE_PRESETS.map((preset) => (
+                <option key={`dock-ambience-${preset}`} value={preset}>
+                  {preset}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Voice Style</span>
+            <select value={stylePreset} onChange={(event) => onStylePresetChange(event.target.value)}>
+              {STYLE_PRESETS.map((preset) => (
+                <option key={`dock-style-${preset}`} value={preset}>
+                  {preset}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      ) : null}
+      <button type="button" onClick={onExport} title="Export" aria-label="Export">
+        <Upload size={14} />
+      </button>
+      <button type="button" onClick={onRefresh} title="Refresh" aria-label="Refresh">
+        <RefreshCw size={14} />
+      </button>
+      <button type="button" onClick={onToggleMiniMode} title="Mini mode">
+        {miniMode ? 'Expand' : 'Compact'}
+      </button>
+      <button type="button" onClick={onClose} title="Close reader" aria-label="Close reader">
+        <X size={14} />
+      </button>
+    </div>
+  </footer>
+);

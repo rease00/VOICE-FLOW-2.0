@@ -6,6 +6,7 @@ import { hasAdminConsoleAccess } from '../../shared/auth/adminAccess';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../shared/notifications/deepLink';
 import { STORAGE_KEYS } from '../../shared/storage/keys';
 import { readStorageString, removeStorageKey } from '../../shared/storage/localStore';
+import { resolveInitialScreen, resolveSessionScreen } from './screenRouting';
 
 const loadLogin = async () => import('../../pages/Login').then((module) => ({ default: module.Login }));
 const loadMainApp = async () => import('../../pages/MainApp').then((module) => ({ default: module.MainApp }));
@@ -18,32 +19,15 @@ const MainApp = lazy(loadMainApp);
 const Onboarding = lazy(loadOnboarding);
 const Profile = lazy(loadProfile);
 const UserIdSetup = lazy(loadUserIdSetup);
-
-export const requiresAuthenticatedScreen = (screen: AppScreen): boolean =>
-  screen === AppScreen.MAIN || screen === AppScreen.PROFILE || screen === AppScreen.USER_ID_SETUP;
-
-const resolveScreenToken = (token: string): AppScreen | null => {
-  const normalized = String(token || '').trim().toLowerCase();
-  if (normalized === 'login') return AppScreen.LOGIN;
-  if (normalized === 'uid' || normalized === 'userid' || normalized === 'user-id') return AppScreen.USER_ID_SETUP;
-  if (normalized === 'main') return AppScreen.MAIN;
-  if (normalized === 'profile') return AppScreen.PROFILE;
-  return null;
-};
-
-export const resolveScreenFromSearch = (search: string): AppScreen | null => {
-  const forced = String(new URLSearchParams(search).get('vf-screen') || '').trim();
-  return resolveScreenToken(forced);
-};
-
-const resolveInitialScreen = (): AppScreen => {
-  if (typeof window === 'undefined') return AppScreen.ONBOARDING;
-  return resolveScreenFromSearch(window.location.search) || AppScreen.ONBOARDING;
-};
+const screenRouterEnv = (import.meta as any).env || {};
 
 export const ScreenRouter: React.FC = () => {
-  const [currentScreen, setCurrentScreen] = useState<AppScreen>(resolveInitialScreen);
-  const { user } = useUser();
+  const [currentScreen, setCurrentScreen] = useState<AppScreen>(() =>
+    typeof window === 'undefined'
+      ? AppScreen.ONBOARDING
+      : resolveInitialScreen(window.location.search, Boolean(screenRouterEnv.DEV))
+  );
+  const { user, authReady, isAuthenticated } = useUser();
   const canOpenAdminConsole = hasAdminConsoleAccess(user);
 
   useEffect(() => {
@@ -63,50 +47,38 @@ export const ScreenRouter: React.FC = () => {
   useEffect(() => {
     const syncFromDeepLink = (): void => {
       const target = readNotificationDeepLink();
-      const nextScreen = resolveScreenToken(String(target.screen || ''));
-      if (nextScreen) setCurrentScreen(nextScreen);
+      const screenToken = String(target.screen || '').trim().toLowerCase();
+      if (screenToken === 'main') setCurrentScreen(AppScreen.MAIN);
+      else if (screenToken === 'profile') setCurrentScreen(AppScreen.PROFILE);
+      else if (screenToken === 'login') setCurrentScreen(AppScreen.LOGIN);
+      else if (screenToken === 'uid' || screenToken === 'userid' || screenToken === 'user-id') {
+        setCurrentScreen(AppScreen.USER_ID_SETUP);
+      }
     };
-    syncFromDeepLink();
     window.addEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncFromDeepLink as EventListener);
     return () => window.removeEventListener(NOTIFICATION_DEEP_LINK_EVENT, syncFromDeepLink as EventListener);
   }, []);
 
   useEffect(() => {
-    const hasSession = Boolean(user.email);
-    if (!hasSession) {
-      if (requiresAuthenticatedScreen(currentScreen)) {
-        setCurrentScreen(AppScreen.LOGIN);
-      }
-      return;
-    }
-
+    if (!authReady) return;
     const needsUserIdSetup = readStorageString(STORAGE_KEYS.uidSetupRequired) === '1';
     if (canOpenAdminConsole) {
       removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-      if (
-        currentScreen === AppScreen.LOGIN ||
-        currentScreen === AppScreen.ONBOARDING ||
-        currentScreen === AppScreen.USER_ID_SETUP
-      ) {
-        setCurrentScreen(AppScreen.MAIN);
-      }
-      return;
     }
 
-    if (needsUserIdSetup && currentScreen !== AppScreen.USER_ID_SETUP) {
-      setCurrentScreen(AppScreen.USER_ID_SETUP);
-      return;
-    }
+    const nextScreen = resolveSessionScreen({
+      authReady,
+      currentScreen,
+      hasSession: isAuthenticated || Boolean(user.email),
+      canOpenAdminConsole,
+      needsUserIdSetup,
+      hasUserId: Boolean(user.userId),
+    });
 
-    if (!needsUserIdSetup && currentScreen === AppScreen.USER_ID_SETUP && user.userId) {
-      setCurrentScreen(AppScreen.MAIN);
-      return;
+    if (nextScreen && nextScreen !== currentScreen) {
+      setCurrentScreen(nextScreen);
     }
-
-    if (currentScreen === AppScreen.LOGIN || currentScreen === AppScreen.ONBOARDING) {
-      setCurrentScreen(AppScreen.MAIN);
-    }
-  }, [canOpenAdminConsole, currentScreen, user, user.userId]);
+  }, [authReady, canOpenAdminConsole, currentScreen, isAuthenticated, user.email, user.userId]);
 
   const renderScreen = () => {
     switch (currentScreen) {
@@ -135,7 +107,11 @@ export const ScreenRouter: React.FC = () => {
             </div>
           }
         >
-          {renderScreen()}
+          {authReady ? renderScreen() : (
+            <div className="flex min-h-screen items-center justify-center text-sm opacity-80">
+              Restoring workspace...
+            </div>
+          )}
         </Suspense>
         <SubscriptionModal />
       </div>

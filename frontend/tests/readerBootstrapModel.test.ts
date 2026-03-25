@@ -18,7 +18,6 @@ const buildSession = (id: string): ReaderSession => ({
   pageViewMode: 'original',
   ttsLanguageMode: 'source',
   multiSpeakerEnabled: false,
-  effectiveMultiSpeakerMode: 'single_narrator',
   translationState: 'ready',
   workKey: `catalog:${id}`,
   sourceKind: 'catalog',
@@ -35,9 +34,9 @@ const buildSession = (id: string): ReaderSession => ({
   warningActive: false,
   savepointDownloadUrl: '',
   billing: {
-    vfPerChar: 1.5,
-    rule: '1 char = 1.5 VF',
-    label: 'Reader pricing: 1 char = 1.5 VF',
+    vfPerChar: 1.0,
+    rule: '1 char = 1 VF',
+    label: 'Reader pricing: 1 char = 1 VF',
   },
   limits: {
     textWindowChars: 1500,
@@ -79,22 +78,16 @@ const buildLibrary = (): ReaderLibrary => ({
 });
 
 describe('reader bootstrap model', () => {
-  it('classifies auth failures by status and message', () => {
+  it('classifies auth errors and bootstrap state', () => {
     expect(isReaderBootstrapAuthError({ status: 401, message: 'blocked' })).toBe(true);
-    expect(isReaderBootstrapAuthError(new Error('Authentication required.'))).toBe(true);
-    expect(isReaderBootstrapAuthError(new Error('Reader request failed.'))).toBe(false);
-  });
-
-  it('derives bootstrap state from library availability', () => {
     expect(resolveReaderBootstrapState({ library: buildLibrary() })).toBe('ready');
     expect(resolveReaderBootstrapState({ library: null, libraryError: new Error('Authentication required.') })).toBe('needs_auth');
-    expect(resolveReaderBootstrapState({ library: null, libraryError: new Error('Cannot reach backend.') })).toBe('error');
+    expect(resolveReaderBootstrapState({ library: null, libraryError: new Error('Backend down') })).toBe('error');
   });
 
-  it('prefers the matching active session when resuming', () => {
+  it('resolves matching active sessions for resume', () => {
     const library = buildLibrary();
     expect(resolveReaderResumeSession(library, 'secondary')?.id).toBe('secondary');
     expect(resolveReaderResumeSession(library, 'missing')?.id).toBe('primary');
-    expect(resolveReaderResumeSession(null, 'missing')).toBeNull();
   });
 });

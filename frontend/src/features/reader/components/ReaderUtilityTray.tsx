@@ -1,593 +1,359 @@
 import React from 'react';
-import { Languages, Settings2, UploadCloud, Wand2, Users, X } from 'lucide-react';
-import { LANGUAGES, VOICES } from '../../../../constants';
-import type {
-  ReaderCatalogRegion,
-  ReaderCommercialPolicy,
-  ReaderOwnershipBasis,
-  ReaderSession,
-  WorkspaceLayoutMode,
-} from '../../../../types';
+import type { VoiceOption } from '../../../../types';
 import { useManagedTabs } from '../../../shared/ui/tabs';
-import { getReaderAvailableUtilityPanels } from './readerTypes';
-import type {
-  ReaderAutoAdvanceProfile,
-  ReaderAudioEngine,
-  ReaderUtilityPanel,
-  ReaderUtilityPanelScope,
-  UploadContentType,
-} from './readerTypes';
+import type { ReaderMode, ReaderTab } from '../model/tabs';
+import { getReaderTabLabel } from '../model/tabs';
+import type { ReaderTabBadgeMap } from './readerTypes';
 
 interface ReaderUtilityTrayProps {
-  layoutMode: WorkspaceLayoutMode;
-  panel: ReaderUtilityPanel | null;
-  panelScope: ReaderUtilityPanelScope;
-  session: ReaderSession | null;
-  isOpen: boolean;
-  legalAckAccepted: boolean;
-  commercialPolicy: ReaderCommercialPolicy | null;
-  regions: ReaderCatalogRegion[];
-  regionId: string;
-  uploadTitle: string;
-  uploadContentType: UploadContentType;
-  uploadOwnershipBasis: ReaderOwnershipBasis;
-  selectedFiles: File[];
-  targetLanguageDraft: string;
-  pageViewModeDraft: 'original' | 'translated';
-  ttsLanguageModeDraft: 'auto' | 'source' | 'target';
-  audioEngineDraft: ReaderAudioEngine;
-  audioEngineStatusLabel: string;
-  readingModeDraft: string;
-  autoAdvanceDraft: ReaderAutoAdvanceProfile;
-  narratorVoiceId: string;
+  mode: ReaderMode;
+  tabs: ReaderTab[];
+  activeTab: ReaderTab;
+  tabBadges: ReaderTabBadgeMap;
+  sourceLanguage: string;
+  targetLanguage: string;
+  playbackLanguage: string;
+  translationPreview: string;
+  translationSupported: boolean;
   multiSpeakerEnabled: boolean;
+  narratorVoiceId: string;
+  speed: number;
+  ambiencePreset: string;
+  stylePreset: string;
+  voiceOptions: VoiceOption[];
+  detectedSpeakers: string[];
   castDraft: Record<string, string>;
-  castSpeakers: string[];
-  activeDetectedUnitId: string;
-  editedDetectedText: string;
-  activeDetectedText: string;
-  hasEditedTextDirty: boolean;
-  isSaving: boolean;
-  isUploading: boolean;
-  isAutoAssigningCast: boolean;
-  onClose: () => void;
-  onSelectPanel: (panel: ReaderUtilityPanel) => void;
-  onSavepoint: () => void;
-  onSavePreferences: () => void;
-  onCloseSession: () => void;
-  onSetRegionId: (value: string) => void;
-  onSetUploadTitle: (value: string) => void;
-  onSetUploadContentType: (value: UploadContentType) => void;
-  onSetUploadOwnershipBasis: (value: ReaderOwnershipBasis) => void;
-  onFileSelection: (files: File[]) => void;
-  onUpload: () => void;
-  onSetTargetLanguageDraft: (value: string) => void;
-  onSetPageViewModeDraft: (value: 'original' | 'translated') => void;
-  onSetTtsLanguageModeDraft: (value: 'auto' | 'source' | 'target') => void;
-  onSetAudioEngineDraft: (value: ReaderAudioEngine) => void;
-  onSetReadingModeDraft: (value: string) => void;
-  onSetAutoAdvanceDraft: (value: ReaderAutoAdvanceProfile) => void;
-  onSetNarratorVoiceId: (value: string) => void;
-  onSetMultiSpeakerEnabled: (value: boolean) => void;
+  textDraft: string;
+  activeText: string;
+  textDirty: boolean;
+  onChangeTab: (tab: ReaderTab) => void;
+  onToggleMultiSpeaker: () => void;
+  onNarratorVoiceChange: (voiceId: string) => void;
+  onSpeedChange: (value: number) => void;
+  onAmbiencePresetChange: (value: string) => void;
+  onStylePresetChange: (value: string) => void;
   onCastDraftChange: (next: Record<string, string>) => void;
-  onAutoAssignCast: () => void;
-  onEditedDetectedTextChange: (value: string) => void;
-  onApplyDetectedTextOverride: () => void;
-  onResetDetectedTextOverride: () => void;
+  onTextDraftChange: (value: string) => void;
+  onApplyTextEdit: () => void;
+  onResetTextEdit: () => void;
+  onSourceLanguageChange: (value: string) => void;
+  onTargetLanguageChange: (value: string) => void;
+  onPlaybackLanguageChange: (value: string) => void;
 }
 
-const AUTO_ADVANCE_OPTIONS: Array<{ value: ReaderAutoAdvanceProfile; label: string }> = [
-  { value: 'off', label: 'Off' },
-  { value: 'audio_sync', label: 'Audio Sync' },
-  { value: 'slow', label: 'Slow' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'fast', label: 'Fast' },
-];
+const AMBIENCE_PRESETS = ['none', 'studio', 'forest', 'rain', 'cafe'];
+const STYLE_PRESETS = ['default', 'dramatic', 'calm', 'cinematic'];
+const COMMON_LANGUAGE_OPTIONS = ['en', 'hi', 'ja', 'es', 'fr', 'de'];
 
-const DEFAULT_OWNERSHIP_BASIS_OPTIONS = [
-  {
-    value: 'own_work',
-    label: 'Own work',
-    description: 'You created the work and control its narration rights.',
-  },
-  {
-    value: 'licensed',
-    label: 'Licensed',
-    description: 'You have a direct license or publisher permission for commercial narration.',
-  },
-  {
-    value: 'open_license',
-    label: 'Open license',
-    description: 'The source is under a license that allows this use with attribution or other required terms.',
-  },
-  {
-    value: 'public_domain',
-    label: 'Public domain',
-    description: 'The work is in the public domain for your target market.',
-  },
-  {
-    value: 'user_responsible',
-    label: 'User responsible',
-    description: 'You will verify rights manually before commercial release.',
-  },
-] satisfies ReaderCommercialPolicy['ownershipBasisOptions'];
+const renderReadPanel = (mode: ReaderMode, tab: ReaderTab) => (
+  <>
+    <h3>{tab === 'read' ? 'Read View' : 'Panels View'}</h3>
+    <p>{tab === 'read' ? 'Primary novel reading surface with chapter text and sentence focus.' : 'Primary comic panel surface with OCR bubble focus and panel navigation.'}</p>
+    <div className="vf-reader-v2-panel__meta">
+      <span>Mode: {mode}</span>
+      <span>{tab === 'read' ? 'Text-first' : 'Panel-first'}</span>
+    </div>
+  </>
+);
 
-const PANEL_LABELS: Record<ReaderUtilityPanel, string> = {
-  import: 'Import',
-  settings: 'Settings',
-  translator: 'Translator',
-  detected: 'AI Text',
-  cast: 'Cast',
-};
+const renderVoicesPanel = (
+  multiSpeakerEnabled: boolean,
+  narratorVoiceId: string,
+  speed: number,
+  ambiencePreset: string,
+  stylePreset: string,
+  voiceOptions: VoiceOption[],
+  onToggleMultiSpeaker: () => void,
+  onNarratorVoiceChange: (voiceId: string) => void,
+  onSpeedChange: (value: number) => void,
+  onAmbiencePresetChange: (value: string) => void,
+  onStylePresetChange: (value: string) => void
+) => (
+  <>
+    <h3>Voices</h3>
+    <div className="vf-reader-v2-field">
+      <label>Voice Mode</label>
+      <button type="button" className={`vf-reader-v2-toggle ${multiSpeakerEnabled ? 'vf-reader-v2-toggle--active' : ''}`} onClick={onToggleMultiSpeaker}>
+        {multiSpeakerEnabled ? 'Multi-speaker' : 'Single-speaker'}
+      </button>
+    </div>
+    <div className="vf-reader-v2-field">
+      <label>Narrator Voice</label>
+      <select value={narratorVoiceId} onChange={(event) => onNarratorVoiceChange(event.target.value)}>
+        {voiceOptions.map((voice) => (
+          <option key={voice.id} value={voice.id}>
+            {voice.name}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div className="vf-reader-v2-field">
+      <label>Speed</label>
+      <input type="range" min={0.7} max={1.6} step={0.05} value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} />
+      <small>{speed.toFixed(2)}x</small>
+    </div>
+    <div className="vf-reader-v2-field">
+      <label>Ambience</label>
+      <select value={ambiencePreset} onChange={(event) => onAmbiencePresetChange(event.target.value)}>
+        {AMBIENCE_PRESETS.map((preset) => (
+          <option key={preset} value={preset}>
+            {preset}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div className="vf-reader-v2-field">
+      <label>Style Preset</label>
+      <select value={stylePreset} onChange={(event) => onStylePresetChange(event.target.value)}>
+        {STYLE_PRESETS.map((preset) => (
+          <option key={preset} value={preset}>
+            {preset}
+          </option>
+        ))}
+      </select>
+    </div>
+  </>
+);
 
-const renderHeader = (panel: ReaderUtilityPanel | null): { title: string; description: string; icon: React.ReactNode } => {
-  if (panel === 'import') {
-    return {
-      title: 'Import To Reader',
-      description: 'Bring novels, books, manga, or comics into your Reader queue.',
-      icon: <UploadCloud size={16} />,
-    };
-  }
-  if (panel === 'translator') {
-    return {
-      title: 'Translator',
-      description: 'Control source/target language, page view, and speech language routing.',
-      icon: <Languages size={16} />,
-    };
-  }
-  if (panel === 'detected') {
-    return {
-      title: 'AI Detected Text',
-      description: 'Edit the current detected text without modifying the original upload.',
-      icon: <Wand2 size={16} />,
-    };
-  }
-  if (panel === 'cast') {
-    return {
-      title: 'Cast & Crew',
-      description: 'Assign narrator and dialogue voices for multi-speaker playback.',
-      icon: <Users size={16} />,
-    };
-  }
-  return {
-    title: 'Reader Settings',
-    description: 'Tune playback, engine choice, region, and pacing for the current session or your Reader defaults.',
-    icon: <Settings2 size={16} />,
-  };
-};
+const renderCastPanel = (
+  multiSpeakerEnabled: boolean,
+  detectedSpeakers: string[],
+  castDraft: Record<string, string>,
+  narratorVoiceId: string,
+  voiceOptions: VoiceOption[],
+  onCastDraftChange: (next: Record<string, string>) => void
+) => (
+  <>
+    <h3>Cast</h3>
+    {!multiSpeakerEnabled ? (
+      <p>Enable multi-speaker mode to manage cast assignments.</p>
+    ) : (
+      <>
+        <p>{detectedSpeakers.length} detected speakers.</p>
+        {detectedSpeakers.length === 0 ? <p>No speakers detected in current unit yet.</p> : null}
+        {detectedSpeakers.map((speaker) => (
+          <div key={speaker} className="vf-reader-v2-field">
+            <label>{speaker}</label>
+            <select
+              value={castDraft[speaker] || narratorVoiceId}
+              onChange={(event) => onCastDraftChange({ ...castDraft, [speaker]: event.target.value })}
+            >
+              {voiceOptions.map((voice) => (
+                <option key={voice.id} value={voice.id}>
+                  {voice.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </>
+    )}
+  </>
+);
+
+const renderTextPanel = (
+  textDraft: string,
+  activeText: string,
+  textDirty: boolean,
+  onTextDraftChange: (value: string) => void,
+  onApplyTextEdit: () => void,
+  onResetTextEdit: () => void
+) => (
+  <>
+    <h3>Text</h3>
+    <p>Review detected text, fix OCR edges, and apply speaker labels.</p>
+    <textarea
+      value={textDraft}
+      onChange={(event) => onTextDraftChange(event.target.value)}
+      placeholder="Detected text appears here..."
+    />
+    <div className="vf-reader-v2-panel__actions">
+      <button type="button" className="vf-reader-v2-primary" disabled={!textDirty} onClick={onApplyTextEdit}>
+        Apply Text Edit
+      </button>
+      <button type="button" className="vf-reader-v2-secondary" onClick={onResetTextEdit}>
+        Reset
+      </button>
+    </div>
+    <small>{textDraft.trim().length.toLocaleString()} characters in editor</small>
+    <small>Raw: {activeText || 'No active text block selected yet.'}</small>
+  </>
+);
+
+const renderTranslatePanel = (
+  sourceLanguage: string,
+  targetLanguage: string,
+  playbackLanguage: string,
+  translationPreview: string,
+  translationSupported: boolean,
+  onSourceLanguageChange: (value: string) => void,
+  onTargetLanguageChange: (value: string) => void,
+  onPlaybackLanguageChange: (value: string) => void
+) => (
+  <>
+    <h3>Translate</h3>
+    {!translationSupported ? <p>Choose a different playback language to enable translation preview.</p> : null}
+    <div className="vf-reader-v2-field">
+      <label>Source Language</label>
+      <select value={sourceLanguage} onChange={(event) => onSourceLanguageChange(event.target.value)}>
+        {COMMON_LANGUAGE_OPTIONS.map((code) => (
+          <option key={`source-${code}`} value={code}>
+            {code.toUpperCase()}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div className="vf-reader-v2-field">
+      <label>Target Language</label>
+      <select value={targetLanguage} onChange={(event) => onTargetLanguageChange(event.target.value)}>
+        {COMMON_LANGUAGE_OPTIONS.map((code) => (
+          <option key={`target-${code}`} value={code}>
+            {code.toUpperCase()}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div className="vf-reader-v2-field">
+      <label>Playback Language</label>
+      <select value={playbackLanguage} onChange={(event) => onPlaybackLanguageChange(event.target.value)}>
+        {COMMON_LANGUAGE_OPTIONS.map((code) => (
+          <option key={`playback-${code}`} value={code}>
+            {code.toUpperCase()}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div className="vf-reader-v2-translate-preview">
+      <span>Preview</span>
+      <p>{translationPreview || 'No translation preview available yet.'}</p>
+    </div>
+  </>
+);
 
 export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
-  layoutMode,
-  panel,
-  panelScope,
-  session,
-  isOpen,
-  legalAckAccepted,
-  commercialPolicy,
-  regions,
-  regionId,
-  uploadTitle,
-  uploadContentType,
-  uploadOwnershipBasis,
-  selectedFiles,
-  targetLanguageDraft,
-  pageViewModeDraft,
-  ttsLanguageModeDraft,
-  audioEngineDraft,
-  audioEngineStatusLabel,
-  readingModeDraft,
-  autoAdvanceDraft,
-  narratorVoiceId,
+  mode,
+  tabs,
+  activeTab,
+  tabBadges,
+  sourceLanguage,
+  targetLanguage,
+  playbackLanguage,
+  translationPreview,
+  translationSupported,
   multiSpeakerEnabled,
+  narratorVoiceId,
+  speed,
+  ambiencePreset,
+  stylePreset,
+  voiceOptions,
+  detectedSpeakers,
   castDraft,
-  castSpeakers,
-  activeDetectedUnitId,
-  editedDetectedText,
-  activeDetectedText,
-  hasEditedTextDirty,
-  isSaving,
-  isUploading,
-  isAutoAssigningCast,
-  onClose,
-  onSelectPanel,
-  onSavepoint,
-  onSavePreferences,
-  onCloseSession,
-  onSetRegionId,
-  onSetUploadTitle,
-  onSetUploadContentType,
-  onSetUploadOwnershipBasis,
-  onFileSelection,
-  onUpload,
-  onSetTargetLanguageDraft,
-  onSetPageViewModeDraft,
-  onSetTtsLanguageModeDraft,
-  onSetAudioEngineDraft,
-  onSetReadingModeDraft,
-  onSetAutoAdvanceDraft,
-  onSetNarratorVoiceId,
-  onSetMultiSpeakerEnabled,
+  textDraft,
+  activeText,
+  textDirty,
+  onChangeTab,
+  onToggleMultiSpeaker,
+  onNarratorVoiceChange,
+  onSpeedChange,
+  onAmbiencePresetChange,
+  onStylePresetChange,
   onCastDraftChange,
-  onAutoAssignCast,
-  onEditedDetectedTextChange,
-  onApplyDetectedTextOverride,
-  onResetDetectedTextOverride,
+  onTextDraftChange,
+  onApplyTextEdit,
+  onResetTextEdit,
+  onSourceLanguageChange,
+  onTargetLanguageChange,
+  onPlaybackLanguageChange,
 }) => {
-  const availablePanels: ReaderUtilityPanel[] = panelScope === 'translator_only'
-    ? ['translator', 'settings']
-    : getReaderAvailableUtilityPanels(Boolean(session));
-  const activePanel = panel && availablePanels.includes(panel) ? panel : (availablePanels[0] || null);
-  // Keep desktop tray behavior consistent across panels so dock interactions are never blocked by a full-screen scrim.
-  const isCompactImport = false;
-  const ownershipBasisOptions = commercialPolicy?.ownershipBasisOptions?.length
-    ? commercialPolicy.ownershipBasisOptions
-    : DEFAULT_OWNERSHIP_BASIS_OPTIONS;
-  const selectedOwnershipBasis = ownershipBasisOptions.find((option) => option.value === uploadOwnershipBasis);
-  const header = renderHeader(activePanel);
-  const showSessionOnlyMessage = Boolean(activePanel && (activePanel === 'detected' || activePanel === 'cast') && !session);
-  const comicReadingModeValue = readingModeDraft === 'rtl_paged' || readingModeDraft === 'ltr_paged'
-    ? readingModeDraft
-    : 'vertical_strip';
   const managedTabs = useManagedTabs({
-    items: availablePanels.map((id) => ({ id })),
-    activeId: activePanel || availablePanels[0] || 'translator',
-    onChange: onSelectPanel,
-    label: 'Reader tools',
+    items: tabs.map((tab) => ({ id: tab })),
+    activeId: activeTab,
+    onChange: onChangeTab,
+    label: 'Reader utility tabs',
     idBase: 'reader-utility',
   });
 
-  const renderPanelContent = (): React.ReactNode => {
-    if (showSessionOnlyMessage) {
-      return <div className="vf-reader-tray__empty">Open or resume a Reader session to use this panel.</div>;
-    }
-
-    if (activePanel === 'import') {
-      return (
-        <div className="vf-reader-tray__body">
-          <div className="vf-reader-tray__grid">
-            <label className="vf-reader-tray__field vf-reader-tray__field--wide">
-              <span>Display Title</span>
-              <input
-                value={uploadTitle}
-                onChange={(event) => onSetUploadTitle(event.target.value)}
-                placeholder="Optional title"
-              />
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Content Type</span>
-              <select value={uploadContentType} onChange={(event) => onSetUploadContentType(event.target.value as UploadContentType)}>
-                <option value="auto">Auto detect</option>
-                <option value="book">Book / novel</option>
-                <option value="comic">Comic / manga</option>
-              </select>
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Rights Basis</span>
-              <select
-                value={uploadOwnershipBasis}
-                onChange={(event) => onSetUploadOwnershipBasis(event.target.value as ReaderOwnershipBasis)}
-              >
-                {ownershipBasisOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <small>
-                {selectedOwnershipBasis?.description || 'Choose the basis you are relying on for this upload.'}
-              </small>
-            </label>
-          </div>
-
-          <label className="vf-reader-tray__dropzone">
-            <input
-              type="file"
-              multiple
-              accept=".txt,.md,.docx,.pdf,.epub,.cbz,.zip,.png,.jpg,.jpeg,.webp"
-              className="hidden"
-              onChange={(event) => onFileSelection(Array.from(event.target.files || []))}
-            />
-            <UploadCloud size={18} />
-            <div>
-              <strong>{selectedFiles.length > 0 ? `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} selected` : 'Choose files to import'}</strong>
-              <p>TXT, MD, DOCX, PDF, EPUB, CBZ, ZIP, PNG, JPG, JPEG, WEBP.</p>
-            </div>
-          </label>
-
-          <div className="vf-reader-tray__actions">
-            <button
-              type="button"
-              className="vf-reader-tray__button vf-reader-tray__button--primary"
-              onClick={onUpload}
-              disabled={!legalAckAccepted || isUploading || selectedFiles.length === 0}
-            >
-              {isUploading ? 'Importing...' : 'Import & Open'}
-            </button>
-            {!legalAckAccepted ? <span className="vf-reader-tray__hint">Accept the Reader rights notice once before importing.</span> : null}
-            {commercialPolicy?.enabled ? (
-              <span className="vf-reader-tray__hint">
-                Commercial mode is active. Upload owned or licensed files, or use catalog items marked commercial-ready.
-              </span>
-            ) : null}
-            {commercialPolicy?.enabled && commercialPolicy.blockedProviders.length ? (
-              <span className="vf-reader-tray__hint">
-                Restricted catalog families: {commercialPolicy.blockedProviders.slice(0, 3).join(', ')}
-                {commercialPolicy.blockedProviders.length > 3 ? ` +${commercialPolicy.blockedProviders.length - 3} more` : ''}.
-              </span>
-            ) : null}
-          </div>
-        </div>
-      );
-    }
-
-    if (activePanel === 'settings') {
-      return (
-        <div className="vf-reader-tray__body">
-          <div className="vf-reader-tray__grid">
-            <label className="vf-reader-tray__field">
-              <span>Region</span>
-              <select value={regionId} onChange={(event) => onSetRegionId(event.target.value)}>
-                {regions.map((region) => (
-                  <option key={region.id} value={region.id}>
-                    {region.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Audio Engine</span>
-              <select value={audioEngineDraft} onChange={(event) => onSetAudioEngineDraft(event.target.value as ReaderAudioEngine)}>
-                <option value="native_audio_dialog">Gemini 2.5 Native Audio Dialog (Default)</option>
-                <option value="tts_hd">Gemini 2.5 Flash TTS</option>
-              </select>
-              <small>Status: {audioEngineStatusLabel}</small>
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Narrator Voice</span>
-              <select value={narratorVoiceId} onChange={(event) => onSetNarratorVoiceId(event.target.value)}>
-                {VOICES.map((voice) => (
-                  <option key={voice.id} value={voice.id}>
-                    {voice.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Multi-Speaker</span>
-              <select value={multiSpeakerEnabled ? 'multi' : 'single'} onChange={(event) => onSetMultiSpeakerEnabled(event.target.value === 'multi')}>
-                <option value="single">Single Speaker</option>
-                <option value="multi">Multi Speaker</option>
-              </select>
-            </label>
-
-            {session?.contentKind === 'comic' || !session ? (
-              <>
-                <label className="vf-reader-tray__field">
-                  <span>{session ? 'Reading Mode' : 'Comic Reading Mode'}</span>
-                  <select value={comicReadingModeValue} onChange={(event) => onSetReadingModeDraft(event.target.value)}>
-                    <option value="vertical_strip">Vertical Strip</option>
-                    <option value="rtl_paged">Right To Left</option>
-                    <option value="ltr_paged">Left To Right</option>
-                  </select>
-                </label>
-
-                <label className="vf-reader-tray__field">
-                  <span>Auto Advance</span>
-                  <select value={autoAdvanceDraft} onChange={(event) => onSetAutoAdvanceDraft(event.target.value as ReaderAutoAdvanceProfile)}>
-                    {AUTO_ADVANCE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </>
-            ) : null}
-          </div>
-
-          <div className="vf-reader-tray__actions">
-            <button
-              type="button"
-              className="vf-reader-tray__button vf-reader-tray__button--primary"
-              onClick={session ? onSavepoint : onSavePreferences}
-              disabled={isSaving}
-            >
-              {isSaving ? 'Saving...' : session ? 'Save Reader Settings' : 'Save Reader Defaults'}
-            </button>
-            {session ? (
-              <button type="button" className="vf-reader-tray__button vf-reader-tray__button--danger" onClick={onCloseSession}>
-                Close Session
-              </button>
-            ) : (
-              <span className="vf-reader-tray__hint">These defaults apply when you open the next Reader session.</span>
-            )}
-          </div>
-        </div>
-      );
-    }
-
-    if (activePanel === 'translator') {
-      return (
-        <div className="vf-reader-tray__body">
-          <div className="vf-reader-tray__grid">
-            <label className="vf-reader-tray__field">
-              <span>Target Language</span>
-              <select value={targetLanguageDraft} onChange={(event) => onSetTargetLanguageDraft(event.target.value)}>
-                {LANGUAGES.map((language) => (
-                  <option key={language.code} value={language.code}>
-                    {language.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Page View</span>
-              <select value={pageViewModeDraft} onChange={(event) => onSetPageViewModeDraft(event.target.value as 'original' | 'translated')}>
-                <option value="original">Original</option>
-                <option value="translated">Translated</option>
-              </select>
-            </label>
-
-            <label className="vf-reader-tray__field">
-              <span>Speech Language</span>
-              <select value={ttsLanguageModeDraft} onChange={(event) => onSetTtsLanguageModeDraft(event.target.value as 'auto' | 'source' | 'target')}>
-                <option value="auto">Auto</option>
-                <option value="source">Source</option>
-                <option value="target">Target</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="vf-reader-tray__actions">
-            <button
-              type="button"
-              className="vf-reader-tray__button vf-reader-tray__button--primary"
-              onClick={session ? onSavepoint : onSavePreferences}
-              disabled={isSaving}
-            >
-              {isSaving ? 'Saving...' : session ? 'Apply Translation State' : 'Save Translation Defaults'}
-            </button>
-            {!session ? <span className="vf-reader-tray__hint">Save language defaults before opening a new Reader session.</span> : null}
-          </div>
-        </div>
-      );
-    }
-
-    if (activePanel === 'detected' && session) {
-      return (
-        <div className="vf-reader-tray__body">
-          <div className="vf-reader-tray__detected-meta">
-            <strong>{activeDetectedUnitId || 'No active unit yet'}</strong>
-            <span>{activeDetectedUnitId ? 'Session-only override' : 'Play a window or panel to edit detected text'}</span>
-          </div>
-          <textarea
-            rows={8}
-            value={editedDetectedText}
-            onChange={(event) => onEditedDetectedTextChange(event.target.value)}
-            placeholder={activeDetectedText || 'Detected text will appear here during playback.'}
-            disabled={!activeDetectedUnitId}
-          />
-          <div className="vf-reader-tray__actions">
-            <button
-              type="button"
-              className="vf-reader-tray__button vf-reader-tray__button--primary"
-              onClick={onApplyDetectedTextOverride}
-              disabled={!activeDetectedUnitId || !hasEditedTextDirty || isSaving}
-            >
-              Apply Session Edit
-            </button>
-            <button
-              type="button"
-              className="vf-reader-tray__button"
-              onClick={onResetDetectedTextOverride}
-              disabled={!activeDetectedUnitId || isSaving}
-            >
-              Reset Text
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    if (activePanel === 'cast' && session) {
-      return (
-        <div className="vf-reader-tray__body">
-          {!multiSpeakerEnabled ? (
-            <div className="vf-reader-tray__empty">Enable Multi-Speaker mode to show cast mapping.</div>
-          ) : (
-            <>
-              <div className="vf-reader-tray__actions vf-reader-tray__actions--between">
-                <span className="vf-reader-tray__hint">Detected {castSpeakers.length} speaker{castSpeakers.length === 1 ? '' : 's'}.</span>
-                <button
-                  type="button"
-                  className="vf-reader-tray__button"
-                  onClick={onAutoAssignCast}
-                  disabled={castSpeakers.length === 0 || isAutoAssigningCast}
-                >
-                  {isAutoAssigningCast ? 'Assigning...' : 'AI Auto Assign'}
-                </button>
-              </div>
-              <div className="vf-reader-tray__grid">
-                {castSpeakers.map((speaker) => (
-                  <label key={speaker} className="vf-reader-tray__field">
-                    <span>{speaker}</span>
-                    <select
-                      value={castDraft[speaker] || narratorVoiceId}
-                      onChange={(event) => onCastDraftChange({ ...castDraft, [speaker]: event.target.value })}
-                    >
-                      {VOICES.map((voice) => (
-                        <option key={voice.id} value={voice.id}>
-                          {voice.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-              </div>
-              <div className="vf-reader-tray__actions">
-                <button type="button" className="vf-reader-tray__button vf-reader-tray__button--primary" onClick={onSavepoint} disabled={isSaving}>
-                  {isSaving ? 'Saving...' : 'Save Cast Mapping'}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      );
-    }
-
-    return null;
-  };
-
-  const panelContent = renderPanelContent();
-
-  if (!activePanel || !isOpen) return null;
-
-  const shellClassName = `vf-reader-tray-shell vf-reader-tray-shell--${layoutMode}${isCompactImport ? ' vf-reader-tray-shell--compact-import' : ''}`;
-  const trayClassName = `vf-reader-tray vf-reader-tray--${layoutMode}${isCompactImport ? ' vf-reader-tray--compact-import' : ''}`;
-
   return (
-    <div className={shellClassName} data-testid="reader-utility-shell">
-      {layoutMode !== 'desktop' ? <button type="button" className="vf-reader-tray__scrim" onClick={onClose} aria-label="Close reader tools overlay" /> : null}
-      <section className={trayClassName} data-testid="reader-utility-tray">
-        <div className="vf-reader-tray__header">
-          <div>
-            <div className="vf-reader-tray__eyebrow">
-              {header.icon}
-              Reader Utility
-            </div>
-            <h3>{header.title}</h3>
-            <p>{header.description}</p>
-          </div>
-          <button type="button" className="vf-reader-tray__close" onClick={onClose} aria-label="Close reader utility tray">
-            <X size={16} />
-          </button>
+    <aside className="vf-reader-v2-tray" data-testid="reader-utility-tray">
+      <header className="vf-reader-v2-tray__header">
+        <div>
+          <div className="vf-reader-v2-eyebrow">Reader Tools</div>
+          <strong>Voice, text, and translation controls</strong>
         </div>
+        <p>Keep narration state, review edits, and switch translations without leaving the player.</p>
+      </header>
+      <div className="vf-reader-v2-tray__tabs" {...managedTabs.listProps}>
+        {tabs.map((tab) => {
+          const badge = tabBadges[tab as keyof ReaderTabBadgeMap];
+          return (
+            <button
+              key={tab}
+              type="button"
+              {...managedTabs.getTabProps(tab)}
+              className={`vf-reader-v2-tab ${activeTab === tab ? 'vf-reader-v2-tab--active' : ''}`}
+              title={`Open ${getReaderTabLabel(tab)} tab`}
+            >
+              <span>{getReaderTabLabel(tab)}</span>
+              {badge ? <em>{badge}</em> : null}
+            </button>
+          );
+        })}
+      </div>
 
-        {!isCompactImport && availablePanels.length > 1 ? (
-          <div className="vf-reader-tray__panel-strip" {...managedTabs.listProps}>
-            {availablePanels.map((panelId) => (
-              <button
-                key={panelId}
-                type="button"
-                className={`vf-reader-tray__panel-tab ${panelId === activePanel ? 'vf-reader-tray__panel-tab--active' : ''}`}
-                {...managedTabs.getTabProps(panelId)}
-              >
-                {PANEL_LABELS[panelId]}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="vf-reader-tray__panel-content" {...managedTabs.getPanelProps(activePanel)}>
-          {panelContent}
-        </div>
-      </section>
-    </div>
+      <div className="vf-reader-v2-tray__body">
+        {tabs.map((tab) => (
+          <section key={tab} className="vf-reader-v2-panel" {...managedTabs.getPanelProps(tab)}>
+            {tab === 'read' || tab === 'panels' ? renderReadPanel(mode, tab) : null}
+            {tab === 'voices'
+              ? renderVoicesPanel(
+                multiSpeakerEnabled,
+                narratorVoiceId,
+                speed,
+                ambiencePreset,
+                stylePreset,
+                voiceOptions,
+                onToggleMultiSpeaker,
+                onNarratorVoiceChange,
+                onSpeedChange,
+                onAmbiencePresetChange,
+                onStylePresetChange
+              )
+              : null}
+            {tab === 'cast'
+              ? renderCastPanel(
+                multiSpeakerEnabled,
+                detectedSpeakers,
+                castDraft,
+                narratorVoiceId,
+                voiceOptions,
+                onCastDraftChange
+              )
+              : null}
+            {tab === 'text'
+              ? renderTextPanel(
+                textDraft,
+                activeText,
+                textDirty,
+                onTextDraftChange,
+                onApplyTextEdit,
+                onResetTextEdit
+              )
+              : null}
+            {tab === 'translate'
+              ? renderTranslatePanel(
+                sourceLanguage,
+                targetLanguage,
+                playbackLanguage,
+                translationPreview,
+                translationSupported,
+                onSourceLanguageChange,
+                onTargetLanguageChange,
+                onPlaybackLanguageChange
+              )
+              : null}
+          </section>
+        ))}
+      </div>
+    </aside>
   );
 };

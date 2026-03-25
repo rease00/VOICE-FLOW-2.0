@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ReaderCatalogItem } from '../types';
-import {
-  filterReaderLibraryItems,
-  getReaderAutoAdvanceDelay,
-  getReaderPrimaryAction,
-  isReaderAutoSwipeAvailable,
-  type ReaderLibraryFilters,
-} from '../src/features/reader/model/library';
+import type { ReaderCatalogItem, ReaderLibrary } from '../types';
+import { resolveHomeTabItems } from '../src/features/reader/model/library';
 
 const buildItem = (overrides: Partial<ReaderCatalogItem> = {}): ReaderCatalogItem => ({
   id: overrides.id || 'item-1',
@@ -17,74 +11,50 @@ const buildItem = (overrides: Partial<ReaderCatalogItem> = {}): ReaderCatalogIte
   surface: overrides.surface || 'books',
   provider: overrides.provider || 'internet_archive',
   license: overrides.license || 'Public domain',
-  supportsReadHere: overrides.supportsReadHere ?? true,
   ...overrides,
 });
 
-const defaultFilters: ReaderLibraryFilters = {
+const buildLibrary = (items: ReaderCatalogItem[]): ReaderLibrary => ({
   surface: 'all',
-  search: '',
-  provider: 'all',
-  contentKind: 'all',
-  progress: 'all',
-  collection: 'all',
-  sort: 'featured',
-};
+  regionId: 'english',
+  regions: [{ id: 'english', label: 'English' }],
+  items,
+  activeSession: null,
+  activeSessions: [],
+  counts: {
+    all: items.length,
+    visible: items.length,
+    books: items.filter((item) => item.contentKind === 'book').length,
+    comics: items.filter((item) => item.contentKind === 'comic').length,
+    uploads: items.filter((item) => item.surface === 'uploads').length,
+    resumable: items.filter((item) => Boolean(item.sessionId || item.resume?.hasProgress)).length,
+  },
+  facets: { providers: [], collections: [], progressStates: [] },
+  shelves: { continueReading: [], trending: [], newArrivals: [], recentlyImported: [] },
+});
 
 describe('reader library model', () => {
-  it('filters by progress state and provider', () => {
+  it('partitions content into home tabs', () => {
     const items = [
-      buildItem({ id: 'resume', provider: 'internet_archive', resume: { hasProgress: true, consumedChars: 100, currentPanelIndex: 0, progressPct: 20 } }),
-      buildItem({ id: 'ready', provider: 'open_library', sessionId: 'session-1', readiness: { state: 'ready', label: 'Ready', playableItems: 1 } }),
-      buildItem({ id: 'new', provider: 'voiceflow_upload', surface: 'uploads', supportsReadHere: true }),
+      buildItem({ id: 'book-1', contentKind: 'book', surface: 'books' }),
+      buildItem({ id: 'comic-1', contentKind: 'comic', surface: 'comics' }),
+      buildItem({ id: 'resume-1', contentKind: 'book', surface: 'books', sessionId: 'session-1' }),
+      buildItem({ id: 'upload-1', contentKind: 'comic', surface: 'uploads' }),
     ];
-    const filtered = filterReaderLibraryItems(items, { ...defaultFilters, progress: 'in_progress', provider: 'internet_archive' });
-    expect(filtered.map((item) => item.id)).toEqual(['resume']);
+    const library = buildLibrary(items);
+
+    expect(resolveHomeTabItems(library, 'novels', '').map((item) => item.id)).toEqual(['book-1', 'resume-1']);
+    expect(resolveHomeTabItems(library, 'comics', '').map((item) => item.id)).toEqual(['comic-1']);
+    expect(resolveHomeTabItems(library, 'library', '').map((item) => item.id)).toEqual(['resume-1']);
+    expect(resolveHomeTabItems(library, 'imported', '').map((item) => item.id)).toEqual(['upload-1']);
   });
 
-  it('resolves CTA states for resume, play, prepare, and blocked items', () => {
-    expect(getReaderPrimaryAction(buildItem({ sessionId: 'session-1', resume: { hasProgress: true, consumedChars: 20, currentPanelIndex: 0, progressPct: 10 } })).label).toBe('Resume');
-    expect(getReaderPrimaryAction(buildItem({ sessionId: 'session-1', readiness: { state: 'ready', label: 'Ready', playableItems: 1 } })).label).toBe('Play');
-    expect(getReaderPrimaryAction(buildItem({ surface: 'uploads', supportsReadHere: true })).label).toBe('Prepare');
-    expect(getReaderPrimaryAction(buildItem({ commercialUseStatus: 'blocked' })).label).toBe('Blocked');
-    expect(getReaderPrimaryAction(buildItem({ commercialUseStatus: 'review' })).label).toBe('Needs Review');
-    expect(getReaderPrimaryAction(buildItem({ supportsReadHere: false, readiness: { state: 'blocked', label: 'Blocked', playableItems: 0 } })).disabled).toBe(true);
-  });
-
-  it('keeps supported titles actionable during active prep and blocks only real prep errors', () => {
-    expect(
-      getReaderPrimaryAction(
-        buildItem({
-          contentKind: 'comic',
-          surface: 'comics',
-          supportsReadHere: true,
-          sessionId: 'session-prep',
-          readiness: { state: 'preparing', label: 'Preparing first playable item', playableItems: 0 },
-          prep: { state: 'running', stage: 'ocr', completedItems: 1, totalItems: 8, failedItems: 0 },
-        })
-      ).label
-    ).toBe('Prepare');
-
-    expect(
-      getReaderPrimaryAction(
-        buildItem({
-          contentKind: 'comic',
-          surface: 'comics',
-          supportsReadHere: true,
-          sessionId: 'session-error',
-          readiness: { state: 'blocked', label: 'Playback unavailable', playableItems: 0, reason: 'Remote comic preparation failed.' },
-          prep: { state: 'error', stage: 'ocr', completedItems: 0, totalItems: 8, failedItems: 8, message: 'Remote comic preparation failed.' },
-        })
-      ).disabled
-    ).toBe(true);
-  });
-
-  it('exposes auto-swipe only for comic sessions and maps timer profiles', () => {
-    expect(isReaderAutoSwipeAvailable({ contentKind: 'comic' } as any)).toBe(true);
-    expect(isReaderAutoSwipeAvailable({ contentKind: 'book' } as any)).toBe(false);
-    expect(getReaderAutoAdvanceDelay('slow')).toBe(9000);
-    expect(getReaderAutoAdvanceDelay('medium')).toBe(6500);
-    expect(getReaderAutoAdvanceDelay('fast')).toBe(4000);
-    expect(getReaderAutoAdvanceDelay('audio_sync')).toBeNull();
+  it('supports search filtering per tab', () => {
+    const items = [
+      buildItem({ id: 'book-1', title: 'Sky Novel', contentKind: 'book', surface: 'books' }),
+      buildItem({ id: 'book-2', title: 'Forest Tales', contentKind: 'book', surface: 'books' }),
+    ];
+    const library = buildLibrary(items);
+    expect(resolveHomeTabItems(library, 'novels', 'sky').map((item) => item.id)).toEqual(['book-1']);
   });
 });

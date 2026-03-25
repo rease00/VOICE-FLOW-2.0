@@ -6,23 +6,23 @@ import {
 } from '../src/features/reader/model/multiSpeaker';
 
 describe('reader multi-speaker model', () => {
-  it('uses single-speaker mode when the toggle is off', () => {
+  it('uses single mode when multi-speaker is off', () => {
     expect(resolveReaderDraftMultiSpeakerMode({
       multiSpeakerEnabled: false,
-      previewText: 'Narrator: Hello there.',
-      castMemory: { Narrator: 'v22' },
+      previewText: 'Narrator: Hello.',
+      castMemory: { Narrator: 'v1' },
     })).toBe('single');
   });
 
-  it('uses studio grouped mode for qualified multi-speaker dialogue', () => {
+  it('switches to grouped mode for multi-speaker scripts', () => {
     expect(resolveReaderDraftMultiSpeakerMode({
       multiSpeakerEnabled: true,
-      previewText: 'Alice: Ready?\nBob: Always.\nAlice: Then move.',
-      castMemory: { Alice: 'v21', Bob: 'v22' },
+      previewText: 'Alice: Ready?\\nBob: Always.',
+      castMemory: { Alice: 'v1', Bob: 'v2' },
     })).toBe('studio_pair_groups');
   });
 
-  it('returns reader line-map mode when the session reports grouped fallback', () => {
+  it('respects session fallback mode labels', () => {
     const mode = getReaderEffectiveMultiSpeakerMode(
       {
         multiSpeakerEnabled: true,
@@ -30,8 +30,8 @@ describe('reader multi-speaker model', () => {
       },
       {
         multiSpeakerEnabled: true,
-        previewText: 'Alice: Ready?\nBob: Always.',
-        castMemory: { Alice: 'v21', Bob: 'v22' },
+        previewText: 'Alice: Ready?\\nBob: Always.',
+        castMemory: { Alice: 'v1', Bob: 'v2' },
       }
     );
     expect(mode).toBe('line_map');

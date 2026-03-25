@@ -51,6 +51,8 @@ import { extractNovelTextFromFile, splitImportedTextToChapters } from '../servic
 import { generateTextContent } from '../services/geminiService';
 import { UploadDropzone } from './ui/UploadDropzone';
 import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
+import { hasAdminConsoleAccess } from '../src/shared/auth/adminAccess';
+import { formatFrontendError } from '../src/shared/errors/formatFrontendError';
 import {
   getNovelRootFolder,
   isNovelLocalFsSupported,
@@ -122,7 +124,6 @@ const createLocalId = (prefix: 'project' | 'chapter' | 'memory' | 'import'): str
 const buildChapterName = (index: number, title: string): string =>
   `Chapter ${String(index).padStart(3, '0')} - ${title}`;
 const buildDriveState = (status: DriveConnectionState['status'], message: string): DriveConnectionState => ({ status, message });
-const normalizeError = (error: any): string => String(error?.message || 'Unknown error');
 const emptyLedger = (): ProjectMemoryLedger => ({ characters: [], places: [], chapterSummaries: [] });
 
 const buildUniqueProjectName = (existing: NovelProject[], baseName: string): string => {
@@ -370,6 +371,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     ledger: false,
   });
   const { user } = useUser();
+  const canSeeAdminDiagnostics = hasAdminConsoleAccess(user);
   const [driveState, setDriveState] = useState<DriveConnectionState>(buildDriveState('checking', 'Checking Google Drive access...'));
   const [driveToken, setDriveToken] = useState('');
   const [isConnectingDrive, setIsConnectingDrive] = useState(false);
@@ -426,6 +428,14 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     setMobilePanelOpen((prev) => ({ ...prev, [panel]: !prev[panel] }));
   };
 
+  const toNovelPublicError = useCallback((errorLike: unknown, fallback: string, context: 'auth' | 'media' | 'runtime' = 'media'): string => (
+    formatFrontendError(errorLike, {
+      fallback,
+      context,
+      isAdmin: canSeeAdminDiagnostics,
+    }).publicMessage
+  ), [canSeeAdminDiagnostics]);
+
   useEffect(() => { chaptersRef.current = chaptersByProjectId; }, [chaptersByProjectId]);
   useEffect(() => { ledgerRef.current = memoryLedgerByProjectId; }, [memoryLedgerByProjectId]);
   useEffect(() => { chapterSummariesRef.current = chapterSummariesByProjectId; }, [chapterSummariesByProjectId]);
@@ -470,21 +480,22 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
     const auth = await getDriveProviderToken();
     if (!auth.ok || !auth.token) {
       setDriveToken('');
-      if (auth.status === 'needs_google_identity') setDriveState(buildDriveState('needs_google_identity', auth.message));
-      else if (auth.status === 'needs_consent') setDriveState(buildDriveState('needs_consent', auth.message));
-      else if (auth.status === 'needs_login' || auth.status === 'guest') setDriveState(buildDriveState('needs_login', auth.message));
-      else setDriveState(buildDriveState('error', auth.message));
+      const safeMessage = toNovelPublicError(auth.message, 'Google Drive needs to be reconnected.', 'auth');
+      if (auth.status === 'needs_google_identity') setDriveState(buildDriveState('needs_google_identity', safeMessage));
+      else if (auth.status === 'needs_consent') setDriveState(buildDriveState('needs_consent', safeMessage));
+      else if (auth.status === 'needs_login' || auth.status === 'guest') setDriveState(buildDriveState('needs_login', safeMessage));
+      else setDriveState(buildDriveState('error', safeMessage));
       return;
     }
     const accessProbe = await verifyDriveAccess(auth.token);
     if (!accessProbe.ok) {
       setDriveToken('');
-      setDriveState(buildDriveState('needs_consent', accessProbe.message));
+      setDriveState(buildDriveState('needs_consent', toNovelPublicError(accessProbe.message, 'Google Drive needs additional permission.', 'auth')));
       return;
     }
     setDriveToken(auth.token);
     setDriveState(buildDriveState('connected', 'Google Drive connected for folder upload/download.'));
-  }, []);
+  }, [toNovelPublicError]);
 
   useEffect(() => {
     let active = true;
@@ -540,13 +551,13 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       setLocalFolderStatus(`Bound to ${handle.name}`);
       onToast(`Local folder bound: ${handle.name}`, 'success');
     } catch (error: any) {
-      const message = normalizeError(error);
+      const message = toNovelPublicError(error, 'Local folder binding failed.');
       setLocalFolderStatus(message);
       onToast(message, 'error');
     } finally {
       setIsBindingLocalFolder(false);
     }
-  }, [onToast]);
+  }, [onToast, toNovelPublicError]);
 
   const syncProjectToLocalFolder = useCallback(
     async (projectId: string): Promise<void> => {
@@ -892,7 +903,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       await adaptSingleChapter(selectedProjectId, selectedChapterId);
       onToast('Chapter adaptation complete.', 'success');
     } catch (error: any) {
-      const message = normalizeError(error);
+      const message = toNovelPublicError(error, 'Chapter adaptation failed.');
       setChapterState(selectedProjectId, selectedChapterId, { chapterId: selectedChapterId, status: 'failed', error: message });
       setChaptersByProjectId((previous) => patchChapterMeta(previous, selectedProjectId, selectedChapterId, { adaptationStatus: 'failed', adaptationError: message }));
       onToast(`Adaptation failed: ${message}`, 'error');
@@ -920,7 +931,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       try {
         await adaptSingleChapter(selectedProjectId, chapter.id);
       } catch (error: any) {
-        const message = normalizeError(error);
+        const message = toNovelPublicError(error, 'Chapter adaptation failed.');
         setChapterState(selectedProjectId, chapter.id, { chapterId: chapter.id, status: 'failed', error: message });
         setChaptersByProjectId((previous) => patchChapterMeta(previous, selectedProjectId, chapter.id, { adaptationStatus: 'failed', adaptationError: message }));
       }
@@ -1196,7 +1207,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       if (driveState.status === 'needs_google_identity') await connectDriveIdentity();
       else await reconsentDriveScopes();
     } catch (error: any) {
-      onToast(`Drive connection failed: ${normalizeError(error)}`, 'error');
+      onToast(`Drive connection failed: ${toNovelPublicError(error, 'Drive connection failed.', 'auth')}`, 'error');
     } finally {
       setIsConnectingDrive(false);
       void refreshDriveSession();
@@ -1212,7 +1223,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       for (const chapter of chaptersToUpload) await createChapter(driveToken, driveProject.id, chapter.title, chapter.text);
       onToast('Uploaded selected novel to Drive.', 'success');
     } catch (error: any) {
-      onToast(`Upload failed: ${normalizeError(error)}`, 'error');
+      onToast(`Upload failed: ${toNovelPublicError(error, 'Upload failed.')}`, 'error');
     } finally {
       setIsUploadingToDrive(false);
     }
@@ -1262,7 +1273,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       setSelectedChapterId(localChapters[0]?.id || '');
       onToast('Downloaded novel from Drive.', 'success');
     } catch (error: any) {
-      onToast(`Download failed: ${normalizeError(error)}`, 'error');
+      onToast(`Download failed: ${toNovelPublicError(error, 'Download failed.')}`, 'error');
     } finally {
       setIsDownloadingFromDrive(false);
     }
@@ -1332,7 +1343,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
         'success'
       );
     } catch (error: any) {
-      onToast(`Import failed: ${normalizeError(error)}`, 'error');
+      onToast(`Import failed: ${toNovelPublicError(error, 'Import failed.')}`, 'error');
     } finally {
       setIsImportExtracting(false);
       setIsImportSplitting(false);
@@ -1703,7 +1714,7 @@ export const NovelWorkspaceV2: React.FC<NovelWorkspaceV2Props> = ({ settings, me
       </div>
       {isImportModalOpen && (
         <div
-          className={`fixed inset-0 z-[90] flex bg-black/40 backdrop-blur-sm ${isPhone ? 'items-stretch justify-stretch p-0' : 'items-center justify-center p-4'} xl:left-64 xl:p-6`}
+          className={`vf-scrim vf-scrim--modal fixed inset-0 z-[90] flex ${isPhone ? 'items-stretch justify-stretch p-0' : 'items-center justify-center p-4'} xl:left-64 xl:p-6`}
           role="dialog"
           aria-modal="true"
           aria-label="Import novel files"

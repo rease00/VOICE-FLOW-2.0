@@ -10,10 +10,36 @@ import type {
 } from '../../../../types';
 import { authFetch } from '../../../../services/authHttpClient';
 import { resolveApiUrl } from '../../../shared/api/config';
+import { fetchTtsJobResult, getTtsJob } from '../../../shared/api/gatewayClient';
+import type { ReaderHomeTab, ReaderTab } from '../model/tabs';
 
 type ReaderSurface = 'all' | 'books' | 'comics' | 'uploads';
-const READER_BOOTSTRAP_TIMEOUT_MS = 20_000;
-const READER_LIBRARY_TIMEOUT_MS = 30_000;
+const READER_BOOTSTRAP_TIMEOUT_MS = 10_000;
+const READER_LIBRARY_BOOTSTRAP_TIMEOUT_MS = 30_000;
+
+export type ReaderCommercialResult = 'allowed' | 'review' | 'blocked';
+
+export interface ReaderCommercialCheckRequest {
+  provider?: string;
+  license?: string;
+  attributionUrl?: string;
+  ownershipBasis?: ReaderOwnershipBasis;
+  intendedUse?: 'tts_transform_only' | 'private_accessibility' | 'public_distribution' | 'resale';
+  isSellingOriginalText?: boolean;
+}
+
+export interface ReaderCommercialCheckResponse {
+  result: ReaderCommercialResult;
+  reason: string;
+  provider: string;
+  licenseToken: string;
+  ownershipBasis: ReaderOwnershipBasis;
+  intendedUse: string;
+  isSellingOriginalText: boolean;
+  catalogAllowed: boolean;
+  notes: string[];
+  nextSteps: string[];
+}
 
 const extractReaderErrorMessage = (detail: unknown): string => {
   if (typeof detail === 'string') return detail.trim();
@@ -87,6 +113,22 @@ export const acceptReaderLegalAck = async (backendBaseUrl: string): Promise<Read
   return payload.ack;
 };
 
+export const checkReaderCommercialUse = async (
+  backendBaseUrl: string,
+  payload: ReaderCommercialCheckRequest
+): Promise<ReaderCommercialCheckResponse> => {
+  const data = await readerFetchJson<{ check: ReaderCommercialCheckResponse }>(
+    resolveApiUrl('/reader/commercial/check', backendBaseUrl),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+  );
+  return data.check;
+};
+
 export const listReaderRegions = async (
   backendBaseUrl: string,
   surface: Exclude<ReaderSurface, 'uploads'>
@@ -115,6 +157,18 @@ export const listReaderItems = async (
   return payload.items || [];
 };
 
+export const getReaderCatalogItem = async (
+  backendBaseUrl: string,
+  itemId: string
+): Promise<ReaderCatalogItem> => {
+  const payload = await readerFetchJson<{ item: ReaderCatalogItem }>(
+    resolveApiUrl(`/reader/catalog/items/${encodeURIComponent(itemId)}`, backendBaseUrl),
+    undefined,
+    { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+  );
+  return payload.item;
+};
+
 export const getReaderLibrary = async (
   backendBaseUrl: string,
   params: { surface?: ReaderSurface; regionId?: string; search?: string }
@@ -126,7 +180,7 @@ export const getReaderLibrary = async (
   const payload = await readerFetchJson<{ library: ReaderLibrary }>(
     resolveApiUrl(`/reader/library?${search.toString()}`, backendBaseUrl),
     undefined,
-    { timeoutMs: READER_LIBRARY_TIMEOUT_MS }
+    { timeoutMs: READER_LIBRARY_BOOTSTRAP_TIMEOUT_MS }
   );
   return payload.library;
 };
@@ -154,11 +208,11 @@ export const createReaderUpload = async (
     body: formData,
   });
   if (!response.ok) {
-    const payload = await readErrorPayload(response);
-    const error = new Error(payload.message) as Error & { status?: number; code?: string; detail?: unknown };
+    const errorPayload = await readErrorPayload(response);
+    const error = new Error(errorPayload.message) as Error & { status?: number; code?: string; detail?: unknown };
     error.status = response.status;
-    if (payload.code) error.code = payload.code;
-    if (typeof payload.detail !== 'undefined') error.detail = payload.detail;
+    if (errorPayload.code) error.code = errorPayload.code;
+    if (typeof errorPayload.detail !== 'undefined') error.detail = errorPayload.detail;
     throw error;
   }
   const data = (await response.json()) as { upload: ReaderCatalogItem };
@@ -166,15 +220,18 @@ export const createReaderUpload = async (
 };
 
 export interface ReaderPreferencesPayload {
+  uid?: string;
   regionId?: string;
   targetLanguage?: string;
   pageViewMode?: 'original' | 'translated';
   ttsLanguageMode?: 'auto' | 'source' | 'target';
   autoAdvanceProfile?: string;
   multiSpeakerEnabled?: boolean;
-  audioEngine?: 'tts_hd' | 'native_audio_dialog';
+  audioEngine?: 'tts_hd';
   narratorVoiceId?: string;
   readingMode?: string;
+  homeTab?: ReaderHomeTab;
+  updatedAt?: string;
 }
 
 export const getReaderPreferences = async (
@@ -215,7 +272,7 @@ export const createReaderSession = async (
     targetLanguage?: string;
     pageViewMode?: 'original' | 'translated';
     ttsLanguageMode?: 'auto' | 'source' | 'target';
-    audioEngine?: 'tts_hd' | 'native_audio_dialog';
+    audioEngine?: 'tts_hd';
     multiSpeakerEnabled?: boolean;
     voiceMode?: 'single' | 'multi';
     narratorVoiceId?: string;
@@ -264,7 +321,7 @@ export const saveReaderSession = async (
     targetLanguage?: string;
     pageViewMode?: 'original' | 'translated';
     ttsLanguageMode?: 'auto' | 'source' | 'target';
-    audioEngine?: 'tts_hd' | 'native_audio_dialog';
+    audioEngine?: 'tts_hd';
     multiSpeakerEnabled?: boolean;
     voiceMode?: 'single' | 'multi';
     narratorVoiceId?: string;
@@ -274,6 +331,7 @@ export const saveReaderSession = async (
       activeItemIndex?: number;
       activeUnitId?: string;
       viewportAnchor?: string;
+      activeReaderTab?: ReaderTab;
     };
   }
 ): Promise<ReaderSession> => {
@@ -291,11 +349,11 @@ export const saveReaderSession = async (
 export const exportReaderSessionAudio = async (backendBaseUrl: string, sessionId: string): Promise<Blob> => {
   const response = await authFetch(resolveApiUrl(`/reader/sessions/${encodeURIComponent(sessionId)}/export`, backendBaseUrl));
   if (!response.ok) {
-    const payload = await readErrorPayload(response);
-    const error = new Error(payload.message) as Error & { status?: number; code?: string; detail?: unknown };
+    const errorPayload = await readErrorPayload(response);
+    const error = new Error(errorPayload.message) as Error & { status?: number; code?: string; detail?: unknown };
     error.status = response.status;
-    if (payload.code) error.code = payload.code;
-    if (typeof payload.detail !== 'undefined') error.detail = payload.detail;
+    if (errorPayload.code) error.code = errorPayload.code;
+    if (typeof errorPayload.detail !== 'undefined') error.detail = errorPayload.detail;
     throw error;
   }
   return response.blob();
@@ -306,11 +364,11 @@ export const deleteReaderSession = async (backendBaseUrl: string, sessionId: str
     method: 'DELETE',
   });
   if (!response.ok) {
-    const payload = await readErrorPayload(response);
-    const error = new Error(payload.message) as Error & { status?: number; code?: string; detail?: unknown };
+    const errorPayload = await readErrorPayload(response);
+    const error = new Error(errorPayload.message) as Error & { status?: number; code?: string; detail?: unknown };
     error.status = response.status;
-    if (payload.code) error.code = payload.code;
-    if (typeof payload.detail !== 'undefined') error.detail = payload.detail;
+    if (errorPayload.code) error.code = errorPayload.code;
+    if (typeof errorPayload.detail !== 'undefined') error.detail = errorPayload.detail;
     throw error;
   }
 };
@@ -319,22 +377,15 @@ export const getReaderTtsJobAudio = async (
   backendBaseUrl: string,
   jobId: string
 ): Promise<{ status: string; audioBase64?: string; mediaType?: string; blob?: Blob }> => {
-  const payload = await readerFetchJson<{
-    status: string;
-    result?: { audioBase64?: string; mediaType?: string };
-  }>(resolveApiUrl(`/tts/jobs/${encodeURIComponent(jobId)}?includeResult=true`, backendBaseUrl));
+  const payload = await getTtsJob(jobId, { baseUrl: backendBaseUrl });
   const result: { status: string; audioBase64?: string; mediaType?: string; blob?: Blob } = {
     status: payload.status,
   };
   if (payload.status === 'completed') {
-    const audioResponse = await authFetch(resolveApiUrl(`/tts/jobs/${encodeURIComponent(jobId)}/audio`, backendBaseUrl));
-    if (audioResponse.ok) {
-      result.blob = await audioResponse.blob();
-      result.mediaType = audioResponse.headers.get('content-type') || payload.result?.mediaType || 'audio/wav';
-      return result;
-    }
+    const audioResponse = await fetchTtsJobResult(jobId, { baseUrl: backendBaseUrl });
+    result.blob = new Blob([audioResponse.audioBytes], { type: audioResponse.mediaType || 'audio/wav' });
+    result.mediaType = audioResponse.mediaType || 'audio/wav';
+    return result;
   }
-  if (payload.result?.audioBase64) result.audioBase64 = payload.result.audioBase64;
-  if (payload.result?.mediaType) result.mediaType = payload.result.mediaType;
   return result;
 };

@@ -1,6 +1,7 @@
 
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import '../src/styles/mainApp.css';
 import { 
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
     Music, Video, 
@@ -8,9 +9,11 @@ import {
     Download, Menu, Box,
     Plus, Bot, Volume2, Clock, Send, 
     Film, Mic2, Sliders,
-    Lock, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Gift, Bell
+    Lock, RefreshCw, Users, Edit2, Palette, Timer, Cpu, Minimize2, Maximize2, Zap, Laptop, Activity, Search, Sun, Moon, Type, ChevronDown, ChevronUp, LogIn, LogOut, UserPlus, Coins, Bell
 } from 'lucide-react';
 import { Button } from '../components/Button';
+import { UploadDropzone } from '../components/ui/UploadDropzone';
+import { VoiceCloneModal } from '../src/features/voice-cloning/VoiceCloneModal';
 import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
 import {
   GenerationSettings,
@@ -25,76 +28,33 @@ import {
   DubbingClip,
   DubbingClipboard,
   CpuDubbingProfile,
+  LabRailPanelId,
 } from '../types';
-import { generateSpeech, audioBufferToWav, generateTextContent, translateText, analyzeVoiceSample, translateVideoContent, detectLanguage, parseMultiSpeakerScript, autoFormatScript, proofreadScript, DirectorOptions, getAudioContext, TTS_RUNTIME_DIAGNOSTICS_EVENT, TTS_GATEWAY_JOB_PROGRESS_EVENT, TTS_GATEWAY_AUDIO_CHUNK_EVENT, inferSpeakerTraitHintsWithAi, normalizeSpeakerMapKey, resolveSpeakerMappedVoiceId } from '../services/geminiService';
-import { extractAndSeparateDubbingStems } from '../services/dubbingService';
-import { AudioPlayer } from '../components/AudioPlayer';
 import { useUser } from '../contexts/UserContext';
-import { AdModal } from '../components/AdModal';
-import { autoAssignSpeakerVoices } from '../src/shared/voices/castAssignment';
-import {
-  applyStudioAudioMix,
-  resolveStudioMusicGain,
-  resolveStudioSpeechGain,
-  STUDIO_SPEECH_GAIN_MAX,
-  STUDIO_SPEECH_GAIN_MIN,
-} from '../services/studioMixService';
-import {
-  clearAllClips,
-  copyClip,
-  cutClip,
-  moveClipLayer,
-  pasteClipAfterSelection,
-  pushUndoHistory,
-  redoTimeline,
-  removeCompletedClips,
-  removeClip,
-  splitClipAtPlayhead,
-  trimClipWindow,
-  undoTimeline,
-} from '../services/dubbingTimelineService';
-import {
-  cancelDubbingJob,
-  checkMediaBackendHealth,
-  createDubbingJobV2,
-  downloadDubbingChunk,
-  downloadDubbingReport,
-  downloadDubbingResult,
-  getDubbingJob,
-  resolveMediaBackendUrl,
-  switchTtsEngineRuntime,
-  transcribeVideoWithBackend,
-} from '../services/mediaBackendService';
-import { fetchEngineRuntimeVoices, getStaticVoiceFallback } from '../services/ttsVoiceRegistryService';
-import { normalizeEmotionTag } from '../services/emotionTagRules';
+import { refreshStudioSpeakerVoices } from '../src/shared/voices/castAssignment';
 import { getEngineDisplayName } from '../services/engineDisplay';
 import { loadKokoroBrowserRuntimeModule } from '../services/loadKokoroBrowserRuntime';
 import {
+  assertBrowserKokoroExecutionSupported,
   isBrowserKokoroExecutionEnabled,
   shouldUseBrowserKokoroExecution,
 } from '../services/kokoroBrowserRuntimeFlags';
-import {
-  getKokoroStudioWorkerState,
-  isKokoroStudioWorkerSupported,
-  warmupKokoroStudioWorker,
-} from '../services/kokoroStudioWorkerClient';
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
 import { SectionCard } from '../components/SectionCard';
 import { BrandLogo } from '../components/BrandLogo';
-import { BlockScriptEditor } from '../components/studio/BlockScriptEditor';
 import { MorphingGenerateButton } from '../components/studio/MorphingGenerateButton';
-import { StudioQueuePanel } from '../components/studio/StudioQueuePanel';
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, readStorageString, removeStorageKey, writeStorageJson, writeStorageString } from '../src/shared/storage/localStore';
 import { buildWorkspaceTabs, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
-import { createTtsJob, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
+import { createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
 import { applySafeMediaVolume, normalizeMediaVolume } from '../src/shared/media/safeMediaVolume';
 import { useWorkspaceViewport } from '../src/shared/ui/useWorkspaceViewport';
+import { useManagedTabs } from '../src/shared/ui/tabs';
 import {
   createRuntimePollTabId,
   isRuntimePollCoordinationAvailable,
@@ -111,6 +71,7 @@ import {
   normalizePreferUserGeminiKey,
 } from '../src/shared/settings/assistantProvider';
 import { hasAdminConsoleAccess as canUseAdminConsole } from '../src/shared/auth/adminAccess';
+import { formatFrontendError } from '../src/shared/errors/formatFrontendError';
 import { joinUiFragments, sanitizeUiText } from '../src/shared/ui/terminology';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../src/shared/notifications/deepLink';
@@ -139,31 +100,441 @@ import {
   readStudioQueueAudioBlob,
   storeStudioQueueAudioBlob,
 } from '../services/studioQueueCacheService';
-import { buildStudioQueueBlobUrl, mergeStudioQueueAudioBlobs } from '../services/studioQueueAudioService';
 import { createStudioObjectUrlRegistry } from '../services/studioObjectUrlRegistry';
-import { buildSentenceAlignedCharWindows } from '../services/ttsLongTextService';
-import { pollTtsGatewayJobForAudio } from '../services/ttsGatewayJobService';
+import { audioBufferToWav } from '../src/shared/audio/wav';
+import { getSharedAudioContext as getAudioContext } from '../src/shared/audio/audioContext';
+import { hydrateRuntimeStatusSnapshot } from '../src/shared/runtime/runtimeStatusHydration';
+import { BACKEND_ROUTING_APPLIED_EVENT } from '../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
+import { base64ToArrayBuffer, fileToBase64 } from '../src/shared/audio/base64';
+import { TTS_VOICE_CONVERSION_FALLBACK_EVENT, type TtsVoiceConversionFallbackDetail } from '../src/shared/audio/voiceConversionEvents';
+import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../services/runtimeStatusMapping';
+
+const STUDIO_SPEECH_GAIN_DEFAULT = 1.0;
+const STUDIO_SPEECH_GAIN_MIN = 0.05;
+const STUDIO_SPEECH_GAIN_MAX = 1.5;
+const STUDIO_MUSIC_GAIN_DEFAULT = 0.3;
+const STUDIO_MUSIC_GAIN_MIN = 0;
+const STUDIO_MUSIC_GAIN_MAX = 1;
+
+const TTS_RUNTIME_STATUS_EVENT = 'voiceflow:tts-runtime-status';
+
+const clampFiniteNumber = (value: unknown, min: number, max: number, fallback: number): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+};
+
+const resolveStudioSpeechGain = (value: unknown): number => (
+  clampFiniteNumber(value, STUDIO_SPEECH_GAIN_MIN, STUDIO_SPEECH_GAIN_MAX, STUDIO_SPEECH_GAIN_DEFAULT)
+);
+
+const resolveStudioMusicGain = (value: unknown): number => (
+  clampFiniteNumber(value, STUDIO_MUSIC_GAIN_MIN, STUDIO_MUSIC_GAIN_MAX, STUDIO_MUSIC_GAIN_DEFAULT)
+);
+
+const SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT = 8;
+
+const appendRollingSample = <T,>(
+  samples: readonly T[],
+  sample: T,
+  limit: number = SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT
+): T[] => {
+  const normalizedLimit = Math.max(1, Math.floor(Number(limit || 0)));
+  const next = [...samples, sample];
+  if (next.length <= normalizedLimit) return next;
+  return next.slice(next.length - normalizedLimit);
+};
+
+const shouldRefreshSelectedEngineTelemetry = (
+  telemetry: { kind?: string; measuredAtMs?: number } | null | undefined,
+  nowMs: number = Date.now(),
+  staleAfterMs: number = 5000
+): boolean => {
+  const kind = String(telemetry?.kind || '').trim().toLowerCase();
+  if (!kind) return true;
+  if (kind === 'pending') return true;
+  if (kind !== 'error') return false;
+
+  const measuredAtMs = Number(telemetry?.measuredAtMs || 0);
+  if (!Number.isFinite(measuredAtMs) || measuredAtMs <= 0) return true;
+
+  const safeStaleAfterMs = Math.max(0, Math.floor(Number(staleAfterMs) || 0));
+  return (nowMs - measuredAtMs) >= safeStaleAfterMs;
+};
+
+interface RuntimeLatencyCandidate {
+  state?: string | undefined;
+  latencyMs?: number | null | undefined;
+}
+
+const normalizeLatency = (value: unknown): number | null => {
+  const latency = Number(value);
+  if (!Number.isFinite(latency) || latency < 0) return null;
+  return Math.floor(latency);
+};
+
+const pickLowestLatencyRuntimeEngine = (
+  candidates: Partial<Record<GenerationSettings['engine'], RuntimeLatencyCandidate | null | undefined>>,
+  engineOrder: readonly GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM']
+): GenerationSettings['engine'] | null => {
+  let selectedEngine: GenerationSettings['engine'] | null = null;
+  let selectedLatencyMs = Number.POSITIVE_INFINITY;
+  let selectedOrder = Number.POSITIVE_INFINITY;
+
+  engineOrder.forEach((engine, order) => {
+    const candidate = candidates[engine];
+    if (!candidate) return;
+    const state = String(candidate.state || '').trim().toLowerCase();
+    if (state !== 'online') return;
+    const latencyMs = normalizeLatency(candidate.latencyMs);
+    if (latencyMs === null) return;
+
+    if (
+      selectedEngine === null
+      || latencyMs < selectedLatencyMs
+      || (latencyMs === selectedLatencyMs && order < selectedOrder)
+    ) {
+      selectedEngine = engine;
+      selectedLatencyMs = latencyMs;
+      selectedOrder = order;
+    }
+  });
+
+  return selectedEngine;
+};
+
+const normalizeEmotionKey = (value: string): string => (
+  String(value || '')
+    .toLowerCase()
+    .replace(/[\(\)\[\]\{\}"']/g, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+);
+
+const EMOTION_CANONICAL_BY_KEY = new Map<string, string>();
+for (const emotion of EMOTIONS) {
+  const key = normalizeEmotionKey(emotion);
+  if (key && !EMOTION_CANONICAL_BY_KEY.has(key)) {
+    EMOTION_CANONICAL_BY_KEY.set(key, emotion);
+  }
+}
+
+const EMOTION_ALIASES: Record<string, string> = {
+  'heroic veera': 'Heroic',
+  'sorrowful karuna': 'Sad',
+  'terrified bhayanaka': 'Fearful',
+  'disgusted bibhatsa': 'Disgusted',
+  'wonderstruck adbhuta': 'Surprised',
+  'peaceful shanta': 'Calm',
+  'amused hasya': 'Playful',
+  'furious raudra': 'Furious',
+  'romantic shringara': 'Romantic',
+  'devotional bhakti': 'Devotional',
+  stern: 'Serious',
+  melodramatic: 'Cinematic Narration',
+  sleepy: 'Relaxed',
+  smiling: 'Cheerful',
+  joking: 'Playful',
+  amused: 'Playful',
+  concerned: 'Empathetic',
+  concern: 'Empathetic',
+  whisper: 'Whispering',
+  shout: 'Shouting',
+  yell: 'Shouting',
+  scream: 'Screaming',
+  cry: 'Crying',
+  laugh: 'Laughing',
+  sad: 'Sad',
+  angry: 'Angry',
+  fear: 'Fearful',
+  calm: 'Calm',
+  happy: 'Happy',
+  surpris: 'Surprised',
+  worried: 'Anxious',
+  panic: 'Anxious',
+  shocked: 'Shocked',
+};
+
+const normalizeEmotionTag = (value: string): string | undefined => {
+  const key = normalizeEmotionKey(value);
+  if (!key) return undefined;
+  if (EMOTION_CANONICAL_BY_KEY.has(key)) return EMOTION_CANONICAL_BY_KEY.get(key);
+  if (Object.prototype.hasOwnProperty.call(EMOTION_ALIASES, key)) return EMOTION_ALIASES[key];
+  for (const [token, emotion] of Object.entries(EMOTION_ALIASES)) {
+    if (key.includes(token)) return emotion;
+  }
+  return undefined;
+};
+
+const normalizeRuntimeToken = (value: unknown): string => String(value || '').trim();
+
+const formatRuntimeServerLabel = (status: Partial<EngineRuntimeUiStatus> | null | undefined): string => {
+  if (!status || typeof status !== 'object') return '';
+  const locationLabel = (
+    normalizeRuntimeToken(status.selectedRegion) ||
+    normalizeRuntimeToken(status.cloudTtsLocation) ||
+    normalizeRuntimeToken(status.vertexLocation) ||
+    normalizeRuntimeToken(status.regionHint)
+  ).replace(/_/g, '-');
+  if (locationLabel) return locationLabel;
+  const token = normalizeRuntimeToken(status.runtimeUrl || status.healthUrl);
+  if (!token) return '';
+  try {
+    return new URL(token).host || token;
+  } catch {
+    return token.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || token;
+  }
+};
+
+const formatRuntimeMetadataSummary = (status: Partial<EngineRuntimeUiStatus> | null | undefined): string => {
+  if (!status || typeof status !== 'object') return '';
+  const provider = normalizeRuntimeToken(status.provider);
+  const lane = normalizeRuntimeToken(status.lane);
+  const server = formatRuntimeServerLabel(status);
+  const modelId = normalizeRuntimeToken(status.modelId);
+  return [provider, lane, server, modelId].filter(Boolean).join(' / ');
+};
+
+const mapGatewayEngineRuntimeToUiStatus = (engineItem: unknown): EngineRuntimeUiStatus => {
+  if (!engineItem || typeof engineItem !== 'object') {
+    return { state: 'offline', detail: 'Gateway did not return runtime status.' };
+  }
+  const candidate = engineItem as Record<string, unknown> & {
+    ready?: unknown;
+    capabilities?: Record<string, unknown> | null;
+    metadata?: Record<string, unknown> | null;
+  };
+  const capabilities = candidate.capabilities && typeof candidate.capabilities === 'object' && !Array.isArray(candidate.capabilities)
+    ? candidate.capabilities
+    : null;
+  const metadata = candidate.metadata && typeof candidate.metadata === 'object' && !Array.isArray(candidate.metadata)
+    ? candidate.metadata
+    : null;
+  const metadataSource = capabilities?.metadata && typeof capabilities.metadata === 'object' && !Array.isArray(capabilities.metadata)
+    ? capabilities.metadata
+    : metadata || capabilities || candidate;
+  const stateToken = normalizeEngineRuntimeState(candidate.state, 'offline');
+  const runtimeReady = typeof candidate.ready === 'boolean' ? candidate.ready : stateToken === 'online';
+  const detail = String(candidate.detail || 'Runtime status updated.') || 'Runtime status updated.';
+  const standbyHint = Boolean((metadataSource as Record<string, unknown>).standby);
+  const mappedState: EngineRuntimeUiState =
+    stateToken === 'not_configured' ? 'not_configured' :
+    stateToken === 'warming' && standbyHint ? 'standby' :
+    stateToken === 'warming' ? 'starting' :
+    (stateToken === 'starting' || (stateToken === 'online' && !runtimeReady)) ? 'starting' :
+    stateToken === 'online' ? 'online' :
+    (stateToken === 'standby' || (stateToken === 'offline' && standbyHint)) ? 'standby' :
+    'offline';
+  return {
+    state: mappedState,
+    detail,
+    provider: normalizeRuntimeToken((metadataSource as Record<string, unknown>).provider),
+    lane: normalizeRuntimeToken((metadataSource as Record<string, unknown>).lane),
+    selectedRegion: normalizeRuntimeToken((metadataSource as Record<string, unknown>).selectedRegion),
+    modelId: normalizeRuntimeToken((metadataSource as Record<string, unknown>).modelId),
+    runtimeUrl: normalizeRuntimeToken((metadataSource as Record<string, unknown>).runtimeUrl),
+    healthUrl: normalizeRuntimeToken((metadataSource as Record<string, unknown>).healthUrl),
+    cloudTtsLocation: normalizeRuntimeToken((metadataSource as Record<string, unknown>).cloudTtsLocation),
+    vertexLocation: normalizeRuntimeToken((metadataSource as Record<string, unknown>).vertexLocation),
+    regionHint: normalizeRuntimeToken((metadataSource as Record<string, unknown>).regionHint),
+    regionSource: normalizeRuntimeToken((metadataSource as Record<string, unknown>).regionSource),
+  };
+};
+
+const loadStudioMixService = (() => {
+  let cached: Promise<typeof import('../services/studioMixService')> | null = null;
+  return () => {
+    cached ??= import('../services/studioMixService');
+    return cached;
+  };
+})();
+const loadDubbingTimelineService = (() => {
+  let cached: Promise<typeof import('../services/dubbingTimelineService')> | null = null;
+  return () => {
+    cached ??= import('../services/dubbingTimelineService');
+    return cached;
+  };
+})();
+
+const cloneDubbingTimelineSnapshot = (clips: DubbingClip[]): DubbingClip[] => clips.map((clip) => ({ ...clip }));
+const pushDubbingTimelineHistory = (
+  past: DubbingClip[][],
+  current: DubbingClip[],
+  maxEntries: number = 40
+): DubbingClip[][] => {
+  const next = [...past, cloneDubbingTimelineSnapshot(current)];
+  if (next.length <= maxEntries) return next;
+  return next.slice(next.length - maxEntries);
+};
 
 const loadAdminTabContent = () => import('../src/features/admin/components/AdminTabContent');
 const loadNovelTabContent = () => import('../src/features/novel/components/NovelTabContent');
 const loadLabTabContent = () => import('../src/features/lab/components/LabTabContent');
-const loadPodcastTabContent = () => import('../src/features/podcast/components/PodcastTabContent');
 const loadReaderTabContent = () => import('../src/features/reader/components/ReaderTabContent');
+const loadPodcastTabContent = () => import('../src/features/podcast/components/PodcastTabContent');
+const loadAudioPlayer = () => import('../components/AudioPlayer');
+const LazyBlockScriptEditor = lazy(async () => {
+  const module = await import('../components/studio/BlockScriptEditor');
+  return { default: module.BlockScriptEditor };
+});
+const LazyStudioQueuePanel = lazy(async () => {
+  const module = await import('../components/studio/StudioQueuePanel');
+  return { default: module.StudioQueuePanel };
+});
+const loadDubbingService = (() => {
+  let cached: Promise<typeof import('../services/dubbingService')> | null = null;
+  return () => {
+    cached ??= import('../services/dubbingService');
+    return cached;
+  };
+})();
+const loadStudioQueueAudioService = (() => {
+  let cached: Promise<typeof import('../services/studioQueueAudioService')> | null = null;
+  return () => {
+    cached ??= import('../services/studioQueueAudioService');
+    return cached;
+  };
+})();
+const loadTtsVoiceRegistryService = (() => {
+  let cached: Promise<typeof import('../services/ttsVoiceRegistryService')> | null = null;
+  return () => {
+    cached ??= import('../services/ttsVoiceRegistryService');
+    return cached;
+  };
+})();
+const loadMediaBackendService = (() => {
+  let cached: Promise<typeof import('../services/mediaBackendService')> | null = null;
+  return () => {
+    cached ??= import('../services/mediaBackendService');
+    return cached;
+  };
+})();
+const loadTtsGatewayJobService = (() => {
+  let cached: Promise<typeof import('../services/ttsGatewayJobService')> | null = null;
+  return () => {
+    cached ??= import('../services/ttsGatewayJobService');
+    return cached;
+  };
+})();
+
+const TTS_GATEWAY_JOB_PROGRESS_EVENT = 'voiceflow:tts-gateway-job-progress';
+const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk';
+const TTS_RUNTIME_DIAGNOSTICS_EVENT = 'voiceflow:tts-runtime-diagnostics';
+const MAINAPP_SPEAKER_NAME_PATTERN_V2 = String.raw`[\p{L}\p{N}][\p{L}\p{M}\p{N}\s.'\u2019_-]{0,58}?`;
+const MAINAPP_SPEAKER_LINE_REGEX_V2 = new RegExp(
+  String.raw`^\s*(?:\[(.+?)\]|\((.+?)\)|(${MAINAPP_SPEAKER_NAME_PATTERN_V2}))(?:\s*[\(\[]([^\)\]]{1,120})[\)\]])?\s*[:\uFF1A]\s*(.*)$`,
+  'u'
+);
+
+const MAINAPP_SFX_REGEX = /^(?:\[|\()(?:SFX|sfx|Sound|SOUND|Music|MUSIC)\b/i;
+const MAINAPP_SPEAKER_LINE_REGEX = MAINAPP_SPEAKER_LINE_REGEX_V2;
+
+const normalizeSpeakerName = (raw: string): string => (
+  String(raw || '')
+    .replace(/^\*+|\*+$/g, '')
+    .replace(/[\[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const normalizeSpeakerMapKey = (raw: string): string => (
+  normalizeSpeakerName(raw)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s._'-]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const resolveSpeakerMappedVoiceId = (
+  speakerMapping: Record<string, string> | undefined,
+  speaker: string
+): string => {
+  if (!speakerMapping || typeof speakerMapping !== 'object') return '';
+  const rawSpeaker = String(speaker || '').trim();
+  if (!rawSpeaker) return '';
+  if (speakerMapping[rawSpeaker]) return String(speakerMapping[rawSpeaker] || '').trim();
+  const normalizedTarget = normalizeSpeakerMapKey(rawSpeaker);
+  if (!normalizedTarget) return '';
+  for (const key of Object.keys(speakerMapping)) {
+    if (normalizeSpeakerMapKey(key) === normalizedTarget) {
+      return String(speakerMapping[key] || '').trim();
+    }
+  }
+  return '';
+};
+
+const normalizeSpeakerHeaderScript = (text: string): string => (
+  String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const match = String(line || '').match(MAINAPP_SPEAKER_LINE_REGEX);
+      if (!match) return line;
+      const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
+      const dialogue = String(match[4] || '').trim();
+      if (!speaker) return line;
+      return dialogue ? `[${speaker}]: ${dialogue}` : `[${speaker}]:`;
+    })
+    .join('\n')
+);
+
+const parseMultiSpeakerScript = (text: string): { isMultiSpeaker: boolean; speakersList: string[]; crewTagsList: string[] } => {
+  const speakers = new Map<string, string>();
+  const crewTags: string[] = [];
+  for (const rawLine of String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+    const trimmed = String(rawLine || '').trim();
+    if (!trimmed || MAINAPP_SFX_REGEX.test(trimmed)) continue;
+    const match = trimmed.match(MAINAPP_SPEAKER_LINE_REGEX);
+    if (!match) continue;
+    const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
+    if (!speaker) continue;
+    const key = speaker.toLowerCase();
+    if (!speakers.has(key)) speakers.set(key, speaker);
+  }
+  return {
+    isMultiSpeaker: speakers.size > 0,
+    speakersList: Array.from(speakers.values()),
+    crewTagsList: crewTags,
+  };
+};
+
+const injectDirectorTagsPreservingFormat = (sourceText: string, directedText: string): { text: string; patchedLineCount: number } => ({
+  text: String(directedText || sourceText || ''),
+  patchedLineCount: 0,
+});
+
+const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => (
+  engine === 'KOKORO' ? KOKORO_VOICES : VOICES
+);
+
+const resolveMediaBackendUrl = (settings: Pick<GenerationSettings, 'mediaBackendUrl'>): string => (
+  sanitizeConfiguredApiBaseUrl(settings.mediaBackendUrl, getDefaultApiBaseUrl()).value
+);
 
 const AdminTabContent = lazy(async () => loadAdminTabContent().then((module) => ({ default: module.AdminTabContent })));
 const NovelTabContent = lazy(async () => loadNovelTabContent().then((module) => ({ default: module.NovelTabContent })));
 const LabTabContent = lazy(async () => loadLabTabContent().then((module) => ({ default: module.default })));
-const PodcastTabContent = lazy(async () => loadPodcastTabContent().then((module) => ({ default: module.PodcastTabContent })));
 const ReaderTabContent = lazy(async () => loadReaderTabContent().then((module) => ({ default: module.ReaderTabContent })));
+const PodcastTabContent = lazy(async () => loadPodcastTabContent().then((module) => ({ default: module.PodcastTabContent })));
+const AudioPlayer = lazy(async () => loadAudioPlayer().then((module) => ({ default: module.AudioPlayer })));
 
 const TAB_PRELOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   [Tab.ADMIN]: loadAdminTabContent,
   [Tab.NOVEL]: loadNovelTabContent,
-  [Tab.LAB]: loadLabTabContent,
-  [Tab.PODCAST]: loadPodcastTabContent,
   [Tab.READER]: loadReaderTabContent,
+  [Tab.PODCAST]: loadPodcastTabContent,
 };
+
+const loadGeminiService = (() => {
+  let cached: Promise<typeof import('../services/geminiService')> | null = null;
+  return () => {
+    cached ??= import('../services/geminiService');
+    return cached;
+  };
+})();
 
 interface MainAppProps {
   setScreen: (screen: AppScreen) => void;
@@ -172,19 +543,149 @@ interface MainAppProps {
 type UiTheme = 'light' | 'dark' | 'system';
 type UiDensity = 'comfortable' | 'compact';
 type UiMotionLevel = 'off' | 'balanced' | 'rich';
-type EngineRuntimeState = 'checking' | 'starting' | 'online' | 'offline' | 'not_configured' | 'standby';
-type CreditsSurfaceTab = 'tokens' | 'subscriptions';
+type EngineRuntimeState = EngineRuntimeUiState;
 
 const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
+const STUDIO_SINGLE_RUN_CHAR_CAP = 8000;
+const STUDIO_EDITOR_HARD_CAP = 50000;
+const STUDIO_QUEUE_INTER_PART_DELAY_MS = 3000;
+const TRANSIENT_GENERATION_RETRY_MAX = 1;
+const TRANSIENT_GENERATION_RETRY_DELAY_MS = 700;
+const RUNTIME_AUTO_SELECT_SESSION_FLAG = 'vf_runtime_auto_select_lowest_engine_v4';
 
-interface EngineRuntimeStatus {
-  state: EngineRuntimeState;
+const hasRuntimeAutoSelectSessionRun = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem(RUNTIME_AUTO_SELECT_SESSION_FLAG) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const markRuntimeAutoSelectSessionRun = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(RUNTIME_AUTO_SELECT_SESSION_FLAG, '1');
+  } catch {
+    // no-op
+  }
+};
+
+const clearRuntimeAutoSelectSessionRun = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(RUNTIME_AUTO_SELECT_SESSION_FLAG);
+  } catch {
+    // no-op
+  }
+};
+
+const RETRYABLE_GENERATION_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_GENERATION_TOKENS = [
+  'chunk_failed',
+  'generation_failed',
+  'poll_failed',
+  'upstream',
+  'timeout',
+  'timed out',
+  'rate limit',
+  'quota',
+  'capacity',
+  'overload',
+];
+const NON_RETRYABLE_GENERATION_TOKENS = [
+  'authentication',
+  'unauthorized',
+  'forbidden',
+  'missing bearer token',
+  'invalid auth token',
+  'requireduserid',
+  'required user id',
+  'billing',
+  'insufficient',
+  'wallet',
+  'balance',
+];
+
+const shouldRetryTransientGenerationError = (errorLike: unknown): boolean => {
+  const candidate = errorLike as {
+    detail?: Record<string, unknown>;
+    cause?: { status?: number; statusCode?: number };
+    status?: number;
+    statusCode?: number;
+    message?: string;
+  };
+  const detail = (candidate?.detail && typeof candidate.detail === 'object')
+    ? candidate.detail
+    : {};
+  if (detail.retryable === true) return true;
+
+  const statusCode = Number(
+    candidate?.statusCode
+    || candidate?.status
+    || candidate?.cause?.statusCode
+    || candidate?.cause?.status
+    || detail.statusCode
+    || 0
+  );
+  if (RETRYABLE_GENERATION_STATUS_CODES.has(statusCode)) return true;
+
+  const combined = sanitizeUiText(
+    [
+      candidate?.message,
+      detail.code,
+      detail.reason,
+      detail.message,
+      detail.error,
+      detail.errorCode,
+      detail.classification,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter((value) => value.length > 0)
+      .join(' ')
+      .toLowerCase()
+  );
+  if (!combined) return false;
+  if (NON_RETRYABLE_GENERATION_TOKENS.some((token) => combined.includes(token))) {
+    return false;
+  }
+  return RETRYABLE_GENERATION_TOKENS.some((token) => combined.includes(token));
+};
+
+type EngineRuntimeStatus = EngineRuntimeUiStatus;
+type SelectedEngineTelemetryKind = 'pending' | 'network' | 'local' | 'error';
+
+interface SelectedEngineTelemetry {
+  kind: SelectedEngineTelemetryKind;
+  label: string;
   detail: string;
+  latencyMs: number | null;
+  measuredAtMs: number;
+  samples: number[];
 }
+
+const createSelectedEngineTelemetry = (
+  overrides: Partial<SelectedEngineTelemetry> = {}
+): SelectedEngineTelemetry => ({
+  kind: 'pending',
+  label: 'Pending',
+  detail: 'Latency probe pending.',
+  latencyMs: null,
+  measuredAtMs: 0,
+  samples: [],
+  ...overrides,
+});
+
+const createInitialSelectedEngineTelemetry = (): Record<GenerationSettings['engine'], SelectedEngineTelemetry> => ({
+  GEM: createSelectedEngineTelemetry(),
+  NEURAL2: createSelectedEngineTelemetry(),
+  KOKORO: createSelectedEngineTelemetry(),
+});
 
 const ENGINE_RUNTIME_STATE_SET: ReadonlySet<EngineRuntimeState> = new Set([
   'checking',
   'starting',
+  'warming',
   'online',
   'offline',
   'not_configured',
@@ -197,6 +698,30 @@ const normalizeEngineRuntimeState = (
 ): EngineRuntimeState => {
   const token = String(rawState || '').trim().toLowerCase() as EngineRuntimeState;
   return ENGINE_RUNTIME_STATE_SET.has(token) ? token : fallback;
+};
+
+const cleanRuntimeMetadataField = (value: unknown): string => String(value || '').trim();
+
+const mergeRuntimeStatus = (
+  current: EngineRuntimeStatus | undefined,
+  patch: Partial<EngineRuntimeStatus>
+): EngineRuntimeStatus => {
+  const state = patch.state ?? current?.state ?? 'offline';
+  const detail = sanitizeUiText(String(patch.detail ?? current?.detail ?? 'Runtime status updated.')) || 'Runtime status updated.';
+  return {
+    state,
+    detail,
+    provider: cleanRuntimeMetadataField(patch.provider ?? current?.provider),
+    lane: cleanRuntimeMetadataField(patch.lane ?? current?.lane),
+    selectedRegion: cleanRuntimeMetadataField(patch.selectedRegion ?? current?.selectedRegion),
+    modelId: cleanRuntimeMetadataField(patch.modelId ?? current?.modelId),
+    runtimeUrl: cleanRuntimeMetadataField(patch.runtimeUrl ?? current?.runtimeUrl),
+    healthUrl: cleanRuntimeMetadataField(patch.healthUrl ?? current?.healthUrl),
+    cloudTtsLocation: cleanRuntimeMetadataField(patch.cloudTtsLocation ?? current?.cloudTtsLocation),
+    vertexLocation: cleanRuntimeMetadataField(patch.vertexLocation ?? current?.vertexLocation),
+    regionHint: cleanRuntimeMetadataField(patch.regionHint ?? current?.regionHint),
+    regionSource: cleanRuntimeMetadataField(patch.regionSource ?? current?.regionSource),
+  };
 };
 
 interface RuntimeAccessProbe {
@@ -229,6 +754,11 @@ interface GatewayJobProgressEventDetail {
   queueDepth?: number;
   stage?: string;
   progressPct?: number;
+  selectedRegion?: string;
+  cloudTtsLocation?: string;
+  vertexLocation?: string;
+  regionHint?: string;
+  regionSource?: string;
 }
 
 interface GatewayAudioChunkEventDetail {
@@ -240,11 +770,18 @@ interface GatewayAudioChunkEventDetail {
   textChars?: number;
   traceId?: string;
   speakerId?: string;
+  voiceId?: string;
   turnIndex?: number;
   sessionEpoch?: number;
   resumeAttempt?: number;
   fallbackUsed?: boolean;
+  speakerIndex?: number;
+  dialogIndex?: number | null;
+  dialogChunkIndex?: number;
+  stageIndex?: number;
+  stageCharCap?: number;
   audioBase64?: string;
+  audioObjectUrl?: string;
 }
 
 interface LiveAudioChunkItem {
@@ -256,11 +793,32 @@ interface LiveAudioChunkItem {
   textChars: number;
   traceId: string;
   speakerId?: string;
+  voiceId?: string;
   turnIndex?: number;
   sessionEpoch?: number;
   resumeAttempt?: number;
   fallbackUsed?: boolean;
-  audioBase64: string;
+  speakerIndex?: number;
+  dialogIndex?: number | null;
+  dialogChunkIndex?: number;
+  stageIndex?: number;
+  stageCharCap?: number;
+  audioBase64?: string;
+  audioObjectUrl?: string;
+}
+
+const LIVE_AUDIO_CHUNK_STATE_CAP = 48;
+
+interface GenerationTimingSnapshot {
+  mode: 'single' | 'queue';
+  startedAtMs: number;
+  firstAudioAtMs: number;
+  completedAtMs: number;
+  timeToFirstAudioMs: number;
+  totalGenerationMs: number;
+  partCount?: number;
+  partDurationsMs?: number[];
+  coldStart?: boolean;
 }
 
 interface CachedDubbingStems {
@@ -319,10 +877,13 @@ const readPositiveIntEnv = (value: unknown, fallback: number): number => {
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
 };
-const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 3000);
+const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 1000);
+const RUNTIME_STATUS_LATENCY_TIMEOUT_MS = readPositiveIntEnv(
+    import.meta.env.VITE_RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
+    5000
+);
 const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_COOLDOWN_POLL_MS, 30000);
 const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(import.meta.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
-const RUNTIME_STATUS_ACCESS_KEEPALIVE_MS = 10 * 60 * 1000;
 const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 5000;
 const RUNTIME_STATUS_LEADER_LEASE_MS = 20000;
 
@@ -362,27 +923,29 @@ const COUNTRY_TAG_BY_NAME: Record<string, string> = {
   india: 'IN',
   canada: 'CA',
   australia: 'AU',
+  japan: 'JP',
+  brazil: 'BR',
+  spain: 'ES',
   ireland: 'IE',
   france: 'FR',
   germany: 'DE',
   russia: 'RU',
   'united arab emirates': 'UAE',
 };
-const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; standardInr: number; scaleInr: number }> = {
-  micro: { label: 'Micro', vf: 50000, standardInr: 550, scaleInr: 440 },
-  standard: { label: 'Standard', vf: 150000, standardInr: 1450, scaleInr: 1160 },
-  mega: { label: 'Mega', vf: 300000, standardInr: 2900, scaleInr: 2320 },
-  ultra: { label: 'Ultra', vf: 600000, standardInr: 5200, scaleInr: 4160 },
+const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number; baseInr: number }> = {
+  micro: { label: 'Micro', vf: 50000, baseInr: 550 },
+  standard: { label: 'Standard', vf: 150000, baseInr: 1450 },
+  mega: { label: 'Mega', vf: 300000, baseInr: 2900 },
+  ultra: { label: 'Ultra', vf: 600000, baseInr: 5200 },
 };
-const LOW_TOKEN_PROMPT_THRESHOLD = 600;
 
 const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
   [Tab.STUDIO]: 'Script, cast, and render audio',
-  [Tab.PODCAST]: 'Live native podcast orchestration and runtime',
-  [Tab.LAB]: 'Experimental audio and video tools',
+  [Tab.PODCAST]: 'Standard podcast scripting and handoff',
+  [Tab.LAB]: 'Studio workspace',
+  [Tab.READER]: 'Narration workspace for novels and comics',
   [Tab.CHARACTERS]: 'Voice roster and cast management',
   [Tab.NOVEL]: 'Long-form drafting and chapter flow',
-  [Tab.READER]: 'Playback, import, and listening tools',
   [Tab.HISTORY]: 'Recent generations and exports',
   [Tab.ADMIN]: 'Operational controls and audits',
 };
@@ -394,29 +957,51 @@ const formatInr = (amount: number): string =>
     maximumFractionDigits: 0,
   }).format(Math.max(0, Number(amount || 0)));
 
-type AdminOpsTab = 'usage' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
+type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics';
 const resolveWorkspaceTabFromUrl = (): Tab => {
   if (typeof window === 'undefined') return Tab.STUDIO;
-  const token = String(new URLSearchParams(window.location.search).get('vf-tab') || '').trim().toUpperCase();
-  return Object.values(Tab).includes(token as Tab) ? (token as Tab) : Tab.STUDIO;
+  const url = new URL(window.location.href);
+  const token = String(url.searchParams.get('vf-tab') || '').trim().toUpperCase();
+  if (Object.values(Tab).includes(token as Tab)) return token as Tab;
+  const pathname = String(url.pathname || '').trim().toLowerCase();
+  if (pathname === '/reader' || pathname.startsWith('/reader/')) return Tab.READER;
+  return Tab.STUDIO;
 };
 
 const resolveAdminOpsTabFromUrl = (): AdminOpsTab => {
   if (typeof window === 'undefined') return 'usage';
   const token = String(new URLSearchParams(window.location.search).get('vf-admin-tab') || '').trim().toLowerCase();
-  return ['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics', 'accounting'].includes(token)
+  return ['usage', 'tokens', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics'].includes(token)
     ? (token as AdminOpsTab)
     : 'usage';
 };
 
-const normalizePlanToken = (planName: unknown): 'free' | 'starter' | 'creator' | 'pro' | 'scale' => {
+const normalizePlanToken = (planName: unknown): 'free' | 'launch' | 'starter' | 'creator' | 'pro' | 'scale' => {
   const token = String(planName || '').trim().toLowerCase();
+  if (token === 'launch') return 'launch';
   if (token === 'starter') return 'starter';
   if (token === 'creator') return 'creator';
   if (token === 'pro') return 'pro';
   if (token === 'scale' || token === 'plus' || token === 'pro_plus' || token === 'pro-plus') return 'scale';
   return 'free';
 };
+
+const resolveTokenPackDiscountPercent = (
+  planToken: ReturnType<typeof normalizePlanToken>,
+  entitlementDiscount: number
+): number => {
+  if (Number.isFinite(entitlementDiscount) && entitlementDiscount > 0) {
+    return Math.max(0, Math.round(entitlementDiscount));
+  }
+  if (planToken === 'starter') return 5;
+  if (planToken === 'creator') return 10;
+  if (planToken === 'pro') return 15;
+  if (planToken === 'scale') return 20;
+  return 0;
+};
+
+const applyTokenPackDiscount = (baseAmountInr: number, discountPercent: number): number =>
+  Math.max(1, Math.round(Math.max(0, Number(baseAmountInr || 0)) * (1 - (Math.max(0, Number(discountPercent || 0)) / 100))));
 
 const normalizeAllowedEngines = (value: unknown): GenerationSettings['engine'][] => {
   if (!Array.isArray(value)) return [];
@@ -433,25 +1018,9 @@ const normalizeEngineToken = (
 ): GenerationSettings['engine'] => {
   const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   if (!token) return fallback;
-  if (token === 'KOKORO' || token === 'KOKORO_RUNTIME' || token === 'BASIC' || token === 'BAS' || token === 'BS') return 'KOKORO';
-  if (
-    token === 'NEURAL2' ||
-    token === 'NEURAL_2' ||
-    token === 'NURAL2' ||
-    token === 'NURAL_2' ||
-    token === 'VECTOR' ||
-    token === 'VEC' ||
-    token === 'HD'
-  ) return 'NEURAL2';
-  if (
-    token === 'GEM' ||
-    token === 'GEMINI' ||
-    token === 'GOOD' ||
-    token === 'GOOD_LITE' ||
-    token === 'PRIME' ||
-    token === 'PRI' ||
-    token === 'PR'
-  ) return 'GEM';
+  if (token === 'KOKORO') return 'KOKORO';
+  if (token === 'VECTOR' || token === 'NEURAL2' || token === 'FLASH') return 'NEURAL2';
+  if (token === 'PRIME' || token === 'GEM' || token === 'PRO' || token === 'PREMIUM' || token === 'QUALITY') return 'GEM';
   return fallback;
 };
 
@@ -466,7 +1035,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   emotionStrength: 0.35,
   engine: 'GEM',
   helperProvider: 'GEMINI',
-  assistantProviderControlsEnabled: true,
+  assistantProviderControlsEnabled: false,
   preferUserGeminiKey: false,
   perplexityApiKey: '',
   localLlmUrl: 'http://localhost:5000',
@@ -513,7 +1082,7 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     pitch: value.pitch === 'Low' || value.pitch === 'Medium' || value.pitch === 'High' ? value.pitch : DEFAULT_SETTINGS.pitch,
     language: typeof value.language === 'string' && value.language.trim() ? value.language : DEFAULT_SETTINGS.language,
     emotion: normalizeEmotionTag(String(value.emotion || '')) || (typeof value.emotion === 'string' && value.emotion.trim() ? value.emotion : DEFAULT_SETTINGS.emotion),
-    helperProvider: value.helperProvider === 'GEMINI' || value.helperProvider === 'PERPLEXITY' || value.helperProvider === 'LOCAL' ? value.helperProvider : DEFAULT_SETTINGS.helperProvider,
+    helperProvider: 'GEMINI',
     assistantProviderControlsEnabled: normalizeAssistantProviderControlsEnabled(
       value.assistantProviderControlsEnabled,
       DEFAULT_SETTINGS.assistantProviderControlsEnabled !== false,
@@ -598,19 +1167,32 @@ const runDubbingEditorTool = (
   }
 
   if (mode === 'speakerize') {
-    return lines
-      .map((line) => {
-        if (!line) return '';
-        if (/^\([^)]*\)\s+[^:]+:\s+/i.test(line)) return line;
-        if (/^[^:]{1,40}:\s+/i.test(line)) return line;
-        if (/^\([^)]*\)\s+/.test(line)) {
-          return line.replace(/^(\([^)]*\)\s+)/, '$1Speaker 1: ');
-        }
-        return `Speaker 1: ${line}`;
-      })
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    return normalizeSpeakerHeaderScript(
+      lines
+        .map((line) => {
+          if (!line) return '';
+          if (/^(?:\[[^\]\n]+\]|\([^)]*\))(?:\s+[\(\[][^\)\]]*[\)\]])?\s*:\s+/i.test(line)) {
+            return line;
+          }
+          if (/^[^:\[\(]{1,40}(?:\s+[\(\[][^\)\]]*[\)\]])?\s*:\s+/i.test(line)) {
+            const match = line.match(/^([^:\[\(]{1,40}?)(?:\s+[\(\[]([^\)\]]*)[\)\]])?\s*:\s*(.+)$/);
+            if (!match) return line;
+            const speaker = String(match[1] || '').trim();
+            const tagBlock = String(match[2] || '').trim();
+            const dialogue = String(match[3] || '').trim();
+            return tagBlock
+              ? `[${speaker}] (${tagBlock}): ${dialogue}`
+              : `[${speaker}]: ${dialogue}`;
+          }
+          if (/^(?:\([^)]*\)|\[[^\]]*\])\s+/.test(line)) {
+            return line.replace(/^((?:\([^)]*\)|\[[^\]]*\])\s+)/, '$1[Speaker 1]: ');
+          }
+          return `[Speaker 1]: ${line}`;
+        })
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+    );
   }
 
   if (mode === 'dedupe') {
@@ -661,6 +1243,14 @@ const formatClipDuration = (ms: number): string => {
   const mm = Math.floor(total / 60);
   const ss = String(total % 60).padStart(2, '0');
   return `${mm}:${ss}`;
+};
+
+const formatGenerationDuration = (ms: number): string => {
+  const safeMs = Math.max(0, Math.floor(Number(ms) || 0));
+  const totalSeconds = Math.round(safeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 };
 
 // --- SYSTEM RESOURCE MONITOR ---
@@ -847,7 +1437,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     getVoiceForCharacter,
     syncCast,
     signOutUser,
-    watchAd,
     refreshEntitlements,
     isAdmin,
     hasUnlimitedAccess,
@@ -864,14 +1453,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   
   // --- State ---
   const [activeTab, setActiveTab] = useState<Tab>(resolveWorkspaceTabFromUrl);
-  const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
+  const isStudioWorkspaceTab = activeTab === Tab.STUDIO || activeTab === Tab.LAB;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (
     resolveSidebarMode(readStorageString(STORAGE_KEYS.studioSidebarMode))
   ));
   const [isCreditsSurfaceOpen, setIsCreditsSurfaceOpen] = useState(false);
-  const [, setCreditsSurfaceTab] = useState<CreditsSurfaceTab>('tokens');
   const [studioRailTab, setStudioRailTab] = useState<StudioRailTab>(() => resolveStudioRailTab('voice'));
   
   // Studio Text State
@@ -886,12 +1474,33 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const deferredSettings = useDeferredValue(settings);
 
   useEffect(() => { writeStorageJson(STORAGE_KEYS.settings, deferredSettings); }, [deferredSettings]);
+  useEffect(() => {
+    const onBackendRoutingApplied = (event: Event) => {
+      const custom = event as CustomEvent<{ baseUrl?: string }>;
+      const nextBaseUrl = String(custom?.detail?.baseUrl || '').trim();
+      if (!nextBaseUrl) return;
+      setSettings((prev) => {
+        const currentBase = sanitizeConfiguredApiBaseUrl(
+          String(prev.mediaBackendUrl || ''),
+          DEFAULT_MEDIA_BACKEND_URL
+        ).value;
+        const nextBase = sanitizeConfiguredApiBaseUrl(nextBaseUrl, DEFAULT_MEDIA_BACKEND_URL).value;
+        if (currentBase === nextBase) return prev;
+        return { ...prev, mediaBackendUrl: nextBase };
+      });
+    };
+    window.addEventListener(BACKEND_ROUTING_APPLIED_EVENT, onBackendRoutingApplied as EventListener);
+    return () => {
+      window.removeEventListener(BACKEND_ROUTING_APPLIED_EVENT, onBackendRoutingApplied as EventListener);
+    };
+  }, []);
 
   // Generation Status State
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
   const [processingStage, setProcessingStage] = useState('');
+  const [generationTiming, setGenerationTiming] = useState<GenerationTimingSnapshot | null>(null);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
   const [liveAudioChunks, setLiveAudioChunks] = useState<LiveAudioChunkItem[]>([]);
   const [studioQueueState, setStudioQueueState] = useState<StudioQueueState | null>(() => (
@@ -901,6 +1510,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   
   // Abort Controller for Cancellation
   const generationAbortController = useRef<AbortController | null>(null);
+  const generationAbortReasonRef = useRef<'' | 'manual' | 'stall'>('');
+  const generationRunStartedAtRef = useRef<number>(0);
+  const generationFirstAudioAtRef = useRef<number>(0);
+  const queueItemTimingRef = useRef<Record<string, { startedAtMs: number; firstAudioAtMs: number }>>({});
+  const generationActivityAtRef = useRef<number>(0);
+  const generationWatchdogTimerRef = useRef<number | null>(null);
   const seenRuntimeDiagnosticsTracesRef = useRef<Set<string>>(new Set());
   const activeGatewayJobIdRef = useRef<string>('');
   const seenLiveChunkKeysRef = useRef<Set<string>>(new Set());
@@ -910,6 +1525,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioQueueAudioUrlsRef = useRef<Record<string, string>>({});
   const masterQueueAudioUrlRef = useRef<string | null>(null);
   const queueMasterRebuildTimerRef = useRef<number | null>(null);
+  const studioQueueCooldownTimerRef = useRef<number | null>(null);
   const queueRunnerLockRef = useRef(false);
   const studioQueueAutoResumeAttemptedRef = useRef(false);
   const generationFailureBurstRef = useRef(0);
@@ -923,15 +1539,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   });
   const lastBackendHealthyRef = useRef<boolean | null>(null);
   const quotaNoticeRef = useRef<Record<string, boolean>>({});
-  const lowTokenPromptNoticeRef = useRef<Record<string, boolean>>({});
+  const studioTextHardCapNoticeAtRef = useRef(0);
   const ttsAccessProbeRef = useRef<RuntimeAccessProbe | null>(null);
   const lastTtsAccessBlockedRef = useRef<boolean | null>(null);
   const ttsAccessClockRetryAtRef = useRef<number>(0);
+  const kokoroWarmupPromiseRef = useRef<Promise<void> | null>(null);
   
   // Modals & Overlays
   const [showSettings, setShowSettings] = useState(false);
-  const [showAdModal, setShowAdModal] = useState(false);
-  const [showLowTokenPrompt, setShowLowTokenPrompt] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [isRedeemingCoupon, setIsRedeemingCoupon] = useState(false);
   const [isBuyingTokenPack, setIsBuyingTokenPack] = useState(false);
@@ -982,7 +1597,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     speaker: true,
     mix: false,
     multiSpeaker: false,
-    cast: false,
+    cast: true,
     queue: false,
     live: false,
   });
@@ -990,19 +1605,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const saved = readStorageString(STORAGE_KEYS.studioEditorMode);
       return saved === 'blocks' ? 'blocks' : 'raw';
   });
+  const [isStudioEditorFullscreen, setIsStudioEditorFullscreen] = useState(false);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const studioImportInputRef = useRef<HTMLInputElement>(null);
 
   const toggleStudioMobilePanel = useCallback((panel: keyof typeof studioMobilePanels) => {
+    if (panel === 'cast') return;
     setStudioMobilePanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
-  }, []);
-  const jumpToStudioRailSection = useCallback((section: StudioRailTab) => {
-    setStudioRailTab(section);
-    if (typeof document === 'undefined') return;
-    const target = document.getElementById(`studio-rail-${section}`);
-    if (!target) return;
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
   // Translation & Chat State
@@ -1018,10 +1628,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [lastAssistantDraft, setLastAssistantDraft] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Lab & Dubbing State
-  const [cloneName, setCloneName] = useState('');
-  const [uploadVoiceFile, setUploadVoiceFile] = useState<File | null>(null);
-  
   // --- Video Dubbing State ---
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -1040,11 +1646,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [isVideoPipelineGuideOpen, setIsVideoPipelineGuideOpen] = useState(false);
   const [dubbingJobResultUrl, setDubbingJobResultUrl] = useState<string | null>(null);
   const [dubbingReportUrl, setDubbingReportUrl] = useState<string | null>(null);
-  const directorOptions: DirectorOptions = {
-      style: 'natural',
-      tone: 'neutral'
-  };
-  
   // Mixing
   const [videoVolume, setVideoVolume] = useState(1.0);
   const [dubVolume, setDubVolume] = useState(1.0);
@@ -1067,12 +1668,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [voiceFilterGender, setVoiceFilterGender] = useState<'All' | 'Male' | 'Female'>('All');
   const [voiceFilterAccent, setVoiceFilterAccent] = useState<string>('All');
   const deferredVoiceSearch = useDeferredValue(voiceSearch);
+  const [isVoiceCloneModalOpen, setIsVoiceCloneModalOpen] = useState(false);
 
   const [characterModalOpen, setCharacterModalOpen] = useState(false);
   const [editingChar, setEditingChar] = useState<CharacterProfile | null>(null);
   const [charForm, setCharForm] = useState<CharacterProfile>({
       id: '', name: '', voiceId: DEFAULT_GEM_VOICE_ID, gender: 'Unknown', age: 'Adult', avatarColor: '#6366f1'
   });
+  const [voiceConversionAttachments, setVoiceConversionAttachments] = useState<Record<string, { audioName: string; audioBase64: string }>>({});
+  const [vcReferenceDraftFile, setVcReferenceDraftFile] = useState<File | null>(null);
+  const [isStudioVoiceConversionEnabled, setIsStudioVoiceConversionEnabled] = useState(false);
+  const [labPanelRequest, setLabPanelRequest] = useState<{ panel: LabRailPanelId; token: number } | null>(null);
+  const voiceConversionFallbackToastRef = useRef<Record<string, number>>({});
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const dubAudioRef = useRef<HTMLAudioElement>(null);
@@ -1098,7 +1705,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setDubbingClips((current) => {
         const next = mutator(current);
         if (next === current) return current;
-        setDubbingHistoryPast((past) => pushUndoHistory(past, current));
+        setDubbingHistoryPast((past) => pushDubbingTimelineHistory(past, current));
         setDubbingHistoryFuture([]);
         return next;
       });
@@ -1189,8 +1796,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     GEM: { state: 'checking', detail: 'Checking...' },
     NEURAL2: { state: 'checking', detail: 'Checking...' },
     KOKORO: { state: 'checking', detail: 'Checking...' },
-
   });
+  const ttsRuntimeStatusRef = useRef(ttsRuntimeStatus);
   const [ttsAccessState, setTtsAccessState] = useState<TtsAccessState>({
     blocked: false,
     detail: 'Checking authentication...',
@@ -1203,9 +1810,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const runtimePollCooldownUntilRef = useRef(0);
   const runtimePollRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const runtimePollWasBusyRef = useRef(false);
+  const [selectedEngineTelemetry, setSelectedEngineTelemetry] = useState<Record<GenerationSettings['engine'], SelectedEngineTelemetry>>(
+    createInitialSelectedEngineTelemetry
+  );
   const [runtimeVoiceCatalogs, setRuntimeVoiceCatalogs] = useState<Record<GenerationSettings['engine'], VoiceOption[]>>(
     EMPTY_RUNTIME_CATALOG
   );
+
+  useEffect(() => {
+    ttsRuntimeStatusRef.current = ttsRuntimeStatus;
+  }, [ttsRuntimeStatus]);
 
   const normalizedPlanToken = normalizePlanToken(stats.planName);
   const isPaidBillingPlan = normalizedPlanToken !== 'free';
@@ -1220,19 +1834,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         ? [...ENGINE_ORDER]
         : entitlementAllowedEngines.length > 0
           ? entitlementAllowedEngines
-          : isPaidBillingPlan
+          : normalizedPlanToken === 'launch'
+            ? ['KOKORO', 'NEURAL2']
+            : isPaidBillingPlan
             ? [...ENGINE_ORDER]
             : ['KOKORO', 'NEURAL2']
     ),
-    [entitlementAllowedEngines, hasUnlimitedAccess, isPaidBillingPlan]
+    [entitlementAllowedEngines, hasUnlimitedAccess, isPaidBillingPlan, normalizedPlanToken]
   );
-  const maxCharsPerGeneration = Math.max(
-    1,
-    Number(
-      stats.limits?.maxCharsPerGeneration ||
-      (normalizedPlanToken === 'scale' ? 15000 : isPaidBillingPlan ? 10000 : 8000)
-    )
-  );
+  const maxCharsPerGeneration = STUDIO_SINGLE_RUN_CHAR_CAP;
   const studioQueueSourceHash = useMemo(() => hashStudioQueueSource(text), [text]);
   const studioQueueEligible = useMemo(
     () => canUseStudioQueue(text, maxCharsPerGeneration),
@@ -1240,80 +1850,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const studioQueueDraftPartCount = useMemo(() => {
     if (!studioQueueEligible) return 0;
-    return buildSentenceAlignedCharWindows(text, maxCharsPerGeneration).length;
-  }, [maxCharsPerGeneration, studioQueueEligible, text]);
+    return createStudioQueueState(text, maxCharsPerGeneration, settings, true).items.length;
+  }, [maxCharsPerGeneration, settings, studioQueueEligible, text]);
   const isStudioQueueModeEnabled = studioQueueState?.queueModeEnabled === true;
   const hasStudioQueueItems = Boolean(studioQueueState?.items.length);
   const selectedTokenPackMeta = TOKEN_PACK_MATRIX[selectedTokenPack];
-  const selectedTokenPackPriceInr = normalizedPlanToken === 'scale'
-    ? selectedTokenPackMeta.scaleInr
-    : selectedTokenPackMeta.standardInr;
+  const tokenPackDiscountPercent = resolveTokenPackDiscountPercent(
+    normalizedPlanToken,
+    Number(stats.limits?.tokenPackDiscountPercent || 0)
+  );
+  const selectedTokenPackPriceInr = applyTokenPackDiscount(selectedTokenPackMeta.baseInr, tokenPackDiscountPercent);
+  const selectedTokenPackSavingsInr = Math.max(0, selectedTokenPackMeta.baseInr - selectedTokenPackPriceInr);
 
-  const currentPlanRank = normalizedPlanToken === 'scale'
-    ? 4
-    : normalizedPlanToken === 'pro'
-      ? 3
-      : normalizedPlanToken === 'creator'
-        ? 2
-        : normalizedPlanToken === 'starter'
-          ? 1
-          : 0;
   const currentEngineSpendable = Math.max(
     0,
     Number(stats.wallet?.spendableNowByEngine?.[settings.engine] || 0)
   );
+  const canRunClientBasicWithoutWallet = settings.engine === 'KOKORO';
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
-  const isLimitReached = isWalletBlocked;
-  const hasAdClaimsRemaining =
-    Math.max(0, Number(stats.wallet?.adClaimsToday || 0)) < Math.max(1, Number(stats.wallet?.adClaimsDailyLimit || 3));
-  const canClaimAdReward = hasUnlimitedAccess || hasAdClaimsRemaining;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
   const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
+  const allowedEngineSummary = planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ');
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
-    const source = sanitizeUiText(String(raw || '').trim());
-    const lowered = source.toLowerCase();
-    if (
-      lowered.includes('missing bearer token') ||
-      lowered.includes('invalid auth token') ||
-      lowered.includes('authentication was rejected') ||
-      lowered.includes('auth token')
-    ) {
-      return 'Backend is reachable, but authentication failed. Sign in again and retry.';
-    }
-    if (
-      lowered.includes('cannot reach backend') ||
-      lowered.includes('backend gateway is unreachable') ||
-      lowered.includes('cors') ||
-      lowered.includes('fetch failed') ||
-      lowered.includes('failed to fetch')
-    ) {
-      return 'Cannot connect to backend service. Verify backend health and CORS configuration, then retry.';
-    }
-    if (
-      lowered.includes('x-admin-unlock') ||
-      lowered.includes('admin-unlock') ||
-      lowered.includes('admin session unlock')
-    ) {
-      return 'Runtime start is admin-locked. Open Settings > Admin and verify session unlock, then retry.';
-    }
-    if (lowered.includes('did not become online') || lowered.includes('timeout')) {
-      return 'Runtime is taking too long to start. Retry or check service health.';
-    }
-    if (lowered.includes('key pool')) {
-      return 'Primary AI runtime keys are not ready. Update key settings or switch engine.';
-    }
-    if (
-      lowered.includes('service_disabled') ||
-      lowered.includes('firestore.googleapis.com') ||
-      lowered.includes('googleapis.com') ||
-      lowered.includes('cloud firestore api has not been used')
-    ) {
-      return 'Profile service is temporarily unavailable. Please try again in a few minutes.';
-    }
-    return source || sanitizeUiText(fallback);
-  }, []);
+    return formatFrontendError(raw, {
+      fallback,
+      context: 'runtime',
+      isAdmin: hasAdminConsoleAccess,
+    }).publicMessage;
+  }, [hasAdminConsoleAccess]);
   const isAuthOrProfileBlockingMessage = useCallback((raw: unknown): boolean => {
     const lowered = String(raw || '').trim().toLowerCase();
     if (!lowered) return false;
@@ -1454,15 +2020,29 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     [isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason]
   );
   const showToast = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
-    const safeMessage = type === 'error' ? toUserFriendlySystemMessage(msg, msg) : sanitizeUiText(msg);
+    const formatted = type === 'error'
+      ? formatFrontendError(msg, { fallback: msg, context: 'generic', isAdmin: hasAdminConsoleAccess })
+      : { publicMessage: sanitizeUiText(msg), adminDetails: undefined };
+    const safeMessage = formatted.publicMessage;
     if (!safeMessage) return;
     emit('custom.message', {
       message: safeMessage,
+      ...(formatted.adminDetails ? { details: formatted.adminDetails } : {}),
       severity: type === 'success' ? 'success' : type === 'error' ? 'error' : 'info',
       category: type === 'error' ? 'system' : 'activity',
       channel: 'toast',
     });
-  }, [emit, toUserFriendlySystemMessage]);
+  }, [emit, hasAdminConsoleAccess]);
+
+  useEffect(() => {
+      if (text.length <= STUDIO_EDITOR_HARD_CAP) return;
+      setText((previous) => String(previous || '').slice(0, STUDIO_EDITOR_HARD_CAP));
+      const now = Date.now();
+      if (now - studioTextHardCapNoticeAtRef.current > 1800) {
+          studioTextHardCapNoticeAtRef.current = now;
+          showToast(`Input is capped at ${STUDIO_EDITOR_HARD_CAP.toLocaleString()} characters. Extra text was trimmed.`, 'info');
+      }
+  }, [showToast, text]);
 
   useEffect(() => {
       const params = new URLSearchParams(window.location.search);
@@ -1501,7 +2081,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           if (target.adminTab) {
               const adminToken = String(target.adminTab || '').trim().toLowerCase();
-              if (['usage', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics', 'accounting'].includes(adminToken)) {
+              if (['usage', 'tokens', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics'].includes(adminToken)) {
                   setInitialAdminOpsTab(adminToken as AdminOpsTab);
               }
           }
@@ -1675,6 +2255,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (cached && cached.key === key) return cached;
 
       clearDubbingStemCache();
+      const { extractAndSeparateDubbingStems } = await loadDubbingService();
       const stems = await extractAndSeparateDubbingStems(file, {
           backendUrl: mediaBackendUrl,
           preferBackendModel: settings.useModelSourceSeparation !== false,
@@ -2083,29 +2664,63 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX')
               .forEach((speaker) => names.add(speaker));
       }
-      detectedSpeakers
-          .map((speaker) => speaker.trim())
-          .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX')
-          .forEach((speaker) => names.add(speaker));
+      if (!isStudioWorkspaceTab) {
+          detectedSpeakers
+              .map((speaker) => speaker.trim())
+              .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX')
+              .forEach((speaker) => names.add(speaker));
+      }
       if (!names.size) names.add('Narrator');
       return [...names];
   }, [detectedSpeakers, dubScript, isStudioWorkspaceTab, studioParsedScript, text]);
   const isStudioMultiSpeakerEnabled = settings.multiSpeakerEnabled !== false;
+  const explicitStudioSpeakers = useMemo(
+      () => studioParsedScript.speakersList.filter((speaker) => String(speaker || '').trim().length > 0),
+      [studioParsedScript]
+  );
+  const hasStudioExplicitMultiSpeakerScript = explicitStudioSpeakers.length > 1;
   const shouldShowStudioQueuePanel = isStudioQueueModeEnabled;
-  const studioRailTabItems = STUDIO_RAIL_TAB_ITEMS;
+  const normalizeStudioSpeakerHeaders = useCallback(
+      (source: string): string => normalizeSpeakerHeaderScript(String(source || '')),
+      []
+  );
+  const studioRailTabItems = useMemo(
+    () =>
+      STUDIO_RAIL_TAB_ITEMS.map((item) => ({
+        ...item,
+        disabled:
+          item.id === 'voice'
+            ? isStudioMultiSpeakerEnabled
+            : item.id === 'cast'
+              ? !isStudioMultiSpeakerEnabled
+              : false,
+      })),
+    [isStudioMultiSpeakerEnabled]
+  );
+  const studioRailTabs = useManagedTabs({
+    items: studioRailTabItems,
+    activeId: studioRailTab,
+    onChange: setStudioRailTab,
+    label: 'Studio controls',
+    idBase: 'studio-controls',
+  });
   const creditsActionState = useMemo(
     () => getStudioCreditsActionState({
-      canClaimAdReward,
+      isAuthenticated: hasSessionIdentity,
       isBuyingTokenPack,
       isRedeemingCoupon,
       couponCode,
     }),
-    [canClaimAdReward, couponCode, isBuyingTokenPack, isRedeemingCoupon]
+    [couponCode, hasSessionIdentity, isBuyingTokenPack, isRedeemingCoupon]
   );
 
   const autoAssignCastVoices = useCallback(async () => {
       if (!isStudioMultiSpeakerEnabled) {
           showToast('Enable Multi-Speaker Mode first.', 'info');
+          return;
+      }
+      if (!hasStudioExplicitMultiSpeakerScript) {
+          showToast('Add at least two speaker-tagged lines like "[Speaker 1]: Dialogue" to use cast auto-assign.', 'info');
           return;
       }
 
@@ -2119,18 +2734,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return;
       }
 
-      const sourceScript = false ? dubScript : text;
+      const sourceScript = String(text || '').trim();
       if (!sourceScript.trim()) {
           showToast('Write or paste a script first.', 'info');
           return;
       }
+      const canonicalSourceScript = normalizeStudioSpeakerHeaders(sourceScript);
+      if (canonicalSourceScript !== sourceScript) {
+          setText(canonicalSourceScript);
+      }
       setIsAutoAssigningCast(true);
       try {
-          let resolvedSpeakers = [...castSpeakers];
+          const { inferSpeakerTraitHintsWithAi } = await loadGeminiService();
+          const parsedSource = parseMultiSpeakerScript(canonicalSourceScript);
+          const parsedSpeakers = parsedSource.speakersList
+              .map((speaker) => String(speaker || '').trim())
+              .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX');
+          let resolvedSpeakers = [...parsedSpeakers];
           let traitHints: Record<string, { gender?: 'Male' | 'Female' | 'Unknown'; ageGroup?: 'Child' | 'Adult' | 'Elderly' | 'Unknown'; tone?: 'calm' | 'energetic' | 'serious' }> = {};
 
           try {
-              const aiAnalysis = await inferSpeakerTraitHintsWithAi(sourceScript, settings, castSpeakers);
+              const aiAnalysis = await inferSpeakerTraitHintsWithAi(canonicalSourceScript, settings, parsedSpeakers);
               if (aiAnalysis.speakers.length > 0) {
                   resolvedSpeakers = aiAnalysis.speakers;
               }
@@ -2144,24 +2768,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               return;
           }
 
-          const rememberedVoices = resolvedSpeakers.reduce<Record<string, string>>((acc, speaker) => {
-              const voiceId = String(getVoiceForCharacter(speaker) || '').trim();
-              if (voiceId) acc[speaker] = voiceId;
-              return acc;
-          }, {});
           const autoAssignOptions = {
               speakers: resolvedSpeakers,
-              script: sourceScript,
+              script: canonicalSourceScript,
               voices: effectiveCatalog,
               characterLibrary,
-              rememberedVoices,
               traitHints,
+              ...(settings.speakerMapping ? { currentMapping: settings.speakerMapping } : {}),
           };
-          const { mapping: nextMapping, assignments } = autoAssignSpeakerVoices(
-              settings.speakerMapping
-                ? { ...autoAssignOptions, existingMapping: settings.speakerMapping }
-                : autoAssignOptions
-          );
+          const { mapping: nextMapping, assignments } = refreshStudioSpeakerVoices(autoAssignOptions);
 
           if (!Object.keys(nextMapping).length) {
               showToast('No cast speakers available to auto-assign.', 'info');
@@ -2169,14 +2784,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
 
           startTransition(() => {
-              setDetectedSpeakers((prev) => {
-                  const merged = new Set(
-                      [...prev, ...resolvedSpeakers]
-                          .map((speaker) => String(speaker || '').trim())
-                          .filter(Boolean)
-                  );
-                  return merged.size > 0 ? [...merged] : prev;
-              });
+              setDetectedSpeakers(resolvedSpeakers);
           });
 
           assignments.forEach(({ speaker, voice, inferredGender, inferredAgeGroup }) => {
@@ -2200,31 +2808,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
           setSettings((prev) => ({
               ...prev,
-              speakerMapping: {
-                  ...prev.speakerMapping,
-                  ...nextMapping,
-                  },
+              speakerMapping: nextMapping,
           }));
-          const mappedCount = Object.keys(nextMapping).length;
+          const mappedCount = assignments.length;
           const detectedCount = resolvedSpeakers.length;
           showToast(
-              `AI detected ${detectedCount} speaker${detectedCount === 1 ? '' : 's'} and assigned ${mappedCount} voice${mappedCount === 1 ? '' : 's'}.`,
+              `AI refreshed ${detectedCount} speaker${detectedCount === 1 ? '' : 's'} and assigned ${mappedCount} voice${mappedCount === 1 ? '' : 's'}.`,
               'success'
           );
       } finally {
           setIsAutoAssigningCast(false);
       }
   }, [
-      activeScriptLanguageCode,
-      activeTab,
-      castSpeakers,
-      characterLibrary,
-      dubScript,
+    activeScriptLanguageCode,
+    characterLibrary,
       getEngineVoiceCatalog,
       getLanguageScopedVoiceCatalog,
-      getVoiceForCharacter,
-      inferSpeakerTraitHintsWithAi,
       isFreeTierUser,
+      hasStudioExplicitMultiSpeakerScript,
       isStudioMultiSpeakerEnabled,
       resolveVoiceAccessTier,
       resolveVoiceAgeGroup,
@@ -2233,8 +2834,29 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       settings.speakerMapping,
       showToast,
       text,
+      refreshStudioSpeakerVoices,
+      normalizeStudioSpeakerHeaders,
       updateCharacter,
   ]);
+
+  const toggleStudioMultiSpeaker = useCallback(() => {
+      const nextEnabled = !isStudioMultiSpeakerEnabled;
+      setSettings((prev) => ({ ...prev, multiSpeakerEnabled: nextEnabled }));
+      if (!nextEnabled) {
+          setStudioRailTab('voice');
+          return;
+      }
+      setStudioRailTab('cast');
+  }, [isStudioMultiSpeakerEnabled]);
+
+  const enableStudioMultiSpeaker = useCallback(() => {
+      setSettings((prev) => (
+          prev.multiSpeakerEnabled === false
+              ? { ...prev, multiSpeakerEnabled: true }
+              : prev
+      ));
+      setStudioRailTab('cast');
+  }, []);
 
   const dubbingStatusAppearance = useMemo(() => {
       const darkTheme = resolvedTheme === 'dark';
@@ -2289,6 +2911,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const refreshEngineVoiceCatalog = useCallback(
       async (engine: GenerationSettings['engine'], _runtimeUrl?: string): Promise<VoiceOption[]> => {
           try {
+              const { fetchEngineRuntimeVoices } = await loadTtsVoiceRegistryService();
               const voices = await fetchEngineRuntimeVoices(engine, mediaBackendUrl, 7000);
               const normalizedVoices = voices.map((voice) => withVoiceMeta(voice, engine));
               const staticVoices = getStaticVoicesForEngine(engine);
@@ -2308,41 +2931,107 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       engine: GenerationSettings['engine'],
       engineItem: any
   ): EngineRuntimeStatus => {
-      if (!engineItem || typeof engineItem !== 'object') {
-          return { state: 'offline', detail: sanitizeUiText('Gateway did not return runtime status.') };
-      }
-      const stateToken = normalizeEngineRuntimeState(engineItem.state, 'offline');
-      const runtimeReady = typeof engineItem.ready === 'boolean' ? engineItem.ready : stateToken === 'online';
-      const detail = sanitizeUiText(String(engineItem.detail || 'Runtime status updated.')) || 'Runtime status updated.';
-      if (stateToken === 'not_configured') {
-          return { state: 'not_configured', detail };
-      }
-      if (stateToken === 'starting' || (stateToken === 'online' && !runtimeReady)) {
-          return { state: 'starting', detail };
-      }
-      if (stateToken === 'online') {
-          return { state: 'online', detail };
-      }
-      if (stateToken === 'standby') {
-          return { state: 'standby', detail };
-      }
-      return { state: 'offline', detail };
+      void engine;
+    const mapped = mapGatewayEngineRuntimeToUiStatus(engineItem);
+    return {
+      state: mapped.state as EngineRuntimeState,
+      detail: sanitizeUiText(mapped.detail) || 'Runtime status updated.',
+      provider: cleanRuntimeMetadataField(mapped.provider),
+      lane: cleanRuntimeMetadataField(mapped.lane),
+      selectedRegion: cleanRuntimeMetadataField(mapped.selectedRegion),
+      modelId: cleanRuntimeMetadataField(mapped.modelId),
+      runtimeUrl: cleanRuntimeMetadataField(mapped.runtimeUrl),
+      healthUrl: cleanRuntimeMetadataField(mapped.healthUrl),
+      cloudTtsLocation: cleanRuntimeMetadataField(mapped.cloudTtsLocation),
+      vertexLocation: cleanRuntimeMetadataField(mapped.vertexLocation),
+      regionHint: cleanRuntimeMetadataField(mapped.regionHint),
+      regionSource: cleanRuntimeMetadataField(mapped.regionSource),
+    };
   }, []);
 
-  const applyRuntimeStatusMap = useCallback((
-      nextStatuses: Record<GenerationSettings['engine'], EngineRuntimeStatus>,
-      options?: { broadcast?: boolean }
-  ) => {
-      setTtsRuntimeStatus(nextStatuses);
-      if (options?.broadcast === false) return;
-      void writeRuntimePollSnapshot(runtimePollTabIdRef.current, nextStatuses);
-  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const snapshot = {
+      fetchedAt: Date.now(),
+      activeEngine: managedActiveEngine || settings.engine,
+      engines: ENGINE_ORDER.reduce((acc, engine) => {
+        acc[engine] = {
+          ...(ttsRuntimeStatus[engine] || { state: 'offline', detail: 'Runtime status unavailable.' }),
+          metadataSummary: formatRuntimeMetadataSummary(ttsRuntimeStatus[engine]),
+        };
+        return acc;
+      }, {} as Record<GenerationSettings['engine'], EngineRuntimeStatus & { metadataSummary: string }>),
+    };
+    try {
+      (window as any).__vfLastTtsRuntimeStatus = snapshot;
+      window.dispatchEvent(new CustomEvent(TTS_RUNTIME_STATUS_EVENT, { detail: snapshot }));
+    } catch {
+      // Keep telemetry best-effort only.
+    }
+  }, [managedActiveEngine, settings.engine, ttsRuntimeStatus]);
 
-  const probeRuntimeStatus = useCallback(async (_engine: GenerationSettings['engine']): Promise<EngineRuntimeStatus> => {
+  const probeRuntimeStatus = useCallback(async (engine: GenerationSettings['engine']): Promise<EngineRuntimeStatus> => {
+      if (engine === 'KOKORO') {
+          try {
+              const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+              const browserState = kokoroBrowserRuntime.getState();
+              const primeStatus = kokoroBrowserRuntime.getLastPrimeStatus();
+              if (primeStatus && (!primeStatus.available || !primeStatus.ready)) {
+                  return {
+                      state: 'offline',
+                      detail: sanitizeUiText(primeStatus.detail || 'Kokoro local mirror is not ready.'),
+                      runtimeUrl: 'local',
+                      healthUrl: 'local',
+                  };
+              }
+              if (browserState === 'ready') {
+                  return {
+                      state: 'online',
+                      detail: 'Local ONNX WebGPU runtime ready (50% cap)',
+                      runtimeUrl: 'local',
+                      healthUrl: 'local',
+                  };
+              }
+              if (browserState === 'warming') {
+                  return {
+                      state: 'starting',
+                      detail: 'Preparing local ONNX WebGPU runtime (50% cap)...',
+                      runtimeUrl: 'local',
+                      healthUrl: 'local',
+                  };
+              }
+              if (browserState === 'suspended') {
+                  return {
+                      state: 'standby',
+                      detail: 'Local ONNX WebGPU runtime suspended (auto-resume on generate)',
+                      runtimeUrl: 'local',
+                      healthUrl: 'local',
+                  };
+              }
+              if (primeStatus?.ready) {
+                  return {
+                      state: 'standby',
+                      detail: 'Local ONNX WebGPU mirror ready. Runtime idle.',
+                      runtimeUrl: 'local',
+                      healthUrl: 'local',
+                  };
+              }
+              return {
+                  state: 'standby',
+                  detail: 'Local ONNX WebGPU runtime idle',
+                  runtimeUrl: 'local',
+                  healthUrl: 'local',
+              };
+          } catch (error: unknown) {
+              const rawDetail = error instanceof Error ? error.message : 'Runtime offline';
+              const detail = sanitizeUiText(rawDetail || 'Runtime offline');
+              return { state: 'offline', detail };
+          }
+      }
       try {
-          const payload = await fetchTtsEnginesStatus(_engine, mediaBackendUrl);
-          const engineItem = payload.engines?.[_engine];
-          return toRuntimeStatus(_engine, engineItem);
+          const payload = await fetchTtsEnginesStatus(engine, mediaBackendUrl);
+          const engineItem = payload.engines?.[engine];
+          return toRuntimeStatus(engine, engineItem);
       } catch (error: unknown) {
           const rawDetail = error instanceof Error ? error.message : 'Runtime offline';
           const detail = sanitizeUiText(rawDetail || 'Runtime offline');
@@ -2351,66 +3040,278 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [mediaBackendUrl, toRuntimeStatus]);
 
   const refreshTtsRuntimeStatus = useCallback(async (options?: { broadcast?: boolean }): Promise<void> => {
-      if (runtimePollRefreshInFlightRef.current) {
-          return runtimePollRefreshInFlightRef.current;
-      }
-      const inFlight = (async () => {
-          const payload = await fetchTtsEnginesStatus(undefined, mediaBackendUrl);
-          const browserKokoroEnabled = isBrowserKokoroExecutionEnabled();
-          const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
-          for (const engine of ENGINE_ORDER) {
-              if (engine === 'KOKORO' && isStudioWorkspaceTab) {
-                  if (isLimitReached) {
-                      nextStatuses[engine] = { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' };
-                      continue;
-                  }
-                  nextStatuses[engine] = { state: 'standby', detail: 'Studio Basic uses an isolated browser worker (auto-start on generate).' };
-                  continue;
-              }
-              if (engine === 'KOKORO' && browserKokoroEnabled) {
-                  const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-                  const browserState = kokoroBrowserRuntime.getState();
-                  if (isLimitReached) {
-                      nextStatuses[engine] = { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' };
-                      continue;
-                  }
-                  if (browserState === 'ready') {
-                      nextStatuses[engine] = { state: 'online', detail: 'Local ONNX CPU runtime ready' };
-                      continue;
-                  }
-                  if (browserState === 'warming') {
-                      nextStatuses[engine] = { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' };
-                      continue;
-                  }
-                  if (browserState === 'suspended') {
-                      nextStatuses[engine] = { state: 'standby', detail: 'Local ONNX CPU runtime suspended (auto-resume on generate)' };
-                      continue;
-                  }
-                  nextStatuses[engine] = { state: 'standby', detail: 'Local ONNX CPU runtime idle' };
-                  continue;
-              }
-              const status = toRuntimeStatus(engine, payload.engines?.[engine]);
-              if (managedActiveEngine && engine !== managedActiveEngine && status.state === 'offline') {
-                  nextStatuses[engine] = { state: 'standby', detail: 'Standby (auto-start on switch)' };
-                  continue;
-              }
-              nextStatuses[engine] = status;
-          }
-          applyRuntimeStatusMap(nextStatuses, { broadcast: options?.broadcast !== false });
-      })()
-        .catch((error) => {
-            runtimePollActiveUntilRef.current = Math.max(
-              runtimePollActiveUntilRef.current,
-              Date.now() + Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS * 3, 15000)
-            );
-            throw error;
-        })
-        .finally(() => {
-            runtimePollRefreshInFlightRef.current = null;
+    if (runtimePollRefreshInFlightRef.current) {
+      return runtimePollRefreshInFlightRef.current;
+    }
+    const selectedRuntimeEngine = managedActiveEngine || settings.engine;
+    const shouldBroadcast = options?.broadcast !== false;
+    const idleDetail = `Idle (active: ${getEngineDisplayName(selectedRuntimeEngine)}). Switch to activate.`;
+    const inFlight = (async () => {
+      const shouldProbeBrowserKokoro = selectedRuntimeEngine === 'KOKORO';
+      const updateSelectedEngineTelemetry = (
+        engine: GenerationSettings['engine'],
+        updater: (current: SelectedEngineTelemetry) => SelectedEngineTelemetry
+      ) => {
+        if (engine !== selectedRuntimeEngine) return;
+        setSelectedEngineTelemetry((prev) => {
+          const current = prev[engine] ?? createSelectedEngineTelemetry();
+          return {
+            ...prev,
+            [engine]: updater(current),
+          };
         });
-      runtimePollRefreshInFlightRef.current = inFlight;
-      return inFlight;
-  }, [applyRuntimeStatusMap, isLimitReached, isStudioWorkspaceTab, managedActiveEngine, mediaBackendUrl, toRuntimeStatus]);
+      };
+      const writeSelectedStatus = (
+        status: EngineRuntimeStatus,
+        otherDetail: string = idleDetail
+      ) => {
+        setTtsRuntimeStatus((prev) => {
+          const next = { ...prev };
+          next[selectedRuntimeEngine] = mergeRuntimeStatus(prev[selectedRuntimeEngine], status);
+          for (const engine of ENGINE_ORDER) {
+            if (engine === selectedRuntimeEngine) continue;
+            if (next[engine]?.state !== 'checking') continue;
+            next[engine] = mergeRuntimeStatus(next[engine], { state: 'standby', detail: otherDetail });
+          }
+          if (shouldBroadcast) {
+            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, next);
+          }
+          return next;
+        });
+      };
+      if (shouldProbeBrowserKokoro) {
+        const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+        const browserState = kokoroBrowserRuntime.getState();
+        const measuredAtMs = Date.now();
+        let status: EngineRuntimeStatus;
+        let sampleValue = 0;
+        let label = 'Local standby';
+        if (browserState === 'ready') {
+          status = { state: 'online', detail: 'Local ONNX WebGPU runtime ready (50% cap)', runtimeUrl: 'local', healthUrl: 'local' };
+          sampleValue = 1;
+          label = 'Local ready';
+        } else if (browserState === 'warming') {
+          status = { state: 'starting', detail: 'Preparing local ONNX WebGPU runtime (50% cap)...', runtimeUrl: 'local', healthUrl: 'local' };
+          label = 'Local warming';
+        } else if (browserState === 'suspended') {
+          status = mergeRuntimeStatus(undefined, {
+            state: 'standby',
+            detail: 'Local ONNX WebGPU runtime suspended (auto-resume on generate)',
+            runtimeUrl: 'local',
+            healthUrl: 'local',
+          });
+          label = 'Local standby';
+        } else {
+          status = mergeRuntimeStatus(undefined, {
+            state: 'standby',
+            detail: 'Local ONNX WebGPU runtime idle',
+            runtimeUrl: 'local',
+            healthUrl: 'local',
+          });
+          label = 'Local standby';
+        }
+        updateSelectedEngineTelemetry(selectedRuntimeEngine, (current) => ({
+          ...current,
+          kind: 'local',
+          label,
+          detail: sanitizeUiText(status.detail || 'Local runtime status updated.') || 'Local runtime status updated.',
+          latencyMs: null,
+          measuredAtMs,
+          samples: appendRollingSample(
+            current.samples,
+            sampleValue,
+            SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT
+          ),
+        }));
+        writeSelectedStatus(status);
+        return;
+      }
+
+      const payload = await fetchTtsEngineLatency(selectedRuntimeEngine, mediaBackendUrl, {
+        timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
+      });
+      const status = toRuntimeStatus(selectedRuntimeEngine, payload);
+      const latencySampleMs = Number.isFinite(payload.gcpPingMs)
+        ? Math.max(1, Math.floor(Number(payload.gcpPingMs)))
+        : (Number.isFinite(payload.latencyMs) ? Math.max(1, Math.floor(payload.latencyMs)) : null);
+      updateSelectedEngineTelemetry(selectedRuntimeEngine, (current) => ({
+        ...current,
+        kind: 'network',
+        label: typeof latencySampleMs === 'number' ? `${latencySampleMs} ms` : 'Pending',
+        detail: sanitizeUiText(status.detail || 'Runtime status updated.') || 'Runtime status updated.',
+        latencyMs: latencySampleMs,
+        measuredAtMs: Date.now(),
+        samples: typeof latencySampleMs === 'number'
+          ? appendRollingSample(
+              current.samples,
+              latencySampleMs,
+              SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT
+            )
+          : current.samples,
+      }));
+      writeSelectedStatus(status);
+    })()
+      .catch((error) => {
+        runtimePollActiveUntilRef.current = Math.max(
+          runtimePollActiveUntilRef.current,
+          Date.now() + Math.max(RUNTIME_STATUS_ACTIVE_POLL_MS * 3, 15000)
+        );
+        const safeDetail = sanitizeUiText(
+          error instanceof Error ? error.message : String(error || 'Runtime status unavailable')
+        ) || 'Runtime status unavailable';
+        const authBlocked = isAuthOrProfileBlockingMessage(safeDetail);
+        if (authBlocked) {
+          syncRuntimeBlockedStateFromError(managedActiveEngine || settings.engine, error);
+        }
+        if (selectedRuntimeEngine) {
+          setSelectedEngineTelemetry((prev) => {
+            const current = prev[selectedRuntimeEngine] ?? createSelectedEngineTelemetry();
+            return {
+              ...prev,
+              [selectedRuntimeEngine]: {
+                ...current,
+                kind: 'error',
+                label: /timeout/i.test(safeDetail) ? 'Timed out' : 'Unavailable',
+                detail: safeDetail,
+                latencyMs: null,
+                measuredAtMs: Date.now(),
+              },
+            };
+          });
+        }
+        setTtsRuntimeStatus((prev) => {
+          const next = { ...prev };
+          const nextStatus: Partial<EngineRuntimeStatus> = !hasSessionIdentity || authBlocked
+            ? { state: 'standby' as EngineRuntimeStatus['state'], detail: 'Sign in to check runtime status.' }
+            : { state: 'offline' as EngineRuntimeStatus['state'], detail: safeDetail };
+          next[selectedRuntimeEngine] = mergeRuntimeStatus(prev[selectedRuntimeEngine], nextStatus);
+          for (const engine of ENGINE_ORDER) {
+            if (engine === selectedRuntimeEngine) continue;
+            if (next[engine]?.state !== 'checking') continue;
+            next[engine] = mergeRuntimeStatus(prev[engine], {
+              state: 'standby',
+              detail: !hasSessionIdentity || authBlocked ? 'Sign in to check runtime status.' : idleDetail,
+            });
+          }
+          if (shouldBroadcast) {
+            void writeRuntimePollSnapshot(runtimePollTabIdRef.current, next);
+          }
+          return next;
+        });
+        console.warn('[studio.runtime_status.refresh]', error);
+      })
+      .finally(() => {
+        runtimePollRefreshInFlightRef.current = null;
+      });
+    runtimePollRefreshInFlightRef.current = inFlight;
+    return inFlight;
+  }, [
+    hasSessionIdentity,
+    isAuthOrProfileBlockingMessage,
+    managedActiveEngine,
+    mediaBackendUrl,
+    settings.engine,
+    syncRuntimeBlockedStateFromError,
+    toRuntimeStatus,
+  ]);
+
+  useEffect(() => {
+    if (!hasSessionIdentity) {
+      clearRuntimeAutoSelectSessionRun();
+      return;
+    }
+    if (hasRuntimeAutoSelectSessionRun()) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    if (isGenerating || Boolean(engineSwitchInProgress)) return;
+
+    let cancelled = false;
+
+    const probeAllRuntimesAndAutoSelect = async (): Promise<void> => {
+      try {
+        const [kokoroProbeResult, statusResult] = await Promise.allSettled([
+          probeRuntimeStatus('KOKORO'),
+          fetchTtsEnginesStatus(undefined, mediaBackendUrl, { timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS }),
+        ]);
+
+        if (cancelled) return;
+
+        const kokoroStatus = kokoroProbeResult.status === 'fulfilled' ? kokoroProbeResult.value : null;
+        const statusPayload = statusResult.status === 'fulfilled' ? statusResult.value : null;
+        if (!kokoroStatus && !statusPayload) return;
+
+        const nextStatuses = { ...ttsRuntimeStatusRef.current };
+        const candidateLatencies: Partial<Record<GenerationSettings['engine'], { state?: string; latencyMs?: number | null }>> = {};
+
+        if (kokoroStatus) {
+          nextStatuses.KOKORO = mergeRuntimeStatus(nextStatuses.KOKORO, kokoroStatus);
+          const kokoroAutoSelectState = (
+            kokoroStatus.state === 'online'
+            || kokoroStatus.state === 'standby'
+          ) ? 'online' : kokoroStatus.state;
+          candidateLatencies.KOKORO = {
+            state: kokoroAutoSelectState,
+            latencyMs: kokoroAutoSelectState === 'online' ? 0 : null,
+          };
+        }
+
+        const enginePayloads = statusPayload?.engines || {};
+        for (const engine of ['GEM', 'NEURAL2'] as const) {
+          const payload = enginePayloads[engine];
+          if (!payload || typeof payload !== 'object') continue;
+          const runtimeStatus = toRuntimeStatus(engine, payload);
+          nextStatuses[engine] = mergeRuntimeStatus(nextStatuses[engine], runtimeStatus);
+          const latencyMs = Number((payload as { latencyMs?: unknown }).latencyMs);
+          candidateLatencies[engine] = {
+            state: runtimeStatus.state,
+            latencyMs: Number.isFinite(latencyMs) ? Math.max(0, Math.floor(latencyMs)) : null,
+          };
+        }
+
+        setTtsRuntimeStatus(nextStatuses);
+
+        const bestEngine = pickLowestLatencyRuntimeEngine(
+          candidateLatencies,
+          planAllowedEngines
+        );
+        if (!bestEngine) return;
+
+        const currentEngine = managedActiveEngine || settings.engine;
+        markRuntimeAutoSelectSessionRun();
+        if (bestEngine === currentEngine) return;
+
+        const bestCatalog = getEngineVoiceCatalog(bestEngine);
+        const nextVoiceId = selectVoiceIdFromCatalog(bestEngine, bestCatalog, settings.voiceId);
+        setManagedActiveEngine(bestEngine);
+        setSettings((prev) => (
+          prev.engine === bestEngine && prev.voiceId === nextVoiceId
+            ? prev
+            : { ...prev, engine: bestEngine, voiceId: nextVoiceId }
+        ));
+      } catch (error) {
+        console.warn('[studio.runtime_auto_select]', error);
+      }
+    };
+
+    void probeAllRuntimesAndAutoSelect();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    engineSwitchInProgress,
+    getEngineVoiceCatalog,
+    hasSessionIdentity,
+    isGenerating,
+    managedActiveEngine,
+    mediaBackendUrl,
+    planAllowedEngines,
+    probeRuntimeStatus,
+    selectVoiceIdFromCatalog,
+    setManagedActiveEngine,
+    setSettings,
+    settings.engine,
+    settings.voiceId,
+    toRuntimeStatus,
+  ]);
 
   const waitForRuntimeOnline = async (engine: GenerationSettings['engine'], timeoutMs: number): Promise<boolean> => {
       const started = Date.now();
@@ -2424,11 +3325,43 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const ensureEngineOnline = async (
       engine: GenerationSettings['engine'],
-      options?: { timeoutMs?: number; silent?: boolean; syncVoiceId?: string; requireAccess?: boolean }
+      options?: { timeoutMs?: number; silent?: boolean; syncVoiceId?: string; requireAccess?: boolean; preferBrowserRuntime?: boolean }
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       const engineLabel = getEngineDisplayName(engine);
       if (!isEnginePlanAllowed(engine)) {
           throw new Error(`${engineLabel} is not enabled for your current plan.`);
+      }
+      if (engine === 'KOKORO') {
+          const localCatalog = getEngineVoiceCatalog('KOKORO');
+          const candidateVoiceId = options?.syncVoiceId || settings.voiceId;
+          const validVoiceId = selectVoiceIdFromCatalog(
+              'KOKORO',
+              localCatalog.length > 0 ? localCatalog : KOKORO_VOICES,
+              candidateVoiceId
+          );
+          setManagedActiveEngine('KOKORO');
+          setTtsRuntimeStatus((prev) => {
+              const next = { ...prev };
+              next.KOKORO = mergeRuntimeStatus(next.KOKORO, { state: 'standby', detail: 'Local ONNX WebGPU runtime idle (warm up on generate).' });
+              ENGINE_ORDER.forEach((other) => {
+                  if (other === 'KOKORO') return;
+                  if (next[other].state === 'not_configured') return;
+                    next[other] = mergeRuntimeStatus(next[other], { state: 'standby', detail: 'Idle (switch engine to activate).' });
+              });
+              return next;
+          });
+          if (options?.syncVoiceId) {
+              setSettings((prev) => (
+                  prev.engine === 'KOKORO' && prev.voiceId === validVoiceId
+                      ? prev
+                      : { ...prev, engine: 'KOKORO', voiceId: validVoiceId }
+              ));
+          }
+          return {
+              runtimeUrl: 'local',
+              catalog: localCatalog,
+              ...(options?.syncVoiceId ? { syncedVoiceId: validVoiceId } : {}),
+          };
       }
       let runtimeUrl = getRuntimeUrlForEngine(engine);
       try {
@@ -2465,13 +3398,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
               const next = { ...prev };
-              next[engine] = { state: 'online', detail: currentStatus.detail || 'Runtime online' };
+                next[engine] = mergeRuntimeStatus(next[engine], { state: 'online', detail: currentStatus.detail || 'Runtime online' });
               ENGINE_ORDER.forEach((other) => {
                   if (other === engine) return;
                   if (next[other].state === 'not_configured') return;
-                  if (next[other].state === 'offline' || next[other].state === 'checking' || next[other].state === 'starting') {
-                      next[other] = { state: 'standby', detail: 'Standby (auto-start on switch)' };
-                  }
+                    next[other] = mergeRuntimeStatus(next[other], { state: 'standby', detail: 'Idle (switch engine to activate).' });
               });
               return next;
           });
@@ -2503,12 +3434,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setEngineSwitchInProgress(engine);
       setTtsRuntimeStatus(prev => ({
           ...prev,
-          [engine]: { state: 'starting', detail: 'Starting runtime...' },
+            [engine]: mergeRuntimeStatus(prev[engine], { state: 'starting', detail: 'Starting runtime...' }),
       }));
 
       try {
           let switchResult;
           try {
+              const { switchTtsEngineRuntime } = await loadMediaBackendService();
               switchResult = await switchTtsEngineRuntime(mediaBackendUrl, engine);
           } catch (switchError: any) {
               const detail = String(switchError?.message || switchError || '').toLowerCase();
@@ -2517,7 +3449,35 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   detail.includes('admin-unlock') ||
                   detail.includes('admin session unlock')
               ) {
-                  throw new Error(`${engineLabel} runtime start is admin-locked. Open Settings > Admin and unlock the session, then retry.`);
+                  const fallbackCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl).catch(() => getEngineVoiceCatalog(engine));
+                  const standbyDetail = `${engineLabel} runtime activation is admin-locked. Continuing with managed runtime auto-recovery.`;
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      [engine]: { state: 'standby', detail: standbyDetail },
+                  }));
+                  let syncedVoiceId: string | undefined;
+                  if (options?.syncVoiceId) {
+                      const candidateVoiceId = options.syncVoiceId || settings.voiceId;
+                      const validVoiceId = selectVoiceIdFromCatalog(
+                          engine,
+                          fallbackCatalog.length > 0 ? fallbackCatalog : getEngineVoiceCatalog(engine),
+                          candidateVoiceId
+                      );
+                      syncedVoiceId = validVoiceId;
+                      setSettings((prev) => (
+                          prev.engine === engine && prev.voiceId === validVoiceId
+                              ? prev
+                              : { ...prev, engine, voiceId: validVoiceId }
+                      ));
+                  }
+                  if (!options?.silent) {
+                      showToast(`${engineLabel} runtime switch is admin-locked. Continuing with auto-recovery.`, 'info');
+                  }
+                  return {
+                      runtimeUrl,
+                      catalog: fallbackCatalog,
+                      ...(syncedVoiceId ? { syncedVoiceId } : {}),
+                  };
               }
               if (
                   detail.includes('unreachable') ||
@@ -2534,11 +3494,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setManagedActiveEngine(engine);
           setTtsRuntimeStatus(prev => {
               const next = { ...prev };
-              next[engine] = { state: 'starting', detail: switchResult?.detail || 'Starting runtime...' };
+                next[engine] = mergeRuntimeStatus(next[engine], { state: 'starting', detail: switchResult?.detail || 'Starting runtime...' });
               ENGINE_ORDER.forEach((other) => {
                   if (other === engine) return;
                   if (next[other].state === 'not_configured') return;
-                  next[other] = { state: 'standby', detail: 'Standby (auto-start on switch)' };
+                    next[other] = mergeRuntimeStatus(next[other], { state: 'standby', detail: 'Standby (auto-start on switch)' });
               });
               return next;
           });
@@ -2550,7 +3510,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
 
           const refreshedCatalog = await refreshEngineVoiceCatalog(engine, runtimeUrl);
-          setTtsRuntimeStatus(prev => ({ ...prev, [engine]: { state: 'online', detail: 'Runtime online' } }));
+          setTtsRuntimeStatus(prev => ({
+            ...prev,
+            [engine]: mergeRuntimeStatus(prev[engine], { state: 'online', detail: 'Runtime online' }),
+          }));
           let syncedVoiceId: string | undefined;
           if (options?.syncVoiceId) {
               const candidateVoiceId = options.syncVoiceId || settings.voiceId;
@@ -2575,7 +3538,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           };
       } catch (error: any) {
           const reason = error?.message || 'Unknown runtime error';
-          setTtsRuntimeStatus(prev => ({ ...prev, [engine]: { state: 'offline', detail: reason } }));
+          setTtsRuntimeStatus(prev => ({
+            ...prev,
+            [engine]: mergeRuntimeStatus(prev[engine], { state: 'offline', detail: reason }),
+          }));
           throw new Error(reason);
       } finally {
           setEngineSwitchInProgress(null);
@@ -2588,10 +3554,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       ensureEngineOnlineRef.current = ensureEngineOnline;
   }, [ensureEngineOnline]);
 
-  const refreshBackendHealth = async (silent: boolean = false) => {
+  const refreshBackendHealth = async (silent: boolean = false, options?: { forceRefresh?: boolean }) => {
       setIsCheckingBackend(true);
       try {
-          const health = await checkMediaBackendHealth(mediaBackendUrl);
+          const { checkMediaBackendHealth } = await loadMediaBackendService();
+          const health = await checkMediaBackendHealth(mediaBackendUrl, { forceRefresh: Boolean(options?.forceRefresh) });
           const ffmpegMissing = !health.ffmpeg?.available;
           const whisperError = Boolean(health.whisper?.error);
           const hasSubsystemError = ffmpegMissing || whisperError;
@@ -2625,84 +3592,48 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       speed: number,
       options?: {
           signal?: AbortSignal;
-          preferBrowserExecution?: boolean;
       }
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       const signal = options?.signal;
-      const preferBrowserExecution = options?.preferBrowserExecution;
+      assertBrowserKokoroExecutionSupported();
       const normalizedWarmupVoiceId = getValidVoiceIdForEngine(
           'KOKORO',
           String(voiceId || DEFAULT_KOKORO_VOICE_ID)
       );
-      if (isLimitReached && !hasUnlimitedAccess) {
-          if (context !== 'studio' && isBrowserKokoroExecutionEnabled()) {
-              const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-              await kokoroBrowserRuntime.suspend();
-          }
-          setTtsRuntimeStatus((prev) => ({
-              ...prev,
-              KOKORO: { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' },
-          }));
-          throw new Error('Usage balance exhausted. Add VF or switch engine to continue.');
-      }
-      const access = await refreshTtsAccessState(true);
-      if (!access.ok) {
-          throw new Error(access.detail || 'Sign in again to enable AI/TTS requests.');
-      }
-
-      if (context === 'studio') {
-          setManagedActiveEngine('KOKORO');
-          setTtsRuntimeStatus((prev) => ({
-              ...prev,
-              KOKORO: { state: 'standby', detail: 'Studio Basic uses an isolated browser worker (auto-start on generate).' },
-          }));
-          return {
-              runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
-              catalog: getEngineVoiceCatalog('KOKORO'),
-              syncedVoiceId: normalizedWarmupVoiceId,
-          };
-      }
-
-      const useBrowserKokoro = shouldUseBrowserKokoroExecution('KOKORO', context) && preferBrowserExecution !== false;
-      if (!useBrowserKokoro) {
-          if (isBrowserKokoroExecutionEnabled()) {
-              const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-              await kokoroBrowserRuntime.suspend();
-          }
-          setTtsRuntimeStatus((prev) => (
-              prev.KOKORO?.state === 'online'
-                  ? prev
-                  : {
-                      ...prev,
-                      KOKORO: { state: 'checking', detail: 'Checking Kokoro runtime...' },
-                  }
-          ));
-          return await ensureEngineOnlineRef.current('KOKORO', {
-              silent: true,
-              syncVoiceId: normalizedWarmupVoiceId,
-          });
-      }
-
       setManagedActiveEngine('KOKORO');
       setTtsRuntimeStatus((prev) => ({
           ...prev,
-          KOKORO: { state: 'starting', detail: 'Preparing local ONNX CPU runtime...' },
+            KOKORO: mergeRuntimeStatus(prev.KOKORO, { state: 'starting', detail: 'Preparing local ONNX WebGPU runtime (50% cap, fast-start)...' }),
       }));
 
       try {
           const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
-          await kokoroBrowserRuntime.ensureReady({
-              backendBaseUrl: mediaBackendUrl,
-              voiceId: normalizedWarmupVoiceId,
-              speed,
-              ...(signal ? { signal } : {}),
+          const browserWarmupTimeoutMs = 45_000;
+          let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+          await Promise.race([
+              kokoroBrowserRuntime.ensureReady({
+                  backendBaseUrl: mediaBackendUrl,
+                  voiceId: normalizedWarmupVoiceId,
+                  speed,
+                  skipRuntimePrime: true,
+                  ...(signal ? { signal } : {}),
+              }),
+              new Promise<never>((_, reject) => {
+                  timeoutHandle = setTimeout(() => {
+                      reject(new Error(`Local ONNX WebGPU runtime warmup timed out after ${Math.round(browserWarmupTimeoutMs / 1000)}s.`));
+                  }, browserWarmupTimeoutMs);
+              }),
+          ]).finally(() => {
+              if (timeoutHandle) {
+                  clearTimeout(timeoutHandle);
+              }
           });
           setTtsRuntimeStatus((prev) => ({
               ...prev,
-              KOKORO: { state: 'online', detail: 'Local ONNX CPU runtime ready' },
+                KOKORO: mergeRuntimeStatus(prev.KOKORO, { state: 'online', detail: 'Local ONNX WebGPU runtime ready (50% cap, fast-start primed)' }),
           }));
           return {
-              runtimeUrl: settings.kokoroTtsServiceUrl || FALLBACK_RUNTIME_URLS.KOKORO,
+              runtimeUrl: 'local',
               catalog: getEngineVoiceCatalog('KOKORO'),
               syncedVoiceId: normalizedWarmupVoiceId,
           };
@@ -2710,23 +3641,86 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (error?.name === 'AbortError') {
               throw error;
           }
-          const detail = error?.message || (
-              useBrowserKokoro
-                  ? `Kokoro local runtime unavailable in ${context}.`
-                  : `Kokoro runtime unavailable in ${context}.`
-          );
+          const detail = error?.message || `Kokoro local runtime unavailable in ${context}.`;
           setTtsRuntimeStatus((prev) => ({
               ...prev,
-              KOKORO: { state: 'offline', detail },
+                KOKORO: mergeRuntimeStatus(prev.KOKORO, { state: 'offline', detail }),
           }));
           throw new Error(detail);
       }
   }, [
       getEngineVoiceCatalog,
       mediaBackendUrl,
-      refreshTtsAccessState,
-      settings.kokoroTtsServiceUrl,
       getValidVoiceIdForEngine,
+  ]);
+
+  const ensureKokoroStudioWarmup = useCallback(async (
+      voiceIdOverride?: string,
+      speedOverride?: number,
+  ): Promise<void> => {
+      if (!isBrowserKokoroExecutionEnabled()) return;
+      if (kokoroWarmupPromiseRef.current) {
+          await kokoroWarmupPromiseRef.current;
+          return;
+      }
+      const warmupVoiceId = getValidVoiceIdForEngine(
+          'KOKORO',
+          String(voiceIdOverride || settings.voiceId || DEFAULT_KOKORO_VOICE_ID)
+      );
+      const warmupSpeed = Number.isFinite(Number(speedOverride)) ? Number(speedOverride) : 1.0;
+      const browserWarmupTimeoutMs = 45_000;
+      const pendingWarmup = (async () => {
+          const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+          const runtimeState = kokoroBrowserRuntime.getState();
+          if (runtimeState === 'ready' || runtimeState === 'warming') return;
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+                KOKORO: mergeRuntimeStatus(prev.KOKORO, { state: 'starting', detail: 'Preparing local ONNX WebGPU runtime (50% cap, fast-start)...' }),
+          }));
+          let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+          try {
+              await Promise.race([
+                  kokoroBrowserRuntime.ensureReady({
+                      backendBaseUrl: mediaBackendUrl,
+                      voiceId: warmupVoiceId,
+                      speed: warmupSpeed,
+                      skipRuntimePrime: true,
+                  }),
+                  new Promise<never>((_, reject) => {
+                      timeoutHandle = setTimeout(() => {
+                          reject(new Error(`Local ONNX WebGPU runtime warmup timed out after ${Math.round(browserWarmupTimeoutMs / 1000)}s.`));
+                      }, browserWarmupTimeoutMs);
+                  }),
+              ]);
+          } finally {
+              if (timeoutHandle) {
+                  clearTimeout(timeoutHandle);
+              }
+          }
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+                KOKORO: mergeRuntimeStatus(prev.KOKORO, { state: 'online', detail: 'Local ONNX WebGPU runtime ready (50% cap, fast-start primed)' }),
+          }));
+      })()
+      .catch((error: any) => {
+          const detail = error?.message || 'Local ONNX WebGPU runtime warmup failed. Auto-resume on generate.';
+          setTtsRuntimeStatus((prev) => ({
+              ...prev,
+                KOKORO: mergeRuntimeStatus(prev.KOKORO, { state: 'standby', detail }),
+          }));
+          throw error;
+      })
+      .finally(() => {
+          if (kokoroWarmupPromiseRef.current === pendingWarmup) {
+              kokoroWarmupPromiseRef.current = null;
+          }
+      });
+      kokoroWarmupPromiseRef.current = pendingWarmup;
+      await pendingWarmup;
+  }, [
+      getValidVoiceIdForEngine,
+      mediaBackendUrl,
+      settings.voiceId,
   ]);
 
   // --- Effects ---
@@ -2741,7 +3735,46 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setStudioRailTab('voice');
           return;
       }
-  }, [activeTab]);
+  }, [activeTab, studioRailTab]);
+  useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
+      if (isStudioMultiSpeakerEnabled && studioRailTab === 'voice') {
+          setStudioRailTab('cast');
+          return;
+      }
+      if (!isStudioMultiSpeakerEnabled && studioRailTab === 'cast') {
+          setStudioRailTab('voice');
+      }
+  }, [isStudioMultiSpeakerEnabled, isStudioWorkspaceTab, studioRailTab]);
+  useEffect(() => {
+      if (isStudioWorkspaceTab) return;
+      setIsStudioEditorFullscreen(false);
+  }, [isStudioWorkspaceTab]);
+  useEffect(() => {
+      const handleFullscreenEscape = (event: KeyboardEvent) => {
+          if (event.key !== 'Escape') return;
+          if (!isStudioEditorFullscreen) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setIsStudioEditorFullscreen(false);
+      };
+
+      window.addEventListener('keydown', handleFullscreenEscape, true);
+      return () => {
+          window.removeEventListener('keydown', handleFullscreenEscape, true);
+      };
+  }, [isStudioEditorFullscreen]);
+  useEffect(() => {
+      if (typeof document === 'undefined' || !isStudioEditorFullscreen) return;
+      const prevBodyOverflow = document.body.style.overflow;
+      const prevHtmlOverflow = document.documentElement.style.overflow;
+      document.body.style.overflow = 'hidden';
+      document.documentElement.style.overflow = 'hidden';
+      return () => {
+          document.body.style.overflow = prevBodyOverflow;
+          document.documentElement.style.overflow = prevHtmlOverflow;
+      };
+  }, [isStudioEditorFullscreen]);
   useEffect(() => {
       const handlePointerDown = (event: MouseEvent) => {
           const target = event.target;
@@ -2801,6 +3834,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const previous = lastRuntimeStatesRef.current[engine];
           const next = ttsRuntimeStatus[engine]?.state || 'offline';
           if (!previous || previous === next) continue;
+          const isSelectedEngine = engine === settings.engine || engine === managedActiveEngine;
           if (previous !== 'checking') {
               const engineLabel = getEngineDisplayName(engine);
               if (next === 'online') {
@@ -2812,7 +3846,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       channel: 'inbox',
                   });
               } else if (next === 'offline') {
-                  const isSelectedEngine = engine === settings.engine;
+                  if (!isSelectedEngine) {
+                      lastRuntimeStatesRef.current[engine] = next;
+                      continue;
+                  }
                   emit('runtime.offline', {
                       entityKey: engine,
                       title: 'Runtime Offline',
@@ -2889,21 +3926,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       if (hasUnlimitedAccess) return;
       const dayKey = String(stats.vfUsage?.daily?.key || new Date().toISOString().slice(0, 10));
-      if (currentEngineSpendable <= LOW_TOKEN_PROMPT_THRESHOLD && currentEngineSpendable > 0) {
-          const noticeKey = `${dayKey}-low-balance-${settings.engine}`;
-          if (!quotaNoticeRef.current[noticeKey]) {
-              quotaNoticeRef.current[noticeKey] = true;
+      const lowBalanceThreshold = 600;
+
+      const issueNotice = (
+        key: string,
+        send: () => void
+      ) => {
+          if (quotaNoticeRef.current[key]) return;
+          quotaNoticeRef.current[key] = true;
+          send();
+      };
+
+      if (currentEngineSpendable <= lowBalanceThreshold && currentEngineSpendable > 0) {
+          issueNotice(`${dayKey}-low-balance-${settings.engine}`, () => {
               emit('wallet.low_balance', {
                 title: 'Low Balance',
                 message: `Low ${getEngineDisplayName(settings.engine)} balance: ${currentEngineSpendable.toLocaleString()} VF remaining.`,
-                dedupeKey: noticeKey,
+                dedupeKey: `${dayKey}-low-balance-${settings.engine}`,
                 channel: 'inbox',
               });
-          }
-          if (!lowTokenPromptNoticeRef.current[noticeKey]) {
-              lowTokenPromptNoticeRef.current[noticeKey] = true;
-              setShowLowTokenPrompt(true);
-          }
+          });
       }
   }, [
       currentEngineSpendable,
@@ -2935,7 +3977,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   dedupeKey: 'backend-offline',
                   action: {
                       label: 'Retry',
-                      onClick: () => { void refreshBackendHealth(false); },
+                      onClick: () => { void refreshBackendHealth(false, { forceRefresh: true }); },
                   },
               });
           }
@@ -3029,17 +4071,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (!snapshot || snapshot.tabId === tabId) return;
           const payload = snapshot.payload;
           if (!payload || typeof payload !== 'object') return;
-          const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
-          for (const engine of ENGINE_ORDER) {
-              const row = payload[engine];
-              nextStatuses[engine] = row && typeof row === 'object'
-                ? {
-                    state: normalizeEngineRuntimeState((row as any).state, 'offline'),
-                    detail: sanitizeUiText(String((row as any).detail || 'Runtime status unavailable.')) || 'Runtime status unavailable.',
-                  }
-                : { state: 'offline', detail: 'Runtime status unavailable.' };
-          }
-          setTtsRuntimeStatus(nextStatuses);
+          setTtsRuntimeStatus((prev) => {
+              const nextStatuses = {} as Record<GenerationSettings['engine'], EngineRuntimeStatus>;
+              for (const engine of ENGINE_ORDER) {
+                  const row = payload[engine];
+                  nextStatuses[engine] = hydrateRuntimeStatusSnapshot(
+                    prev[engine],
+                    row && typeof row === 'object' ? (row as Partial<EngineRuntimeStatus>) : null
+                  );
+              }
+              return nextStatuses;
+          });
       };
       const refreshLeadership = () => {
           const previous = runtimePollIsLeaderRef.current;
@@ -3178,172 +4220,59 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ]);
 
   useEffect(() => {
-      if (!hasSessionIdentity) return () => {};
-      const keepAliveId = window.setInterval(() => {
-          if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-          if (!runtimePollIsLeaderRef.current) return;
-          void refreshTtsAccessState();
-      }, RUNTIME_STATUS_ACCESS_KEEPALIVE_MS);
-      return () => window.clearInterval(keepAliveId);
-  }, [hasSessionIdentity, refreshTtsAccessState]);
-
-  useEffect(() => {
-      if (settings.engine !== 'KOKORO') return;
-      let cancelled = false;
-      void (async () => {
-          try {
-              await prepareKokoroExecution('studio', settings.voiceId, 1.0);
-              if (cancelled) return;
-          } catch (error: any) {
-              if (cancelled) return;
-              setTtsRuntimeStatus((prev) => ({
-                  ...prev,
-                  KOKORO: {
-                      state: 'offline',
-                      detail: error?.message || 'Local ONNX CPU runtime unavailable.',
-                  },
-              }));
-          }
-      })();
-      return () => {
-          cancelled = true;
-      };
-  }, [prepareKokoroExecution, settings.engine, settings.voiceId]);
-
-  useEffect(() => {
-      if (!isStudioWorkspaceTab) return;
-      if (!hasSessionIdentity) return;
-      if (settings.engine !== 'KOKORO') return;
-      if (isLimitReached && !hasUnlimitedAccess) {
-          setTtsRuntimeStatus((prev) => ({
-              ...prev,
-              KOKORO: { state: 'standby', detail: 'Usage balance exhausted. Local ONNX CPU runtime is on standby.' },
-          }));
-          return;
-      }
-      setTtsRuntimeStatus((prev) => {
-          if (prev.KOKORO?.state === 'offline') return prev;
-          return {
-              ...prev,
-              KOKORO: { state: 'standby', detail: 'Studio Basic uses an isolated browser worker (auto-start on generate).' },
-          };
-      });
-      return;
-  }, [
-      hasUnlimitedAccess,
-      isStudioWorkspaceTab,
-      isLimitReached,
-      hasSessionIdentity,
-      settings.engine,
-  ]);
-
-  useEffect(() => {
-      if (typeof window === 'undefined') return;
-      if (!isStudioWorkspaceTab) return;
-      if (!hasSessionIdentity) return;
-      if (settings.engine !== 'KOKORO') return;
-      if (isLimitReached && !hasUnlimitedAccess) return;
-      if (!isKokoroStudioWorkerSupported()) return;
-
-      const workerState = getKokoroStudioWorkerState();
-      if (workerState === 'ready' || workerState === 'warming') return;
-
-      let cancelled = false;
-      const abortController = new AbortController();
-      let debounceTimer: number | null = null;
-      let fallbackTimer: number | null = null;
-      let idleCallbackId: number | null = null;
-
-      const runWarmup = () => {
-          if (cancelled || abortController.signal.aborted) return;
-          const stateSnapshot = getKokoroStudioWorkerState();
-          if (stateSnapshot === 'ready' || stateSnapshot === 'warming') return;
-
-          const warmupVoiceId = getValidVoiceIdForEngine(
-              'KOKORO',
-              String(settings.voiceId || DEFAULT_KOKORO_VOICE_ID),
+      if (!hasSessionIdentity) {
+          setSelectedEngineTelemetry(
+            ENGINE_ORDER.reduce((acc, engine) => {
+                acc[engine] = createSelectedEngineTelemetry({
+                    label: 'Sign in',
+                    detail: 'Sign in to measure latency.',
+                });
+                return acc;
+            }, {} as Record<GenerationSettings['engine'], SelectedEngineTelemetry>)
           );
+      }
+  }, [hasSessionIdentity]);
 
-          setTtsRuntimeStatus((prev) => {
-              if (prev.KOKORO?.state === 'offline') return prev;
-              return {
-                  ...prev,
-                  KOKORO: { state: 'starting', detail: 'Preparing isolated Basic browser worker...' },
-              };
-          });
+  useEffect(() => {
+      if (!hasSessionIdentity) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const currentTelemetry = selectedEngineTelemetry[settings.engine];
+      if (!shouldRefreshSelectedEngineTelemetry(currentTelemetry, Date.now())) return;
+      void refreshTtsRuntimeStatus({ broadcast: false });
+  }, [hasSessionIdentity, refreshTtsRuntimeStatus, selectedEngineTelemetry, settings.engine]);
 
-          void warmupKokoroStudioWorker(
-              {
-                  backendBaseUrl: mediaBackendUrl,
-                  voiceId: warmupVoiceId,
-                  language: studioTextLanguageCode,
-                  speed: settings.speed,
-              },
-              abortController.signal,
-          )
-              .then(() => {
-                  if (cancelled || abortController.signal.aborted) return;
-                  setTtsRuntimeStatus((prev) => {
-                      if (prev.KOKORO?.state === 'offline') return prev;
-                      return {
-                          ...prev,
-                          KOKORO: { state: 'standby', detail: 'Studio Basic worker ready for faster live playback.' },
-                      };
-                  });
-              })
-              .catch((error: any) => {
-                  if (cancelled || abortController.signal.aborted || error?.name === 'AbortError') return;
-                  const detail = toUserFriendlySystemMessage(
-                      error?.message,
-                      'Studio Basic worker warmup failed. Generation will retry on start.',
-                  );
-                  setTtsRuntimeStatus((prev) => {
-                      if (prev.KOKORO?.state === 'offline') return prev;
-                      return {
-                          ...prev,
-                          KOKORO: { state: 'standby', detail },
-                      };
-                  });
-              });
-      };
-
-      debounceTimer = window.setTimeout(() => {
-          if (cancelled) return;
-          const win = window as Window & {
-              requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
-              cancelIdleCallback?: (handle: number) => void;
-          };
-          if (typeof win.requestIdleCallback === 'function') {
-              idleCallbackId = win.requestIdleCallback(() => runWarmup(), { timeout: 900 });
-              return;
-          }
-          fallbackTimer = window.setTimeout(() => runWarmup(), 0);
-      }, 240);
+  useEffect(() => {
+      if (!isStudioWorkspaceTab) return;
+      if (!isBrowserKokoroExecutionEnabled()) return;
+      if (settings.engine !== 'KOKORO') return;
+      let cancelled = false;
+      const timer = setTimeout(() => {
+          void (async () => {
+              try {
+                  await ensureKokoroStudioWarmup(settings.voiceId, 1.0);
+                  if (cancelled) return;
+              } catch (error: any) {
+                  if (cancelled) return;
+                  setTtsRuntimeStatus((prev) => ({
+                      ...prev,
+                      KOKORO: {
+                          state: 'standby',
+                          detail: error?.message || 'Local ONNX WebGPU runtime warmup failed. Auto-resume on generate.',
+                      },
+                  }));
+              }
+          })();
+      }, 120);
 
       return () => {
           cancelled = true;
-          abortController.abort();
-          if (debounceTimer) window.clearTimeout(debounceTimer);
-          if (fallbackTimer) window.clearTimeout(fallbackTimer);
-          if (idleCallbackId !== null) {
-              const win = window as Window & { cancelIdleCallback?: (handle: number) => void };
-              if (typeof win.cancelIdleCallback === 'function') {
-                  win.cancelIdleCallback(idleCallbackId);
-              }
-          }
+          clearTimeout(timer);
       };
   }, [
-      getValidVoiceIdForEngine,
-      hasSessionIdentity,
-      hasUnlimitedAccess,
+      ensureKokoroStudioWarmup,
       isStudioWorkspaceTab,
-      isLimitReached,
-      mediaBackendUrl,
       settings.engine,
-      settings.speed,
       settings.voiceId,
-      studioTextLanguageCode,
-      toUserFriendlySystemMessage,
   ]);
 
   useEffect(() => {
@@ -3466,9 +4395,30 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [emit]);
 
   useEffect(() => {
+      const handleVoiceConversionFallback = (event: Event) => {
+          const detail = ((event as CustomEvent<TtsVoiceConversionFallbackDetail>).detail || {}) as TtsVoiceConversionFallbackDetail;
+          const voiceId = String(detail.voiceId || '').trim();
+          const voiceName = String(detail.voiceName || '').trim();
+          const error = String(detail.error || '').trim();
+          const dedupeKey = `${voiceId || voiceName || 'unknown'}:${error.slice(0, 120)}`;
+          const now = Date.now();
+          const lastShownAt = voiceConversionFallbackToastRef.current[dedupeKey] || 0;
+          if ((now - lastShownAt) < 15000) return;
+          voiceConversionFallbackToastRef.current[dedupeKey] = now;
+          showToast(
+              `Seed-VC VC failed for ${voiceName || voiceId || 'the selected voice'}; using original TTS audio.`,
+              'info'
+          );
+      };
+      window.addEventListener(TTS_VOICE_CONVERSION_FALLBACK_EVENT, handleVoiceConversionFallback as EventListener);
+      return () => window.removeEventListener(TTS_VOICE_CONVERSION_FALLBACK_EVENT, handleVoiceConversionFallback as EventListener);
+  }, [showToast]);
+
+  useEffect(() => {
       const handleGatewayProgress = (event: Event) => {
           const detail = ((event as CustomEvent<GatewayJobProgressEventDetail>).detail || {}) as GatewayJobProgressEventDetail;
-          if (!isGenerating) return;
+          const generationActive = Boolean(generationAbortController.current || isStudioQueueRunActiveRef.current);
+          if (!generationActive && !isGenerating) return;
           const queueState = studioQueueStateRef.current;
           const activeQueueItemId = String(activeStudioQueueItemIdRef.current || '').trim();
           const activeQueueItem = activeQueueItemId
@@ -3500,6 +4450,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           const pct = Number(detail.progressPct || 0);
           const stage = String(detail.stage || '').trim();
+          generationActivityAtRef.current = Date.now();
+          const stageLower = stage.toLowerCase();
+          if (
+              !generationFirstAudioAtRef.current
+              && stageLower.includes('first live chunk ready')
+          ) {
+              const firstAudioAtMs = Date.now();
+              generationFirstAudioAtRef.current = firstAudioAtMs;
+              if (activeQueueItem?.id) {
+                  const currentTiming = queueItemTimingRef.current[activeQueueItem.id];
+                  if (currentTiming && !currentTiming.firstAudioAtMs) {
+                      currentTiming.firstAudioAtMs = firstAudioAtMs;
+                  }
+              }
+          }
           if (isStudioQueueRunActiveRef.current && queueState?.items.length) {
               const orderedItems = [...queueState.items].sort((left, right) => left.order - right.order);
               const totalItems = Math.max(1, orderedItems.length);
@@ -3535,7 +4500,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   useEffect(() => {
       const handleGatewayAudioChunk = (event: Event) => {
           const detail = ((event as CustomEvent<GatewayAudioChunkEventDetail>).detail || {}) as GatewayAudioChunkEventDetail;
-          if (!isGenerating) return;
+          const audioObjectUrl = String(detail.audioObjectUrl || '').trim();
+          const audioBase64 = String(detail.audioBase64 || '').trim();
+          const disposeUnclaimedAudioUrl = () => {
+          if (!audioObjectUrl) return;
+              if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+                  URL.revokeObjectURL(audioObjectUrl);
+              }
+          };
+          const generationActive = Boolean(generationAbortController.current || isStudioQueueRunActiveRef.current);
+          if (!generationActive && !isGenerating) {
+              disposeUnclaimedAudioUrl();
+              return;
+          }
           const queueState = studioQueueStateRef.current;
           const activeQueueItemId = String(activeStudioQueueItemIdRef.current || '').trim();
           const activeQueueItem = activeQueueItemId
@@ -3545,19 +4522,62 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const detailEngine = String(detail.engine || '').trim()
             ? normalizeEngineToken(detail.engine, expectedEngine)
             : '';
-          if (detailEngine && expectedEngine && detailEngine !== expectedEngine) return;
+          if (detailEngine && expectedEngine && detailEngine !== expectedEngine) {
+              disposeUnclaimedAudioUrl();
+              return;
+          }
           const index = Number(detail.index);
-          const audioBase64 = String(detail.audioBase64 || '').trim();
-          if (!Number.isFinite(index) || index < 0 || !audioBase64) return;
-          const activeJobId = String(activeGatewayJobIdRef.current || '').trim();
-          if (!activeJobId) return;
+          if (!Number.isFinite(index) || index < 0 || (!audioBase64 && !audioObjectUrl)) {
+              disposeUnclaimedAudioUrl();
+              return;
+          }
           const detailJobId = String(detail.jobId || '').trim();
-          if (!detailJobId || detailJobId !== activeJobId) return;
-          const key = `${detailJobId}:${Math.round(index)}`;
-          if (seenLiveChunkKeysRef.current.has(key)) return;
+          let activeJobId = String(activeGatewayJobIdRef.current || '').trim();
+          if (!activeJobId && detailJobId) {
+              activeGatewayJobIdRef.current = detailJobId;
+              activeJobId = detailJobId;
+              if (activeQueueItem && String(activeQueueItem.jobId || '').trim() !== detailJobId) {
+                  setStudioQueueState((prev) => {
+                      if (!prev) return prev;
+                      return {
+                          ...prev,
+                          items: prev.items.map((item) => (
+                              item.id === activeQueueItem.id
+                                  ? { ...item, jobId: detailJobId }
+                                  : item
+                          )),
+                      };
+                  });
+              }
+          }
+          if (!activeJobId) {
+              disposeUnclaimedAudioUrl();
+              return;
+          }
+          if (detailJobId && detailJobId !== activeJobId) {
+              disposeUnclaimedAudioUrl();
+              return;
+          }
+          const resolvedJobId = detailJobId || activeJobId;
+          const key = `${resolvedJobId}:${Math.round(index)}`;
+          if (seenLiveChunkKeysRef.current.has(key)) {
+              disposeUnclaimedAudioUrl();
+              return;
+          }
           seenLiveChunkKeysRef.current.add(key);
+          generationActivityAtRef.current = Date.now();
+          const firstAudioAtMs = Date.now();
+          if (!generationFirstAudioAtRef.current) {
+              generationFirstAudioAtRef.current = firstAudioAtMs;
+          }
+          if (activeQueueItem?.id) {
+              const currentTiming = queueItemTimingRef.current[activeQueueItem.id];
+              if (currentTiming && !currentTiming.firstAudioAtMs) {
+                  currentTiming.firstAudioAtMs = firstAudioAtMs;
+              }
+          }
           const nextChunk: LiveAudioChunkItem = {
-              jobId: detailJobId,
+              jobId: resolvedJobId,
               index: Math.round(index),
               engine: (detailEngine || normalizeEngineToken(settings.engine, 'GEM')),
               contentType: String(detail.contentType || 'audio/wav'),
@@ -3565,14 +4585,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               textChars: Number(detail.textChars || 0),
               traceId: String(detail.traceId || ''),
               speakerId: String(detail.speakerId || ''),
+              voiceId: String(detail.voiceId || ''),
               turnIndex: Number(detail.turnIndex || Math.round(index)),
               sessionEpoch: Number(detail.sessionEpoch || 0),
               resumeAttempt: Number(detail.resumeAttempt || 0),
               fallbackUsed: Boolean(detail.fallbackUsed),
-              audioBase64,
+              ...(audioBase64 ? { audioBase64 } : {}),
+              ...(audioObjectUrl ? { audioObjectUrl } : {}),
           };
-          startTransition(() => {
-              setLiveAudioChunks((prev) => [...prev, nextChunk]);
+          setLiveAudioChunks((prev) => {
+              const next = [...prev, nextChunk];
+              return next.length > LIVE_AUDIO_CHUNK_STATE_CAP
+                  ? next.slice(next.length - LIVE_AUDIO_CHUNK_STATE_CAP)
+                  : next;
           });
       };
       window.addEventListener(TTS_GATEWAY_AUDIO_CHUNK_EVENT, handleGatewayAudioChunk as EventListener);
@@ -3723,6 +4748,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               if (cancelled) return;
               if (studioQueueAudioUrlsRef.current[item.id]) continue;
               try {
+                  const { buildStudioQueueBlobUrl } = await loadStudioQueueAudioService();
                   const blob = await readStudioQueueAudioBlob(item.audioCacheKey || '');
                   if (!blob || cancelled) continue;
                   const url = buildStudioQueueBlobUrl(blob);
@@ -3829,6 +4855,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
     const timeoutId = setTimeout(async () => {
       if (textToAnalyze.length > 5 && settings.language === 'Auto') {
+        const { detectLanguage } = await loadGeminiService();
         const code = await detectLanguage(textToAnalyze, settings);
         setDetectedLang(code.toUpperCase());
       } else {
@@ -3940,11 +4967,72 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // --- Logic Functions ---
 
+  const markGenerationActivity = useCallback(() => {
+      generationActivityAtRef.current = Date.now();
+  }, []);
+
+  const clearGenerationWatchdog = useCallback(() => {
+      if (generationWatchdogTimerRef.current) {
+          window.clearInterval(generationWatchdogTimerRef.current);
+          generationWatchdogTimerRef.current = null;
+      }
+  }, []);
+
+  const clearStudioQueueCooldownTimer = useCallback(() => {
+      if (studioQueueCooldownTimerRef.current) {
+          window.clearTimeout(studioQueueCooldownTimerRef.current);
+          studioQueueCooldownTimerRef.current = null;
+      }
+  }, []);
+
+  const waitForStudioQueueCooldownTick = useCallback((delayMs: number, signal: AbortSignal): Promise<void> => (
+      new Promise((resolve, reject) => {
+          if (signal.aborted) {
+              reject(new DOMException('Queue cooldown cancelled.', 'AbortError'));
+              return;
+          }
+          clearStudioQueueCooldownTimer();
+          const handleAbort = () => {
+              clearStudioQueueCooldownTimer();
+              reject(new DOMException('Queue cooldown cancelled.', 'AbortError'));
+          };
+          signal.addEventListener('abort', handleAbort, { once: true });
+          studioQueueCooldownTimerRef.current = window.setTimeout(() => {
+              studioQueueCooldownTimerRef.current = null;
+              signal.removeEventListener('abort', handleAbort);
+              resolve();
+          }, Math.max(0, delayMs));
+      })
+  ), [clearStudioQueueCooldownTimer]);
+
+  const startGenerationWatchdog = useCallback(() => {
+      clearGenerationWatchdog();
+      generationActivityAtRef.current = Date.now();
+      generationWatchdogTimerRef.current = window.setInterval(() => {
+          if (!generationAbortController.current) return;
+          const elapsedMs = Date.now() - generationActivityAtRef.current;
+          if (elapsedMs < 90000) return;
+          clearGenerationWatchdog();
+          generationAbortReasonRef.current = 'stall';
+          generationAbortController.current.abort();
+          generationAbortController.current = null;
+          activeGatewayJobIdRef.current = '';
+          setLiveAudioChunks([]);
+          seenLiveChunkKeysRef.current.clear();
+          if (progressTimerRef.current) {
+              clearInterval(progressTimerRef.current);
+              progressTimerRef.current = null;
+          }
+          setProcessingStage(sanitizeUiText('Generation timed out while waiting for runtime response.'));
+      }, 5000);
+  }, [clearGenerationWatchdog]);
+
   const setLiveProgress = useCallback((nextProgress: number, stageMessage?: string) => {
       const safe = Math.max(0, Math.min(99, Math.round(nextProgress)));
       setProgress((prev) => Math.max(prev, safe));
+      markGenerationActivity();
       if (stageMessage) setProcessingStage(sanitizeUiText(stageMessage));
-  }, []);
+  }, [markGenerationActivity]);
 
   // Helper to start simulated progress
   const startSimulation = (
@@ -3958,6 +5046,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
      setTimeLeft(mode === 'simulated' ? estSeconds : 0);
      setProcessingStage(sanitizeUiText(startMsg));
      setIsGenerating(true);
+     markGenerationActivity();
+     startGenerationWatchdog();
      if (mode === 'live') {
          setProgress(6);
          return;
@@ -3971,11 +5061,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
              return prev + increment;
          });
          setTimeLeft(prev => Math.max(0, prev - 0.1)); // inaccurate but visual
+         markGenerationActivity();
      }, 100);
   };
 
   const stopSimulation = () => {
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      clearGenerationWatchdog();
       setProgress(100);
       setTimeLeft(0);
       // Short delay to show 100% before closing
@@ -3984,6 +5076,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setProgress(0);
       }, 500);
   };
+
+  useEffect(() => {
+      return () => {
+          clearGenerationWatchdog();
+          clearStudioQueueCooldownTimer();
+          if (progressTimerRef.current) {
+              clearInterval(progressTimerRef.current);
+              progressTimerRef.current = null;
+          }
+      };
+  }, [clearGenerationWatchdog, clearStudioQueueCooldownTimer]);
 
   const findNextStudioQueueProcessItem = (state: StudioQueueState | null | undefined): StudioQueueItem | null => {
       if (!state) return null;
@@ -4004,11 +5107,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   order: index,
                   label: String(item.label || `Part ${index + 1}`),
               }));
-          const activeItemId = items.some((item) => item.id === next.activeItemId)
-              ? next.activeItemId
-              : items.find((item) => item.status === 'running')?.id
-                || items.find((item) => item.status === 'queued')?.id
-                || items[0]?.id;
+           const activeItemId = items.some((item) => item.id === next.activeItemId)
+               ? next.activeItemId
+               : items.find((item) => item.status === 'running')?.id
+                 || items.find((item) => item.status === 'queued')?.id
+                 || items.find((item) => item.status === 'cooldown')?.id
+                 || items[0]?.id;
           return {
               ...next,
               items,
@@ -4030,6 +5134,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, []);
 
   const resetStudioQueueOutputState = useCallback(async (clearCache = false) => {
+      clearStudioQueueCooldownTimer();
       if (queueMasterRebuildTimerRef.current) {
           window.clearTimeout(queueMasterRebuildTimerRef.current);
           queueMasterRebuildTimerRef.current = null;
@@ -4045,7 +5150,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (clearCache) {
           await clearStudioQueueAudioCache().catch(() => undefined);
       }
-  }, [setGeneratedAudioUrlManaged]);
+  }, [clearStudioQueueCooldownTimer, setGeneratedAudioUrlManaged]);
 
   const rebuildStudioQueueMasterAudio = useCallback(async (
       stateOverride?: StudioQueueState | null
@@ -4075,6 +5180,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return null;
       }
 
+      const { mergeStudioQueueAudioBlobs, buildStudioQueueBlobUrl } = await loadStudioQueueAudioService();
       const mergedBlob = await mergeStudioQueueAudioBlobs(blobs);
       const nextUrl = buildStudioQueueBlobUrl(mergedBlob);
       if (masterQueueAudioUrlRef.current) {
@@ -4156,9 +5262,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       item: StudioQueueItem,
       controller: AbortController
   ): Promise<void> => {
+      const itemStartedAtMs = Date.now();
       const audioCacheKey = item.audioCacheKey || `studio-queue:${item.id}`;
       activeStudioQueueItemIdRef.current = item.id;
       activeGatewayJobIdRef.current = String(item.jobId || '').trim();
+      generationRunStartedAtRef.current = itemStartedAtMs;
+      generationFirstAudioAtRef.current = 0;
+      queueItemTimingRef.current[item.id] = {
+          startedAtMs: itemStartedAtMs,
+          firstAudioAtMs: 0,
+      };
       seenLiveChunkKeysRef.current.clear();
       setLiveAudioChunks([]);
 
@@ -4174,6 +5287,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           status: 'running',
                           error: undefined,
                           audioCacheKey,
+                          startedAt: itemStartedAtMs,
+                          firstAudioAt: undefined,
+                          timeToFirstAudioMs: undefined,
+                          totalGenerationMs: undefined,
                       }
                       : entry
               )),
@@ -4182,30 +5299,89 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       try {
           const normalizedQueueEngine = normalizeEngineToken(item.settingsSnapshot.engine, 'GEM');
-          let wavBlob: Blob;
-          if (String(item.jobId || '').trim()) {
-              const queuedResult = await pollTtsGatewayJobForAudio({
-                  baseUrl: resolveMediaBackendUrl(item.settingsSnapshot),
-                  jobId: item.jobId || '',
-                  runtimeLabel: getEngineDisplayName(normalizedQueueEngine),
-                  engine: normalizedQueueEngine,
-                  signal: controller.signal,
-              });
-              const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
-              const mixedBuffer = await applyStudioAudioMix(decoded, item.settingsSnapshot);
-              wavBlob = audioBufferToWav(mixedBuffer);
-          } else {
-              const result = await performGeneration(
-                  item.sourceText,
-                  controller.signal,
-                  item.settingsSnapshot,
-                  { createObjectUrl: false }
-              );
-              wavBlob = result.wavBlob;
+          const runSettings: GenerationSettings = {
+              ...item.settingsSnapshot,
+              speakerMapping: {
+                  ...(item.settingsSnapshot.speakerMapping || {}),
+              },
+          };
+          let wavBlob: Blob | null = null;
+          let generationOutput: Awaited<ReturnType<typeof performGeneration>> | null = null;
+          let currentJobId = String(item.jobId || '').trim();
+          let retryCount = 0;
+
+          while (true) {
+              try {
+                  if (currentJobId) {
+                      const { pollTtsGatewayJobForAudio } = await loadTtsGatewayJobService();
+                      const queuedResult = await pollTtsGatewayJobForAudio({
+                          baseUrl: resolveMediaBackendUrl(runSettings),
+                          jobId: currentJobId,
+                          runtimeLabel: getEngineDisplayName(normalizedQueueEngine),
+                          engine: normalizedQueueEngine,
+                          signal: controller.signal,
+                      });
+                      const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
+                      const { applyStudioAudioMix } = await loadStudioMixService();
+                      const mixedBuffer = await applyStudioAudioMix(decoded, runSettings);
+                      wavBlob = audioBufferToWav(mixedBuffer);
+                  } else {
+                      generationOutput = await performGeneration(
+                          item.sourceText,
+                          controller.signal,
+                          runSettings,
+                          { createObjectUrl: false }
+                      );
+                      wavBlob = generationOutput.wavBlob;
+                  }
+                  break;
+              } catch (attemptError: any) {
+                  if (attemptError?.name === 'AbortError') {
+                      throw attemptError;
+                  }
+                  const shouldRetry = (
+                      retryCount < TRANSIENT_GENERATION_RETRY_MAX
+                      && shouldRetryTransientGenerationError(attemptError)
+                  );
+                  if (!shouldRetry) {
+                      throw attemptError;
+                  }
+                  retryCount += 1;
+                  currentJobId = '';
+                  activeGatewayJobIdRef.current = '';
+                  setLiveAudioChunks([]);
+                  seenLiveChunkKeysRef.current.clear();
+                  updateStudioQueueState((prev) => {
+                      if (!prev) return prev;
+                      return {
+                          ...prev,
+                          activeItemId: item.id,
+                          items: prev.items.map((entry) => (
+                              entry.id === item.id
+                                  ? { ...entry, status: 'running', error: undefined, jobId: undefined }
+                                  : entry
+                          )),
+                      };
+                  });
+                  setProcessingStage('Transient runtime issue detected. Retrying queue item once...');
+                  showToast('Transient runtime issue detected. Retrying queue item once...', 'info');
+                  await new Promise((resolve) => setTimeout(resolve, TRANSIENT_GENERATION_RETRY_DELAY_MS));
+              }
+          }
+
+          if (!wavBlob) {
+              throw new Error('Queue generation returned empty audio payload.');
           }
 
           await storeStudioQueueAudioBlob(audioCacheKey, wavBlob);
+          const { buildStudioQueueBlobUrl } = await loadStudioQueueAudioService();
           replaceStudioQueueItemAudioUrl(item.id, buildStudioQueueBlobUrl(wavBlob));
+          const completedAtMs = Date.now();
+          const itemTiming = queueItemTimingRef.current[item.id] || {
+              startedAtMs: itemStartedAtMs,
+              firstAudioAtMs: 0,
+          };
+          const firstAudioAtMs = itemTiming.firstAudioAtMs || generationOutput?.firstAudioAtMs || generationFirstAudioAtRef.current || completedAtMs;
           updateStudioQueueState((prev) => {
               if (!prev) return prev;
               return {
@@ -4218,14 +5394,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               status: 'completed',
                               error: undefined,
                               audioCacheKey,
-                              jobId: String(activeGatewayJobIdRef.current || entry.jobId || '').trim(),
-                              completedAt: Date.now(),
+                              jobId: String(activeGatewayJobIdRef.current || currentJobId || entry.jobId || '').trim(),
+                              completedAt: completedAtMs,
+                              startedAt: entry.startedAt || itemStartedAtMs,
+                              firstAudioAt: firstAudioAtMs,
+                              timeToFirstAudioMs: Math.max(0, firstAudioAtMs - itemStartedAtMs),
+                              totalGenerationMs: Math.max(0, completedAtMs - itemStartedAtMs),
                           }
                           : entry
                   )),
               };
           });
       } catch (error: any) {
+          const queueItemErrorMessage = error?.name === 'AbortError'
+              ? undefined
+              : formatFrontendError(error, {
+                  fallback: 'Queue generation failed.',
+                  context: 'generation',
+                  isAdmin: hasAdminConsoleAccess,
+              }).publicMessage;
           updateStudioQueueState((prev) => {
               if (!prev) return prev;
               return {
@@ -4236,9 +5423,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           ? {
                               ...entry,
                               status: error?.name === 'AbortError' ? 'cancelled' : 'failed',
-                              error: error?.name === 'AbortError' ? undefined : (error?.message || 'Queue generation failed.'),
+                              error: queueItemErrorMessage,
                               audioCacheKey,
                               jobId: String(activeGatewayJobIdRef.current || entry.jobId || '').trim(),
+                              startedAt: entry.startedAt || itemStartedAtMs,
+                              totalGenerationMs: Math.max(0, Date.now() - itemStartedAtMs),
                           }
                           : entry
                   )),
@@ -4246,9 +5435,55 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           });
           throw error;
       } finally {
+          delete queueItemTimingRef.current[item.id];
           activeGatewayJobIdRef.current = '';
       }
-  }, [performGeneration, replaceStudioQueueItemAudioUrl, updateStudioQueueState]);
+  }, [performGeneration, replaceStudioQueueItemAudioUrl, showToast, updateStudioQueueState]);
+
+  const startStudioQueueInterPartCooldown = useCallback(async (
+      nextItem: StudioQueueItem,
+      totalItems: number,
+      signal: AbortSignal
+  ): Promise<void> => {
+      const cooldownUntil = Date.now() + STUDIO_QUEUE_INTER_PART_DELAY_MS;
+      updateStudioQueueState((prev) => {
+          if (!prev) return prev;
+          return {
+              ...prev,
+              activeItemId: nextItem.id,
+              items: prev.items.map((item) => (
+                  item.id === nextItem.id
+                      ? {
+                          ...item,
+                          status: 'cooldown',
+                          cooldownUntil,
+                          error: undefined,
+                      }
+                      : item
+              )),
+          };
+      });
+
+      try {
+          for (let remainingSeconds = Math.ceil(STUDIO_QUEUE_INTER_PART_DELAY_MS / 1000); remainingSeconds >= 1; remainingSeconds -= 1) {
+              setProcessingStage(sanitizeUiText(`Queue ${Math.min(totalItems, nextItem.order + 1)}/${totalItems} starts in ${remainingSeconds}s`));
+              markGenerationActivity();
+              await waitForStudioQueueCooldownTick(1000, signal);
+          }
+      } finally {
+          updateStudioQueueState((prev) => {
+              if (!prev) return prev;
+              return {
+                  ...prev,
+                  items: prev.items.map((item) => (
+                      item.id === nextItem.id && item.status === 'cooldown'
+                          ? { ...item, status: 'queued', cooldownUntil: undefined }
+                          : item
+                  )),
+              };
+          });
+      }
+  }, [markGenerationActivity, updateStudioQueueState, waitForStudioQueueCooldownTick]);
 
   const executeStudioQueue = useCallback(async (
       initialState?: StudioQueueState | null
@@ -4256,6 +5491,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (queueRunnerLockRef.current) return;
       queueRunnerLockRef.current = true;
       isStudioQueueRunActiveRef.current = true;
+      clearStudioQueueCooldownTimer();
+      const generationNotificationKey = `queue:${settings.engine}`;
 
       try {
           let nextItem = findNextStudioQueueProcessItem(initialState || studioQueueStateRef.current);
@@ -4264,12 +5501,61 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               generationAbortController.current = controller;
               await runStudioQueueItem(nextItem, controller);
               scheduleStudioQueueMasterRebuild();
+              const queuedNextItem = findNextStudioQueueProcessItem(studioQueueStateRef.current);
+              if (!queuedNextItem) {
+                  generationAbortController.current = null;
+                  break;
+              }
+              activeStudioQueueItemIdRef.current = queuedNextItem.id;
+              const queueTotalItems = Math.max(1, [...(studioQueueStateRef.current?.items || [])].length);
+              await startStudioQueueInterPartCooldown(queuedNextItem, queueTotalItems, controller.signal);
               generationAbortController.current = null;
               nextItem = findNextStudioQueueProcessItem(studioQueueStateRef.current);
           }
 
           const masterUrl = await rebuildStudioQueueMasterAudio(studioQueueStateRef.current);
           const completedItems = [...(studioQueueStateRef.current?.items || [])].filter((item) => item.status === 'completed');
+          const queuePartDurationsMs = completedItems
+              .map((entry) => {
+                  const directDuration = Number(entry.totalGenerationMs || 0);
+                  if (Number.isFinite(directDuration) && directDuration > 0) return directDuration;
+                  const startedAt = Number(entry.startedAt || 0);
+                  const completedAt = Number(entry.completedAt || 0);
+                  if (startedAt > 0 && completedAt > startedAt) return completedAt - startedAt;
+                  return 0;
+              })
+              .filter((durationMs) => Number.isFinite(durationMs) && durationMs > 0);
+          const queueTotalGenerationMs = queuePartDurationsMs.reduce((sum, durationMs) => sum + durationMs, 0);
+          const queueStartedAtMs = completedItems.reduce((min, entry) => {
+              const startedAt = Number(entry.startedAt || 0);
+              if (!startedAt) return min;
+              return Math.min(min, startedAt);
+          }, Number.MAX_SAFE_INTEGER);
+          const queueFirstAudioAtMs = completedItems.reduce((min, entry) => {
+              const firstAudioAt = Number(entry.firstAudioAt || 0);
+              if (!firstAudioAt) return min;
+              return Math.min(min, firstAudioAt);
+          }, Number.MAX_SAFE_INTEGER);
+          const queueCompletedAtMs = Date.now();
+          if (queueTotalGenerationMs > 0) {
+              const resolvedStartedAt = queueStartedAtMs === Number.MAX_SAFE_INTEGER
+                  ? (generationRunStartedAtRef.current || queueCompletedAtMs)
+                  : queueStartedAtMs;
+              const resolvedFirstAudioAt = queueFirstAudioAtMs === Number.MAX_SAFE_INTEGER
+                  ? (generationFirstAudioAtRef.current || resolvedStartedAt)
+                  : queueFirstAudioAtMs;
+              setGenerationTiming({
+                  mode: 'queue',
+                  startedAtMs: resolvedStartedAt,
+                  firstAudioAtMs: resolvedFirstAudioAt,
+                  completedAtMs: queueCompletedAtMs,
+                  timeToFirstAudioMs: Math.max(0, resolvedFirstAudioAt - resolvedStartedAt),
+                  totalGenerationMs: queueTotalGenerationMs,
+                  partCount: completedItems.length,
+                  partDurationsMs: queuePartDurationsMs,
+                  coldStart: false,
+              });
+          }
           if (masterUrl && completedItems.length > 0) {
               addToHistory({
                   id: Date.now().toString(),
@@ -4283,10 +5569,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               void loadHistory(30);
           }
           generationFailureBurstRef.current = 0;
-          showToast(`Queued audio ready (${completedItems.length} part${completedItems.length === 1 ? '' : 's'}).`, 'success');
+          const queueTimingLabel = queueTotalGenerationMs > 0
+              ? ` in ${formatGenerationDuration(queueTotalGenerationMs)}`
+              : '';
+          const queueFirstAudioLabel = queueTotalGenerationMs > 0
+              ? ` First audio ${formatGenerationDuration(Math.max(0, (queueFirstAudioAtMs === Number.MAX_SAFE_INTEGER ? (generationFirstAudioAtRef.current || queueCompletedAtMs) : queueFirstAudioAtMs) - (queueStartedAtMs === Number.MAX_SAFE_INTEGER ? (generationRunStartedAtRef.current || queueCompletedAtMs) : queueStartedAtMs)))}.`
+              : '';
+          const queueCompletionMessage = `Queued audio ready (${completedItems.length} part${completedItems.length === 1 ? '' : 's'})${queueTimingLabel}.${queueFirstAudioLabel}`;
+          emit('generation.completed', {
+              title: 'Generation Completed',
+              message: queueCompletionMessage,
+              entityKey: generationNotificationKey,
+              dedupeKey: `generation-completed-queue:${settings.engine}`,
+              channel: 'inbox',
+          });
+          showToast(queueCompletionMessage, 'success');
       } finally {
           queueRunnerLockRef.current = false;
           isStudioQueueRunActiveRef.current = false;
+          clearStudioQueueCooldownTimer();
           generationAbortController.current = null;
           activeGatewayJobIdRef.current = '';
           activeStudioQueueItemIdRef.current = '';
@@ -4300,6 +5601,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       rebuildStudioQueueMasterAudio,
       runStudioQueueItem,
       scheduleStudioQueueMasterRebuild,
+      clearStudioQueueCooldownTimer,
+      startStudioQueueInterPartCooldown,
+      emit,
       showToast,
       text,
   ]);
@@ -4307,18 +5611,41 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const startStudioQueuedGeneration = useCallback(async (): Promise<void> => {
       const currentHash = hashStudioQueueSource(text);
       const existingState = studioQueueStateRef.current;
+      const lockedQueueSettings: GenerationSettings = buildStudioGenerationSettings({
+          ...settings,
+          speakerMapping: {
+              ...(settings.speakerMapping || {}),
+          },
+      });
       const hasResumableCurrentQueue = Boolean(
           existingState
           && existingState.sourceHash === currentHash
-          && existingState.items.some((item) => item.status === 'queued' || item.status === 'running' || item.status === 'failed')
+          && existingState.items.some((item) => item.status === 'queued' || item.status === 'cooldown' || item.status === 'running' || item.status === 'failed')
       );
       let nextState = hasResumableCurrentQueue
           ? {
               ...existingState!,
               queueModeEnabled: true,
           }
-          : createStudioQueueState(text, maxCharsPerGeneration, settings, true);
-      if (!nextState.items.some((item) => item.status === 'queued' || item.status === 'running')) {
+          : createStudioQueueState(text, maxCharsPerGeneration, lockedQueueSettings, true);
+      if (hasResumableCurrentQueue && nextState.items.length > 0) {
+          nextState = {
+              ...nextState,
+              items: nextState.items.map((entry) => ({
+                  ...entry,
+                  status: entry.status === 'cooldown' ? 'queued' : entry.status,
+                  cooldownUntil: undefined,
+                  settingsSnapshot: {
+                      ...entry.settingsSnapshot,
+                      speakerMapping: {
+                          ...(lockedQueueSettings.speakerMapping || {}),
+                          ...(entry.settingsSnapshot?.speakerMapping || {}),
+                      },
+                  },
+              })),
+          };
+      }
+      if (!nextState.items.some((item) => item.status === 'queued' || item.status === 'cooldown' || item.status === 'running')) {
           const firstFailed = [...nextState.items].sort((left, right) => left.order - right.order).find((item) => item.status === 'failed');
           if (firstFailed) {
               nextState = {
@@ -4326,7 +5653,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   activeItemId: firstFailed.id,
                   items: nextState.items.map((item) => (
                       item.id === firstFailed.id
-                          ? { ...item, status: 'queued', error: undefined, jobId: undefined }
+                          ? { ...item, status: 'queued', cooldownUntil: undefined, error: undefined, jobId: undefined }
                           : item
                   )),
               };
@@ -4340,13 +5667,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
       activeGatewayJobIdRef.current = '';
+      generationRunStartedAtRef.current = Date.now();
+      generationFirstAudioAtRef.current = 0;
+      setGenerationTiming(null);
+      setStudioRailTab('queue');
+      const generationNotificationKey = `queue:${settings.engine}`;
 
-      const estTime = Math.max(4, Math.ceil(text.length / 18));
+      const estTime = Math.max(4, Math.ceil(text.length / 14));
       startSimulation(estTime, 'Preparing queued generation...', 'live');
       emit('generation.started', {
           title: 'Generation Started',
           message: 'Queued Studio generation started.',
-          dedupeKey: 'generation-started',
+          entityKey: generationNotificationKey,
+          dedupeKey: `generation-started:${settings.engine}`,
           channel: 'inbox',
       });
 
@@ -4359,14 +5692,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
           syncRuntimeBlockedStateFromError(settings.engine, error);
           generationFailureBurstRef.current += 1;
-          const queueFailureMessage = toUserFriendlySystemMessage(
-              error?.message || 'Queue generation failed. Check runtime health and retry.',
-              'Queue generation failed. Check runtime health and retry.'
-          );
+          const queueFailureMessage = formatFrontendError(error, {
+              fallback: 'Queue generation failed. Check runtime health and retry.',
+              context: 'generation',
+              isAdmin: hasAdminConsoleAccess,
+          }).publicMessage;
           emit('generation.failed', {
               title: 'Generation Failure',
               message: queueFailureMessage,
-              dedupeKey: 'generation-failed-main',
+              entityKey: generationNotificationKey,
+              dedupeKey: `generation-failed-main:${settings.engine}`,
               action: {
                   label: 'Open Settings',
                   onClick: () => setShowSettings(true),
@@ -4377,9 +5712,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [
       emit,
       executeStudioQueue,
+      buildStudioGenerationSettings,
       maxCharsPerGeneration,
       resetStudioQueueOutputState,
       settings,
+      setStudioRailTab,
       showToast,
       text,
       toUserFriendlySystemMessage,
@@ -4393,7 +5730,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               activeItemId: itemId,
               items: prev.items.map((item) => (
                   item.id === itemId
-                      ? { ...item, status: 'queued', error: undefined, jobId: undefined }
+                      ? { ...item, status: 'queued', cooldownUntil: undefined, error: undefined, jobId: undefined }
                       : item
               )),
           };
@@ -4404,7 +5741,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       let currentState = studioQueueStateRef.current;
       if (!currentState || !currentState.items.length) return;
       if (isGenerating) return;
-      if (!currentState.items.some((item) => item.status === 'queued' || item.status === 'running')) {
+      if (currentState.items.some((item) => item.status === 'cooldown')) {
+          currentState = {
+              ...currentState,
+              items: currentState.items.map((item) => (
+                  item.status === 'cooldown'
+                      ? { ...item, status: 'queued', cooldownUntil: undefined }
+                      : item
+              )),
+          };
+          setStudioQueueState(currentState);
+      }
+      setStudioRailTab('queue');
+      generationRunStartedAtRef.current = Date.now();
+      generationFirstAudioAtRef.current = 0;
+      if (!currentState.items.some((item) => item.status === 'queued' || item.status === 'cooldown' || item.status === 'running')) {
           const firstFailed = [...currentState.items].sort((left, right) => left.order - right.order).find((item) => item.status === 'failed');
           if (firstFailed) {
               currentState = {
@@ -4412,22 +5763,27 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   activeItemId: firstFailed.id,
                   items: currentState.items.map((item) => (
                       item.id === firstFailed.id
-                          ? { ...item, status: 'queued', error: undefined, jobId: undefined }
+                          ? { ...item, status: 'queued', cooldownUntil: undefined, error: undefined, jobId: undefined }
                           : item
                   )),
               };
               setStudioQueueState(currentState);
           }
       }
-      startSimulation(Math.max(4, Math.ceil(text.length / 18)), 'Resuming queued generation...', 'live');
+      startSimulation(Math.max(4, Math.ceil(text.length / 14)), 'Resuming queued generation...', 'live');
       try {
           await executeStudioQueue(currentState);
       } catch (error: any) {
           if (error?.name !== 'AbortError') {
-              showToast(error?.message || 'Queue resume failed.', 'error');
+              const resumeFailureMessage = formatFrontendError(error, {
+                  fallback: 'Queue resume failed.',
+                  context: 'generation',
+                  isAdmin: hasAdminConsoleAccess,
+              }).publicMessage;
+              showToast(resumeFailureMessage || 'Queue resume failed.', 'error');
           }
       }
-  }, [executeStudioQueue, isGenerating, showToast, text.length]);
+  }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, setStudioRailTab, showToast, text.length]);
 
   useEffect(() => {
       if (!studioQueueState?.items.length) {
@@ -4444,32 +5800,54 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (!runningItem || isGenerating || studioQueueAutoResumeAttemptedRef.current) return;
 
       studioQueueAutoResumeAttemptedRef.current = true;
-      startSimulation(Math.max(4, Math.ceil(studioQueueState.items.reduce((sum, item) => sum + item.charCount, 0) / 18)), 'Reconnecting queued generation...', 'live');
+      setStudioRailTab('queue');
+      startSimulation(Math.max(4, Math.ceil(studioQueueState.items.reduce((sum, item) => sum + item.charCount, 0) / 14)), 'Reconnecting queued generation...', 'live');
       void executeStudioQueue(studioQueueState).catch((error: any) => {
           if (error?.name !== 'AbortError') {
-              showToast(error?.message || 'Queue recovery failed.', 'error');
+              const recoveryFailureMessage = formatFrontendError(error, {
+                  fallback: 'Queue recovery failed.',
+                  context: 'generation',
+                  isAdmin: hasAdminConsoleAccess,
+              }).publicMessage;
+              showToast(recoveryFailureMessage || 'Queue recovery failed.', 'error');
           }
       });
-  }, [executeStudioQueue, isGenerating, scheduleStudioQueueMasterRebuild, showToast, studioQueueState]);
+  }, [executeStudioQueue, hasAdminConsoleAccess, isGenerating, scheduleStudioQueueMasterRebuild, setStudioRailTab, showToast, studioQueueState]);
 
   const handleCancelGeneration = () => {
       if (!isGenerating) return;
 
+      clearStudioQueueCooldownTimer();
       const hadController = Boolean(generationAbortController.current);
       if (hadController) {
+          generationAbortReasonRef.current = 'manual';
           generationAbortController.current?.abort();
           generationAbortController.current = null;
           setProcessingStage(sanitizeUiText('Cancelling generation...'));
           const activeDubJobId = String(activeDubbingJobIdRef.current || '').trim();
           if (activeDubJobId) {
-              void cancelDubbingJob(mediaBackendUrl, activeDubJobId).catch(() => undefined);
+              void loadMediaBackendService()
+                .then(({ cancelDubbingJob }) => cancelDubbingJob(mediaBackendUrl, activeDubJobId))
+                .catch(() => undefined);
           }
       } else {
           stopSimulation();
       }
 
+      clearGenerationWatchdog();
       activeGatewayJobIdRef.current = '';
       activeDubbingJobIdRef.current = '';
+      updateStudioQueueState((prev) => {
+          if (!prev) return prev;
+          return {
+              ...prev,
+              items: prev.items.map((item) => (
+                  item.status === 'cooldown'
+                      ? { ...item, status: 'queued', cooldownUntil: undefined }
+                      : item
+              )),
+          };
+      });
       setLiveAudioChunks([]);
       seenLiveChunkKeysRef.current.clear();
       emit('generation.cancelled', {
@@ -4492,34 +5870,39 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       options?: { createObjectUrl?: boolean }
   ) {
       if (!scriptText.trim()) throw new Error("Text is empty");
-      const studioSettings = normalizeSettings(settingsOverride || settings);
+      const studioSettings = normalizeSettings(settingsOverride ?? buildStudioGenerationSettings(settings));
       const multiSpeakerEnabled = studioSettings.multiSpeakerEnabled !== false;
-      const preferBrowserKokoro = studioSettings.engine === 'KOKORO'
-          ? true
-          : shouldUseBrowserKokoro(studioSettings.engine, 'studio');
+      const preferBrowserKokoro = shouldUseBrowserKokoro(studioSettings.engine, 'studio');
+      const runtimeColdStart = studioSettings.engine === 'KOKORO' && preferBrowserKokoro
+        ? await loadKokoroBrowserRuntimeModule().then(({ kokoroBrowserRuntime }) => {
+            const state = kokoroBrowserRuntime.getState();
+            return state === 'cold' || state === 'warming';
+          }).catch(() => true)
+        : false;
       const runtimePrepStage = studioSettings.engine === 'KOKORO'
-          ? (
-              preferBrowserKokoro
-                ? 'Preparing isolated Basic browser worker...'
-                : 'Using Basic backend runtime to keep UI responsive...'
-            )
+          ? 'Preparing local ONNX WebGPU runtime (50% cap)...'
           : `Checking ${studioSettings.engine} runtime...`;
       setLiveProgress(14, runtimePrepStage);
       let engineState: { runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string };
       if (studioSettings.engine === 'KOKORO') {
           engineState = await prepareKokoroExecution('studio', studioSettings.voiceId, studioSettings.speed, {
-              preferBrowserExecution: preferBrowserKokoro,
               ...(signal ? { signal } : {}),
           });
       } else {
           engineState = await ensureEngineOnline(studioSettings.engine, { silent: true, syncVoiceId: studioSettings.voiceId, requireAccess: true });
       }
-      const browserKokoro = studioSettings.engine === 'KOKORO';
-      setLiveProgress(28, browserKokoro ? 'Local ONNX CPU runtime ready. Preparing voice selection...' : 'Runtime ready. Preparing voice selection...');
+      const browserKokoro = studioSettings.engine === 'KOKORO' && preferBrowserKokoro;
+      setLiveProgress(28, browserKokoro ? 'Local ONNX WebGPU runtime ready (50% cap). Preparing voice selection...' : 'Runtime ready. Preparing voice selection...');
       
-      // Auto-Add Characters to Library before generation
-      if (multiSpeakerEnabled && detectedSpeakers.length > 0) {
-          syncCast(detectedSpeakers);
+      const parsedForRun = parseMultiSpeakerScript(scriptText);
+      const runSpeakers = parsedForRun.speakersList
+          .map((speaker) => String(speaker || '').trim())
+          .filter((speaker) => speaker && speaker.toUpperCase() !== 'SFX');
+      const shouldUseMultiSpeakerForRun = multiSpeakerEnabled;
+
+      // Keep generation routing aligned with actual script structure.
+      if (shouldUseMultiSpeakerForRun) {
+          syncCast(runSpeakers);
       }
 
       const freshCatalog = engineState.catalog.length > 0
@@ -4541,48 +5924,96 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         : (selectedVoice?.geminiVoiceName || voiceId || 'Fenrir');
       const generationSettings = {
           ...studioSettings,
-          multiSpeakerEnabled,
+          multiSpeakerEnabled: shouldUseMultiSpeakerForRun,
           voiceId,
           runtimeVoiceCatalog: freshCatalog,
       } as GenerationSettings & { runtimeVoiceCatalog?: VoiceOption[] };
 
       // Pass signal to generateSpeech and then apply studio-level audio mix.
       setLiveProgress(40, 'Generating audio...');
+      const { generateSpeech } = await loadGeminiService();
       const ttsBuffer = await generateSpeech(
           scriptText,
           engineVoiceName,
           generationSettings,
           'speech',
           signal,
-          { context: 'studio', preferLiveChunks: true, preferBrowserKokoro: preferBrowserKokoro }
+          { context: 'studio', preferLiveChunks: true }
       );
+      if (browserKokoro) {
+          const { kokoroBrowserRuntime } = await loadKokoroBrowserRuntimeModule();
+          kokoroBrowserRuntime.scheduleSuspend(studioSettings.kokoroStandbyIdleMs || 300000);
+      }
       setLiveProgress(74, 'TTS response received. Applying studio mix...');
+      const { applyStudioAudioMix } = await loadStudioMixService();
       const mixedBuffer = await applyStudioAudioMix(ttsBuffer, generationSettings);
       setLiveProgress(90, 'Rendering final audio buffer...');
       const wavBlob = audioBufferToWav(mixedBuffer);
       const url = options?.createObjectUrl === false ? null : URL.createObjectURL(wavBlob);
       
-      return { url, wavBlob, voiceNameDisplay };
+      return {
+          url,
+          wavBlob,
+          firstAudioAtMs: generationFirstAudioAtRef.current || 0,
+          voiceNameDisplay,
+          usedMultiSpeaker: shouldUseMultiSpeakerForRun,
+          speakerCount: runSpeakers.length,
+          runtimeColdStart,
+      };
   }
 
   const handleGenerate = async () => {
     if (!text.trim()) return showToast("Please enter some text.", "info");
-    if (!hasUnlimitedAccess && text.length > maxCharsPerGeneration) {
+    if (text.length > maxCharsPerGeneration) {
       if (!isStudioQueueModeEnabled) {
-        return showToast(`This plan allows up to ${maxCharsPerGeneration.toLocaleString()} characters per generation. Enable Queue to process long scripts in parts.`, 'error');
+        emit('custom.message', {
+          title: 'Queue Recommended',
+          message: `This script is ${text.length.toLocaleString()} chars. Single generation is capped at ${maxCharsPerGeneration.toLocaleString()} chars.`,
+          dedupeKey: 'studio-queue-recommended',
+          channel: 'inbox',
+          action: {
+            label: 'Enable Queue',
+            onClick: () => {
+              if (isGenerating || isStudioQueueRunActiveRef.current) return;
+              setStudioQueueModeEnabled(true);
+              setStudioRailTab('queue');
+              void startStudioQueuedGeneration();
+            },
+          },
+        });
+        return showToast(`Single generation is capped at ${maxCharsPerGeneration.toLocaleString()} chars. Tap "Enable Queue" to run this script.`, 'info');
       }
+      setStudioRailTab('queue');
       await startStudioQueuedGeneration();
       return;
     }
-    if (isWalletBlocked) {
-      promptLowTokenShop(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`);
+    if (isWalletBlocked && !canRunClientBasicWithoutWallet) {
+      showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Billing to top up or upgrade.`, 'error');
+      openBillingProfile();
       return;
+    }
+    if (settings.engine === 'KOKORO' && shouldUseBrowserKokoroExecution('KOKORO', 'studio')) {
+      try {
+        setProcessingStage('Preparing local ONNX WebGPU runtime...');
+        await ensureKokoroStudioWarmup(settings.voiceId, settings.speed);
+      } catch (warmupError: any) {
+        showToast(
+          toUserFriendlySystemMessage(
+            warmupError?.message,
+            'Basic Runtime warmup delayed. Continuing generation with runtime recovery...'
+          ),
+          'info'
+        );
+      }
     }
     
     // Setup Abort Controller
     if (generationAbortController.current) generationAbortController.current.abort();
     const controller = new AbortController();
     generationAbortController.current = controller;
+    generationRunStartedAtRef.current = Date.now();
+    generationFirstAudioAtRef.current = 0;
+    setGenerationTiming(null);
     
     setGeneratedAudioUrlManaged(null);
     setLiveAudioChunks([]);
@@ -4590,49 +6021,112 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     activeGatewayJobIdRef.current = '';
     
     // Calculate Estimate
-    // TTS speed is roughly 20 chars per second for runtime estimate
-    const estTime = Math.max(3, Math.ceil(text.length / 20));
-    startSimulation(estTime, "Preparing backend generation...", 'live');
+    // TTS speed is roughly 14 chars per second for runtime estimate
+    const estTime = Math.max(3, Math.ceil(text.length / 14));
+    const generationNotificationKey = `single:${settings.engine}`;
+    startSimulation(estTime, settings.engine === 'KOKORO' ? 'Preparing local WebGPU runtime...' : 'Preparing generation...', 'live');
     emit('generation.started', {
       title: 'Generation Started',
       message: 'Generation started.',
-      dedupeKey: 'generation-started',
+      entityKey: generationNotificationKey,
+      dedupeKey: `generation-started:${settings.engine}`,
       channel: 'inbox',
     });
 
     try {
-      const { url, voiceNameDisplay } = await performGeneration(text, controller.signal);
+      let generationResult: Awaited<ReturnType<typeof performGeneration>> | null = null;
+      let retryCount = 0;
+      while (!generationResult) {
+        try {
+          generationResult = await performGeneration(text, controller.signal);
+        } catch (attemptError: any) {
+          if (attemptError?.name === 'AbortError') throw attemptError;
+          const shouldRetry = (
+            retryCount < TRANSIENT_GENERATION_RETRY_MAX
+            && shouldRetryTransientGenerationError(attemptError)
+          );
+          if (!shouldRetry) throw attemptError;
+          retryCount += 1;
+          activeGatewayJobIdRef.current = '';
+          setLiveAudioChunks([]);
+          seenLiveChunkKeysRef.current.clear();
+          setProcessingStage('Transient runtime issue detected. Retrying once...');
+          showToast('Transient runtime issue detected. Retrying once...', 'info');
+          await new Promise((resolve) => setTimeout(resolve, TRANSIENT_GENERATION_RETRY_DELAY_MS));
+        }
+      }
+      const { url, voiceNameDisplay, usedMultiSpeaker, speakerCount, runtimeColdStart } = generationResult;
       if (!url) throw new Error('Generated audio URL missing.');
       setLiveProgress(96, 'Finalizing output and updating history...');
       setGeneratedAudioUrlManaged(url);
+      const completedAtMs = Date.now();
+      const startedAtMs = generationRunStartedAtRef.current || completedAtMs;
+      const firstAudioAtMs = generationResult.firstAudioAtMs || generationFirstAudioAtRef.current || completedAtMs;
+      const totalGenerationMs = Math.max(0, completedAtMs - startedAtMs);
+      const timeToFirstAudioMs = Math.max(0, firstAudioAtMs - startedAtMs);
+      setGenerationTiming({
+        mode: 'single',
+        startedAtMs,
+        firstAudioAtMs,
+        completedAtMs,
+        timeToFirstAudioMs,
+        totalGenerationMs,
+        partCount: 1,
+        partDurationsMs: [totalGenerationMs],
+        coldStart: Boolean(runtimeColdStart),
+      });
 
       addToHistory({
         id: Date.now().toString(),
         text: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
         audioUrl: url,
-        voiceName: isStudioMultiSpeakerEnabled && detectedSpeakers.length > 0
-          ? `Cast (${detectedSpeakers.length})`
+        voiceName: usedMultiSpeaker
+          ? `Cast (${speakerCount})`
           : voiceNameDisplay,
         timestamp: Date.now()
       });
       void loadHistory(30);
 
       generationFailureBurstRef.current = 0;
-      showToast("Audio Generated!", "success");
+      const coldStartLabel = runtimeColdStart ? ' (cold start)' : '';
+      const completionMessage = `Audio generated in ${formatGenerationDuration(totalGenerationMs)}${coldStartLabel}. First audio ${formatGenerationDuration(timeToFirstAudioMs)}.`;
+      emit('generation.completed', {
+        title: 'Generation Completed',
+        message: completionMessage,
+        entityKey: generationNotificationKey,
+        dedupeKey: `generation-completed-single:${settings.engine}`,
+        channel: 'inbox',
+      });
+      showToast(completionMessage, 'success');
     } catch (e: any) {
       if (e.name === 'AbortError') {
-          // Cancelled cleanly
+          if (generationAbortReasonRef.current === 'stall') {
+              const stallMessage = 'Generation stalled for over 90 seconds. Retry or switch engine/runtime.';
+              showToast(stallMessage, 'error');
+              emit('generation.failed', {
+                  title: 'Generation Stalled',
+                  message: stallMessage,
+                  entityKey: generationNotificationKey,
+                  dedupeKey: `generation-stalled-main:${settings.engine}`,
+                  action: {
+                      label: 'Open Settings',
+                      onClick: () => setShowSettings(true),
+                  },
+              });
+          }
       } else {
           syncRuntimeBlockedStateFromError(settings.engine, e);
           generationFailureBurstRef.current += 1;
-          const failureMessage = toUserFriendlySystemMessage(
-              e?.message || 'Generation failed. Check runtime health and retry.',
-              'Generation failed. Check runtime health and retry.'
-          );
+          const failureMessage = formatFrontendError(e, {
+              fallback: 'Generation failed. Check runtime health and retry.',
+              context: 'generation',
+              isAdmin: hasAdminConsoleAccess,
+          }).publicMessage;
           emit('generation.failed', {
               title: 'Generation Failure',
               message: failureMessage,
-              dedupeKey: 'generation-failed-main',
+              entityKey: generationNotificationKey,
+              dedupeKey: `generation-failed-main:${settings.engine}`,
               action: {
                   label: 'Open Settings',
                   onClick: () => setShowSettings(true),
@@ -4643,6 +6137,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       stopSimulation();
       generationAbortController.current = null;
       activeGatewayJobIdRef.current = '';
+      generationAbortReasonRef.current = '';
+      generationRunStartedAtRef.current = 0;
+      generationFirstAudioAtRef.current = 0;
     }
   };
 
@@ -4670,6 +6167,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               avatarColor: randomColor
           });
       }
+      setVcReferenceDraftFile(null);
       setCharacterModalOpen(true);
   };
 
@@ -4677,6 +6175,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (!charForm.name.trim()) return showToast("Character Name required", "error");
       updateCharacter(charForm);
       setCharacterModalOpen(false);
+      setVcReferenceDraftFile(null);
       showToast(editingChar ? "Character Updated" : "Character Added", "success");
   };
 
@@ -4690,7 +6189,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- VOICE PREVIEW LOGIC ---
   const handleVoicePreview = async (voiceId: string, name: string) => {
       const voice = getVoiceById(voiceId);
-      const engine: GenerationSettings['engine'] = voice?.engine || 'GEM';
+      const engine: GenerationSettings['engine'] = normalizeEngineToken(voice?.engine, 'GEM');
       await playVoiceSample(voiceId, name, engine);
   };
 
@@ -4702,6 +6201,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (!base) return raw;
       return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
   }, [mediaBackendUrl]);
+
+  const resolveClonedVoicePlaybackUrl = useCallback((voice?: VoiceOption): string => {
+      if (!voice) return '';
+      const preview = resolveVoicePreviewUrl(voice);
+      if (preview) return preview;
+      if (!voice.isCloned) return '';
+      return String((voice as ClonedVoice).originalSampleUrl || '').trim();
+  }, [resolveVoicePreviewUrl]);
 
   const playVoiceSample = async (voiceId: string, name: string, engine: GenerationSettings['engine'] = 'GEM') => {
       // Stop current
@@ -4719,6 +6226,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setPreviewState({ id: voiceId, status: 'loading' });
       const selectedVoice = getVoiceById(voiceId);
       const fallbackPreviewUrl = resolveVoicePreviewUrl(selectedVoice);
+      const clonedPlaybackUrl = resolveClonedVoicePlaybackUrl(selectedVoice);
 
       const playAudioSource = async (sourceUrl: string, revokeOnEnd: boolean): Promise<void> => {
           const audio = new Audio(sourceUrl);
@@ -4763,6 +6271,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       };
 
       try {
+          if (clonedPlaybackUrl) {
+              await playAudioSource(clonedPlaybackUrl, false);
+              return;
+          }
           if (engine === 'KOKORO') {
               await prepareKokoroExecution('preview', voiceId, 1.0);
           } else {
@@ -4787,6 +6299,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             voiceParam = voiceId;
           }
 
+          const { generateSpeech } = await loadGeminiService();
           const buffer = await generateSpeech(
               text,
               voiceParam,
@@ -4816,7 +6329,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handlePreviewCharacter = async (char: CharacterProfile) => {
      const vid = char.voiceId;
-      const engine: GenerationSettings['engine'] = getVoiceById(vid)?.engine || 'GEM';
+      const engine: GenerationSettings['engine'] = normalizeEngineToken(getVoiceById(vid)?.engine, 'GEM');
      await playVoiceSample(char.voiceId, char.name, engine);
   };
 
@@ -4868,9 +6381,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       async (clipId: string, options?: { skipHistory?: boolean }) => {
           const clip = dubbingClips.find((item) => item.id === clipId) || null;
           if (!clip) return;
+          const { removeClip } = await loadDubbingTimelineService();
           const jobId = String(clip.jobId || '').trim();
           if (jobId) {
               try {
+                  const { cancelDubbingJob } = await loadMediaBackendService();
                   await cancelDubbingJob(mediaBackendUrl, jobId);
               } catch {
                   // best effort cancel
@@ -4891,17 +6406,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await handleRemoveClipFromQueue(selectedDubbingClipId);
   }, [handleRemoveClipFromQueue, selectedDubbingClipId]);
 
-  const handleRemoveCompletedQueue = useCallback(() => {
+  const handleRemoveCompletedQueue = useCallback(async () => {
       const completed = dubbingClips.filter((clip) => clip.status === 'completed');
+      const { removeCompletedClips } = await loadDubbingTimelineService();
       completed.forEach((clip) => releaseClipArtifacts(clip));
       mutateDubbingTimeline((current) => removeCompletedClips(current));
   }, [dubbingClips, mutateDubbingTimeline, releaseClipArtifacts]);
 
   const handleClearDubbingQueue = useCallback(async () => {
+      const { clearAllClips } = await loadDubbingTimelineService();
       for (const clip of dubbingClips) {
           const jobId = String(clip.jobId || '').trim();
           if (jobId) {
               try {
+                  const { cancelDubbingJob } = await loadMediaBackendService();
                   await cancelDubbingJob(mediaBackendUrl, jobId);
               } catch {}
           }
@@ -4917,7 +6435,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
   }, [dubbingClips, mediaBackendUrl, mutateDubbingTimeline, releaseClipArtifacts]);
 
-  const handleTimelineUndo = useCallback(() => {
+  const handleTimelineUndo = useCallback(async () => {
+      const { undoTimeline } = await loadDubbingTimelineService();
       setDubbingHistoryPast((past) => {
           const undone = undoTimeline(past, dubbingClips, dubbingHistoryFuture);
           if (undone.changed) {
@@ -4928,7 +6447,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
   }, [dubbingClips, dubbingHistoryFuture]);
 
-  const handleTimelineRedo = useCallback(() => {
+  const handleTimelineRedo = useCallback(async () => {
+      const { redoTimeline } = await loadDubbingTimelineService();
       setDubbingHistoryFuture((future) => {
           const redone = redoTimeline(dubbingHistoryPast, dubbingClips, future);
           if (redone.changed) {
@@ -4939,13 +6459,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
   }, [dubbingClips, dubbingHistoryPast]);
 
-  const handleDubbingTimelineTool = useCallback((tool: 'cut' | 'copy' | 'paste' | 'split' | 'trim_in' | 'trim_out' | 'layer' | 'remove') => {
+  const handleDubbingTimelineTool = useCallback(async (tool: 'cut' | 'copy' | 'paste' | 'split' | 'trim_in' | 'trim_out' | 'layer' | 'remove') => {
       if (!selectedDubbingClipId) {
           showToast('Select a clip first.', 'info');
           return;
       }
+      const timelineService = await loadDubbingTimelineService();
       if (tool === 'copy') {
-          const copied = copyClip(dubbingClips, selectedDubbingClipId);
+          const copied = timelineService.copyClip(dubbingClips, selectedDubbingClipId);
           if (!copied) {
               showToast('Unable to copy selected clip.', 'error');
               return;
@@ -4957,7 +6478,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (tool === 'paste') {
           let pastedAny = false;
           mutateDubbingTimeline((current) => {
-              const pasted = pasteClipAfterSelection(current, selectedDubbingClipId, dubbingClipboard);
+              const pasted = timelineService.pasteClipAfterSelection(current, selectedDubbingClipId, dubbingClipboard);
               pastedAny = Boolean(pasted.pastedId);
               if (pasted.pastedId) setSelectedDubbingClipId(String(pasted.pastedId));
               return pasted.clips;
@@ -4966,14 +6487,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           return;
       }
       if (tool === 'cut') {
-          mutateDubbingTimeline((current) => cutClip(current, selectedDubbingClipId).clips);
+          mutateDubbingTimeline((current) => timelineService.cutClip(current, selectedDubbingClipId).clips);
           showToast('Clip cut from timeline.', 'success');
           return;
       }
       if (tool === 'split') {
           let didSplit = false;
           mutateDubbingTimeline((current) => {
-              const split = splitClipAtPlayhead(current, selectedDubbingClipId, dubbingPlayheadMs);
+              const split = timelineService.splitClipAtPlayhead(current, selectedDubbingClipId, dubbingPlayheadMs);
               didSplit = Boolean(split.splitIds);
               if (split.splitIds?.[1]) setSelectedDubbingClipId(String(split.splitIds[1]));
               return split.clips;
@@ -4986,14 +6507,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
       if (tool === 'trim_in') {
           mutateDubbingTimeline((current) =>
-              trimClipWindow(current, selectedDubbingClipId, { trimInMs: Math.max(0, dubbingPlayheadMs) })
+              timelineService.trimClipWindow(current, selectedDubbingClipId, { trimInMs: Math.max(0, dubbingPlayheadMs) })
           );
           showToast('Trim-in updated.', 'success');
           return;
       }
       if (tool === 'trim_out') {
           mutateDubbingTimeline((current) =>
-              trimClipWindow(current, selectedDubbingClipId, { trimOutMs: Math.max(0, dubbingPlayheadMs) })
+              timelineService.trimClipWindow(current, selectedDubbingClipId, { trimOutMs: Math.max(0, dubbingPlayheadMs) })
           );
           showToast('Trim-out updated.', 'success');
           return;
@@ -5001,7 +6522,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (tool === 'layer') {
           const target = dubbingClips.find((clip) => clip.id === selectedDubbingClipId);
           const nextLayer: DubbingClip['layer'] = target?.layer === 'V2' ? 'V1' : 'V2';
-          mutateDubbingTimeline((current) => moveClipLayer(current, selectedDubbingClipId, nextLayer));
+          mutateDubbingTimeline((current) => timelineService.moveClipLayer(current, selectedDubbingClipId, nextLayer));
           showToast(`Moved clip to Layer ${nextLayer}.`, 'success');
           return;
       }
@@ -5037,6 +6558,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           });
 
           const task = mode === 'translate' && targetLang === 'English' ? 'translate' : 'transcribe';
+          const { transcribeVideoWithBackend } = await loadMediaBackendService();
           const backendResult = await transcribeVideoWithBackend(mediaBackendUrl, stemCache.speechFile, {
               language: settings.dubbingSourceLanguage || 'auto',
               task,
@@ -5053,6 +6575,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   stage: `Translating to ${targetLang}...`,
                   error: '',
               });
+              const { translateText } = await loadGeminiService();
               nextScript = await translateText(backendResult.script, targetLang, settings);
           }
 
@@ -5079,6 +6602,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       } catch (e: any) {
           try {
               const lang = mode === 'translate' ? targetLang : 'Original';
+              const { translateVideoContent } = await loadGeminiService();
               const fallback = await translateVideoContent(videoFile, lang, settings);
               setDubScript(fallback);
               showToast('Used fallback transcription path.', 'info');
@@ -5112,7 +6636,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setDubScript(nextValue);
       const labels: Record<typeof mode, string> = {
           clean: 'Cleaned script spacing and punctuation.',
-          speakerize: 'Applied speaker labels to dialogue lines.',
+          speakerize: 'Applied "[Speaker Name]:" tags to dialogue lines.',
           dedupe: 'Removed duplicate consecutive lines.',
           compact: 'Compacted script to non-empty lines.',
       };
@@ -5121,8 +6645,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerateDub = async () => {
       if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
-      if (isWalletBlocked) {
-          promptLowTokenShop(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance.`);
+      if (isWalletBlocked && !canRunClientBasicWithoutWallet) {
+          showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Billing to top up or upgrade.`, 'error');
+          openBillingProfile();
           return;
       }
 
@@ -5157,8 +6682,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           preflight: 'Preflight checks',
           queued: 'Queued',
       };
+      const {
+        transcribeVideoWithBackend,
+        createDubbingJobV2,
+        getDubbingJob,
+        downloadDubbingChunk,
+        downloadDubbingResult,
+        downloadDubbingReport,
+      } = await loadMediaBackendService();
 
       resetDubbingLivePlayback();
+      const generationNotificationKey = `dubbing:${settings.engine}`;
       startSimulation(26, 'Submitting backend dubbing job...', 'live');
       patchDubbingUiState({
           phase: 'running',
@@ -5169,7 +6703,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       emit('generation.started', {
           title: 'Generation Started',
           message: 'Generation started for dubbing queue workflow.',
-          dedupeKey: 'generation-started-dubbing',
+          entityKey: generationNotificationKey,
+          dedupeKey: `generation-started-dubbing:${settings.engine}`,
           channel: 'inbox',
       });
 
@@ -5392,10 +6927,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   if (clipError?.name === 'AbortError') {
                       throw clipError;
                   }
+                  const clipErrorMessage = formatFrontendError(clipError, {
+                      fallback: 'Clip dubbing failed.',
+                      context: 'generation',
+                      isAdmin: hasAdminConsoleAccess,
+                  }).publicMessage;
                   setDubbingClips((current) =>
                       current.map((item) =>
                           item.id === clip.id
-                              ? { ...item, status: 'failed', error: clipError?.message || 'Clip dubbing failed' }
+                              ? { ...item, status: 'failed', error: clipErrorMessage || 'Clip dubbing failed' }
                               : item
                       )
                   );
@@ -5424,10 +6964,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           } else {
               syncRuntimeBlockedStateFromError(settings.engine, e);
               generationFailureBurstRef.current += 1;
+              const dubbingFailureMessage = formatFrontendError(e, {
+                  fallback: 'Generation failed. Check backend health and retry.',
+                  context: 'generation',
+                  isAdmin: hasAdminConsoleAccess,
+              }).publicMessage;
               emit('generation.failed', {
                   title: 'Generation Failure',
-                  message: e?.message || 'Generation failed. Check backend health and retry.',
-                  dedupeKey: 'generation-failed-dubbing',
+                  message: dubbingFailureMessage,
+                  entityKey: generationNotificationKey,
+                  dedupeKey: `generation-failed-dubbing:${settings.engine}`,
                   action: {
                       label: 'Open Settings',
                       onClick: () => setShowSettings(true),
@@ -5437,9 +6983,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   phase: 'error',
                   progress: 100,
                   stage: 'Dubbing failed',
-                  error: e?.message || 'Unknown dubbing error',
+                  error: dubbingFailureMessage || 'Unknown dubbing error',
               });
-              showToast(e?.message || 'Dubbing failed.', 'error');
+              showToast(dubbingFailureMessage || 'Dubbing failed.', 'error');
           }
       } finally {
           activeDubbingJobIdRef.current = '';
@@ -5478,7 +7024,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       showToast(mode === 'grammar' ? "Fixing Grammar..." : mode === 'novel' ? "Directing Audio Novel..." : "Optimizing...", "info");
       
       try {
-          const polished = await proofreadScript(currentText, settings, mode);
+          const { proofreadScript } = await loadGeminiService();
+          const polished = await proofreadScript(currentText, settings, mode, {
+              languageCode: activeScriptLanguageCode,
+          });
           setFn(polished);
           showToast("Script Enhanced", "success");
       } catch (e: any) {
@@ -5489,20 +7038,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
   };
 
-  const handleDirectorAI = async (targetText: string, mode: 'audio_drama' | 'video_dub' = 'audio_drama') => {
+  const handleDirectorAI = async (targetText: string) => {
       const safeInput = String(targetText || '');
       if (!safeInput.trim()) return showToast('Enter text first', 'info');
       setIsAiWriting(true);
       try {
-          const options = mode === 'video_dub' ? directorOptions : undefined;
-          // Speaker assignment only: keep original script unchanged.
-          const { mood, cast } = await autoFormatScript(safeInput, settings, 'audio_drama', options, characterLibrary);
-          
-          if (cast && cast.length > 0) {
-              syncCast(cast as CharacterProfile[]);
-              showToast(`AI Director assigned cast for ${cast.length} speaker${cast.length === 1 ? '' : 's'}.`, "success");
+          const { autoDirectStudioScript } = await loadGeminiService();
+          const { mood, cast, directedText } = await autoDirectStudioScript(safeInput, settings, undefined, characterLibrary);
+          const tagInjection = injectDirectorTagsPreservingFormat(safeInput, directedText || safeInput);
+          if (tagInjection.patchedLineCount > 0 && tagInjection.text !== safeInput) {
+              setText(tagInjection.text);
+          }
+
+          const castNames = cast
+              .map((entry) => String(entry.name || '').trim())
+              .filter((name) => name.length > 0);
+          startTransition(() => {
+              setDetectedSpeakers(castNames);
+          });
+
+          const outcomeMessages: string[] = [];
+          if (castNames.length > 0) {
+              outcomeMessages.push(`identified ${castNames.length} speaker${castNames.length === 1 ? '' : 's'}`);
+          }
+          if (tagInjection.patchedLineCount > 0) {
+              outcomeMessages.push(`added tags to ${tagInjection.patchedLineCount} line${tagInjection.patchedLineCount === 1 ? '' : 's'}`);
+          }
+          if (outcomeMessages.length > 0) {
+              showToast(`AI Director ${outcomeMessages.join(' and ')}.`, "success");
           } else {
-              showToast(`No speakers found to assign. Mood: ${mood || 'Neutral'}`, "info");
+              showToast(`No speakers found to assign or patch. Mood: ${mood || 'Neutral'}`, "info");
           }
 
       } catch (e: any) {
@@ -5591,6 +7156,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       
       setIsAiWriting(true);
       try {
+          const { translateText } = await loadGeminiService();
           const translated = await translateText(currentText, targetLang, settings);
           setFn(translated);
           showToast("Translation Complete", "success");
@@ -5642,6 +7208,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const context = false ? dubScript : text;
 
       try {
+          const { generateTextContent } = await loadGeminiService();
           const response = await generateTextContent(userText, context, settings);
           const sanitizedResponse = sanitizeUiText(response);
           setLastAssistantDraft(sanitizedResponse);
@@ -5660,7 +7227,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
       } catch (e: any) {
           syncRuntimeBlockedStateFromError(settings.engine, e);
-          const message = sanitizeUiText(e?.message || 'Assistant request failed.');
+          const message = formatFrontendError(e, {
+              fallback: 'Assistant request failed.',
+              context: 'generation',
+              isAdmin: hasAdminConsoleAccess,
+          }).publicMessage;
           setChatHistory((prev) => [...prev, { role: 'ai', text: `[Assistant error] ${message}` }]);
           showToast(message, 'error');
       } finally {
@@ -5763,57 +7334,127 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await handleAssistantRequest(userText);
   };
 
-  const handleVoiceClone = async () => {
-      if (!cloneName || !uploadVoiceFile) return showToast("Missing name or file", "info");
-      const file = uploadVoiceFile; 
-      if(!file) return;
+  const handleVoiceClone = useCallback(() => {
+      setIsVoiceCloneModalOpen(true);
+  }, []);
 
-      startSimulation(5, "Analyzing Voice Print...");
+  const handleVoiceCloneCreated = useCallback((voice: ClonedVoice) => {
+      addClonedVoice(voice);
+      setSettings((current) => ({ ...current, voiceId: voice.id }));
+      setCharTab('GALLERY');
+      showToast(`Voice clone ready: ${voice.name}`, 'success');
+  }, [addClonedVoice, setCharTab, setSettings, showToast]);
 
+  const getVoiceConversionAttachmentKey = useCallback((voiceId: string): string => String(voiceId || '').trim().toLowerCase(), []);
+
+  const getVoiceConversionAttachment = useCallback((voiceId?: string) => {
+      const key = getVoiceConversionAttachmentKey(String(voiceId || ''));
+      if (!key) return null;
+      return voiceConversionAttachments[key] || null;
+  }, [getVoiceConversionAttachmentKey, voiceConversionAttachments]);
+
+  const attachVoiceConversionSample = useCallback(async (voiceId: string, file: File | null) => {
+      const normalizedVoiceId = getVoiceConversionAttachmentKey(voiceId);
+      if (!normalizedVoiceId || !file) return;
       try {
-          const analysis = await analyzeVoiceSample(file, settings);
-          const description = analysis.description;
-
-          const newVoice: ClonedVoice = {
-              id: `clone_${Date.now()}`,
-              name: cloneName,
-              gender: 'Unknown',
-              accent: 'Custom',
-              geminiVoiceName: 'Fenrir', 
-              originalSampleUrl: URL.createObjectURL(file),
-              dateCreated: Date.now(),
-              description,
-              isCloned: true
-          };
-          addClonedVoice(newVoice);
-          setSettings((s) => ({ ...s, voiceId: newVoice.id }));
-          if (analysis.emotionHint) {
-              const confidencePct = Math.round((analysis.emotionHint.confidence || 0) * 100);
-              showToast(
-                  `Emotion helper: ${analysis.emotionHint.emotion}${confidencePct > 0 ? ` (${confidencePct}%)` : ''}`,
-                  'info'
-              );
-          }
-          showToast("Voice Cloned Successfully!", "success");
-          setCloneName('');
-          setUploadVoiceFile(null);
-      } catch(e: any) {
-          showToast(e.message, "error");
-      } finally {
-          stopSimulation();
+          const audioBase64 = await fileToBase64(file);
+          setVoiceConversionAttachments((current) => ({
+              ...current,
+              [normalizedVoiceId]: {
+                  audioName: file.name || 'reference.wav',
+                  audioBase64,
+              },
+          }));
+          setVcReferenceDraftFile(file);
+          setIsStudioVoiceConversionEnabled(true);
+          showToast(`VC sample attached to ${voiceId}.`, 'success');
+      } catch (error) {
+          showToast(error instanceof Error ? error.message : 'Failed to attach VC sample.', 'error');
       }
-  };
+  }, [getVoiceConversionAttachmentKey, showToast]);
+
+  const clearVoiceConversionSample = useCallback((voiceId: string) => {
+      const normalizedVoiceId = getVoiceConversionAttachmentKey(voiceId);
+      if (!normalizedVoiceId) return;
+      const hadAttachment = Boolean(voiceConversionAttachments[normalizedVoiceId]);
+      setVoiceConversionAttachments((current) => {
+          if (!current[normalizedVoiceId]) return current;
+          const next = { ...current };
+          delete next[normalizedVoiceId];
+          return next;
+      });
+      setVcReferenceDraftFile(null);
+      if (hadAttachment) {
+          showToast(`VC sample cleared for ${voiceId}.`, 'info');
+      }
+  }, [getVoiceConversionAttachmentKey, showToast, voiceConversionAttachments]);
+
+  const openOpenVoicePanel = useCallback(() => {
+      setCharacterModalOpen(false);
+      setVcReferenceDraftFile(null);
+      setLabPanelRequest({ panel: 'openvoice', token: Date.now() });
+      setActiveTab(Tab.LAB);
+  }, [setActiveTab]);
+
+  function buildStudioGenerationSettings(baseSettings: GenerationSettings): GenerationSettings {
+      if (!isStudioVoiceConversionEnabled) {
+          return {
+              ...baseSettings,
+              voiceConversionReferences: undefined,
+          };
+      }
+      const attachments = voiceConversionAttachments;
+      return {
+          ...baseSettings,
+          voiceConversionReferences: Object.keys(attachments).length > 0 ? { ...attachments } : undefined,
+      };
+  }
+
+  const currentVoiceConversionAttachment = getVoiceConversionAttachment(charForm.voiceId);
+  const voiceConversionAttachmentCount = useMemo(
+      () => Object.keys(voiceConversionAttachments).length,
+      [voiceConversionAttachments]
+  );
+
+  useEffect(() => {
+      if (!characterModalOpen) {
+          setVcReferenceDraftFile(null);
+          return;
+      }
+      if (!currentVoiceConversionAttachment || typeof File === 'undefined') {
+          setVcReferenceDraftFile(null);
+          return;
+      }
+      try {
+          setVcReferenceDraftFile(new File(
+              [base64ToArrayBuffer(currentVoiceConversionAttachment.audioBase64)],
+              currentVoiceConversionAttachment.audioName || 'reference.wav',
+              { type: 'audio/wav' }
+          ));
+      } catch {
+          setVcReferenceDraftFile(null);
+      }
+  }, [characterModalOpen, currentVoiceConversionAttachment]);
+
+  useEffect(() => {
+      if (Object.keys(voiceConversionAttachments).length > 0) {
+          setIsStudioVoiceConversionEnabled(true);
+      }
+  }, [voiceConversionAttachments]);
 
   // --- Derived State for Gallery ---
   const galleryVoicePool = useMemo(() => {
       const dedup = new Map<string, VoiceOption>();
+      clonedVoices.forEach((voice) => {
+          if (voice?.id) dedup.set(voice.id, voice);
+      });
       ENGINE_ORDER.forEach((engine) => {
           getEngineVoiceCatalog(engine).forEach((voice) => {
               dedup.set(voice.id, voice);
           });
       });
       return [...dedup.values()];
-  }, [getEngineVoiceCatalog]);
+  }, [clonedVoices, getEngineVoiceCatalog]);
 
   const filteredVoices = useMemo(() => {
       const normalizedSearch = deferredVoiceSearch.trim().toLowerCase();
@@ -5876,11 +7517,33 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       ? 'Cloud Runtime'
       : 'Basic Runtime'
   );
+  const getEngineDescription = (engine: GenerationSettings['engine']) => {
+    if (engine === 'KOKORO') return 'WebGPU-first basic engine with a 50% browser utilization cap for fast startup and low live latency.';
+    if (engine === 'NEURAL2') return 'Balanced cloud engine for clean narration and reliable multilingual output.';
+    return 'Premium cloud engine for richer expressiveness, direction fidelity, and complex scenes.';
+  };
+  const formatCompactRate = (value: number): string => {
+    const safe = Math.max(0, Number(value || 0));
+    if (!Number.isFinite(safe) || safe <= 0) return '0';
+    return safe.toFixed(safe < 1 ? 2 : 1).replace(/\.?0+$/, '');
+  };
+  const getEngineVfRate = (engine: GenerationSettings['engine']): number =>
+    Math.max(0, Number(stats?.vfUsage?.rates?.[engine] || 0));
+  const getEngineRateLabel = (engine: GenerationSettings['engine']): string => {
+    const rate = getEngineVfRate(engine);
+    if (rate <= 0) return 'VF rate syncing';
+    return `${formatCompactRate(rate)} VF / char`;
+  };
+  const getEngineCharsPerVfLabel = (engine: GenerationSettings['engine']): string => {
+    const rate = getEngineVfRate(engine);
+    if (rate <= 0) return 'chars/VF pending';
+    return `~${formatCompactRate(1 / rate)} chars / VF`;
+  };
   const getRuntimeStateLabel = (state: EngineRuntimeState) => {
     if (state === 'online') return 'Online';
     if (state === 'offline') return 'Offline';
     if (state === 'standby') return 'Standby';
-    if (state === 'starting') return 'Starting';
+    if (state === 'starting' || state === 'warming') return 'Starting';
     if (state === 'not_configured') return 'Not Set';
     return 'Checking';
   };
@@ -5889,55 +7552,56 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       if (state === 'online') return 'bg-emerald-950/45 text-emerald-300 border-emerald-700/60';
       if (state === 'offline') return 'bg-red-950/45 text-red-300 border-red-700/60';
       if (state === 'standby') return 'bg-slate-800 text-slate-300 border-slate-700';
-      if (state === 'starting') return 'bg-indigo-950/45 text-indigo-200 border-indigo-700/60';
+      if (state === 'starting' || state === 'warming') return 'bg-indigo-950/45 text-indigo-200 border-indigo-700/60';
       if (state === 'not_configured') return 'bg-amber-950/45 text-amber-300 border-amber-700/60';
       return 'bg-slate-900 text-slate-300 border-slate-700';
     }
     if (state === 'online') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
     if (state === 'offline') return 'bg-red-50 text-red-700 border-red-200';
     if (state === 'standby') return 'bg-slate-100 text-slate-700 border-slate-200';
-    if (state === 'starting') return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+    if (state === 'starting' || state === 'warming') return 'bg-indigo-50 text-indigo-700 border-indigo-200';
     if (state === 'not_configured') return 'bg-amber-50 text-amber-700 border-amber-200';
     return 'bg-gray-50 text-gray-600 border-gray-200';
   };
   const activateTtsEngine = async (engine: GenerationSettings['engine']) => {
+      const targetEngine = normalizeEngineToken(engine, settings.engine || 'GEM');
       if (engineSwitchInProgress) return;
-      if (!isEnginePlanAllowed(engine)) {
+      if (!isEnginePlanAllowed(targetEngine)) {
           if (!hasUnlimitedAccess && !isPaidBillingPlan) {
-              openCreditsSurface('subscriptions');
+              setShowSubscriptionModal(true);
               showToast('Prime engine is available on paid plans. Upgrade to continue.', 'info');
           } else {
-              showToast(`${getEngineLabel(engine)} is not enabled for this plan.`, 'info');
+              showToast(`${getEngineLabel(targetEngine)} is not enabled for this plan.`, 'info');
           }
           return;
       }
-      if (engine === settings.engine && ttsRuntimeStatus[engine].state === 'online') return;
+      if (targetEngine === settings.engine && ttsRuntimeStatus[targetEngine].state === 'online') return;
 
-      const nextVoiceId = getValidVoiceIdForEngine(engine, settings.voiceId);
+      const nextVoiceId = getValidVoiceIdForEngine(targetEngine, settings.voiceId);
 
       setSettings(prev => {
-          const catalog = getEngineVoiceCatalog(engine);
-          const fallbackVoiceId = getValidVoiceIdForEngine(engine, catalog[0]?.id || nextVoiceId || prev.voiceId);
+          const catalog = getEngineVoiceCatalog(targetEngine);
+          const fallbackVoiceId = getValidVoiceIdForEngine(targetEngine, catalog[0]?.id || nextVoiceId || prev.voiceId);
           const refreshedMapping: Record<string, string> = {};
           Object.entries(prev.speakerMapping || {}).forEach(([speaker, mappedVoiceId]) => {
-              refreshedMapping[speaker] = getValidVoiceIdForEngine(engine, mappedVoiceId || fallbackVoiceId);
+              refreshedMapping[speaker] = getValidVoiceIdForEngine(targetEngine, mappedVoiceId || fallbackVoiceId);
           });
           return {
               ...prev,
-              engine,
-              voiceId: getValidVoiceIdForEngine(engine, prev.voiceId),
+              engine: targetEngine,
+              voiceId: getValidVoiceIdForEngine(targetEngine, prev.voiceId),
               speakerMapping: refreshedMapping,
           };
       });
 
       try {
-          if (engine !== 'KOKORO') {
-              await ensureEngineOnline(engine, { syncVoiceId: nextVoiceId });
+          if (targetEngine !== 'KOKORO') {
+              await ensureEngineOnline(targetEngine, { syncVoiceId: nextVoiceId });
               return;
           }
           await prepareKokoroExecution('studio', nextVoiceId, settings.speed);
       } catch (error: any) {
-          showToast(`Failed to activate ${getEngineLabel(engine)}: ${error?.message || 'Unknown error'}`, 'error');
+          showToast(`Failed to activate ${getEngineLabel(targetEngine)}: ${error?.message || 'Unknown error'}`, 'error');
       }
   };
   const activeTabLabel = activeTab === Tab.STUDIO
@@ -5945,13 +7609,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     : activeTab === Tab.PODCAST
       ? 'Podcast'
     : activeTab === Tab.LAB
-      ? 'Lab'
+      ? 'Studio'
+      : activeTab === Tab.READER
+        ? 'Reader'
       : activeTab === Tab.CHARACTERS
         ? 'Character'
         : activeTab === Tab.NOVEL
           ? 'Novel'
-          : activeTab === Tab.READER
-            ? 'Reader'
           : activeTab === Tab.HISTORY
             ? 'History'
             : activeTab === Tab.ADMIN
@@ -5960,12 +7624,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activeTabDetail = WORKSPACE_TAB_DETAILS[activeTab] || 'Workspace controls';
   const contentMaxWidthClass = isStudioWorkspaceTab
     ? 'max-w-[1320px]'
-    : activeTab === Tab.PODCAST
-      ? 'max-w-[1380px]'
-    : activeTab === Tab.LAB
-      ? 'max-w-[1480px]'
     : activeTab === Tab.READER
-      ? 'max-w-[1360px]'
+        ? 'max-w-[1480px]'
       : 'max-w-5xl';
   const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
 
@@ -5976,7 +7636,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [activeTab, hasAdminConsoleAccess]);
   useEffect(() => {
       const activeTabExists = workspaceTabs.some((item) => item.id === activeTab);
-      if (!activeTabExists) {
+      if (activeTab !== Tab.LAB && !activeTabExists) {
           setActiveTab(Tab.STUDIO);
       }
   }, [activeTab, workspaceTabs]);
@@ -6018,26 +7678,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setScreen(AppScreen.LOGIN);
   };
 
-  const openCreditsSurface = (
-    tab: CreditsSurfaceTab = 'tokens',
-    options?: { promptLowToken?: boolean }
-  ) => {
-    if (isGuestSession) {
-      openAuthScreen('signup');
-      return;
-    }
-    setCreditsSurfaceTab(tab);
-    setIsCreditsSurfaceOpen(true);
-    setIsMobileMenuOpen(false);
-    if (options?.promptLowToken) {
-      setShowLowTokenPrompt(true);
-    }
-  };
-
-  const promptLowTokenShop = (message: string) => {
-    openCreditsSurface('tokens', { promptLowToken: true });
-    showToast(message, 'info');
-  };
+  const openBillingProfile = useCallback(() => {
+      if (typeof window !== 'undefined') {
+          const url = new URL(window.location.href);
+          url.searchParams.set('vf-screen', 'profile');
+          url.searchParams.set('vf-tab', 'billing');
+          window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      }
+      setIsMobileMenuOpen(false);
+      setScreen(AppScreen.PROFILE);
+  }, [setScreen]);
 
   const handleSignOut = async () => {
       try {
@@ -6072,8 +7722,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const result = await billingActions.startTokenPackCheckout(selectedTokenPack);
           if (!result.url) throw new Error('Checkout URL is missing.');
           if (Number.isFinite(result.packVf) && Number.isFinite(result.finalAmountInr)) {
+              const checkoutDiscount = Math.max(0, Number(result.discountPercent ?? tokenPackDiscountPercent));
               showToast(
-                  `Checkout: ${(result.packVf || 0).toLocaleString()} VF for ${formatInr(result.finalAmountInr || 0)}.`,
+                  `Checkout: ${(result.packVf || 0).toLocaleString()} VF for ${formatInr(result.finalAmountInr || 0)}${checkoutDiscount > 0 ? ` after ${checkoutDiscount}% plan savings` : ''}.`,
                   'info'
               );
           }
@@ -6151,29 +7802,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         </button>
       </div>
 
+      <div className="mt-3 grid grid-cols-1 gap-2">
+        <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
+          <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Spendable</div>
+          <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
+            {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
+          </div>
+          <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
+            {getEngineDisplayName(settings.engine)}
+          </div>
+        </div>
+      </div>
+
       {!hasUnlimitedAccess && (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Spendable</div>
-              <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                {hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}
-              </div>
-              <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                {getEngineDisplayName(settings.engine)}
-              </div>
-            </div>
-              <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-              <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Generations today</div>
-              <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                {Math.max(0, Number(stats.generationsUsed || 0)).toLocaleString()}
-              </div>
-              <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                Current daily usage window
-              </div>
-            </div>
-          </div>
-
           <div className={`mt-3 rounded-xl border px-3 py-3 text-[11px] ${isDarkUi ? 'border-slate-700 bg-slate-950/60 text-slate-300' : 'border-gray-200 bg-white/90 text-gray-600'}`}>
             <div className="flex items-center justify-between gap-2">
               <span>Monthly free pool</span>
@@ -6184,29 +7826,40 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{walletPaid.toLocaleString()}</strong>
             </div>
             <div className="mt-1 flex items-center justify-between gap-2">
-              <span>Per-generation cap</span>
-              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{maxCharsPerGeneration.toLocaleString()} chars</strong>
-            </div>
-            <div className="mt-1 flex items-center justify-between gap-2">
               <span>Allowed engines</span>
               <strong className={`max-w-[9rem] truncate text-right ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+                {allowedEngineSummary}
+              </strong>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span>Token-pack savings</span>
+              <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>
+                {tokenPackDiscountPercent > 0 ? `${tokenPackDiscountPercent}% off` : 'No plan discount'}
               </strong>
             </div>
           </div>
 
+          {!hasSessionIdentity ? (
+            <div className={`mt-3 rounded-xl border px-3 py-2 text-[11px] ${
+              isDarkUi
+                ? 'border-amber-400/25 bg-amber-500/10 text-amber-100'
+                : 'border-amber-200 bg-amber-50 text-amber-700'
+            }`}>
+              Sign in to buy token packs or redeem coupons.
+            </div>
+          ) : null}
+
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button
-              onClick={() => setShowAdModal(true)}
-              disabled={creditsActionState.watchAdDisabled}
-              className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+              onClick={openBillingProfile}
+              className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold ${
                 isDarkUi
-                  ? 'border-amber-400/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                  : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                  ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+                  : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
               }`}
             >
-              <Gift size={12} />
-              Watch Ad
+              <Bell size={12} />
+              Open Billing
             </button>
             <button
               onClick={() => { void handleBuyTokenPack(); }}
@@ -6236,7 +7889,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             >
               {(Object.keys(TOKEN_PACK_MATRIX) as TokenPackKey[]).map((packKey) => {
                 const item = TOKEN_PACK_MATRIX[packKey];
-                const displayPrice = normalizedPlanToken === 'scale' ? item.scaleInr : item.standardInr;
+                const displayPrice = applyTokenPackDiscount(item.baseInr, tokenPackDiscountPercent);
                 return (
                   <option key={packKey} value={packKey}>
                     {joinUiFragments([item.label, `${item.vf.toLocaleString()} VF`, formatInr(displayPrice)])}
@@ -6245,7 +7898,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               })}
             </select>
             <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-              Checkout price: {formatInr(selectedTokenPackPriceInr)} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
+              Checkout price: {formatInr(selectedTokenPackPriceInr)} ({tokenPackDiscountPercent > 0 ? `${tokenPackDiscountPercent}% plan discount saves ${formatInr(selectedTokenPackSavingsInr)}` : 'Standard pricing'})
             </div>
           </div>
           <div className="mt-2 flex items-center gap-1">
@@ -6412,7 +8065,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
             {!hasUnlimitedAccess && (
               <>
-                <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="mt-3 grid grid-cols-1 gap-2">
               <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
                 <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Spendable</div>
                 <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
@@ -6420,15 +8073,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 </div>
                 <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
                   {getEngineDisplayName(settings.engine)}
-                </div>
-              </div>
-              <div className={`rounded-xl border px-3 py-3 ${isDarkUi ? 'border-slate-700 bg-slate-950/70' : 'border-gray-200 bg-gray-50/90'}`}>
-                <div className={`text-[10px] font-bold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Generations today</div>
-                <div className={`mt-2 text-sm font-semibold ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {Math.max(0, Number(stats.generationsUsed || 0)).toLocaleString()}
-                </div>
-                <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                  Current daily usage window
                 </div>
               </div>
                 </div>
@@ -6443,37 +8087,38 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{walletPaid.toLocaleString()}</strong>
               </div>
               <div className="mt-1 flex items-center justify-between gap-2">
-                <span>Per-generation cap</span>
-                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>{maxCharsPerGeneration.toLocaleString()} chars</strong>
-              </div>
-              <div className="mt-1 flex items-center justify-between gap-2">
                 <span>Allowed engines</span>
                 <strong className={`max-w-[9rem] truncate text-right ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
                   {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+                </strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span>Token-pack savings</span>
+                <strong className={isDarkUi ? 'text-slate-100' : 'text-slate-900'}>
+                  {tokenPackDiscountPercent > 0 ? `${tokenPackDiscountPercent}% off` : 'No plan discount'}
                 </strong>
               </div>
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
-                onClick={() => setShowAdModal(true)}
-                disabled={!canClaimAdReward}
-                className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+                onClick={openBillingProfile}
+                className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold ${
                   isDarkUi
-                    ? 'border-amber-400/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                    : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                    ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+                    : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
                 }`}
               >
-                <Gift size={12} />
-                Watch Ad
-              </button>
-              <button
-                onClick={() => { void handleBuyTokenPack(); }}
-                disabled={isBuyingTokenPack}
-                className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
-                  isDarkUi
-                    ? 'border-emerald-400/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
-                    : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                <Bell size={12} />
+                Open Billing
+            </button>
+            <button
+              onClick={() => { void handleBuyTokenPack(); }}
+              disabled={creditsActionState.buyTokenPackDisabled}
+              className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold disabled:opacity-50 ${
+                isDarkUi
+                  ? 'border-emerald-400/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                  : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                 }`}
               >
                 {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
@@ -6495,7 +8140,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               >
                 {(Object.keys(TOKEN_PACK_MATRIX) as TokenPackKey[]).map((packKey) => {
                   const item = TOKEN_PACK_MATRIX[packKey];
-                  const displayPrice = normalizedPlanToken === 'scale' ? item.scaleInr : item.standardInr;
+                  const displayPrice = applyTokenPackDiscount(item.baseInr, tokenPackDiscountPercent);
                   return (
                     <option key={packKey} value={packKey}>
                       {joinUiFragments([item.label, `${item.vf.toLocaleString()} VF`, formatInr(displayPrice)])}
@@ -6504,7 +8149,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 })}
               </select>
               <div className={`mt-1 text-[10px] ${isDarkUi ? 'text-slate-500' : 'text-gray-500'}`}>
-                Checkout price: {formatInr(selectedTokenPackPriceInr)} ({normalizedPlanToken === 'scale' ? 'Scale discount applied' : 'Standard pricing'})
+                Checkout price: {formatInr(selectedTokenPackPriceInr)} ({tokenPackDiscountPercent > 0 ? `${tokenPackDiscountPercent}% plan discount saves ${formatInr(selectedTokenPackSavingsInr)}` : 'Standard pricing'})
               </div>
             </div>
             <div className="mt-2 flex items-center gap-1">
@@ -6520,7 +8165,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               />
               <button
                 onClick={() => { void handleRedeemCoupon(); }}
-                disabled={isRedeemingCoupon || !couponCode.trim()}
+                disabled={creditsActionState.redeemCouponDisabled}
                 className={`h-8 rounded-lg border px-2 text-[11px] font-semibold disabled:opacity-50 ${
                   isDarkUi
                     ? 'border-cyan-400/35 text-cyan-200 hover:bg-cyan-500/10'
@@ -6667,7 +8312,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       return (
       <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/55 backdrop-blur-[3px]"
+          className="vf-scrim vf-scrim--drawer fixed inset-0 z-50 flex justify-end"
           onClick={() => setShowSettings(false)}
           role="dialog"
           aria-modal="true"
@@ -6834,6 +8479,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               const accessBlockedDetail = sanitizeUiText(
                                 ttsAccessState.detail || 'Sign in again to enable AI/TTS requests.'
                               );
+                              const connectedServer = sanitizeUiText(formatRuntimeServerLabel(status));
                               return (
                                   <button
                                       key={engine}
@@ -6863,6 +8509,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       <div className="flex-1 min-w-0">
                                           <div className={`font-semibold text-xs ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
                                           <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{getEngineSubLabel(engine)}</div>
+                                          <div className={`mt-1 text-[10px] leading-4 ${isDarkUi ? 'text-slate-300' : 'text-slate-600'}`}>
+                                              {getEngineDescription(engine)}
+                                          </div>
+                                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                              <span
+                                                className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
+                                                  isDarkUi ? 'border-slate-600 bg-slate-800/80 text-slate-200' : 'border-slate-200 bg-slate-100 text-slate-700'
+                                                }`}
+                                              >
+                                                {getEngineRateLabel(engine)}
+                                              </span>
+                                              <span
+                                                className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
+                                                  isDarkUi ? 'border-slate-600 bg-slate-800/80 text-slate-300' : 'border-slate-200 bg-slate-100 text-slate-600'
+                                                }`}
+                                              >
+                                                {getEngineCharsPerVfLabel(engine)}
+                                              </span>
+                                            </div>
+                                          {connectedServer ? (
+                                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                                  <span
+                                                    className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
+                                                      isDarkUi ? 'border-cyan-500/30 bg-cyan-500/12 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-700'
+                                                    }`}
+                                                  >
+                                                    Server: {connectedServer}
+                                                  </span>
+                                              </div>
+                                          ) : null}
                                           {showAccessBlockedNote && (
                                               <div className={`mt-1 text-[10px] font-medium ${isDarkUi ? 'text-amber-300' : 'text-amber-700'}`}>
                                                   {accessBlockedDetail}
@@ -6898,7 +8574,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
   const usesFullBleedLabContent = activeTab === Tab.LAB;
   const shouldLockLabScroll = usesFullBleedLabContent && !isPhone;
-  const shouldShowCreativeAssistant = isStudioWorkspaceTab;
+  const shouldHideAssistantForLab = activeTab === Tab.LAB || activeTab === Tab.READER;
   const isDesktopCompactSidebar = isDesktop && sidebarMode === 'compact';
   const mainDesktopPaddingClass = isDesktopCompactSidebar ? 'xl:pl-[4.5rem]' : 'xl:pl-64';
   const topbarDesktopOffsetClass = isDesktopCompactSidebar
@@ -6918,6 +8594,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'pb-[calc(env(safe-area-inset-bottom)+8rem)]'
           : 'pb-52'
       : 'pb-36';
+  const workspaceScrollFrameClass =
+    activeTab === Tab.PODCAST
+      ? 'overflow-y-auto px-4 md:px-8 pt-16 md:pt-20 pb-6 md:pb-8'
+      : `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`;
   const studioFloatingDockWidthClass = isDesktop
     ? 'w-[clamp(17rem,28vw,20.25rem)] max-w-[calc(100vw-2rem)]'
     : 'w-[clamp(15.5rem,31vw,18.25rem)] max-w-[calc(100vw-2rem)]';
@@ -6927,7 +8607,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioAssistantPositionClass = isPhone
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
-  const showTopbarAssistantButton = isPhone && shouldShowCreativeAssistant;
+  const showTopbarAssistantButton = isPhone && !shouldHideAssistantForLab && !isStudioWorkspaceTab;
   const showFloatingAssistantFab = !isPhone;
   const assistantFabSizeClass = isPhone ? 'w-14 h-14' : 'w-16 h-16';
   const assistantPanelSizeClass = isPhone
@@ -6941,7 +8621,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = shouldShowCreativeAssistant && (showFloatingAssistantFab || isChatOpen);
+  const shouldRenderFloatingAssistant = !shouldHideAssistantForLab && (showFloatingAssistantFab || isChatOpen);
 
   return (
     <div className={`relative min-h-screen vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
@@ -6951,7 +8631,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {isMobileMenuOpen && (
         <button
           type="button"
-          className="fixed inset-0 bg-black/45 backdrop-blur-[2px] z-[55] xl:hidden"
+          className="vf-scrim vf-scrim--sheet fixed inset-0 z-[55] xl:hidden"
           onClick={() => setIsMobileMenuOpen(false)}
           aria-label="Close mobile menu"
         />
@@ -7018,53 +8698,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </div>
                  </div>
 
-                 <div className="vf-topbar-runtime-wrap hidden sm:block min-w-0 flex-1 overflow-x-auto no-scrollbar">
+                 <div className="vf-topbar-runtime-wrap min-w-0 flex-1 overflow-hidden">
                      <EngineRuntimeStrip
                        engineOrder={ENGINE_ORDER}
                        statuses={ttsRuntimeStatus}
+                       telemetry={selectedEngineTelemetry[settings.engine] || createSelectedEngineTelemetry()}
                        accessState={ttsAccessState}
                        activeEngine={settings.engine}
                        switchingEngine={engineSwitchInProgress}
-                       compact={isTablet}
+                       compact={!isDesktop}
                        resolvedTheme={resolvedTheme}
-                       onActivate={(engine) => { void activateTtsEngine(engine); }}
+                       onActivate={activateTtsEngine}
                      />
-                  </div>
-                  <div className="sm:hidden min-w-0 flex-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const cycleOrder = planAllowedEngines.length > 0 ? planAllowedEngines : ENGINE_ORDER;
-                        const activeIndex = cycleOrder.indexOf(settings.engine);
-                        const nextEngine: GenerationSettings['engine'] = cycleOrder[(activeIndex + 1) % cycleOrder.length] ?? 'KOKORO';
-                        void activateTtsEngine(nextEngine);
-                      }}
-                      className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-[10px] font-bold uppercase tracking-wide ${
-                        resolvedTheme === 'dark'
-                          ? 'border-slate-700 bg-slate-900/85 text-slate-200'
-                          : 'border-slate-200 bg-white text-slate-700'
-                      }`}
-                      title={`Active: ${getEngineDisplayName(settings.engine)}. Tap to switch engine.`}
-                    >
-                      <span className={`h-1.5 w-1.5 rounded-full ${
-                        ttsRuntimeStatus[settings.engine]?.state === 'online'
-                          ? 'bg-emerald-400'
-                          : ttsRuntimeStatus[settings.engine]?.state === 'starting'
-                            ? 'bg-amber-400'
-                            : 'bg-rose-400'
-                      }`} />
-                      {getEngineDisplayName(settings.engine)}
-                    </button>
                   </div>
 
                   <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
-                      <button
+                     <button
                         type="button"
                         ref={creditsSurfaceTriggerRef}
                         onClick={() => setIsCreditsSurfaceOpen((open) => !open)}
                         aria-expanded={isCreditsSurfaceOpen}
                         aria-label="Open plan and credits"
-                        className={`inline-flex items-center gap-1 sm:gap-2 rounded-full border px-2 py-1 sm:px-2.5 text-[10px] font-bold ${
+                        className={`inline-flex items-center gap-1.5 sm:gap-2 rounded-full border px-2 py-1 sm:px-2.5 text-[10px] font-bold ${
                           resolvedTheme === 'dark'
                             ? 'border-slate-700 bg-slate-900/85 text-slate-200 hover:bg-slate-800'
                             : 'border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -7074,8 +8729,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         <Coins size={12} className="sm:hidden" />
                         <span className="sm:hidden">{hasUnlimitedAccess ? 'Credits' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
                         <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
-                        <span className={`hidden sm:inline ${resolvedTheme === 'dark' ? 'text-slate-500' : 'text-gray-500'}`}>|</span>
-                        <span className="hidden sm:inline">{`Today ${Math.max(0, Number(stats.generationsUsed || 0)).toLocaleString()} gens`}</span>
                         <span className={`hidden sm:inline rounded-full px-2 py-0.5 text-[9px] ${
                           isPaidBillingPlan
                             ? (resolvedTheme === 'dark' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-50 text-cyan-700')
@@ -7138,7 +8791,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             {isPhone && (
               <button
                 type="button"
-                className="fixed inset-0 z-[48] bg-black/45 backdrop-blur-[2px]"
+                className="vf-scrim vf-scrim--sheet fixed inset-0 z-[48]"
                 onClick={() => setIsCreditsSurfaceOpen(false)}
                 aria-label="Close plan and credits panel"
               />
@@ -7155,10 +8808,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         {/* Scrollable Content Area */}
         <div
           ref={contentScrollRef}
-          className={`vf-main-scroll flex-1 custom-scrollbar relative ${
+          className={`vf-main-scroll flex-1 studio-scrollbar relative ${
             usesFullBleedLabContent
               ? `${shouldLockLabScroll ? 'overflow-hidden' : 'overflow-y-auto'} px-0 md:px-0 pt-16 md:pt-20 pb-0`
-              : `overflow-y-auto px-4 md:px-8 pt-20 md:pt-24 ${studioScrollPaddingClass}`
+              : workspaceScrollFrameClass
           }`}
         >
             <div className={usesFullBleedLabContent ? 'mx-auto w-full h-full max-w-none space-y-0' : `mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
@@ -7169,7 +8822,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         {/* Editor Section */}
                         <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
                             {/* Reduced Height Editor */}
-                            <SectionCard className={`vf-editor-shell rounded-3xl overflow-hidden flex flex-col ${studioEditorHeightClass} relative group transition-all hover:shadow-md`}>
+                            {isStudioEditorFullscreen && (
+                                <button
+                                    type="button"
+                                    className="vf-scrim vf-scrim--modal vf-editor-fullscreen-scrim fixed inset-0 z-[57]"
+                                    aria-label="Exit fullscreen editor"
+                                    onClick={() => setIsStudioEditorFullscreen(false)}
+                                />
+                            )}
+                            <SectionCard className={`vf-editor-shell rounded-3xl overflow-hidden flex flex-col ${studioEditorHeightClass} relative ${
+                                isStudioEditorFullscreen ? 'vf-editor-shell--fullscreen z-[58]' : 'group transition-all hover:shadow-md'
+                            }`}>
                                 {/* Toolbar */}
                                 <div className={`vf-studio-toolbar border-b ${isPhone ? 'flex flex-col items-stretch gap-1.5 px-2.5 py-2' : 'flex items-center justify-between gap-2.5 px-3 py-2.5'}`}>
                                     <div className={`${isPhone ? 'vf-toolbar-primary vf-toolbar-primary--phone flex min-w-0 items-center gap-1.5 overflow-x-auto pb-0.5 pr-0.5' : 'vf-toolbar-primary flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2'}`}>
@@ -7217,7 +8880,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Sparkles size={13}/>
                                             <span>{isPhone ? 'Assist' : 'Assistant'}</span>
                                          </button>
-                                         <button onClick={() => handleDirectorAI(text, 'audio_drama')} disabled={isAiWriting} className="vf-toolbar-ai text-xs font-bold disabled:opacity-50 transition-colors shadow-sm">
+                                         <button
+                                            type="button"
+                                            onClick={() => handleDirectorAI(text)}
+                                            disabled={isAiWriting}
+                                            title="Analyze the current text and add speaker/emotion tags"
+                                            className="vf-toolbar-ai text-xs font-bold disabled:opacity-50 transition-colors shadow-sm"
+                                         >
                                             {isAiWriting ? <Loader2 size={13} className="animate-spin"/> : <Wand2 size={13}/>} 
                                             <span>AI Director</span>
                                          </button>
@@ -7232,16 +8901,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                 </div>
                                 
                                 <div className="flex-1 min-h-0">
-                                    <BlockScriptEditor
-                                      value={text}
-                                      mode={studioEditorMode}
-                                      emotions={EMOTIONS}
-                                      speakerSuggestions={castSpeakers}
-                                      onChange={setText}
-                                      onModeChange={setStudioEditorMode}
-                                      placeholder="Write your script here... The AI Director can auto-assign voices for characters."
-                                      className="h-full"
-                                    />
+                                    <Suspense fallback={<div className={`flex h-full items-center justify-center text-sm ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading editor...</div>}>
+                                      <LazyBlockScriptEditor
+                                        value={text}
+                                        mode={studioEditorMode}
+                                        emotions={EMOTIONS}
+                                        speakerSuggestions={castSpeakers}
+                                        onChange={setText}
+                                        onRawBlurNormalize={normalizeStudioSpeakerHeaders}
+                                        maxChars={STUDIO_EDITOR_HARD_CAP}
+                                        onOverflow={({ maxChars }) => {
+                                          const now = Date.now();
+                                          if (now - studioTextHardCapNoticeAtRef.current < 1800) return;
+                                          studioTextHardCapNoticeAtRef.current = now;
+                                          showToast(`Input is capped at ${maxChars.toLocaleString()} characters.`, 'info');
+                                        }}
+                                        onModeChange={setStudioEditorMode}
+                                        placeholder="Write your script here... Use [Speaker Name]: tags or let AI Director add them."
+                                        className="h-full"
+                                        isFullscreen={isStudioEditorFullscreen}
+                                        onToggleFullscreen={() => setIsStudioEditorFullscreen((current) => !current)}
+                                      />
+                                    </Suspense>
                                 </div>
 
                                 <StudioTranslateBar
@@ -7255,7 +8936,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
                                 <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-3 py-2 gap-2' : 'px-4 sm:px-6 py-3 gap-3'}`}>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <span className="vf-editor-count">{text.length} chars</span>
+                                        <span className="vf-editor-count">{`${text.length.toLocaleString()} / ${maxCharsPerGeneration.toLocaleString()} chars`}</span>
                                         {studioQueueEligible && (
                                             <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
                                                 isDarkUi
@@ -7270,7 +8951,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         <button
                                             type="button"
                                             onClick={() => setStudioQueueModeEnabled(!isStudioQueueModeEnabled)}
-                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                            disabled={isGenerating || studioQueueState?.items.some((item) => item.status === 'running' || item.status === 'cooldown')}
+                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-60 ${
                                                 isStudioQueueModeEnabled
                                                     ? isDarkUi
                                                         ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
@@ -7286,9 +8968,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         <button
                                             type="button"
                                             onClick={() => {
-                                                const nextEnabled = !isStudioMultiSpeakerEnabled;
-                                                if (nextEnabled) setStudioRailTab('cast');
-                                                setSettings((prev) => ({ ...prev, multiSpeakerEnabled: nextEnabled }));
+                                                if (!isStudioMultiSpeakerEnabled) {
+                                                    setStudioRailTab('cast');
+                                                }
+                                                toggleStudioMultiSpeaker();
                                             }}
                                             className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
                                                 isStudioMultiSpeakerEnabled
@@ -7303,6 +8986,32 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Users size={12} />
                                             Multi-Speaker {isStudioMultiSpeakerEnabled ? 'On' : 'Off'}
                                         </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsStudioVoiceConversionEnabled((current) => !current)}
+                                            title={
+                                              voiceConversionAttachmentCount > 0
+                                                ? `${voiceConversionAttachmentCount} reference sample${voiceConversionAttachmentCount === 1 ? '' : 's'} ready for post-TTS VC.`
+                                                : 'Attach a reference sample in Characters to use post-TTS VC.'
+                                            }
+                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                              isStudioVoiceConversionEnabled
+                                                ? isDarkUi
+                                                  ? 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200'
+                                                  : 'border-fuchsia-300 bg-fuchsia-50 text-fuchsia-700'
+                                                : isDarkUi
+                                                  ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-fuchsia-500/30 hover:text-fuchsia-200'
+                                                  : 'border-gray-200 bg-white text-gray-600 hover:border-fuchsia-200 hover:text-fuchsia-700'
+                                            }`}
+                                        >
+                                            <FileAudio size={12} />
+                                            VC {isStudioVoiceConversionEnabled ? 'On' : 'Off'}
+                                            {voiceConversionAttachmentCount > 0 && (
+                                              <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-extrabold ${isStudioVoiceConversionEnabled ? 'bg-white/15 text-current' : isDarkUi ? 'bg-fuchsia-500/15 text-fuchsia-100' : 'bg-fuchsia-100 text-fuchsia-700'}`}>
+                                                {voiceConversionAttachmentCount}
+                                              </span>
+                                            )}
+                                        </button>
                                         <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex items-center gap-1"><Save size={12}/> Save Draft</button>
                                     </div>
                                 </div>
@@ -7311,19 +9020,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             {/* Generated Audio Player */}
                             {(generatedAudioUrl || isGenerating || liveAudioChunks.length > 0) && (
                                 <div className="animate-in slide-in-from-bottom-4">
-                                    <AudioPlayer
-                                      audioUrl={generatedAudioUrl}
-                                      isGenerating={isGenerating}
-                                      liveChunks={liveAudioChunks}
-                                      isLiveStreaming={isGenerating}
-                                      autoPlayOnFirstChunk={settings.autoPlayGeneratedAudio !== false}
-                                      onReset={() => {
-                                        setGeneratedAudioUrlManaged(null);
-                                        setLiveAudioChunks([]);
-                                        seenLiveChunkKeysRef.current.clear();
-                                        activeGatewayJobIdRef.current = '';
-                                      }}
-                                    />
+                                    <Suspense fallback={<div className={`rounded-3xl border px-4 py-4 text-sm ${isDarkUi ? 'border-slate-800 bg-slate-950 text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>Loading audio player...</div>}>
+                                      <AudioPlayer
+                                        audioUrl={generatedAudioUrl}
+                                        isGenerating={isGenerating}
+                                        liveChunks={liveAudioChunks}
+                                        isLiveStreaming={isGenerating || liveAudioChunks.length > 0}
+                                        autoPlayOnFirstChunk={settings.autoPlayGeneratedAudio !== false}
+                                        onReset={() => {
+                                          setGeneratedAudioUrlManaged(null);
+                                          setLiveAudioChunks([]);
+                                          seenLiveChunkKeysRef.current.clear();
+                                          activeGatewayJobIdRef.current = '';
+                                        }}
+                                      />
+                                    </Suspense>
+                                    {generationTiming && (
+                                      <div className={`mt-2 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-[11px] ${
+                                        isDarkUi
+                                          ? 'border-cyan-500/30 bg-slate-950 text-cyan-100'
+                                          : 'border-cyan-200 bg-cyan-50 text-cyan-700'
+                                      }`}>
+                                        <span className="font-bold uppercase tracking-wide">{generationTiming.mode === 'queue' ? 'Queue timing' : 'Run timing'}</span>
+                                        <span>First audio {formatGenerationDuration(generationTiming.timeToFirstAudioMs)}</span>
+                                        <span>Total {formatGenerationDuration(generationTiming.totalGenerationMs)}</span>
+                                        {generationTiming.mode === 'queue' && generationTiming.partCount ? (
+                                          <span>{generationTiming.partCount} part{generationTiming.partCount === 1 ? '' : 's'}</span>
+                                        ) : null}
+                                        {generationTiming.coldStart ? <span className="font-semibold">(cold start)</span> : null}
+                                      </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -7331,18 +9057,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                        {/* Controls Sidebar */}
 		                        <div className={`vf-studio-rail h-fit xl:sticky xl:top-24 xl:self-start ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
                               <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-3 rounded-3xl'}>
-                                <div className="flex flex-wrap gap-2">
+                                <div className="flex flex-wrap gap-2" {...studioRailTabs.listProps}>
                                   {studioRailTabItems.map((tabItem) => {
                                     const isActive = studioRailTab === tabItem.id;
+                                    const isDisabled = Boolean(tabItem.disabled);
                                     return (
                                       <button
                                         key={tabItem.id}
                                         type="button"
-                                        onClick={() => jumpToStudioRailSection(tabItem.id)}
-                                        aria-pressed={isActive}
+                                        {...studioRailTabs.getTabProps(tabItem.id, isDisabled)}
+                                        title={isDisabled ? 'Voice controls are disabled while Multi-Speaker mode is on. Use Cast.' : undefined}
                                         className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
                                           isActive
                                             ? (isDarkUi ? 'border-cyan-500/45 bg-cyan-500/14 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700')
+                                            : isDisabled
+                                              ? (isDarkUi ? 'cursor-not-allowed border-slate-800 bg-slate-950 text-slate-500 opacity-65' : 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400')
                                             : (isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-500/30 hover:text-cyan-200' : 'border-gray-200 bg-white text-gray-600 hover:border-cyan-200 hover:text-cyan-700')
                                         }`}
                                       >
@@ -7361,7 +9090,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   })}
                                 </div>
                               </SectionCard>
-                                <div id="studio-rail-voice">
+		                            {studioRailTab === 'voice' && (
 	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -7382,6 +9111,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                         {getEngineDisplayName(settings.engine)}
                                                     </span>
                                                     <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openCharacterModal(characterLibrary.find((char) => char.voiceId === settings.voiceId) || undefined, settings.voiceId)}
+                                                        className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
+                                                          isDarkUi
+                                                            ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                            : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
+                                                        }`}
+                                                        title="Attach a VC reference for the selected voice"
+                                                        aria-label="Attach a VC reference for the selected voice"
+                                                    >
+                                                        <UploadCloud size={12} />
+                                                    </button>
                                                 </div>
                                             </div>
                                             {studioMobilePanels.speaker ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
@@ -7400,13 +9142,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                                {getEngineDisplayName(settings.engine)}
 	                                            </span>
                                                 <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
-                                            </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openCharacterModal(characterLibrary.find((char) => char.voiceId === settings.voiceId) || undefined, settings.voiceId)}
+                                                    className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
+                                                      isDarkUi
+                                                        ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                        : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
+                                                    }`}
+                                                    title="Attach a VC reference for the selected voice"
+                                                    aria-label="Attach a VC reference for the selected voice"
+                                                >
+                                                    <UploadCloud size={12} />
+                                                </button>
 	                                    </div>
+                                    </div>
                                     )}
 
                                     {(!isPhone || studioMobilePanels.speaker) && (
                                     <>
-	                                <div className={`max-h-60 overflow-y-auto custom-scrollbar space-y-3 ${isPhone ? 'mt-4 mb-3' : 'mb-4'}`}>
+	                                <div className={`max-h-60 overflow-y-auto studio-scrollbar space-y-3 pr-1 ${isPhone ? 'mt-4 mb-3' : 'mb-4'}`}>
                                         <div>
                                             <div className="mb-2 flex items-center justify-between">
                                                 <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Free Speakers</span>
@@ -7420,19 +9175,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                         <button
                                                             key={v.id}
                                                             onClick={() => setSettings(s => ({ ...s, voiceId: v.id }))}
-                                                            className={`vf-voice-chip ${isSelected ? 'vf-voice-chip--active' : ''} flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
+                                                            className={`vf-voice-chip ${isSelected ? 'vf-voice-chip--active' : ''} flex min-h-[2.85rem] min-w-[7.35rem] max-w-[10rem] items-center gap-2 overflow-hidden rounded-xl border px-2.5 py-2 text-xs font-bold transition-all ${isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
                                                         >
-                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{voiceMeta.name[0] || 'V'}</div>
-                                                            <div className="flex flex-col items-start leading-tight">
-                                                                <div className="flex items-center gap-1.5">
-                                                                    <span>{voiceMeta.name}</span>
+                                                            <div className={`h-5 w-5 shrink-0 rounded-full flex items-center justify-center ${isSelected ? 'bg-white/20' : 'bg-gray-200'}`}>{voiceMeta.name[0] || 'V'}</div>
+                                                            <div className="min-w-0 flex flex-col items-start leading-tight">
+                                                                <div className="flex w-full items-center gap-1.5">
+                                                                    <span className="truncate">{voiceMeta.name}</span>
                                                                     {voiceMeta.countryTag && (
-                                                                        <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold leading-none ${isSelected ? 'border-white/40 bg-white/15 text-white/90' : 'border-gray-300 bg-gray-100 text-gray-600'}`}>
+                                                                        <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold leading-none ${isSelected ? 'border-white/40 bg-white/15 text-white/90' : 'border-gray-300 bg-gray-100 text-gray-600'}`}>
                                                                             {voiceMeta.countryTag}
                                                                         </span>
                                                                     )}
                                                                 </div>
-                                                                <span className={`text-[10px] font-semibold ${isSelected ? 'text-white/80' : 'text-gray-500'}`}>
+                                                                <span className={`w-full truncate text-[10px] font-semibold ${isSelected ? 'text-white/80' : 'text-gray-500'}`}>
                                                                     {resolveVoicePersonaLabel(v)}
                                                                 </span>
                                                             </div>
@@ -7461,20 +9216,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                                 }
                                                                 setSettings((s) => ({ ...s, voiceId: v.id }));
                                                             }}
-                                                            className={`vf-voice-chip flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${locked ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
+                                                            className={`vf-voice-chip ${isSelected && !locked ? 'vf-voice-chip--active' : ''} flex min-h-[2.85rem] min-w-[7.35rem] max-w-[10rem] items-center gap-2 overflow-hidden rounded-xl border px-2.5 py-2 text-xs font-bold transition-all ${locked ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-200' : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'}`}
                                                             title={locked ? 'Upgrade to use Pro voices' : undefined}
                                                         >
-                                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isSelected && !locked ? 'bg-white/20' : 'bg-amber-200'}`}>{voiceMeta.name[0] || 'V'}</div>
-                                                            <div className="flex flex-col items-start leading-tight">
-                                                                <div className="flex items-center gap-1.5">
-                                                                    <span>{voiceMeta.name}</span>
+                                                            <div className={`h-5 w-5 shrink-0 rounded-full flex items-center justify-center ${isSelected && !locked ? 'bg-white/20' : locked ? 'bg-amber-200' : 'bg-gray-200'}`}>{voiceMeta.name[0] || 'V'}</div>
+                                                            <div className="min-w-0 flex flex-col items-start leading-tight">
+                                                                <div className="flex w-full items-center gap-1.5">
+                                                                    <span className="truncate">{voiceMeta.name}</span>
                                                                     {voiceMeta.countryTag && (
-                                                                        <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold leading-none ${isSelected && !locked ? 'border-white/40 bg-white/15 text-white/90' : 'border-amber-300 bg-amber-100 text-amber-700'}`}>
+                                                                        <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold leading-none ${isSelected && !locked ? 'border-white/40 bg-white/15 text-white/90' : locked ? 'border-amber-300 bg-amber-100 text-amber-700' : 'border-gray-300 bg-gray-100 text-gray-600'}`}>
                                                                             {voiceMeta.countryTag}
                                                                         </span>
                                                                     )}
                                                                 </div>
-                                                                <span className={`text-[10px] font-semibold ${isSelected && !locked ? 'text-white/80' : 'text-amber-700'}`}>
+                                                                <span className={`w-full truncate text-[10px] font-semibold ${locked ? 'text-amber-700' : isSelected ? 'text-white/80' : 'text-gray-500'}`}>
                                                                     {locked ? 'Pro - Upgrade' : resolveVoicePersonaLabel(v)}
                                                                 </span>
                                                             </div>
@@ -7504,10 +9259,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </>
                                     )}
 		                            </SectionCard>
-                                  </div>
+                                  )}
 
 	                            {/* Studio Audio Mix */}
-                                  <div id="studio-rail-mix">
+                                  {studioRailTab === 'mix' && (
 		                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -7605,10 +9360,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     </div>
                                     )}
 			                            </SectionCard>
-                                  </div>
+                                  )}
 
-                                    <div id="studio-rail-cast">
-                                      {isStudioMultiSpeakerEnabled ? (
+                                    {studioRailTab === 'cast' && (
+                                      isStudioMultiSpeakerEnabled ? (
 		                            <>
 		                            {/* Cast & Crew */}
 	                            <SectionCard className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
@@ -7617,21 +9372,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         : 'bg-indigo-50 border-indigo-100'
                                     }`}>
                                     {isPhone ? (
-                                        <button
-                                            type="button"
-                                            onClick={() => toggleStudioMobilePanel('cast')}
-                                            className="mb-3 flex w-full items-center justify-between gap-3 text-left"
-                                        >
-                                            <div>
+                                        <div className="mb-3 flex flex-col gap-2">
+                                            <div className="flex items-start justify-between gap-3">
                                                 <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
                                                     isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
                                                 }`}><Bot size={14}/> Cast &amp; Crew</h3>
-                                                <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                                    {isStudioMultiSpeakerEnabled ? `${activeScriptLanguageCode.toUpperCase()} - ${studioCrewTags.length} crew cues` : 'Disabled'}
-                                                </p>
+                                                <button
+                                                    type="button"
+                                                    onClick={autoAssignCastVoices}
+                                                    disabled={
+                                                        !isStudioMultiSpeakerEnabled ||
+                                                        !hasStudioExplicitMultiSpeakerScript ||
+                                                        isAutoAssigningCast ||
+                                                        castSpeakers.length === 0 ||
+                                                        castVoiceOptions.length === 0
+                                                    }
+                                                    title="Refresh cast from the current text and assign voices"
+                                                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                        isDarkUi
+                                                            ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
+                                                            : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                                                    } disabled:opacity-60`}
+                                                >
+                                                    {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                                                    AI Auto
+                                                </button>
                                             </div>
-                                            {studioMobilePanels.cast ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-                                        </button>
+                                            <p className={`text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                {isStudioMultiSpeakerEnabled ? `${activeScriptLanguageCode.toUpperCase()} - ${studioCrewTags.length} crew cues` : 'Disabled'}
+                                            </p>
+                                        </div>
                                     ) : (
                                     <div className="flex items-center justify-between mb-3">
                                         <h3 className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 ${
@@ -7643,11 +9413,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 onClick={autoAssignCastVoices}
                                                 disabled={
                                                     !isStudioMultiSpeakerEnabled ||
+                                                    !hasStudioExplicitMultiSpeakerScript ||
                                                     isAutoAssigningCast ||
                                                     castSpeakers.length === 0 ||
                                                     castVoiceOptions.length === 0
                                                 }
-                                                title="AI auto-detect speakers from script text and assign voices"
+                                                title="Refresh cast from the current text and assign voices"
                                                 className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
                                                     isDarkUi
                                                         ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
@@ -7676,101 +9447,111 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </div>
                                     </div>
                                     )}
-                                    {(!isPhone || studioMobilePanels.cast) && (
                                     <>
-                                    {isPhone && (
-                                        <button
-                                            type="button"
-                                            onClick={autoAssignCastVoices}
-                                            disabled={
-                                                !isStudioMultiSpeakerEnabled ||
-                                                isAutoAssigningCast ||
-                                                castSpeakers.length === 0 ||
-                                                castVoiceOptions.length === 0
-                                            }
-                                            title="AI auto-detect speakers from script text and assign voices"
-                                            className={`mb-3 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
-                                                isDarkUi
-                                                    ? 'bg-slate-950 text-indigo-200 border-indigo-500/30 hover:bg-slate-900'
-                                                    : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
-                                            } disabled:opacity-60`}
-                                        >
-                                            {isAutoAssigningCast ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
-                                            AI Auto
-                                        </button>
-                                    )}
                                     {!isStudioMultiSpeakerEnabled && (
                                       <p className="mb-3 text-[11px] font-medium text-gray-500">
                                         Enable Multi-Speaker Mode to edit cast mappings.
                                       </p>
                                     )}
                                     <div className="space-y-2">
-                                        {castSpeakers.map(speaker => (
-                                            <div key={speaker} className={`flex items-center justify-between gap-2 p-2 rounded-lg border shadow-sm ${
-                                                isDarkUi
-                                                  ? 'bg-slate-950 border-indigo-500/20'
-                                                  : 'bg-white border-indigo-100'
-                                            }`}>
-                                                <span className={`text-xs font-bold truncate ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>{speaker}</span>
-                                                <select 
-                                                    className={`text-[10px] font-bold rounded p-1 outline-none max-w-[150px] ${isDarkUi ? 'bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-700'}`}
-                                                    value={resolveMappedVoiceForSpeaker(speaker) || castFreeVoiceOptions[0]?.id || castVoiceOptions[0]?.id || ''}
-                                                    disabled={!isStudioMultiSpeakerEnabled}
-                                                    onChange={(e) => {
-                                                        const newVoiceId = e.target.value;
-                                                        const selectedVoice = castVoiceOptions.find((voice) => voice.id === newVoiceId);
-                                                        if (selectedVoice && isVoiceLockedForFreeTier(settings.engine, selectedVoice)) {
-                                                            setShowSubscriptionModal(true);
-                                                            return;
-                                                        }
-                                                        setSettings((s) => ({
-                                                            ...s,
-                                                            speakerMapping: upsertSpeakerVoiceMapping(speaker, newVoiceId, s.speakerMapping),
-                                                        }));
-                                                        
-                                                        const char = characterLibrary.find(c => c.name.toLowerCase() === speaker.toLowerCase());
-                                                        if (char) {
-                                                            updateCharacter({ ...char, voiceId: newVoiceId });
-                                                        } else {
-                                                            const voice =
-                                                                getVoiceById(newVoiceId) ||
-                                                                castVoiceOptions.find(v => v.id === newVoiceId) ||
-                                                                castVoiceOptions[0];
-                                                            updateCharacter({
-                                                                id: Date.now().toString(),
-                                                                name: speaker,
-                                                                voiceId: newVoiceId,
-                                                                gender: voice?.gender || 'Unknown',
-                                                                age: voice ? resolveVoiceAgeGroup(voice) : 'Unknown'
-                                                            });
-                                                        }
-	                                                    }}
-			                                                >
-                                                         {castFreeVoiceOptions.length > 0 && (
-                                                             <optgroup label="Free Speakers">
-                                                                 {castFreeVoiceOptions.map((v: any) => (
-                                                                     <option key={v.id} value={v.id}>
-                                                                          {`${resolveVoiceDisplayLabel(v)} (${resolveVoicePersonaLabel(v)})`}
-                                                                     </option>
-                                                                 ))}
-                                                             </optgroup>
-                                                         )}
-                                                         {castProVoiceOptions.length > 0 && (
-                                                             <optgroup label="Pro Speakers">
-                                                                 {castProVoiceOptions.map((v: any) => (
-                                                                      <option
-                                                                          key={v.id}
-                                                                          value={v.id}
-                                                                          disabled={isVoiceLockedForFreeTier(settings.engine, v)}
-                                                                      >
-                                                                          {`${resolveVoiceDisplayLabel(v)} (${resolveVoicePersonaLabel(v)}) - Pro`}
-                                                                      </option>
-                                                                  ))}
-                                                              </optgroup>
-                                                          )}
-			                                                </select>
-			                                            </div>
-			                                        ))}
+                                        {castSpeakers.map(speaker => {
+                                            const char = characterLibrary.find(c => c.name.toLowerCase() === speaker.toLowerCase()) || null;
+                                            const selectedVoiceId = char?.voiceId || resolveMappedVoiceForSpeaker(speaker) || castFreeVoiceOptions[0]?.id || castVoiceOptions[0]?.id || '';
+                                            const selectedVoiceConversionAttachment = selectedVoiceId ? getVoiceConversionAttachment(selectedVoiceId) : null;
+                                            return (
+                                                <div key={speaker} className={`flex items-center justify-between gap-2 p-2 rounded-lg border shadow-sm ${
+                                                    isDarkUi
+                                                      ? 'bg-slate-950 border-indigo-500/20'
+                                                      : 'bg-white border-indigo-100'
+                                                }`}>
+                                                    <div className="flex min-w-0 items-center gap-2">
+                                                        <span className={`truncate text-xs font-bold ${isDarkUi ? 'text-slate-100' : 'text-gray-700'}`}>{speaker}</span>
+                                                        {selectedVoiceConversionAttachment && (
+                                                            <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide ${
+                                                                isDarkUi
+                                                                    ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200'
+                                                                    : 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700'
+                                                            }`}>
+                                                                VC
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openCharacterModal(char || undefined, selectedVoiceId)}
+                                                            className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition ${
+                                                              isDarkUi
+                                                                ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                                : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
+                                                            }`}
+                                                            title={`Attach a VC reference for ${speaker}`}
+                                                            aria-label={`Attach a VC reference for ${speaker}`}
+                                                        >
+                                                            <UploadCloud size={12} />
+                                                        </button>
+                                                        <select 
+                                                            className={`max-w-[150px] rounded p-1 text-[10px] font-bold outline-none ${isDarkUi ? 'bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-700'}`}
+                                                            aria-label={`Voice for ${speaker}`}
+                                                            data-testid={`studio-cast-voice-${speaker}`}
+                                                            value={selectedVoiceId}
+                                                            disabled={!isStudioMultiSpeakerEnabled}
+                                                            onChange={(e) => {
+                                                                const newVoiceId = e.target.value;
+                                                                const selectedVoice = castVoiceOptions.find((voice) => voice.id === newVoiceId);
+                                                                if (selectedVoice && isVoiceLockedForFreeTier(settings.engine, selectedVoice)) {
+                                                                    setShowSubscriptionModal(true);
+                                                                    return;
+                                                                }
+                                                                setSettings((s) => ({
+                                                                    ...s,
+                                                                    speakerMapping: upsertSpeakerVoiceMapping(speaker, newVoiceId, s.speakerMapping),
+                                                                }));
+                                                                
+                                                                if (char) {
+                                                                    updateCharacter({ ...char, voiceId: newVoiceId });
+                                                                } else {
+                                                                    const voice =
+                                                                        getVoiceById(newVoiceId) ||
+                                                                        castVoiceOptions.find(v => v.id === newVoiceId) ||
+                                                                        castVoiceOptions[0];
+                                                                    updateCharacter({
+                                                                        id: Date.now().toString(),
+                                                                        name: speaker,
+                                                                        voiceId: newVoiceId,
+                                                                        gender: voice?.gender || 'Unknown',
+                                                                        age: voice ? resolveVoiceAgeGroup(voice) : 'Unknown'
+                                                                    });
+                                                                }
+                                                            }}
+                                                        >
+                                                            {castFreeVoiceOptions.length > 0 && (
+                                                                <optgroup label="Free Speakers">
+                                                                    {castFreeVoiceOptions.map((v: any) => (
+                                                                        <option key={v.id} value={v.id}>
+                                                                            {`${resolveVoiceDisplayLabel(v)} (${resolveVoicePersonaLabel(v)})`}
+                                                                        </option>
+                                                                    ))}
+                                                                </optgroup>
+                                                            )}
+                                                            {castProVoiceOptions.length > 0 && (
+                                                                <optgroup label="Pro Speakers">
+                                                                    {castProVoiceOptions.map((v: any) => (
+                                                                        <option
+                                                                            key={v.id}
+                                                                            value={v.id}
+                                                                            disabled={isVoiceLockedForFreeTier(settings.engine, v)}
+                                                                        >
+                                                                            {`${resolveVoiceDisplayLabel(v)} (${resolveVoicePersonaLabel(v)}) - Pro`}
+                                                                        </option>
+                                                                    ))}
+                                                                </optgroup>
+                                                            )}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
 	                                    </div>
                                         {studioCrewTags.length > 0 && (
                                             <div className={`mt-3 rounded-2xl border p-3 ${isDarkUi ? 'border-cyan-500/20 bg-slate-950' : 'border-cyan-100 bg-white/90'}`}>
@@ -7791,15 +9572,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             </div>
                                         )}
 	                                    <div className={`mt-2 text-[10px] text-center ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>
-	                                        {!isStudioMultiSpeakerEnabled
-                                                ? 'Enable Multi-Speaker Mode to apply cast mappings during Studio generation.'
-                                                : detectedSpeakers.length > 0
-                                                ? 'Voices are automatically saved to your Character Library.'
-                                                : 'No explicit speaker tags detected. Narrator mapping is active.'}
-	                                    </div>
+		                                        {!isStudioMultiSpeakerEnabled
+	                                                ? 'Single-speaker mode active. Voice is enabled and Cast & Crew is disabled.'
+	                                                : 'Multi-speaker mode active. Cast & Crew is enabled and Voice is disabled.'}
+		                                    </div>
                                     </>
-                                    )}
-	                                </SectionCard>
+		                                </SectionCard>
                                     </>
                                       ) : (
                                         <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
@@ -7807,33 +9585,46 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           <p className={`mt-2 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
                                             Enable Multi-Speaker Mode from the editor toolbar to configure cast mappings.
                                           </p>
+                                          <button
+                                            type="button"
+                                            onClick={enableStudioMultiSpeaker}
+                                            className={`mt-3 inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                              isDarkUi
+                                                ? 'border-indigo-500/40 bg-indigo-500/12 text-indigo-200 hover:bg-indigo-500/18'
+                                                : 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                                            }`}
+                                          >
+                                            <Users size={12} />
+                                            Enable Multi-Speaker
+                                          </button>
                                         </SectionCard>
-                                      )}
-                                    </div>
-
-                                    <div id="studio-rail-queue">
-                                    {shouldShowStudioQueuePanel && (
-                                        <StudioQueuePanel
-                                            queueState={studioQueueState}
-                                            draftPartCount={studioQueueDraftPartCount}
-                                            planCap={maxCharsPerGeneration}
-                                            queueEligible={studioQueueEligible}
-                                            isQueueModeEnabled={isStudioQueueModeEnabled}
-                                            isGenerating={isGenerating}
-                                            audioUrls={studioQueueAudioUrls}
-                                            isDarkUi={isDarkUi}
-                                            visualVariant="embedded"
-                                            isPhone={isPhone}
-                                            isOpen={studioMobilePanels.queue}
-                                            onToggleOpen={() => toggleStudioMobilePanel('queue')}
-                                            onResumeQueue={() => { void resumeStudioQueue(); }}
-                                            onClearQueue={() => { void clearStudioQueueState(); }}
-                                            onDeleteItem={(itemId) => { void deleteStudioQueueItem(itemId); }}
-                                            onRetryItem={retryStudioQueueItem}
-                                            onReorderItems={reorderStudioQueueItems}
-                                        />
+                                      )
                                     )}
-                                    {!shouldShowStudioQueuePanel && (
+
+                                    {studioRailTab === 'queue' && shouldShowStudioQueuePanel && (
+                                        <Suspense fallback={<SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}><div className={`text-sm ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading queue...</div></SectionCard>}>
+                                          <LazyStudioQueuePanel
+                                              queueState={studioQueueState}
+                                              draftPartCount={studioQueueDraftPartCount}
+                                              planCap={maxCharsPerGeneration}
+                                              queueEligible={studioQueueEligible}
+                                              isQueueModeEnabled={isStudioQueueModeEnabled}
+                                              isGenerating={isGenerating}
+                                              audioUrls={studioQueueAudioUrls}
+                                              isDarkUi={isDarkUi}
+                                              visualVariant="embedded"
+                                              isPhone={isPhone}
+                                              isOpen={studioMobilePanels.queue}
+                                              onToggleOpen={() => toggleStudioMobilePanel('queue')}
+                                              onResumeQueue={() => { void resumeStudioQueue(); }}
+                                              onClearQueue={() => { void clearStudioQueueState(); }}
+                                              onDeleteItem={(itemId) => { void deleteStudioQueueItem(itemId); }}
+                                              onRetryItem={retryStudioQueueItem}
+                                              onReorderItems={reorderStudioQueueItems}
+                                          />
+                                        </Suspense>
+                                    )}
+                                    {studioRailTab === 'queue' && !shouldShowStudioQueuePanel && (
                                       <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                         <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
                                           <Clock size={13} /> Queue
@@ -7843,25 +9634,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </p>
                                       </SectionCard>
                                     )}
-                                    </div>
 
                         </div>
                     </div>
                     </div>
                 )}
 
-                {activeTab === Tab.PODCAST && (
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading podcast workspace...</SectionCard>}>
-                      <PodcastTabContent
-                        mediaBackendUrl={mediaBackendUrl}
-                        resolvedTheme={resolvedTheme}
-                        selectedEngine={settings.engine}
-                        onToast={showToast}
-                        onRefreshEntitlements={refreshEntitlements}
-                      />
-                    </Suspense>
-                )}
-                
                 {/* --- REDESIGNED CHARACTER TAB --- */}
                 {activeTab === Tab.CHARACTERS && (
                     <div className="max-w-5xl mx-auto animate-in fade-in">
@@ -7873,19 +9651,24 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                 <p className="text-sm text-gray-500">Manage your cast or browse the gallery to find the perfect voice.</p>
                             </div>
                             
-                            <div className="flex w-full rounded-xl border border-gray-200 bg-white p-1 shadow-sm sm:w-auto">
-                                <button 
-                                    onClick={() => setCharTab('CAST')}
-                                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all sm:flex-none sm:px-5 ${charTab === 'CAST' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
-                                >
-                                    <Users size={16}/> My Cast
-                                </button>
-                                <button 
-                                    onClick={() => setCharTab('GALLERY')}
-                                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all sm:flex-none sm:px-5 ${charTab === 'GALLERY' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
-                                >
-                                    <StoreIcon size={16}/> Voice Gallery
-                                </button>
+                            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+                                <div className="flex w-full rounded-xl border border-gray-200 bg-white p-1 shadow-sm sm:w-auto">
+                                    <button
+                                        onClick={() => setCharTab('CAST')}
+                                        className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all sm:flex-none sm:px-5 ${charTab === 'CAST' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
+                                    >
+                                        <Users size={16}/> My Cast
+                                    </button>
+                                    <button
+                                        onClick={() => setCharTab('GALLERY')}
+                                        className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all sm:flex-none sm:px-5 ${charTab === 'GALLERY' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}
+                                    >
+                                        <StoreIcon size={16}/> Voice Gallery
+                                    </button>
+                                </div>
+                                <Button variant="secondary" onClick={handleVoiceClone} icon={<Sparkles size={16} />} className="shadow-sm">
+                                    Clone Voice
+                                </Button>
                             </div>
                         </div>
 
@@ -8056,12 +9839,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                          )}
 
                          {/* ... modal ... */}
-                         {characterModalOpen && (
-                             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-                                 <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 animate-in zoom-in duration-200">
+                        {characterModalOpen && (
+                             <div className="vf-scrim vf-scrim--modal fixed inset-0 z-50 flex items-center justify-center p-4">
+                                 <div className="bg-white w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-3xl shadow-2xl p-6 animate-in zoom-in duration-200">
                                      <div className="flex justify-between items-center mb-6">
                                          <h3 className="text-lg font-bold">{editingChar ? 'Edit Character' : 'New Character'}</h3>
-                                         <button onClick={() => setCharacterModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={18}/></button>
+                                         <button onClick={() => { setCharacterModalOpen(false); setVcReferenceDraftFile(null); }} className="p-2 hover:bg-gray-100 rounded-full"><X size={18}/></button>
                                      </div>
                                      <div className="space-y-4">
                                          {/* ... form fields ... */}
@@ -8120,15 +9903,75 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                                       {`${resolveVoiceDisplayLabel(voice)} (${resolveVoicePersonaLabel(voice)}) - Pro`}
                                                                   </option>
                                                               ))}
-                                                      </optgroup>
+                                                     </optgroup>
                                                   </select>
 	                                         </div>
+
+                                         <div className={`rounded-2xl border p-4 ${isDarkUi ? 'border-fuchsia-500/20 bg-fuchsia-500/5' : 'border-fuchsia-100 bg-fuchsia-50/70'}`}>
+                                             <div className="mb-3 flex items-start justify-between gap-3">
+                                                 <div>
+                                                     <label className={`text-xs font-bold uppercase tracking-wide ${isDarkUi ? 'text-fuchsia-200' : 'text-fuchsia-700'}`}>Voice Conversion</label>
+                                                     <p className={`mt-1 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
+                                                         Upload a clean reference sample to use as post-TTS Seed-VC VC for this voice.
+                                                     </p>
+                                                 </div>
+                                                 <button
+                                                     type="button"
+                                                     onClick={openOpenVoicePanel}
+                                                     className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                       isDarkUi
+                                                         ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200 hover:bg-fuchsia-500/15'
+                                                         : 'border-fuchsia-200 bg-white text-fuchsia-700 hover:bg-fuchsia-50'
+                                                     }`}
+                                                 >
+                                                     <Sparkles size={12} />
+                                                     Seed-VC GPU
+                                                 </button>
+                                             </div>
+                                             <UploadDropzone
+                                                 accept="audio/*"
+                                                 file={vcReferenceDraftFile}
+                                                 label="Upload VC reference sample"
+                                                 hint="Use a clean sample that matches the selected voice."
+                                                 dragLabel="Drop VC reference audio"
+                                                 className={isDarkUi ? 'border-fuchsia-500/20 bg-slate-950 text-slate-100' : 'border-fuchsia-200 bg-white'}
+                                                 onFilesSelected={(files) => {
+                                                     void attachVoiceConversionSample(charForm.voiceId, files[0] || null);
+                                                 }}
+                                             />
+                                             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                                 <span className={isDarkUi ? 'text-slate-300' : 'text-gray-600'}>
+                                                     {currentVoiceConversionAttachment
+                                                         ? `Attached: ${currentVoiceConversionAttachment.audioName}`
+                                                         : 'No VC sample attached for this voice.'}
+                                                 </span>
+                                                 {currentVoiceConversionAttachment && (
+                                                     <button
+                                                         type="button"
+                                                         onClick={() => clearVoiceConversionSample(charForm.voiceId)}
+                                                         className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                                           isDarkUi
+                                                             ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-fuchsia-500/30 hover:text-fuchsia-100'
+                                                             : 'border-gray-200 bg-white text-gray-600 hover:border-fuchsia-200 hover:text-fuchsia-700'
+                                                         }`}
+                                                     >
+                                                         Clear sample
+                                                     </button>
+                                                 )}
+                                             </div>
+                                         </div>
 
                                          <Button fullWidth onClick={saveCharacter} className="mt-4">{editingChar ? 'Save Changes' : 'Create Character'}</Button>
                                      </div>
                                  </div>
                              </div>
                          )}
+                         <VoiceCloneModal
+                           isOpen={isVoiceCloneModalOpen}
+                           onClose={() => setIsVoiceCloneModalOpen(false)}
+                           onCloneCreated={handleVoiceCloneCreated}
+                           backendBaseUrl={mediaBackendUrl}
+                         />
                     </div>
                 )}
 
@@ -8282,22 +10125,37 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </Suspense>
                 )}
 
-                {activeTab === Tab.LAB && (
-                    <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading Lab...</SectionCard>}>
-                      <LabTabContent
-                        resolvedTheme={resolvedTheme}
+                {activeTab === Tab.PODCAST && (
+                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading podcast workspace...</SectionCard>}>
+                      <PodcastTabContent
+                        currentEngine={settings.engine}
+                        currentVoiceId={settings.voiceId}
+                        currentLanguage={settings.language}
+                        mediaBackendUrl={mediaBackendUrl}
+                        resolveVoiceCatalog={getEngineVoiceCatalog}
                         onToast={showToast}
                       />
                     </Suspense>
                 )}
 
                 {activeTab === Tab.READER && (
-                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader...</SectionCard>}>
+                    <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading reader workspace...</SectionCard>}>
                       <ReaderTabContent
-                          settings={settings}
-                          mediaBackendUrl={mediaBackendUrl}
-                          resolvedTheme={resolvedTheme}
-                          onToast={showToast}
+                        settings={settings}
+                        mediaBackendUrl={mediaBackendUrl}
+                        resolvedTheme={resolvedTheme}
+                        onToast={showToast}
+                      />
+                    </Suspense>
+                )}
+
+                {activeTab === Tab.LAB && (
+                    <Suspense fallback={<SectionCard className={`${usesFullBleedLabContent ? 'min-h-[60vh] rounded-3xl p-6' : 'rounded-3xl p-6'} text-sm`}>Loading Lab...</SectionCard>}>
+                      <LabTabContent
+                        resolvedTheme={resolvedTheme}
+                        onToast={showToast}
+                        panelRequest={labPanelRequest}
+                        onPanelRequestHandled={() => setLabPanelRequest(null)}
                       />
                     </Suspense>
                 )}
@@ -8355,7 +10213,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       </main>
 
-      {shouldRenderFloatingAssistant && isChatOpen && (
+      {!shouldHideAssistantForLab && isChatOpen && (
         <button
           type="button"
           className="fixed inset-0 z-40 bg-transparent"
@@ -8470,7 +10328,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       </div>
                   </div>
 
-                  <div className={`flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar ${
+                  <div className={`flex-1 overflow-y-auto p-3 space-y-3 studio-scrollbar ${
                       isDarkUi ? 'bg-slate-950/70' : 'bg-slate-50/80'
                   }`}>
                       {chatHistory.map((msg, i) => (
@@ -8543,75 +10401,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
       {/* Modals & Overlays */}
       {showSettings && renderSettingsPanel()}
-      {showLowTokenPrompt && !isGuestSession && (
-        <div className="fixed inset-0 z-[58] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Low token alert"
-            className={`w-full max-w-sm rounded-2xl border p-4 shadow-xl ${
-              isDarkUi ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-gray-200 bg-white text-slate-900'
-            }`}
-          >
-            <div className="flex items-start gap-3">
-              <div className={`rounded-xl p-2 ${isDarkUi ? 'bg-amber-500/15 text-amber-200' : 'bg-amber-100 text-amber-700'}`}>
-                <Coins size={16} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-sm font-semibold">Token balance alert</div>
-                <div className={`mt-1 text-xs leading-5 ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
-                  {isWalletBlocked
-                    ? `You are out of spendable ${getEngineDisplayName(settings.engine)} VF. Open Token Shop to continue generation.`
-                    : `Spendable ${getEngineDisplayName(settings.engine)} VF is low (${currentEngineSpendable.toLocaleString()} remaining).`}
-                </div>
-              </div>
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setShowLowTokenPrompt(false)}
-                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
-                  isDarkUi
-                    ? 'border-slate-700 text-slate-300 hover:bg-slate-900'
-                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                Not now
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowLowTokenPrompt(false);
-                  openCreditsSurface('tokens');
-                }}
-                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
-                  isDarkUi
-                    ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
-                    : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
-                }`}
-              >
-                Open Token Shop
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      <AdModal
-        isOpen={showAdModal}
-        onClose={() => setShowAdModal(false)}
-        onReward={() => {
-          void (async () => {
-            try {
-              await watchAd();
-              showToast('Reward granted: +1000 VFF', 'success');
-            } catch (error: any) {
-              showToast(error?.message || 'Ad reward claim failed.', 'error');
-            } finally {
-              setShowAdModal(false);
-            }
-          })();
-        }}
-      />
       </div>
     </div>
   );
@@ -8636,5 +10425,3 @@ const StoreIcon = ({ size, className }: { size?: number, className?: string }) =
       <path d="M22 7v3a2 2 0 0 1-2 2v0a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7" />
     </svg>
 );
-
-

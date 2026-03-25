@@ -1,98 +1,70 @@
-import type { ReaderCatalogItem, ReaderSession } from '../../../../types';
+import type { ReaderCatalogItem, ReaderLibrary } from '../../../../types';
+import type { ReaderHomeTab } from './tabs';
+import { READER_HOME_TABS } from './tabs';
 
-export type ReaderSurfaceFilter = 'all' | 'books' | 'comics' | 'uploads';
-export type ReaderProgressFilter = 'all' | 'in_progress' | 'ready' | 'new';
-export type ReaderSortOption = 'featured' | 'resume' | 'title' | 'newest';
+export const HOME_TAB_ORDER: ReaderHomeTab[] = [...READER_HOME_TABS];
 
-export interface ReaderLibraryFilters {
-  surface: ReaderSurfaceFilter;
-  search: string;
-  provider: string;
-  contentKind: 'all' | 'book' | 'comic';
-  progress: ReaderProgressFilter;
-  collection: string;
-  sort: ReaderSortOption;
-}
+const asLower = (value: string | undefined): string =>
+  String(value || '').trim().toLowerCase();
 
-export interface ReaderPrimaryAction {
-  label: string;
-  intent: 'resume' | 'prepare' | 'play' | 'blocked';
-  disabled: boolean;
-}
-
-const matchesProgressFilter = (item: ReaderCatalogItem, progress: ReaderProgressFilter): boolean => {
-  if (progress === 'all') return true;
-  const resume = item.resume;
-  const readinessState = item.readiness?.state || '';
-  if (progress === 'in_progress') return Boolean(resume?.hasProgress);
-  if (progress === 'ready') return Boolean(item.sessionId) && readinessState === 'ready';
-  return !resume?.hasProgress && !item.sessionId;
+const matchesSearch = (item: ReaderCatalogItem, searchTerm: string): boolean => {
+  const query = asLower(searchTerm);
+  if (!query) return true;
+  const haystack = [
+    item.title,
+    item.author,
+    item.summary,
+    item.provider,
+    item.collectionLabel,
+  ].map((value) => asLower(value)).join(' ');
+  return haystack.includes(query);
 };
 
-export const filterReaderLibraryItems = (
-  items: ReaderCatalogItem[],
-  filters: ReaderLibraryFilters
+export const resolveHomeTabItems = (
+  library: ReaderLibrary | null,
+  tab: ReaderHomeTab,
+  searchTerm: string
 ): ReaderCatalogItem[] => {
-  const query = filters.search.trim().toLowerCase();
-  return [...items]
-    .filter((item) => (filters.surface === 'all' ? true : item.surface === filters.surface))
-    .filter((item) => (filters.provider === 'all' ? true : item.provider === filters.provider))
-    .filter((item) => (filters.collection === 'all' ? true : item.collectionLabel === filters.collection))
-    .filter((item) => (filters.contentKind === 'all' ? true : item.contentKind === filters.contentKind))
-    .filter((item) => matchesProgressFilter(item, filters.progress))
-    .filter((item) => {
-      if (!query) return true;
-      return `${item.title} ${item.author} ${item.summary || ''} ${item.provider} ${item.collectionLabel || ''}`.toLowerCase().includes(query);
-    })
-    .sort((left, right) => {
-      if (filters.sort === 'title') return left.title.localeCompare(right.title);
-      if (filters.sort === 'newest') {
-        return String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''));
-      }
-      if (filters.sort === 'resume') {
-        return Number(right.resume?.progressPct || 0) - Number(left.resume?.progressPct || 0);
-      }
-      const rightScore = Number(right.resume?.progressPct || 0) + (right.sessionId ? 15 : 0) + (right.readiness?.state === 'ready' ? 10 : 0);
-      const leftScore = Number(left.resume?.progressPct || 0) + (left.sessionId ? 15 : 0) + (left.readiness?.state === 'ready' ? 10 : 0);
-      return rightScore - leftScore;
-    });
+  const items = (library?.items || []).filter((item) => matchesSearch(item, searchTerm));
+  if (tab === 'novels') {
+    return items.filter((item) => item.contentKind === 'book' && item.surface !== 'uploads');
+  }
+  if (tab === 'comics') {
+    return items.filter((item) => item.contentKind === 'comic' && item.surface !== 'uploads');
+  }
+  if (tab === 'library') {
+    return items.filter((item) => Boolean(item.sessionId || item.resume?.hasProgress));
+  }
+  return items.filter((item) => item.surface === 'uploads');
 };
 
-export const getReaderPrimaryAction = (item: ReaderCatalogItem): ReaderPrimaryAction => {
-  const commercialStatus = String(item.commercialUseStatus || '').trim().toLowerCase();
-  if (commercialStatus === 'blocked') {
-    return { label: 'Blocked', intent: 'blocked', disabled: true };
-  }
-  if (commercialStatus === 'review') {
-    return { label: 'Needs Review', intent: 'blocked', disabled: true };
-  }
-  const prepState = String(item.prep?.state || '').trim().toLowerCase();
-  const hasPrepError = prepState === 'error';
-  if (item.readiness?.state === 'blocked' && (hasPrepError || (!item.supportsReadHere && item.surface !== 'uploads' && !item.sessionId))) {
-    return { label: 'Unavailable', intent: 'blocked', disabled: true };
-  }
-  if (item.sessionId && item.resume?.hasProgress) {
-    return { label: 'Resume', intent: 'resume', disabled: false };
-  }
-  if (item.sessionId && item.readiness?.state === 'ready') {
-    return { label: 'Play', intent: 'play', disabled: false };
-  }
-  if (item.supportsReadHere || item.surface === 'uploads' || item.sessionId) {
-    return { label: 'Prepare', intent: 'prepare', disabled: false };
-  }
-  if (hasPrepError || item.readiness?.state === 'blocked') {
-    return { label: 'Unavailable', intent: 'blocked', disabled: true };
-  }
-  return { label: 'Unavailable', intent: 'blocked', disabled: true };
+export const sortReaderItems = (items: ReaderCatalogItem[]): ReaderCatalogItem[] => (
+  [...items].sort((left, right) => {
+    const rightScore = Number(right.resume?.progressPct || 0) + (right.sessionId ? 20 : 0);
+    const leftScore = Number(left.resume?.progressPct || 0) + (left.sessionId ? 20 : 0);
+    if (rightScore !== leftScore) return rightScore - leftScore;
+    return String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''));
+  })
+);
+
+export const isImportedItem = (item: ReaderCatalogItem | null | undefined): boolean =>
+  String(item?.surface || '').trim().toLowerCase() === 'uploads';
+
+export const isLowConfidenceItem = (item: ReaderCatalogItem | null | undefined): boolean => {
+  const prep = asLower(item?.prep?.state);
+  const readiness = asLower(item?.readiness?.state);
+  if (prep === 'error' || prep === 'degraded') return true;
+  if (readiness === 'blocked') return true;
+  const reason = asLower(item?.readiness?.reason);
+  return reason.includes('confidence') || reason.includes('review');
 };
 
-export const isReaderAutoSwipeAvailable = (session: ReaderSession | null | undefined): boolean =>
-  Boolean(session && session.contentKind === 'comic');
-
-export const getReaderAutoAdvanceDelay = (profile: string | null | undefined): number | null => {
-  const safe = String(profile || '').trim().toLowerCase();
-  if (safe === 'slow') return 9000;
-  if (safe === 'medium') return 6500;
-  if (safe === 'fast') return 4000;
-  return null;
+export const resolveImportedStatusBadge = (item: ReaderCatalogItem): string => {
+  const prepState = asLower(item.prep?.state);
+  const readinessState = asLower(item.readiness?.state);
+  if (prepState === 'queued' || prepState === 'running') return 'Processing';
+  if (isLowConfidenceItem(item)) return 'Needs Review';
+  if (readinessState === 'ready') return 'Ready To Play';
+  if (item.contentKind === 'comic') return 'Text Detected';
+  return 'Text Ready';
 };

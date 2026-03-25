@@ -3,6 +3,7 @@ import {
   guessAgeGroupFromSpeaker,
   guessGenderFromName,
   parseScriptToSegments,
+  normalizeSpeakerMapKey,
   resolveSpeakerMappedVoiceId,
 } from '../../../services/geminiService';
 
@@ -235,4 +236,53 @@ export const autoAssignSpeakerVoices = ({
   });
 
   return { mapping, assignments };
+};
+
+const findSpeakerMappingKey = (mapping: Record<string, string> | undefined, speaker: string): string => {
+  if (!mapping || typeof mapping !== 'object') return '';
+  const rawSpeaker = String(speaker || '');
+  if (!rawSpeaker.trim()) return '';
+  if (mapping[rawSpeaker]) return rawSpeaker;
+  const trimmed = rawSpeaker.trim();
+  if (trimmed && mapping[trimmed]) return trimmed;
+  const normalizedTarget = normalizeSpeakerMapKey(rawSpeaker);
+  if (!normalizedTarget) return '';
+  for (const key of Object.keys(mapping)) {
+    if (!key) continue;
+    if (normalizeSpeakerMapKey(key) === normalizedTarget) return key;
+  }
+  return '';
+};
+
+interface RefreshStudioSpeakerVoicesOptions extends Omit<AutoAssignSpeakerVoicesOptions, 'existingMapping' | 'rememberedVoices'> {
+  currentMapping?: Record<string, string>;
+}
+
+export const refreshStudioSpeakerVoices = ({
+  currentMapping = {},
+  ...options
+}: RefreshStudioSpeakerVoicesOptions): { mapping: Record<string, string>; assignments: AutoAssignedSpeakerVoice[] } => {
+  const currentSpeakerKeys = new Set(
+    options.speakers
+      .map((speaker) => String(speaker || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const { mapping: freshMapping, assignments } = autoAssignSpeakerVoices({
+    ...options,
+    characterLibrary: (options.characterLibrary || []).filter(
+      (item) => !currentSpeakerKeys.has(String(item.name || '').trim().toLowerCase())
+    ),
+  });
+
+  const nextMapping = { ...(currentMapping || {}) };
+  Object.entries(freshMapping).forEach(([speaker, voiceId]) => {
+    const matchedKey = findSpeakerMappingKey(nextMapping, speaker);
+    if (matchedKey && matchedKey !== speaker) delete nextMapping[matchedKey];
+    nextMapping[speaker] = voiceId;
+  });
+
+  return {
+    mapping: nextMapping,
+    assignments,
+  };
 };
