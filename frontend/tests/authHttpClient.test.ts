@@ -1,19 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockFirebaseAuth, mockReadLocalAdminSession } = vi.hoisted(() => ({
+const { mockFirebaseAuth } = vi.hoisted(() => ({
   mockFirebaseAuth: {
     currentUser: null as { uid: string; getIdToken: (forceRefresh?: boolean) => Promise<string> } | null,
   },
-  mockReadLocalAdminSession: vi.fn(async () => null),
 }));
 
 vi.mock('../services/firebaseClient', () => ({
   firebaseAuth: mockFirebaseAuth,
-}));
-
-vi.mock('../services/localAdminAuth', () => ({
-  getLocalAdminUid: () => 'local_admin',
-  readLocalAdminSession: mockReadLocalAdminSession,
 }));
 
 import { authFetch } from '../services/authHttpClient';
@@ -22,7 +16,6 @@ describe('authFetch', () => {
   beforeEach(() => {
     vi.useRealTimers();
     mockFirebaseAuth.currentUser = null;
-    mockReadLocalAdminSession.mockClear();
     vi.stubGlobal('fetch', vi.fn());
   });
 

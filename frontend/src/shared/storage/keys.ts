@@ -15,7 +15,6 @@ export const STORAGE_KEYS = {
   novelWorkspaceMeta: 'vf_novel_workspace_meta',
   novelWorkspaceMigration: 'vf_novel_workspace_migration',
   readerPreferences: 'vf_reader_preferences',
-  localAdminSession: 'vf_local_admin_session',
   driveGoogleTokenCache: 'vf_drive_google_token_cache',
   notifications: 'vf_notifications',
   notificationStateVersion: 'vf_notification_state_version',

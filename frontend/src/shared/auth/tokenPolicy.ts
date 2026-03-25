@@ -3,11 +3,10 @@ export const AUTH_HEADER_KEYS = {
   devUid: 'x-dev-uid',
 } as const;
 
-export type AuthMode = 'firebase_id_token' | 'local_admin_uid' | 'none';
+export type AuthMode = 'firebase_id_token' | 'none';
 
 export interface AuthHeaderInput {
   idToken?: string;
-  localAdminUid?: string;
 }
 
 export interface AuthHeaderResolution {
@@ -25,12 +24,6 @@ export const resolveAuthHeaders = (
   if (idToken) {
     headers.set(AUTH_HEADER_KEYS.authorization, `Bearer ${idToken}`);
     return { headers, hasAuth: true, mode: 'firebase_id_token' };
-  }
-
-  const localAdminUid = String(input.localAdminUid || '').trim();
-  if (localAdminUid) {
-    headers.set(AUTH_HEADER_KEYS.devUid, localAdminUid);
-    return { headers, hasAuth: true, mode: 'local_admin_uid' };
   }
 
   return { headers, hasAuth: false, mode: 'none' };

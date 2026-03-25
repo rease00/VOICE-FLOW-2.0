@@ -4,7 +4,6 @@ import { AppScreen } from '../types';
 import { useAuthSession } from '../src/features/auth/hooks/useAuthSession';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { removeStorageKey, readStorageString, writeStorageString } from '../src/shared/storage/localStore';
-import { isLocalAdminUsername } from '../services/localAdminAuth';
 import { BrandLogo } from '../components/BrandLogo';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
@@ -43,8 +42,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const firebaseIssue = !isFirebaseConfigured
     ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set VITE_FIREBASE_* and restart frontend.')
     : '';
-  const localAdminLoginAttempt = mode === 'login' && isLocalAdminUsername(email);
-  const disableEmailAuthSubmit = Boolean(firebaseIssue) && !localAdminLoginAttempt;
+  const disableEmailAuthSubmit = Boolean(firebaseIssue);
   const disableOAuthAuthSubmit = Boolean(firebaseIssue);
 
   useEffect(() => {
@@ -356,7 +354,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
                 <button
                   type="button"
                   onClick={handleForgotPassword}
-                  disabled={isLoading || isResetting || (Boolean(firebaseIssue) && !localAdminLoginAttempt)}
+                  disabled={isLoading || isResetting || disableEmailAuthSubmit}
                   className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isResetting ? 'Sending reset link...' : 'Forgot password?'}

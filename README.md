@@ -63,50 +63,24 @@ Optional multi-key pool from file:
 - Set `GEMINI_API_KEYS_FILE` to a local text file path (for example `C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt`).
 - File format supports one key per line or comma/newline-separated keys.
 
-## Local Encrypted Admin Login
+## Firebase-Only Admin Login
 
-Use this only for local/dev operation when backend auth enforcement is disabled (`VF_AUTH_ENFORCE=0`).
-Production requirement: keep `VF_AUTH_ENFORCE=1`, `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=0`, and `VITE_ENABLE_DEV_UID_HEADER=0`.
+Local encrypted admin login has been removed. Authentication is Firebase-only.
+Production requirement: keep `VF_AUTH_ENFORCE=1` and `VITE_ENABLE_DEV_UID_HEADER=0`.
 
-1. Generate local admin credential values:
-
-```powershell
-node -e "const c=require('node:crypto');const pwd=process.argv[1];if(!pwd){console.error('Usage: node <script> <admin_password>');process.exit(1);}const salt=c.randomBytes(16);const it=210000;const hash=c.pbkdf2Sync(pwd,salt,it,32,'sha256');const key=c.randomBytes(32);console.log('VITE_LOCAL_ADMIN_PASSWORD_HASH_B64='+hash.toString('base64'));console.log('VITE_LOCAL_ADMIN_PASSWORD_SALT_B64='+salt.toString('base64'));console.log('VITE_LOCAL_ADMIN_PBKDF2_ITERATIONS='+it);console.log('VITE_LOCAL_ADMIN_SESSION_KEY_B64='+key.toString('base64'));" "<your_admin_password>"
-```
-
-2. Set these in `.env`:
-- `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=1` (local dev only)
-- `VITE_ENABLE_DEV_UID_HEADER=1` (local dev only)
-- `VITE_LOCAL_ADMIN_USERNAME=admin`
-- `VITE_LOCAL_ADMIN_UID=local_admin`
-- `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64=...`
-- `VITE_LOCAL_ADMIN_PASSWORD_SALT_B64=...`
-- `VITE_LOCAL_ADMIN_PBKDF2_ITERATIONS=210000`
-- `VITE_LOCAL_ADMIN_SESSION_TTL_MIN=480`
-- `VITE_LOCAL_ADMIN_SESSION_KEY_B64=...`
-
-3. Ensure backend uses dev-UID resolution:
-- `VF_AUTH_ENFORCE=0`
-- Optional fallback UID: `VF_DEV_BYPASS_UID=dev_local_user`
-- For guardian approvals, include local UID in `VF_ADMIN_APPROVER_UIDS` and configure `VF_ADMIN_APPROVAL_TOKEN`.
-
-4. Keep dev server endpoints locked down by default:
+1. Keep dev server endpoints locked down by default:
 - `VITE_DEV_SERVER_EXPOSE=0` (binds UI dev server to loopback)
 - `VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0` (disables `/__local/bootstrap-services` route)
 - `VF_DEV_BOOTSTRAP_TOKEN=<strong_random_token>` (required when enabling local bootstrap route)
 - `VITE_API_BASE_URL=http://127.0.0.1:7800` (canonical frontend backend gateway base URL; same default when unset)
 - `VF_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000` (and add deployed frontend origins in remote environments)
 
-## Admin Firebase Fallback (when local admin env is missing)
-
-If `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64` (or related local admin env vars) is missing/invalid, signing in with `admin` now falls back to Firebase email/password login.
-
-1. Set frontend env mapping in `.env`:
+2. Set frontend admin mapping in `.env` (optional but recommended):
 - `VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>`
 - Optional: `VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>`
 - Optional: `VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>`
 
-2. In Firebase (Firestore), mark the admin user for UI/admin fallback:
+3. In Firebase (Firestore), mark the admin user for UI/admin role resolution:
 - Document path: `users/<uid>`
 - Add one of:
   - `isAdmin: true`
@@ -114,7 +88,7 @@ If `VITE_LOCAL_ADMIN_PASSWORD_HASH_B64` (or related local admin env vars) is mis
   - `role: "admin"`
   - `roles: ["admin"]`
 
-3. Restart the frontend dev server after `.env` changes.
+4. Restart the frontend dev server after `.env` changes.
 
 ## Mandatory User ID Flow
 

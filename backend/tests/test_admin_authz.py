@@ -81,9 +81,10 @@ def test_admin_endpoint_accepts_firestore_admin_without_claim(monkeypatch) -> No
     assert response.json()["ok"] is True
 
 
-def test_admin_endpoint_allows_local_admin_uid_only_in_dev_mode(monkeypatch) -> None:
+def test_admin_endpoint_requires_allowlisted_uid_in_dev_mode(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset({"local_admin"}))
     monkeypatch.setattr(backend_app, "_admin_list_users", lambda limit, search="": [])
     client = TestClient(backend_app.app)
 
@@ -427,6 +428,7 @@ def test_account_profile_routes_allow_userid_when_firestore_service_disabled(mon
 def test_admin_users_endpoint_repairs_colliding_backfill_user_ids(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset({"local_admin"}))
     monkeypatch.setattr(backend_app, "_firebase_ready", lambda: True)
     monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
     monkeypatch.setattr(
@@ -471,6 +473,7 @@ def test_admin_users_endpoint_repairs_colliding_backfill_user_ids(monkeypatch) -
 def test_admin_users_endpoint_does_not_create_default_entitlement_or_usage_docs(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset({"local_admin"}))
     monkeypatch.setattr(backend_app, "_firebase_ready", lambda: True)
     monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
     monkeypatch.setattr(
@@ -498,6 +501,7 @@ def test_admin_users_endpoint_does_not_create_default_entitlement_or_usage_docs(
 def test_admin_users_search_handles_missing_profiles_from_firebase_listing(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_ADMIN_APPROVER_UIDS", frozenset({"local_admin"}))
     monkeypatch.setattr(backend_app, "_firebase_ready", lambda: True)
     monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
     monkeypatch.setattr(

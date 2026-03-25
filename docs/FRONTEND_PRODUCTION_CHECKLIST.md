@@ -2,9 +2,7 @@
 
 ## Security and auth baseline
 - Keep backend auth enforcement enabled in production: `VF_AUTH_ENFORCE=1`.
-- Keep local admin and dev UID forwarding disabled in production:
-  - `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=0`
-  - `VITE_ENABLE_DEV_UID_HEADER=0`
+- Keep dev UID forwarding disabled in production: `VITE_ENABLE_DEV_UID_HEADER=0`.
 - Keep Vite dev bootstrap endpoint disabled unless intentionally testing local orchestration:
   - `VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0`
 

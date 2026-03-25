@@ -100,47 +100,29 @@ $env:VF_SERVICE_LOG_ROTATE_MAX_BYTES="20971520"  # 20 MB default
 $env:VF_SERVICE_LOG_ROTATE_KEEP="3"
 ```
 
-## Local Encrypted Admin Login (Frontend + Dev Backend)
+## Firebase-Only Admin Login
 
-This mode relies on backend UID resolution from `x-dev-uid`, so keep:
+Local encrypted admin login is disabled. Authentication is Firebase-only.
 
-```powershell
-$env:VF_AUTH_ENFORCE="0"
-```
+Production requirement: keep `VF_AUTH_ENFORCE=1` and `VITE_ENABLE_DEV_UID_HEADER=0`.
 
-Production requirement: keep `VF_AUTH_ENFORCE=1`, `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=0`, and `VITE_ENABLE_DEV_UID_HEADER=0`.
-
-Frontend `.env` keys required:
-
-```powershell
-VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=1
-VITE_ENABLE_DEV_UID_HEADER=1
-VITE_LOCAL_ADMIN_USERNAME=admin
-VITE_LOCAL_ADMIN_UID=local_admin
-VITE_LOCAL_ADMIN_PASSWORD_HASH_B64=<base64>
-VITE_LOCAL_ADMIN_PASSWORD_SALT_B64=<base64>
-VITE_LOCAL_ADMIN_PBKDF2_ITERATIONS=210000
-VITE_LOCAL_ADMIN_SESSION_TTL_MIN=480
-VITE_LOCAL_ADMIN_SESSION_KEY_B64=<base64>
-VITE_DEV_SERVER_EXPOSE=0
-VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0
-```
-
-If guardian approval actions are used, add the same UID to backend allowlist:
-
-```powershell
-$env:VF_ADMIN_APPROVER_UIDS="local_admin"
-```
-
-If local admin env keys are missing/invalid, `admin` login falls back to Firebase email/password:
+Frontend `.env` keys (optional admin mapping):
 
 ```powershell
 VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>
 VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>   # optional
 VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>       # optional
+VITE_DEV_SERVER_EXPOSE=0
+VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0
 ```
 
-Firestore admin fallback (optional UI/admin resolution):
+If guardian approval actions are used, allow explicit admin UIDs:
+
+```powershell
+$env:VF_ADMIN_APPROVER_UIDS="<firebase_uid_1>,<firebase_uid_2>"
+```
+
+Firestore admin role mapping (optional UI/admin resolution):
 - `users/<uid>` document with `isAdmin: true` or `role: "admin"` (or `roles: ["admin"]`).
 
 ## Manual Per-Service Start (Separate Terminals)

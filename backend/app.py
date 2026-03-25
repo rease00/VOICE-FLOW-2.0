@@ -5580,8 +5580,6 @@ def _request_is_admin(request: Request, uid: Optional[str] = None) -> bool:
         return True
     if safe_uid in VF_ADMIN_APPROVER_UIDS:
         return True
-    if not VF_AUTH_ENFORCE and safe_uid.startswith("local_admin"):
-        return True
     if _firestore_user_is_admin(safe_uid):
         return True
     return False
@@ -5994,8 +5992,6 @@ def _rbac_bootstrap_actor(uid: str, request: Request) -> Optional[dict[str, Any]
     if not safe_uid:
         return None
     if _request_claim_is_admin(request) or safe_uid in VF_ADMIN_APPROVER_UIDS or _firestore_user_is_admin(safe_uid):
-        role = RBAC_ROLE_SUPER_ADMIN
-    elif not VF_AUTH_ENFORCE and safe_uid.startswith("local_admin"):
         role = RBAC_ROLE_SUPER_ADMIN
     else:
         return None
@@ -22412,7 +22408,7 @@ def _admin_list_users(limit: int, search: str = "") -> list[dict[str, Any]]:
                         "email": "",
                         "displayName": uid,
                         "disabled": False,
-                        "admin": uid in VF_ADMIN_APPROVER_UIDS or uid.startswith("local_admin"),
+                        "admin": uid in VF_ADMIN_APPROVER_UIDS,
                         "plan": plan_name,
                         "status": str(entitlement.get("status") or "free_active"),
                         "features": features,

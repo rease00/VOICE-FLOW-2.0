@@ -43,17 +43,7 @@ import {
   googleProvider,
   isAdminIdentity,
   isFirebaseConfigured,
-  resolveFirebaseLoginEmail,
 } from '../services/firebaseClient';
-import {
-  clearLocalAdminSession,
-  createLocalAdminSession,
-  getLocalAdminConfigIssue,
-  isLocalAdminUsername,
-  readLocalAdminSession,
-  verifyLocalAdminPassword,
-  type LocalAdminSessionPayload,
-} from '../services/localAdminAuth';
 import {
   AccountEntitlements,
   claimAdReward,
@@ -139,19 +129,6 @@ const readSettingsBackendUrl = (): string => {
   return resolveApiBaseUrl(parsed?.mediaBackendUrl);
 };
 
-const isBearerTokenAuthMismatch = (error: unknown): boolean => {
-  const message = String((error as { message?: string })?.message || error || '').trim().toLowerCase();
-  if (!message) return false;
-  return (
-    message.includes('missing bearer token') ||
-    message.includes('invalid auth token') ||
-    message.includes('auth token did not include uid')
-  );
-};
-
-const localAdminBackendAuthMismatchMessage =
-  'Local admin login is enabled in frontend, but backend auth enforcement is ON. ' +
-  'Set VF_AUTH_ENFORCE=0 for local admin mode, or disable local admin login and sign in with Firebase.';
 const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
 const DEFAULT_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/?vf-screen=login';
 
@@ -518,20 +495,6 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   };
 };
 
-const mapLocalAdminSessionToProfile = (session: LocalAdminSessionPayload): UserProfile => {
-  const fallbackName = session.email.split('@')[0] || 'Local Admin';
-  return {
-    uid: session.uid,
-    googleId: session.uid,
-    name: fallbackName,
-    email: session.email,
-    role: 'admin',
-    isAdmin: true,
-    providers: ['local_admin'],
-    adminActor: null,
-  };
-};
-
 const resolveFirebaseConfigIssue = (): string =>
   String(firebaseConfigIssue || '').trim() ||
   'Firebase auth is not configured. Set VITE_FIREBASE_* and restart the frontend server.';
@@ -549,7 +512,7 @@ const mapFirebaseAuthError = (error: any): string => {
     return resolveFirebaseConfigIssue();
   }
   if (code === 'auth/invalid-email') {
-    return 'Use a valid email address. For local admin login, use the configured local admin username.';
+    return 'Use a valid email address.';
   }
   if (code === 'auth/network-request-failed' || loweredMessage.includes('network-request-failed')) {
     return 'Cannot reach authentication service right now. Check internet connection, then retry.';
@@ -636,10 +599,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const isAdmin = Boolean(user.isAdmin);
   const isAuthenticated = Boolean(user.uid);
   const hasUnlimitedAccess = isAdmin;
-  const isLocalAdminSessionActive = useMemo(
-    () => !firebaseAuth.currentUser && Array.isArray(user.providers) && user.providers.includes('local_admin'),
-    [user.providers]
-  );
 
   useEffect(() => {
     writeStorageJson(STORAGE_KEYS.stats, stats);
@@ -651,8 +610,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const refreshEntitlements = async () => {
     const firebaseUser = firebaseAuth.currentUser;
-    const localAdminSession = firebaseUser ? null : await readLocalAdminSession();
-    if (!firebaseUser && !localAdminSession) {
+    if (!firebaseUser) {
       setStats(INITIAL_STATS);
       return;
     }
@@ -666,8 +624,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const refreshAdminActor = async () => {
     const firebaseUser = firebaseAuth.currentUser;
-    const localAdminSession = firebaseUser ? null : await readLocalAdminSession();
-    const currentUid = String(firebaseUser?.uid || localAdminSession?.uid || '').trim();
+    const currentUid = String(firebaseUser?.uid || '').trim();
     if (!currentUid) {
       setUser((prev) => (prev.adminActor ? { ...prev, adminActor: null } : prev));
       return;
@@ -733,8 +690,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const loadHistory = async (limit = 30) => {
     const firebaseUser = firebaseAuth.currentUser;
-    const localAdminSession = firebaseUser ? null : await readLocalAdminSession();
-    if (!firebaseUser && !localAdminSession) {
+    if (!firebaseUser) {
       setHistory([]);
       return;
     }
@@ -803,13 +759,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
           }
-          const localAdminSession = await readLocalAdminSession();
-          if (localAdminSession) {
-            setUser(mapLocalAdminSessionToProfile(localAdminSession));
-            setCharacterLibrary(readStoredCharacterLibrary());
-            void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
-            return;
-          }
           removeStorageKey(STORAGE_KEYS.uidSetupRequired);
           setUser(BLANK_USER);
           setCharacterLibrary(DEFAULT_CHARACTERS);
@@ -817,7 +766,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           setHistory([]);
           return;
         }
-        clearLocalAdminSession();
         await firebaseUser.reload().catch(() => undefined);
         if (requiresEmailVerificationForUser(firebaseUser)) {
           if (charactersUnsubscribeRef.current) {
@@ -865,92 +813,19 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const signInWithEmail: UserContextType['signInWithEmail'] = async (email, password) => {
     const rawEmail = String(email || '').trim();
-    if (isLocalAdminUsername(rawEmail)) {
-      const configIssue = getLocalAdminConfigIssue();
-      if (!configIssue) {
-        const valid = await verifyLocalAdminPassword(String(password || ''));
-        if (!valid) {
-          return { ok: false, error: 'Invalid admin credentials.' };
-        }
-        const session = await createLocalAdminSession(rawEmail);
-        if (!session) {
-          return { ok: false, error: 'Could not create local admin session. Check local admin env values.' };
-        }
-        if (charactersUnsubscribeRef.current) {
-          charactersUnsubscribeRef.current();
-          charactersUnsubscribeRef.current = null;
-        }
-        if (firebaseAuth.currentUser) {
-          await signOut(firebaseAuth).catch(() => undefined);
-        }
-        setUser(mapLocalAdminSessionToProfile(session));
-        setCharacterLibrary(readStoredCharacterLibrary());
-        try {
-          await fetchAccountProfile(readSettingsBackendUrl());
-        } catch (error) {
-          if (isBearerTokenAuthMismatch(error)) {
-            clearLocalAdminSession();
-            setUser(BLANK_USER);
-            setStats(INITIAL_STATS);
-            setHistory([]);
-            return {
-              ok: false,
-              error: localAdminBackendAuthMismatchMessage,
-            };
-          }
-        }
-        removeStorageKey(STORAGE_KEYS.uidSetupRequired);
-        void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
-        return { ok: true };
-      }
-
-      const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
-      if (firebaseAuthConfigIssue) {
-        return {
-          ok: false,
-          error: `Local admin login is disabled: ${configIssue}. ${firebaseAuthConfigIssue}`,
-        };
-      }
-
-      const fallbackEmail = resolveFirebaseLoginEmail(rawEmail);
-      if (!fallbackEmail.includes('@')) {
-        return {
-          ok: false,
-          error: `Local admin login is disabled: ${configIssue}. Firebase fallback requires VITE_ADMIN_LOGIN_EMAIL or a valid Firebase auth domain.`,
-        };
-      }
-      try {
-        const credential = await signInWithEmailAndPassword(firebaseAuth, fallbackEmail, String(password || ''));
-        await credential.user.reload().catch(() => undefined);
-        if (requiresEmailVerificationForUser(credential.user)) {
-          await signOut(firebaseAuth).catch(() => undefined);
-          return buildUnverifiedEmailSignInResult(
-            `Local admin login is disabled: ${configIssue}. ${unverifiedEmailAuthMessage}`
-          );
-        }
-        return { ok: true };
-      } catch (error: any) {
-        return {
-          ok: false,
-          error: `Local admin login is disabled: ${configIssue}. Firebase fallback failed: ${mapFirebaseAuthError(error)}`,
-        };
-      }
-    }
-
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
     }
 
     try {
-      const normalizedEmail = resolveFirebaseLoginEmail(rawEmail);
-      if (!normalizedEmail.includes('@')) {
+      if (!rawEmail.includes('@')) {
         return {
           ok: false,
-          error: 'Use a full email address to sign in. If needed, map an admin username or admin UID using VITE_ADMIN_LOGIN_EMAIL in .env.',
+          error: 'Use a full email address to sign in.',
         };
       }
-      const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+      const credential = await signInWithEmailAndPassword(firebaseAuth, rawEmail, String(password || ''));
       await credential.user.reload().catch(() => undefined);
       if (requiresEmailVerificationForUser(credential.user)) {
         await signOut(firebaseAuth).catch(() => undefined);
@@ -963,13 +838,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName, userId) => {
-    if (isLocalAdminUsername(String(email || '').trim())) {
-      return {
-        ok: false,
-        error: 'Local admin account cannot sign up. Use Login mode.',
-      };
-    }
-
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
@@ -1020,20 +888,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!rawEmail) {
       return { ok: false, error: 'Enter your email first.' };
     }
-    if (isLocalAdminUsername(rawEmail)) {
-      return {
-        ok: false,
-        error: 'Local admin login does not use Firebase email verification.',
-      };
-    }
 
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
     }
 
-    const normalizedEmail = resolveFirebaseLoginEmail(rawEmail);
-    if (!normalizedEmail.includes('@')) {
+    if (!rawEmail.includes('@')) {
       return { ok: false, error: 'Use a valid email address.' };
     }
 
@@ -1041,11 +902,11 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       let currentUser = firebaseAuth.currentUser;
       const currentEmail = String(currentUser?.email || '').trim().toLowerCase();
-      if (!currentUser || currentEmail !== normalizedEmail.toLowerCase()) {
+      if (!currentUser || currentEmail !== rawEmail.toLowerCase()) {
         if (!String(password || '').trim()) {
           return { ok: false, error: 'Enter your password to resend verification email.' };
         }
-        const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, String(password || ''));
+        const credential = await signInWithEmailAndPassword(firebaseAuth, rawEmail, String(password || ''));
         currentUser = credential.user;
         signedInTemporarily = true;
       }
@@ -1071,24 +932,17 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!rawEmail) {
       return { ok: false, error: 'Enter your email first.' };
     }
-    if (isLocalAdminUsername(rawEmail)) {
-      return {
-        ok: false,
-        error: 'Local admin password is managed via local env; use Firebase email directly if needed.',
-      };
-    }
 
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
       return { ok: false, error: firebaseAuthConfigIssue };
     }
 
-    const normalizedEmail = resolveFirebaseLoginEmail(rawEmail);
-    if (!normalizedEmail.includes('@')) {
+    if (!rawEmail.includes('@')) {
       return { ok: false, error: 'Use a valid email address.' };
     }
     try {
-      await sendPasswordResetEmail(firebaseAuth, normalizedEmail);
+      await sendPasswordResetEmail(firebaseAuth, rawEmail);
       return { ok: true };
     } catch {
       // Keep response generic to avoid account enumeration hints.
@@ -1172,7 +1026,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const signOutUser: UserContextType['signOutUser'] = async () => {
-    clearLocalAdminSession();
     if (charactersUnsubscribeRef.current) {
       charactersUnsubscribeRef.current();
       charactersUnsubscribeRef.current = null;
@@ -1192,35 +1045,16 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const uid = firebaseAuth.currentUser?.uid;
     const id = character.id || crypto.randomUUID();
     const payload: CharacterProfile = { ...character, id };
-    if (uid) {
-      void setDoc(doc(firestoreDb, 'users', uid, 'characters', id), payload, { merge: true });
-      return;
-    }
-    if (!isLocalAdminSessionActive) return;
-    setCharacterLibrary((current) => {
-      const next = current.some((item) => item.id === id)
-        ? current.map((item) => (item.id === id ? payload : item))
-        : [payload, ...current];
-      writeStoredCharacterLibrary(next);
-      return next;
-    });
-  }, [isLocalAdminSessionActive]);
+    if (!uid) return;
+    void setDoc(doc(firestoreDb, 'users', uid, 'characters', id), payload, { merge: true });
+  }, []);
 
   const deleteCharacter = useCallback((id: string) => {
     if (DEFAULT_CHARACTERS.some((item) => item.id === id)) return;
     const uid = firebaseAuth.currentUser?.uid;
-    if (uid) {
-      void deleteDoc(doc(firestoreDb, 'users', uid, 'characters', id));
-      return;
-    }
-    if (!isLocalAdminSessionActive) return;
-    setCharacterLibrary((current) => {
-      const next = current.filter((item) => item.id !== id);
-      const resolved = next.length > 0 ? next : DEFAULT_CHARACTERS;
-      writeStoredCharacterLibrary(resolved);
-      return resolved;
-    });
-  }, [isLocalAdminSessionActive]);
+    if (!uid) return;
+    void deleteDoc(doc(firestoreDb, 'users', uid, 'characters', id));
+  }, []);
 
   const syncCast = (cast: string[] | CharacterProfile[]) => {
     if (!cast || cast.length === 0) return;

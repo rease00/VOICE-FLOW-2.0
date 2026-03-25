@@ -57,10 +57,6 @@ const adminEmailAllowlist = new Set(
 
 const adminUidAllowlist = new Set(parseCsvEnv(import.meta.env.VITE_ADMIN_UID_ALLOWLIST));
 
-const explicitAdminLoginEmail = String(import.meta.env.VITE_ADMIN_LOGIN_EMAIL || '')
-  .trim()
-  .toLowerCase();
-
 if (!hasRequiredFirebaseConfig) {
   // eslint-disable-next-line no-console
   console.warn('Firebase config is incomplete. Set VITE_FIREBASE_* environment variables.');
@@ -121,17 +117,7 @@ export const isFirebaseConfigured = hasRequiredFirebaseConfig && !usingFirebaseF
 export const resolveFirebaseLoginEmail = (rawEmail: string): string => {
   const trimmed = String(rawEmail || '').trim();
   if (!trimmed) return '';
-  if (trimmed.includes('@')) return trimmed;
-  const token = trimmed.toLowerCase();
-  if (explicitAdminLoginEmail) {
-    const matchesAdminUid = Array.from(adminUidAllowlist).some((item) => item.trim().toLowerCase() === token);
-    if (matchesAdminUid) return explicitAdminLoginEmail;
-  }
-  if (/^admin[0-9]*$/.test(token) && firebaseConfig.authDomain) {
-    if (token === 'admin' && explicitAdminLoginEmail) return explicitAdminLoginEmail;
-    return `${token}@${firebaseConfig.authDomain}`.toLowerCase();
-  }
-  return trimmed;
+  return trimmed.includes('@') ? trimmed : '';
 };
 
 export const isAdminIdentity = (uid?: string | null, email?: string | null, hasAdminClaim = false): boolean => {

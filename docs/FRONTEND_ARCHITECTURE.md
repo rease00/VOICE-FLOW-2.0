@@ -16,10 +16,8 @@ This refactor is incremental. Existing root-level modules (`views/`, `components
 ## Security and token handling
 
 - `services/authHttpClient.ts` resolves auth headers through `src/shared/auth/tokenPolicy.ts`.
-- Firebase ID token remains primary (`Authorization: Bearer <token>`).
-- Local admin fallback and `x-dev-uid` forwarding are explicitly DEV-only and must be enabled via env flags:
-  - `VITE_ENABLE_LOCAL_ADMIN_DEV_LOGIN=1`
-  - `VITE_ENABLE_DEV_UID_HEADER=1`
+- Firebase ID token is the auth source (`Authorization: Bearer <token>`).
+- `x-dev-uid` forwarding is DEV-only and must stay disabled in production (`VITE_ENABLE_DEV_UID_HEADER=0`).
 - Frontend gateway base URL is `VITE_API_BASE_URL`.
 - If unset, frontend resolves base URL to current non-localhost origin first, then falls back to `http://127.0.0.1:7800`.
 

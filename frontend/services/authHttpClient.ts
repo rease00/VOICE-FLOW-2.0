@@ -1,5 +1,4 @@
 import { firebaseAuth } from './firebaseClient';
-import { getLocalAdminUid, readLocalAdminSession } from './localAdminAuth';
 import { resolveAuthHeaders } from '../src/shared/auth/tokenPolicy';
 
 export interface AuthFetchOptions {
@@ -141,11 +140,8 @@ export const authFetch = async (
     const firebaseUid = String(currentUser?.uid || '').trim();
     const tokenResult = await getCurrentIdTokenWithRefresh(forceTokenRefresh);
     const token = tokenResult.token;
-    const localAdminSession = token ? null : await readLocalAdminSession();
-    const localAdminUid = localAdminSession ? String(localAdminSession.uid || getLocalAdminUid()).trim() : '';
     const { headers, hasAuth } = resolveAuthHeaders(init.headers, {
       idToken: token,
-      localAdminUid,
     });
 
     // In local/dev backend mode (VF_AUTH_ENFORCE=0), backend UID comes from x-dev-uid.
