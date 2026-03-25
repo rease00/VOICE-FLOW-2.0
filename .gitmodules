@@ -1,0 +1,3 @@
+[submodule "backend/engines/modal-openvoice/vendor/OpenVoice"]
+	path = backend/engines/modal-openvoice/vendor/OpenVoice
+	url = https://github.com/myshell-ai/OpenVoice.git
