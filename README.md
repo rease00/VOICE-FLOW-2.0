@@ -355,6 +355,19 @@ Notes:
   - Gemini runtime `/v1/admin/api-pool*` routes require `GEMINI_RUNTIME_ADMIN_TOKEN`
   - production defaults should remain strict (`VF_AUTH_ENFORCE=1`, `VITE_ENABLE_DEV_UID_HEADER=0`)
 
+## Secret Scanning (Pre-commit + CI)
+
+- Local pre-commit hook:
+  - install once per clone: `npm run hooks:install`
+  - runs:
+    - staged-file scan: `npm run audit:secrets:staged`
+    - tracked-config scan: `npm run audit:secrets:tracked-config`
+- Manual local run:
+  - `npm run audit:secrets`
+- CI:
+  - GitHub Actions workflow: `.github/workflows/secret-scans.yml`
+  - includes tracked-config scanner + gitleaks working-tree scan (redacted output)
+
 ## Admin SaaS Control Plane (Phase 2)
 
 - RBAC tiers (Firestore-first):

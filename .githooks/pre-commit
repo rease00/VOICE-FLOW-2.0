@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -eu
+
+echo "[pre-commit] scanning staged files for potential secrets..."
+node scripts/scan-staged-secrets.mjs
+
+echo "[pre-commit] scanning tracked config files for potential secrets..."
+npm run -s audit:secrets:tracked-config

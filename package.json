@@ -29,9 +29,12 @@
     "services:doctor": "npm --prefix backend run services:doctor",
     "services:restart": "npm --prefix backend run services:restart",
     "services:down": "npm --prefix backend run services:down",
+    "models:kokoro:sync": "npm --prefix backend run models:kokoro:sync",
     "audit:auth:bootstrap": "npm --prefix backend run audit:auth:bootstrap",
     "audit:gemini-stack": "npm --prefix backend run audit:gemini-stack",
     "audit:secrets:tracked-config": "npm --prefix backend run audit:secrets:tracked-config",
+    "audit:secrets:staged": "node scripts/scan-staged-secrets.mjs",
+    "audit:secrets": "npm run audit:secrets:staged && npm run audit:secrets:tracked-config",
     "audit:connectivity": "npm --prefix backend run audit:connectivity",
     "audit:media": "npm --prefix backend run audit:media",
     "validate:k8s": "npm --prefix backend run validate:k8s",
@@ -52,6 +55,7 @@
     "ci:reliability": "npm --prefix backend run ci:reliability",
     "audit:cpu:background": "npm --prefix backend run audit:cpu:background",
     "audit:function-manifests": "npm --prefix backend run audit:function-manifests",
-    "audit:stress:matrix": "npm --prefix backend run audit:stress:matrix"
+    "audit:stress:matrix": "npm --prefix backend run audit:stress:matrix",
+    "hooks:install": "git config core.hooksPath .githooks"
   }
 }
