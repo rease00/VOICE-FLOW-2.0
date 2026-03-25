@@ -6,10 +6,10 @@
   "scripts": {
     "dev": "next dev",
     "dev:ui": "next dev",
-    "build": "next build --webpack && node scripts/prune-bundled-audio.mjs",
+    "build": "next build --webpack && node scripts/prune-bundled-audio.mjs && node scripts/prune-cloudflare-browser-deps.mjs && opennextjs-cloudflare build --skipBuild && node scripts/create-pages-dist.mjs",
     "start": "next start",
     "preview": "next start",
-    "cloudflare:build": "node scripts/verify-cloudflare-workers.mjs && npm run build && node scripts/prune-cloudflare-browser-deps.mjs && opennextjs-cloudflare build --skipBuild",
+    "cloudflare:build": "node scripts/verify-cloudflare-workers.mjs && npm run build",
     "cloudflare:preview": "npm run cloudflare:build && opennextjs-cloudflare preview",
     "cloudflare:deploy": "npm run cloudflare:build && opennextjs-cloudflare deploy",
     "cloudflare:verify": "node scripts/verify-cloudflare-workers.mjs",
