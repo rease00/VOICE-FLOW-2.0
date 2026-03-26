@@ -39,6 +39,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const [verificationCooldownUntil, setVerificationCooldownUntil] = useState(0);
   const [verificationCooldownRemainingSec, setVerificationCooldownRemainingSec] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [provisioningHintMsg, setProvisioningHintMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const firebaseIssue = !isFirebaseConfigured
     ? (String(firebaseConfigIssue || '').trim() || 'Firebase auth is not configured. Set NEXT_PUBLIC_FIREBASE_* (or VITE_FIREBASE_* during migration) and restart frontend.')
@@ -56,6 +57,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
 
   useEffect(() => {
     setInfoMsg(null);
+    setProvisioningHintMsg(null);
     setNeedsEmailVerification(false);
     setVerificationCooldownUntil(0);
   }, [mode]);
@@ -78,6 +80,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     event.preventDefault();
     setErrorMsg(null);
     setInfoMsg(null);
+    setProvisioningHintMsg(null);
     setNeedsEmailVerification(false);
     setIsLoading(true);
     try {
@@ -113,6 +116,8 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
           return;
         }
         setErrorMsg(message);
+        const provisioningHint = 'provisioningHint' in result ? String(result.provisioningHint || '').trim() : '';
+        setProvisioningHintMsg(provisioningHint ? sanitizeUiText(provisioningHint) : null);
         emit(mode === 'signup' ? 'auth.signup.failed' : 'auth.signin.failed', {
           title: mode === 'signup' ? 'Sign Up Failed' : 'Sign In Failed',
           message,
@@ -141,6 +146,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
     if (verificationCooldownRemainingSec > 0 || isResendingVerification) return;
     setErrorMsg(null);
     setInfoMsg(null);
+    setProvisioningHintMsg(null);
     setIsResendingVerification(true);
     try {
       const result = await resendEmailVerification(email, password);
@@ -173,6 +179,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const handleGoogle = async () => {
     setErrorMsg(null);
     setInfoMsg(null);
+    setProvisioningHintMsg(null);
     setIsLoading(true);
     try {
       const result = await signInWithGoogle();
@@ -206,6 +213,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
   const handleForgotPassword = async () => {
     setErrorMsg(null);
     setInfoMsg(null);
+    setProvisioningHintMsg(null);
     setIsResetting(true);
     try {
       const result = await requestPasswordReset(email);
@@ -265,6 +273,13 @@ export const Login: React.FC<LoginProps> = ({ setScreen }) => {
           <div className="mb-5 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">
             <AlertCircle size={16} className="mt-0.5 shrink-0" />
             <span>{errorMsg}</span>
+          </div>
+        )}
+
+        {provisioningHintMsg && (
+          <div className="mb-5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+            <span>{provisioningHintMsg}</span>
           </div>
         )}
 

@@ -24,6 +24,7 @@ const RETRY_MAX_MS = sanitizePositiveInt(process.env.VF_DEV_RETRY_MAX_MS, 10000)
 const SERVICE_RESTART_MAX = sanitizePositiveInt(process.env.VF_DEV_SERVICE_RESTART_MAX, 3);
 const CRASH_WINDOW_MS = sanitizePositiveInt(process.env.VF_DEV_CRASH_WINDOW_MS, 120000);
 const MONITOR_INTERVAL_MS = 2500;
+const AUTO_SEED_FIREBASE_ADMINS = toBool(process.env.VF_DEV_AUTO_SEED_FIREBASE_ADMINS, false);
 
 let shuttingDown = false;
 let viteChild = null;
@@ -166,6 +167,78 @@ async function runBootstrapWithRetry() {
     await sleep(waitMs);
   }
   return false;
+}
+
+function resolveFirebaseSeedPythonBin() {
+  const byService = String(process.env.VF_PYTHON_BIN_MEDIA_BACKEND || "").trim();
+  if (byService) return byService;
+
+  const venvPython = path.join(
+    ROOT,
+    ".venvs",
+    "media-backend",
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python"
+  );
+  if (fs.existsSync(venvPython)) return venvPython;
+
+  const byGlobal = String(process.env.VF_PYTHON_BIN || "").trim();
+  if (byGlobal) return byGlobal;
+
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+function hasFirebaseAdminSeedCredentials() {
+  return Boolean(
+    String(process.env.GOOGLE_APPLICATION_CREDENTIALS || "").trim() ||
+    String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "").trim()
+  );
+}
+
+function runFirebaseAdminSeedIfEnabled() {
+  if (!AUTO_SEED_FIREBASE_ADMINS) {
+    return Promise.resolve(true);
+  }
+
+  if (!hasFirebaseAdminSeedCredentials()) {
+    console.error('[dev-all] stage=seed status=skip reason="firebase admin credentials not configured"');
+    return Promise.resolve(true);
+  }
+
+  const pythonBin = resolveFirebaseSeedPythonBin();
+  const seedArgs = ["scripts/firebase_seed_admins.py"];
+  if (!toBool(process.env.VF_FIRESTORE_ENABLE, true)) {
+    seedArgs.push("--skip-firestore");
+  }
+
+  return new Promise((resolve) => {
+    console.error(
+      `[dev-all] stage=seed status=starting python="${path.basename(pythonBin)}" firestore_mode=${seedArgs.includes("--skip-firestore") ? "auth_only" : "auth_and_firestore"}`
+    );
+    const child = spawn(pythonBin, seedArgs, {
+      cwd: ROOT,
+      stdio: "inherit",
+      env: process.env,
+      windowsHide: false,
+    });
+
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        console.error("[dev-all] stage=seed status=ok");
+        resolve(true);
+        return;
+      }
+      const cause = describeBootstrapError(code, signal);
+      console.error(`[dev-all] stage=seed status=fail cause="${cause}"`);
+      resolve(false);
+    });
+
+    child.on("error", (error) => {
+      const cause = error instanceof Error ? error.message : String(error);
+      console.error(`[dev-all] stage=seed status=fail cause="${cause}"`);
+      resolve(false);
+    });
+  });
 }
 
 function computeSessionOwnedServices(beforeSnap, afterSnap) {
@@ -409,6 +482,12 @@ async function main() {
   preSnapshot = snapshotRunningServices();
   const bootOk = await runBootstrapWithRetry();
   if (!bootOk) {
+    await shutdown(1);
+    return;
+  }
+
+  const seedOk = await runFirebaseAdminSeedIfEnabled();
+  if (!seedOk) {
     await shutdown(1);
     return;
   }

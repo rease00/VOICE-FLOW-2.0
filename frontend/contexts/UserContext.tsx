@@ -44,6 +44,7 @@ import {
   isAdminIdentity,
   isFirebaseConfigured,
 } from '../services/firebaseClient';
+import { resolveAdminProvisioningHint } from '../src/shared/auth/adminProvisioning';
 import {
   AccountEntitlements,
   clearGenerationHistory,
@@ -835,7 +836,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       return { ok: true };
     } catch (error: any) {
-      return { ok: false, error: mapFirebaseAuthError(error) };
+      const errorCode = String(error?.code || '').trim().toLowerCase();
+      const provisioningHint = resolveAdminProvisioningHint(rawEmail, errorCode);
+      return {
+        ok: false,
+        error: mapFirebaseAuthError(error),
+        ...(provisioningHint ? { provisioningHint } : {}),
+      };
     }
   };
 

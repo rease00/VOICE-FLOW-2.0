@@ -440,6 +440,7 @@ export interface SignInActionResult extends AuthActionResult {
   requiresUserIdSetup?: boolean;
   requiresEmailVerification?: boolean;
   canResendVerification?: boolean;
+  provisioningHint?: string;
 }
 
 export interface SignUpActionResult extends AuthActionResult {

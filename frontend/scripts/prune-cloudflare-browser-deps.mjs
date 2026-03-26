@@ -27,6 +27,26 @@ const removePath = (targetPath, removed) => {
   removed.push(path.relative(frontendDir, targetPath).split(path.sep).join('/'));
 };
 
+const pruneNestedPackage = (nodeModulesDir, packageName, removed, { keepTopLevel = false } = {}) => {
+  if (!fs.existsSync(nodeModulesDir)) return;
+  const rootNodeModulesDir = path.resolve(nodeModulesDir);
+
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const entryPath = path.join(directory, entry.name);
+      const isTopLevelChild = path.resolve(directory) === rootNodeModulesDir;
+      if (entry.name === packageName && !(keepTopLevel && isTopLevelChild)) {
+        removePath(entryPath, removed);
+        continue;
+      }
+      walk(entryPath);
+    }
+  };
+
+  walk(nodeModulesDir);
+};
+
 const main = () => {
   if (!fs.existsSync(standaloneDir)) {
     console.log('[prune:cloudflare] .next/standalone is missing; nothing to prune.');
@@ -69,6 +89,11 @@ const main = () => {
   for (const targetPath of packageTargets) {
     removePath(targetPath, removed);
   }
+
+  // OpenNext/esbuild reads from the live frontend install before it sees the standalone copy.
+  // Remove any nested native ORT bindings so resolution falls back to the top-level stub.
+  pruneNestedPackage(path.join(frontendDir, 'node_modules'), 'onnxruntime-node', removed, { keepTopLevel: true });
+  pruneNestedPackage(nodeModulesDir, 'onnxruntime-node', removed);
 
   const traceFiles = [];
   const nextDir = path.join(frontendDir, '.next');

@@ -99,6 +99,14 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def merge_env_files(paths: list[Path]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for candidate in paths:
+        if candidate.exists():
+            values.update(parse_env_file(candidate))
+    return values
+
+
 def get_env(key: str, fallback: dict[str, str]) -> str:
     explicit = os.getenv(key)
     if explicit is not None:
@@ -336,19 +344,19 @@ def upsert_firestore_admin_rows(
 
 
 def resolve_env_values(env_file: str) -> dict[str, str]:
-    fallback: dict[str, str] = {}
     if env_file:
-        fallback.update(parse_env_file(Path(env_file).expanduser().resolve()))
-        return fallback
+        return merge_env_files([Path(env_file).expanduser().resolve()])
 
-    repo_root_env = Path(__file__).resolve().parents[2] / ".env"
-    backend_env = Path(__file__).resolve().parents[1] / ".env"
-    for candidate in (repo_root_env, backend_env):
-        values = parse_env_file(candidate)
-        if values:
-            fallback.update(values)
-            break
-    return fallback
+    repo_root = Path(__file__).resolve().parents[2]
+    backend_root = Path(__file__).resolve().parents[1]
+    return merge_env_files(
+        [
+            repo_root / ".env",
+            backend_root / ".env",
+            repo_root / ".env.local",
+            backend_root / ".env.local",
+        ]
+    )
 
 
 def main() -> int:

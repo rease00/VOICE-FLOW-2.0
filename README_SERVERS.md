@@ -106,12 +106,15 @@ Local encrypted admin login is disabled. Authentication is Firebase-only.
 
 Production requirement: keep `VF_AUTH_ENFORCE=1` and `VITE_ENABLE_DEV_UID_HEADER=0`.
 
+Optional local-dev bootstrap: set `VF_DEV_AUTO_SEED_FIREBASE_ADMINS=1` so `npm run dev` seeds allowlisted Firebase admins before the frontend starts when `GOOGLE_APPLICATION_CREDENTIALS` or `FIREBASE_SERVICE_ACCOUNT_JSON` is available.
+
 Frontend `.env` keys (optional admin mapping):
 
 ```powershell
 VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>
 VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>   # optional
 VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>       # optional
+FIREBASE_SEED_ADMIN_PASSWORD=<strong-admin-password>   # local-dev seed password
 VITE_DEV_SERVER_EXPOSE=0
 VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0
 ```

@@ -21,6 +21,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
    `GEMINI_API_KEYS_FILE=C:\Users\1wasi\OneDrive\Desktop\voice-Flow\API.txt`
 3. Run full local stack (services + UI in one lifecycle):
    `npm run dev`
+   - Optional: set `VF_DEV_AUTO_SEED_FIREBASE_ADMINS=1` to seed allowlisted Firebase admins before the UI starts.
 4. Frontend-only mode (no service orchestration):
    `npm run dev:ui`
 
@@ -110,8 +111,10 @@ python scripts/firebase_seed_admins.py --password "<strong_admin_password>"
 ```
 
 Defaults:
-- Password: required via `--password` or `FIREBASE_SEED_ADMIN_PASSWORD` from env/`.env`.
+- Password: required via `--password` or `FIREBASE_SEED_ADMIN_PASSWORD` from env/`.env`/`.env.local`.
 - Reads allowlists from env or `.env`: `VF_ADMIN_APPROVER_UIDS`, `VITE_ADMIN_UID_ALLOWLIST`, `VITE_ADMIN_EMAIL_ALLOWLIST`, `VITE_ADMIN_LOGIN_EMAIL`.
+- For local dev, `firebase_seed_admins.py` also falls back to repo root `.env.local` and `backend/.env.local`.
+- When `VF_DEV_AUTO_SEED_FIREBASE_ADMINS=1` is set, `npm run dev` will invoke this seed step before the frontend starts.
 - Writes:
   - Firebase custom claim: `admin=true`
   - Firestore: `users/{uid}` with `isAdmin/admin/role/roles`
