@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPublicDeploymentHost, shouldEnforcePrivateMode } from './siteAccess';
+import { isPublicDeploymentHost, resolveRequestHost, shouldEnforcePrivateMode } from './siteAccess';
 
 describe('isPublicDeploymentHost', () => {
   it('treats the production custom domain as public', () => {
@@ -28,5 +28,38 @@ describe('shouldEnforcePrivateMode', () => {
 
   it('stays open when private mode is disabled', () => {
     expect(shouldEnforcePrivateMode({ VF_SITE_PRIVATE: '0' }, 'preview.voiceflow.internal')).toBe(false);
+  });
+});
+
+describe('resolveRequestHost', () => {
+  it('prefers forwarded host headers when available', () => {
+    expect(
+      resolveRequestHost({
+        url: 'https://deployment.example.pages.dev/',
+        headers: new Headers({
+          host: 'deployment.example.pages.dev',
+          'x-forwarded-host': 'v-flow-ai.com',
+        }),
+      }),
+    ).toBe('v-flow-ai.com');
+  });
+
+  it('falls back to the request URL host when headers are missing', () => {
+    expect(
+      resolveRequestHost({
+        url: 'https://voice-flow-bl1.pages.dev/',
+      }),
+    ).toBe('voice-flow-bl1.pages.dev');
+  });
+
+  it('normalizes ports and casing out of the resolved host', () => {
+    expect(
+      resolveRequestHost({
+        url: 'https://deployment.example.pages.dev/',
+        headers: new Headers({
+          host: 'V-FLOW-AI.COM:443',
+        }),
+      }),
+    ).toBe('v-flow-ai.com');
   });
 });
