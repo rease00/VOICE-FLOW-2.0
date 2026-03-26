@@ -6,7 +6,16 @@ const browserOnlyStubPath = path.join(process.cwd(), 'src/shared/runtime/browser
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
-  serverExternalPackages: ['sharp'],
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
+  serverExternalPackages: [
+    'sharp',
+    'kokoro-js',
+    '@huggingface/transformers',
+    '@huggingface/jinja',
+    'onnxruntime-web',
+    'onnxruntime-node',
+    'onnxruntime-common',
+  ],
   webpack(config, { isServer }) {
     if (isServer) {
       config.resolve.alias = {
