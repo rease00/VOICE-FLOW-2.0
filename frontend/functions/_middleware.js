@@ -1,12 +1,9 @@
+import { shouldEnforcePrivateMode } from '../src/shared/runtime/siteAccess';
+
 const BOT_UA_PATTERN =
   /(bot|crawler|spider|slurp|bingpreview|facebookexternalhit|discordbot|whatsapp|telegrambot|linkedinbot|semrush|ahrefs|mj12bot|dotbot|yandex)/i;
 
 const PRIVATE_HEADER_VALUE = 'noindex, nofollow, noarchive, nosnippet, noimageindex';
-
-const isPrivateModeEnabled = (env) => {
-  const raw = String(env?.VF_SITE_PRIVATE ?? '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
-};
 
 const unauthorizedResponse = (status, message) =>
   new Response(message, {
@@ -46,7 +43,8 @@ const decoratePrivateHeaders = (response) => {
 };
 
 export async function onRequest(context) {
-  if (!isPrivateModeEnabled(context.env)) {
+  const requestHost = new URL(context.request.url).hostname;
+  if (!shouldEnforcePrivateMode(context.env, requestHost)) {
     return context.next();
   }
 
