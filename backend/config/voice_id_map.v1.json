@@ -71,14 +71,14 @@
           "voice": "Charon",
           "name": "Tahlia",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v11",
           "voice": "Achernar",
           "name": "Daichi",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v12",
@@ -99,14 +99,14 @@
           "voice": "Algieba",
           "name": "Larissa",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v15",
           "voice": "Zephyr",
           "name": "Javier",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v16",
@@ -134,7 +134,7 @@
           "voice": "Gacrux",
           "name": "Mahesh",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v20",
@@ -169,7 +169,7 @@
           "voice": "Sadachbia",
           "name": "Greta",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v25",
@@ -183,35 +183,35 @@
           "voice": "Schedar",
           "name": "Elodie",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v27",
           "voice": "Sulafat",
           "name": "Zayed",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v28",
           "voice": "Umbriel",
           "name": "Noora",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         },
         {
           "voice_id": "v29",
           "voice": "Vindemiatrix",
           "name": "Nikolai",
           "language": "multilingual",
-          "gender": "male"
+          "gender": "female"
         },
         {
           "voice_id": "v30",
           "voice": "Zubenelgenubi",
           "name": "Svetlana",
           "language": "multilingual",
-          "gender": "female"
+          "gender": "male"
         }
       ],
       "voiceToProfile": {

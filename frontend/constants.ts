@@ -54,7 +54,7 @@ export const VOICES: VoiceOption[] = [
 ];
 
 // ============================================================================
-// KOKORO VOICES - Aligned with local Kokoro runtime voice registry
+// KOKORO VOICES - Aligned with the backend gateway voice catalog
 // ============================================================================
 export const KOKORO_VOICES: VoiceOption[] = [
   { id: 'af_heart', name: 'Lyra US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_heart', country: 'United States', ageGroup: 'Adult' },
