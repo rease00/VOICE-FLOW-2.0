@@ -9,7 +9,8 @@ import { resolveAppPath } from '../../../../src/app/navigation';
 export default function AppProfilePage() {
   const router = useRouter();
   const setScreen = useCallback((screen: AppScreen) => {
-    router.replace(resolveAppPath(screen));
+    const suffix = typeof window !== 'undefined' ? window.location.search : '';
+    router.replace(`${resolveAppPath(screen)}${suffix}`);
   }, [router]);
 
   return <Profile setScreen={setScreen} />;

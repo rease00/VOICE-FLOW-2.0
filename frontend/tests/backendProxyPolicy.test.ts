@@ -1,0 +1,187 @@
+import type { NextRequest } from 'next/server';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { proxyBackendRequest } from '../app/api/backend/proxy';
+
+interface EnvSnapshot {
+  VF_MEDIA_BACKEND_URL?: string;
+  VF_BACKEND_PROXY_ALLOWLIST?: string;
+  VF_BACKEND_PROXY_MUTATION_ALLOWLIST?: string;
+}
+
+const createRequest = (input: {
+  method?: string;
+  url?: string;
+  headers?: HeadersInit;
+  body?: ReadableStream<Uint8Array> | null;
+} = {}): NextRequest => {
+  return {
+    method: input.method || 'GET',
+    headers: new Headers(input.headers),
+    body: input.body ?? null,
+    nextUrl: new URL(input.url || 'https://voiceflow.local/api/backend/tts/v2/jobs'),
+  } as unknown as NextRequest;
+};
+
+let envSnapshot: EnvSnapshot = {};
+
+describe('backend proxy header policy', () => {
+  beforeEach(() => {
+    envSnapshot = {
+      VF_MEDIA_BACKEND_URL: process.env.VF_MEDIA_BACKEND_URL,
+      VF_BACKEND_PROXY_ALLOWLIST: process.env.VF_BACKEND_PROXY_ALLOWLIST,
+      VF_BACKEND_PROXY_MUTATION_ALLOWLIST: process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST,
+    };
+    process.env.VF_MEDIA_BACKEND_URL = 'http://127.0.0.1:7800';
+    delete process.env.VF_BACKEND_PROXY_ALLOWLIST;
+    delete process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
+  });
+
+  afterEach(() => {
+    if (envSnapshot.VF_MEDIA_BACKEND_URL === undefined) delete process.env.VF_MEDIA_BACKEND_URL;
+    else process.env.VF_MEDIA_BACKEND_URL = envSnapshot.VF_MEDIA_BACKEND_URL;
+    if (envSnapshot.VF_BACKEND_PROXY_ALLOWLIST === undefined) delete process.env.VF_BACKEND_PROXY_ALLOWLIST;
+    else process.env.VF_BACKEND_PROXY_ALLOWLIST = envSnapshot.VF_BACKEND_PROXY_ALLOWLIST;
+    if (envSnapshot.VF_BACKEND_PROXY_MUTATION_ALLOWLIST === undefined) delete process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
+    else process.env.VF_BACKEND_PROXY_MUTATION_ALLOWLIST = envSnapshot.VF_BACKEND_PROXY_MUTATION_ALLOWLIST;
+    vi.unstubAllGlobals();
+  });
+
+  it('forwards only allowlisted headers and strips spoofed transport headers', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const request = createRequest({
+      method: 'POST',
+      url: 'https://voiceflow.local/api/backend/tts/v2/jobs?trace=1',
+      headers: {
+        authorization: 'Bearer token',
+        cookie: 'session=abc',
+        'content-type': 'application/json',
+        'idempotency-key': 'idem-123',
+        'x-vf-tts-session-key': 'session-key',
+        'x-forwarded-for': '203.0.113.10',
+        'x-forwarded-host': 'evil.example',
+        'x-dev-uid': 'spoofed-user',
+        'x-real-ip': '198.51.100.1',
+        'x-user-id': 'spoofed-id',
+        'x-custom-header': 'drop-me',
+      },
+    });
+
+    const response = await proxyBackendRequest(request, ['tts', 'v2', 'jobs']);
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(target)).toBe('http://127.0.0.1:7800/tts/v2/jobs?trace=1');
+
+    const forwarded = new Headers(init.headers);
+    expect(forwarded.get('authorization')).toBe('Bearer token');
+    expect(forwarded.get('cookie')).toBe('session=abc');
+    expect(forwarded.get('content-type')).toBe('application/json');
+    expect(forwarded.get('idempotency-key')).toBe('idem-123');
+    expect(forwarded.get('x-vf-tts-session-key')).toBe('session-key');
+    expect(forwarded.has('x-forwarded-for')).toBe(false);
+    expect(forwarded.has('x-forwarded-host')).toBe(false);
+    expect(forwarded.has('x-dev-uid')).toBe(false);
+    expect(forwarded.has('x-real-ip')).toBe(false);
+    expect(forwarded.has('x-user-id')).toBe(false);
+    expect(forwarded.has('x-custom-header')).toBe(false);
+  });
+
+  it('does not treat x-dev-uid as authenticated context for unsafe methods', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-dev-uid': 'spoofed-user',
+        },
+      }),
+      ['tts', 'v2', 'jobs']
+    );
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured 502 response when the upstream backend fetch throws', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer token',
+          'content-type': 'application/json',
+        },
+      }),
+      ['voice-clone', 'openvoice', 'separate']
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      detail: expect.stringContaining('/voice-clone/openvoice/separate'),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows admin stress routes and still strips spoofed x-dev-uid header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'POST',
+        url: 'https://voiceflow.local/api/backend/admin/voice-clone/stress/start?trace=stress',
+        headers: {
+          authorization: 'Bearer token',
+          'content-type': 'application/json',
+          'x-dev-uid': 'spoofed-admin',
+        },
+      }),
+      ['admin', 'voice-clone', 'stress', 'start']
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(target)).toBe('http://127.0.0.1:7800/admin/voice-clone/stress/start?trace=stress');
+    const forwarded = new Headers(init.headers);
+    expect(forwarded.get('authorization')).toBe('Bearer token');
+    expect(forwarded.get('content-type')).toBe('application/json');
+    expect(forwarded.has('x-dev-uid')).toBe(false);
+  });
+
+  it('allows admin voice clone provider routes and strips spoofed x-dev-uid header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const response = await proxyBackendRequest(
+      createRequest({
+        method: 'PATCH',
+        url: 'https://voiceflow.local/api/backend/admin/voice-clone/provider',
+        headers: {
+          authorization: 'Bearer token',
+          'content-type': 'application/json',
+          'x-dev-uid': 'spoofed-admin',
+        },
+      }),
+      ['admin', 'voice-clone', 'provider']
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(target)).toBe('http://127.0.0.1:7800/admin/voice-clone/provider');
+    const forwarded = new Headers(init.headers);
+    expect(forwarded.get('authorization')).toBe('Bearer token');
+    expect(forwarded.get('content-type')).toBe('application/json');
+    expect(forwarded.has('x-dev-uid')).toBe(false);
+  });
+});

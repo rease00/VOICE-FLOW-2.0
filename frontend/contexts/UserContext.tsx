@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
   ActionCodeSettings,
@@ -28,6 +29,7 @@ import {
   ClonedVoice,
   Draft,
   HistoryItem,
+  GenerationSettings,
   UserContextType,
   UserProfile,
   UserStats,
@@ -47,6 +49,8 @@ import {
 import { resolveAdminProvisioningHint } from '../src/shared/auth/adminProvisioning';
 import {
   AccountEntitlements,
+  ACCOUNT_DELETE_CONFIRM_PHRASE,
+  deleteAccount as deleteAccountRequest,
   clearGenerationHistory,
   fetchAccountProfile,
   fetchAccountEntitlements,
@@ -55,9 +59,9 @@ import {
 } from '../services/accountService';
 import { fetchAdminActor } from '../services/adminService';
 import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
-import { warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
+import { clearDriveTokenCache, warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
-import { readEnvValue } from '../src/shared/runtime/env';
+import { readEnvBoolean, readEnvValue } from '../src/shared/runtime/env';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey, writeStorageString } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
@@ -67,13 +71,58 @@ import {
   setSessionClonedVoices,
 } from '../services/clonedVoiceSessionStore';
 
-interface ExtendedUserContextType extends UserContextType {
+interface ExtendedUserContextType extends Omit<UserContextType, 'deleteAccount'> {
   syncCast: (cast: string[] | CharacterProfile[]) => void;
   isSyncing: boolean;
   refreshEntitlements: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
 }
 
 const UserContext = createContext<ExtendedUserContextType | undefined>(undefined);
+export const USER_CONTEXT_CHARACTER_SYNC_WARNING_EVENT = 'voiceflow:user-character-sync-warning';
+
+const FIRESTORE_PERMISSION_ERROR_TOKENS = [
+  'permission-denied',
+  'insufficient permissions',
+  'missing or insufficient permissions',
+];
+
+const isFirestorePermissionError = (error: unknown): boolean => {
+  const code = String((error as { code?: unknown } | null)?.code || '').trim().toLowerCase();
+  const message = String((error as { message?: unknown } | null)?.message || '').trim().toLowerCase();
+  if (!code && !message) return false;
+  return FIRESTORE_PERMISSION_ERROR_TOKENS.some((token) => code.includes(token) || message.includes(token));
+};
+
+const emitCharacterSyncWarning = (message: string): void => {
+  if (typeof window === 'undefined') return;
+  const safeMessage = String(message || '').trim();
+  if (!safeMessage) return;
+  try {
+    window.dispatchEvent(new CustomEvent(USER_CONTEXT_CHARACTER_SYNC_WARNING_EVENT, { detail: { message: safeMessage } }));
+  } catch {
+    // no-op
+  }
+};
+
+const runFirestoreWriteWithTokenRefreshRetry = async (operation: () => Promise<void>): Promise<{ ok: true } | { ok: false; error: unknown }> => {
+  try {
+    await operation();
+    return { ok: true };
+  } catch (error) {
+    const canRetryWithFreshToken = isFirestorePermissionError(error) && Boolean(firebaseAuth.currentUser);
+    if (!canRetryWithFreshToken) {
+      return { ok: false, error };
+    }
+    try {
+      await firebaseAuth.currentUser?.getIdToken(true);
+      await operation();
+      return { ok: true };
+    } catch (retryError) {
+      return { ok: false, error: retryError };
+    }
+  }
+};
 
 const DEFAULT_CHARACTERS: CharacterProfile[] = [
   {
@@ -131,7 +180,7 @@ const readSettingsBackendUrl = (): string => {
 };
 
 const unverifiedEmailAuthMessage = 'Verify your email before signing in. Check your inbox/spam and then try again.';
-const DEFAULT_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/?vf-screen=login';
+const DEFAULT_DEV_EMAIL_VERIFY_CONTINUE_URL = 'http://localhost:3000/app/login';
 
 interface PendingSignupProfile {
   uid: string;
@@ -179,19 +228,23 @@ const resolveEmailVerificationContinueUrl = (): string => {
     process.env.VITE_AUTH_EMAIL_VERIFY_CONTINUE_URL
   );
   if (configured) return configured;
-  if (typeof window === 'undefined' || !window.location) return DEFAULT_EMAIL_VERIFY_CONTINUE_URL;
+  const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+  if (isProductionRuntime) return '';
+  if (typeof window === 'undefined' || !window.location) return DEFAULT_DEV_EMAIL_VERIFY_CONTINUE_URL;
   const url = new URL(window.location.href);
-  url.searchParams.set('vf-screen', 'login');
-  url.searchParams.delete('vf-tab');
-  url.searchParams.delete('billing');
+  url.pathname = '/app/login';
+  url.search = '';
   return url.toString();
 };
 
 export const buildEmailVerificationActionSettings = (): ActionCodeSettings | undefined => {
   const candidate = resolveEmailVerificationContinueUrl();
+  if (!candidate) return undefined;
   try {
     const parsed = new URL(candidate);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+    if (isProductionRuntime && parsed.protocol !== 'https:') return undefined;
     return {
       url: parsed.toString(),
       handleCodeInApp: false,
@@ -222,15 +275,19 @@ const isContinueUrlVerificationError = (error: any): boolean => {
 const sendVerificationEmailWithFallback = async (
   targetUser: Parameters<typeof sendEmailVerification>[0]
 ): Promise<void> => {
+  const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
   const actionSettings = buildEmailVerificationActionSettings();
   if (!actionSettings) {
+    if (isProductionRuntime) {
+      throw new Error('Email verification continue URL is not configured for production.');
+    }
     await sendEmailVerification(targetUser);
     return;
   }
   try {
     await sendEmailVerification(targetUser, actionSettings);
   } catch (error) {
-    if (!isContinueUrlVerificationError(error)) throw error;
+    if (!isContinueUrlVerificationError(error) || isProductionRuntime) throw error;
     // Retry without continue URL override so Firebase can still send verification mail.
     await sendEmailVerification(targetUser);
   }
@@ -257,21 +314,25 @@ const normalizePlanNameForStats = (value: unknown): UserStats['planName'] => {
 const isPaidPlanName = (planName: UserStats['planName']): boolean =>
   planName === 'Launcher' || planName === 'Starter' || planName === 'Creator' || planName === 'Pro' || planName === 'Scale' || planName === 'Enterprise';
 
-const normalizeAllowedEngines = (input: unknown): Array<'KOKORO' | 'NEURAL2' | 'GEM'> => {
-  if (!Array.isArray(input)) return ['KOKORO', 'NEURAL2'];
-  const allowed = new Set<'KOKORO' | 'NEURAL2' | 'GEM'>();
-  input.forEach((value) => {
-    const token = String(value || '').trim().toUpperCase();
-    if (token === 'KOKORO' || token === 'NEURAL2' || token === 'GEM') {
+const normalizeAllowedEngines = (input: unknown): GenerationSettings['engine'][] => {
+  if (!Array.isArray(input)) return ['DUNO', 'VECTOR'];
+  const allowed = new Set<GenerationSettings['engine']>();
+  for (const value of input) {
+    const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (token === 'DUNO' || token === 'VECTOR' || token === 'PRIME') {
       allowed.add(token);
-      return;
     }
-    if (token === 'GOOD') {
-      allowed.add('GEM');
-    }
-  });
-  return allowed.size > 0 ? Array.from(allowed) : ['KOKORO', 'NEURAL2'];
+  }
+  return allowed.size > 0 ? Array.from(allowed) : ['DUNO', 'VECTOR'];
 };
+
+const readCanonicalEngineBucket = (
+  bucket: Record<string, { chars: number; vf: number }> | undefined,
+  engine: GenerationSettings['engine']
+): { chars: number; vf: number } => ({
+  chars: Math.max(0, Number(bucket?.[engine]?.chars || 0)),
+  vf: Math.max(0, Number(bucket?.[engine]?.vf || 0)),
+});
 
 const normalizeStoredStats = (stored: any): UserStats => {
   const walletFallback = createEmptyWalletStats();
@@ -288,16 +349,9 @@ const normalizeStoredStats = (stored: any): UserStats => {
       ...walletFallback,
       ...(stored?.wallet || {}),
       spendableNowByEngine: {
-        KOKORO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.KOKORO ?? walletFallback.spendableNowByEngine.KOKORO)),
-        NEURAL2: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.NEURAL2 ?? walletFallback.spendableNowByEngine.NEURAL2)),
-        GEM: Math.max(
-          0,
-          Number(
-            stored?.wallet?.spendableNowByEngine?.GEM
-            ?? stored?.wallet?.spendableNowByEngine?.GOOD
-            ?? walletFallback.spendableNowByEngine.GEM
-          )
-        ),
+        DUNO: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.DUNO ?? walletFallback.spendableNowByEngine.DUNO)),
+        VECTOR: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.VECTOR ?? walletFallback.spendableNowByEngine.VECTOR)),
+        PRIME: Math.max(0, Number(stored?.wallet?.spendableNowByEngine?.PRIME ?? walletFallback.spendableNowByEngine.PRIME)),
       },
     },
     limits: {
@@ -317,26 +371,9 @@ const mapEntitlementRatesToUsage = (
 ): UserStats['vfUsage']['rates'] => {
   const vfRates = (entitlements?.limits?.vfRates || {}) as Record<string, unknown>;
   return {
-    KOKORO: Number.isFinite(vfRates.KOKORO) ? Math.max(0, Number(vfRates.KOKORO)) : fallback.KOKORO,
-    NEURAL2: Number.isFinite(vfRates.NEURAL2) ? Math.max(0, Number(vfRates.NEURAL2)) : fallback.NEURAL2,
-    GEM: Number.isFinite(vfRates.GEM)
-      ? Math.max(0, Number(vfRates.GEM))
-      : Number.isFinite(vfRates.GOOD)
-        ? Math.max(0, Number(vfRates.GOOD))
-        : fallback.GEM,
-  };
-};
-
-const readLegacyGemUsage = (
-  bucket: Record<string, { chars: number; vf: number }>,
-  primaryKey: 'GEM',
-  legacyKey: 'GOOD'
-): { chars: number; vf: number } => {
-  const primary = bucket?.[primaryKey];
-  const legacy = bucket?.[legacyKey];
-  return {
-    chars: Math.max(0, Number(primary?.chars || 0)) + Math.max(0, Number(legacy?.chars || 0)),
-    vf: Math.max(0, Number(primary?.vf || 0)) + Math.max(0, Number(legacy?.vf || 0)),
+    DUNO: Number.isFinite(vfRates.DUNO) ? Math.max(0, Number(vfRates.DUNO)) : fallback.DUNO,
+    VECTOR: Number.isFinite(vfRates.VECTOR) ? Math.max(0, Number(vfRates.VECTOR)) : fallback.VECTOR,
+    PRIME: Number.isFinite(vfRates.PRIME) ? Math.max(0, Number(vfRates.PRIME)) : fallback.PRIME,
   };
 };
 
@@ -348,11 +385,19 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
   const wallet = entitlements.wallet || walletFallback;
   const planName = normalizePlanNameForStats(entitlements.plan);
 
-  const dailyGemUsage = readLegacyGemUsage(dailyByEngine, 'GEM', 'GOOD');
-  const monthlyGemUsage = readLegacyGemUsage(monthlyByEngine, 'GEM', 'GOOD');
+  const dailyUsage = {
+    DUNO: readCanonicalEngineBucket(dailyByEngine, 'DUNO'),
+    VECTOR: readCanonicalEngineBucket(dailyByEngine, 'VECTOR'),
+    PRIME: readCanonicalEngineBucket(dailyByEngine, 'PRIME'),
+  };
+  const monthlyUsage = {
+    DUNO: readCanonicalEngineBucket(monthlyByEngine, 'DUNO'),
+    VECTOR: readCanonicalEngineBucket(monthlyByEngine, 'VECTOR'),
+    PRIME: readCanonicalEngineBucket(monthlyByEngine, 'PRIME'),
+  };
 
-  const dailyTotalChars = Object.values(dailyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
-  const monthlyTotalChars = Object.values(monthlyByEngine).reduce((sum, item: any) => sum + Math.max(0, Number(item?.chars || 0)), 0);
+  const dailyTotalChars = dailyUsage.DUNO.chars + dailyUsage.VECTOR.chars + dailyUsage.PRIME.chars;
+  const monthlyTotalChars = monthlyUsage.DUNO.chars + monthlyUsage.VECTOR.chars + monthlyUsage.PRIME.chars;
 
   return ensureStatsUsageWindows({
     ...prev,
@@ -370,18 +415,9 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.daily?.vfUsed || 0)),
         byEngine: {
           ...usage.daily.byEngine,
-          KOKORO: {
-            chars: Math.max(0, Number(dailyByEngine?.KOKORO?.chars || 0)),
-            vf: Math.max(0, Number(dailyByEngine?.KOKORO?.vf || 0)),
-          },
-          NEURAL2: {
-            chars: Math.max(0, Number(dailyByEngine?.NEURAL2?.chars || 0)),
-            vf: Math.max(0, Number(dailyByEngine?.NEURAL2?.vf || 0)),
-          },
-          GEM: {
-            chars: dailyGemUsage.chars,
-            vf: dailyGemUsage.vf,
-          },
+          DUNO: dailyUsage.DUNO,
+          VECTOR: dailyUsage.VECTOR,
+          PRIME: dailyUsage.PRIME,
         },
       },
       monthly: {
@@ -391,18 +427,9 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
         totalVf: Math.max(0, Number(entitlements.monthly?.vfUsed || 0)),
         byEngine: {
           ...usage.monthly.byEngine,
-          KOKORO: {
-            chars: Math.max(0, Number(monthlyByEngine?.KOKORO?.chars || 0)),
-            vf: Math.max(0, Number(monthlyByEngine?.KOKORO?.vf || 0)),
-          },
-          NEURAL2: {
-            chars: Math.max(0, Number(monthlyByEngine?.NEURAL2?.chars || 0)),
-            vf: Math.max(0, Number(monthlyByEngine?.NEURAL2?.vf || 0)),
-          },
-          GEM: {
-            chars: monthlyGemUsage.chars,
-            vf: monthlyGemUsage.vf,
-          },
+          DUNO: monthlyUsage.DUNO,
+          VECTOR: monthlyUsage.VECTOR,
+          PRIME: monthlyUsage.PRIME,
         },
       },
     },
@@ -412,12 +439,9 @@ const mapEntitlementsToStats = (entitlements: AccountEntitlements, prev: UserSta
       vffBalance: Math.max(0, Number(wallet.vffBalance || 0)),
       paidVfBalance: Math.max(0, Number(wallet.paidVfBalance || 0)),
       spendableNowByEngine: {
-        KOKORO: Math.max(0, Number(wallet.spendableNowByEngine?.KOKORO || 0)),
-        NEURAL2: Math.max(0, Number(wallet.spendableNowByEngine?.NEURAL2 || 0)),
-        GEM: Math.max(
-          0,
-          Number(wallet.spendableNowByEngine?.GEM || 0) + Number((wallet as any).spendableNowByEngine?.GOOD || 0)
-        ),
+        DUNO: Math.max(0, Number(wallet.spendableNowByEngine?.DUNO || 0)),
+        VECTOR: Math.max(0, Number(wallet.spendableNowByEngine?.VECTOR || 0)),
+        PRIME: Math.max(0, Number(wallet.spendableNowByEngine?.PRIME || 0)),
       },
       vffMonthKey: wallet.vffMonthKey,
     },
@@ -452,6 +476,16 @@ const hasFirestoreAdminRole = (data: Record<string, unknown> | null | undefined)
   return false;
 };
 
+export const shouldAllowFirestoreAdminRoleFallback = (): boolean => {
+  const configured = readEnvBoolean(
+    process.env.NEXT_PUBLIC_ALLOW_FIRESTORE_ADMIN_ROLE,
+    process.env.VITE_ALLOW_FIRESTORE_ADMIN_ROLE
+  );
+  if (configured !== undefined) return configured;
+  const isProductionRuntime = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+  return !isProductionRuntime;
+};
+
 const readFirestoreAdminStatus = async (uid: string): Promise<boolean> => {
   const normalizedUid = String(uid || '').trim();
   if (!normalizedUid) return false;
@@ -470,7 +504,10 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   const tokenResult = await current.getIdTokenResult().catch(() => null);
   const hasAdminClaim = Boolean(tokenResult?.claims?.admin);
   const envOrClaimAdmin = isAdminIdentity(current.uid, current.email, hasAdminClaim);
-  const firestoreAdmin = envOrClaimAdmin ? false : await readFirestoreAdminStatus(current.uid);
+  let firestoreAdmin = false;
+  if (!envOrClaimAdmin && shouldAllowFirestoreAdminRoleFallback()) {
+    firestoreAdmin = await readFirestoreAdminStatus(current.uid);
+  }
   const isAdmin = envOrClaimAdmin || firestoreAdmin;
   const providerIds = (current.providerData || [])
     .map((provider) => String(provider?.providerId || '').trim())
@@ -486,8 +523,8 @@ const mapFirebaseUserToProfile = async (): Promise<UserProfile> => {
   return {
     uid: current.uid,
     googleId: current.uid,
-    name: current.displayName || current.email || current.phoneNumber || 'VoiceFlow User',
-    email: current.email || `${current.uid}@firebase.voiceflow`,
+    name: current.displayName || current.email || current.phoneNumber || 'V FLOW AI User',
+    email: current.email || `${current.uid}@firebase.vflowai`,
     userId: userId || undefined,
     avatarUrl: current.photoURL || undefined,
     phoneNumber: current.phoneNumber || undefined,
@@ -507,7 +544,7 @@ const requireFirebaseConfigForAuth = (): string | null => {
   return resolveFirebaseConfigIssue();
 };
 
-const mapFirebaseAuthError = (error: any): string => {
+const mapFirebaseAuthError = (error: any, context: 'signin' | 'signup' = 'signin'): string => {
   const code = String(error?.code || '').trim().toLowerCase();
   const rawMessage = String(error?.message || '').trim();
   const loweredMessage = rawMessage.toLowerCase();
@@ -530,6 +567,9 @@ const mapFirebaseAuthError = (error: any): string => {
   }
   if (code === 'auth/email-already-in-use') {
     return 'This email is already registered. Use Login or reset password.';
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return 'Google sign-in requires localhost in local development. Open the app at http://localhost:3000 and retry.';
   }
   if (code === 'auth/weak-password') {
     return 'Password is too weak. Use at least 6 characters.';
@@ -558,7 +598,9 @@ const mapFirebaseAuthError = (error: any): string => {
   if (loweredMessage.includes('token used too early') || loweredMessage.includes('token is not yet valid')) {
     return 'System clock is out of sync. Sync your device clock and sign in again.';
   }
-  return 'Authentication failed. Please retry.';
+  return context === 'signup'
+    ? 'Sign-up failed. Please check your details and try again.'
+    : 'Sign-in failed. Please check your details and try again.';
 };
 
 const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
@@ -583,11 +625,7 @@ const MAX_IN_MEMORY_HISTORY_ITEMS = 30;
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [authReady, setAuthReady] = useState(false);
-  const [stats, setStats] = useState<UserStats>(() => {
-    const stored = readStorageJson(STORAGE_KEYS.stats);
-    if (!stored) return INITIAL_STATS;
-    return normalizeStoredStats(stored);
-  });
+  const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
   const [user, setUser] = useState<UserProfile>(BLANK_USER);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [clonedVoices, setClonedVoices] = useState<ClonedVoice[]>([]);
@@ -598,12 +636,22 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const confirmationRef = useRef<ConfirmationResult | null>(null);
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
   const charactersUnsubscribeRef = useRef<(() => void) | null>(null);
+  const hasHydratedStatsRef = useRef(false);
 
   const isAdmin = Boolean(user.isAdmin);
   const isAuthenticated = Boolean(user.uid);
   const hasUnlimitedAccess = isAdmin;
 
   useEffect(() => {
+    const stored = readStorageJson(STORAGE_KEYS.stats);
+    if (stored) {
+      setStats(normalizeStoredStats(stored));
+    }
+    hasHydratedStatsRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedStatsRef.current) return;
     writeStorageJson(STORAGE_KEYS.stats, stats);
   }, [stats]);
 
@@ -611,7 +659,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setSessionClonedVoices(clonedVoices);
   }, [clonedVoices]);
 
-  const refreshEntitlements = async () => {
+  const refreshEntitlements = useCallback(async () => {
     const firebaseUser = firebaseAuth.currentUser;
     if (!firebaseUser) {
       setStats(INITIAL_STATS);
@@ -623,9 +671,9 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch {
       // Keep the current stats if backend is not reachable.
     }
-  };
+  }, []);
 
-  const refreshAdminActor = async () => {
+  const refreshAdminActor = useCallback(async () => {
     const firebaseUser = firebaseAuth.currentUser;
     const currentUid = String(firebaseUser?.uid || '').trim();
     if (!currentUid) {
@@ -660,7 +708,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         };
       });
     }
-  };
+  }, []);
 
   const applyPendingSignupProfile = async (uid: string, email: string): Promise<void> => {
     const pending = readPendingSignupProfile();
@@ -755,13 +803,25 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   useEffect(() => {
     let isMounted = true;
+    let authResolved = false;
+    const markAuthReady = () => {
+      if (!isMounted || authResolved) return;
+      authResolved = true;
+      setAuthReady(true);
+    };
+    const authReadyFallbackTimer = typeof window !== 'undefined'
+      ? window.setTimeout(markAuthReady, 3500)
+      : null;
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
+      markAuthReady();
       try {
         if (!firebaseUser) {
           if (charactersUnsubscribeRef.current) {
             charactersUnsubscribeRef.current();
             charactersUnsubscribeRef.current = null;
           }
+          clearDriveTokenCache();
+          removeStorageKey(STORAGE_KEYS.settings);
           removeStorageKey(STORAGE_KEYS.uidSetupRequired);
           setUser(BLANK_USER);
           setCharacterLibrary(DEFAULT_CHARACTERS);
@@ -776,6 +836,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             charactersUnsubscribeRef.current = null;
           }
           await signOut(firebaseAuth).catch(() => undefined);
+          clearDriveTokenCache();
+          removeStorageKey(STORAGE_KEYS.settings);
           removeStorageKey(STORAGE_KEYS.uidSetupRequired);
           setUser(BLANK_USER);
           setCharacterLibrary(DEFAULT_CHARACTERS);
@@ -789,17 +851,18 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         bootstrapCharacterSync(firebaseUser.uid);
         void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
       } finally {
-        if (isMounted) {
-          setAuthReady(true);
-        }
+        markAuthReady();
       }
     });
     return () => {
       isMounted = false;
+      if (authReadyFallbackTimer !== null) {
+        window.clearTimeout(authReadyFallbackTimer);
+      }
       unsubscribe();
       if (charactersUnsubscribeRef.current) charactersUnsubscribeRef.current();
     };
-  }, []);
+  }, [refreshAdminActor, refreshEntitlements]);
 
   useEffect(() => {
     const safeUid = String(user.uid || '').trim();
@@ -812,9 +875,9 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     void refreshAdminActor();
   // user.adminActor intentionally excluded to avoid a fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.uid]);
+  }, [refreshAdminActor, user.uid]);
 
-  const signInWithEmail: UserContextType['signInWithEmail'] = async (email, password) => {
+  const signInWithEmail = useCallback<UserContextType['signInWithEmail']>(async (email, password) => {
     const rawEmail = String(email || '').trim();
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
     if (firebaseAuthConfigIssue) {
@@ -844,7 +907,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         ...(provisioningHint ? { provisioningHint } : {}),
       };
     }
-  };
+  }, []);
 
   const signUpWithEmail: UserContextType['signUpWithEmail'] = async (email, password, displayName, userId) => {
     const firebaseAuthConfigIssue = requireFirebaseConfigForAuth();
@@ -888,7 +951,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setUser(BLANK_USER);
       return { ok: true, requiresEmailVerification: true };
     } catch (error: any) {
-      return { ok: false, error: mapFirebaseAuthError(error) };
+      return { ok: false, error: mapFirebaseAuthError(error, 'signup') };
     }
   };
 
@@ -1042,6 +1105,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (firebaseAuth.currentUser) {
       await signOut(firebaseAuth).catch(() => undefined);
     }
+    clearDriveTokenCache();
+    removeStorageKey(STORAGE_KEYS.settings);
     setUser(BLANK_USER);
     setCharacterLibrary(DEFAULT_CHARACTERS);
     setStats(INITIAL_STATS);
@@ -1055,17 +1120,39 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const id = character.id || crypto.randomUUID();
     const payload: CharacterProfile = { ...character, id };
     if (!uid) return;
-    void setDoc(doc(firestoreDb, 'users', uid, 'characters', id), payload, { merge: true });
+    void runFirestoreWriteWithTokenRefreshRetry(
+      () => setDoc(doc(firestoreDb, 'users', uid, 'characters', id), payload, { merge: true })
+    ).then((result) => {
+      if (result.ok) return;
+      const permissionDenied = isFirestorePermissionError(result.error);
+      emitCharacterSyncWarning(
+        permissionDenied
+          ? 'Voice preset changed locally, but cloud save was denied. Please sign in again or check account permissions.'
+          : 'Voice preset changed locally, but cloud sync failed. You can continue and retry later.'
+      );
+      console.warn('[UserContext] updateCharacter sync failed', result.error);
+    });
   }, []);
 
   const deleteCharacter = useCallback((id: string) => {
     if (DEFAULT_CHARACTERS.some((item) => item.id === id)) return;
     const uid = firebaseAuth.currentUser?.uid;
     if (!uid) return;
-    void deleteDoc(doc(firestoreDb, 'users', uid, 'characters', id));
+    void runFirestoreWriteWithTokenRefreshRetry(
+      () => deleteDoc(doc(firestoreDb, 'users', uid, 'characters', id))
+    ).then((result) => {
+      if (result.ok) return;
+      const permissionDenied = isFirestorePermissionError(result.error);
+      emitCharacterSyncWarning(
+        permissionDenied
+          ? 'Character removed locally, but cloud delete was denied by permissions.'
+          : 'Character removed locally, but cloud sync failed. You can continue and retry later.'
+      );
+      console.warn('[UserContext] deleteCharacter sync failed', result.error);
+    });
   }, []);
 
-  const syncCast = (cast: string[] | CharacterProfile[]) => {
+  const syncCast = useCallback((cast: string[] | CharacterProfile[]) => {
     if (!cast || cast.length === 0) return;
     const existingByName = new Map(characterLibrary.map((item) => [item.name.toLowerCase(), item]));
     const builtInVoiceIds = new Set(VOICES.map((voice) => voice.id));
@@ -1088,7 +1175,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         description: meta?.description || 'Persisted from explicit cast profile',
       });
     });
-  };
+  }, [characterLibrary, updateCharacter]);
 
   const contextValue = useMemo<ExtendedUserContextType>(() => ({
     user,
@@ -1125,6 +1212,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await clearHistoryRemote();
     },
     deleteAccount: async () => {
+      await deleteAccountRequest(readSettingsBackendUrl(), ACCOUNT_DELETE_CONFIRM_PHRASE);
+      clearPendingSignupProfile();
       await signOutUser();
       setHistory([]);
       setClonedVoices([]);
@@ -1179,10 +1268,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isSyncing,
     authReady,
     refreshAdminActor,
+    refreshEntitlements,
+    signInWithEmail,
     showSubscriptionModal,
     stats,
     updateCharacter,
     user,
+    syncCast,
   ]);
 
   return <UserContext.Provider value={contextValue}>{children}</UserContext.Provider>;
@@ -1193,3 +1285,4 @@ export const useUser = () => {
   if (!context) throw new Error('useUser must be used within a UserProvider');
   return context;
 };
+

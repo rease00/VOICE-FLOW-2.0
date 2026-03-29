@@ -3,21 +3,21 @@ import { ASSISTANT_PROVIDER_UI_LABELS, joinUiFragments, sanitizeUiText } from '.
 
 describe('sanitizeUiText', () => {
   it('keeps assistant-provider copy neutral while productizing engine names', () => {
-    expect(sanitizeUiText('Gemini failed; Kokoro offline.')).toBe('Primary AI failed; Basic offline.');
-    expect(sanitizeUiText('NEURAL2 fallback engaged.')).toBe('Vector fallback engaged.');
-    expect(sanitizeUiText('GEM ready.')).toBe('Prime ready.');
+    expect(sanitizeUiText('Gemini failed; DUNO offline.')).toBe('Primary AI failed; DUNO offline.');
+    expect(sanitizeUiText('VECTOR fallback engaged.')).toBe('VECTOR fallback engaged.');
+    expect(sanitizeUiText('PRIME ready.')).toBe('PRIME ready.');
   });
 
   it('replaces runtime and slot-set phrases', () => {
-    expect(sanitizeUiText('Gemini runtime slot set is empty.')).toBe('Prime Runtime slot set is empty.');
+    expect(sanitizeUiText('Gemini runtime slot set is empty.')).toBe('Primary AI runtime slot set is empty.');
     expect(sanitizeUiText('Loading Gemini pool status...')).toBe('Loading Primary AI slot set status...');
-    expect(sanitizeUiText('Kokoro Runtime ready')).toBe('Basic Runtime ready');
-    expect(sanitizeUiText('Neural2 runtime online')).toBe('Vector Runtime online');
+    expect(sanitizeUiText('DUNO Runtime ready')).toBe('DUNO Runtime ready');
+    expect(sanitizeUiText('VECTOR runtime online')).toBe('VECTOR Runtime online');
   });
 
   it('is case-insensitive for supported provider phrases', () => {
     expect(sanitizeUiText('GEMINI API KEY missing')).toBe('Primary AI API key missing');
-    expect(sanitizeUiText('KOKORO RUNTIME')).toBe('Basic Runtime');
+    expect(sanitizeUiText('DUNO RUNTIME')).toBe('DUNO Runtime');
   });
 
   it('keeps unrelated text unchanged', () => {
@@ -36,6 +36,6 @@ describe('ASSISTANT_PROVIDER_UI_LABELS', () => {
 describe('joinUiFragments', () => {
   it('joins truthy fragments with a normalized separator', () => {
     expect(joinUiFragments(['Ready', '', '32% complete'])).toBe('Ready | 32% complete');
-    expect(joinUiFragments(['Gemini ready', null, 'Kokoro offline'])).toBe('Primary AI ready | Basic offline');
+    expect(joinUiFragments(['Gemini ready', null, 'DUNO offline'])).toBe('Primary AI ready | DUNO offline');
   });
 });

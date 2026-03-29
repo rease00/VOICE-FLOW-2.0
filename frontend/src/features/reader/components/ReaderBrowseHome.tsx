@@ -1,15 +1,19 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
 import type { ReaderCatalogItem } from '../../../../types';
-import { READER_HOME_TABS, getReaderHomeTabLabel, type ReaderHomeTab, type ReaderHomeTabCounts } from '../model/tabs';
+import { READER_HOME_TABS, getReaderHomeTabLabel, type ReaderHomeTab } from '../model/tabs';
+import type { ReaderBootstrapState } from '../model/bootstrap';
+import type { ReaderHomeViewModel } from '../model/dashboard';
 
 interface ReaderBrowseHomeProps {
+  viewModel: ReaderHomeViewModel;
   homeTab: ReaderHomeTab;
-  homeTabCounts: ReaderHomeTabCounts;
   searchTerm: string;
-  items: ReaderCatalogItem[];
   selectedItemId: string;
   isLoading: boolean;
+  bootstrapState: ReaderBootstrapState;
+  legalAccepted: boolean;
+  libraryErrorMessage: string;
   onChangeHomeTab: (tab: ReaderHomeTab) => void;
   onChangeSearchTerm: (next: string) => void;
   onSelectItem: (itemId: string) => void;
@@ -34,13 +38,18 @@ const getItemShelfLabel = (item: ReaderCatalogItem): string => {
   return item.contentKind === 'comic' ? 'Manga / Comic' : 'Novel';
 };
 
+const getProgressPct = (item: ReaderCatalogItem): number => Math.max(0, Math.round(Number(item.resume?.progressPct || 0)));
+const formatProgressLabel = (progressPct: number): string => `${Math.max(0, Math.round(progressPct))}% complete`;
+
 export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
+  viewModel,
   homeTab,
   searchTerm,
-  items,
   selectedItemId,
   isLoading,
-  homeTabCounts,
+  bootstrapState,
+  legalAccepted,
+  libraryErrorMessage,
   onChangeHomeTab,
   onChangeSearchTerm,
   onSelectItem,
@@ -48,27 +57,121 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   resolveImportedStatusBadge,
   resolveMediaUrl,
 }) => {
-  const activeCount = Number(homeTabCounts[homeTab] || 0);
+  const [brokenImages, setBrokenImages] = useState<Record<string, true>>({});
+  const spotlight = viewModel.spotlight;
+  const spotlightProgress = spotlight ? getProgressPct(spotlight) : 0;
+  const activeCount = Number(viewModel.tabCounts[homeTab] || 0);
+  const homeStats = useMemo(() => ([
+    { label: 'Library', value: viewModel.highlights.library },
+    { label: 'Resumable', value: viewModel.highlights.resumable },
+    { label: 'Uploads', value: viewModel.highlights.uploads },
+    { label: 'Books', value: viewModel.highlights.books },
+  ].map((entry) => ({
+    ...entry,
+    value: Number(entry.value || 0),
+  }))), [viewModel.highlights.books, viewModel.highlights.library, viewModel.highlights.resumable, viewModel.highlights.uploads]);
+
+  const stateMessages = [
+    !legalAccepted
+      ? {
+          title: 'Reader rights pending',
+          body: 'Accept the Reader rights prompt once to unlock imports and resume the home dashboard.',
+        }
+      : null,
+    bootstrapState === 'loading'
+      ? {
+          title: 'Loading shelves',
+          body: 'Reader is loading your dashboard and restoring the latest shelf state.',
+        }
+      : null,
+    bootstrapState === 'needs_auth'
+      ? {
+          title: 'Sign in required',
+          body: 'Sign in to restore Reader shelves, sessions, and your dashboard state.',
+        }
+      : null,
+    bootstrapState === 'error'
+      ? {
+          title: 'Recoverable dashboard error',
+          body: libraryErrorMessage || 'Reader could not load the dashboard right now. Retry after checking backend availability.',
+        }
+      : null,
+  ].filter(Boolean) as Array<{ title: string; body: string }>;
+
+  const shelfSections = viewModel.sections;
+
   return (
     <section className="vf-reader-v2-home" data-testid="reader-home">
       <header className="vf-reader-v2-home__hero">
         <div className="vf-reader-v2-home__hero-copy">
-          <div className="vf-reader-v2-eyebrow">Reader Library</div>
-          <h2>Find books, comics, and imports faster.</h2>
-          <p>Search first, then use the filter chips to move between novels, manga, the full library, and your imported titles.</p>
+          <div className="vf-reader-v2-eyebrow">Reader Dashboard</div>
+          <h2>{viewModel.mission.title}</h2>
+          <p>{viewModel.mission.subtitle}</p>
+          <div className="vf-reader-v2-home__hero-actions">
+            <button
+              type="button"
+              className="vf-reader-v2-primary"
+              onClick={() => {
+                if (spotlight) onOpenItem(spotlight.id);
+              }}
+              disabled={!spotlight}
+            >
+              {viewModel.mission.ctaText}
+            </button>
+            <span className="vf-reader-v2-home__hero-status">{spotlight ? `${spotlight.title} - ${formatProgressLabel(spotlightProgress)}` : 'No continue reading item available'}</span>
+          </div>
         </div>
-        <div className="vf-reader-v2-home__hero-metrics" aria-label="Reader shelf counts">
-          {READER_HOME_TABS.map((tab) => {
-            const count = Number(homeTabCounts[tab] || 0);
-            const label = getReaderHomeTabLabel(tab);
-            const isActive = homeTab === tab;
-            return (
-              <div key={tab} className={`vf-reader-v2-home__metric ${isActive ? 'vf-reader-v2-home__metric--active' : ''}`}>
-                <span>{label}</span>
-                <strong>{count.toLocaleString()}</strong>
+
+        <div className="vf-reader-v2-home__spotlight">
+          {spotlight ? (
+            <>
+              <button
+                type="button"
+                className="vf-reader-v2-home__spotlight-cover"
+                onClick={() => onOpenItem(spotlight.id)}
+                aria-label={`Open ${spotlight.title}`}
+              >
+                {brokenImages[spotlight.id] || !resolveMediaUrl(spotlight.coverUrl) ? (
+                  <div className="vf-reader-v2-home__spotlight-cover-fallback">
+                    <span>{getItemShelfLabel(spotlight)}</span>
+                    <strong>{spotlight.title}</strong>
+                  </div>
+                ) : (
+                  <img
+                    src={resolveMediaUrl(spotlight.coverUrl)}
+                    alt={spotlight.title}
+                    onError={() => setBrokenImages((current) => ({ ...current, [spotlight.id]: true }))}
+                  />
+                )}
+              </button>
+              <div className="vf-reader-v2-home__spotlight-body">
+                <div className="vf-reader-v2-home__spotlight-meta">
+                  <span>{getItemShelfLabel(spotlight)}</span>
+                  <span>{spotlight.collectionLabel || spotlight.provider}</span>
+                  <span>{getItemMeta(spotlight)}</span>
+                </div>
+                <h3>{spotlight.title}</h3>
+                <p>{spotlight.author}</p>
+                <div className="vf-reader-v2-home__progress" aria-label={`Continue reading progress ${spotlightProgress}%`}>
+                  <div className="vf-reader-v2-home__progress-track">
+                    <div className="vf-reader-v2-home__progress-fill" style={{ width: `${spotlightProgress}%` }} />
+                  </div>
+                  <div className="vf-reader-v2-home__progress-meta">
+                    <span>{formatProgressLabel(spotlightProgress)}</span>
+                    <span>{spotlight.readiness?.label || spotlight.prep?.state || 'Ready to open'}</span>
+                  </div>
+                </div>
+                <button type="button" className="vf-reader-v2-secondary" onClick={() => onOpenItem(spotlight.id)}>
+                  Open Continue Reading
+                </button>
               </div>
-            );
-          })}
+            </>
+          ) : (
+            <div className="vf-reader-v2-home__spotlight-empty">
+              <strong>No continue reading item yet</strong>
+              <p>Your next session will appear here once Reader has a resumable title.</p>
+            </div>
+          )}
         </div>
       </header>
 
@@ -78,13 +181,13 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
           <input
             value={searchTerm}
             onChange={(event) => onChangeSearchTerm(event.target.value)}
-            placeholder="Search title, author, genre..."
+            placeholder="Search title, author, or collection"
             aria-label="Search reader catalog"
           />
         </label>
         <div className="vf-reader-v2-home__chips" role="group" aria-label="Reader home filters">
           {READER_HOME_TABS.map((tab) => {
-            const count = Number(homeTabCounts[tab] || 0);
+            const count = Number(viewModel.tabCounts[tab] || 0);
             const label = getReaderHomeTabLabel(tab);
             const isActive = homeTab === tab;
             return (
@@ -103,72 +206,118 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
         </div>
         <div className="vf-reader-v2-home__summary">
           <span>
-            Showing <strong>{items.length.toLocaleString()}</strong> {items.length === 1 ? 'title' : 'titles'}
+            Showing <strong>{viewModel.visibleCount.toLocaleString()}</strong> {viewModel.visibleCount === 1 ? 'title' : 'titles'}
           </span>
           <span>
-            Shelf total <strong>{activeCount.toLocaleString()}</strong>
+            Shelf total <strong>{viewModel.shelfTotal.toLocaleString()}</strong>
           </span>
+          <span>
+            Filtered <strong>{activeCount.toLocaleString()}</strong>
+          </span>
+        </div>
+        <div className="vf-reader-v2-home__metrics" aria-label="Reader shelf counts">
+          {homeStats.map((entry) => (
+            <div key={entry.label} className="vf-reader-v2-home__metric">
+              <span>{entry.label}</span>
+              <strong>{entry.value.toLocaleString()}</strong>
+            </div>
+          ))}
         </div>
       </section>
 
-      {isLoading ? <div className="vf-reader-v2-empty">Loading reader catalog...</div> : null}
-      {!isLoading && items.length === 0 ? <div className="vf-reader-v2-empty">No titles found for this tab.</div> : null}
-
-      <div className="vf-reader-v2-home__grid">
-        {items.map((item) => {
-          const imported = item.surface === 'uploads';
-          const coverUrl = resolveMediaUrl(item.coverUrl);
-          const importedBadge = imported ? resolveImportedStatusBadge(item) : '';
-          return (
-            <article
-              key={item.id}
-              className={`vf-reader-v2-card ${selectedItemId === item.id ? 'vf-reader-v2-card--active' : ''}`}
-              onMouseEnter={() => onSelectItem(item.id)}
-              onFocusCapture={() => onSelectItem(item.id)}
-            >
-              <button
-                type="button"
-                className="vf-reader-v2-card__cover"
-                onClick={() => onOpenItem(item.id)}
-                aria-label={`Open ${item.title}`}
-              >
-                {coverUrl ? (
-                  <img src={coverUrl} alt={item.title} />
-                ) : (
-                  <div className="vf-reader-v2-card__cover-fallback">
-                    <span className="vf-reader-v2-card__cover-eyebrow">{getItemShelfLabel(item)}</span>
-                    <strong>{item.title}</strong>
-                  </div>
-                )}
-              </button>
-              <div className="vf-reader-v2-card__body">
-                <div className="vf-reader-v2-card__meta">
-                  <span>{getItemShelfLabel(item)}</span>
-                  <span>{item.collectionLabel || item.provider}</span>
-                  {imported ? <span className="vf-reader-v2-badge">{importedBadge}</span> : null}
-                </div>
-                <h3>{item.title}</h3>
-                <p>{item.author}</p>
-                <p className="vf-reader-v2-card__summary">{item.summary || 'Open to preview details and launch the player.'}</p>
-                <div className="vf-reader-v2-card__stats">
-                  <span>{getItemMeta(item)}</span>
-                  <span>{Math.round(Number(item.resume?.progressPct || 0))}% complete</span>
-                </div>
-                <div className="vf-reader-v2-card__actions">
-                  <button
-                    type="button"
-                    className="vf-reader-v2-primary vf-reader-v2-card__open"
-                    onClick={() => onOpenItem(item.id)}
-                    aria-label={`Open ${item.title}`}
-                  >
-                    Open
-                  </button>
-                </div>
+      <section className="vf-reader-v2-home__shelves" aria-label="Reader shelves">
+        {shelfSections.map((section) => (
+          <article key={section.id} className="vf-reader-v2-home__shelf">
+            <header className="vf-reader-v2-home__shelf-head">
+              <div>
+                <div className="vf-reader-v2-eyebrow">{section.label}</div>
+                <h3>{section.heading}</h3>
+                <p>{section.description}</p>
               </div>
+              <div className="vf-reader-v2-home__shelf-count">{section.items.length.toLocaleString()}</div>
+            </header>
+
+            {section.items.length === 0 ? (
+              <div className="vf-reader-v2-home__shelf-empty">{section.emptyMessage}</div>
+            ) : (
+              <div className="vf-reader-v2-home__shelf-grid">
+                {section.items.map((item) => {
+                  const imported = item.surface === 'uploads';
+                  const coverUrl = resolveMediaUrl(item.coverUrl);
+                  const progressPct = getProgressPct(item);
+                  const showFallback = brokenImages[item.id] || !coverUrl;
+                  return (
+                    <article
+                      key={item.id}
+                      className={`vf-reader-v2-home__card ${selectedItemId === item.id ? 'vf-reader-v2-home__card--active' : ''}`}
+                      onMouseEnter={() => onSelectItem(item.id)}
+                      onFocusCapture={() => onSelectItem(item.id)}
+                    >
+                      <button
+                        type="button"
+                        className="vf-reader-v2-home__card-cover"
+                        onClick={() => onOpenItem(item.id)}
+                        aria-label={`Open ${item.title}`}
+                      >
+                        {showFallback ? (
+                          <div className="vf-reader-v2-home__card-cover-fallback">
+                            <span>{getItemShelfLabel(item)}</span>
+                            <strong>{item.title}</strong>
+                          </div>
+                        ) : (
+                          <img
+                            src={coverUrl}
+                            alt={item.title}
+                            onError={() => setBrokenImages((current) => ({ ...current, [item.id]: true }))}
+                          />
+                        )}
+                      </button>
+                      <div className="vf-reader-v2-home__card-body">
+                        <div className="vf-reader-v2-home__card-meta">
+                          <span>{getItemShelfLabel(item)}</span>
+                          <span>{item.collectionLabel || item.provider}</span>
+                          {imported ? <span className="vf-reader-v2-badge">{resolveImportedStatusBadge(item)}</span> : null}
+                        </div>
+                        <h4>{item.title}</h4>
+                        <p>{item.author}</p>
+                        <div className="vf-reader-v2-home__card-progress">
+                          <div className="vf-reader-v2-home__progress-track">
+                            <div className="vf-reader-v2-home__progress-fill" style={{ width: `${progressPct}%` }} />
+                          </div>
+                          <span>{formatProgressLabel(progressPct)}</span>
+                        </div>
+                        <div className="vf-reader-v2-home__card-meta vf-reader-v2-home__card-meta--secondary">
+                          <span>{getItemMeta(item)}</span>
+                          <span>{item.summary || 'Open for a full Reader preview.'}</span>
+                        </div>
+                        <button type="button" className="vf-reader-v2-primary vf-reader-v2-home__card-open" onClick={() => onOpenItem(item.id)}>
+                          Open
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </article>
+        ))}
+      </section>
+
+      <section className="vf-reader-v2-home__states" aria-label="Reader status panels">
+        {stateMessages.length > 0 ? (
+          stateMessages.map((message) => (
+            <article key={message.title} className="vf-reader-v2-home__state-card">
+              <strong>{message.title}</strong>
+              <p>{message.body}</p>
             </article>
-          );
-        })}
-      </div>
+          ))
+        ) : (
+          <article className="vf-reader-v2-home__state-card">
+            <strong>Reader is ready</strong>
+            <p>Your dashboard and playback shell are both online.</p>
+          </article>
+        )}
+      </section>
     </section>
   );
 };

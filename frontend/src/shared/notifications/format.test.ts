@@ -24,6 +24,16 @@ describe('notification format helpers', () => {
     expect(toUserMessage(raw, 'Could not save user ID.')).toContain('Profile service is temporarily unavailable');
   });
 
+  it('uses fallback copy for unmatched technical errors instead of raw internals', () => {
+    const raw = 'Unhandled failure at http://localhost:7800 with trace_id=abc123';
+    expect(toUserMessage(raw, 'Request failed.')).toBe('Request failed.');
+  });
+
+  it('maps firebase auth and permission codes to safe copy', () => {
+    expect(toUserMessage('Firebase: Error (auth/user-not-found).', 'Request failed.')).toContain('Sign-in failed');
+    expect(toUserMessage('FirebaseError: permission-denied', 'Request failed.')).toContain('restricted');
+  });
+
   it('enforces compact toast title/message limits', () => {
     const title = truncateForToast('A'.repeat(90), 42);
     const message = truncateForToast('B'.repeat(220), 110);

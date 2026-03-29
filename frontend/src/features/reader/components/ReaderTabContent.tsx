@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { GenerationSettings, ReaderCatalogItem, ReaderLegalAck, ReaderLibrary, ReaderSession, ReaderSessionProgress } from '../../../../types';
+import type {
+  GenerationSettings,
+  ReaderCatalogItem,
+  ReaderDashboardPayload,
+  ReaderLegalAck,
+  ReaderLibrary,
+  ReaderSession,
+  ReaderSessionProgress,
+} from '../../../../types';
 import { VOICES } from '../../../../constants';
 import { parseMultiSpeakerScript } from '../../../../services/geminiService';
 import { readStorageJson, writeStorageJson } from '../../../shared/storage/localStore';
@@ -12,13 +20,15 @@ import {
   createReaderSession,
   createReaderUpload,
   exportReaderSessionAudio,
+  getReaderDashboard,
   getReaderCatalogItem,
   getReaderLegalAck,
-  getReaderLibrary,
   getReaderPreferences,
   getReaderSession,
   getReaderTtsJobAudio,
+  primeReaderQueue,
   saveReaderSession,
+  resolveReaderQueuePrimeMode,
   type ReaderCommercialCheckResponse,
   updateReaderPreferences,
   updateReaderProgress,
@@ -28,19 +38,17 @@ import { resolveReaderBootstrapState } from '../model/bootstrap';
 import {
   isImportedItem,
   isLowConfidenceItem,
-  resolveHomeTabItems,
   resolveImportedStatusBadge,
-  sortReaderItems,
 } from '../model/library';
 import { buildReaderDeepLink, isReaderPath, parseReaderDeepLink } from '../model/route';
-import { getReaderPlayableUnits, isLowConfidenceSession, resolveReaderMode, resolveReaderStatusLabel } from '../model/session';
+import { EMPTY_READER_LIBRARY, buildReaderDashboardPayloadFromLibrary, resolveReaderHomeViewModel } from '../model/dashboard';
+import { getReaderPlayableUnits, isLowConfidenceSession, resolveReaderBillingDisplay, resolveReaderMode, resolveReaderStatusLabel } from '../model/session';
 import {
   coerceReaderHomeTab,
   coerceReaderTab,
   getReaderTabs,
   resolveImportedDefaultTab,
   type ReaderHomeTab,
-  type ReaderHomeTabCounts,
   type ReaderMode,
   type ReaderTab,
 } from '../model/tabs';
@@ -58,6 +66,8 @@ interface ReaderTabContentProps {
   settings?: GenerationSettings;
   resolvedTheme: ReaderResolvedTheme;
   onToast: (message: string, type?: 'success' | 'error' | 'info') => void;
+  syncLocation?: boolean;
+  isActive?: boolean;
 }
 
 const READER_RESTORE_VERSION = 1;
@@ -141,7 +151,7 @@ const normalizeContentMode = (item: ReaderCatalogItem | null | undefined, sessio
 };
 
 const toHomeTab = (mode: ReaderMode): ReaderHomeTab =>
-  mode === 'comic' ? 'comics' : 'novels';
+  mode === 'comic' ? 'library' : 'novels';
 
 const detectImportTypeFromFiles = (files: File[]): 'book' | 'comic' => {
   const comicExtensions = ['.cbz', '.zip', '.png', '.jpg', '.jpeg', '.webp'];
@@ -201,6 +211,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [library, setLibrary] = useState<ReaderLibrary | null>(null);
   const [libraryError, setLibraryError] = useState<unknown>(null);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+  const [dashboard, setDashboard] = useState<ReaderDashboardPayload | null>(null);
   const [legalAck, setLegalAck] = useState<ReaderLegalAck | null>(null);
   const [homeTab, setHomeTab] = useState<ReaderHomeTab>(() => coerceReaderHomeTab(readerPreferencesCacheRef.current.homeTab));
   const [searchTerm, setSearchTerm] = useState('');
@@ -226,7 +237,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [castDraft, setCastDraft] = useState<Record<string, string>>({});
   const [unitOverridesDraft, setUnitOverridesDraft] = useState<Record<string, string>>({});
   const [textDraft, setTextDraft] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
+  const [isSavingTextEdit, setIsSavingTextEdit] = useState(false);
+  const [isSavingVoiceSettings, setIsSavingVoiceSettings] = useState(false);
+  const [isSavingCastAssignments, setIsSavingCastAssignments] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadTitle, setUploadTitle] = useState('');
@@ -237,6 +250,15 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [miniMode, setMiniMode] = useState(() => isPhone || isTablet);
   const [lastJobId, setLastJobId] = useState('');
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
+  const sessionMutationRef = useRef<Record<'open' | 'progress' | 'savepoint' | 'settings' | 'queue-prime' | 'bootstrap', number>>({
+    open: 0,
+    progress: 0,
+    savepoint: 0,
+    settings: 0,
+    'queue-prime': 0,
+    bootstrap: 0,
+  });
+  const sessionSnapshotRef = useRef<{ sessionId: string; updatedAtMs: number }>({ sessionId: '', updatedAtMs: 0 });
 
   const sessionItem = useMemo(
     () => (library?.items || []).find((item) => item.id === sessionItemId) || null,
@@ -246,19 +268,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (previewItemSnapshot && previewItemSnapshot.id === previewItemId) return previewItemSnapshot;
     return (library?.items || []).find((item) => item.id === previewItemId) || null;
   }, [library?.items, previewItemId, previewItemSnapshot]);
-  const filteredItems = useMemo(
-    () => sortReaderItems(resolveHomeTabItems(library, homeTab, searchTerm)),
-    [library, homeTab, searchTerm]
+  const readerDashboard = useMemo(
+    () => dashboard || (library ? buildReaderDashboardPayloadFromLibrary(library) : null),
+    [dashboard, library]
   );
-  const homeTabCounts = useMemo<ReaderHomeTabCounts>(() => {
-    const counts = {
-      novels: resolveHomeTabItems(library, 'novels', searchTerm).length,
-      comics: resolveHomeTabItems(library, 'comics', searchTerm).length,
-      library: resolveHomeTabItems(library, 'library', searchTerm).length,
-      imported: resolveHomeTabItems(library, 'imported', searchTerm).length,
-    } satisfies ReaderHomeTabCounts;
-    return counts;
-  }, [library, searchTerm]);
+  const homeViewModel = useMemo(
+    () => resolveReaderHomeViewModel(readerDashboard || buildReaderDashboardPayloadFromLibrary(EMPTY_READER_LIBRARY), homeTab, searchTerm),
+    [homeTab, readerDashboard, searchTerm]
+  );
 
   const activeText = useMemo(
     () => getActiveUnitText(session, mode, activeUnitIndex),
@@ -402,8 +419,13 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const loadLibrary = useCallback(async () => {
     setIsLoadingLibrary(true);
     try {
+      const searchQuery = searchTerm.trim();
       const [libraryResult, legalResult, preferencesResult] = await Promise.allSettled([
-        getReaderLibrary(mediaBackendUrl, { surface: 'all' }),
+        getReaderDashboard(mediaBackendUrl, {
+          surface: 'all',
+          regionId: readerPreferencesCacheRef.current.regionId || 'english',
+          ...(searchQuery ? { search: searchQuery } : {}),
+        }),
         getReaderLegalAck(mediaBackendUrl),
         getReaderPreferences(mediaBackendUrl),
       ]);
@@ -418,14 +440,17 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
 
       if (libraryResult.status === 'fulfilled') {
         const libraryPayload = libraryResult.value;
-        setLibrary(libraryPayload);
+        setDashboard(libraryPayload);
+        setLibrary(libraryPayload.library);
         setLibraryError(null);
         if (!hasUserChangedHomeTabRef.current) {
           setHomeTab((current) => coerceReaderHomeTab(resolvedPreferences.homeTab, current));
         }
-        const first = libraryPayload.items[0];
+        const first = libraryPayload.library.items[0];
         if (first) setSelectedItemId((current) => current || first.id);
       } else {
+        setDashboard(null);
+        setLibrary(null);
         setLibraryError(libraryResult.reason);
         const message = String((libraryResult.reason as Error)?.message || 'Could not load Reader catalog.');
         onToast(message, 'error');
@@ -447,6 +472,58 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     void loadLibrary();
   }, [loadLibrary]);
 
+  const getSessionUpdatedAtMs = useCallback((value: ReaderSession | null | undefined): number => (
+    Math.max(0, Number((value as { updatedAtMs?: number } | null | undefined)?.updatedAtMs || 0))
+  ), []);
+
+  const issueSessionMutationToken = useCallback((
+    lane: 'open' | 'progress' | 'savepoint' | 'settings' | 'queue-prime' | 'bootstrap'
+  ): number => {
+    sessionMutationRef.current[lane] += 1;
+    return sessionMutationRef.current[lane];
+  }, []);
+
+  const commitSessionResponse = useCallback((
+    lane: 'open' | 'progress' | 'savepoint' | 'settings' | 'queue-prime' | 'bootstrap',
+    nextSession: ReaderSession | null | undefined,
+    options?: {
+      expectedSessionId?: string;
+      token?: number;
+      allowSessionSwitch?: boolean;
+    }
+  ): boolean => {
+    if (!nextSession) return false;
+    const nextSessionId = String(nextSession.id || '').trim();
+    const nextUpdatedAtMs = getSessionUpdatedAtMs(nextSession);
+    if (typeof options?.token === 'number' && options.token !== sessionMutationRef.current[lane]) return false;
+    if (options?.expectedSessionId && nextSessionId !== options.expectedSessionId) return false;
+    const currentSnapshot = sessionSnapshotRef.current;
+    if (!options?.allowSessionSwitch && currentSnapshot.sessionId && nextSessionId && currentSnapshot.sessionId !== nextSessionId) {
+      return false;
+    }
+    if (
+      currentSnapshot.sessionId
+      && nextSessionId === currentSnapshot.sessionId
+      && currentSnapshot.updatedAtMs > 0
+      && nextUpdatedAtMs < currentSnapshot.updatedAtMs
+    ) {
+      return false;
+    }
+    setSession(nextSession);
+    sessionSnapshotRef.current = {
+      sessionId: nextSessionId || currentSnapshot.sessionId,
+      updatedAtMs: Math.max(currentSnapshot.updatedAtMs, nextUpdatedAtMs),
+    };
+    return true;
+  }, [getSessionUpdatedAtMs]);
+
+  const invalidateSessionMutations = useCallback(() => {
+    (Object.keys(sessionMutationRef.current) as Array<keyof typeof sessionMutationRef.current>).forEach((lane) => {
+      sessionMutationRef.current[lane] += 1;
+    });
+    sessionSnapshotRef.current = { sessionId: '', updatedAtMs: 0 };
+  }, []);
+
   const openReaderItem = useCallback(async (
     item: ReaderCatalogItem,
     options?: {
@@ -456,6 +533,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       fromDeepLink?: boolean;
     }
   ): Promise<boolean> => {
+    const openToken = issueSessionMutationToken('open');
     try {
       const nextSession = await createReaderSession(mediaBackendUrl, {
         ...(isImportedItem(item) ? { uploadId: item.id } : { itemId: item.id }),
@@ -500,7 +578,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       });
       const nextTab = coerceReaderTab(requestedTab || fallbackDefaultTab, nextTabs, nextMode);
 
-      setSession(nextSession);
+      if (!commitSessionResponse('open', nextSession, { token: openToken, allowSessionSwitch: true })) {
+        return false;
+      }
       setSessionItemId(item.id);
       setPreviewItemId('');
       setPreviewItemSnapshot(null);
@@ -518,6 +598,23 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       setCastDraft(nextSession.castMemory || {});
       setUnitOverridesDraft(nextSession.unitOverrides || {});
 
+      const queuePrimeToken = issueSessionMutationToken('queue-prime');
+      void primeReaderQueue(mediaBackendUrl, {
+        sessionId: nextSession.id,
+        mode: resolveReaderQueuePrimeMode(nextMode),
+        lookaheadUnits: 4,
+        fromActiveIndex: clampedIndex,
+      })
+        .then((primedSession) => {
+          if (primedSession) {
+            commitSessionResponse('queue-prime', primedSession, {
+              expectedSessionId: nextSession.id,
+              token: queuePrimeToken,
+            });
+          }
+        })
+        .catch(() => undefined);
+
       if (restoreEntry && typeof restoreEntry.lastScrollPosition === 'number' && !options?.fromDeepLink) {
         window.requestAnimationFrame(() => {
           if (contentScrollRef.current) contentScrollRef.current.scrollTop = restoreEntry.lastScrollPosition;
@@ -532,7 +629,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       onToast(String((error as Error)?.message || 'Could not open reader title.'), 'error');
       return false;
     }
-  }, [mediaBackendUrl, multiSpeakerEnabled, narratorVoiceId, onToast, sourceLanguage, targetLanguage]);
+  }, [commitSessionResponse, issueSessionMutationToken, mediaBackendUrl, multiSpeakerEnabled, narratorVoiceId, onToast, sourceLanguage, targetLanguage]);
 
   useEffect(() => {
     if (hasHandledDeepLinkRef.current) return;
@@ -598,18 +695,25 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       sessionKey,
       tab: activeTab,
     };
+    const savepointToken = issueSessionMutationToken('savepoint');
     const restoreState = {
       activeItemIndex: activeUnitIndex,
       ...(activeUnit?.id ? { activeUnitId: activeUnit.id, viewportAnchor: activeUnit.id } : {}),
       activeReaderTab: activeTab,
     };
     void saveReaderSession(mediaBackendUrl, session.id, { restoreState })
-      .then((nextSession) => setSession(nextSession))
+      .then((nextSession) => {
+        commitSessionResponse('savepoint', nextSession, {
+          expectedSessionId: session.id,
+          token: savepointToken,
+        });
+      })
       .catch(() => undefined);
-  }, [activeTab, activeUnit?.id, activeUnitIndex, lastJobId, mediaBackendUrl, mode, session?.id, sessionItemId]);
+  }, [activeTab, activeUnit?.id, activeUnitIndex, commitSessionResponse, issueSessionMutationToken, lastJobId, mediaBackendUrl, mode, session?.id, sessionItemId]);
 
   useEffect(() => {
     if (!session?.id) return;
+    const progressToken = issueSessionMutationToken('progress');
     const consumedChars = session.windows
       .slice(0, Math.max(0, activeUnitIndex + 1))
       .reduce((total, windowItem) => total + Number(windowItem.charCount || 0), 0);
@@ -619,11 +723,16 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       ...(mode === 'comic' ? { currentPanelIndex: activeUnitIndex } : { consumedChars }),
     };
     void updateReaderProgress(mediaBackendUrl, session.id, progressPayload)
-      .then((nextSession) => setSession(nextSession))
+      .then((nextSession) => {
+        commitSessionResponse('progress', nextSession, {
+          expectedSessionId: session.id,
+          token: progressToken,
+        });
+      })
       .catch(() => undefined);
     // Sync progress only when position changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeUnitIndex, mediaBackendUrl, mode, session?.id]);
+  }, [activeUnit?.id, activeUnitIndex, commitSessionResponse, issueSessionMutationToken, mediaBackendUrl, mode, session?.id, session?.windows]);
 
   const resolveAudioUrlForUnit = useCallback(async (): Promise<string> => {
     if (!activeUnit) return '';
@@ -689,28 +798,79 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       [activeUnit.id]: nextBody,
     };
     setUnitOverridesDraft(nextOverrides);
-    setIsSaving(true);
+    const savepointToken = issueSessionMutationToken('savepoint');
+    setIsSavingTextEdit(true);
     try {
       const nextSession = await saveReaderSession(mediaBackendUrl, session.id, {
         unitOverrides: nextOverrides,
         multiSpeakerEnabled,
         narratorVoiceId,
       });
-      setSession(nextSession);
+      commitSessionResponse('savepoint', nextSession, {
+        expectedSessionId: session.id,
+        token: savepointToken,
+      });
       onToast('Text override applied.', 'success');
     } catch (error) {
       onToast(String((error as Error)?.message || 'Could not apply text override.'), 'error');
     } finally {
-      setIsSaving(false);
+      setIsSavingTextEdit(false);
     }
-  }, [activeUnit, mediaBackendUrl, multiSpeakerEnabled, narratorVoiceId, onToast, session?.id, textDraft, unitOverridesDraft]);
+  }, [activeUnit, commitSessionResponse, issueSessionMutationToken, mediaBackendUrl, multiSpeakerEnabled, narratorVoiceId, onToast, session?.id, textDraft, unitOverridesDraft]);
 
   const handleResetTextEdit = useCallback(() => {
     setTextDraft(activeText || '');
   }, [activeText]);
 
+  const handleSaveVoiceSettings = useCallback(async () => {
+    if (!session?.id) return;
+    const settingsToken = issueSessionMutationToken('settings');
+    setIsSavingVoiceSettings(true);
+    try {
+      const nextSession = await saveReaderSession(mediaBackendUrl, session.id, {
+        multiSpeakerEnabled,
+        narratorVoiceId,
+        voiceMode: multiSpeakerEnabled ? 'multi' : 'single',
+      });
+      if (commitSessionResponse('settings', nextSession, {
+        expectedSessionId: session.id,
+        token: settingsToken,
+      })) {
+        onToast('Voice settings saved.', 'success');
+      }
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not save voice settings.'), 'error');
+    } finally {
+      setIsSavingVoiceSettings(false);
+    }
+  }, [commitSessionResponse, issueSessionMutationToken, mediaBackendUrl, multiSpeakerEnabled, narratorVoiceId, onToast, session?.id]);
+
+  const handleSaveCastAssignments = useCallback(async () => {
+    if (!session?.id) return;
+    const settingsToken = issueSessionMutationToken('settings');
+    setIsSavingCastAssignments(true);
+    try {
+      const nextSession = await saveReaderSession(mediaBackendUrl, session.id, {
+        castOverrides: castDraft,
+        multiSpeakerEnabled,
+        narratorVoiceId,
+      });
+      if (commitSessionResponse('settings', nextSession, {
+        expectedSessionId: session.id,
+        token: settingsToken,
+      })) {
+        onToast('Cast assignments saved.', 'success');
+      }
+    } catch (error) {
+      onToast(String((error as Error)?.message || 'Could not save cast assignments.'), 'error');
+    } finally {
+      setIsSavingCastAssignments(false);
+    }
+  }, [castDraft, commitSessionResponse, issueSessionMutationToken, mediaBackendUrl, multiSpeakerEnabled, narratorVoiceId, onToast, session?.id]);
+
   const handleRefresh = useCallback(async () => {
     try {
+      const bootstrapToken = issueSessionMutationToken('bootstrap');
       const sessionPromise = session?.id
         ? getReaderSession(mediaBackendUrl, session.id)
         : Promise.resolve(null);
@@ -719,7 +879,10 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
         sessionPromise,
       ]);
       if (session?.id && sessionResult.status === 'fulfilled' && sessionResult.value) {
-        setSession(sessionResult.value);
+        commitSessionResponse('bootstrap', sessionResult.value, {
+          expectedSessionId: session.id,
+          token: bootstrapToken,
+        });
         onToast('Reader refreshed.', 'success');
         return;
       }
@@ -729,7 +892,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     } catch (error) {
       onToast(String((error as Error)?.message || 'Could not refresh reader session.'), 'error');
     }
-  }, [loadLibrary, mediaBackendUrl, onToast, session?.id]);
+  }, [commitSessionResponse, issueSessionMutationToken, loadLibrary, mediaBackendUrl, onToast, session?.id]);
 
   const handleExport = useCallback(async () => {
     if (!session?.id) return;
@@ -754,6 +917,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       audioNode.removeAttribute('src');
       audioNode.load();
     }
+    invalidateSessionMutations();
     setSession(null);
     setSessionItemId('');
     setPreviewItemId('');
@@ -771,7 +935,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     const readerQueryKeys = ['tab', 'chapter', 'episode', 'vf-reader-mode', 'vf-reader-item', 'vf-reader-title', 'vf-reader-tab', 'vf-reader-chapter', 'vf-reader-episode'];
     readerQueryKeys.forEach((key) => url.searchParams.delete(key));
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-  }, []);
+  }, [invalidateSessionMutations]);
 
   const runCommercialCheckForItem = useCallback((item: ReaderCatalogItem) => {
     const sourceMeta = item.sourceMeta && typeof item.sourceMeta === 'object'
@@ -878,6 +1042,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   });
 
   const textDirty = textDraft.trim() !== activeText.trim();
+  const voiceSettingsDirty = Boolean(
+    session
+    && (
+      session.multiSpeakerEnabled !== multiSpeakerEnabled
+      || String(session.narratorVoiceId || '') !== String(narratorVoiceId || '')
+    )
+  );
+  const castSettingsDirty = JSON.stringify(castDraft || {}) !== JSON.stringify(session?.castMemory || {});
   const lowConfidenceSignal = isLowConfidenceSession(session) || isLowConfidenceItem(sessionItem || undefined);
   const speakerCountLabel = detectedSpeakers.length === 1
     ? '1 speaker'
@@ -901,6 +1073,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (sourceLanguage === targetLanguage) return content;
     return `[${targetLanguage.toUpperCase()}] ${content}`;
   }, [activeText, sourceLanguage, targetLanguage]);
+
+  const billingDisplay = useMemo(() => resolveReaderBillingDisplay(session), [session]);
 
   return (
     <div className={getReaderThemeClassName(resolvedTheme)}>
@@ -928,17 +1102,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
           </section>
         ) : null}
 
-        {bootstrapState === 'error' && !library ? (
-          <section className="vf-reader-v2-empty">
-            Reader could not load right now. Retry after checking backend availability.
-          </section>
-        ) : null}
-        {bootstrapState === 'needs_auth' && !library ? (
-          <section className="vf-reader-v2-empty">
-            Sign in to load your Reader shelves and restore sessions.
-          </section>
-        ) : null}
-
         {!session ? (
           <>
             <section className="vf-reader-v2-import">
@@ -961,12 +1124,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
             </section>
 
             <ReaderBrowseHome
+              viewModel={homeViewModel}
               homeTab={homeTab}
-              homeTabCounts={homeTabCounts}
               searchTerm={searchTerm}
-              items={filteredItems}
               selectedItemId={selectedItemId}
               isLoading={isLoadingLibrary}
+              bootstrapState={bootstrapState}
+              legalAccepted={Boolean(legalAck?.accepted)}
+              libraryErrorMessage={String((libraryError as Error)?.message || libraryError || '')}
               onChangeHomeTab={persistHomeTab}
               onChangeSearchTerm={setSearchTerm}
               onSelectItem={setSelectedItemId}
@@ -982,6 +1147,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
                 Back To Home
               </button>
               <span>{mode === 'novel' ? 'Novel Reader' : 'Comic Reader'}</span>
+              {(billingDisplay.label || billingDisplay.rule) ? (
+                <span className="vf-reader-v2-workspace__billing">{billingDisplay.label || billingDisplay.rule}</span>
+              ) : null}
             </section>
 
             <div className="vf-reader-v2-workspace">
@@ -1019,21 +1187,19 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
                 textDraft={textDraft}
                 activeText={activeText}
                 textDirty={textDirty}
+                voiceSettingsDirty={voiceSettingsDirty}
+                castSettingsDirty={castSettingsDirty}
+                isSavingVoiceSettings={isSavingVoiceSettings}
+                isSavingCastAssignments={isSavingCastAssignments}
                 onChangeTab={setActiveTab}
                 onToggleMultiSpeaker={() => setMultiSpeakerEnabled((current) => !current)}
                 onNarratorVoiceChange={setNarratorVoiceId}
                 onSpeedChange={setPlaybackSpeed}
                 onAmbiencePresetChange={setAmbiencePreset}
                 onStylePresetChange={setStylePreset}
-                onCastDraftChange={(nextCast) => {
-                  setCastDraft(nextCast);
-                  if (!session?.id) return;
-                  void saveReaderSession(mediaBackendUrl, session.id, {
-                    castOverrides: nextCast,
-                    multiSpeakerEnabled,
-                    narratorVoiceId,
-                  }).catch(() => undefined);
-                }}
+                onCastDraftChange={setCastDraft}
+                onSaveVoiceSettings={() => void handleSaveVoiceSettings()}
+                onSaveCastAssignments={() => void handleSaveCastAssignments()}
                 onTextDraftChange={setTextDraft}
                 onApplyTextEdit={() => void handleApplyTextEdit()}
                 onResetTextEdit={handleResetTextEdit}

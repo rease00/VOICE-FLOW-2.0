@@ -1,6 +1,6 @@
 export type ReaderMode = 'novel' | 'comic';
 export type ReaderTab = 'read' | 'panels' | 'voices' | 'cast' | 'text' | 'translate';
-export const READER_HOME_TABS = ['novels', 'comics', 'library', 'imported'] as const;
+export const READER_HOME_TABS = ['novels', 'library', 'imported'] as const;
 export type ReaderHomeTab = (typeof READER_HOME_TABS)[number];
 export type ReaderHomeTabCounts = Record<ReaderHomeTab, number>;
 
@@ -18,7 +18,6 @@ const normalizeLang = (value: string | undefined): string =>
 
 const READER_HOME_TAB_LABELS: Record<ReaderHomeTab, string> = {
   novels: 'Novels',
-  comics: 'Comics',
   library: 'Library',
   imported: 'Imported',
 };

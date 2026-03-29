@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ReaderCatalogItem } from '../../../../types';
 import type { ReaderCommercialCheckResponse } from '../api/readerApi';
+import { ReaderCover } from './ReaderCover';
 
 interface ReaderLaunchModalProps {
   item: ReaderCatalogItem;
@@ -27,7 +28,6 @@ export const ReaderLaunchModal: React.FC<ReaderLaunchModalProps> = ({
   const coverUrl = resolveMediaUrl(item.coverUrl);
   const progress = Math.round(Number(item.resume?.progressPct || 0));
   const summary = resolveSummary(item);
-  const isBlocked = commercialCheck?.result === 'blocked';
 
   return (
     <div className="vf-reader-v2-modal-backdrop" role="presentation" onClick={onClose}>
@@ -39,11 +39,17 @@ export const ReaderLaunchModal: React.FC<ReaderLaunchModalProps> = ({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="vf-reader-v2-modal__cover">
-          {coverUrl ? (
-            <img src={coverUrl} alt={item.title} />
-          ) : (
-            <div className="vf-reader-v2-modal__cover-fallback">{item.title}</div>
-          )}
+          <ReaderCover
+            src={coverUrl}
+            title={item.title}
+            subtitle={item.author}
+            eyebrow={item.surface === 'uploads' ? 'Imported' : (item.contentKind === 'comic' ? 'Comic' : 'Novel')}
+            alt={item.title}
+            variant="modal"
+            loading="eager"
+            fetchPriority="high"
+            className="vf-reader-v2-modal__cover-shell"
+          />
         </div>
 
         <div className="vf-reader-v2-modal__content">
@@ -51,20 +57,12 @@ export const ReaderLaunchModal: React.FC<ReaderLaunchModalProps> = ({
           <h3>{item.title}</h3>
           <p className="vf-reader-v2-modal__author">{item.author}</p>
           <p className="vf-reader-v2-modal__summary">{summary}</p>
-          {isLoading ? <p className="vf-reader-v2-modal__loading">Refreshing details from backend...</p> : null}
-          {isCheckingCommercial ? <p className="vf-reader-v2-modal__loading">Checking commercial usage policy...</p> : null}
+          {isLoading ? <p className="vf-reader-v2-modal__loading" role="status" aria-live="polite">Refreshing details from backend...</p> : null}
+          {isCheckingCommercial ? <p className="vf-reader-v2-modal__loading" role="status" aria-live="polite">Checking commercial policy...</p> : null}
           {commercialCheck ? (
-            <div className={`vf-reader-v2-modal__policy vf-reader-v2-modal__policy--${commercialCheck.result}`}>
-              <strong>Commercial: {commercialCheck.result.toUpperCase()}</strong>
-              <p>{commercialCheck.reason || 'No policy warnings detected for this intent.'}</p>
-              {commercialCheck.nextSteps.length > 0 ? (
-                <ul>
-                  {commercialCheck.nextSteps.slice(0, 2).map((step) => (
-                    <li key={step}>{step}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
+            <p className="vf-reader-v2-modal__loading" role="status" aria-live="polite">
+              Policy: {commercialCheck.result.toUpperCase()} {commercialCheck.reason ? `- ${commercialCheck.reason}` : ''}
+            </p>
           ) : null}
 
           <div className="vf-reader-v2-modal__meta">
@@ -77,8 +75,8 @@ export const ReaderLaunchModal: React.FC<ReaderLaunchModalProps> = ({
             <button type="button" className="vf-reader-v2-secondary" onClick={onClose}>
               Back
             </button>
-            <button type="button" className="vf-reader-v2-primary" onClick={onRead} disabled={isBlocked}>
-              {isBlocked ? 'Use Licensed Import' : 'Read'}
+            <button type="button" className="vf-reader-v2-primary" onClick={onRead}>
+              Read
             </button>
           </div>
         </div>

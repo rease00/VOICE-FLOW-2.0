@@ -54,7 +54,7 @@ The current service layout is:
 - `voiceflow-api`
 - `voiceflow-worker`
 - `voiceflow-gemini-runtime`
-- `voiceflow-kokoro-runtime`
+- Duno runtime (Modal-hosted endpoint configured via `VF_DUNO_RUNTIME_URL`)
 
 This is the correct permanent shape. Do not collapse everything just because it is possible.
 
@@ -115,7 +115,7 @@ Users
       -> Stripe
       -> Worker service
            -> Gemini fast runtime
-           -> Kokoro standard runtime
+           -> Duno standard runtime (Modal)
            -> Artifact store
 ```
 
@@ -123,7 +123,7 @@ Users
 
 ### Free = Standard Lane
 
-- Engine access: `KOKORO`, `NEURAL2`
+- Engine access: `DUNO`, `VECTOR`
 - Delivery mode: async-first
 - Queue lane: `free`
 - Priority: best effort
@@ -150,15 +150,15 @@ Users
 
 ## Permanent Model Routing Rule
 
-Do not promise "fast" on the CPU-heavy Kokoro path.
+Do not promise "fast" on the CPU-heavy Duno path.
 
 The permanent rule should be:
 
-- Free users get the standard Kokoro / Neural2 path
+- Free users get the standard Duno / Neural2 path
 - Paid users get the Gemini fast path first
-- Kokoro remains the budget or fallback engine, not the premium low-latency promise
+- Duno remains the budget or fallback engine, not the premium low-latency promise
 
-This matters because Kokoro is the slower CPU-heavy path in your current architecture.
+This matters because Duno is the slower CPU-heavy path in your current architecture.
 
 ## Phase 1: First 90 Days With Zero Cash
 
@@ -170,7 +170,7 @@ This is the launch architecture I would actually use.
 | API | Cloud Run | permanent | bursty public HTTP |
 | Worker | Cloud Run | temporary-but-valid | repo requires a dedicated worker role |
 | Gemini runtime | Cloud Run + Vertex mode | permanent | lets paid fast lane consume Google Cloud credits |
-| Kokoro runtime | Cloud Run | temporary | keep min-instances at zero and accept cold starts |
+| Duno runtime | Modal | permanent | external runtime configured via `VF_DUNO_RUNTIME_URL` |
 | Redis | Upstash Free | temporary | shared queue state without cash spend |
 | Auth/Profile | Firebase Auth + Firestore | permanent | already integrated |
 | Artifact storage | local TTL first, R2 later | staged | current code already supports local file refs |
@@ -185,7 +185,7 @@ Reasons:
 - it breaks the "no rupee" constraint immediately
 - your current goal is credit preservation, not lowest long-run unit cost
 
-Hetzner becomes the right move later, after credits end or when Kokoro traffic becomes steady enough to justify fixed monthly compute.
+Hetzner becomes the right move later, after credits end or when Duno traffic becomes steady enough to justify fixed monthly compute.
 
 ## Phase-1 Service Settings
 
@@ -205,10 +205,9 @@ These are the blueprint targets, not a promise that every number is already opti
 - bill Gemini usage through Vertex-backed mode, not AI Studio billing
 - reserve this path primarily for paid users
 
-### `voiceflow-kokoro-runtime`
+### Duno runtime (Modal)
 
-- `minInstances = 0`
-- allow cold starts
+- configure `VF_DUNO_RUNTIME_URL` on API/worker
 - treat it as the free or standard lane
 - avoid promising premium latency on this path
 
@@ -299,7 +298,7 @@ This blueprint is not a promise for:
 
 - one worker service
 - one Redis free tier
-- Kokoro on cold-start serverless
+- Duno on Modal-hosted runtime
 - paid users routed to Gemini fast path
 - free users pushed to standard async behavior
 
@@ -307,7 +306,7 @@ Upgrade when:
 
 - paid queue age becomes noticeable
 - Cloud Run burn rate exceeds the daily target
-- Kokoro cold starts become a frequent complaint
+- Duno cold starts become a frequent complaint
 
 ## Stage B: 1k to 10k Daily Active Users
 
@@ -324,7 +323,7 @@ Upgrade when:
 
 ## Stage C: 10k to 50k Daily Active Users
 
-- move Kokoro to dedicated CPU compute after the free-credit phase ends
+- move Duno to dedicated CPU compute after the free-credit phase ends
 - keep API and Gemini runtime on autoscaling serverless
 - move Redis to a paid managed tier
 - add artifact CDN and retention policy
@@ -383,7 +382,7 @@ These are the changes the project should eventually absorb to match this bluepri
 - lower `voiceflow-api` minimum instances to zero
 - lower `voiceflow-gemini-runtime` minimum instances to zero
 - keep `voiceflow-worker` as a distinct service
-- keep `voiceflow-kokoro-runtime` at zero minimum instances in the credit-preservation phase
+- ensure `VF_DUNO_RUNTIME_URL` points at the Modal endpoint in the credit-preservation phase
 
 ### 2. Gemini provider strategy
 
@@ -423,7 +422,7 @@ Track these from day one:
 - queue depth by lane
 - oldest queued age by lane
 - paid-lane p50 and p95 queue wait
-- Kokoro cold-start frequency
+- Duno endpoint cold-start frequency (Modal)
 - worker CPU utilization
 - Gemini runtime error rate
 - daily burn against the `$3.33/day` target
@@ -436,7 +435,7 @@ The permanent answer is:
 - Cloud Run API permanently
 - Cloud Run Gemini runtime permanently
 - Dedicated worker permanently
-- Kokoro on serverless first, then dedicated CPU later
+- Duno on Modal-hosted runtime first, then dedicated CPU later if needed
 - Redis shared queue permanently
 - Free users on standard lane
 - Paid users on fast lane
@@ -461,7 +460,7 @@ If your top priority later becomes:
 
 - `lowest steady monthly cost after credits`
 
-Then move Kokoro and perhaps workers to a VPS or fixed CPU node after the 90-day phase.
+Then move Duno and perhaps workers to a VPS or fixed CPU node after the 90-day phase.
 
 ## Pricing And Policy Checkpoints
 

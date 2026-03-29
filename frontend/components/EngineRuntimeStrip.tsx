@@ -113,7 +113,7 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
             disabled={switchLocked || pending}
             title={titleParts.filter(Boolean).join(' - ')}
             aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}${showAccessBlockedNote ? '. Access blocked.' : ''}`}
-            className={`vf-runtime-chip group relative inline-flex h-9 items-center justify-center rounded-full border transition-all ${
+            className={`vf-runtime-chip group relative inline-flex h-9 items-center justify-center rounded-full border transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
               compact ? 'min-w-[3rem] gap-1 px-2' : 'min-w-[3rem] gap-1.5 px-1.5 sm:min-w-[3.8rem] sm:gap-2 sm:px-2.5'
             } ${
               resolvedTheme === 'dark'

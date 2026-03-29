@@ -13,15 +13,26 @@ spec:
       labels:
         app: voiceflow-worker
     spec:
+      terminationGracePeriodSeconds: 45
       containers:
         - name: worker
-          image: ghcr.io/voiceflow/backend:latest
+          image: ghcr.io/voiceflow/backend-worker:latest
           imagePullPolicy: IfNotPresent
-          command: ["python", "app.py"]
+          command: ["python", "-m", "workers.tts_worker"]
           env:
+            - name: VF_SERVICE_ROLE
+              value: "worker"
+            - name: VF_ENV
+              value: "production"
             - name: VF_TTS_QUEUE_ENABLED
               value: "1"
+            - name: VF_TTS_QUEUE_WORKER_COUNT
+              value: "8"
             - name: VF_TTS_QUEUE_SYNC_WAIT_MS
+              value: "0"
+            - name: VF_DEV_UID_HEADER_ENABLED
+              value: "0"
+            - name: VF_ENABLE_DEV_ADMIN_LOGIN
               value: "0"
           envFrom:
             - configMapRef:
@@ -30,6 +41,26 @@ spec:
                 name: voiceflow-redis
             - secretRef:
                 name: voiceflow-runtime-admin
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-lc", "sleep 10"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               cpu: "500m"

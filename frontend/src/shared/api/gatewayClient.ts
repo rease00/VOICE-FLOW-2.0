@@ -13,12 +13,20 @@ import type {
   DubbingJobStatusResponse,
 } from './contracts';
 import { resolveApiBaseUrl, resolveApiUrl } from './config';
-import { requestBlob, requestJson, requestPublicJson } from './httpClient';
+import { requestBlob, requestJson } from './httpClient';
 
-export type RuntimeLogService = 'media-backend' | 'gemini-runtime' | 'kokoro-runtime';
+export type RuntimeLogService = 'media-backend' | 'gemini-runtime';
 const TTS_V2_SESSION_HEADER = 'x-vf-tts-session-key';
+const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 const TTS_V2_SESSION_REFRESH_SKEW_MS = 30_000;
 const TTS_V2_SESSION_CACHE = new Map<string, { sessionKey: string; expiresAtMs: number }>();
+const TTS_V2_SESSION_IN_FLIGHT = new Map<string, Promise<string>>();
+
+const createAbortError = (): Error => {
+  const error = new Error('Operation aborted');
+  error.name = 'AbortError';
+  return error;
+};
 
 const withBaseUrl = (baseUrl?: string): { baseUrl?: string } => (baseUrl ? { baseUrl } : {});
 const removedGatewayFeature = (feature: string): Error =>
@@ -38,6 +46,10 @@ interface TtsV2SessionIssueResponse {
 export const issueTtsV2SessionKey = async (options?: {
   baseUrl?: string;
   force?: boolean;
+  regionHint?: string;
+  regionSource?: string;
+  probeAllSlotRegions?: boolean;
+  signal?: AbortSignal;
 }): Promise<string> => {
   const cacheKey = ttsV2SessionCacheKey(options?.baseUrl);
   const now = Date.now();
@@ -47,31 +59,71 @@ export const issueTtsV2SessionKey = async (options?: {
       return cached.sessionKey;
     }
   }
-  const issued = await requestJson<TtsV2SessionIssueResponse>(
-    '/tts/v2/sessions',
-    { method: 'POST' },
-    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
-  );
-  const sessionKey = String(issued?.sessionKey || '').trim();
-  if (!sessionKey) {
-    throw new Error('Gateway did not return a valid TTS session key.');
+  const requestBody = {
+    ...(String(options?.regionHint || '').trim() ? { regionHint: String(options?.regionHint || '').trim() } : {}),
+    ...(String(options?.regionSource || '').trim() ? { regionSource: String(options?.regionSource || '').trim() } : {}),
+    probeAllSlotRegions: options?.probeAllSlotRegions === true,
+  };
+  const requestKey = `${cacheKey}:${JSON.stringify(requestBody)}`;
+  const inFlight = TTS_V2_SESSION_IN_FLIGHT.get(requestKey);
+  if (inFlight) {
+    return inFlight;
   }
-  const ttlSeconds = Math.max(60, Math.floor(Number(issued?.ttlSeconds || 1800)));
-  const expiresAtMsRaw = Math.floor(Number(issued?.expiresAtMs || 0));
-  const expiresAtMs = expiresAtMsRaw > now ? expiresAtMsRaw : (now + (ttlSeconds * 1000));
-  TTS_V2_SESSION_CACHE.set(cacheKey, { sessionKey, expiresAtMs });
-  return sessionKey;
+
+  const pending = (async () => {
+    const issued = await requestJson<TtsV2SessionIssueResponse>(
+      '/tts/v2/sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+      { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+    );
+    const sessionKey = String(issued?.sessionKey || '').trim();
+    if (!sessionKey) {
+      throw new Error('Gateway did not return a valid TTS session key.');
+    }
+    const ttlSeconds = Math.max(60, Math.floor(Number(issued?.ttlSeconds || 1800)));
+    const expiresAtMsRaw = Math.floor(Number(issued?.expiresAtMs || 0));
+    const expiresAtMs = expiresAtMsRaw > now ? expiresAtMsRaw : (now + (ttlSeconds * 1000));
+    TTS_V2_SESSION_CACHE.set(cacheKey, { sessionKey, expiresAtMs });
+    return sessionKey;
+  })();
+
+  TTS_V2_SESSION_IN_FLIGHT.set(requestKey, pending);
+  try {
+    return await pending;
+  } finally {
+    if (TTS_V2_SESSION_IN_FLIGHT.get(requestKey) === pending) {
+      TTS_V2_SESSION_IN_FLIGHT.delete(requestKey);
+    }
+  }
 };
 
 const fetchPublicJsonWithTimeout = async <T>(
   pathOrUrl: string,
-  options?: { baseUrl?: string | undefined; timeoutMs?: number | undefined }
+  options?: { baseUrl?: string | undefined; timeoutMs?: number | undefined; signal?: AbortSignal | undefined }
 ): Promise<T> => {
   const timeoutMs = Number(options?.timeoutMs || 0);
-  const controller = Number.isFinite(timeoutMs) && timeoutMs > 0 ? new AbortController() : null;
-  const timer = controller
-    ? globalThis.setTimeout(() => controller.abort(), Math.max(500, Math.floor(timeoutMs)))
+  const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  const externalSignal = options?.signal;
+  if (externalSignal?.aborted) {
+    throw createAbortError();
+  }
+  const controller = hasTimeout || externalSignal ? new AbortController() : null;
+  let timedOut = false;
+  const timer = controller && hasTimeout
+    ? globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, Math.max(500, Math.floor(timeoutMs)))
     : null;
+  const forwardAbort = () => controller?.abort();
+  if (externalSignal && controller) {
+    externalSignal.addEventListener('abort', forwardAbort, { once: true });
+  }
   try {
     const requestInit: RequestInit = {
       method: 'GET',
@@ -80,15 +132,87 @@ const fetchPublicJsonWithTimeout = async <T>(
     };
     if (controller) {
       requestInit.signal = controller.signal;
+    } else if (externalSignal) {
+      requestInit.signal = externalSignal;
     }
     const response = await fetch(resolveApiUrl(pathOrUrl, options?.baseUrl), requestInit);
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`.trim());
     }
     return await response.json() as T;
+  } catch (error: unknown) {
+    if (externalSignal?.aborted) {
+      throw createAbortError();
+    }
+    if (timedOut) {
+      throw new Error(`Request timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s.`);
+    }
+    throw error;
   } finally {
     if (timer !== null) {
       globalThis.clearTimeout(timer);
+    }
+    if (externalSignal && controller) {
+      externalSignal.removeEventListener('abort', forwardAbort);
+    }
+  }
+};
+
+const fetchAuthJsonWithTimeout = async <T>(
+  pathOrUrl: string,
+  options?: { baseUrl?: string | undefined; timeoutMs?: number | undefined; signal?: AbortSignal | undefined }
+): Promise<T> => {
+  const timeoutMs = Number(options?.timeoutMs || 0);
+  const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  const externalSignal = options?.signal;
+  if (externalSignal?.aborted) {
+    throw createAbortError();
+  }
+  const controller = hasTimeout || externalSignal ? new AbortController() : null;
+  let timedOut = false;
+  const timer = controller && hasTimeout
+    ? globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, Math.max(500, Math.floor(timeoutMs)))
+    : null;
+  const forwardAbort = () => controller?.abort();
+  if (externalSignal && controller) {
+    externalSignal.addEventListener('abort', forwardAbort, { once: true });
+  }
+  try {
+    const requestInit: RequestInit = {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+    };
+    if (controller) {
+      requestInit.signal = controller.signal;
+    } else if (externalSignal) {
+      requestInit.signal = externalSignal;
+    }
+    return await requestJson<T>(
+      pathOrUrl,
+      requestInit,
+      {
+        ...withBaseUrl(options?.baseUrl),
+        requireAuth: true,
+      }
+    );
+  } catch (error: unknown) {
+    if (externalSignal?.aborted) {
+      throw createAbortError();
+    }
+    if (timedOut) {
+      throw new Error(`Request timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s.`);
+    }
+    throw error;
+  } finally {
+    if (timer !== null) {
+      globalThis.clearTimeout(timer);
+    }
+    if (externalSignal && controller) {
+      externalSignal.removeEventListener('abort', forwardAbort);
     }
   }
 };
@@ -132,16 +256,17 @@ export interface TtsEngineLatencyResponse extends EngineStatusItem {
 export const fetchTtsEnginesStatus = async (
   engine?: GenerationSettings['engine'],
   baseUrl?: string,
-  options?: { timeoutMs?: number | undefined }
+  options?: { timeoutMs?: number | undefined; signal?: AbortSignal | undefined }
 ): Promise<TtsEngineStatusResponse> => {
   const params = new URLSearchParams();
   if (engine) params.set('engine', engine);
   const path = `/tts/engines/status${params.toString() ? `?${params.toString()}` : ''}`;
-  return fetchPublicJsonWithTimeout<TtsEngineStatusResponse>(path, {
+  return fetchAuthJsonWithTimeout<TtsEngineStatusResponse>(path, {
     ...(baseUrl ? { baseUrl } : {}),
     ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
       ? { timeoutMs: options.timeoutMs }
       : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
   });
 };
 
@@ -149,6 +274,7 @@ export const fetchRoutingBackendCandidates = async (options?: {
   baseUrl?: string;
   timeoutMs?: number;
   force?: boolean;
+  signal?: AbortSignal;
 }): Promise<RoutingBackendCandidatesResponse> => {
   const baseUrl = resolveApiBaseUrl(options?.baseUrl);
   void options?.force;
@@ -168,6 +294,7 @@ export const fetchRoutingBackendCandidates = async (options?: {
       ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? { timeoutMs: options.timeoutMs }
         : {}),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
     const region = String(
       healthSnapshot?.selectedRegion ||
@@ -235,26 +362,31 @@ export const switchTtsEngine = async (
 };
 
 export const fetchTtsEngineCapabilities = async (baseUrl?: string): Promise<TtsEngineCapabilitiesResponse> => {
-  return requestPublicJson<TtsEngineCapabilitiesResponse>('/tts/engines/capabilities', undefined, withBaseUrl(baseUrl));
+  return requestJson<TtsEngineCapabilitiesResponse>(
+    '/tts/engines/capabilities',
+    undefined,
+    { ...withBaseUrl(baseUrl), requireAuth: true }
+  );
 };
 
 export const fetchTtsEngineLatency = async (
   engine: GenerationSettings['engine'],
   baseUrl?: string,
-  options?: { timeoutMs?: number }
+  options?: { timeoutMs?: number; signal?: AbortSignal }
 ): Promise<TtsEngineLatencyResponse> => {
   const params = new URLSearchParams({ engine });
   const startedAtMs = Date.now();
   const healthUrl = resolveApiUrl('/health', baseUrl);
   const runtimeUrl = resolveApiBaseUrl(baseUrl);
   try {
-    const status = await fetchPublicJsonWithTimeout<TtsEngineStatusResponse>(
+    const status = await fetchAuthJsonWithTimeout<TtsEngineStatusResponse>(
       `/tts/engines/status?${params.toString()}`,
       {
         baseUrl,
         ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
           ? { timeoutMs: options.timeoutMs }
           : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
       }
     );
     const engineItem = status.engines?.[engine];
@@ -388,11 +520,23 @@ export const createTtsJob = async (
   const sessionKey = await issueTtsV2SessionKey(
     options?.baseUrl ? { baseUrl: options.baseUrl } : undefined
   );
+  const requestId = String(
+    (payload as Record<string, unknown>).request_id ||
+    (payload as Record<string, unknown>).requestId ||
+    ''
+  ).trim();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    [TTS_V2_SESSION_HEADER]: sessionKey,
+  };
+  if (requestId) {
+    headers[IDEMPOTENCY_HEADER] = requestId;
+  }
   return requestJson<TtsJobStatusResponse>(
     '/tts/v2/jobs',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', [TTS_V2_SESSION_HEADER]: sessionKey },
+      headers,
       body: JSON.stringify(payload),
     },
     { ...withBaseUrl(options?.baseUrl), requireAuth: true }

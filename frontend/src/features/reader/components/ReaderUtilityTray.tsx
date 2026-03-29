@@ -1,5 +1,6 @@
 import React from 'react';
 import type { VoiceOption } from '../../../../types';
+import { MUSIC_TRACKS } from '../../../../constants';
 import { useManagedTabs } from '../../../shared/ui/tabs';
 import type { ReaderMode, ReaderTab } from '../model/tabs';
 import { getReaderTabLabel } from '../model/tabs';
@@ -20,6 +21,10 @@ interface ReaderUtilityTrayProps {
   speed: number;
   ambiencePreset: string;
   stylePreset: string;
+  voiceSettingsDirty: boolean;
+  castSettingsDirty: boolean;
+  isSavingVoiceSettings: boolean;
+  isSavingCastAssignments: boolean;
   voiceOptions: VoiceOption[];
   detectedSpeakers: string[];
   castDraft: Record<string, string>;
@@ -33,6 +38,8 @@ interface ReaderUtilityTrayProps {
   onAmbiencePresetChange: (value: string) => void;
   onStylePresetChange: (value: string) => void;
   onCastDraftChange: (next: Record<string, string>) => void;
+  onSaveVoiceSettings: () => void;
+  onSaveCastAssignments: () => void;
   onTextDraftChange: (value: string) => void;
   onApplyTextEdit: () => void;
   onResetTextEdit: () => void;
@@ -41,9 +48,19 @@ interface ReaderUtilityTrayProps {
   onPlaybackLanguageChange: (value: string) => void;
 }
 
-const AMBIENCE_PRESETS = ['none', 'studio', 'forest', 'rain', 'cafe'];
-const STYLE_PRESETS = ['default', 'dramatic', 'calm', 'cinematic'];
+const AMBIENCE_TRACKS = MUSIC_TRACKS.map((track) => ({
+  id: String(track.id || '').trim(),
+  label: String(track.name || '').trim(),
+})).filter((track) => Boolean(track.id) && Boolean(track.label));
+const STYLE_PRESET_OPTIONS = [
+  { id: 'default', label: 'Default' },
+  { id: 'cinematic', label: 'Cinematic' },
+  { id: 'podcast', label: 'Podcast' },
+  { id: 'dramatic', label: 'Dramatic' },
+];
 const COMMON_LANGUAGE_OPTIONS = ['en', 'hi', 'ja', 'es', 'fr', 'de'];
+const toFieldId = (prefix: string, value: string): string =>
+  `${prefix}-${String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'default'}`;
 
 const renderReadPanel = (mode: ReaderMode, tab: ReaderTab) => (
   <>
@@ -62,24 +79,33 @@ const renderVoicesPanel = (
   speed: number,
   ambiencePreset: string,
   stylePreset: string,
+  voiceSettingsDirty: boolean,
+  isSavingVoiceSettings: boolean,
   voiceOptions: VoiceOption[],
   onToggleMultiSpeaker: () => void,
   onNarratorVoiceChange: (voiceId: string) => void,
   onSpeedChange: (value: number) => void,
   onAmbiencePresetChange: (value: string) => void,
-  onStylePresetChange: (value: string) => void
+  onStylePresetChange: (value: string) => void,
+  onSaveVoiceSettings: () => void
 ) => (
   <>
     <h3>Voices</h3>
     <div className="vf-reader-v2-field">
-      <label>Voice Mode</label>
-      <button type="button" className={`vf-reader-v2-toggle ${multiSpeakerEnabled ? 'vf-reader-v2-toggle--active' : ''}`} onClick={onToggleMultiSpeaker}>
+      <span id="reader-voice-mode-label">Voice Mode</span>
+      <button
+        id="reader-voice-mode-toggle"
+        type="button"
+        className={`vf-reader-v2-toggle ${multiSpeakerEnabled ? 'vf-reader-v2-toggle--active' : ''}`}
+        onClick={onToggleMultiSpeaker}
+        aria-pressed={multiSpeakerEnabled}
+      >
         {multiSpeakerEnabled ? 'Multi-speaker' : 'Single-speaker'}
       </button>
     </div>
     <div className="vf-reader-v2-field">
-      <label>Narrator Voice</label>
-      <select value={narratorVoiceId} onChange={(event) => onNarratorVoiceChange(event.target.value)}>
+      <label htmlFor="reader-narrator-voice">Narrator Voice</label>
+      <select id="reader-narrator-voice" value={narratorVoiceId} onChange={(event) => onNarratorVoiceChange(event.target.value)}>
         {voiceOptions.map((voice) => (
           <option key={voice.id} value={voice.id}>
             {voice.name}
@@ -88,29 +114,37 @@ const renderVoicesPanel = (
       </select>
     </div>
     <div className="vf-reader-v2-field">
-      <label>Speed</label>
-      <input type="range" min={0.7} max={1.6} step={0.05} value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} />
-      <small>{speed.toFixed(2)}x</small>
+      <label htmlFor="reader-speed-range">Speed</label>
+      <input id="reader-speed-range" type="range" min={0.7} max={1.6} step={0.05} value={speed} aria-describedby="reader-speed-readout" onChange={(event) => onSpeedChange(Number(event.target.value))} />
+      <small id="reader-speed-readout">{speed.toFixed(2)}x</small>
     </div>
     <div className="vf-reader-v2-field">
-      <label>Ambience</label>
-      <select value={ambiencePreset} onChange={(event) => onAmbiencePresetChange(event.target.value)}>
-        {AMBIENCE_PRESETS.map((preset) => (
-          <option key={preset} value={preset}>
-            {preset}
+      <label htmlFor="reader-ambience-track">Ambience</label>
+      <select id="reader-ambience-track" value={ambiencePreset} onChange={(event) => onAmbiencePresetChange(event.target.value)}>
+        {AMBIENCE_TRACKS.map((track) => (
+          <option key={track.id} value={track.id}>
+            {track.label}
           </option>
         ))}
       </select>
     </div>
     <div className="vf-reader-v2-field">
-      <label>Style Preset</label>
-      <select value={stylePreset} onChange={(event) => onStylePresetChange(event.target.value)}>
-        {STYLE_PRESETS.map((preset) => (
-          <option key={preset} value={preset}>
-            {preset}
+      <label htmlFor="reader-style-preset">Style</label>
+      <select id="reader-style-preset" value={stylePreset} onChange={(event) => onStylePresetChange(event.target.value)}>
+        {STYLE_PRESET_OPTIONS.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.label}
           </option>
         ))}
       </select>
+    </div>
+    <p className="vf-reader-v2-panel__status" role="status" aria-live="polite">
+      {voiceSettingsDirty ? 'Voice settings have unsaved changes.' : 'Voice settings are saved to this session.'}
+    </p>
+    <div className="vf-reader-v2-panel__actions">
+      <button type="button" className="vf-reader-v2-primary" disabled={!voiceSettingsDirty || isSavingVoiceSettings} onClick={onSaveVoiceSettings}>
+        {isSavingVoiceSettings ? 'Saving Voice Settings...' : 'Save Voice Settings'}
+      </button>
     </div>
   </>
 );
@@ -119,25 +153,29 @@ const renderCastPanel = (
   multiSpeakerEnabled: boolean,
   detectedSpeakers: string[],
   castDraft: Record<string, string>,
-  narratorVoiceId: string,
+  castSettingsDirty: boolean,
+  isSavingCastAssignments: boolean,
   voiceOptions: VoiceOption[],
-  onCastDraftChange: (next: Record<string, string>) => void
+  onCastDraftChange: (next: Record<string, string>) => void,
+  onSaveCastAssignments: () => void
 ) => (
   <>
     <h3>Cast</h3>
     {!multiSpeakerEnabled ? (
-      <p>Enable multi-speaker mode to manage cast assignments.</p>
+      <p>Save voice settings with multi-speaker enabled to manage cast assignments.</p>
     ) : (
       <>
         <p>{detectedSpeakers.length} detected speakers.</p>
-        {detectedSpeakers.length === 0 ? <p>No speakers detected in current unit yet.</p> : null}
+        {detectedSpeakers.length === 0 ? <p role="status" aria-live="polite">No speakers detected in the current unit yet.</p> : null}
         {detectedSpeakers.map((speaker) => (
           <div key={speaker} className="vf-reader-v2-field">
-            <label>{speaker}</label>
+            <label htmlFor={toFieldId('reader-cast', speaker)}>{speaker}</label>
             <select
-              value={castDraft[speaker] || narratorVoiceId}
+              id={toFieldId('reader-cast', speaker)}
+              value={String(castDraft[speaker] || '')}
               onChange={(event) => onCastDraftChange({ ...castDraft, [speaker]: event.target.value })}
             >
+              <option value="">Unassigned</option>
               {voiceOptions.map((voice) => (
                 <option key={voice.id} value={voice.id}>
                   {voice.name}
@@ -148,6 +186,14 @@ const renderCastPanel = (
         ))}
       </>
     )}
+    <p className="vf-reader-v2-panel__status" role="status" aria-live="polite">
+      {castSettingsDirty ? 'Cast assignments have unsaved changes.' : 'Cast assignments are saved to this session.'}
+    </p>
+    <div className="vf-reader-v2-panel__actions">
+      <button type="button" className="vf-reader-v2-primary" disabled={!castSettingsDirty || isSavingCastAssignments || !multiSpeakerEnabled} onClick={onSaveCastAssignments}>
+        {isSavingCastAssignments ? 'Saving Cast...' : 'Save Cast Assignments'}
+      </button>
+    </div>
   </>
 );
 
@@ -162,7 +208,9 @@ const renderTextPanel = (
   <>
     <h3>Text</h3>
     <p>Review detected text, fix OCR edges, and apply speaker labels.</p>
+    <label htmlFor="reader-text-draft" className="vf-reader-v2-sr-only">Text draft editor</label>
     <textarea
+      id="reader-text-draft"
       value={textDraft}
       onChange={(event) => onTextDraftChange(event.target.value)}
       placeholder="Detected text appears here..."
@@ -194,8 +242,8 @@ const renderTranslatePanel = (
     <h3>Translate</h3>
     {!translationSupported ? <p>Choose a different playback language to enable translation preview.</p> : null}
     <div className="vf-reader-v2-field">
-      <label>Source Language</label>
-      <select value={sourceLanguage} onChange={(event) => onSourceLanguageChange(event.target.value)}>
+      <label htmlFor="reader-source-language">Source Language</label>
+      <select id="reader-source-language" value={sourceLanguage} onChange={(event) => onSourceLanguageChange(event.target.value)}>
         {COMMON_LANGUAGE_OPTIONS.map((code) => (
           <option key={`source-${code}`} value={code}>
             {code.toUpperCase()}
@@ -204,8 +252,8 @@ const renderTranslatePanel = (
       </select>
     </div>
     <div className="vf-reader-v2-field">
-      <label>Target Language</label>
-      <select value={targetLanguage} onChange={(event) => onTargetLanguageChange(event.target.value)}>
+      <label htmlFor="reader-target-language">Target Language</label>
+      <select id="reader-target-language" value={targetLanguage} onChange={(event) => onTargetLanguageChange(event.target.value)}>
         {COMMON_LANGUAGE_OPTIONS.map((code) => (
           <option key={`target-${code}`} value={code}>
             {code.toUpperCase()}
@@ -214,8 +262,8 @@ const renderTranslatePanel = (
       </select>
     </div>
     <div className="vf-reader-v2-field">
-      <label>Playback Language</label>
-      <select value={playbackLanguage} onChange={(event) => onPlaybackLanguageChange(event.target.value)}>
+      <label htmlFor="reader-playback-language">Playback Language</label>
+      <select id="reader-playback-language" value={playbackLanguage} onChange={(event) => onPlaybackLanguageChange(event.target.value)}>
         {COMMON_LANGUAGE_OPTIONS.map((code) => (
           <option key={`playback-${code}`} value={code}>
             {code.toUpperCase()}
@@ -223,9 +271,9 @@ const renderTranslatePanel = (
         ))}
       </select>
     </div>
-    <div className="vf-reader-v2-translate-preview">
+    <div className="vf-reader-v2-translate-preview" role="status" aria-live="polite">
       <span>Preview</span>
-      <p>{translationPreview || 'No translation preview available yet.'}</p>
+      <p>{translationPreview || 'Translation preview is a mock placeholder until a real translation is available.'}</p>
     </div>
   </>
 );
@@ -245,6 +293,10 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
   speed,
   ambiencePreset,
   stylePreset,
+  voiceSettingsDirty,
+  castSettingsDirty,
+  isSavingVoiceSettings,
+  isSavingCastAssignments,
   voiceOptions,
   detectedSpeakers,
   castDraft,
@@ -258,6 +310,8 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
   onAmbiencePresetChange,
   onStylePresetChange,
   onCastDraftChange,
+  onSaveVoiceSettings,
+  onSaveCastAssignments,
   onTextDraftChange,
   onApplyTextEdit,
   onResetTextEdit,
@@ -311,12 +365,15 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
                 speed,
                 ambiencePreset,
                 stylePreset,
+                voiceSettingsDirty,
+                isSavingVoiceSettings,
                 voiceOptions,
                 onToggleMultiSpeaker,
                 onNarratorVoiceChange,
                 onSpeedChange,
                 onAmbiencePresetChange,
-                onStylePresetChange
+                onStylePresetChange,
+                onSaveVoiceSettings
               )
               : null}
             {tab === 'cast'
@@ -324,9 +381,11 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
                 multiSpeakerEnabled,
                 detectedSpeakers,
                 castDraft,
-                narratorVoiceId,
+                castSettingsDirty,
+                isSavingCastAssignments,
                 voiceOptions,
-                onCastDraftChange
+                onCastDraftChange,
+                onSaveCastAssignments
               )
               : null}
             {tab === 'text'

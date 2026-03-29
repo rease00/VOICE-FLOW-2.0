@@ -34,6 +34,27 @@ describe('formatFrontendError', () => {
         context: 'auth',
       }).publicMessage
     ).toContain('Complete your user ID setup');
+
+    expect(
+      formatFrontendError('Forbidden', {
+        fallback: 'Auth failed.',
+        context: 'auth',
+      }).publicMessage
+    ).toContain('restricted');
+
+    expect(
+      formatFrontendError('Firebase: Error (auth/user-not-found).', {
+        fallback: 'Auth failed.',
+        context: 'auth',
+      }).publicMessage
+    ).toContain('sign in again');
+
+    expect(
+      formatFrontendError('FirebaseError: permission-denied', {
+        fallback: 'Auth failed.',
+        context: 'auth',
+      }).publicMessage
+    ).toContain('restricted');
   });
 
   it('maps quota and billing failures to clean user-facing copy', () => {

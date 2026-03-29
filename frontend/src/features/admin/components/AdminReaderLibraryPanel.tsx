@@ -216,6 +216,10 @@ export const AdminReaderLibraryPanel: React.FC<AdminReaderLibraryPanelProps> = (
           publishState: nextDraft.publishState,
         }, mediaBackendUrl);
         setSelectedItem(updated);
+        setItems((current) => {
+          const remaining = current.filter((item) => item.id !== updated.id);
+          return [updated, ...remaining];
+        });
         selectedItemIdRef.current = updated.id;
         setDraft(toDraft(updated));
         isCreatingNewRef.current = false;
@@ -238,6 +242,10 @@ export const AdminReaderLibraryPanel: React.FC<AdminReaderLibraryPanelProps> = (
         setSelectedItemId(created.id);
         selectedItemIdRef.current = created.id;
         setSelectedItem(created);
+        setItems((current) => {
+          const remaining = current.filter((item) => item.id !== created.id);
+          return [created, ...remaining];
+        });
         setDraft(toDraft(created));
         setFiles([]);
         onToast(`${getAdminReaderCatalogPublishStateLabel(created.publishState === 'draft' ? 'draft' : 'published')} "${created.title}" in Reader Library.`, 'success');
@@ -257,6 +265,7 @@ export const AdminReaderLibraryPanel: React.FC<AdminReaderLibraryPanelProps> = (
     try {
       await deleteAdminReaderCatalogItem(selectedItemId, mediaBackendUrl);
       onToast('Reader Library item deleted.', 'success');
+      setItems((current) => current.filter((item) => item.id !== selectedItemId));
       handleResetForm();
       await reloadItems();
     } catch (error) {

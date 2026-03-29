@@ -42,6 +42,8 @@ frontend/.next*
 frontend/.open-next/
 frontend/tsconfig.tsbuildinfo
 test-results/
+pytest-of-*/
+.pytest_cache/
 mcp-before-revert/
 mcp-after-revert/
 docs/audits/artifacts/
@@ -54,6 +56,8 @@ API.txt
 FIREBASE.txt
 backend/config/gemini_api_pools.json
 *firebase-adminsdk*.json
+voiceflow-*-firebase-adminsdk*.json
+voiceflow-*-service-account*.json
 *serviceAccount*.json
 *.pem
 *.p12

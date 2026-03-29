@@ -17,12 +17,14 @@ export type AdminDataSection =
   | 'accounting'
   | 'supportConversations'
   | 'supportAiPolicy'
+  | 'adminNotices'
   | 'adminUnlockStatus';
 
 const ADMIN_MAIN_TAB_SECTIONS: Record<AdminMainTab, readonly AdminDataSection[]> = {
   unlock: ['adminUnlockStatus'],
   users: ['users'],
-  messages: ['supportConversations', 'supportAiPolicy'],
+  messages: ['supportConversations', 'supportAiPolicy', 'adminNotices', 'adminUnlockStatus'],
+  readerLibrary: ['adminUnlockStatus'],
   pools: ['geminiPools'],
   ops: [],
 };
@@ -55,6 +57,7 @@ export const ADMIN_REFRESH_ALL_SECTIONS: readonly AdminDataSection[] = [
   'accounting',
   'supportConversations',
   'supportAiPolicy',
+  'adminNotices',
   'adminUnlockStatus',
 ] as const;
 

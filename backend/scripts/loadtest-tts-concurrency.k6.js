@@ -73,16 +73,16 @@ const parseJsonBody = (response) => {
 };
 
 const makePayload = (engine, requestId) => {
-  if (engine === 'KOKORO') {
+  if (engine === 'DUNO') {
     return {
-      engine: 'KOKORO',
-      text: 'k6 queue hardening load payload for Kokoro path.',
+      engine: 'DUNO',
+      text: 'k6 queue hardening load payload for Duno path.',
       voice_id: 'hf_alpha',
       request_id: requestId,
     };
   }
   return {
-    engine: 'GEM',
+    engine: 'PRIME',
     text: 'k6 queue hardening load payload for Gemini path.',
     voice_id: 'Fenrir',
     request_id: requestId,
@@ -91,7 +91,7 @@ const makePayload = (engine, requestId) => {
 
 const pickEngine = () => {
   const ratio = Number.isFinite(GEM_RATIO) ? GEM_RATIO : 0.6;
-  return Math.random() < ratio ? 'GEM' : 'KOKORO';
+  return Math.random() < ratio ? 'PRIME' : 'DUNO';
 };
 
 const pickMode = () => {

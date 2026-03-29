@@ -82,9 +82,9 @@ describe('reader tab model', () => {
   });
 
   it('normalizes reader home tabs and labels', () => {
-    expect(READER_HOME_TABS).toEqual(['novels', 'comics', 'library', 'imported']);
+    expect(READER_HOME_TABS).toEqual(['novels', 'library', 'imported']);
     expect(coerceReaderHomeTab('Imported')).toBe('imported');
     expect(coerceReaderHomeTab('unknown', 'library')).toBe('library');
-    expect(getReaderHomeTabLabel('comics')).toBe('Comics');
+    expect(getReaderHomeTabLabel('library')).toBe('Library');
   });
 });

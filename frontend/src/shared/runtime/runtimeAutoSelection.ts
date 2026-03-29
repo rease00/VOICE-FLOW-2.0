@@ -13,7 +13,7 @@ const normalizeLatency = (value: unknown): number | null => {
 
 export const pickLowestLatencyRuntimeEngine = (
   candidates: Partial<Record<GenerationSettings['engine'], RuntimeLatencyCandidate | null | undefined>>,
-  engineOrder: readonly GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM']
+  engineOrder: readonly GenerationSettings['engine'][] = ['DUNO', 'VECTOR', 'PRIME']
 ): GenerationSettings['engine'] | null => {
   let selectedEngine: GenerationSettings['engine'] | null = null;
   let selectedLatencyMs = Number.POSITIVE_INFINITY;
@@ -43,8 +43,7 @@ export const pickLowestLatencyRuntimeEngine = (
 
 export const pickLowestLatencyServerRuntimeEngine = (
   candidates: Partial<Record<GenerationSettings['engine'], RuntimeLatencyCandidate | null | undefined>>,
-  engineOrder: readonly GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM']
+  engineOrder: readonly GenerationSettings['engine'][] = ['DUNO', 'VECTOR', 'PRIME']
 ): GenerationSettings['engine'] | null => {
-  const remoteOrder = engineOrder.filter((engine) => engine !== 'KOKORO');
-  return pickLowestLatencyRuntimeEngine(candidates, remoteOrder);
+  return pickLowestLatencyRuntimeEngine(candidates, engineOrder);
 };

@@ -3,6 +3,7 @@ import {
   DEFAULT_NOTIFICATION_PREFS,
   coerceNotificationPrefs,
   prepareNotificationsForStorage,
+  resolveNotificationPollDelayMs,
   shouldEscalateRepeatedGenerationFailure,
 } from './NotificationProvider';
 import { limitNotifications, NOTIFICATION_MAX_ITEMS } from './store';
@@ -75,7 +76,7 @@ describe('notification provider helpers', () => {
     const prepared = prepareNotificationsForStorage(rows);
 
     expect(prepared).toHaveLength(2);
-    expect(prepared[0]?.message).toBe('Prime Runtime offline');
+    expect(prepared[0]?.message).toBe('Primary AI Runtime offline');
     expect(prepared[0]?.action?.label).toBe('Open Primary AI Diagnostics');
     expect(prepared[0]?.action && 'onClick' in prepared[0].action).toBe(false);
     expect(prepared[1]?.action).toBeUndefined();
@@ -108,4 +109,43 @@ describe('notification provider helpers', () => {
       shouldEscalateRepeatedGenerationFailure('Cannot connect to backend service. Verify backend health and retry.')
     ).toBe(true);
   });
+
+  it('backs notification polling off by visibility and error state', () => {
+    expect(resolveNotificationPollDelayMs({ visibilityState: 'visible' })).toBe(60_000);
+    expect(resolveNotificationPollDelayMs({ visibilityState: 'hidden' })).toBe(5 * 60_000);
+    expect(resolveNotificationPollDelayMs({ errorCount: 1 })).toBe(75_000);
+    expect(resolveNotificationPollDelayMs({ errorCount: 3 })).toBe(300_000);
+    expect(resolveNotificationPollDelayMs({ errorCount: 10 })).toBe(600_000);
+  });
+
+  it('prefers server expiry timestamps when rehydrating persisted notifications', async () => {
+    const { coercePersistedNotification } = await import('./NotificationProvider');
+    const nowMs = 1_700_000_000_000;
+    const createdAt = '2026-03-27T10:00:00.000Z';
+    const serverExpiresAt = '2026-03-28T10:00:00.000Z';
+
+    const withServerExpiry = coercePersistedNotification(
+      {
+        id: 'server-expiry',
+        eventCode: 'custom.message',
+        message: 'Server-controlled expiry',
+        createdAt,
+        expiresAt: serverExpiresAt,
+      } as never,
+      nowMs
+    );
+    const withFallbackExpiry = coercePersistedNotification(
+      {
+        id: 'fallback-expiry',
+        eventCode: 'custom.message',
+        message: 'Fallback expiry',
+        createdAt,
+      } as never,
+      nowMs
+    );
+
+    expect(withServerExpiry?.expiresAt).toBe(Date.parse(serverExpiresAt));
+    expect(withFallbackExpiry?.expiresAt).toBe(Date.parse(createdAt) + 30 * 24 * 60 * 60 * 1000);
+  });
 });
+

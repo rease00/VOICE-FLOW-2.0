@@ -26,26 +26,33 @@ afterEach(() => {
 });
 
 describe('api config', () => {
-  it('uses the hosted origin by default when the app is running remotely', () => {
+  it('uses the proxy backend by default when the app is running remotely', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
-    expect(getDefaultApiBaseUrl()).toBe('https://app.voiceflow.example');
+    expect(getDefaultApiBaseUrl()).toBe('/api/backend');
   });
 
   it('heals stale localhost overrides on hosted deployments', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
-    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('https://app.voiceflow.example');
+    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/backend');
     expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'http://127.0.0.1:7800').value).toBe('https://app.voiceflow.example');
   });
 
-  it('keeps localhost overrides during local development', () => {
+  it('keeps explicit local backend overrides during local development', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('http://localhost:5173');
 
     expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('http://127.0.0.1:7800');
+  });
+
+  it('uses explicit local env backend during local development', () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'http://127.0.0.1:7800');
+    setWindowLocation('http://localhost:5173');
+
+    expect(getDefaultApiBaseUrl()).toBe('http://127.0.0.1:7800');
   });
 
   it('preserves explicit remote backends', () => {

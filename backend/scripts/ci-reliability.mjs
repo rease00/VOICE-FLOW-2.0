@@ -3,6 +3,7 @@ import { runCommand } from './lib/process-runner.mjs';
 
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const asBool = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+const asFalseyBool = (value) => ['0', 'false', 'no', 'off'].includes(String(value || '').trim().toLowerCase());
 const loadGateEnabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.VF_ENABLE_LOAD_GATE || '').trim().toLowerCase());
 const loadGate100Enabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_LOAD_GATE_100 || '').trim().toLowerCase(),
@@ -13,6 +14,15 @@ const liveAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
 const connectivityAuditGateEnabled = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.VF_ENABLE_CONNECTIVITY_AUDIT_GATE || '').trim().toLowerCase(),
 );
+const authEnforced = !asFalseyBool(process.env.VF_AUTH_ENFORCE);
+const hasAuditBearerToken = Boolean(String(
+  process.env.AUDIT_BEARER_TOKEN
+  || process.env.VF_AUDIT_BEARER_TOKEN
+  || process.env.VF_BEARER_TOKEN
+  || ''
+).trim());
+const forceMediaAuditGate = asBool(process.env.VF_FORCE_MEDIA_AUDIT_GATE);
+const shouldRunMediaAuditGate = forceMediaAuditGate || !authEnforced || hasAuditBearerToken;
 
 const steps = [
   {
@@ -31,11 +41,6 @@ const steps = [
     args: ['run', 'validate:k8s'],
   },
   {
-    name: 'Media backend audit',
-    command: npmBin,
-    args: ['run', 'audit:media'],
-  },
-  {
     name: 'TTS long-text 5000 smoke gate',
     command: npmBin,
     args: ['run', 'audit:tts:longtext:smoke'],
@@ -46,6 +51,19 @@ const steps = [
     args: ['run', 'test:contracts'],
   },
 ];
+
+if (shouldRunMediaAuditGate) {
+  steps.splice(3, 0, {
+    name: 'Media backend audit',
+    command: npmBin,
+    args: ['run', 'audit:media'],
+  });
+} else {
+  const reason = authEnforced
+    ? 'VF_AUTH_ENFORCE is enabled and no AUDIT_BEARER_TOKEN was provided.'
+    : 'media audit gate disabled.';
+  console.log(`[ci:reliability] skipping "Media backend audit": ${reason}`);
+}
 
 if (loadGateEnabled) {
   steps.push({

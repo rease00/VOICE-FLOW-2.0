@@ -7,6 +7,7 @@ import {
   Loader2,
   LogOut,
   RefreshCcw,
+  Sparkles,
 } from 'lucide-react';
 import { AppScreen, GenerationSettings, HistoryItem } from '../../types';
 import { BrandLogo } from '../BrandLogo';
@@ -18,11 +19,14 @@ import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../../sr
 import { resolveApiBaseUrl } from '../../src/shared/api/config';
 import { STORAGE_KEYS } from '../../src/shared/storage/keys';
 import { readStorageJson, readStorageString, writeStorageString } from '../../src/shared/storage/localStore';
+import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } from '../../src/shared/theme/brandThemes';
+import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../../src/shared/theme/themeDom';
 import { useManagedTabs } from '../../src/shared/ui/tabs';
 import { sanitizeUiText } from '../../src/shared/ui/terminology';
 import { resolveHistoryVoiceLabel } from '../../src/shared/voices/historyVoiceLabel';
 import { getEngineDisplayName } from '../../services/engineDisplay';
 import {
+  ACCOUNT_DELETE_CONFIRM_PHRASE,
   fetchAccountEntitlements,
   fetchAccountProfile,
   fetchAccountBillingSummary,
@@ -36,6 +40,7 @@ import {
   type SupportConversation,
   type TtsEngineKey,
 } from '../../services/accountService';
+import { normalizeEngineToken } from '../../views/mainAppHelpers';
 import {
   DEFAULT_ACCOUNT_TAB,
   resolveAccountTabFromSearch,
@@ -77,8 +82,10 @@ import {
 } from './accountCenterLayout';
 
 type ThemeChoice = 'light' | 'dark' | 'system';
+type SupportLoadState = 'idle' | 'loading' | 'ready' | 'forbidden' | 'error';
+type SupportLoadOptions = { force?: boolean };
 
-const EAGER_ACCOUNT_TABS: AccountTabKey[] = ['account', 'billing', 'usage', 'preferences'];
+const EAGER_ACCOUNT_TABS: AccountTabKey[] = ['account'];
 
 const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }> = {
   account: {
@@ -87,7 +94,7 @@ const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }>
   },
   billing: {
     title: 'Billing',
-    detail: 'Plan actions, payment status, invoices, and renewal controls.',
+    detail: 'Plans, payment status, invoices, and renewals.',
   },
   usage: {
     title: 'Usage',
@@ -99,7 +106,7 @@ const ACCOUNT_TAB_META: Record<AccountTabKey, { title: string; detail: string }>
   },
   support: {
     title: 'Support',
-    detail: 'Create requests and track your support conversation status.',
+    detail: 'Send requests and track support conversation status.',
   },
   activity: {
     title: 'Activity',
@@ -118,11 +125,31 @@ const readSavedUiTheme = (): ThemeChoice => {
   return 'system';
 };
 
+const readSavedUiBrandTheme = (): UiBrandThemeId => {
+  const token = String(readStorageString(STORAGE_KEYS.uiBrandTheme) || '').trim().toLowerCase();
+  if (token === 'aurora' || token === 'sunset' || token === 'emerald' || token === 'neon') return token;
+  return 'neon';
+};
+
 const resolveThemeChoice = (themeChoice: ThemeChoice): boolean => {
   if (typeof window === 'undefined') return themeChoice === 'dark';
   if (themeChoice === 'dark') return true;
   if (themeChoice === 'light') return false;
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+};
+
+const isHttpStatusError = (error: unknown, status: number): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { status?: unknown; cause?: { status?: unknown } };
+  if (Number(candidate.status) === status) return true;
+  return Number(candidate.cause?.status) === status;
+};
+
+const getSupportLoadErrorMessage = (error: unknown): string => {
+  if (isHttpStatusError(error, 401) || isHttpStatusError(error, 403)) {
+    return 'Support conversations are not available for this account.';
+  }
+  return sanitizeUiText(error instanceof Error ? error.message : 'Could not load support conversations.');
 };
 
 const normalizePlanKey = (value: unknown): 'free' | BillingPlanKey => {
@@ -158,7 +185,10 @@ const setScreenSearchState = (screen: 'main' | 'profile' | 'login', tab?: Accoun
     url.searchParams.delete('vf-tab');
     url.searchParams.delete('vf-conversation-id');
   }
-  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl === currentUrl) return;
+  window.history.replaceState({}, '', nextUrl);
 };
 
 const buildFallbackBillingSummary = (
@@ -206,9 +236,14 @@ const buildFallbackBillingSummary = (
       },
     },
     billing: {
+      provider: 'razorpay',
+      hasBillingManagement: isPaidPlan,
       stripeReady: false,
       hasPortalAccess: false,
+      paymentGateway: 'razorpay',
       stripeCustomerId: null,
+      subscriptionId: null,
+      customerId: null,
       billingCountry: null,
       currencyMode: null,
     },
@@ -236,18 +271,27 @@ const renderHistoryTimestamp = (timestamp: number): string => {
   return formatDateTime(new Date(timestamp).toISOString());
 };
 
-const normalizeHistoryEngine = (value?: HistoryItem['engine']): GenerationSettings['engine'] => {
-  if (value === 'KOKORO' || value === 'NEURAL2') return value;
-  return 'GEM';
+const normalizeHistoryEngine = (value?: HistoryItem['engine'] | string): GenerationSettings['engine'] => {
+  return normalizeEngineToken(value, 'PRIME');
 };
 
-const ENGINE_RATE_ORDER: TtsEngineKey[] = ['KOKORO', 'NEURAL2', 'GEM'];
+const ENGINE_RATE_ORDER: TtsEngineKey[] = ['DUNO', 'VECTOR', 'PRIME'];
+const DECIMAL_FORMATTER_CACHE = new Map<string, Intl.NumberFormat>();
 
-const formatDecimalValue = (value: number, minimumFractionDigits: number, maximumFractionDigits: number): string =>
-  new Intl.NumberFormat('en-IN', {
+const getDecimalFormatter = (minimumFractionDigits: number, maximumFractionDigits: number): Intl.NumberFormat => {
+  const key = `${minimumFractionDigits}:${maximumFractionDigits}`;
+  const cached = DECIMAL_FORMATTER_CACHE.get(key);
+  if (cached) return cached;
+  const formatter = new Intl.NumberFormat('en-IN', {
     minimumFractionDigits,
     maximumFractionDigits,
-  }).format(Math.max(0, Number(value || 0)));
+  });
+  DECIMAL_FORMATTER_CACHE.set(key, formatter);
+  return formatter;
+};
+
+const formatDecimalValue = (value: number, minimumFractionDigits: number, maximumFractionDigits: number): string =>
+  getDecimalFormatter(minimumFractionDigits, maximumFractionDigits).format(Math.max(0, Number(value || 0)));
 
 const formatVfRatePerCharacter = (rate: number): string => {
   const safeRate = Number(rate || 0);
@@ -271,61 +315,127 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     history,
     isAdmin,
     hasUnlimitedAccess,
+    deleteAccount,
     signOutUser,
     updateUser,
     setShowSubscriptionModal,
     loadHistory,
     refreshEntitlements,
   } = useUser();
+  const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const { emit, prefs, setPrefs } = useNotifications();
   const baseUrl = useMemo(() => readSettingsBackendUrl(), []);
-  const billingActions = useBillingActions({ baseUrl });
+  const billingActions = useBillingActions({ baseUrl, returnPath: '/app/buy' });
 
-  const [themeChoice, setThemeChoice] = useState<ThemeChoice>(readSavedUiTheme);
-  const [isDarkUi, setIsDarkUi] = useState<boolean>(() => resolveThemeChoice(readSavedUiTheme()));
+  const [themeChoice, setThemeChoice] = useState<ThemeChoice>('system');
+  const [brandThemeChoice, setBrandThemeChoice] = useState<UiBrandThemeId>('neon');
+  const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
+  const [hasMounted, setHasMounted] = useState(false);
+  const hasAppliedThemeRef = useRef(false);
   const [accountProfile, setAccountProfile] = useState<AccountUserProfile | null>(null);
   const [accountEntitlements, setAccountEntitlements] = useState<AccountEntitlements | null>(null);
   const [billingSummary, setBillingSummary] = useState<AccountBillingSummary | null>(null);
   const [supportText, setSupportText] = useState('');
   const [supportConversations, setSupportConversations] = useState<SupportConversation[]>([]);
+  const [supportLoadState, setSupportLoadState] = useState<SupportLoadState>('idle');
+  const [supportLoadError, setSupportLoadError] = useState('');
+  const supportLoadAttemptedRef = useRef(false);
   const [isLoadingCore, setIsLoadingCore] = useState(true);
   const [isLoadingSupport, setIsLoadingSupport] = useState(false);
   const [isLoadingActivity, setIsLoadingActivity] = useState(false);
   const [isSendingSupport, setIsSendingSupport] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [portalIntent, setPortalIntent] = useState<'manage' | 'cancel' | null>(null);
+  const [subscriptionAction, setSubscriptionAction] = useState<'cancel' | 'resume' | null>(null);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [showAllInvoices, setShowAllInvoices] = useState(false);
-  const [activeTab, setActiveTab] = useState<AccountTabKey>(() => {
-    if (typeof window === 'undefined') return DEFAULT_ACCOUNT_TAB;
-    return resolveAccountTabFromSearch(window.location.search, DEFAULT_ACCOUNT_TAB);
-  });
+  const [activeTab, setActiveTab] = useState<AccountTabKey>(DEFAULT_ACCOUNT_TAB);
+  const [hasResolvedInitialSearchState, setHasResolvedInitialSearchState] = useState(false);
   const [loadedTabs, setLoadedTabs] = useState<Set<AccountTabKey>>(() => new Set(EAGER_ACCOUNT_TABS));
-  const [highlightedConversationId, setHighlightedConversationId] = useState<string>(() => {
-    if (typeof window === 'undefined') return '';
-    return String(new URLSearchParams(window.location.search).get('vf-conversation-id') || '').trim();
-  });
+  const [highlightedConversationId, setHighlightedConversationId] = useState<string>('');
+  const [deleteConfirmPhrase, setDeleteConfirmPhrase] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
   const conversationRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const refreshEntitlementsRef = useRef(refreshEntitlements);
+  const updateUserRef = useRef(updateUser);
+  const loadHistoryRef = useRef(loadHistory);
+  const userIdRef = useRef(String(user.userId || '').trim().toLowerCase());
+
+  useEffect(() => {
+    refreshEntitlementsRef.current = refreshEntitlements;
+  }, [refreshEntitlements]);
+
+  useEffect(() => {
+    updateUserRef.current = updateUser;
+  }, [updateUser]);
+
+  useEffect(() => {
+    loadHistoryRef.current = loadHistory;
+  }, [loadHistory]);
+
+  useEffect(() => {
+    userIdRef.current = String(user.userId || '').trim().toLowerCase();
+  }, [user.userId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
+    const syncFromSearch = () => {
+      const params = new URLSearchParams(window.location.search);
+      const nextConversationId = String(params.get('vf-conversation-id') || '').trim();
+      const nextTab = nextConversationId
+        ? 'support'
+        : resolveAccountTabFromSearch(window.location.search, DEFAULT_ACCOUNT_TAB);
+      setActiveTab((current) => (current === nextTab ? current : nextTab));
+      setHighlightedConversationId((current) => (current === nextConversationId ? current : nextConversationId));
+    };
+
+    syncFromSearch();
+    setHasResolvedInitialSearchState(true);
+    window.addEventListener('popstate', syncFromSearch);
+    return () => {
+      window.removeEventListener('popstate', syncFromSearch);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    setThemeChoice(readSavedUiTheme());
+    setBrandThemeChoice(readSavedUiBrandTheme());
+    setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !hasMounted) return undefined;
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {
       const dark = resolveThemeChoice(themeChoice);
       setIsDarkUi(dark);
-      document.body.classList.toggle('theme-dark', dark);
-      writeStorageString(STORAGE_KEYS.uiTheme, themeChoice);
+      const cleanup = applyThemeModeToDocument(document, themeChoice, dark ? 'dark' : 'light');
+      if (hasAppliedThemeRef.current) {
+        writeStorageString(STORAGE_KEYS.uiTheme, themeChoice);
+      } else {
+        hasAppliedThemeRef.current = true;
+      }
+      return cleanup;
     };
 
-    applyTheme();
+    const cleanup = applyTheme();
     if (themeChoice !== 'system') return undefined;
     media.addEventListener?.('change', applyTheme);
     media.addListener?.(applyTheme);
     return () => {
+      cleanup?.();
       media.removeEventListener?.('change', applyTheme);
       media.removeListener?.(applyTheme);
     };
-  }, [themeChoice]);
+  }, [hasMounted, themeChoice]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !hasMounted) return undefined;
+    const cleanup = applyBrandThemeToDocument(document, brandThemeChoice);
+    writeStorageString(STORAGE_KEYS.uiBrandTheme, brandThemeChoice);
+    return cleanup;
+  }, [hasMounted, brandThemeChoice]);
 
   const markTabLoaded = useCallback((tab: AccountTabKey) => {
     setLoadedTabs((prev) => {
@@ -337,14 +447,25 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   }, []);
 
   const syncCoreAccountData = useCallback(async (announceErrors: boolean) => {
-    await refreshEntitlements();
-    const [profileResult, entitlementsResult, billingResult] = await Promise.allSettled([
+    if (!hasSessionIdentity) {
+      setAccountProfile(null);
+      setAccountEntitlements(null);
+      setBillingSummary(null);
+      setSupportConversations([]);
+      setSupportLoadState('idle');
+      setSupportLoadError('');
+      supportLoadAttemptedRef.current = false;
+      return;
+    }
+
+    const [refreshResult, profileResult, entitlementsResult, billingResult] = await Promise.allSettled([
+      refreshEntitlementsRef.current(),
       fetchAccountProfile(baseUrl),
       fetchAccountEntitlements(baseUrl),
       fetchAccountBillingSummary(baseUrl),
     ]);
 
-    let hadSuccess = false;
+    let hadSuccess = refreshResult.status === 'fulfilled';
 
     if (profileResult.status === 'fulfilled') {
       hadSuccess = true;
@@ -361,7 +482,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
       setBillingSummary(billingResult.value);
       setShowAllInvoices(false);
       const resolvedUserId = String(billingResult.value.profile.userId || '').trim().toLowerCase();
-      if (resolvedUserId) updateUser({ userId: resolvedUserId });
+      if (resolvedUserId && resolvedUserId !== userIdRef.current) {
+        userIdRef.current = resolvedUserId;
+        updateUserRef.current({ userId: resolvedUserId });
+      }
     }
 
     if (!hadSuccess && announceErrors) {
@@ -373,19 +497,36 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         dedupeKey: 'account-refresh-warning',
       });
     }
-  }, [baseUrl, emit, refreshEntitlements, updateUser]);
+  }, [baseUrl, emit, hasSessionIdentity]);
 
-  const loadSupportData = useCallback(async (announceErrors: boolean) => {
+  const loadSupportData = useCallback(async (announceErrors: boolean, options?: SupportLoadOptions) => {
+    if (!hasSessionIdentity) {
+      setSupportConversations([]);
+      setSupportLoadState('idle');
+      setSupportLoadError('');
+      supportLoadAttemptedRef.current = false;
+      return;
+    }
+    if (!options?.force && supportLoadAttemptedRef.current) return;
+    supportLoadAttemptedRef.current = true;
+    if (isLoadingSupport) return;
+    setSupportLoadState('loading');
+    setSupportLoadError('');
     setIsLoadingSupport(true);
     try {
       const rows = await fetchMySupportConversations(baseUrl, 40);
       setSupportConversations(rows);
+      setSupportLoadState('ready');
       markTabLoaded('support');
     } catch (error) {
+      const nextState = isHttpStatusError(error, 401) || isHttpStatusError(error, 403) ? 'forbidden' : 'error';
+      const nextMessage = getSupportLoadErrorMessage(error);
+      setSupportLoadState(nextState);
+      setSupportLoadError(nextMessage);
       if (announceErrors) {
         emit('custom.message', {
           title: 'Support',
-          message: sanitizeUiText(error instanceof Error ? error.message : 'Could not load support conversations.'),
+          message: nextMessage,
           severity: 'warning',
           category: 'activity',
           dedupeKey: 'account-support-load-warning',
@@ -394,12 +535,16 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     } finally {
       setIsLoadingSupport(false);
     }
-  }, [baseUrl, emit, markTabLoaded]);
+  }, [baseUrl, emit, hasSessionIdentity, isLoadingSupport, markTabLoaded]);
 
   const loadActivityData = useCallback(async (announceErrors: boolean) => {
+    if (!hasSessionIdentity) {
+      setIsLoadingActivity(false);
+      return;
+    }
     setIsLoadingActivity(true);
     try {
-      await loadHistory(20);
+      await loadHistoryRef.current(20);
       markTabLoaded('activity');
     } catch (error) {
       if (announceErrors) {
@@ -414,14 +559,23 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     } finally {
       setIsLoadingActivity(false);
     }
-  }, [emit, loadHistory, markTabLoaded]);
+  }, [emit, hasSessionIdentity, markTabLoaded]);
+
+  const syncCoreAccountDataRef = useRef(syncCoreAccountData);
+  useEffect(() => {
+    syncCoreAccountDataRef.current = syncCoreAccountData;
+  }, [syncCoreAccountData]);
 
   useEffect(() => {
+    if (!hasSessionIdentity) {
+      setIsLoadingCore(false);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       setIsLoadingCore(true);
       try {
-        await syncCoreAccountData(false);
+        await syncCoreAccountDataRef.current(false);
       } finally {
         if (!cancelled) setIsLoadingCore(false);
       }
@@ -429,18 +583,22 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     return () => {
       cancelled = true;
     };
-  }, [syncCoreAccountData]);
+  }, [hasSessionIdentity]);
 
   useEffect(() => {
-    if (!shouldLazyLoadAccountTab(activeTab) || loadedTabs.has(activeTab)) return;
+    if (!hasSessionIdentity) return;
+    if (!shouldLazyLoadAccountTab(activeTab)) return;
     if (activeTab === 'support') {
-      void loadSupportData(false);
+      if (supportLoadState === 'idle' && !supportLoadAttemptedRef.current) void loadSupportData(false);
       return;
     }
+    if (loadedTabs.has(activeTab)) return;
     if (activeTab === 'activity') {
       void loadActivityData(false);
+      return;
     }
-  }, [activeTab, loadedTabs, loadActivityData, loadSupportData]);
+    markTabLoaded(activeTab);
+  }, [activeTab, hasSessionIdentity, loadedTabs, loadActivityData, loadSupportData, markTabLoaded, supportLoadState]);
 
   useEffect(() => {
     const applyDeepLink = (target?: { screen?: string; tab?: string; conversationId?: string }): void => {
@@ -478,6 +636,8 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         },
         replaceUrl: (nextUrl) => {
           if (cancelled) return;
+          const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+          if (nextUrl === currentUrl) return;
           window.history.replaceState({}, '', nextUrl);
         },
         notify: (state, refreshed) => {
@@ -507,8 +667,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   }, [emit, syncCoreAccountData]);
 
   useEffect(() => {
+    if (!hasResolvedInitialSearchState) return;
     setScreenSearchState('profile', activeTab, shouldKeepConversationSelection(activeTab) ? highlightedConversationId : '');
-  }, [activeTab, highlightedConversationId]);
+  }, [activeTab, hasResolvedInitialSearchState, highlightedConversationId]);
 
   useEffect(() => {
     if (activeTab !== 'support' || !highlightedConversationId) return;
@@ -518,34 +679,56 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   }, [activeTab, highlightedConversationId, supportConversations]);
 
   const handleRefresh = useCallback(async () => {
+    if (!hasSessionIdentity) return;
     setIsRefreshing(true);
     try {
       await syncCoreAccountData(true);
-      if (loadedTabs.has('support')) await loadSupportData(false);
-      if (loadedTabs.has('activity')) await loadActivityData(false);
+      const followUpLoads: Promise<void>[] = [];
+      if (loadedTabs.has('support')) followUpLoads.push(loadSupportData(false, { force: true }));
+      if (loadedTabs.has('activity')) followUpLoads.push(loadActivityData(false));
+      if (followUpLoads.length > 0) await Promise.all(followUpLoads);
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadActivityData, loadSupportData, loadedTabs, syncCoreAccountData]);
+  }, [hasSessionIdentity, loadActivityData, loadSupportData, loadedTabs, syncCoreAccountData]);
 
-  const handleOpenPortal = useCallback(async (intent: 'manage' | 'cancel') => {
-    setPortalIntent(intent);
+  const handleRecurringAction = useCallback(async (intent: 'cancel' | 'resume') => {
+    setSubscriptionAction(intent);
     try {
-      const { url } = await billingActions.openBillingPortal();
-      if (!url) throw new Error('Billing portal URL is missing.');
-      window.location.href = url;
+      const result = intent === 'cancel'
+        ? await billingActions.cancelRecurringSubscription()
+        : await billingActions.resumeRecurringSubscription();
+      if (result.summary) {
+        setBillingSummary(result.summary);
+      } else if (result.subscription) {
+        setBillingSummary((prev) => (prev ? {
+          ...prev,
+          subscription: {
+            ...prev.subscription,
+            ...result.subscription,
+          },
+        } : prev));
+      }
+      await syncCoreAccountData(true);
+      emit('custom.message', {
+        title: 'Billing',
+        message: intent === 'cancel' ? 'Recurring billing will end at the current period boundary.' : 'Recurring billing has been resumed.',
+        severity: 'success',
+        category: 'activity',
+        dedupeKey: `billing-subscription-${intent}-success`,
+      });
     } catch (error) {
       emit('custom.message', {
         title: 'Billing',
-        message: sanitizeUiText(error instanceof Error ? error.message : 'Could not open billing portal.'),
+        message: sanitizeUiText(error instanceof Error ? error.message : `Could not ${intent === 'cancel' ? 'cancel' : 'resume'} recurring billing.`),
         severity: 'error',
         category: 'activity',
-        dedupeKey: `billing-portal-${intent}-failed`,
+        dedupeKey: `billing-subscription-${intent}-failed`,
       });
     } finally {
-      setPortalIntent(null);
+      setSubscriptionAction(null);
     }
-  }, [billingActions, emit]);
+  }, [billingActions, emit, syncCoreAccountData]);
 
   const handleSendSupport = useCallback(async () => {
     const text = supportText.trim();
@@ -554,7 +737,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     try {
       await postSupportMessage({ text }, baseUrl);
       setSupportText('');
-      await loadSupportData(false);
+      await loadSupportData(false, { force: true });
       setActiveTab('support');
       emit('support.message.sent', {
         title: 'Support',
@@ -576,7 +759,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     try {
       await markSupportConversationUnresolved(conversationId, baseUrl);
       setHighlightedConversationId(conversationId);
-      await loadSupportData(false);
+      await loadSupportData(false, { force: true });
       emit('support.conversation.unresolved', {
         title: 'Support',
         message: 'Conversation escalated back to support.',
@@ -609,7 +792,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     : Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0) + Number(stats.wallet?.paidVfBalance || 0));
   const paymentMethodLabel = describePaymentMethod(summary);
   const memberSinceLabel = accountProfile?.createdAt ? formatDate(accountProfile.createdAt) : 'Unavailable';
-  const canManageBilling = Boolean(summary.billing.hasPortalAccess);
+  const canManageBilling = Boolean(summary.billing.hasBillingManagement ?? summary.billing.hasPortalAccess ?? isPaidPlan);
   const billingActionVisibility = useMemo(() => getBillingActionVisibility(summary), [summary]);
   const providerLabels = Array.isArray(user.providers) ? user.providers.filter(Boolean) : [];
   const providerSummary = providerLabels.length > 0 ? providerLabels.map(formatProviderLabel).join(', ') : 'Email';
@@ -620,6 +803,8 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
       ? 'warning'
       : 'success';
   const activeThemeLabel = themeChoice === 'system' ? 'System' : themeChoice === 'dark' ? 'Dark' : 'Light';
+  const activeBrandThemeLabel = UI_BRAND_THEME_CONFIGS[brandThemeChoice].label;
+  const activeThemeSummary = `${activeThemeLabel} Â· ${activeBrandThemeLabel}`;
   const totalPreferenceCount = isAdmin ? 7 : 6;
   const enabledPreferenceCount = [
     prefs.allowTips,
@@ -633,11 +818,10 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const invoices = summary.invoices || [];
   const visibleInvoices = showAllInvoices ? invoices : invoices.slice(0, 4);
   const recentActivity = history.slice(0, 8);
-  const userDisplayName = accountProfile?.displayName || user.name || 'VoiceFlow user';
+  const userDisplayName = accountProfile?.displayName || user.name || 'V FLOW AI user';
   const userEmail = accountProfile?.email || user.email || 'Email unavailable';
   const accountStatus = humanizeToken(accountProfile?.status || summary.profile.status || '', 'Active');
   const recurringBenefit = Math.max(0, Number(summary.plan.pricing.discountPercent || 0));
-  const ttsSuccessRpm = Math.max(1, Number(summary.plan.ttsSuccessRpm || (summary.plan.key === 'scale' ? 10 : 5)));
   const statsAllowedEngines = stats.limits?.allowedEngines;
   const allowedEngines = useMemo(
     () => (summary.plan.allowedEngines.length > 0
@@ -682,26 +866,71 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
       : summary.subscription.nextBillingAt
         ? `Recurring billing is scheduled for ${formatDateTime(summary.subscription.nextBillingAt)}.`
         : 'The billing backend has not returned the next renewal timestamp yet.';
-  const activeSupportConversationCount = supportConversations.filter(
-    (row) => ['open', 'needs_human'].includes(String(row.status || '').trim().toLowerCase())
-  ).length;
-  const supportSummaryText = !loadedTabs.has('support')
-    ? 'Open Support to load your conversation queue.'
-    : isLoadingSupport
-      ? 'Loading support conversations...'
-      : supportConversations.length > 0
-        ? activeSupportConversationCount > 0
-          ? `${activeSupportConversationCount} active conversation${activeSupportConversationCount === 1 ? '' : 's'}`
-          : 'All conversations currently resolved.'
-        : 'No support conversations yet.';
+  const activeSupportConversationCount = useMemo(
+    () => supportConversations.filter(
+      (row) => ['open', 'needs_human'].includes(String(row.status || '').trim().toLowerCase())
+    ).length,
+    [supportConversations]
+  );
+  const supportSummaryText = useMemo(
+    () => supportLoadState === 'forbidden'
+      ? supportLoadError || 'Support conversations are not available for this account.'
+      : supportLoadState === 'error'
+        ? supportLoadError || 'Could not load support conversations.'
+        : supportLoadState === 'loading'
+          ? 'Loading support conversations...'
+          : !loadedTabs.has('support')
+            ? 'Open Support to load your conversation queue.'
+            : isLoadingSupport
+              ? 'Loading support conversations...'
+              : supportConversations.length > 0
+                ? activeSupportConversationCount > 0
+                  ? `${activeSupportConversationCount} active conversation${activeSupportConversationCount === 1 ? '' : 's'}`
+                  : 'All conversations currently resolved.'
+                : 'No support conversations yet.',
+    [activeSupportConversationCount, isLoadingSupport, loadedTabs, supportConversations.length, supportLoadError, supportLoadState]
+  );
+  const supportConversationCards = useMemo(
+    () => supportConversations.map((conversation) => {
+      const statusToken = String(conversation.status || '').trim().toLowerCase();
+      return {
+        conversationId: conversation.conversationId,
+        canReopen: !['open', 'needs_human'].includes(statusToken),
+        lastUpdated: conversation.lastMessageAt || conversation.updatedAt,
+        assignedTo: conversation.assignedTo ? sanitizeUiText(conversation.assignedTo) : '',
+        statusTone: statusToneFromConversation(conversation.status),
+        statusLabel: humanizeToken(conversation.status, 'Open'),
+        priorityTone: statusToneFromPriority(conversation.priority),
+        priorityLabel: humanizeToken(conversation.priority, 'Normal'),
+      };
+    }),
+    [supportConversations]
+  );
+  const activityRows = useMemo(
+    () => recentActivity.map((item) => {
+      const historyEngine = normalizeHistoryEngine(item.engine);
+      const charCount = Math.max(0, Number(item.chars || (item.text || '').length || 0));
+      return {
+        id: item.id,
+        timestampLabel: renderHistoryTimestamp(Number(item.timestamp || Date.now())),
+        engineLabel: getEngineDisplayName(historyEngine),
+        voiceLabel: sanitizeUiText(resolveHistoryVoiceLabel(item)),
+        charCount,
+        statusTone: item.status === 'failed' ? 'warning' as const : 'success' as const,
+        statusLabel: humanizeToken(item.status || 'completed'),
+        preview: sanitizeUiText(String(item.text || '').replace(/\s+/g, ' ').trim()) || 'No preview available.',
+      };
+    }),
+    [recentActivity]
+  );
   const navItems = useMemo(() => ([
     { key: 'account' as AccountTabKey, label: 'Account', summary: `${planName} plan | Member since ${memberSinceLabel}` },
-    { key: 'billing' as AccountTabKey, label: 'Billing', summary: canManageBilling ? `${paymentMethodLabel} | ${renewalHeadline}` : 'Portal and invoice management stay here.' },
+    { key: 'billing' as AccountTabKey, label: 'Billing', summary: canManageBilling ? `${paymentMethodLabel} | ${renewalHeadline}` : 'Billing management and invoices stay here.' },
     { key: 'usage' as AccountTabKey, label: 'Usage', summary: hasUnlimitedAccess ? `Unlimited access | ${formatNumber(monthlyUsed)} VF used this month` : `${formatNumber(monthlyUsed)} of ${formatNumber(monthlyLimit)} VF used this month` },
-    { key: 'preferences' as AccountTabKey, label: 'Preferences', summary: `${activeThemeLabel} theme | ${enabledPreferenceCount}/${totalPreferenceCount} toggles enabled` },
+    { key: 'preferences' as AccountTabKey, label: 'Preferences', summary: `${activeThemeSummary} theme | ${enabledPreferenceCount}/${totalPreferenceCount} toggles enabled` },
     { key: 'support' as AccountTabKey, label: 'Support', summary: supportSummaryText },
   ]), [
-    activeThemeLabel,
+    activeThemeSummary,
     canManageBilling,
     enabledPreferenceCount,
     hasUnlimitedAccess,
@@ -733,9 +962,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const renderTabRail = () => (
     <div
       {...accountSectionTabs.listProps}
-      className={`shrink-0 rounded-[0.95rem] border p-0.5 sm:p-1 ${surfaceClass(isDarkUi)}`}
+      className={`shrink-0 rounded-[1rem] border p-1 ${surfaceClass(isDarkUi)}`}
     >
-      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 sm:gap-2 xl:grid-cols-5">
+      <div className="flex snap-x snap-mandatory gap-1.5 overflow-x-auto sm:grid sm:grid-cols-3 sm:gap-2 xl:grid-cols-5 sm:overflow-visible">
         {navItems.map((item) => {
           const isActive = item.key === activeTab;
           return (
@@ -743,7 +972,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
               key={item.key}
               type="button"
               {...accountSectionTabs.getTabProps(item.key)}
-              className={`inline-flex w-full items-center justify-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition sm:gap-1.5 sm:px-2.5 sm:py-1.5 sm:text-xs ${
+              className={`inline-flex min-w-[9.5rem] snap-start items-center justify-center gap-1 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:min-w-0 sm:w-full sm:gap-1.5 sm:px-2.5 sm:py-1.5 sm:text-[13px] ${
                 isActive
                   ? (isDarkUi ? 'border-cyan-300/40 bg-cyan-400/14 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900')
                   : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`
@@ -759,21 +988,123 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderAccountSection = () => (
-    <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
-      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-        <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.displayName} value={userDisplayName} />
-        <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.email} value={userEmail} />
-        <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.userId} value={accountProfile?.userId || user.userId || 'Pending'} />
-        <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.accountStatus} value={accountStatus} />
-        <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.authProviders} value={providerSummary} />
-        <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.memberSince} value={memberSinceLabel} />
-        <InfoRow isDarkUi={isDarkUi} label="TTS success limit" value={`${formatNumber(ttsSuccessRpm)} RPM`} />
+    <div className="space-y-3 sm:space-y-4">
+      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+        <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.displayName} value={userDisplayName} />
+          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.email} value={userEmail} />
+          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.userId} value={accountProfile?.userId || user.userId || 'Pending'} />
+          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.accountStatus} value={accountStatus} />
+          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.authProviders} value={providerSummary} />
+          <InfoRow isDarkUi={isDarkUi} label={ACCOUNT_DETAIL_LABELS.memberSince} value={memberSinceLabel} />
+        </div>
       </div>
+
+      <details className={`group rounded-[1.2rem] border border-rose-300/40 p-3 sm:p-4 ${isDarkUi ? 'bg-rose-400/8' : 'bg-rose-50/70'} ${cardInsetClass(isDarkUi)}`}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-slate-950/80">
+          <div>
+            <div className={labelClass(isDarkUi)}>Danger zone</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Delete account permanently</div>
+          </div>
+          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold sm:text-[12px] ${isDarkUi ? 'border-rose-300/20 bg-rose-400/10 text-rose-50' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+            Optional
+          </span>
+        </summary>
+        <div className={`mt-2.5 text-[13px] leading-5 sm:mt-3 sm:text-sm ${subduedClass(isDarkUi)}`}>
+          This is irreversible. Type <span className="font-semibold text-rose-700">{ACCOUNT_DELETE_CONFIRM_PHRASE}</span> exactly to confirm permanent deletion, then we will sign you out and clear local account data.
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <div className="min-w-0">
+            <label htmlFor="delete-confirm-phrase" className={labelClass(isDarkUi)}>
+              Confirmation phrase
+            </label>
+            <input
+              id="delete-confirm-phrase"
+              name="deleteConfirmPhrase"
+              autoComplete="off"
+              spellCheck={false}
+              value={deleteConfirmPhrase}
+              onChange={(event) => {
+                setDeleteConfirmPhrase(event.target.value);
+                if (deleteAccountError) setDeleteAccountError(null);
+              }}
+              placeholder={ACCOUNT_DELETE_CONFIRM_PHRASE}
+              aria-describedby="delete-confirm-help"
+              className={`mt-1.5 h-10 min-w-0 w-full rounded-full border px-4 text-[13px] font-semibold uppercase tracking-[0.12em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 sm:text-sm ${
+                isDarkUi
+                  ? 'border-rose-300/20 bg-slate-950/45 text-rose-50 placeholder:text-rose-200/40 focus-visible:ring-offset-slate-950/80'
+                  : 'border-rose-200 bg-white text-rose-900 placeholder:text-rose-400 focus-visible:ring-offset-white'
+              }`}
+            />
+            <div id="delete-confirm-help" className={`mt-1.5 text-[11px] sm:text-[12px] ${subduedClass(isDarkUi)}`}>
+              The delete action stays disabled until the exact phrase matches.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              if (deleteConfirmPhrase.trim().toUpperCase() !== ACCOUNT_DELETE_CONFIRM_PHRASE) return;
+              setDeleteAccountError(null);
+              setIsDeletingAccount(true);
+              try {
+                await deleteAccount();
+                emit('custom.message', {
+                  title: 'Account deleted',
+                  message: 'Your account was deleted and local data has been cleared.',
+                  severity: 'success',
+                  category: 'security',
+                  channel: 'toast',
+                });
+                setScreenSearchState('login');
+                setScreen(AppScreen.LOGIN);
+              } catch (error) {
+                const message = sanitizeUiText(error instanceof Error ? error.message : 'Account deletion failed.');
+                setDeleteAccountError(message);
+                emit('custom.message', {
+                  title: 'Account deletion failed',
+                  message,
+                  severity: 'error',
+                  category: 'security',
+                  dedupeKey: 'profile-delete-account-failed',
+                });
+              } finally {
+                setIsDeletingAccount(false);
+              }
+            }}
+            disabled={isDeletingAccount || deleteConfirmPhrase.trim().toUpperCase() !== ACCOUNT_DELETE_CONFIRM_PHRASE}
+            className={`inline-flex h-10 items-center justify-center rounded-full px-4 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm ${
+              isDarkUi
+                ? 'border border-rose-300/25 bg-rose-400/12 text-rose-50 hover:bg-rose-400/18'
+                : 'border border-rose-200 bg-rose-600 text-white hover:bg-rose-700'
+            }`}
+          >
+            {isDeletingAccount ? 'Deleting...' : 'Delete account'}
+          </button>
+        </div>
+        {deleteAccountError ? (
+          <div className={`mt-2 rounded-xl border px-3 py-2 text-[12px] sm:text-[13px] ${isDarkUi ? 'border-rose-300/25 bg-rose-400/10 text-rose-50' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+            {deleteAccountError}
+          </div>
+        ) : null}
+      </details>
     </div>
   );
 
   const renderBillingSection = () => (
     <div className="space-y-3 sm:space-y-4">
+      <button
+        type="button"
+        onClick={() => {
+          if (typeof window !== 'undefined') {
+            window.location.href = '/app/buy';
+          }
+        }}
+        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
+          isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+        }`}
+      >
+        Open Buy Center
+      </button>
       <div className="flex flex-wrap gap-2 sm:gap-3">
         {billingActionVisibility.showChangePlan ? (
           <button
@@ -786,33 +1117,37 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             Change plan
           </button>
         ) : null}
-        {billingActionVisibility.showOpenBillingPortal ? (
-          <button
-            type="button"
-            onClick={() => void handleOpenPortal('manage')}
-            disabled={portalIntent !== null}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
-              isDarkUi ? 'border-white/10 bg-white/[0.06] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
-            }`}
-          >
-            {portalIntent === 'manage' ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : <ExternalLink className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
-            Open billing portal
-          </button>
-        ) : null}
         {billingActionVisibility.showCancelRecurring ? (
           <button
             type="button"
             onClick={() => setIsCancelDialogOpen(true)}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
+            disabled={subscriptionAction !== null}
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
               isDarkUi ? 'border-rose-300/20 bg-rose-400/10 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
             }`}
           >
+            {subscriptionAction === 'cancel' ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : null}
             Cancel recurring
+          </button>
+        ) : null}
+        {billingActionVisibility.showResumeRecurring ? (
+          <button
+            type="button"
+            onClick={() => void handleRecurringAction('resume')}
+            disabled={subscriptionAction !== null}
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
+              isDarkUi ? 'border-emerald-300/20 bg-emerald-400/10 text-emerald-50 hover:bg-emerald-400/18' : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+            }`}
+          >
+            {subscriptionAction === 'resume' ? <Loader2 className="h-3.5 w-3.5 animate-spin sm:h-4 sm:w-4" /> : null}
+            Resume plan
           </button>
         ) : null}
       </div>
       <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.92fr_1.08fr]">
         <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+          <div className={labelClass(isDarkUi)}>Plan overview</div>
+          <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Current plan details</div>
           <div className="grid gap-2.5 sm:grid-cols-2 sm:gap-3">
             <InfoRow isDarkUi={isDarkUi} label="Plan" value={planName} />
             <InfoRow isDarkUi={isDarkUi} label="Plan status" value={humanizeToken(summary.subscription.status || summary.plan.status || 'inactive')} />
@@ -825,13 +1160,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
         <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
           <div className={labelClass(isDarkUi)}>Payment method</div>
-          <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{paymentMethodLabel}</div>
-          <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>
+          <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{paymentMethodLabel}</div>
+          <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>
             {summary.paymentMethod?.expMonth && summary.paymentMethod?.expYear
               ? `Expires ${String(summary.paymentMethod.expMonth).padStart(2, '0')}/${summary.paymentMethod.expYear}`
               : canManageBilling
-                ? 'Manage the default payment method from the billing portal.'
-                : 'No live billing portal session is available yet.'}
+                ? 'Manage the default payment method inside the Buy center.'
+                : 'Billing management details are not available yet.'}
           </div>
           <div className="mt-3 grid gap-2.5 sm:mt-4 sm:grid-cols-2 sm:gap-3">
             <InfoRow isDarkUi={isDarkUi} label="Billing country" value={summary.billing.billingCountry || 'Unavailable'} />
@@ -847,21 +1182,21 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className={labelClass(isDarkUi)}>Invoices</div>
-            <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Invoices and receipts</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Invoices and receipts</div>
           </div>
           {invoices.length > 4 ? (
             <button
               type="button"
               onClick={() => setShowAllInvoices((prev) => !prev)}
-              className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
+              className={`rounded-full border px-3 py-1.5 text-[13px] font-semibold ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
             >
               {showAllInvoices ? 'Show recent 4' : `Show all ${invoices.length}`}
             </button>
           ) : null}
         </div>
         {visibleInvoices.length === 0 ? (
-          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-xs sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
-            No invoices are synced yet. Stripe receipts appear here after billing activity posts.
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-[13px] sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+            No invoices yet. Billing receipts appear here after payment activity.
           </div>
         ) : (
           <div className="mt-3 space-y-2 sm:mt-4">
@@ -923,11 +1258,11 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             <div>
               <div className={labelClass(isDarkUi)}>Engine pricing</div>
               <div className={`mt-1 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>VF rate per character</div>
-              <div className={`mt-0.5 text-[11px] leading-5 sm:mt-1 sm:text-sm ${subduedClass(isDarkUi)}`}>
+          <div className={`mt-0.5 text-[12px] leading-5 sm:mt-1 sm:text-sm ${subduedClass(isDarkUi)}`}>
                 Characters are billed by engine rate. Your plan changes engine access and queue priority, not the base VF pricing.
               </div>
             </div>
-            <div className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold sm:px-3 sm:py-1 sm:text-[11px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+            <div className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold sm:px-3 sm:py-1 sm:text-[12px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
               {allowedEngines.length > 0 ? `${allowedEngines.length}/${engineRateRows.length} engines unlocked` : 'Waiting for plan sync'}
             </div>
           </div>
@@ -945,7 +1280,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                         <div className={`text-[12px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
                           {getEngineDisplayName(row.engine)}
                         </div>
-                        <div className={`mt-0.5 text-[10px] sm:mt-1 sm:text-xs ${subduedClass(isDarkUi)}`}>
+                        <div className={`mt-0.5 text-[12px] sm:mt-1 sm:text-[13px] ${subduedClass(isDarkUi)}`}>
                           {row.usageLabel}
                         </div>
                       </div>
@@ -955,13 +1290,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:min-w-[300px]">
                     <div className={`rounded-[0.9rem] border px-2.5 py-1.5 sm:px-3 sm:py-2 ${cardInsetClass(isDarkUi)}`}>
                       <div className={labelClass(isDarkUi)}>Exact rate</div>
-                      <div className={`mt-0.5 text-[12px] font-semibold sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                      <div className={`mt-0.5 text-[13px] font-semibold sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                         {formatVfRatePerCharacter(row.rate)}
                       </div>
                     </div>
                     <div className={`rounded-[0.9rem] border px-2.5 py-1.5 sm:px-3 sm:py-2 ${cardInsetClass(isDarkUi)}`}>
                       <div className={labelClass(isDarkUi)}>Inverse view</div>
-                      <div className={`mt-0.5 text-[12px] font-semibold sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                      <div className={`mt-0.5 text-[13px] font-semibold sm:mt-1.5 sm:text-sm ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                         {formatCharsPerVf(row.rate)}
                       </div>
                     </div>
@@ -987,24 +1322,64 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.78fr_1.22fr]">
       <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Theme</div>
-        <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Appearance mode</div>
-        <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Choose how the account center should render in light and dark environments.</div>
+        <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Appearance mode</div>
+        <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>Choose how the account center should render in light and dark environments.</div>
         <div className="mt-3 grid gap-2.5 sm:mt-4 sm:grid-cols-3 sm:gap-3 xl:grid-cols-1">
           <ThemeButton active={themeChoice === 'light'} isDarkUi={isDarkUi} icon={SUMMARY_ICONS.light} title="Light" onClick={() => setThemeChoice('light')} />
           <ThemeButton active={themeChoice === 'dark'} isDarkUi={isDarkUi} icon={SUMMARY_ICONS.dark} title="Dark" onClick={() => setThemeChoice('dark')} />
           <ThemeButton active={themeChoice === 'system'} isDarkUi={isDarkUi} icon={SUMMARY_ICONS.preferences} title="System" onClick={() => setThemeChoice('system')} />
         </div>
+        <div className="mt-4">
+          <div className={`mb-2 flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.16em] ${isDarkUi ? 'text-slate-400' : 'text-slate-500'}`}>
+            <Sparkles size={12} /> Brand palette
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            {UI_BRAND_THEME_ORDER.map((themeId) => {
+              const theme = UI_BRAND_THEME_CONFIGS[themeId];
+              const active = brandThemeChoice === themeId;
+              return (
+                <button
+                  key={themeId}
+                  type="button"
+                  onClick={() => setBrandThemeChoice(themeId)}
+                  className={`vf-brand-chip flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-[12px] font-semibold transition ${
+                    active
+                      ? isDarkUi
+                        ? 'text-white'
+                        : 'text-slate-900'
+                      : isDarkUi
+                        ? 'border-slate-700 text-slate-300 hover:bg-white/[0.04]'
+                        : 'border-slate-200 text-slate-700 hover:bg-white'
+                  }`}
+                  data-active={active}
+                  aria-pressed={active}
+                  >
+                  <span
+                    className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/40"
+                    style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 55%, ${theme.accent3} 100%)` }}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate">{theme.label}</span>
+                    <span className={`block truncate text-[10px] font-medium ${isDarkUi ? 'text-slate-400' : 'text-slate-500'}`}>{theme.description}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className={`mt-2 text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-slate-500'}`}>Active palette: {activeBrandThemeLabel}</div>
+        </div>
       </div>
 
       <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Notifications</div>
-        <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Inbox and email preferences</div>
-        <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Critical warnings remain enabled. These toggles control helpful prompts and email delivery.</div>
+        <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Inbox and email preferences</div>
+        <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>Critical warnings remain enabled. These toggles control helpful prompts and email delivery.</div>
         <div className="mt-3 grid gap-2.5 sm:mt-4 sm:gap-3 lg:grid-cols-2">
           <PreferenceToggle isDarkUi={isDarkUi} title="Tips" detail="Allow helpful prompts and educational hints." checked={prefs.allowTips} onToggle={() => setPrefs((prev) => ({ ...prev, allowTips: !prev.allowTips }))} />
           <PreferenceToggle isDarkUi={isDarkUi} title="System info" detail="Show runtime and backend notices." checked={prefs.allowSystemInfo} onToggle={() => setPrefs((prev) => ({ ...prev, allowSystemInfo: !prev.allowSystemInfo }))} />
           <PreferenceToggle isDarkUi={isDarkUi} title="Notification sound" detail="Play a tone for warning, error, and critical alerts." checked={prefs.playSound} onToggle={() => setPrefs((prev) => ({ ...prev, playSound: !prev.playSound }))} />
-          <PreferenceToggle isDarkUi={isDarkUi} title="Email async jobs" detail="Email queued TTS and dubbing job updates." checked={prefs.emailAsyncJobs} onToggle={() => setPrefs((prev) => ({ ...prev, emailAsyncJobs: !prev.emailAsyncJobs }))} />
+          <PreferenceToggle isDarkUi={isDarkUi} title="Email async jobs" detail="Email queued TTS and voice-generation job updates." checked={prefs.emailAsyncJobs} onToggle={() => setPrefs((prev) => ({ ...prev, emailAsyncJobs: !prev.emailAsyncJobs }))} />
           <PreferenceToggle isDarkUi={isDarkUi} title="Email billing" detail="Email quota, receipt, and balance notifications." checked={prefs.emailBilling} onToggle={() => setPrefs((prev) => ({ ...prev, emailBilling: !prev.emailBilling }))} />
           <PreferenceToggle isDarkUi={isDarkUi} title="Email support" detail="Email support replies and resolution updates." checked={prefs.emailSupport} onToggle={() => setPrefs((prev) => ({ ...prev, emailSupport: !prev.emailSupport }))} />
           {isAdmin ? <PreferenceToggle isDarkUi={isDarkUi} title="Email admin alerts" detail="Operator notices and admin escalations." checked={prefs.emailAdminAlerts} onToggle={() => setPrefs((prev) => ({ ...prev, emailAdminAlerts: !prev.emailAdminAlerts }))} /> : null}
@@ -1017,25 +1392,34 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.92fr_1.08fr]">
       <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Compose request</div>
-        <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Send a support message</div>
-        <div className={`mt-1 text-xs sm:text-sm ${subduedClass(isDarkUi)}`}>Use this for billing questions, account issues, or anything that needs a human follow-up.</div>
+        <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Send a support message</div>
+        <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>Use this for billing or account issues that need human follow-up.</div>
+        <label htmlFor="support-message" className={`mt-3 block ${labelClass(isDarkUi)}`}>
+          Message
+        </label>
         <textarea
+          id="support-message"
+          name="supportMessage"
           value={supportText}
           onChange={(event) => setSupportText(event.target.value)}
+          rows={6}
           placeholder="Describe the issue, expected outcome, and anything already tried."
-          className={`mt-3 min-h-[120px] w-full rounded-[1rem] border px-3 py-2.5 text-[13px] outline-none transition sm:mt-4 sm:min-h-[148px] sm:rounded-[1.1rem] sm:px-4 sm:py-3 sm:text-sm ${
+          aria-describedby="support-message-help"
+          className={`mt-1.5 min-h-[120px] w-full rounded-[1rem] border px-3 py-2.5 text-[14px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 sm:min-h-[148px] sm:rounded-[1.1rem] sm:px-4 sm:py-3 sm:text-[15px] ${
             isDarkUi
-              ? 'border-white/10 bg-slate-950/40 text-white placeholder:text-slate-500 focus:border-cyan-300/45'
-              : 'border-slate-200 bg-white text-slate-950 placeholder:text-slate-400 focus:border-cyan-300'
+              ? 'border-white/10 bg-slate-950/40 text-white placeholder:text-slate-500 focus-visible:ring-offset-slate-950/80'
+              : 'border-slate-200 bg-white text-slate-950 placeholder:text-slate-400 focus-visible:ring-offset-white'
           }`}
         />
+        <div id="support-message-help" className={`mt-2 text-[12px] sm:text-[13px] ${subduedClass(isDarkUi)}`}>
+          Recent conversations update after sending or retrying.
+        </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 sm:mt-4 sm:gap-3">
-          <div className={`text-xs ${subduedClass(isDarkUi)}`}>Recent conversations refresh after each message.</div>
           <button
             type="button"
             onClick={() => void handleSendSupport()}
             disabled={isSendingSupport || supportText.trim().length === 0}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
               isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
             }`}
           >
@@ -1049,24 +1433,42 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className={labelClass(isDarkUi)}>Recent conversations</div>
-            <div className={`mt-1.5 text-base font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Support timeline</div>
+            <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Recent support conversations</div>
           </div>
           {isLoadingSupport ? <Loader2 className={`h-4 w-4 animate-spin sm:h-[18px] sm:w-[18px] ${isDarkUi ? 'text-cyan-200' : 'text-cyan-800'}`} /> : null}
         </div>
-        {isLoadingSupport && supportConversations.length === 0 ? (
-          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-xs sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+        {(supportLoadState === 'forbidden' || supportLoadState === 'error') && supportConversationCards.length === 0 ? (
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-[12px] sm:mt-4 sm:px-4 sm:py-4 sm:text-[13px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+            <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+              {supportLoadState === 'forbidden' ? 'Support conversations unavailable' : 'Could not load support conversations'}
+            </div>
+            <div className="mt-1.5 leading-5">
+              {supportLoadError || (supportLoadState === 'forbidden'
+                ? 'This account does not currently have permission to view support conversations.'
+                : 'Try refreshing the account or loading support again in a moment.')}
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadSupportData(true, { force: true })}
+              className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 sm:px-4 sm:py-2 sm:text-sm ${
+                isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
+              }`}
+            >
+              Retry support sync
+            </button>
+          </div>
+        ) : isLoadingSupport && supportConversationCards.length === 0 ? (
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-[12px] sm:mt-4 sm:px-4 sm:py-4 sm:text-[13px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             Syncing support conversations...
           </div>
-        ) : supportConversations.length === 0 ? (
-          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-xs sm:mt-4 sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
+        ) : supportConversationCards.length === 0 ? (
+          <div className={`mt-3 rounded-[1rem] border px-3 py-3 text-[12px] sm:mt-4 sm:px-4 sm:py-4 sm:text-[13px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
             No support conversations yet.
           </div>
         ) : (
           <div className="mt-3 space-y-2.5 sm:mt-4 sm:space-y-3">
-            {supportConversations.map((conversation) => {
+            {supportConversationCards.map((conversation) => {
               const isHighlighted = highlightedConversationId === conversation.conversationId;
-              const canReopen = !['open', 'needs_human'].includes(String(conversation.status || '').trim().toLowerCase());
-              const lastUpdated = conversation.lastMessageAt || conversation.updatedAt;
               return (
                 <div
                   key={conversation.conversationId}
@@ -1089,20 +1491,20 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                         Conversation {conversation.conversationId.slice(0, 8)}
                       </button>
                       <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>
-                        Last updated {formatDateTime(lastUpdated)}
-                        {conversation.assignedTo ? ` | Assigned to ${sanitizeUiText(conversation.assignedTo)}` : ''}
+                        Last updated {formatDateTime(conversation.lastUpdated)}
+                        {conversation.assignedTo ? ` | Assigned to ${conversation.assignedTo}` : ''}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <StatusBadge isDarkUi={isDarkUi} tone={statusToneFromConversation(conversation.status)} label={humanizeToken(conversation.status, 'Open')} />
-                      <StatusBadge isDarkUi={isDarkUi} tone={statusToneFromPriority(conversation.priority)} label={humanizeToken(conversation.priority, 'Normal')} />
+                      <StatusBadge isDarkUi={isDarkUi} tone={conversation.statusTone} label={conversation.statusLabel} />
+                      <StatusBadge isDarkUi={isDarkUi} tone={conversation.priorityTone} label={conversation.priorityLabel} />
                     </div>
                   </div>
-                  {canReopen ? (
+                  {conversation.canReopen ? (
                     <button
                       type="button"
                       onClick={() => void handleMarkUnresolved(conversation.conversationId)}
-                      className={`mt-2.5 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold sm:mt-3 sm:px-3 sm:py-1.5 sm:text-xs ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
+                      className={`mt-2.5 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[12px] font-semibold sm:mt-3 sm:px-3 sm:py-1.5 sm:text-[13px] ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}
                     >
                       Reopen with support
                     </button>
@@ -1118,36 +1520,32 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
   const renderActivitySection = () => (
     <div className="space-y-2.5 sm:space-y-3">
-      {isLoadingActivity && recentActivity.length === 0 ? (
+      {isLoadingActivity && activityRows.length === 0 ? (
         <div className={`rounded-[1rem] border px-3 py-3 text-xs sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
           Syncing recent generation history...
         </div>
-      ) : recentActivity.length === 0 ? (
+      ) : activityRows.length === 0 ? (
         <div className={`rounded-[1rem] border px-3 py-3 text-xs sm:px-4 sm:py-4 sm:text-sm ${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}>
           No generation history yet.
         </div>
       ) : (
-        recentActivity.map((item) => {
-          const historyEngine = normalizeHistoryEngine(item.engine);
-          const voiceLabel = sanitizeUiText(resolveHistoryVoiceLabel(item));
-          const charCount = Math.max(0, Number(item.chars || (item.text || '').length || 0));
-          const preview = sanitizeUiText(String(item.text || '').replace(/\s+/g, ' ').trim()) || 'No preview available.';
+        activityRows.map((item) => {
           return (
             <div key={item.id} className={`rounded-[1rem] border px-3 py-3 sm:px-4 sm:py-4 ${cardInsetClass(isDarkUi)}`}>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
-                  <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{voiceLabel}</div>
+                  <div className={`text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{item.voiceLabel}</div>
                   <div className={`mt-1 text-xs ${subduedClass(isDarkUi)}`}>
-                    {renderHistoryTimestamp(Number(item.timestamp || Date.now()))}
+                    {item.timestampLabel}
                     {' | '}
-                    {getEngineDisplayName(historyEngine)}
+                    {item.engineLabel}
                     {' | '}
-                    {formatNumber(charCount)} chars
+                    {formatNumber(item.charCount)} chars
                   </div>
                 </div>
-                <StatusBadge isDarkUi={isDarkUi} tone={item.status === 'failed' ? 'warning' : 'success'} label={humanizeToken(item.status || 'completed')} />
+                <StatusBadge isDarkUi={isDarkUi} tone={item.statusTone} label={item.statusLabel} />
               </div>
-              <div className={`mt-2.5 line-clamp-3 text-[13px] leading-5 sm:mt-3 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{preview}</div>
+              <div className={`mt-2.5 line-clamp-3 text-[13px] leading-5 sm:mt-3 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{item.preview}</div>
             </div>
           );
         })
@@ -1172,6 +1570,36 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     return renderActivitySection();
   };
 
+  if (!hasMounted) {
+    return (
+      <div className="h-[100dvh] w-full overflow-hidden bg-transparent px-2.5 py-3 sm:px-6 sm:py-6">
+        <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(88%_72%_at_0%_0%,rgba(34,211,238,0.14),transparent_50%),radial-gradient(82%_76%_at_100%_12%,rgba(251,191,36,0.12),transparent_54%),radial-gradient(80%_74%_at_50%_100%,rgba(244,114,182,0.1),transparent_58%),linear-gradient(180deg,#eef8ff_0%,#f8fbff_45%,#fffaf4_100%)]" />
+        <div className="relative mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col gap-2.5 sm:gap-4">
+          <section className={`shrink-0 rounded-[1.45rem] border p-2.5 sm:p-4 ${surfaceClass(false)}`}>
+            <div className="flex flex-col gap-2.5 sm:gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="h-8 w-32 animate-pulse rounded-full border border-slate-200/80 bg-slate-100/80" />
+                <div className="flex items-center gap-2">
+                  <div className="h-8 w-24 animate-pulse rounded-full border border-slate-200/80 bg-slate-100/80" />
+                  <div className="h-8 w-20 animate-pulse rounded-full border border-slate-200/80 bg-slate-100/80" />
+                </div>
+              </div>
+
+              <div className="grid gap-2.5 sm:gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-start">
+                <div className="h-11 animate-pulse rounded-full border border-slate-200/80 bg-slate-100/80" />
+                <div className="h-20 animate-pulse rounded-[1rem] border border-slate-200/80 bg-slate-100/80" />
+              </div>
+            </div>
+          </section>
+
+          <div className={`rounded-[1.2rem] border px-3 py-4 text-xs sm:px-4 sm:py-6 sm:text-sm ${surfaceClass(false)} ${mutedClass(false)}`}>
+            Loading account center...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-[100dvh] w-full overflow-hidden bg-transparent px-2.5 py-3 sm:px-6 sm:py-6">
       <div
@@ -1192,7 +1620,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   setScreenSearchState('main');
                   setScreen(AppScreen.MAIN);
                 }}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition sm:gap-2 sm:px-3 sm:py-2 sm:text-sm ${
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
                   isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white/80 text-slate-800 hover:bg-white'
                 }`}
               >
@@ -1205,7 +1633,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   type="button"
                   onClick={() => void handleRefresh()}
                   disabled={isRefreshing}
-                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition disabled:opacity-60 sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-sm ${
+                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition disabled:opacity-60 sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
                     isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white/80 text-slate-800 hover:bg-white'
                   }`}
                 >
@@ -1224,7 +1652,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     setScreenSearchState('login');
                     setScreen(AppScreen.LOGIN);
                   }}
-                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-sm ${
+                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
                     isDarkUi ? 'border-rose-300/25 bg-rose-400/12 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
                   }`}
                 >
@@ -1236,12 +1664,12 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
             <div className="grid gap-2.5 sm:gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-start">
               <div className="flex items-center lg:min-h-[56px]">
-                <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${cardInsetClass(isDarkUi)}`}>
+                <h1 className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${cardInsetClass(isDarkUi)}`}>
                   <BrandLogo size="sm" tone={isDarkUi ? 'light' : 'dark'} />
-                  <span className={`text-[10px] font-black uppercase tracking-[0.2em] sm:text-[11px] sm:tracking-[0.24em] ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                  <span className={`text-[11px] font-black uppercase tracking-[0.18em] sm:text-[12px] sm:tracking-[0.22em] ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
                     Account Center
                   </span>
-                </div>
+                </h1>
               </div>
 
               <div className={`flex min-w-0 items-center gap-2 rounded-[1rem] border px-2.5 py-2 sm:px-3 sm:py-2.5 lg:justify-self-end ${cardInsetClass(isDarkUi)}`}>
@@ -1250,13 +1678,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 </div>
                 <div className="min-w-0">
                   <div className={`truncate text-[13px] font-semibold sm:text-sm ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{userDisplayName}</div>
-                  <div className={`truncate text-[11px] sm:text-xs ${subduedClass(isDarkUi)}`}>{userEmail}</div>
+                  <div className={`truncate text-[12px] sm:text-xs ${subduedClass(isDarkUi)}`}>{userEmail}</div>
                   <div className="mt-1 flex flex-wrap gap-1.5 sm:mt-1.5">
                     <StatusBadge isDarkUi={isDarkUi} tone={summary.subscription.active ? 'success' : 'neutral'} label={planName} />
                     <StatusBadge isDarkUi={isDarkUi} tone={usageTone} label={hasUnlimitedAccess ? 'Unlimited access' : accountStatus} />
                     {summary.plan.earlyAccess ? <StatusBadge isDarkUi={isDarkUi} tone="warning" label="Early access" /> : null}
                   </div>
-                  <div className={`mt-1 text-[10px] sm:mt-1.5 sm:text-[11px] ${subduedClass(isDarkUi)}`}>
+                  <div className={`mt-1 text-[11px] sm:mt-1.5 sm:text-[12px] ${subduedClass(isDarkUi)}`}>
                     <span>{hasUnlimitedAccess ? 'Monthly: Unlimited' : `Monthly: ${formatNumber(monthlyUsed)}/${formatNumber(monthlyLimit)}`}</span>
                   </div>
                 </div>
@@ -1279,11 +1707,11 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 <div className="flex flex-wrap items-start justify-between gap-2.5 sm:gap-3">
                   <div>
                     <div className={labelClass(isDarkUi)}>{sectionHeader.title} section</div>
-                    <h2 className={`mt-1 text-base font-semibold sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{sectionHeader.title}</h2>
-                    <p className={`mt-1 text-[11px] leading-5 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{sectionHeader.detail}</p>
+                    <h2 className={`mt-1 text-[15px] font-semibold sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>{sectionHeader.title}</h2>
+                    <p className={`mt-1 text-[12px] leading-5 sm:text-sm sm:leading-6 ${mutedClass(isDarkUi)}`}>{sectionHeader.detail}</p>
                   </div>
                   {activeTab === 'billing' ? (
-                    <StatusBadge isDarkUi={isDarkUi} tone={canManageBilling ? 'success' : 'neutral'} label={canManageBilling ? 'Portal ready' : 'Portal unavailable'} />
+                    <StatusBadge isDarkUi={isDarkUi} tone={canManageBilling ? 'success' : 'neutral'} label={canManageBilling ? 'Billing ready' : 'Billing unavailable'} />
                   ) : activeTab === 'usage' ? (
                     <StatusBadge isDarkUi={isDarkUi} tone={usageTone} label={hasUnlimitedAccess ? 'Unlimited' : `${formatNumber(monthlyUsed)} VF used`} />
                   ) : activeTab === 'support' ? (
@@ -1301,6 +1729,9 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
               </div>
             </div>
           </section>
+          {accountTabItems.filter((item) => item.id !== activeTab).map((item) => (
+            <section key={`account-panel-${item.id}`} {...accountSectionTabs.getPanelProps(item.id)} className="hidden" />
+          ))}
         </div>
       </div>
 
@@ -1324,7 +1755,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 {planName} renews at {formatCurrencyInr(summary.plan.pricing.recurringInr || 0)} / month
               </div>
               <div className={`mt-2 text-sm leading-6 ${mutedClass(isDarkUi)}`}>
-                The current recurring rate reflects your plan benefit versus the first-cycle pricing of {formatCurrencyInr(summary.plan.pricing.firstCycleInr || 0)}. Cancellation itself is completed inside the Stripe billing portal.
+                The current recurring rate reflects your plan benefit versus the first-cycle pricing of {formatCurrencyInr(summary.plan.pricing.firstCycleInr || 0)}. Cancellation is handled inline and takes effect at the current period boundary.
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <div className={`rounded-[1rem] border px-4 py-3 ${isDarkUi ? 'border-emerald-300/15 bg-emerald-400/10 text-emerald-50' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
@@ -1336,7 +1767,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 </div>
                 <div className={`rounded-[1rem] border px-4 py-3 ${isDarkUi ? 'border-rose-300/15 bg-rose-400/10 text-rose-50' : 'border-rose-200 bg-rose-50 text-rose-800'}`}>
                   <div className="text-sm font-semibold">Continue to cancel</div>
-                  <div className="mt-2 text-xs">Cancellation settings will be handled in the billing portal.</div>
+                  <div className="mt-2 text-xs">Cancellation settings will be handled in the Buy center.</div>
                 </div>
               </div>
             </div>
@@ -1349,13 +1780,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 type="button"
                 onClick={() => {
                   setIsCancelDialogOpen(false);
-                  void handleOpenPortal('cancel');
+                  void handleRecurringAction('cancel');
                 }}
-                disabled={portalIntent !== null}
+                disabled={subscriptionAction !== null}
                 className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold ${isDarkUi ? 'border-rose-300/20 bg-rose-400/12 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
               >
-                {portalIntent === 'cancel' ? <Loader2 size={16} className="animate-spin" /> : null}
-                Continue to billing portal
+                {subscriptionAction === 'cancel' ? <Loader2 size={16} className="animate-spin" /> : null}
+                Confirm cancel
               </button>
             </div>
           </div>
@@ -1364,3 +1795,4 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
     </div>
   );
 };
+

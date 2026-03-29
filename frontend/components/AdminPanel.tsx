@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Key, Loader2, MessageSquareText, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, BookOpen, Key, Loader2, MessageSquareText, RefreshCw, Shield, Ticket, UserCog, Users } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { useAdminCoupons } from '../src/features/admin/hooks/useAdminCoupons';
 import { useAdminUsers } from '../src/features/admin/hooks/useAdminUsers';
+import { getEngineDisplayName } from '../services/engineDisplay';
 import {
   type AdminPermission,
   type AdminRoleAssignment,
@@ -78,13 +79,21 @@ import {
   verifyAdminAuditChain,
   fetchAdminSupportConversations,
   fetchAdminSupportConversationById,
+  fetchAdminBroadcastNotices,
   replyAdminSupportConversation,
   resolveAdminSupportConversation,
   fetchAdminSupportAiPolicy,
+  createAdminBroadcastNotice,
+  deleteAdminBroadcastNotice,
+  fetchAdminVoiceCloneProvider,
+  patchAdminVoiceCloneProvider,
   patchAdminSupportAiPolicy,
+  type AdminNotice,
   type SupportConversation,
   type SupportMessage,
   type SupportAiPolicy,
+  type VoiceCloneProviderStatusPayload,
+  type VoiceCloneProviderKey,
 } from '../services/adminService';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 import { useManagedTabs } from '../src/shared/ui/tabs';
@@ -106,6 +115,7 @@ import {
   type AdminDataSection,
   type OpsTab,
 } from '../src/features/admin/model/loadPlan';
+import { AdminReaderLibraryPanel } from '../src/features/admin/components/AdminReaderLibraryPanel';
 
 type ToastKind = 'success' | 'error' | 'info';
 type CouponKind = 'wallet_credit' | 'subscription_discount';
@@ -167,6 +177,64 @@ const toDateInput = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
+const toLocalDateTime = (
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number
+): Date | null => {
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  const candidate = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (Number.isNaN(candidate.getTime())) return null;
+  if (
+    candidate.getFullYear() !== year ||
+    candidate.getMonth() !== month - 1 ||
+    candidate.getDate() !== day ||
+    candidate.getHours() !== hour ||
+    candidate.getMinutes() !== minute
+  ) {
+    return null;
+  }
+  return candidate;
+};
+
+const parseDateTimeInput = (value: string): Date | null => {
+  const raw = String(value || '').replace(/\u00a0/g, ' ').trim();
+  if (!raw) return null;
+
+  const nativeParsed = new Date(raw);
+  if (!Number.isNaN(nativeParsed.getTime())) {
+    return nativeParsed;
+  }
+
+  const normalized = raw.replace(/\s+/g, ' ');
+  const dmy = normalized.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:[ T](\d{1,2})(?::(\d{2}))?)?$/);
+  if (dmy) {
+    const day = Number(dmy[1]);
+    const month = Number(dmy[2]);
+    const year = Number(dmy[3]);
+    const hour = Number(dmy[4] || 0);
+    const minute = Number(dmy[5] || 0);
+    return toLocalDateTime(year, month, day, hour, minute);
+  }
+
+  const ymd = normalized.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2})(?::(\d{2}))?)?$/);
+  if (ymd) {
+    const year = Number(ymd[1]);
+    const month = Number(ymd[2]);
+    const day = Number(ymd[3]);
+    const hour = Number(ymd[4] || 0);
+    const minute = Number(ymd[5] || 0);
+    return toLocalDateTime(year, month, day, hour, minute);
+  }
+
+  return null;
+};
+
 const asNumber = (value: unknown): number => {
   const next = Number(value || 0);
   return Number.isFinite(next) ? next : 0;
@@ -176,6 +244,16 @@ const asNumber = (value: unknown): number => {
 const isForbiddenError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
   return Number((error as { status?: number }).status || 0) === 403;
+};
+
+const isAdminUnlockMutationError = (error: unknown): boolean => {
+  const message = String((error as { message?: string })?.message || '').trim().toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes('x-admin-unlock')
+    || message.includes('admin unlock token')
+    || message.includes('unlock session')
+  );
 };
 
 const isUidAllowlistAuthorizationError = (error: unknown): boolean => {
@@ -188,13 +266,15 @@ const isUidAllowlistAuthorizationError = (error: unknown): boolean => {
 };
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
-  if (isUidAllowlistAuthorizationError(error)) {
+  if (isAdminUnlockMutationError(error)) {
     return sanitizeUiText(
-      'Admin action blocked. Add your Firebase UID to VF_ADMIN_APPROVER_UIDS in backend env, then restart backend services.'
+      'Admin unlock required. Open Unlock tab, issue a key, verify it, then retry this action.'
     );
   }
-  if (error && typeof error === 'object' && typeof (error as { message?: string }).message === 'string') {
-    return sanitizeUiText(String((error as { message: string }).message));
+  if (isUidAllowlistAuthorizationError(error)) {
+    return sanitizeUiText(
+      'Admin action blocked. Ask a workspace administrator to grant admin access for your account, then retry.'
+    );
   }
   return sanitizeUiText(fallback);
 };
@@ -367,6 +447,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [supportReplyText, setSupportReplyText] = useState('');
   const [supportAiPolicy, setSupportAiPolicy] = useState<SupportAiPolicy | null>(null);
   const [supportAiPolicyDraft, setSupportAiPolicyDraft] = useState<SupportAiPolicy | null>(null);
+  const [adminNotices, setAdminNotices] = useState<AdminNotice[]>([]);
+  const [isLoadingAdminNotices, setIsLoadingAdminNotices] = useState(false);
+  const [adminNoticeTitle, setAdminNoticeTitle] = useState('');
+  const [adminNoticeMessage, setAdminNoticeMessage] = useState('');
+  const [adminNoticeDetails, setAdminNoticeDetails] = useState('');
+  const [adminNoticeExpiresAt, setAdminNoticeExpiresAt] = useState('');
   const [isLoadingSupportConversations, setIsLoadingSupportConversations] = useState(false);
   const [isLoadingSupportDetail, setIsLoadingSupportDetail] = useState(false);
   const [isLoadingSupportAiPolicy, setIsLoadingSupportAiPolicy] = useState(false);
@@ -375,6 +461,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [opsApprovals, setOpsApprovals] = useState<OpsGuardianApprovalsPayload | null>(null);
   const [opsGateway, setOpsGateway] = useState<Record<string, unknown> | null>(null);
   const [opsQueue, setOpsQueue] = useState<Record<string, unknown> | null>(null);
+  const [voiceCloneProvider, setVoiceCloneProvider] = useState<VoiceCloneProviderStatusPayload | null>(null);
+  const [voiceCloneProviderDraft, setVoiceCloneProviderDraft] = useState<VoiceCloneProviderKey>('cloud_run');
   const [isLoadingOps, setIsLoadingOps] = useState(false);
 
   const [alertPolicies, setAlertPolicies] = useState<AlertPolicy[]>([]);
@@ -421,6 +509,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [audioMetadataEngine, setAudioMetadataEngine] = useState('');
   const [audioMetadataFrom, setAudioMetadataFrom] = useState('');
   const [audioMetadataTo, setAudioMetadataTo] = useState('');
+  const audioMetadataEngineOptions = useMemo(() => ([
+    'DUNO',
+    'VECTOR',
+    'PRIME',
+  ] as const).map((engine) => ({
+    value: engine,
+    label: getEngineDisplayName(engine),
+  })), []);
 
   const now = new Date();
   const [analyticsFrom, setAnalyticsFrom] = useState(toDateInput(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000)));
@@ -461,26 +557,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     loadedAdminSectionsRef.current.add(section);
   };
 
+  const couponTabIds: CouponKind[] = ['wallet_credit', 'subscription_discount'];
+  const opsTabIds: OpsTab[] = ['usage', 'tokens', 'guardian', 'alerts', 'scheduler', 'audit', 'analytics', 'accounting'];
+  const opsTabLabels: Record<OpsTab, string> = {
+    usage: 'Usage',
+    tokens: 'Tokens',
+    guardian: 'Guardian',
+    alerts: 'Alerts',
+    scheduler: 'Scheduled Tasks',
+    audit: 'Audit Ledger',
+    analytics: 'Coupon Analytics',
+    accounting: 'Accounting',
+  };
+
   const couponTabs = useManagedTabs({
-    items: [
-      { id: 'wallet_credit' as CouponKind },
-      { id: 'subscription_discount' as CouponKind },
-    ],
+    items: couponTabIds.map((id) => ({ id })),
     activeId: couponTab,
     onChange: setCouponTab,
     label: 'Coupon types',
     idBase: 'admin-coupon-types',
   });
   const opsTabs = useManagedTabs({
-    items: [
-      { id: 'usage' as OpsTab },
-      { id: 'guardian' as OpsTab },
-      { id: 'alerts' as OpsTab },
-      { id: 'scheduler' as OpsTab },
-      { id: 'audit' as OpsTab },
-      { id: 'analytics' as OpsTab },
-      { id: 'accounting' as OpsTab },
-    ],
+    items: opsTabIds.map((id) => ({ id })),
     activeId: opsTab,
     onChange: setOpsTab,
     label: 'Admin ops sections',
@@ -501,8 +599,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     idBase: 'admin-message-sections',
   });
 
-  const notifyError = (error: unknown, fallback: string) => {
-    if (isForbiddenError(error) && !isUidAllowlistAuthorizationError(error)) return;
+  const notifyError = (error: unknown, fallback: string, options?: { showForbidden?: boolean }) => {
+    if (isForbiddenError(error) && !isUidAllowlistAuthorizationError(error) && !options?.showForbidden) return;
     onToast(sanitizeUiText(getErrorMessage(error, fallback)), 'error');
   };
 
@@ -608,31 +706,51 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const reloadAdminNoticesSafely = async (): Promise<boolean> => {
+    setIsLoadingAdminNotices(true);
+    try {
+      const notices = await fetchAdminBroadcastNotices(mediaBackendUrl, { status: 'all', limit: 300 });
+      setAdminNotices(Array.isArray(notices) ? notices : []);
+      markAdminSectionLoaded('adminNotices');
+      return true;
+    } catch (error: unknown) {
+      notifyError(error, 'Failed to load broadcast notices.', { showForbidden: true });
+      return false;
+    } finally {
+      setIsLoadingAdminNotices(false);
+    }
+  };
+
   const reloadOpsSafely = async () => {
     setIsLoadingOps(true);
     try {
-      const [usage, guardian, approvals, gateway, queue] = await Promise.allSettled([
+      const [usage, guardian, approvals, gateway, queue, provider] = await Promise.allSettled([
         fetchAdminIntegrationsUsage(mediaBackendUrl),
         fetchOpsGuardianStatus(mediaBackendUrl, true),
         fetchOpsGuardianApprovals(mediaBackendUrl, 'pending'),
         fetchAdminTtsGatewayStatus(mediaBackendUrl),
         fetchAdminTtsQueueMetrics(mediaBackendUrl),
+        fetchAdminVoiceCloneProvider(mediaBackendUrl),
       ]);
       if (usage.status === 'fulfilled') setOpsUsage(usage.value as unknown as Record<string, unknown>);
       if (guardian.status === 'fulfilled') setOpsGuardian(guardian.value);
       if (approvals.status === 'fulfilled') setOpsApprovals(approvals.value);
       if (gateway.status === 'fulfilled') setOpsGateway(gateway.value as Record<string, unknown>);
       if (queue.status === 'fulfilled') setOpsQueue(queue.value as Record<string, unknown>);
-      const failures = [usage, guardian, approvals, gateway, queue].filter(
+      if (provider.status === 'fulfilled') {
+        setVoiceCloneProvider(provider.value);
+        setVoiceCloneProviderDraft((provider.value?.activeProvider as VoiceCloneProviderKey) || 'cloud_run');
+      }
+      const failures = [usage, guardian, approvals, gateway, queue, provider].filter(
         (result) => result.status === 'rejected'
       ) as PromiseRejectedResult[];
       if (failures.length > 0) {
-        const fallback = failures.length === 5
+        const fallback = failures.length === 6
           ? 'Failed to load ops telemetry.'
-          : `Some ops telemetry endpoints failed (${failures.length}/5).`;
+          : `Some ops telemetry endpoints failed (${failures.length}/6).`;
         notifyError(failures[0]?.reason, fallback);
       }
-      if ([usage, guardian, approvals, gateway, queue].some((result) => result.status === 'fulfilled')) {
+      if ([usage, guardian, approvals, gateway, queue, provider].some((result) => result.status === 'fulfilled')) {
         markAdminSectionLoaded('ops');
       }
     } catch (error: unknown) {
@@ -1018,7 +1136,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const payload = await fetchAdminSessionUnlockStatus(mediaBackendUrl);
       setAdminUnlockStatusPayload(payload);
-      if (!Boolean(payload?.status?.isUnlocked)) {
+      const unlockExpiresAtMs = Number(payload?.status?.unlockExpiresAtMs || 0);
+      if (unlockExpiresAtMs > 0 && unlockExpiresAtMs <= Date.now()) {
         clearAdminUnlockToken();
       }
       markAdminSectionLoaded('adminUnlockStatus');
@@ -1083,6 +1202,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             break;
           case 'supportAiPolicy':
             await reloadSupportAiPolicySafely();
+            break;
+          case 'adminNotices':
+            await reloadAdminNoticesSafely();
             break;
           case 'adminUnlockStatus':
             await reloadAdminUnlockStatusSafely();
@@ -1163,7 +1285,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       await action();
     } catch (error: unknown) {
-      notifyError(error, fallback);
+      notifyError(error, fallback, { showForbidden: true });
     } finally {
       setIsSaving('');
     }
@@ -1254,6 +1376,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const canSupportAiReview = can('support.ai.review');
   const canSupportAiConfig = can('support.ai.config');
   const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canBillingWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite || canSupportReply || canSupportAiConfig;
+  const voiceCloneProviderActive = String(voiceCloneProvider?.activeProvider || voiceCloneProviderDraft || 'cloud_run').trim() as VoiceCloneProviderKey;
+  const voiceCloneProviderDefault = String(voiceCloneProvider?.defaultProvider || 'cloud_run').trim() || 'cloud_run';
+  const voiceCloneProviderInfo = voiceCloneProvider?.providers?.[voiceCloneProviderActive] || null;
+  const voiceCloneProviderReady = Boolean(voiceCloneProviderInfo?.ready);
+
+  const handleSaveVoiceCloneProvider = async () => {
+    if (!canOpsMutate) {
+      onToast('Missing ops.mutate permission.', 'info');
+      return;
+    }
+    await withSaving('voice_clone_provider', async () => {
+      const next = await patchAdminVoiceCloneProvider(
+        { activeProvider: voiceCloneProviderDraft },
+        mediaBackendUrl
+      );
+      setVoiceCloneProvider(next);
+      setVoiceCloneProviderDraft((next?.activeProvider as VoiceCloneProviderKey) || voiceCloneProviderDraft);
+      await reloadOpsSafely();
+      onToast('Voice clone provider updated.', 'success');
+    }, 'Failed to update voice clone provider.');
+  };
 
   const handleReplySupportConversation = async () => {
     const safeConversationId = String(selectedSupportConversationId || '').trim();
@@ -1320,6 +1463,83 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       onToast('Support AI policy updated.', 'success');
     }, 'Failed to save support AI policy.');
   };
+
+  const handleCreateAdminNotice = async () => {
+    if (!canSupportReply) {
+      onToast('Missing support.reply permission.', 'info');
+      return;
+    }
+    if (adminUnlockRequired && !adminUnlockTokenPresent) {
+      onToast('Unlock required before creating broadcast notices.', 'info');
+      setAdminMainTab('unlock');
+      return;
+    }
+    const title = sanitizeUiText(String(adminNoticeTitle || '').trim());
+    const message = sanitizeUiText(String(adminNoticeMessage || '').trim());
+    if (!message) {
+      onToast('Broadcast message is required.', 'info');
+      return;
+    }
+    const details = sanitizeUiText(String(adminNoticeDetails || '').trim());
+    const expiresAtInput = String(adminNoticeExpiresAt || '').trim();
+    if (!expiresAtInput) {
+      onToast('Expiry date/time is required.', 'info');
+      return;
+    }
+    const parsedExpiry = parseDateTimeInput(expiresAtInput);
+    if (!parsedExpiry) {
+      onToast('Enter a valid expiry date and time.', 'info');
+      return;
+    }
+    if (parsedExpiry.getTime() <= Date.now()) {
+      onToast('Expiry must be in the future.', 'info');
+      return;
+    }
+    const expiresAt = parsedExpiry.toISOString();
+    await withSaving('admin_notice_create', async () => {
+      await createAdminBroadcastNotice({
+        ...(title ? { title } : {}),
+        message,
+        ...(details ? { details } : {}),
+        expiresAt,
+      }, mediaBackendUrl);
+      setAdminNoticeTitle('');
+      setAdminNoticeMessage('');
+      setAdminNoticeDetails('');
+      setAdminNoticeExpiresAt('');
+      const reloaded = await reloadAdminNoticesSafely();
+      if (reloaded) {
+        onToast('Broadcast notice created.', 'success');
+      } else {
+        onToast('Broadcast notice created, but reloading the list failed.', 'info');
+      }
+    }, 'Failed to create broadcast notice.');
+  };
+
+  const handleDeleteAdminNotice = async (notice: AdminNotice) => {
+    if (!canSupportReply) {
+      onToast('Missing support.reply permission.', 'info');
+      return;
+    }
+    if (adminUnlockRequired && !adminUnlockTokenPresent) {
+      onToast('Unlock required before deleting broadcast notices.', 'info');
+      setAdminMainTab('unlock');
+      return;
+    }
+    const noticeId = String(notice.id || '').trim();
+    if (!noticeId) return;
+    if (!window.confirm(`Delete broadcast notice "${notice.title || noticeId}"? This cannot be undone.`)) return;
+    await withSaving(`admin_notice_delete_${noticeId}`, async () => {
+      await deleteAdminBroadcastNotice(noticeId, mediaBackendUrl);
+      const reloaded = await reloadAdminNoticesSafely();
+      if (reloaded) {
+        onToast('Broadcast notice deleted.', 'success');
+      } else {
+        onToast('Broadcast notice deleted, but reloading the list failed.', 'info');
+      }
+    }, 'Failed to delete broadcast notice.');
+  };
+
   const updateSupportAiPolicyDraft = (patch: Partial<SupportAiPolicy>) => {
     setSupportAiPolicyDraft((previous) => {
       const fallback: SupportAiPolicy = {
@@ -1338,8 +1558,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const adminUnlockStatus = adminUnlockStatusPayload?.status || null;
+  const adminUnlockRequired = Boolean(adminUnlockStatus?.unlockRequired);
   const adminUnlockTokenPresent = Boolean(getAdminUnlockToken());
   const adminUnlockActive = Boolean(adminUnlockStatus?.isUnlocked) && adminUnlockTokenPresent;
+  const canMutateBroadcastNotices = canSupportReply && (!adminUnlockRequired || adminUnlockTokenPresent);
+  const canManageReaderLibrary = canUseAdminUnlock && (!adminUnlockRequired || adminUnlockTokenPresent);
   const sanitizePlanToken = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const updateCouponPlanRow = (rowId: string, patch: Partial<Omit<CouponPlanDraftRow, 'id'>>) => {
     setCouponPlanRows((previous) => previous.map((row) => (row.id === rowId ? { ...row, ...patch } : row)));
@@ -1613,7 +1836,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const userSupportConversations = segmentedSupportConversations.users;
   const activeSupportConversations = adminMessagesTab === 'critical'
     ? criticalSupportConversations
-    : userSupportConversations;
+    : adminMessagesTab === 'users'
+      ? userSupportConversations
+      : [];
+  const sortedAdminNotices = useMemo(
+    () => [...adminNotices].sort((left, right) => {
+      const leftTime = Number(new Date(String(left.createdAt || left.updatedAt || 0)).getTime() || 0);
+      const rightTime = Number(new Date(String(right.createdAt || right.updatedAt || 0)).getTime() || 0);
+      return rightTime - leftTime;
+    }),
+    [adminNotices]
+  );
   const supportPriorityToneClass = (priority: string): string => {
     const token = String(priority || '').trim().toLowerCase();
     if (token === 'red') return 'border-red-200 bg-red-50 text-red-700';
@@ -1629,6 +1862,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
   useEffect(() => {
     if (adminMainTab !== 'messages' || !canSupportRead) return;
+    if (adminMessagesTab === 'broadcast') return;
     if (activeSupportConversations.length === 0) {
       setSelectedSupportConversationId('');
       setSelectedSupportConversation(null);
@@ -1642,7 +1876,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!nextConversation) return;
     void loadSupportConversationDetailSafely(nextConversation.conversationId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminMainTab, canSupportRead, activeSupportConversations, selectedSupportConversationId]);
+  }, [adminMainTab, adminMessagesTab, canSupportRead, activeSupportConversations, selectedSupportConversationId]);
   const lastRun = dailyUsageResetStatus?.lastRun;
 
   const handleExportAuditCsv = () => {
@@ -1701,6 +1935,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             ['unlock', 'Unlock', <Key size={13} key="unlock-icon" />],
             ['users', 'Users', <Users size={13} key="users-icon" />],
             ['messages', 'Messages', <MessageSquareText size={13} key="messages-icon" />],
+            ['readerLibrary', 'Reader Library', <BookOpen size={13} key="reader-library-icon" />],
             ['pools', 'Primary AI Pool', <Key size={13} key="pools-icon" />],
             ['ops', 'Ops', <Activity size={13} key="ops-icon" />],
           ] as Array<[AdminMainTab, string, React.ReactNode]>).map(([tabId, label, icon]) => (
@@ -1798,29 +2033,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <MessageSquareText size={16} className="text-indigo-600" />
             Messages
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              value={supportSearch}
-              onChange={(event) => setSupportSearch(event.target.value)}
-              placeholder="Search uid, userId, status"
-              className="h-8 w-52 rounded border border-gray-200 px-2 text-xs"
-            />
-            <button
-              onClick={() => { void reloadSupportConversationsSafely(supportSearch); }}
-              className="h-8 rounded border border-indigo-200 bg-indigo-50 px-2.5 text-xs font-semibold text-indigo-700"
-            >
-              Search
-            </button>
-            <button
-              onClick={() => {
-                void reloadSupportConversationsSafely(supportSearch);
-                void reloadSupportAiPolicySafely();
-              }}
-              className="h-8 rounded border border-gray-200 px-2.5 text-xs font-semibold text-gray-700"
-            >
-              Refresh
-            </button>
-          </div>
+          {adminMessagesTab === 'broadcast' ? (
+            <div className="text-xs text-gray-500">Broadcast notices are managed below.</div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={supportSearch}
+                onChange={(event) => setSupportSearch(event.target.value)}
+                placeholder="Search uid, userId, status"
+                className="h-8 w-52 rounded border border-gray-200 px-2 text-xs"
+              />
+              <button
+                onClick={() => { void reloadSupportConversationsSafely(supportSearch); }}
+                className="h-8 rounded border border-indigo-200 bg-indigo-50 px-2.5 text-xs font-semibold text-indigo-700"
+              >
+                Search
+              </button>
+              <button
+                onClick={() => {
+                  void reloadSupportConversationsSafely(supportSearch);
+                  void reloadSupportAiPolicySafely();
+                }}
+                className="h-8 rounded border border-gray-200 px-2.5 text-xs font-semibold text-gray-700"
+              >
+                Refresh
+              </button>
+            </div>
+          )}
         </div>
         <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
           <span className="rounded border border-red-200 bg-red-50 px-2 py-1 font-semibold text-red-700">
@@ -1828,6 +2067,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </span>
           <span className="rounded border border-blue-200 bg-blue-50 px-2 py-1 font-semibold text-blue-700">
             Users: {userSupportConversations.length}
+          </span>
+          <span className="rounded border border-violet-200 bg-violet-50 px-2 py-1 font-semibold text-violet-700">
+            Broadcast: {adminNotices.length}
           </span>
           <span className="rounded border border-gray-200 bg-gray-50 px-2 py-1 text-gray-600">
             Total: {filteredSupportConversations.length}
@@ -1851,12 +2093,144 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           >
             Users
           </button>
+          <button
+            {...adminMessagesTabs.getTabProps('broadcast')}
+            className={`rounded px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${
+              adminMessagesTab === 'broadcast' ? 'bg-indigo-600 text-white' : 'text-gray-600'
+            }`}
+          >
+            Broadcast
+          </button>
         </div>
 
-        {!canSupportRead ? (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `support.read` permission.</div>
-        ) : (
-          <div {...adminMessagesTabs.getPanelProps(adminMessagesTab)} className="grid gap-3 lg:grid-cols-[minmax(18rem,22rem)_1fr]">
+        <div
+          {...adminMessagesTabs.getPanelProps(adminMessagesTab)}
+          className={!canSupportRead ? '' : adminMessagesTab === 'broadcast' ? 'space-y-3' : 'grid gap-3 lg:grid-cols-[minmax(18rem,22rem)_1fr]'}
+        >
+          {!canSupportRead ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `support.read` permission.</div>
+          ) : adminMessagesTab === 'broadcast' ? (
+            <div className="grid gap-3 lg:grid-cols-[minmax(20rem,24rem)_1fr]">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-2 text-xs font-semibold text-gray-700">Create broadcast notice</div>
+                <div className="grid gap-2 text-xs">
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Title</span>
+                    <input
+                      value={adminNoticeTitle}
+                      onChange={(event) => setAdminNoticeTitle(event.target.value)}
+                      placeholder="Service maintenance tonight"
+                      className="h-8 rounded border border-gray-200 px-2 text-xs"
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Message</span>
+                    <textarea
+                      value={adminNoticeMessage}
+                      onChange={(event) => setAdminNoticeMessage(event.target.value)}
+                      rows={5}
+                      placeholder="Tell users what changed and what they should expect."
+                      className="rounded border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Details (optional)</span>
+                    <textarea
+                      value={adminNoticeDetails}
+                      onChange={(event) => setAdminNoticeDetails(event.target.value)}
+                      rows={3}
+                      placeholder="Optional additional context for users."
+                      className="rounded border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Expires at</span>
+                    <input
+                      type="datetime-local"
+                      value={adminNoticeExpiresAt}
+                      onChange={(event) => setAdminNoticeExpiresAt(event.target.value)}
+                      required
+                      className="h-8 rounded border border-gray-200 px-2 text-xs"
+                    />
+                  </label>
+                  <button
+                    onClick={() => { void handleCreateAdminNotice(); }}
+                    disabled={!canMutateBroadcastNotices || Boolean(isSaving)}
+                    className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-700 disabled:opacity-60"
+                  >
+                    {isSaving === 'admin_notice_create' ? 'Creating...' : 'Create Broadcast'}
+                  </button>
+                  <div className="text-[11px] leading-4 text-gray-500">
+                    Expiry is required before creating. Use picker, `YYYY-MM-DDTHH:mm`, or `DD-MM-YYYY HH:mm`.
+                  </div>
+                  {adminUnlockRequired && !adminUnlockTokenPresent ? (
+                    <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                      Unlock is required for broadcast create/delete. Open the Unlock tab first.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-gray-700">Broadcast notices</div>
+                  <button
+                    onClick={() => { void reloadAdminNoticesSafely(); }}
+                    className="rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700"
+                  >
+                    {isLoadingAdminNotices ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+                {isLoadingAdminNotices ? (
+                  <div className="inline-flex items-center gap-2 text-xs text-gray-500">
+                    <Loader2 size={13} className="animate-spin" />
+                    Loading broadcast notices...
+                  </div>
+                ) : sortedAdminNotices.length === 0 ? (
+                  <div className="text-xs text-gray-500">No broadcast notices yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {sortedAdminNotices.map((notice) => {
+                      const noticeId = String(notice.id || '').trim();
+                      const statusToken = String(notice.status || '').trim().toLowerCase();
+                      const statusClass = statusToken === 'deleted'
+                        ? 'border-red-200 bg-red-50 text-red-700'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+                      return (
+                        <div key={noticeId || `${notice.title}-${notice.createdAt || notice.updatedAt || ''}`} className="rounded-lg border border-gray-200 bg-white p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="break-words text-xs font-semibold text-gray-800">{notice.title || '-'}</div>
+                              <div className="mt-1 whitespace-pre-wrap break-words text-xs text-gray-700">{notice.message || '-'}</div>
+                              {notice.details ? (
+                                <div className="mt-1 whitespace-pre-wrap break-words text-[11px] text-gray-500">{String(notice.details)}</div>
+                              ) : null}
+                            </div>
+                            <button
+                              onClick={() => { void handleDeleteAdminNotice(notice); }}
+                              disabled={!canMutateBroadcastNotices || statusToken === 'deleted' || Boolean(isSaving)}
+                              className="rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700 disabled:opacity-60"
+                            >
+                              {isSaving === `admin_notice_delete_${noticeId}` ? 'Deleting...' : 'Delete'}
+                            </button>
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+                            <span className={`rounded border px-1.5 py-0.5 font-semibold ${statusClass}`}>{statusToken || 'active'}</span>
+                            <span className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-gray-600">
+                              created {formatDate(notice.createdAt || notice.updatedAt || '')}
+                            </span>
+                            <span className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-gray-600">
+                              expires {formatDate(notice.expiresAt || '')}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
               <div className="mb-2 text-xs font-semibold text-gray-700">
                 {adminMessagesTab === 'critical' ? 'Critical queue' : 'Users queue'}
@@ -2050,8 +2424,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               )}
             </div>
-          </div>
-        )}
+            </>
+          )}
+        </div>
+        {ADMIN_MESSAGES_TAB_ORDER.filter((tabId) => tabId !== adminMessagesTab).map((tabId) => (
+          <div key={`admin-message-panel-${tabId}`} {...adminMessagesTabs.getPanelProps(tabId)} className="hidden" />
+        ))}
       </section>
 
       <section className="hidden rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -2275,6 +2653,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
       </section>
 
+      <section className={`${adminMainTab === 'readerLibrary' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
+        <AdminReaderLibraryPanel
+          mediaBackendUrl={mediaBackendUrl}
+          onToast={onToast}
+          canManage={canManageReaderLibrary}
+        />
+      </section>
+
       <section className={`${adminMainTab === 'users' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-bold text-gray-800">
@@ -2384,7 +2770,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </select>
                         <div className="mt-1 text-[10px] text-gray-500">
                           Cap: {Math.max(0, Number(row.limits?.maxCharsPerGeneration || 0)).toLocaleString()} chars
-                          {row.features?.earlyAccess ? ' • Early access' : ''}
+                          {row.features?.earlyAccess ? ' â€¢ Early access' : ''}
                         </div>
                       </td>
                       <td className="px-2 py-2">
@@ -2527,8 +2913,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <button {...couponTabs.getTabProps('subscription_discount')} className={`rounded px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${couponTab === 'subscription_discount' ? 'bg-indigo-600 text-white' : 'text-gray-600'}`}>Subscription</button>
           </div>
         </div>
-        {!canCouponsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `coupons.read` permission.</div> : (
-          <div {...couponTabs.getPanelProps(couponTab)}>
+        <div {...couponTabs.getPanelProps(couponTab)}>
+          {!canCouponsRead ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">Missing `coupons.read` permission.</div> : (
+            <>
             {canCouponsWrite && (
               <div className="grid gap-2">
                 <div className="grid grid-cols-3 gap-2">
@@ -2639,8 +3026,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
+            </>
+          )}
+        </div>
+        {couponTabIds.filter((tabId) => tabId !== couponTab).map((tabId) => (
+          <div key={`admin-coupon-panel-${tabId}`} {...couponTabs.getPanelProps(tabId)} className="hidden" />
+        ))}
       </section>
 
       <section className={`${adminMainTab === 'pools' ? '' : 'hidden'} rounded-2xl border border-gray-200 bg-white p-4 shadow-sm`}>
@@ -2745,17 +3136,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <button onClick={() => { void reloadOpsSafely(); void reloadAlertsSafely(); void reloadSchedulerSafely(); void reloadAuditSafely(); void reloadAudioMetadataSafely(); void reloadAnalyticsSafely(); void reloadAccountingSafely(); }} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-gray-700"><RefreshCw size={13} />Refresh</button>
         </div>
         <div className="mb-3 flex flex-wrap gap-2" {...opsTabs.listProps}>
-          {([
-            ['usage', 'Usage'],
-            ['tokens', 'Tokens'],
-            ['guardian', 'Guardian'],
-            ['alerts', 'Alerts'],
-            ['scheduler', 'Scheduled Tasks'],
-            ['audit', 'Audit Ledger'],
-            ['analytics', 'Coupon Analytics'],
-            ['accounting', 'Accounting'],
-          ] as Array<[OpsTab, string]>).map(([tabId, label]) => (
-            <button key={tabId} {...opsTabs.getTabProps(tabId)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${opsTab === tabId ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}>{label}</button>
+          {opsTabIds.map((tabId) => (
+            <button key={tabId} {...opsTabs.getTabProps(tabId)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${opsTab === tabId ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-700'}`}>{opsTabLabels[tabId]}</button>
           ))}
         </div>
 
@@ -2764,6 +3146,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="space-y-3 text-xs">
             {isLoadingOps ? <div className="text-gray-500">Loading ops telemetry...</div> : (
               <>
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="font-semibold text-gray-800">Voice clone provider</div>
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${voiceCloneProviderReady ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {voiceCloneProviderReady ? 'Ready' : 'Not ready'}
+                    </span>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-4">
+                    <div>Active: <strong>{voiceCloneProviderActive}</strong></div>
+                    <div>Default: <strong>{voiceCloneProviderDefault}</strong></div>
+                    <div>Device: <strong>{String(voiceCloneProviderInfo?.device || 'n/a')}</strong></div>
+                    <div>Detail: <strong>{String(voiceCloneProviderInfo?.detail || 'n/a')}</strong></div>
+                  </div>
+                  {canOpsMutate ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <select
+                        value={voiceCloneProviderDraft}
+                        onChange={(event) => setVoiceCloneProviderDraft(event.target.value as VoiceCloneProviderKey)}
+                        className="h-8 rounded border border-gray-200 bg-white px-2 text-xs"
+                      >
+                        <option value="cloud_run">cloud_run</option>
+                        <option value="modal">modal</option>
+                      </select>
+                      <button
+                        onClick={() => { void handleSaveVoiceCloneProvider(); }}
+                        disabled={isSaving === 'voice_clone_provider'}
+                        className="h-8 rounded border border-indigo-200 bg-indigo-50 px-2 text-xs font-semibold text-indigo-700 disabled:opacity-60"
+                      >
+                        {isSaving === 'voice_clone_provider' ? 'Saving...' : 'Switch'}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Requests</div><div className="text-lg font-bold text-gray-900">{asNumber((opsUsage?.windows as Record<string, Record<string, unknown>> | undefined)?.total?.requests).toLocaleString()}</div></div>
                   <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Queue depth</div><div className="text-lg font-bold text-gray-900">{asNumber((opsQueue?.queue as Record<string, unknown> | undefined)?.depth).toLocaleString()}</div></div>
@@ -2858,8 +3273,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </select>
                 <select value={audioMetadataEngine} onChange={(event) => setAudioMetadataEngine(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs">
                   <option value="">All engines</option>
-                  <option value="GEM">Prime</option>
-                  <option value="KOKORO">Basic</option>
+                  {audioMetadataEngineOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
                 <input type="date" value={audioMetadataFrom} onChange={(event) => setAudioMetadataFrom(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
                 <input type="date" value={audioMetadataTo} onChange={(event) => setAudioMetadataTo(event.target.value)} className="h-8 rounded border border-gray-200 px-2 text-xs" />
@@ -3062,9 +3480,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         ))}
         </div>
+        {opsTabIds.filter((tabId) => tabId !== opsTab).map((tabId) => (
+          <div key={`admin-ops-panel-${tabId}`} {...opsTabs.getPanelProps(tabId)} className="hidden" />
+        ))}
       </section>
+      {ADMIN_MAIN_TAB_ORDER.filter((tabId) => tabId !== adminMainTab).map((tabId) => (
+        <section key={`admin-main-panel-${tabId}`} {...adminMainTabs.getPanelProps(tabId)} className="hidden" />
+      ))}
       </div>
       </section>
     </div>
   );
 };
+

@@ -1,14 +1,15 @@
 import type { SupportConversation } from '../../../../services/adminService';
 
-export type AdminMessagesTab = 'critical' | 'users';
+export type AdminMessagesTab = 'critical' | 'users' | 'broadcast';
 
-export const ADMIN_MESSAGES_TAB_ORDER: readonly AdminMessagesTab[] = ['critical', 'users'] as const;
+export const ADMIN_MESSAGES_TAB_ORDER: readonly AdminMessagesTab[] = ['critical', 'users', 'broadcast'] as const;
 export const DEFAULT_ADMIN_MESSAGES_TAB: AdminMessagesTab = 'critical';
 
 const toToken = (value: unknown): string => String(value || '').trim().toLowerCase();
 
 export const resolveAdminMessagesTab = (value: unknown): AdminMessagesTab => {
   const token = toToken(value);
+  if (token === 'broadcast' || token === 'notices') return 'broadcast';
   return token === 'users' ? 'users' : 'critical';
 };
 

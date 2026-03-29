@@ -91,85 +91,284 @@ def test_user_profile_upsert_failfast_on_firestore_unavailable(monkeypatch) -> N
         assert "temporarily unavailable" in str(exc.detail).lower()
 
 
-def test_checkout_releases_coupon_reservation_when_customer_create_fails(monkeypatch) -> None:
+def test_checkout_returns_502_when_stripe_customer_create_fails(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
-    monkeypatch.setattr(backend_app, "_stripe_price_id_for_plan", lambda _plan, phase="first": "price_ok")
-    monkeypatch.setattr(backend_app, "_stripe_plan_prices_configured", lambda: True)
-    monkeypatch.setattr(
-        backend_app,
-        "_reserve_subscription_coupon_for_checkout",
-        lambda _uid, _code, _plan: {"coupon": {"id": "coupon_1"}, "reservationId": "res_1"},
-    )
+    monkeypatch.setattr(backend_app, "_stripe_price_id_for_plan", lambda _plan, phase="first": "price_test_1")
+    monkeypatch.setattr(backend_app, "_stripe_plan_prices_configured", lambda required_plan=None: True)
     monkeypatch.setattr(backend_app, "_load_entitlement", lambda _uid: backend_app._default_entitlement(_uid))
-    released: list[str] = []
-    monkeypatch.setattr(
-        backend_app,
-        "_release_subscription_coupon_reservation",
-        lambda reservation_id, reason="": released.append(f"{reservation_id}:{reason}"),
-    )
 
-    class _StripeFailCustomer:
+    class _Stripe:
         class Customer:
             @staticmethod
             def create(**_kwargs):
                 raise RuntimeError("customer create failed")
 
-    monkeypatch.setattr(backend_app, "stripe", _StripeFailCustomer)
+        class checkout:
+            class Session:
+                @staticmethod
+                def create(**_kwargs):
+                    raise AssertionError("checkout session should not be created when customer creation fails")
+
+    monkeypatch.setattr(backend_app, "stripe", _Stripe())
     client = TestClient(backend_app.app)
     response = client.post(
         "/billing/checkout-session",
-        headers={"x-dev-uid": "checkout_user"},
-        json={"plan": "starter", "couponCode": "SAVE20"},
+        headers={"x-dev-uid": "checkout_user", "Idempotency-Key": "checkout_user:starter:1"},
+        json={"plan": "starter"},
     )
     assert response.status_code == 502
-    assert released == ["res_1:customer_create_failed"]
+
+
+def test_stripe_checkout_session_honors_idempotency_key(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
+    monkeypatch.setattr(backend_app, "_stripe_price_id_for_plan", lambda _plan, phase="first": "price_test_1")
+    monkeypatch.setattr(backend_app, "_stripe_plan_prices_configured", lambda required_plan=None: True)
+    monkeypatch.setattr(backend_app, "_load_entitlement", lambda uid: backend_app._default_entitlement(uid))
+
+    captured_sessions: list[dict[str, object]] = []
+
+    class _Stripe:
+        class Customer:
+            @staticmethod
+            def create(**kwargs):
+                _ = kwargs
+                return {"id": "cus_test_123"}
+
+        class checkout:
+            class Session:
+                @staticmethod
+                def create(**kwargs):
+                    captured_sessions.append(dict(kwargs))
+                    return {"id": "cs_test_123", "url": "https://checkout.test"}
+
+    monkeypatch.setattr(backend_app, "stripe", _Stripe())
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/checkout-session",
+        headers={"x-dev-uid": "checkout_user", "Idempotency-Key": "checkout_user:starter:1"},
+        json={"plan": "starter"},
+    )
+
+    assert response.status_code == 200
+    assert len(captured_sessions) == 1
+    assert str(captured_sessions[0].get("idempotency_key") or "") == "checkout_user:starter:1"
+
+
+def test_token_pack_checkout_session_honors_idempotency_key(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
+    monkeypatch.setattr(backend_app, "_load_entitlement", lambda uid: backend_app._default_entitlement(uid))
+    monkeypatch.setattr(backend_app, "_token_pack_config", lambda pack_key: {"priceInr": 499})
+    monkeypatch.setattr(backend_app, "_token_pack_vf_for_pack", lambda pack_key: 650)
+    monkeypatch.setattr(backend_app, "_token_pack_amount_inr_for_plan", lambda plan_name, pack_key: 499)
+
+    captured_sessions: list[dict[str, object]] = []
+
+    class _Stripe:
+        class Customer:
+            @staticmethod
+            def create(**kwargs):
+                _ = kwargs
+                return {"id": "cus_test_456"}
+
+        class checkout:
+            class Session:
+                @staticmethod
+                def create(**kwargs):
+                    captured_sessions.append(dict(kwargs))
+                    return {"id": "cs_pack_test_123", "url": "https://checkout.test/pack"}
+
+    monkeypatch.setattr(backend_app, "stripe", _Stripe())
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/token-pack/checkout-session",
+        headers={"x-dev-uid": "token_pack_user", "Idempotency-Key": "token_pack_user:standard:1"},
+        json={"pack": "standard"},
+    )
+
+    assert response.status_code == 200
+    assert len(captured_sessions) == 1
+    assert str(captured_sessions[0].get("idempotency_key") or "") == "token_pack_user:standard:1"
+
+
+def test_billing_subscription_cancel_updates_stripe_and_syncs_entitlement(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda _uid: {
+            "plan": "Pro",
+            "status": "active",
+            "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
+            "stripeCustomerId": "cus_test_123",
+            "subscriptionId": "sub_test_123",
+            "billingCountry": "in",
+        },
+    )
+
+    modify_calls: list[dict[str, object]] = []
+    sync_calls: list[dict[str, object]] = []
+
+    class _Stripe:
+        class Subscription:
+            @staticmethod
+            def modify(subscription_id: str, **kwargs):
+                modify_calls.append({"subscription_id": subscription_id, **kwargs})
+                return {
+                    "id": subscription_id,
+                    "status": "active",
+                    "cancel_at_period_end": bool(kwargs.get("cancel_at_period_end")),
+                    "items": {"data": [{"price": {"id": "price_pro_monthly"}}]},
+                }
+
+    monkeypatch.setattr(backend_app, "stripe", _Stripe())
+    monkeypatch.setattr(
+        backend_app,
+        "_sync_entitlement_from_subscription",
+        lambda **kwargs: sync_calls.append(dict(kwargs)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_build_billing_account_summary",
+        lambda _uid: {
+            "subscription": {"id": "sub_test_123", "cancelAtPeriodEnd": True},
+            "billing": {"stripeReady": True},
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post("/billing/subscription/cancel", headers={"x-dev-uid": "billing_user"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("provider") == backend_app.BILLING_PROVIDER_STRIPE
+    assert payload.get("subscription", {}).get("id") == "sub_test_123"
+    assert "cancel" in str(payload.get("message") or "").lower()
+    assert modify_calls == [{"subscription_id": "sub_test_123", "cancel_at_period_end": True}]
+    assert sync_calls == [
+        {
+            "uid": "billing_user",
+            "customer_id": "cus_test_123",
+            "subscription_id": "sub_test_123",
+            "subscription_status": "active",
+            "price_id": "price_pro_monthly",
+            "billing_country": "IN",
+        }
+    ]
+
+
+def test_billing_subscription_resume_updates_stripe_and_syncs_entitlement(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda _uid: {
+            "plan": "Pro",
+            "status": "active",
+            "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
+            "stripeCustomerId": "cus_test_456",
+            "subscriptionId": "sub_test_456",
+            "billingCountry": "us",
+        },
+    )
+
+    modify_calls: list[dict[str, object]] = []
+    sync_calls: list[dict[str, object]] = []
+
+    class _Stripe:
+        class Subscription:
+            @staticmethod
+            def modify(subscription_id: str, **kwargs):
+                modify_calls.append({"subscription_id": subscription_id, **kwargs})
+                return {
+                    "id": subscription_id,
+                    "status": "active",
+                    "cancel_at_period_end": bool(kwargs.get("cancel_at_period_end")),
+                    "items": {"data": [{"price": {"id": "price_pro_monthly"}}]},
+                }
+
+    monkeypatch.setattr(backend_app, "stripe", _Stripe())
+    monkeypatch.setattr(
+        backend_app,
+        "_sync_entitlement_from_subscription",
+        lambda **kwargs: sync_calls.append(dict(kwargs)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_build_billing_account_summary",
+        lambda _uid: {
+            "subscription": {"id": "sub_test_456", "cancelAtPeriodEnd": False},
+            "billing": {"stripeReady": True},
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post("/billing/subscription/resume", headers={"x-dev-uid": "billing_user"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("provider") == backend_app.BILLING_PROVIDER_STRIPE
+    assert payload.get("subscription", {}).get("id") == "sub_test_456"
+    assert "resume" in str(payload.get("message") or "").lower()
+    assert modify_calls == [{"subscription_id": "sub_test_456", "cancel_at_period_end": False}]
+    assert sync_calls == [
+        {
+            "uid": "billing_user",
+            "customer_id": "cus_test_456",
+            "subscription_id": "sub_test_456",
+            "subscription_status": "active",
+            "price_id": "price_pro_monthly",
+            "billing_country": "US",
+        }
+    ]
 
 
 def test_billing_webhook_idempotent_by_event_id(monkeypatch) -> None:
     _reset_inmemory_state()
-    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
-    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
-    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
-    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test")
-    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
-    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
+    first_allowed, first_row = backend_app._stripe_webhook_event_begin("evt_dedupe_1", "payment.captured")
+    second_allowed, second_row = backend_app._stripe_webhook_event_begin("evt_dedupe_1", "payment.captured")
 
-    credit_calls: list[str] = []
-    monkeypatch.setattr(
-        backend_app,
-        "_credit_paid_vf",
-        lambda **kwargs: credit_calls.append(str(kwargs.get("uid") or "")),
-    )
-    client = TestClient(backend_app.app)
-    event_payload = {
-        "id": "evt_dedupe_1",
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_token_pack_1",
-                "metadata": {
-                    "kind": "token_pack",
-                    "uid": "wallet_user_1",
-                    "packKey": "micro",
-                    "packVf": "50000",
-                    "standardAmountInr": "550",
-                    "finalAmountInr": "550",
-                },
-                "customer": "cus_wallet_1",
-                "amount_total": 55000,
-                "currency": "inr",
-            }
-        },
-    }
-    first = client.post("/billing/webhook", json=event_payload)
-    second = client.post("/billing/webhook", json=event_payload)
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert second.json().get("duplicate") is True
-    assert credit_calls == ["wallet_user_1"]
+    assert first_allowed is True
+    assert str(first_row.get("state") or "") == "processing"
+    assert second_allowed is False
+    assert str(second_row.get("state") or "") == "processing"
+
+    backend_app._stripe_webhook_event_complete("evt_dedupe_1", status="succeeded")
+    third_allowed, third_row = backend_app._stripe_webhook_event_begin("evt_dedupe_1", "payment.captured")
+    assert third_allowed is False
+    assert str(third_row.get("state") or "") == "succeeded"
+
+
+def test_billing_webhook_retries_after_failed_processing(monkeypatch) -> None:
+    _reset_inmemory_state()
+    first_allowed, first_row = backend_app._stripe_webhook_event_begin("evt_retryable_1", "payment.captured")
+    assert first_allowed is True
+    assert str(first_row.get("state") or "") == "processing"
+
+    backend_app._stripe_webhook_event_complete("evt_retryable_1", status="failed", error_detail="temporary billing failure")
+    failed_row = dict(backend_app._INMEMORY_STRIPE_WEBHOOK_EVENTS.get("evt_retryable_1") or {})
+    assert str(failed_row.get("state") or "") == "failed"
+    assert "temporary billing failure" in str(failed_row.get("lastError") or "")
+
+    retry_allowed, retry_row = backend_app._stripe_webhook_event_begin("evt_retryable_1", "payment.captured")
+    assert retry_allowed is True
+    assert str(retry_row.get("state") or "") == "processing"
+    assert int(retry_row.get("attemptCount") or 0) >= 2
+
+    backend_app._stripe_webhook_event_complete("evt_retryable_1", status="succeeded")
+    final_row = dict(backend_app._INMEMORY_STRIPE_WEBHOOK_EVENTS.get("evt_retryable_1") or {})
+    assert str(final_row.get("state") or "") == "succeeded"
 
 
 def test_unknown_price_id_preserves_existing_plan() -> None:
@@ -245,4 +444,3 @@ def test_token_pack_expiry_recalculation_migration(monkeypatch) -> None:
     assert "lot_expired" not in by_id
     assert by_id["lot_keep"]["expiresAt"] == "2026-06-01T00:00:00+00:00"
     assert by_id["lot_manual"]["expiresAt"] is None
-

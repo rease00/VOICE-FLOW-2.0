@@ -118,3 +118,25 @@ def test_ocr_fallback_exhaustion_returns_retry_metadata(monkeypatch) -> None:
         match = re.search(r"retryAfterMs=(\d+)", message)
         assert match is not None
         assert int(match.group(1)) > 0
+
+
+def test_allocator_failure_release_can_skip_ghost_token_usage() -> None:
+    key = _make_key(13)
+    allocator = GeminiRateAllocator(backend_app.GEMINI_ALLOCATOR_CONFIG, wait_slice_ms=100)
+    model_id = "gemini-2.5-flash-tts"
+
+    acquire = allocator.acquire_for_models(
+        model_candidates=[model_id],
+        key_pool=[key],
+        requested_tokens=321,
+        wait_timeout_ms=1000,
+    )
+    assert acquire.lease is not None
+
+    allocator.release(acquire.lease, success=False, used_tokens=0, error_kind="timeout")
+    snapshot = allocator.snapshot([key])
+    key_entry = snapshot["keys"][0]
+    model_entry = next(item for item in key_entry["models"] if item["model"] == model_id)
+
+    assert int(model_entry["usage"]["requests"]) == 1
+    assert int(model_entry["usage"]["tokens"]) == 0

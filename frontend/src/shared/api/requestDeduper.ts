@@ -49,6 +49,13 @@ const resolveRequestSignal = (input: RequestInfo | URL, init?: RequestInit): Abo
   return null;
 };
 
+const stripSignalFromInit = (init?: RequestInit): RequestInit | undefined => {
+  if (!init) return undefined;
+  const next = { ...(init as RequestInit & { priority?: string }) };
+  delete (next as RequestInit & { signal?: AbortSignal | null }).signal;
+  return next;
+};
+
 const resolveRequestCache = (input: RequestInfo | URL, init?: RequestInit): string => {
   if (typeof init?.cache === 'string' && init.cache) return init.cache;
   if (typeof Request !== 'undefined' && input instanceof Request) return String(input.cache || '');
@@ -103,7 +110,6 @@ const resolveRequestPriority = (input: RequestInfo | URL, init?: RequestInit): s
 const buildRequestKey = (input: RequestInfo | URL, init?: RequestInit): string | null => {
   const method = resolveRequestMethod(input, init);
   if (method !== 'GET') return null;
-  if (resolveRequestSignal(input, init)) return null;
 
   const url = resolveRequestUrl(input).trim();
   if (!url) return null;
@@ -133,6 +139,94 @@ const buildRequestKey = (input: RequestInfo | URL, init?: RequestInit): string |
   ].join('::');
 };
 
+const buildSharedFetchArgs = (
+  input: RequestInfo | URL,
+  init?: RequestInit
+): { input: RequestInfo | URL; init?: RequestInit } => {
+  const initWithoutSignal = stripSignalFromInit(init);
+  if (!(typeof Request !== 'undefined' && input instanceof Request)) {
+    return initWithoutSignal ? { input, init: initWithoutSignal } : { input };
+  }
+
+  const mergedInit: RequestInit & { priority?: string } = {
+    ...initWithoutSignal,
+    method: resolveRequestMethod(input, init),
+  };
+
+  const mergedHeaders = resolveRequestHeaders(input, init);
+  if (mergedHeaders) mergedInit.headers = mergedHeaders;
+
+  const cache = resolveRequestCache(input, init);
+  if (cache) mergedInit.cache = cache as RequestCache;
+
+  const credentials = resolveRequestCredentials(input, init);
+  if (credentials) mergedInit.credentials = credentials as RequestCredentials;
+
+  const mode = resolveRequestMode(input, init);
+  if (mode) mergedInit.mode = mode as RequestMode;
+
+  const redirect = resolveRequestRedirect(input, init);
+  if (redirect) mergedInit.redirect = redirect as RequestRedirect;
+
+  const referrerPolicy = resolveRequestReferrerPolicy(input, init);
+  if (referrerPolicy) mergedInit.referrerPolicy = referrerPolicy as ReferrerPolicy;
+
+  const integrity = resolveRequestIntegrity(input, init);
+  if (integrity) mergedInit.integrity = integrity;
+
+  if (resolveRequestKeepalive(input, init) === '1') {
+    mergedInit.keepalive = true;
+  }
+
+  const priority = resolveRequestPriority(input, init);
+  if (priority) mergedInit.priority = priority as RequestPriority;
+
+  const url = resolveRequestUrl(input).trim();
+  return { input: url || input, init: mergedInit };
+};
+
+const createAbortError = (): Error => {
+  try {
+    return new DOMException('The operation was aborted.', 'AbortError');
+  } catch {
+    const error = new Error('The operation was aborted.');
+    error.name = 'AbortError';
+    return error;
+  }
+};
+
+const awaitResponseWithSignal = async (pending: Promise<Response>, signal: AbortSignal | null): Promise<Response> => {
+  if (!signal) return pending;
+  if (signal.aborted) throw createAbortError();
+
+  return new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(createAbortError());
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      (response) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(response);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      }
+    );
+  });
+};
+
 const inFlightRequests = new Map<string, Promise<Response>>();
 
 export const fetchWithRequestDedup = async (
@@ -145,20 +239,21 @@ export const fetchWithRequestDedup = async (
     return fetchImpl(input, init);
   }
 
+  const callerSignal = resolveRequestSignal(input, init);
   const existing = inFlightRequests.get(key);
   if (existing) {
-    return (await existing).clone();
+    const response = await awaitResponseWithSignal(existing, callerSignal);
+    return response.clone();
   }
 
-  const pending = fetchImpl(input, init);
+  const sharedArgs = buildSharedFetchArgs(input, init);
+  const pending = fetchImpl(sharedArgs.input, sharedArgs.init);
   inFlightRequests.set(key, pending);
-
-  try {
-    const response = await pending;
-    return response;
-  } finally {
+  void pending.finally(() => {
     if (inFlightRequests.get(key) === pending) {
       inFlightRequests.delete(key);
     }
-  }
+  });
+
+  return await awaitResponseWithSignal(pending, callerSignal);
 };

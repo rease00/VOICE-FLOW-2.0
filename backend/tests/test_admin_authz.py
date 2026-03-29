@@ -96,6 +96,24 @@ def test_admin_endpoint_requires_allowlisted_uid_in_dev_mode(monkeypatch) -> Non
     assert non_admin.status_code == 403
 
 
+def test_admin_allowlist_env_helper_ignores_public_fallbacks(monkeypatch) -> None:
+    monkeypatch.delenv("VF_ADMIN_APPROVER_UIDS", raising=False)
+    monkeypatch.delenv("VF_ADMIN_APPROVER_EMAILS", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_VF_ADMIN_APPROVER_UIDS", "public_admin")
+    monkeypatch.setenv("NEXT_PUBLIC_VF_ADMIN_APPROVER_EMAILS", "public@example.com")
+    monkeypatch.setenv("VITE_VF_ADMIN_APPROVER_UIDS", "vite_admin")
+    monkeypatch.setenv("VITE_VF_ADMIN_APPROVER_EMAILS", "vite@example.com")
+
+    assert backend_app._server_only_allowlist_env("VF_ADMIN_APPROVER_UIDS") == frozenset()
+    assert backend_app._server_only_allowlist_env("VF_ADMIN_APPROVER_EMAILS") == frozenset()
+
+    monkeypatch.setenv("VF_ADMIN_APPROVER_UIDS", "server_admin, second_admin")
+    monkeypatch.setenv("VF_ADMIN_APPROVER_EMAILS", "Admin@One.com, Second@Two.com")
+
+    assert backend_app._server_only_allowlist_env("VF_ADMIN_APPROVER_UIDS") == frozenset({"server_admin", "second_admin"})
+    assert backend_app._server_only_allowlist_env("VF_ADMIN_APPROVER_EMAILS") == frozenset({"Admin@One.com", "Second@Two.com"})
+
+
 def test_admin_actor_requires_ops_read_permission(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
@@ -603,7 +621,7 @@ def test_admin_can_submit_tts_without_userid_profile(monkeypatch) -> None:
         json={
             "request_id": f"test_{uuid.uuid4().hex}",
             "mode": "single_speaker",
-            "engine": "GEM",
+            "engine": "PRIME",
             "text": "admin synthesis bypass check",
         },
     )

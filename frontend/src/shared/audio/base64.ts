@@ -1,3 +1,5 @@
+import { authFetch } from '../../../services/authHttpClient';
+
 const CHUNK_SIZE = 8192;
 
 export const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
@@ -21,7 +23,10 @@ export const fileToBase64 = async (file: File): Promise<string> => {
 export const fetchUrlToBase64 = async (url: string): Promise<string> => {
   const raw = String(url || '').trim();
   if (!raw) return '';
-  const response = await fetch(raw);
+  const isOpaqueBrowserUrl = /^(?:blob:|data:)/i.test(raw);
+  const response = isOpaqueBrowserUrl
+    ? await fetch(raw)
+    : await authFetch(raw, undefined, { requireAuth: true });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -30,6 +35,13 @@ export const fetchUrlToBase64 = async (url: string): Promise<string> => {
     throw new Error('Empty audio response');
   }
   return arrayBufferToBase64(buffer);
+};
+
+export const buildBase64DataUrl = (audioBase64: string, contentType: string = 'audio/wav'): string => {
+  const safe = String(audioBase64 || '').trim();
+  if (!safe) return '';
+  const safeContentType = String(contentType || 'audio/wav').trim() || 'audio/wav';
+  return `data:${safeContentType};base64,${safe}`;
 };
 
 export const base64ToArrayBuffer = (encoded: string): ArrayBuffer => {

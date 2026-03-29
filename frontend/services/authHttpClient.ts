@@ -6,6 +6,7 @@ import { fetchWithRequestDedup } from '../src/shared/api/requestDeduper';
 export interface AuthFetchOptions {
   requireAuth?: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 interface TokenResolution {
@@ -109,8 +110,36 @@ const getCurrentIdTokenWithRefresh = async (forceRefresh: boolean): Promise<Toke
   }
 };
 
-const sleep = async (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+const createAbortError = (): Error => {
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
+};
+
+const sleep = async (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  const timeoutId = setTimeout(() => {
+    cleanup();
+    resolve();
+  }, Math.max(0, ms));
+
+  const onAbort = () => {
+    cleanup();
+    reject(createAbortError());
+  };
+
+  const cleanup = () => {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', onAbort);
+  };
+
+  if (signal?.aborted) {
+    cleanup();
+    reject(createAbortError());
+    return;
+  }
+
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
 
 const readResponseDetail = async (response: Response): Promise<string> => {
   try {
@@ -169,21 +198,23 @@ export const authFetch = async (
     const attempt = await resolveRequestHeaders(forceTokenRefresh);
     const timeoutMs = Number(options.timeoutMs || 0);
     const shouldApplyTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
-    const controller = shouldApplyTimeout ? new AbortController() : null;
-    const originalSignal = init.signal;
+    const callerSignals = [init.signal, options.signal].filter(Boolean) as AbortSignal[];
+    const controller = shouldApplyTimeout || callerSignals.length > 0 ? new AbortController() : null;
     let timeoutTriggered = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const forwardAbort = () => controller?.abort();
 
-    if (originalSignal && controller) {
-      if (originalSignal.aborted) {
-        controller.abort();
-      } else {
-        originalSignal.addEventListener('abort', forwardAbort, { once: true });
+    if (controller) {
+      for (const signal of callerSignals) {
+        if (signal.aborted) {
+          controller.abort();
+        } else {
+          signal.addEventListener('abort', forwardAbort, { once: true });
+        }
       }
     }
 
-    if (controller) {
+    if (controller && shouldApplyTimeout) {
       timeoutId = setTimeout(() => {
         timeoutTriggered = true;
         controller.abort();
@@ -195,8 +226,8 @@ export const authFetch = async (
         ...init,
         headers: attempt.headers,
       };
-      if (controller?.signal || originalSignal) {
-        fetchInit.signal = controller?.signal || originalSignal || null;
+      if (controller?.signal) {
+        fetchInit.signal = controller.signal;
       }
       const response = await fetchWithRequestDedup(input, fetchInit);
       return {
@@ -204,14 +235,16 @@ export const authFetch = async (
         hasFirebaseToken: attempt.hasFirebaseToken,
       };
     } catch (error: unknown) {
-      if (timeoutTriggered && controller && !originalSignal?.aborted) {
+      if (timeoutTriggered && controller && !callerSignals.some((signal) => signal.aborted)) {
         throw new Error(formatRequestTimeoutMessage(input, timeoutMs));
       }
       throw error;
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
-      if (originalSignal && controller) {
-        originalSignal.removeEventListener('abort', forwardAbort);
+      if (controller) {
+        for (const signal of callerSignals) {
+          signal.removeEventListener('abort', forwardAbort);
+        }
       }
     }
   };
@@ -228,7 +261,8 @@ export const authFetch = async (
     }
 
     for (const retryDelayMs of TOKEN_TIMING_RETRY_DELAYS_MS) {
-      await sleep(retryDelayMs);
+      const retrySignal = options.signal || init.signal;
+      await sleep(retryDelayMs, retrySignal ?? undefined);
       const retry = await runAttempt(true);
       response = retry.response;
       hasFirebaseToken = retry.hasFirebaseToken;

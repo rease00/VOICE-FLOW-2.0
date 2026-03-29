@@ -108,9 +108,6 @@ def merge_env_files(paths: list[Path]) -> dict[str, str]:
 
 
 def get_env(key: str, fallback: dict[str, str]) -> str:
-    explicit = os.getenv(key)
-    if explicit is not None:
-        return str(explicit)
     return str(fallback.get(key) or "")
 
 
@@ -161,18 +158,29 @@ def load_rows_from_allowlists(
     env_values: dict[str, str],
     password: str,
     create_missing_uids: bool,
+    allow_public_admin_env: bool = False,
 ) -> list[SeedTarget]:
     if len(password) < 8:
         raise ValueError("Password must be at least 8 characters.")
 
     uid_tokens: list[str] = []
     uid_tokens.extend(csv_tokens(get_env("VF_ADMIN_APPROVER_UIDS", env_values)))
-    uid_tokens.extend(csv_tokens(get_env("VITE_ADMIN_UID_ALLOWLIST", env_values)))
+    if allow_public_admin_env:
+        uid_tokens.extend(csv_tokens(get_env("NEXT_PUBLIC_ADMIN_UID_ALLOWLIST", env_values)))
+        uid_tokens.extend(csv_tokens(get_env("VITE_ADMIN_UID_ALLOWLIST", env_values)))
 
     email_tokens: list[str] = []
-    email_tokens.extend(csv_tokens(get_env("VITE_ADMIN_EMAIL_ALLOWLIST", env_values)))
-    login_email = normalize_email(get_env("VITE_ADMIN_LOGIN_EMAIL", env_values))
-    if login_email:
+    email_tokens.extend(csv_tokens(get_env("VF_ADMIN_APPROVER_EMAILS", env_values)))
+    server_login_email = normalize_email(get_env("VF_ADMIN_LOGIN_EMAIL", env_values))
+    if server_login_email:
+        email_tokens.append(server_login_email)
+    if allow_public_admin_env:
+        email_tokens.extend(csv_tokens(get_env("NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST", env_values)))
+        email_tokens.extend(csv_tokens(get_env("VITE_ADMIN_EMAIL_ALLOWLIST", env_values)))
+    login_email = normalize_email(
+        get_env("NEXT_PUBLIC_ADMIN_LOGIN_EMAIL", env_values) or get_env("VITE_ADMIN_LOGIN_EMAIL", env_values)
+    )
+    if allow_public_admin_env and login_email:
         email_tokens.append(login_email)
 
     unique_uids: list[str] = []
@@ -232,6 +240,7 @@ def find_or_create_auth_user(target: SeedTarget, dry_run: bool, create_missing_u
             updates: dict[str, Any] = {
                 "password": target.password,
                 "display_name": target.display_name,
+                "email_verified": True,
             }
             if target.email and not str(getattr(user_record, "email", "") or "").strip():
                 updates["email"] = target.email
@@ -245,6 +254,7 @@ def find_or_create_auth_user(target: SeedTarget, dry_run: bool, create_missing_u
                         email_record.uid,
                         password=target.password,
                         display_name=target.display_name,
+                        email_verified=True,
                     )
                     return email_record.uid, "update-by-email"
                 except auth.UserNotFoundError:
@@ -257,6 +267,7 @@ def find_or_create_auth_user(target: SeedTarget, dry_run: bool, create_missing_u
                 email=email_for_create,
                 password=target.password,
                 display_name=target.display_name,
+                email_verified=True,
             )
             return created.uid, "create-by-uid"
 
@@ -270,6 +281,7 @@ def find_or_create_auth_user(target: SeedTarget, dry_run: bool, create_missing_u
             email=safe_email,
             password=target.password,
             display_name=target.display_name,
+            email_verified=True,
         )
         return record.uid, "update-by-email"
     except auth.UserNotFoundError:
@@ -277,6 +289,7 @@ def find_or_create_auth_user(target: SeedTarget, dry_run: bool, create_missing_u
             email=safe_email,
             password=target.password,
             display_name=target.display_name,
+            email_verified=True,
         )
         return created.uid, "create-by-email"
 
@@ -344,12 +357,14 @@ def upsert_firestore_admin_rows(
 
 
 def resolve_env_values(env_file: str) -> dict[str, str]:
+    process_values = dict(os.environ)
     if env_file:
-        return merge_env_files([Path(env_file).expanduser().resolve()])
+        file_values = merge_env_files([Path(env_file).expanduser().resolve()])
+        return {**file_values, **process_values}
 
     repo_root = Path(__file__).resolve().parents[2]
     backend_root = Path(__file__).resolve().parents[1]
-    return merge_env_files(
+    file_values = merge_env_files(
         [
             repo_root / ".env",
             backend_root / ".env",
@@ -357,6 +372,7 @@ def resolve_env_values(env_file: str) -> dict[str, str]:
             backend_root / ".env.local",
         ]
     )
+    return {**file_values, **process_values}
 
 
 def main() -> int:
@@ -393,19 +409,37 @@ def main() -> int:
         action="store_true",
         help="Skip Firestore users/admin_roles upserts and only manage Firebase Auth + custom claims.",
     )
+    parser.add_argument(
+        "--allow-public-admin-env",
+        action="store_true",
+        help=(
+            "Allow legacy NEXT_PUBLIC/VITE admin allowlist env vars. "
+            "Disabled by default; prefer server-only VF_ADMIN_APPROVER_UIDS/VF_ADMIN_APPROVER_EMAILS."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate and print actions without writing.")
     args = parser.parse_args()
 
     create_missing_uids = not bool(args.skip_create_missing_uids)
 
     try:
+        env_values = resolve_env_values(args.env_file)
+        allow_public_admin_env = bool(args.allow_public_admin_env)
+        for key in (
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CLOUD_PROJECT",
+            "GCLOUD_PROJECT",
+            "FIREBASE_SERVICE_ACCOUNT_JSON",
+        ):
+            value = str(env_values.get(key) or "").strip()
+            if value:
+                os.environ[key] = value
         if args.csv:
             csv_path = Path(args.csv).expanduser().resolve()
             if not csv_path.exists():
                 raise SystemExit(f"CSV file not found: {csv_path}")
             targets = load_rows_from_csv(csv_path)
         else:
-            env_values = resolve_env_values(args.env_file)
             resolved_password = str(args.password or "").strip() or str(
                 get_env("FIREBASE_SEED_ADMIN_PASSWORD", env_values)
             ).strip()
@@ -413,10 +447,17 @@ def main() -> int:
                 raise ValueError(
                     "Missing admin seed password. Set --password or FIREBASE_SEED_ADMIN_PASSWORD in env/.env."
                 )
+            if allow_public_admin_env:
+                print(
+                    "[warn] using legacy public admin allowlist env vars (NEXT_PUBLIC/VITE). "
+                    "Prefer server-only VF_ADMIN_APPROVER_UIDS/VF_ADMIN_APPROVER_EMAILS.",
+                    file=sys.stderr,
+                )
             targets = load_rows_from_allowlists(
                 env_values=env_values,
                 password=resolved_password,
                 create_missing_uids=create_missing_uids,
+                allow_public_admin_env=allow_public_admin_env,
             )
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(f"Failed to load seed targets: {exc}") from exc

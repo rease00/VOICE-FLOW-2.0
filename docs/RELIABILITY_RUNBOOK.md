@@ -30,6 +30,21 @@
    - Keep `VF_ADMIN_COUPON_LIMIT_BYPASS=0` (dev-only escape hatch).
    - Set `GEMINI_RUNTIME_ADMIN_TOKEN` on both media-backend and gemini-runtime processes.
 
+## Security Containment For This Repo
+
+1. Firebase service-account handling:
+   - Rotate and revoke any leaked Firebase service-account key immediately.
+   - Keep service-account JSON out of the repo and rely on secret-manager injection only.
+   - Run `npm run precommit:secrets` before sharing patches that touch config, auth, billing, or infra files.
+2. Backend proxy hardening:
+   - Set `VF_BACKEND_PROXY_ALLOWLIST` explicitly in production.
+   - Set `VF_BACKEND_PROXY_MUTATION_ALLOWLIST` to only the prefixes that truly need write methods.
+   - Treat any proxy allowlist expansion as a deploy review item, not a casual env tweak.
+3. Canary gates for this remediation:
+   - No secret-scan failures in `npm run audit:secrets`.
+   - No 4xx or 5xx increase on proxy-routed traffic after tightening allowlists.
+   - No job-queue growth or webhook reconciliation drift during rollout.
+
 ## Admin Control Plane Phase 2
 
 1. RBAC role matrix:
@@ -78,8 +93,8 @@
 2. Included checks:
    - Type checks (`tsc --noEmit`)
    - Kubernetes manifest validation (`validate:k8s`)
-   - GEM/KOKORO Hindi emotion audit
-   - GEM/KOKORO long-text smoke audit
+   - PRIME and Duno Modal-gateway Hindi emotion audit
+   - PRIME and Duno Modal-gateway long-text smoke audit
    - Media backend audit
    - Runtime contract conformance
 3. Optional staging load gate:
@@ -177,7 +192,7 @@
 ## Runtime Capabilities
 
 1. Individual runtime capabilities:
-   - `GET /v1/capabilities` on Gemini/Kokoro runtimes
+   - `GET /v1/capabilities` on the Gemini runtime; Duno capabilities come from the backend `GET /tts/engines/capabilities` gateway
 2. Aggregated capabilities:
    - `GET /tts/engines/capabilities` on media backend
 
@@ -196,7 +211,6 @@
    - Includes `deadlineAtMs`, `queueAgeMs`, `queueDepthAtRead`, `engineConcurrencyAtRead`.
 5. Tail backend/runtime logs:
    - `GET /runtime/logs/tail?service=media-backend`
-   - `GET /runtime/logs/tail?service=kokoro-runtime`
    - `GET /runtime/logs/tail?service=gemini-runtime`
    - Canonical log directory: `backend/.runtime/logs/`
 6. If synthesis fails, use `trace_id`:
@@ -236,13 +250,13 @@
    - Symptom: unexpected `x-vf-post-tts-conversion` value or stale history voice labels.
    - Check first:
    - Job payload from `GET /tts/jobs/{job_id}` and response headers.
-   - Expected header values: `disabled` (GEM/NEURAL2) or `disabled_for_kokoro` (KOKORO).
+   - Expected header values: `disabled` (PRIME/VECTOR) or `disabled_for_duno` (DUNO).
    - `GET /account/generation-history` returns canonical `voiceId` and human `voiceName`.
 
 ## Recovery Procedure
 
 1. Attempt idempotent engine switch:
-   - `POST /tts/engines/switch` with `{ "engine": "KOKORO" | "GEM", "gpu": false }`
+   - `POST /tts/engines/switch` with `{ "engine": "DUNO" | "PRIME", "gpu": false }`
 2. If still unhealthy, restart services:
    - `npm run services:down`
    - `npm run services:bootstrap`
@@ -252,11 +266,11 @@
    - `npm run audit:media`
    - `npm run test:contracts`
 4. If queue overload persists under load:
-   - Increase worker/runtime replicas in Kubernetes.
+   - Increase worker replicas and verify the Modal Duno endpoint capacity.
    - Scale managed Redis tier.
    - Tune:
      - `VF_TTS_ENGINE_CONCURRENCY_GEM`
-     - `VF_TTS_ENGINE_CONCURRENCY_KOKORO`
+     - `VF_TTS_ENGINE_CONCURRENCY_DUNO`
      - `VF_TTS_QUEUE_JOB_TTL_MS`
      - `VF_TTS_QUEUE_SYNC_WAIT_MS`
 

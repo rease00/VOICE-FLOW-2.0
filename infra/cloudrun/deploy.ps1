@@ -5,6 +5,13 @@ param(
     [string]$Profile = "",
     [string]$Tag = "",
     [string]$RedisUrl = $env:VF_REDIS_URL,
+    [string]$DunoRuntimeUrl = $env:VF_DUNO_RUNTIME_URL,
+    [string]$DunoRuntimeToken = $env:VF_DUNO_RUNTIME_TOKEN,
+    [string]$KokoroRuntimeUrl = $env:VF_KOKORO_RUNTIME_URL,
+    [string]$KokoroRuntimeToken = $env:VF_KOKORO_RUNTIME_TOKEN,
+    [string]$OpenVoiceRuntimeUrl = $env:VF_OPENVOICE_RUNTIME_URL,
+    [string]$OpenVoiceRuntimeToken = $env:VF_OPENVOICE_RUNTIME_TOKEN,
+    [string]$OpenVoiceArtifactSecret = $env:VF_OPENVOICE_ARTIFACT_SECRET,
     [string]$VpcConnector = $env:VF_CLOUDRUN_VPC_CONNECTOR,
     [switch]$SkipBuild,
     [switch]$DryRun
@@ -82,16 +89,76 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
-            "__KOKORO_RUNTIME_URL__" {
-                $runtimeUrl = [string]$RuntimeUrls["voiceflow-kokoro-runtime"]
-                if (-not $runtimeUrl) {
+            "__DUNO_RUNTIME_URL__" {
+                if (-not $DunoRuntimeUrl) {
                     if ($DryRun) {
-                        $resolved[$key] = "https://voiceflow-kokoro-runtime.a.run.app"
+                        $resolved[$key] = "https://modal-duno-runtime.example"
                         break
                     }
-                    throw "Kokoro runtime URL is not available yet."
+                    $resolved[$key] = ""
+                    break
+                }
+                $resolved[$key] = [string]$DunoRuntimeUrl
+            }
+            "__KOKORO_RUNTIME_URL__" {
+                if (-not $KokoroRuntimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = "https://modal-kokoro-runtime.example"
+                        break
+                    }
+                    throw "Modal Kokoro runtime URL is required. Pass -KokoroRuntimeUrl or set VF_KOKORO_RUNTIME_URL."
+                }
+                $resolved[$key] = [string]$KokoroRuntimeUrl
+            }
+            "__OPENVOICE_RUNTIME_URL__" {
+                $runtimeUrl = [string]$RuntimeUrls["voiceflow-seed-vc-runtime"]
+                if (-not $runtimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = "https://voiceflow-seed-vc-runtime.a.run.app"
+                        break
+                    }
+                    throw "Seed VC runtime URL is not available yet."
                 }
                 $resolved[$key] = $runtimeUrl
+            }
+            "__OPENVOICE_MODAL_RUNTIME_URL__" {
+                if (-not $OpenVoiceRuntimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = ""
+                        break
+                    }
+                    $resolved[$key] = ""
+                    break
+                }
+                $resolved[$key] = [string]$OpenVoiceRuntimeUrl
+            }
+            "__KOKORO_RUNTIME_TOKEN__" {
+                if ($KokoroRuntimeToken) {
+                    $resolved[$key] = [string]$KokoroRuntimeToken
+                    break
+                }
+                $resolved[$key] = ""
+            }
+            "__OPENVOICE_RUNTIME_TOKEN__" {
+                if ($OpenVoiceRuntimeToken) {
+                    $resolved[$key] = [string]$OpenVoiceRuntimeToken
+                    break
+                }
+                $resolved[$key] = ""
+            }
+            "__OPENVOICE_MODAL_RUNTIME_TOKEN__" {
+                if ($OpenVoiceRuntimeToken) {
+                    $resolved[$key] = [string]$OpenVoiceRuntimeToken
+                    break
+                }
+                $resolved[$key] = ""
+            }
+            "__OPENVOICE_ARTIFACT_SECRET__" {
+                if ($OpenVoiceArtifactSecret) {
+                    $resolved[$key] = [string]$OpenVoiceArtifactSecret
+                    break
+                }
+                $resolved[$key] = ""
             }
             default {
                 $resolved[$key] = $value
@@ -99,6 +166,36 @@ function Resolve-EnvMap {
         }
     }
     return $resolved
+}
+
+function Resolve-SecretReference {
+    param([string]$SecretValue)
+
+    $token = [string]$SecretValue
+    if (-not $token) {
+        return ""
+    }
+
+    if ($token -match ':(latest|\d+)$') {
+        return $token
+    }
+
+    return "$token`:1"
+}
+
+function Get-ServiceOrderingRank {
+    param([string]$ServiceName)
+    $name = [string]$ServiceName
+    if ($name -like "*-runtime") {
+        return 0
+    }
+    if ($name -like "*worker*") {
+        return 1
+    }
+    if ($name -like "*api*") {
+        return 2
+    }
+    return 3
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -121,6 +218,7 @@ if (-not $Profile) {
 if (-not $Profile) {
     $Profile = "cloudrun-2vcpu"
 }
+$profileContract = $null
 if ($config.PSObject.Properties.Name -contains "profileContractPath") {
     $profileContractPath = Join-Path $repoRoot ([string]$config.profileContractPath)
     if (-not (Test-Path $profileContractPath)) {
@@ -180,14 +278,51 @@ if ($services.Count -eq 0) {
     throw "No services found in $ConfigPath."
 }
 
+if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "services")) {
+    $contractServices = $profileContract.services
+    foreach ($svc in $services) {
+        $serviceName = [string]$svc.name
+        if (-not $serviceName) {
+            continue
+        }
+        if (-not ($contractServices.PSObject.Properties.Name -contains $serviceName)) {
+            throw "Service '$serviceName' is not declared in profile contract '$Profile'."
+        }
+        $contractSvc = $contractServices.$serviceName
+        foreach ($field in @("cpu", "memory", "minInstances", "maxInstances", "concurrency", "cpuAlwaysAllocated")) {
+            if (-not ($contractSvc.PSObject.Properties.Name -contains $field)) {
+                continue
+            }
+            $expected = [string]$contractSvc.$field
+            $actual = [string]$svc.$field
+            if ($actual -ne $expected) {
+                throw "Profile contract mismatch for $serviceName.$field (expected '$expected', found '$actual')."
+            }
+        }
+    }
+}
+
 $imageByService = @{}
 $builds = @{}
+$imageUsageByName = @{}
 foreach ($svc in $services) {
     $serviceName = [string]$svc.name
     $imageName = [string]$svc.imageName
     $dockerfile = [string]$svc.dockerfile
     if (-not $serviceName -or -not $imageName -or -not $dockerfile) {
         throw "Each service requires name, imageName, and dockerfile."
+    }
+    if ($imageUsageByName.ContainsKey($imageName)) {
+        $first = $imageUsageByName[$imageName]
+        if ([string]$first.dockerfile -ne $dockerfile) {
+            throw ("Image name collision detected for '$imageName': services '{0}' and '{1}' use different dockerfiles. Assign distinct imageName values per service." -f [string]$first.serviceName, $serviceName)
+        }
+    }
+    else {
+        $imageUsageByName[$imageName] = @{
+            serviceName = $serviceName
+            dockerfile = $dockerfile
+        }
     }
     $imageUri = "$Region-docker.pkg.dev/$ProjectId/$repoName/$imageName`:$Tag"
     $imageByService[$serviceName] = $imageUri
@@ -218,9 +353,42 @@ else {
 }
 
 $runtimeUrls = @{}
-$runtimeServices = @($services | Where-Object { [string]$_.name -like "*-runtime" })
-$nonRuntimeServices = @($services | Where-Object { [string]$_.name -notlike "*-runtime" })
-$deployOrder = @($runtimeServices + $nonRuntimeServices)
+$serviceByName = @{}
+foreach ($svc in $services) {
+    $serviceByName[[string]$svc.name] = $svc
+}
+$deployOrder = @()
+$added = @{}
+if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "rolloutOrder")) {
+    foreach ($orderedName in @($profileContract.rolloutOrder)) {
+        $name = [string]$orderedName
+        if (-not $name) {
+            continue
+        }
+        if (-not $serviceByName.ContainsKey($name)) {
+            throw "Profile contract rolloutOrder contains unknown service '$name'."
+        }
+        if (-not $added.ContainsKey($name)) {
+            $deployOrder += $serviceByName[$name]
+            $added[$name] = $true
+        }
+    }
+}
+
+$remainingServices = @($services | Where-Object { -not $added.ContainsKey([string]$_.name) })
+if ($remainingServices.Count -gt 0) {
+    $remainingOrdered = @($remainingServices | Sort-Object `
+        @{ Expression = { Get-ServiceOrderingRank -ServiceName ([string]$_.name) } }, `
+        @{ Expression = { [string]$_.name } })
+    foreach ($svc in $remainingOrdered) {
+        $name = [string]$svc.name
+        if (-not $added.ContainsKey($name)) {
+            $deployOrder += $svc
+            $added[$name] = $true
+        }
+    }
+}
+Write-Host ("Deploy order: " + (($deployOrder | ForEach-Object { [string]$_.name }) -join " -> "))
 
 foreach ($svc in $deployOrder) {
     $name = [string]$svc.name
@@ -266,6 +434,26 @@ foreach ($svc in $deployOrder) {
         "--cpu", [string]$svc.cpu,
         "--memory", [string]$svc.memory
     )
+
+    $gpuCount = 0
+    if ($svc.PSObject.Properties.Name -contains "gpuCount") {
+        try {
+            $gpuCount = [int]$svc.gpuCount
+        }
+        catch {
+            $gpuCount = 0
+        }
+    }
+    $gpuType = ""
+    if ($svc.PSObject.Properties.Name -contains "gpuType") {
+        $gpuType = [string]$svc.gpuType
+    }
+    if ($gpuCount -gt 0) {
+        $deployArgs += @("--gpu", [string]$gpuCount)
+        if ($gpuType) {
+            $deployArgs += @("--gpu-type", $gpuType)
+        }
+    }
 
     if ($timeoutSeconds -gt 0) {
         $deployArgs += @("--timeout", "$($timeoutSeconds)s")
@@ -319,7 +507,8 @@ foreach ($svc in $deployOrder) {
     if ($secretEnvMap.Count -gt 0) {
         $pairs = @()
         foreach ($k in $secretEnvMap.Keys) {
-            $pairs += ("{0}={1}:latest" -f $k, $secretEnvMap[$k])
+            $secretRef = Resolve-SecretReference -SecretValue ([string]$secretEnvMap[$k])
+            $pairs += ("{0}={1}" -f $k, $secretRef)
         }
         $deployArgs += @("--set-secrets", ($pairs -join ","))
     }
@@ -343,7 +532,7 @@ foreach ($svc in $deployOrder) {
 Write-Host ""
 Write-Host "Cloud Run deployment completed."
 Write-Host "Runtime URLs:"
-foreach ($key in @("voiceflow-gemini-runtime", "voiceflow-kokoro-runtime")) {
+foreach ($key in @("voiceflow-seed-vc-runtime", "voiceflow-gemini-runtime")) {
     $value = [string]$runtimeUrls[$key]
     if ($value) {
         Write-Host "  $key = $value"

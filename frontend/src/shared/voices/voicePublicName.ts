@@ -1,11 +1,11 @@
-import { F5_VOICES, KOKORO_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
+import { F5_VOICES, DUNO_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
 
 const normalizeVoiceToken = (value: unknown): string =>
   String(value || '').trim().toLowerCase();
 
 const PUBLIC_VOICE_NAME_MAP = (() => {
   const out = new Map<string, string>();
-  const voiceCatalog = [...VOICES, ...KOKORO_VOICES, ...OPENAI_VOICES, ...F5_VOICES];
+  const voiceCatalog = [...VOICES, ...DUNO_VOICES, ...OPENAI_VOICES, ...F5_VOICES];
   for (const voice of voiceCatalog) {
     const label = String(voice.name || '').trim();
     if (!label) continue;

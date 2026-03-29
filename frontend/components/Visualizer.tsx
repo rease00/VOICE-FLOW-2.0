@@ -76,7 +76,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
     };
     readPalette();
     const observer = new MutationObserver(readPalette);
-    observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['class', 'style', 'data-theme', 'data-vf-brand-theme', 'data-vf-theme-mode', 'data-vf-resolved-theme'],
+    });
     return () => observer.disconnect();
   }, []);
 

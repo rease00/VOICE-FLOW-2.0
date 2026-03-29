@@ -1,6 +1,6 @@
 import { NovelChapter, NovelProject } from '../types';
 
-export const DRIVE_ROOT_FOLDER_NAME = 'VoiceFlow Novels';
+export const DRIVE_ROOT_FOLDER_NAME = 'V FLOW AI Novels';
 export const EXPORTS_FOLDER_NAME = 'Exports';
 
 export const MIME_GOOGLE_FOLDER = 'application/vnd.google-apps.folder';

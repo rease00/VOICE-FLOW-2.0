@@ -10,4 +10,4 @@ export const hasActiveAdminActor = (actor: AdminActor): boolean => {
 
 export const hasAdminConsoleAccess = (
   user: Pick<UserProfile, 'isAdmin' | 'adminActor'> | null | undefined
-): boolean => Boolean(user?.isAdmin) || hasActiveAdminActor(user?.adminActor);
+): boolean => hasActiveAdminActor(user?.adminActor);

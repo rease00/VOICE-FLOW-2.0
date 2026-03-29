@@ -32,6 +32,6 @@ export const resolveAccountTabFromSearch = (
   return normalizeAccountTab(params.get('vf-tab'), fallback);
 };
 
-export const shouldLazyLoadAccountTab = (tab: AccountTabKey): boolean => tab === 'support';
+export const shouldLazyLoadAccountTab = (tab: AccountTabKey): boolean => tab !== 'account';
 
 export const shouldKeepConversationSelection = (tab: AccountTabKey): boolean => tab === 'support';

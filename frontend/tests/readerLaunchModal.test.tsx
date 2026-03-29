@@ -33,29 +33,34 @@ describe('reader launch modal', () => {
     expect(html).toContain('Alice follows a rabbit into a strange world.');
   });
 
-  it('renders policy guidance and blocks read label when commercial status is blocked', () => {
+  it('keeps the read action available while loading details', () => {
     const html = renderToStaticMarkup(
       <ReaderLaunchModal
         item={createItem()}
         resolveMediaUrl={() => ''}
-        commercialCheck={{
-          result: 'blocked',
-          reason: 'Provider is blocked by strict policy.',
-          provider: 'project_gutenberg',
-          licenseToken: 'public-domain',
-          ownershipBasis: 'user_responsible',
-          intendedUse: 'tts_transform_only',
-          isSellingOriginalText: false,
-          catalogAllowed: false,
-          notes: [],
-          nextSteps: ['Use imported content with explicit rights.'],
-        }}
+        isLoading
         onClose={vi.fn()}
         onRead={vi.fn()}
       />
     );
 
-    expect(html).toContain('Commercial: BLOCKED');
-    expect(html).toContain('Use Licensed Import');
+    expect(html).toContain('Refreshing details from backend...');
+    expect(html).toContain('Read');
+    expect(html).not.toContain('Use Licensed Import');
+  });
+
+  it('falls back to cover text when no image url is available', () => {
+    const html = renderToStaticMarkup(
+      <ReaderLaunchModal
+        item={createItem()}
+        resolveMediaUrl={() => ''}
+        onClose={vi.fn()}
+        onRead={vi.fn()}
+      />
+    );
+
+    expect(html).toContain('vf-reader-v2-cover__fallback');
+    expect(html).toContain('Alice in Wonderland');
+    expect(html).toContain('Lewis Carroll');
   });
 });

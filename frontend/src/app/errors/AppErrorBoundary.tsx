@@ -8,6 +8,7 @@ import { BrandLogo } from '../../../components/BrandLogo';
 
 interface AppErrorBoundaryState {
   message: string;
+  technicalMessage: string;
 }
 
 interface CapturedAppError {
@@ -30,12 +31,30 @@ const isRecoverableAllowlistError = (message: string): boolean => {
   );
 };
 
+const isRecoverableAuthRejection = (message: string): boolean => {
+  const lowered = String(message || '').trim().toLowerCase();
+  if (!lowered) return false;
+  return (
+    lowered.includes('authentication required')
+    || lowered.includes('missing bearer token')
+    || lowered.includes('invalid auth token')
+    || lowered.includes('auth token did not include uid')
+  );
+};
+
 const isMediaVolumeAssignmentError = (message: string): boolean => {
   const lowered = String(message || '').trim().toLowerCase();
   if (!lowered) return false;
   return lowered.includes("failed to set the 'volume' property")
     && lowered.includes('htmlmediaelement');
 };
+
+const DEFAULT_APP_ERROR_MESSAGE = 'The app encountered an unexpected error. You can retry the interface or reload the app.';
+
+const createAppErrorState = (error: unknown): AppErrorBoundaryState => ({
+  message: DEFAULT_APP_ERROR_MESSAGE,
+  technicalMessage: sanitizeUiText((error as Error)?.message || 'Unknown render error'),
+});
 
 const clampUnitVolume = (value: unknown, fallback: number): number => {
   const parsed = Number(value);
@@ -109,12 +128,10 @@ const AppErrorFallback: React.FC<{ message: string; onRetry: () => void }> = ({ 
 );
 
 class ReactAppErrorBoundary extends React.Component<ReactAppErrorBoundaryProps, AppErrorBoundaryState> {
-  state: AppErrorBoundaryState = { message: '' };
+  state: AppErrorBoundaryState = { message: '', technicalMessage: '' };
 
   static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
-    return {
-      message: sanitizeUiText((error as Error)?.message || 'Unknown render error'),
-    };
+    return createAppErrorState(error);
   }
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
@@ -136,10 +153,10 @@ class ReactAppErrorBoundary extends React.Component<ReactAppErrorBoundaryProps, 
   }
 
   private handleRetry = (): void => {
-    if (isMediaVolumeAssignmentError(this.state.message)) {
+    if (isMediaVolumeAssignmentError(this.state.technicalMessage)) {
       sanitizeStoredVolumeSettings();
     }
-    this.setState({ message: '' });
+    this.setState({ message: '', technicalMessage: '' });
   };
 
   render(): React.ReactNode {
@@ -151,7 +168,7 @@ class ReactAppErrorBoundary extends React.Component<ReactAppErrorBoundaryProps, 
 }
 
 export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const [uiError, setUiError] = useState<AppErrorBoundaryState>({ message: '' });
+  const [uiError, setUiError] = useState<AppErrorBoundaryState>({ message: '', technicalMessage: '' });
   const { emit } = useNotifications();
 
   const reportCapturedError = useCallback((error: CapturedAppError, options: { showFallback?: boolean; title: string; userMessage: string; dedupeKey: string }) => {
@@ -169,7 +186,7 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
     emit('app.crash.captured', {
       title: options.title,
       message: options.userMessage,
-      details: error.message,
+      details: options.userMessage,
       sticky: true,
       dedupeKey: options.dedupeKey,
       action: {
@@ -178,7 +195,7 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
       },
     });
     if (options.showFallback !== false) {
-      setUiError({ message: error.message });
+      setUiError({ message: options.userMessage, technicalMessage: error.message });
     }
     void reportFrontendError(telemetryPayload);
   }, [emit]);
@@ -225,9 +242,32 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
         emit('custom.message', {
           title: 'Admin Access Blocked',
           message: 'This admin action is restricted for your account.',
-          details: 'Add your Firebase UID to VF_ADMIN_APPROVER_UIDS in backend env, then restart backend services.',
+          details: 'Ask a workspace administrator to grant admin access for your account, then retry.',
           sticky: true,
           dedupeKey: 'admin-uid-not-allowlisted',
+        });
+        void reportFrontendError(telemetryPayload);
+        return;
+      }
+
+      if (isRecoverableAuthRejection(message)) {
+        const telemetryPayload: Parameters<typeof reportFrontendError>[0] = {
+          message,
+          severity: 'warn',
+          component: 'AppErrorBoundary',
+          metadata: { kind: 'unhandledrejection', reason: 'auth_required' },
+        };
+        if (typeof reason?.stack === 'string') {
+          telemetryPayload.stack = reason.stack;
+        }
+        event.preventDefault();
+        emit('custom.message', {
+          title: 'Sign In Required',
+          message: 'Your session is missing or expired. Sign in again and retry.',
+          severity: 'warning',
+          category: 'security',
+          sticky: true,
+          dedupeKey: 'auth-required-unhandled-rejection',
         });
         void reportFrontendError(telemetryPayload);
         return;
@@ -255,11 +295,11 @@ export const AppErrorBoundary: React.FC<React.PropsWithChildren> = ({ children }
   }, [emit, reportCapturedError]);
 
   const handleFallbackRetry = useCallback(() => {
-    if (isMediaVolumeAssignmentError(uiError.message)) {
+    if (isMediaVolumeAssignmentError(uiError.technicalMessage)) {
       sanitizeStoredVolumeSettings();
     }
-    setUiError({ message: '' });
-  }, [uiError.message]);
+    setUiError({ message: '', technicalMessage: '' });
+  }, [uiError.technicalMessage]);
 
   if (uiError.message) {
     return <AppErrorFallback message={uiError.message} onRetry={handleFallbackRetry} />;

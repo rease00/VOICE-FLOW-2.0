@@ -157,45 +157,25 @@ def test_admin_unlock_rejects_expired_token_and_identity_mismatches(monkeypatch)
 
 
 def test_billing_webhook_security_enforced_in_production(monkeypatch) -> None:
-    class _DummyStripe:
-        api_key = ""
-
-        class Webhook:
-            @staticmethod
-            def construct_event(payload, sig_header, secret):
-                _ = payload, sig_header, secret
-                raise ValueError("signature verification failed")
-
-    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
     monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", True)
-    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_security")
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
 
     client = TestClient(backend_app.app)
-    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
     missing_secret = client.post("/billing/webhook", json={"type": "checkout.session.completed"})
     assert missing_secret.status_code == 503
 
-    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "whsec_security")
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "whsec_security")
     unsigned = client.post("/billing/webhook", json={"type": "checkout.session.completed"})
     assert unsigned.status_code == 400
-    assert "invalid webhook payload" in str((unsigned.json() or {}).get("detail") or "").lower()
+    assert "invalid razorpay webhook signature" in str((unsigned.json() or {}).get("detail") or "").lower()
 
 
 def test_billing_webhook_unsigned_requires_explicit_local_dev_mode(monkeypatch) -> None:
-    class _DummyStripe:
-        api_key = ""
-
-        class Webhook:
-            @staticmethod
-            def construct_event(payload, sig_header, secret):
-                _ = payload, sig_header, secret
-                raise AssertionError("Webhook.construct_event should not be used without a webhook secret")
-
-    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
-    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_unsigned_mode")
-    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
     monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
-    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED", True)
     monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", False)
 
     client = TestClient(backend_app.app)
@@ -226,6 +206,13 @@ def test_docs_paths_not_exempt_when_docs_disabled(monkeypatch) -> None:
     assert backend_app._auth_exempt_path("/docs") is False
     assert backend_app._auth_exempt_path("/openapi.json") is False
     assert backend_app._auth_exempt_path("/redoc") is False
+
+
+def test_tts_engine_status_paths_require_auth(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    assert backend_app._auth_exempt_path("/tts/engines/status") is False
+    assert backend_app._auth_exempt_path("/tts/engines/capabilities") is False
+    assert backend_app._auth_exempt_path("/tts/engines/voices") is False
 
 
 def test_video_asset_manifest_loader_removed() -> None:

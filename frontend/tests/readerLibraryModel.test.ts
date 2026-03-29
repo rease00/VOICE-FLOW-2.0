@@ -44,7 +44,6 @@ describe('reader library model', () => {
     const library = buildLibrary(items);
 
     expect(resolveHomeTabItems(library, 'novels', '').map((item) => item.id)).toEqual(['book-1', 'resume-1']);
-    expect(resolveHomeTabItems(library, 'comics', '').map((item) => item.id)).toEqual(['comic-1']);
     expect(resolveHomeTabItems(library, 'library', '').map((item) => item.id)).toEqual(['resume-1']);
     expect(resolveHomeTabItems(library, 'imported', '').map((item) => item.id)).toEqual(['upload-1']);
   });

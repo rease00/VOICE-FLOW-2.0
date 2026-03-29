@@ -100,7 +100,13 @@ const request = async (
   options: ApiRequestOptions | undefined
 ): Promise<Response> => {
   const url = resolveApiUrl(pathOrUrl, options?.baseUrl);
-  return authFetch(url, init, { requireAuth: Boolean(options?.requireAuth) });
+  const requireAuth = Boolean(options?.requireAuth);
+  const dedupeKeyUrl = `${url}${url.includes('?') ? '&' : '?'}__vf_dedupe_auth=${requireAuth ? '1' : '0'}`;
+  return fetchWithRequestDedup(
+    dedupeKeyUrl,
+    init,
+    (_input, requestInit) => authFetch(url, requestInit, { requireAuth })
+  );
 };
 
 const requestPublic = async (

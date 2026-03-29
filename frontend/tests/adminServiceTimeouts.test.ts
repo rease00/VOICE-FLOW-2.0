@@ -32,7 +32,7 @@ describe('adminService read timeouts', () => {
     await fetchAdminUsers('http://127.0.0.1:7800', { limit: 20 });
 
     expect(authFetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:7800/admin/users?limit=20',
+      '/api/backend/admin/users?limit=20',
       undefined,
       expect.objectContaining({
         requireAuth: true,
@@ -47,8 +47,12 @@ describe('adminService read timeouts', () => {
     await patchAdminUser('uid_1', { plan: 'Pro' }, 'http://127.0.0.1:7800');
 
     expect(authFetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:7800/admin/users/uid_1',
-      expect.objectContaining({ method: 'PATCH' }),
+      '/api/backend/admin/users/uid_1',
+      expect.objectContaining({
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: 'Pro' }),
+      }),
       { requireAuth: true }
     );
   });
@@ -59,7 +63,7 @@ describe('adminService read timeouts', () => {
     await fetchAdminAccountingSummary('http://127.0.0.1:7800', { from: '2026-03-01', to: '2026-03-13' });
 
     expect(authFetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:7800/admin/accounting/summary?from=2026-03-01&to=2026-03-13',
+      '/api/backend/admin/accounting/summary?from=2026-03-01&to=2026-03-13',
       undefined,
       expect.objectContaining({
         requireAuth: true,

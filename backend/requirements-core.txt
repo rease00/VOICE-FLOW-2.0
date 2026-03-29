@@ -19,3 +19,4 @@ firebase-admin==6.7.0
 stripe==11.4.1
 redis==5.2.1
 google-cloud-bigquery==3.38.0
+google-cloud-texttospeech==2.33.0

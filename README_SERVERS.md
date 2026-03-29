@@ -35,7 +35,7 @@ npm run start:backend
 npm run start:backend:gpu
 ```
 
-`start:backend:gpu` enables GPU mode only for eligible runtimes; Kokoro still runs on CPU.
+`start:backend:gpu` enables GPU mode only for eligible local runtimes; Duno uses the Modal-hosted endpoint either way.
 
 `npm run start:backend` is idempotent: it reconciles PID files with active listener PIDs and avoids unnecessary restarts unless runtime code/dependencies changed.
 
@@ -85,7 +85,7 @@ npm run services:down
 Dev orchestration env knobs:
 
 ```powershell
-$env:VF_DEV_BOOTSTRAP_MODE="cpu"   # or "gpu"; Kokoro stays CPU-only
+$env:VF_DEV_BOOTSTRAP_MODE="cpu"   # or "gpu"; Duno still uses the Modal-hosted endpoint
 $env:VF_DEV_BOOTSTRAP_RETRIES="3"
 $env:VF_DEV_RETRY_BASE_MS="1500"
 $env:VF_DEV_RETRY_MAX_MS="10000"
@@ -111,13 +111,19 @@ Optional local-dev bootstrap: set `VF_DEV_AUTO_SEED_FIREBASE_ADMINS=1` so `npm r
 Frontend `.env` keys (optional admin mapping):
 
 ```powershell
-VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>
-VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>   # optional
-VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>       # optional
+NEXT_PUBLIC_ADMIN_LOGIN_EMAIL=<your-admin-email>
+NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>   # optional
+NEXT_PUBLIC_ADMIN_UID_ALLOWLIST=<comma-separated-uids>       # optional
+VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>                     # transitional alias
+VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>          # transitional alias
+VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>              # transitional alias
 FIREBASE_SEED_ADMIN_PASSWORD=<strong-admin-password>   # local-dev seed password
 VITE_DEV_SERVER_EXPOSE=0
 VITE_ENABLE_LOCAL_BOOTSTRAP_ENDPOINT=0
 ```
+
+Local Google sign-in note:
+- Open the app on `http://localhost:3000` in dev. The frontend also redirects `127.0.0.1` to `localhost` so Firebase OAuth stays on an authorized domain.
 
 If guardian approval actions are used, allow explicit admin UIDs:
 
@@ -174,20 +180,8 @@ By default, allocator rotates one successful request at a time so large key pool
 Cross-request speaker-to-key affinity is disabled by default for the same reason. Set `GEMINI_SPEAKER_KEY_AFFINITY_ENABLED=1` only if you explicitly want repeated speaker groups to prefer the same key.
 After changing allocator limits or key pool files, restart both media backend and gemini runtime so active processes pick up the new effective limits.
 
-Kokoro runtime (port `7820`):
-
-```powershell
-python -m uvicorn app:app --app-dir backend/engines/kokoro-runtime --host 127.0.0.1 --port 7820
-```
-
-`KOKORO_DEVICE` is kept for compatibility only. The Kokoro runtime ignores GPU requests and always uses CPU.
-
-Kokoro runtime throughput env vars:
-
-```powershell
-$env:KOKORO_BATCH_DEFAULT_PARALLEL="2"
-$env:KOKORO_BATCH_PARALLEL_LIMIT="100"
-```
+Duno is no longer started as a local process. Configure the backend with `VF_DUNO_RUNTIME_URL` pointing to the Modal endpoint and set `VF_DUNO_RUNTIME_TOKEN` if the Modal service is private.
+OpenVoice/Seed-VC is also hosted remotely; configure `VF_OPENVOICE_RUNTIME_URL`, and set `VF_OPENVOICE_RUNTIME_TOKEN` plus `VF_OPENVOICE_ARTIFACT_SECRET` when the Modal service is private.
 
 Media backend TTS gateway concurrency env vars:
 
@@ -201,10 +195,10 @@ $env:VF_TTS_GATEWAY_QUEUE_WAIT_TIMEOUT_MS="30000"
 
 - Media backend: `http://127.0.0.1:7800/health`
 - Gemini runtime: `http://127.0.0.1:7810/health`
-- Kokoro runtime: `http://127.0.0.1:7820/health`
+- Duno runtime: use the media backend TTS gateway; there is no local `7820` process anymore.
 - Runtime capabilities (per engine):
   - Gemini: `http://127.0.0.1:7810/v1/capabilities`
-  - Kokoro: `http://127.0.0.1:7820/v1/capabilities`
+  - Duno: use `http://127.0.0.1:7800/tts/engines/capabilities`
 - Aggregated capabilities:
   - Media backend: `http://127.0.0.1:7800/tts/engines/capabilities`
 - Account generation history:
@@ -237,9 +231,11 @@ npm run backend:install
 Switch active TTS engine (bootstrap helper):
 
 ```powershell
-node backend/scripts/bootstrap-services.mjs switch KOKORO
-node backend/scripts/bootstrap-services.mjs switch GEM
+node backend/scripts/bootstrap-services.mjs switch PRIME
+node backend/scripts/bootstrap-services.mjs switch VECTOR
 ```
+
+`DUNO` is Modal-hosted and remote-only, so there is no local bootstrap switch target for it.
 
 Run strict reliability gate pipeline:
 
@@ -271,4 +267,3 @@ npm run backend -- audit:bootstrap:idempotency
 Per-service Python interpreter env vars (optional):
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
-- `VF_PYTHON_BIN_KOKORO_RUNTIME`

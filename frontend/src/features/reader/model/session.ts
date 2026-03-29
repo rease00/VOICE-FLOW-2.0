@@ -4,7 +4,24 @@ import type { ReaderMode } from './tabs';
 export const READER_TEXT_PREFETCH_THRESHOLD_CHARS = 1000;
 export const READER_PANEL_BATCH_SIZE = 10;
 export const READER_PANEL_PREFETCH_TRIGGER_INDEX = 5;
-export const READER_BILLING_RULE = '1 char = 1 VF';
+
+export const resolveReaderBillingDisplay = (session: ReaderSession | null | undefined): {
+  vfPerChar: number;
+  rule: string;
+  label: string;
+} => {
+  const billing = session?.billing;
+  return {
+    vfPerChar: Math.max(0, Number(billing?.vfPerChar || 0)),
+    rule: String(billing?.rule || '').trim(),
+    label: String(billing?.label || '').trim(),
+  };
+};
+
+export const resolveReaderProgressLabel = (session: ReaderSession | null | undefined): string => {
+  const progressPct = Math.max(0, Math.round(Number(session?.progressPct || 0)));
+  return `${progressPct}% complete`;
+};
 
 export const shouldTriggerReaderWindowPrefetch = (input: {
   consumedChars: number;

@@ -14,7 +14,9 @@ const MANIFEST_PATH = path.join(ROOT, "data", "voice-profile-generated-manifest.
 const REF_DIR_RELATIVE = "assets/voice_profiles/reference";
 
 const GEM_RUNTIME_URL = String(process.env.VF_GEMINI_RUNTIME_URL || "http://127.0.0.1:7810").trim().replace(/\/+$/, "");
-const KOKORO_RUNTIME_URL = String(process.env.VF_KOKORO_RUNTIME_URL || "http://127.0.0.1:7820").trim().replace(/\/+$/, "");
+const DUNO_RUNTIME_URL = String(
+  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL || ""
+).trim().replace(/\/+$/, "");
 
 function parseJson(raw) {
   const clean = String(raw || "").replace(/^\uFEFF/, "");
@@ -77,8 +79,8 @@ async function synthesizeGemReference({ text, voiceId, traceId }) {
   return bytes;
 }
 
-async function synthesizeKokoroReference({ text, voiceId, traceId }) {
-  const endpoint = `${KOKORO_RUNTIME_URL}/synthesize`;
+async function synthesizeDunoReference({ text, voiceId, traceId }) {
+  const endpoint = `${DUNO_RUNTIME_URL}/synthesize`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -103,8 +105,8 @@ async function synthesizeKokoroReference({ text, voiceId, traceId }) {
 }
 
 function buildProfileMappings(voiceMapPayload) {
-  const gemVoiceToProfile = voiceMapPayload?.engines?.GEM?.voiceToProfile || {};
-  const kokoroVoiceToProfile = voiceMapPayload?.engines?.KOKORO?.voiceToProfile || {};
+  const gemVoiceToProfile = voiceMapPayload?.engines?.PRIME?.voiceToProfile || {};
+  const dunoVoiceToProfile = voiceMapPayload?.engines?.DUNO?.voiceToProfile || {};
 
   const gemPairs = canonicalVoiceIdEntries(gemVoiceToProfile);
   const gemProfileToVoice = new Map();
@@ -114,19 +116,19 @@ function buildProfileMappings(voiceMapPayload) {
     }
   }
 
-  const kokoroProfileToVoice = new Map();
-  for (const [voiceId, profileId] of Object.entries(kokoroVoiceToProfile || {})) {
+  const dunoProfileToVoice = new Map();
+  for (const [voiceId, profileId] of Object.entries(dunoVoiceToProfile || {})) {
     const v = String(voiceId || "").trim();
     const p = String(profileId || "").trim();
     if (!v || !p) continue;
-    if (!kokoroProfileToVoice.has(p)) {
-      kokoroProfileToVoice.set(p, v);
+    if (!dunoProfileToVoice.has(p)) {
+      dunoProfileToVoice.set(p, v);
     }
   }
-  return { gemProfileToVoice, kokoroProfileToVoice };
+  return { gemProfileToVoice, dunoProfileToVoice };
 }
 
-function kokoroGenderFallbackVoice(profile) {
+function dunoGenderFallbackVoice(profile) {
   const gender = String(profile?.gender || "").trim().toLowerCase();
   if (gender === "male") return "hm_omega";
   return "hf_alpha";
@@ -138,11 +140,15 @@ async function main() {
   const bank = await readJson(PROFILE_BANK_PATH);
   const map = await readJson(VOICE_MAP_PATH);
 
+  if (!DUNO_RUNTIME_URL) {
+    throw new Error("VF_DUNO_RUNTIME_URL must point to the Modal Duno endpoint.");
+  }
+
   if (!Array.isArray(bank?.profiles)) {
     throw new Error("Invalid profile bank. Expected profiles[]");
   }
 
-  const { gemProfileToVoice, kokoroProfileToVoice } = buildProfileMappings(map);
+  const { gemProfileToVoice, dunoProfileToVoice } = buildProfileMappings(map);
 
   await fs.mkdir(REF_DIR, { recursive: true });
   const rows = [];
@@ -155,8 +161,8 @@ async function main() {
     }
 
     const gemVoiceId = String(gemProfileToVoice.get(profileId) || "").trim();
-    const kokoroVoiceId = String(kokoroProfileToVoice.get(profileId) || "").trim();
-    const kokoroFallbackVoiceId = kokoroGenderFallbackVoice(profile);
+    const dunoVoiceId = String(dunoProfileToVoice.get(profileId) || "").trim();
+    const dunoFallbackVoiceId = dunoGenderFallbackVoice(profile);
 
     const targetPath = path.join(REF_DIR, `${profileId}.wav`);
     if (!force) {
@@ -166,7 +172,7 @@ async function main() {
           profileId,
           status: "skip",
           reason: "exists",
-          voiceId: gemVoiceId || kokoroVoiceId || kokoroFallbackVoiceId,
+          voiceId: gemVoiceId || dunoVoiceId || dunoFallbackVoiceId,
           targetPath: path.relative(ROOT, targetPath),
         });
         console.log(`[skip] ${profileId} exists`);
@@ -181,7 +187,7 @@ async function main() {
     let engineUsed = "";
     let voiceUsed = "";
     let gemError = "";
-    let kokoroError = "";
+    let dunoError = "";
 
     if (gemVoiceId) {
       try {
@@ -190,7 +196,7 @@ async function main() {
           voiceId: gemVoiceId,
           traceId: `vf_profile_ref_${profileId}_gem`,
         });
-        engineUsed = "GEM";
+        engineUsed = "PRIME";
         voiceUsed = gemVoiceId;
       } catch (error) {
         gemError = error instanceof Error ? error.message : String(error);
@@ -198,19 +204,19 @@ async function main() {
     }
 
     if (!bytes) {
-      const fallbackOrder = [kokoroVoiceId, kokoroFallbackVoiceId].filter(Boolean);
-      for (const kokoroCandidate of fallbackOrder) {
+      const fallbackOrder = [dunoVoiceId, dunoFallbackVoiceId].filter(Boolean);
+      for (const dunoCandidate of fallbackOrder) {
         try {
-          bytes = await synthesizeKokoroReference({
+          bytes = await synthesizeDunoReference({
             text,
-            voiceId: kokoroCandidate,
-            traceId: `vf_profile_ref_${profileId}_kokoro`,
+            voiceId: dunoCandidate,
+            traceId: `vf_profile_ref_${profileId}_duno`,
           });
-          engineUsed = "KOKORO";
-          voiceUsed = kokoroCandidate;
+          engineUsed = "DUNO";
+          voiceUsed = dunoCandidate;
           break;
         } catch (error) {
-          kokoroError = error instanceof Error ? error.message : String(error);
+          dunoError = error instanceof Error ? error.message : String(error);
         }
       }
     }
@@ -228,12 +234,12 @@ async function main() {
       });
       console.log(`[ok] ${profileId} (${engineUsed}:${voiceUsed}) -> ${path.relative(ROOT, targetPath)}`);
     } else {
-      const reason = [gemError, kokoroError].filter(Boolean).join(" | ") || "no_runtime_available";
+      const reason = [gemError, dunoError].filter(Boolean).join(" | ") || "no_runtime_available";
       rows.push({
         profileId,
         status: "fail",
         engine: "none",
-        voiceId: gemVoiceId || kokoroVoiceId || kokoroFallbackVoiceId || "",
+        voiceId: gemVoiceId || dunoVoiceId || dunoFallbackVoiceId || "",
         reason,
       });
       console.log(`[fail] ${profileId} ${reason}`);
@@ -281,10 +287,10 @@ async function main() {
 
   const summary = {
     generatedAt: new Date().toISOString(),
-    note: "Voice profile reference clips generated from runtime mappings with GEM primary and Kokoro fallback.",
+    note: "Voice profile reference clips generated from runtime mappings with PRIME primary and Duno fallback.",
     runtimeUrls: {
       gem: GEM_RUNTIME_URL,
-      kokoro: KOKORO_RUNTIME_URL,
+      duno: DUNO_RUNTIME_URL,
     },
     rows,
   };

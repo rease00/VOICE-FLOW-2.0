@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppScreen } from '../../../../types';
 import { Onboarding } from '../../../../views/Onboarding';
-import { resolveAppPath } from '../../../../src/app/navigation';
+import { resolveAppPath, resolveLoginPath, type AuthRouteMode } from '../../../../src/app/navigation';
 
 export default function AppOnboardingPage() {
   const router = useRouter();
@@ -12,5 +12,9 @@ export default function AppOnboardingPage() {
     router.replace(resolveAppPath(screen));
   }, [router]);
 
-  return <Onboarding setScreen={setScreen} />;
+  const openAuthScreen = useCallback((mode: AuthRouteMode) => {
+    router.replace(resolveLoginPath(mode));
+  }, [router]);
+
+  return <Onboarding setScreen={setScreen} openAuthScreen={openAuthScreen} />;
 }

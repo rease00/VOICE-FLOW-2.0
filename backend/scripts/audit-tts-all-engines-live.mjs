@@ -56,17 +56,17 @@ const { headers: AUTH_HEADERS, auth: AUTH } = buildAuditHeaders(
 
 const ENGINES = [
   {
-    engine: 'KOKORO',
-    voiceId: String(process.env.VF_TTS_AUDIT_KOKORO_VOICE || 'af_heart').trim() || 'af_heart',
-    language: String(process.env.VF_TTS_AUDIT_KOKORO_LANGUAGE || 'en').trim() || 'en',
+    engine: 'DUNO',
+    voiceId: String(process.env.VF_TTS_AUDIT_DUNO_VOICE || 'af_heart').trim() || 'af_heart',
+    language: String(process.env.VF_TTS_AUDIT_DUNO_LANGUAGE || 'en').trim() || 'en',
   },
   {
-    engine: 'NEURAL2',
-    voiceName: String(process.env.VF_TTS_AUDIT_NEURAL2_VOICE || 'Fenrir').trim() || 'Fenrir',
-    language: String(process.env.VF_TTS_AUDIT_NEURAL2_LANGUAGE || 'en').trim() || 'en',
+    engine: 'VECTOR',
+    voiceName: String(process.env.VF_TTS_AUDIT_VECTOR_VOICE || 'Fenrir').trim() || 'Fenrir',
+    language: String(process.env.VF_TTS_AUDIT_VECTOR_LANGUAGE || 'en').trim() || 'en',
   },
   {
-    engine: 'GEM',
+    engine: 'PRIME',
     voiceName: String(process.env.VF_TTS_AUDIT_GEM_VOICE || 'Fenrir').trim() || 'Fenrir',
     language: String(process.env.VF_TTS_AUDIT_GEM_LANGUAGE || 'en').trim() || 'en',
   },
@@ -213,14 +213,14 @@ const resolveEngineProvider = (engineStatus, engineCapabilities, engine) => {
       engineStatus?.provider ||
       ''
     ).trim() ||
-    (engine === 'KOKORO' ? 'cpu' : 'hosted');
+    (engine === 'DUNO' ? 'cpu' : 'hosted');
   const providerPreference =
     capabilityMeta.providerPreference ||
     engineCapabilities?.provider_preference ||
     runtimeMeta.providerPreference ||
     runtimeCapabilities.providerPreference ||
     engineStatus?.provider_preference ||
-    (engine === 'KOKORO' ? ['cpu'] : ['hosted']);
+    (engine === 'DUNO' ? ['cpu'] : ['hosted']);
   const deviceMode =
     String(
       capabilityMeta.deviceMode ||
@@ -230,7 +230,7 @@ const resolveEngineProvider = (engineStatus, engineCapabilities, engine) => {
       engineStatus?.device_mode ||
       ''
     ).trim() ||
-    (engine === 'KOKORO' ? 'cpu' : 'remote');
+    (engine === 'DUNO' ? 'cpu' : 'remote');
   return {
     provider,
     providerPreference: Array.isArray(providerPreference) ? providerPreference : [providerPreference].filter(Boolean),
@@ -565,9 +565,9 @@ const main = async () => {
 
   const capabilitiesByEngine = capabilitiesProbe.ok
     ? {
-        KOKORO: resolveEngineCapabilities(capabilitiesProbe.payload, 'KOKORO'),
-        NEURAL2: resolveEngineCapabilities(capabilitiesProbe.payload, 'NEURAL2'),
-        GEM: resolveEngineCapabilities(capabilitiesProbe.payload, 'GEM'),
+        DUNO: resolveEngineCapabilities(capabilitiesProbe.payload, 'DUNO'),
+        VECTOR: resolveEngineCapabilities(capabilitiesProbe.payload, 'VECTOR'),
+        PRIME: resolveEngineCapabilities(capabilitiesProbe.payload, 'PRIME'),
       }
     : {};
 

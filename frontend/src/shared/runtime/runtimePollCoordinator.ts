@@ -1,5 +1,6 @@
 export interface RuntimePollLeaderLease {
   tabId: string;
+  leaseToken: string;
   expiresAtMs: number;
   heartbeatAtMs: number;
 }
@@ -57,6 +58,12 @@ const parseJson = <T>(raw: string): T | null => {
 export const createRuntimePollTabId = (): string =>
   `vf-tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
+const createRuntimePollLeaseToken = (): string => (
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `vf-lease-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+);
+
 export const resetRuntimePollCoordinationAvailabilityForTests = (): void => {
   runtimePollCoordinationAvailableCache = null;
 };
@@ -99,12 +106,21 @@ export const tryAcquireRuntimePollLeadership = (
     current.tabId === safeTabId ||
     Number(current.expiresAtMs || 0) <= safeNow;
   if (!canTake) return false;
+  const leaseToken = createRuntimePollLeaseToken();
   const next: RuntimePollLeaderLease = {
     tabId: safeTabId,
+    leaseToken,
     heartbeatAtMs: safeNow,
     expiresAtMs: safeNow + safeLeaseMs,
   };
-  return writeStorage(RUNTIME_POLL_LEADER_KEY, JSON.stringify(next));
+  if (!writeStorage(RUNTIME_POLL_LEADER_KEY, JSON.stringify(next))) return false;
+  const confirmed = readRuntimePollLeaderLease();
+  return Boolean(
+    confirmed &&
+    confirmed.tabId === safeTabId &&
+    confirmed.leaseToken === leaseToken &&
+    Number(confirmed.expiresAtMs || 0) > safeNow
+  );
 };
 
 export const renewRuntimePollLeadership = (tabId: string, nowMs: number, leaseMs: number): boolean =>

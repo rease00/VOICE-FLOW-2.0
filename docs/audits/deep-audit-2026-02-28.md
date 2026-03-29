@@ -23,7 +23,7 @@ Target state: current dirty working tree (no reverts)
 ## System Surfaces Audited
 - Backend API: `backend/app.py`
 - Gemini runtime: `backend/engines/gemini-runtime/app.py`
-- Kokoro runtime: `backend/engines/kokoro-runtime/app.py`
+- Duno runtime: Modal-hosted endpoint configured via `VF_DUNO_RUNTIME_URL`
 - CI/reliability gate: `backend/scripts/ci-reliability.mjs`
 - Frontend build/type/audit/test harness + Playwright smoke surfaces
 
@@ -72,7 +72,7 @@ Evidence: `auth-enforced-probe-results.json`, `auth-enforced-backend-stdout.log`
 - `npm run audit:tts:hindi` -> **FAIL**
   - Total 12 cases; pass 4, fail 8
   - Gemini: 2 failures (`synthesis_failed_504`, `synthesis_failed_503`)
-  - Kokoro: 6 failures (`duration_out_of_range_24_36`)
+  - Duno: 6 failures (`duration_out_of_range_24_36`)
 - `npm run audit:tts:longtext:smoke` -> **FAIL** (`fetch failed` / abort)
 - `npm run audit:tts:longtext:matrix` -> **FAIL** (`This operation was aborted`)
 

@@ -75,7 +75,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         setIsDragActive(false);
         handleFiles(event.dataTransfer?.files || null);
       }}
-      className={`vf-upload-dropzone relative overflow-hidden rounded-xl border-2 border-dashed px-4 py-4 text-center transition-all ${
+      className={`vf-upload-dropzone relative overflow-hidden rounded-xl border-2 border-dashed px-4 py-4 text-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
         isDragActive
           ? 'vf-upload-dropzone--active border-indigo-400 bg-indigo-50/70'
           : 'border-gray-200 bg-gray-50'
@@ -85,7 +85,10 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         type="file"
         accept={accept}
         multiple={multiple}
-        onChange={(event) => handleFiles(event.target.files)}
+        onChange={(event) => {
+          handleFiles(event.currentTarget.files);
+          event.currentTarget.value = '';
+        }}
         className="absolute inset-0 cursor-pointer opacity-0"
         disabled={disabled}
       />

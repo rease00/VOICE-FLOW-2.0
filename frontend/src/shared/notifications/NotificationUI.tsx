@@ -35,14 +35,12 @@ const readSettingsPanelOpen = (): boolean => {
 };
 
 const resolveToastRightOffset = (): string => {
-  if (typeof window === 'undefined') return '1rem';
   if (window.innerWidth < 768) return '0.5rem';
   if (!readSettingsPanelOpen()) return '1rem';
   return 'calc(min(28rem, 96vw) + 1rem)';
 };
 
 const resolveToastTopOffset = (): string => {
-  if (typeof window === 'undefined') return '1rem';
   if (window.innerWidth < 768) {
     return 'calc(0.75rem + env(safe-area-inset-top))';
   }
@@ -221,9 +219,10 @@ const CenterItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ it
 
 export const NotificationUI: React.FC = () => {
   const [filter, setFilter] = useState<'active' | 'all' | 'unread' | 'critical' | 'resolved'>('active');
-  const [isDarkUi, setIsDarkUi] = useState<boolean>(() => readDarkTheme());
-  const [toastRightOffset, setToastRightOffset] = useState<string>(() => resolveToastRightOffset());
-  const [toastTopOffset, setToastTopOffset] = useState<string>(() => resolveToastTopOffset());
+  const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
+  const [toastRightOffset, setToastRightOffset] = useState<string>('1rem');
+  const [toastTopOffset, setToastTopOffset] = useState<string>('1rem');
+  const [isClearAllConfirmOpen, setIsClearAllConfirmOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const {
     notifications,
@@ -233,6 +232,18 @@ export const NotificationUI: React.FC = () => {
     setCenterOpen,
     clearAll,
   } = useNotifications();
+
+  useEffect(() => {
+    const syncUiState = () => {
+      setIsDarkUi(readDarkTheme());
+      setToastRightOffset(resolveToastRightOffset());
+      setToastTopOffset(resolveToastTopOffset());
+    };
+
+    syncUiState();
+    window.addEventListener('resize', syncUiState);
+    return () => window.removeEventListener('resize', syncUiState);
+  }, []);
 
   const centerItems = useMemo(() => {
     if (filter === 'active') return notifications.filter((item) => item.status === 'active');
@@ -281,6 +292,12 @@ export const NotificationUI: React.FC = () => {
     );
     focusables[0]?.focus();
   }, [isCenterOpen]);
+
+  useEffect(() => {
+    if (!isCenterOpen || notifications.length === 0) {
+      setIsClearAllConfirmOpen(false);
+    }
+  }, [isCenterOpen, notifications.length]);
 
   useEffect(() => {
     if (!isCenterOpen) return;
@@ -392,8 +409,7 @@ export const NotificationUI: React.FC = () => {
                 type="button"
                 onClick={() => {
                   if (notifications.length === 0) return;
-                  if (!window.confirm('Clear all notifications?')) return;
-                  clearAll();
+                  setIsClearAllConfirmOpen(true);
                 }}
                 disabled={notifications.length === 0}
                 className={`rounded-md border px-2 py-1 text-[11px] font-semibold transition-colors disabled:opacity-45 ${isDarkUi ? 'border-rose-500/45 text-rose-200 hover:bg-rose-500/20' : 'border-rose-300 text-rose-700 hover:bg-rose-50'}`}
@@ -401,6 +417,33 @@ export const NotificationUI: React.FC = () => {
                 Clear all
               </button>
             </div>
+            {isClearAllConfirmOpen && (
+              <div className={`mx-4 mt-2 rounded-lg border px-3 py-2 ${isDarkUi ? 'border-rose-400/45 bg-rose-500/10 text-rose-100' : 'border-rose-200 bg-rose-50 text-rose-900'}`}>
+                <p className="text-xs font-semibold">Clear all notifications?</p>
+                <p className={`mt-1 text-[11px] ${isDarkUi ? 'text-rose-200/90' : 'text-rose-700'}`}>
+                  This removes all active and resolved items from your notification center.
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsClearAllConfirmOpen(false)}
+                    className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold ${isDarkUi ? 'border-rose-300/40 text-rose-100 hover:bg-rose-500/20' : 'border-rose-300 text-rose-700 hover:bg-rose-100'}`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearAll();
+                      setIsClearAllConfirmOpen(false);
+                    }}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-semibold text-white ${isDarkUi ? 'bg-rose-600 hover:bg-rose-500' : 'bg-rose-600 hover:bg-rose-700'}`}
+                  >
+                    Clear all now
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="h-[calc(100%-6.75rem)] overflow-y-auto p-3">
               {centerItems.length === 0 ? (
                 <div className={`rounded-xl border border-dashed p-6 text-center text-sm ${isDarkUi ? 'border-slate-700 text-slate-400' : 'border-slate-300 text-slate-500'}`}>

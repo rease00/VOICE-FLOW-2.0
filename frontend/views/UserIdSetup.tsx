@@ -115,47 +115,64 @@ export const UserIdSetup: React.FC<{ setScreen: (screen: AppScreen) => void }> =
     }
   };
 
+  const authControlTransitionClass = 'transition-[border-color,background-color,color,box-shadow,filter,opacity,transform]';
+  const authButtonTransitionClass = 'transition-[background-color,color,box-shadow,filter,opacity,transform]';
+  const authControlFocusClass = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950';
+  const authButtonFocusClass = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-100';
+
   return (
     <div className="vf-auth-shell min-h-[100dvh] w-full overflow-y-auto bg-transparent p-4 sm:p-6">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(70%_60%_at_0%_0%,rgba(99,102,241,0.12),transparent_60%),radial-gradient(75%_65%_at_100%_20%,rgba(14,165,233,0.12),transparent_62%)]" />
-      <div className="vf-auth-card vf-surface-card relative mx-auto my-6 w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl animate-in fade-in zoom-in duration-300 md:my-10 md:p-10">
+      <div className="vf-auth-card vf-surface-card relative mx-auto my-6 w-full max-w-md rounded-3xl border border-sky-200/80 bg-slate-100/95 p-8 shadow-2xl animate-in fade-in zoom-in duration-300 md:my-10 md:p-10">
         <div className="mb-6 text-center">
           <div className="mx-auto flex justify-center">
             <BrandLogo size="lg" tone="dark" />
           </div>
-          <p className="mt-3 text-sm text-gray-500">Set your one-time User ID to finish account setup.</p>
+          <p className="mt-3 text-sm text-slate-700">Choose your one-time User ID to finish setting up your account.</p>
         </div>
 
         {errorMsg && (
-          <div className="mb-4 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">
+          <div className="mb-4 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700" role="alert" aria-live="assertive" aria-atomic="true">
             <AlertCircle size={16} className="mt-0.5 shrink-0" />
             <span>{errorMsg}</span>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4" aria-busy={isChecking || isSubmitting}>
+          <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {isChecking ? 'Checking profile...' : isSubmitting ? 'Saving user ID...' : ''}
+          </p>
           <div>
-            <label className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-gray-500">User ID</label>
+            <label htmlFor="user-id-setup" className="mb-1 ml-1 block text-xs font-bold uppercase tracking-wide text-slate-600">User ID</label>
             <div className="relative">
               <input
+                id="user-id-setup"
+                name="userId"
+                type="text"
                 value={userId}
                 onChange={(event) => setUserId(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
                 placeholder={suggestedUserId || 'artist_01'}
                 pattern="[a-z0-9_]{4,24}"
                 title="Use lowercase letters, numbers, underscore. 4-24 chars."
-                className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-3 text-sm outline-none transition-all focus:border-indigo-500 focus:bg-white"
+                autoComplete="username"
+                inputMode="text"
+                spellCheck={false}
+                aria-describedby="user-id-setup-help"
+                aria-invalid={Boolean(errorMsg)}
+                className={`w-full rounded-xl border border-slate-600 bg-slate-900/85 py-3 pl-10 pr-3 text-sm text-slate-100 outline-none ${authControlTransitionClass} ${authControlFocusClass} placeholder:text-slate-500 focus:border-cyan-400 focus:bg-slate-950`}
                 required
                 disabled={isChecking || isSubmitting}
               />
-              <User size={16} className="absolute left-3 top-3.5 text-gray-400" />
+              <User size={16} className="absolute left-3 top-3.5 text-slate-500" />
             </div>
-            <p className="mt-1 text-[11px] text-gray-500">Lowercase only, 4-24 chars. This value is immutable.</p>
+            <p id="user-id-setup-help" className="mt-1 text-[11px] text-slate-500">Lowercase only, 4-24 chars. You can choose this once.</p>
           </div>
 
           <button
             type="submit"
             disabled={isChecking || isSubmitting}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-900 py-3.5 text-sm font-bold text-white shadow-lg shadow-gray-200 transition-all hover:bg-black disabled:cursor-not-allowed disabled:opacity-70"
+            aria-busy={isChecking || isSubmitting}
+            className={`flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-sky-600 to-cyan-500 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-500/20 ${authButtonTransitionClass} ${authButtonFocusClass} hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             {isChecking ? 'Checking profile...' : isSubmitting ? 'Saving...' : 'Continue to App'}
             {!isChecking && !isSubmitting && <ArrowRight size={16} />}
@@ -170,7 +187,7 @@ export const UserIdSetup: React.FC<{ setScreen: (screen: AppScreen) => void }> =
               setScreen(AppScreen.LOGIN);
             })();
           }}
-          className="mt-4 w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          className={`mt-4 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm font-semibold text-slate-100 ${authButtonTransitionClass} ${authButtonFocusClass} hover:bg-slate-800`}
         >
           Sign Out
         </button>

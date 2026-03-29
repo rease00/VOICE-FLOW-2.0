@@ -1,13 +1,19 @@
-import { F5_VOICES, KOKORO_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
+import { F5_VOICES, DUNO_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
 
 const UNKNOWN_VOICE_LABEL = 'Unknown voice';
 const LEGACY_HISTORY_VOICE_LABELS = new Set(['ai voice']);
 
 const normalizeVoiceToken = (value: unknown): string => String(value || '').trim().toLowerCase();
 
+const getMappedVoiceLabel = (value: unknown): string | null => {
+  const token = normalizeVoiceToken(value);
+  if (!token) return null;
+  return HISTORY_VOICE_LABELS.get(token) || null;
+};
+
 const HISTORY_VOICE_LABELS = (() => {
   const out = new Map<string, string>();
-  const voiceCatalog = [...VOICES, ...KOKORO_VOICES, ...OPENAI_VOICES, ...F5_VOICES];
+  const voiceCatalog = [...VOICES, ...DUNO_VOICES, ...OPENAI_VOICES, ...F5_VOICES];
   for (const voice of voiceCatalog) {
     const label = String(voice.name || '').trim();
     if (!label) continue;
@@ -20,15 +26,25 @@ const HISTORY_VOICE_LABELS = (() => {
 })();
 
 export const resolveHistoryVoiceLabel = (input: { voiceName?: unknown; voiceId?: unknown }): string => {
+  const mappedFromVoiceId = getMappedVoiceLabel(input.voiceId);
+  if (mappedFromVoiceId) {
+    return mappedFromVoiceId;
+  }
+
   const rawVoiceName = String(input.voiceName || '').trim();
-  if (rawVoiceName && !LEGACY_HISTORY_VOICE_LABELS.has(rawVoiceName.toLowerCase())) {
-    return rawVoiceName;
+  if (rawVoiceName) {
+    const mappedFromVoiceName = getMappedVoiceLabel(rawVoiceName);
+    if (mappedFromVoiceName) {
+      return mappedFromVoiceName;
+    }
+    if (!LEGACY_HISTORY_VOICE_LABELS.has(rawVoiceName.toLowerCase())) {
+      return rawVoiceName;
+    }
   }
 
   const rawVoiceId = String(input.voiceId || '').trim();
   if (rawVoiceId) {
-    const mappedLabel = HISTORY_VOICE_LABELS.get(normalizeVoiceToken(rawVoiceId));
-    return String(mappedLabel || rawVoiceId).trim() || UNKNOWN_VOICE_LABEL;
+    return rawVoiceId;
   }
 
   return UNKNOWN_VOICE_LABEL;

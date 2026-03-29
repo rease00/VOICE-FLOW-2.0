@@ -11,6 +11,7 @@ from array import array
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -105,6 +106,8 @@ def _extract_non_silent_run_levels(samples: list[int]) -> list[int]:
 
 
 def _configure_runtime_for_local_tests(runtime, key_pool: list[str]) -> None:
+    runtime.VF_TTS_UPSTREAM_PROVIDER = runtime.TTS_UPSTREAM_PROVIDER_RUNTIME
+    runtime.VF_TTS_TEXTTOSPEECH_ONLY = False
     runtime._SERVER_API_KEY_POOL = tuple(key_pool)
     runtime._SERVER_API_KEY_SET = frozenset(key_pool)
     if runtime.genai is None:
@@ -184,7 +187,7 @@ def test_grouped_synthesis_caps_concurrency_by_pool_size() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_concurrency",
-            engine="GEM",
+            engine="PRIME",
             auth_mode=auth_mode,
             source_policy=source_policy,
             target_voice="Fenrir",
@@ -223,7 +226,7 @@ def test_grouped_synthesis_reassembles_audio_in_line_index_order() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_ordering",
-            engine="GEM",
+            engine="PRIME",
             auth_mode=auth_mode,
             source_policy=source_policy,
             target_voice="Fenrir",
@@ -264,7 +267,7 @@ def test_grouped_synthesis_reports_key_selection_history() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_key_history",
-            engine="GEM",
+            engine="PRIME",
             auth_mode=auth_mode,
             source_policy=source_policy,
             target_voice="Fenrir",
@@ -314,7 +317,7 @@ def test_grouped_synthesis_retries_failed_group_once() -> None:
         runtime._synthesize_pcm_with_key_pool = _stub_synthesize_pcm_with_key_pool
         result = runtime._synthesize_studio_pair_groups(
             trace_id="trace_retry",
-            engine="GEM",
+            engine="PRIME",
             auth_mode=auth_mode,
             source_policy=source_policy,
             target_voice="Fenrir",
@@ -376,60 +379,63 @@ def test_synthesize_structured_returns_serial_line_chunks() -> None:
         runtime._synthesize_pcm_with_key_pool = original
 
 
+@pytest.mark.parametrize("legacy_engine", ["GEMINI", "NEURAL2", "DUNO_RUNTIME"])
+def test_synthesize_rejects_legacy_engine_aliases(legacy_engine: str) -> None:
+    runtime = _load_gemini_runtime_module()
+    client = TestClient(runtime.app)
+    runtime._synthesize_pcm_with_key_pool = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("legacy engine aliases should not reach synthesis")
+    )
+
+    response = client.post(
+        "/synthesize",
+        json={
+            "engine": legacy_engine,
+            "text": "hello world",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Invalid engine. Use DUNO, VECTOR, or PRIME." in str(response.json().get("detail") or response.text)
+
+
 def test_grouped_long_text_is_windowed_and_reassembled() -> None:
     runtime = _load_gemini_runtime_module()
     key_pool = [_make_key(41), _make_key(42), _make_key(43)]
     _configure_runtime_for_local_tests(runtime, key_pool)
-    original = runtime._synthesize_studio_pair_groups
-    windows_seen: list[list[int]] = []
+    original = runtime._synthesize_pcm_with_key_pool
+    window_indexes_seen: list[int] = []
+    lane_tokens_seen: list[str] = []
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
 
-    def _stub_grouped(**kwargs):
-        window_line_map = list(kwargs.get("normalized_line_map") or [])
-        line_indexes = [int(line.get("lineIndex", -1)) for line in window_line_map]
-        windows_seen.append(line_indexes)
-        line_chunks = []
-        pcm_fragments = []
-        for line_index in line_indexes:
-            pcm = _pcm_for_line_ids([line_index])
-            pcm_fragments.append(pcm)
-            line_chunks.append(
-                {
-                    "lineIndex": line_index,
-                    "pcmBytes": pcm,
-                    "splitMode": "duration",
-                    "silenceFallback": False,
-                }
-            )
-        wav_bytes = runtime.pcm16_to_wav(b"".join(pcm_fragments), sample_rate=24000)
-        return {
-            "wavBytes": wav_bytes,
-            "sampleRate": 24000,
-            "lineChunks": line_chunks,
-            "traceId": kwargs.get("trace_id"),
-            "model": "gemini-2.5-flash-preview-tts",
-            "speechModeUsed": "studio_pair_groups",
-            "speechModes": ["studio_pair_groups"],
-            "speechModeRequested": "studio_pair_groups",
-            "keySelectionIndex": 0,
-            "keyPoolSize": len(key_pool),
-            "speakerHint": "",
-            "windowCount": 1,
-            "diagnostics": {
-                "groupCount": 1,
-                "pauseSplitGroups": 0,
-                "durationSplitGroups": 1,
-                "concurrencyUsed": 1,
-            },
-        }
+    def _stub_pcm_with_pool(**kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            if active > max_active:
+                max_active = active
+        try:
+            time.sleep(0.03)
+            text_input = str(kwargs.get("text_input") or "")
+            matched = re.search(r"line_(\d+)", text_input)
+            line_index = int(matched.group(1)) if matched else 0
+            window_indexes_seen.append(int(kwargs.get("window_index") or 0))
+            lane_tokens_seen.append(str((list(kwargs.get("affinity_speakers") or [""])[0] or "")))
+            return _pcm_for_line_ids([line_index]), "gemini-2.5-flash-preview-tts", "single-speaker", 0
+        finally:
+            with lock:
+                active -= 1
 
     try:
-        runtime._synthesize_studio_pair_groups = _stub_grouped
+        runtime._synthesize_pcm_with_key_pool = _stub_pcm_with_pool
         speaker_voices = _speaker_voices(["A", "B", "C", "D"])
         line_map = []
         text_lines = []
         for index in range(6):
             speaker = ["A", "B", "C", "D"][index % 4]
-            text = ("word " * 900).strip()
+            text = (f"line_{index} " + ("word " * 900)).strip()
             line_map.append({"lineIndex": index, "speaker": speaker, "text": text})
             text_lines.append(f"{speaker}: {text}")
         request = runtime.SynthesizeRequest(
@@ -441,25 +447,30 @@ def test_grouped_long_text_is_windowed_and_reassembled() -> None:
             return_line_chunks=True,
         )
         result = runtime._synthesize_text_to_wav(request)
-        assert len(windows_seen) > 1
+        assert len(window_indexes_seen) > len(line_map)
+        assert len(set(window_indexes_seen)) == len(window_indexes_seen)
+        assert max_active <= 3
+        assert max_active >= 2
+        assert set(lane_tokens_seen) == {"lane:l1", "lane:l2", "lane:l3"}
+        assert lane_tokens_seen.count("lane:l1") >= 3
         chunks = list(result.get("lineChunks") or [])
         assert [int(item.get("lineIndex", -1)) for item in chunks] == [0, 1, 2, 3, 4, 5]
+        diagnostics = dict(result.get("diagnostics") or {})
+        assert diagnostics.get("strategies") == ["dialogue_three_lane_scheduler", "sentence_aware_chunking"]
+        assert int(diagnostics.get("laneCount") or 0) == 3
         levels = _extract_non_silent_run_levels(_decode_wav_samples(bytes(result["wavBytes"])))
-        assert levels[:6] == [1000, 1100, 1200, 1300, 1400, 1500]
+        assert levels.count(1000) >= 3
+        assert len(levels) >= len(window_indexes_seen)
     finally:
-        runtime._synthesize_studio_pair_groups = original
+        runtime._synthesize_pcm_with_key_pool = original
 
 
-def test_pair_mode_falls_back_to_split_windows_when_grouping_fails() -> None:
+def test_grouped_scripts_use_dialogue_scheduler_without_pair_group_recovery() -> None:
     runtime = _load_gemini_runtime_module()
     key_pool = [_make_key(51), _make_key(52)]
     _configure_runtime_for_local_tests(runtime, key_pool)
 
-    original_group_windows = runtime._synthesize_studio_pair_group_windows
     original_pcm_with_pool = runtime._synthesize_pcm_with_key_pool
-
-    def _stub_group_windows(**kwargs):
-        raise RuntimeError("forced_pair_groups_failure_for_test")
 
     def _stub_pcm_with_pool(**kwargs):
         line_ids = _parse_line_ids(str(kwargs.get("text_input") or ""))
@@ -468,13 +479,12 @@ def test_pair_mode_falls_back_to_split_windows_when_grouping_fails() -> None:
         return _pcm_for_line_ids(line_ids), "gemini-2.5-flash-preview-tts", "single-speaker", 0
 
     try:
-        runtime._synthesize_studio_pair_group_windows = _stub_group_windows
         runtime._synthesize_pcm_with_key_pool = _stub_pcm_with_pool
 
         line_map = _line_map_for_speakers(["A", "B", "A", "B"])
         request = runtime.SynthesizeRequest(
             text="\n".join(f"{line['speaker']}: {line['text']}" for line in line_map),
-            engine="NEURAL2",
+            engine="VECTOR",
             voiceName="Fenrir",
             speaker_voices=_speaker_voices(["A", "B"]),
             multi_speaker_mode="studio_pair_groups",
@@ -486,10 +496,9 @@ def test_pair_mode_falls_back_to_split_windows_when_grouping_fails() -> None:
         strategies = list(diagnostics.get("strategies") or [])
 
         assert len(bytes(result["wavBytes"])) > 0
-        assert bool(diagnostics.get("recoveryUsed")) is True
-        assert "pair_group_split_fallback" in strategies
-        assert "single_speaker_line_windows" in strategies
-        assert result.get("speechModeRequested") == "pair_group_split_fallback"
+        assert bool(diagnostics.get("recoveryUsed")) is False
+        assert strategies == ["dialogue_three_lane_scheduler", "sentence_aware_chunking"]
+        assert result.get("speechModeRequested") == "studio_pair_groups"
+        assert result.get("speechModeUsed") == "studio_pair_groups"
     finally:
-        runtime._synthesize_studio_pair_group_windows = original_group_windows
         runtime._synthesize_pcm_with_key_pool = original_pcm_with_pool

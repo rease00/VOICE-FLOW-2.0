@@ -1,16 +1,18 @@
 param(
     [Parameter(Mandatory = $true)][string]$ProjectId,
     [string]$Region = "us-central1",
+    [string]$Profile = "cloudrun-2vcpu",
+    [string]$ProfileContractPath = "",
     [string]$ServiceName = "voiceflow-api",
     [string]$CandidateRevision = "",
     [string]$StableRevision = "",
-    [string]$Steps = "10,50,100",
-    [int]$SoakSeconds = 180,
+    [string]$Steps = "",
+    [int]$SoakSeconds = -1,
     [string]$ProbeUrl = "",
     [string[]]$RuntimeHealthUrls = @(),
     [string]$QueueMetricsUrl = "",
-    [int]$MaxQueueDepth = 200,
-    [int]$MaxOldestQueuedAgeMs = 120000,
+    [int]$MaxQueueDepth = -1,
+    [int]$MaxOldestQueuedAgeMs = -1,
     [string]$AuthBearerToken = $env:AUDIT_BEARER_TOKEN,
     [string]$DevUid = $env:AUDIT_DEV_UID,
     [switch]$AutoRollback,
@@ -183,6 +185,102 @@ function Rollback-To-Stable {
     Write-Host "Rollback complete: $($script:StableRevision)=100"
 }
 
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $ProfileContractPath) {
+    $ProfileContractPath = Join-Path $scriptRoot ("profiles.{0}.json" -f $Profile)
+}
+
+$profileContract = $null
+if (-not (Test-Path $ProfileContractPath)) {
+    throw "Profile contract not found: $ProfileContractPath"
+}
+$profileContract = Get-Content -Raw -Path $ProfileContractPath | ConvertFrom-Json
+$profileName = [string]$profileContract.name
+if ($profileName -and $profileName -ne $Profile) {
+    throw "Requested profile '$Profile' does not match rollout contract '$profileName'."
+}
+
+$canaryDefaults = $null
+if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "canary")) {
+    $canaryDefaults = $profileContract.canary
+}
+$loadTestDefaults = $null
+if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "loadTest")) {
+    $loadTestDefaults = $profileContract.loadTest
+}
+
+if ([string]::IsNullOrWhiteSpace($Steps)) {
+    if ($canaryDefaults -and ($canaryDefaults.PSObject.Properties.Name -contains "steps")) {
+        $contractStepsRaw = $canaryDefaults.steps
+        $contractStepTokens = @()
+        if ($contractStepsRaw -is [string]) {
+            $contractStepTokens = @(([string]$contractStepsRaw) -split ",")
+        }
+        else {
+            foreach ($entry in @($contractStepsRaw)) {
+                $contractStepTokens += [string]$entry
+            }
+        }
+        $contractStepValues = @()
+        foreach ($token in $contractStepTokens) {
+            $value = 0
+            if ([int]::TryParse(([string]$token).Trim(), [ref]$value)) {
+                $contractStepValues += [Math]::Max(0, [Math]::Min(100, $value))
+            }
+        }
+        if ($contractStepValues.Count -gt 0) {
+            $Steps = ($contractStepValues -join ",")
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($Steps)) {
+    $Steps = "10,50,100"
+}
+
+if ($SoakSeconds -lt 0) {
+    if ($canaryDefaults -and ($canaryDefaults.PSObject.Properties.Name -contains "soakSeconds")) {
+        $SoakSeconds = [int]$canaryDefaults.soakSeconds
+    }
+    else {
+        $SoakSeconds = 180
+    }
+}
+if ($MaxQueueDepth -lt 0) {
+    if ($canaryDefaults -and ($canaryDefaults.PSObject.Properties.Name -contains "maxQueueDepth")) {
+        $MaxQueueDepth = [int]$canaryDefaults.maxQueueDepth
+    }
+    elseif ($loadTestDefaults -and ($loadTestDefaults.PSObject.Properties.Name -contains "maxQueueDepth")) {
+        $MaxQueueDepth = [int]$loadTestDefaults.maxQueueDepth
+    }
+    else {
+        $MaxQueueDepth = 200
+    }
+}
+if ($MaxOldestQueuedAgeMs -lt 0) {
+    if ($canaryDefaults -and ($canaryDefaults.PSObject.Properties.Name -contains "maxOldestQueuedAgeMs")) {
+        $MaxOldestQueuedAgeMs = [int]$canaryDefaults.maxOldestQueuedAgeMs
+    }
+    elseif ($loadTestDefaults -and ($loadTestDefaults.PSObject.Properties.Name -contains "maxOldestQueuedAgeMs")) {
+        $MaxOldestQueuedAgeMs = [int]$loadTestDefaults.maxOldestQueuedAgeMs
+    }
+    else {
+        $MaxOldestQueuedAgeMs = 120000
+    }
+}
+
+if ($SoakSeconds -lt 0) {
+    throw "Soak seconds must be >= 0."
+}
+if ($MaxQueueDepth -lt 1) {
+    throw "Max queue depth must be >= 1."
+}
+if ($MaxOldestQueuedAgeMs -lt 1) {
+    throw "Max oldest queued age ms must be >= 1."
+}
+
+Write-Host "Canary profile: $Profile"
+Write-Host "Canary defaults: steps=$Steps soak=${SoakSeconds}s maxQueueDepth=$MaxQueueDepth maxOldestQueuedAgeMs=$MaxOldestQueuedAgeMs"
+
 $status = Get-ServiceStatus
 if (-not $status) {
     throw "Unable to read Cloud Run service status for $ServiceName."
@@ -208,6 +306,15 @@ foreach ($token in ($Steps -split ",")) {
 }
 if ($stepValues.Count -eq 0) {
     throw "No valid rollout steps parsed from -Steps '$Steps'."
+}
+$stepValues = @($stepValues | Sort-Object -Unique)
+if ($stepValues[$stepValues.Count - 1] -ne 100) {
+    throw "Rollout steps must end at 100%."
+}
+for ($i = 1; $i -lt $stepValues.Count; $i++) {
+    if ($stepValues[$i] -le $stepValues[$i - 1]) {
+        throw "Rollout steps must be strictly increasing."
+    }
 }
 
 foreach ($percent in $stepValues) {

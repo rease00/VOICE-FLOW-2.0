@@ -15,7 +15,7 @@
 ## Reproducible Command Results
 1. Services health
 - Command: `npm run services:check`
-- Result: `PASS` for Gemini Runtime, Kokoro Runtime, LLVC Runtime, Media Backend.
+- Result: `PASS` for Gemini Runtime, Duno Runtime, LLVC Runtime, Media Backend.
 
 2. Auth-gated backend audits (strict mode)
 - Command: `npm run audit:connectivity` with `AUDIT_BEARER_TOKEN=<firebase_id_token>`

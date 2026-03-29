@@ -1,10 +1,11 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { ReaderCatalogItem, VoiceOption } from '../types';
+import type { ReaderCatalogItem, ReaderLibrary, VoiceOption } from '../types';
 import { ReaderBrowseHome } from '../src/features/reader/components/ReaderBrowseHome';
 import { ReaderUtilityTray } from '../src/features/reader/components/ReaderUtilityTray';
-import type { ReaderHomeTabCounts, ReaderTab } from '../src/features/reader/model/tabs';
+import { buildReaderDashboardPayloadFromLibrary, resolveReaderHomeViewModel } from '../src/features/reader/model/dashboard';
+import type { ReaderTab } from '../src/features/reader/model/tabs';
 
 const makeCatalogItem = (overrides: Partial<ReaderCatalogItem> = {}): ReaderCatalogItem => ({
   id: 'reader-item',
@@ -31,34 +32,56 @@ const voiceOptions: VoiceOption[] = [
 const noOp = () => undefined;
 
 describe('reader browse home', () => {
-  it('renders filter chips instead of tabs and shows counts', () => {
+  it('renders a dashboard view without a comics home tab', () => {
+    const library = {
+      surface: 'all',
+      regionId: 'english',
+      regions: [{ id: 'english', label: 'English' }],
+      items: [
+        makeCatalogItem({
+          id: 'imported-1',
+          title: 'Imported Story',
+          author: 'A Reader',
+          contentKind: 'book',
+          surface: 'uploads',
+          resume: {
+            hasProgress: true,
+            consumedChars: 240,
+            currentPanelIndex: 0,
+            progressPct: 42,
+          },
+        }),
+      ],
+      activeSession: null,
+      activeSessions: [],
+      counts: {
+        all: 1,
+        visible: 1,
+        books: 0,
+        comics: 0,
+        uploads: 1,
+        resumable: 1,
+      },
+      facets: { providers: [], collections: [], progressStates: [] },
+      shelves: {
+        continueReading: [],
+        trending: [],
+        newArrivals: [],
+        recentlyImported: [],
+      },
+    } satisfies ReaderLibrary;
+    const dashboard = buildReaderDashboardPayloadFromLibrary(library);
+    const viewModel = resolveReaderHomeViewModel(dashboard, 'imported', '');
     const markup = renderToStaticMarkup(
       <ReaderBrowseHome
+        viewModel={viewModel}
         homeTab="imported"
-        homeTabCounts={{
-          novels: 1,
-          comics: 0,
-          library: 0,
-          imported: 1,
-        } satisfies ReaderHomeTabCounts}
         searchTerm=""
-        items={[
-          makeCatalogItem({
-            id: 'imported-1',
-            title: 'Imported Story',
-            author: 'A Reader',
-            contentKind: 'book',
-            surface: 'uploads',
-            resume: {
-              hasProgress: true,
-              consumedChars: 240,
-              currentPanelIndex: 0,
-              progressPct: 42,
-            },
-          }),
-        ]}
         selectedItemId="imported-1"
         isLoading={false}
+        bootstrapState="ready"
+        legalAccepted
+        libraryErrorMessage=""
         onChangeHomeTab={noOp}
         onChangeSearchTerm={noOp}
         onSelectItem={noOp}
@@ -73,7 +96,8 @@ describe('reader browse home', () => {
     expect(markup).not.toContain('role="tab"');
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain('Imported');
-    expect(markup).toContain('1');
+    expect(markup).not.toContain('Comics');
+    expect(markup).toContain('Reader Dashboard');
   });
 });
 

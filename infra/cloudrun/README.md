@@ -2,10 +2,13 @@
 
 This folder contains Cloud Run production deployment assets for the split topology:
 
+- `voiceflow-seed-vc-runtime` (internal ingress, L4 GPU)
 - `voiceflow-api` (public ingress)
 - `voiceflow-worker` (internal ingress)
 - `voiceflow-gemini-runtime` (internal ingress)
-- `voiceflow-kokoro-runtime` (internal ingress)
+- Duno runtime is provided by Modal and configured via `VF_DUNO_RUNTIME_URL` on the backend.
+- Seed VC/OpenVoice defaults to Cloud Run and is configured via `VF_OPENVOICE_PROVIDER_DEFAULT=cloud_run` plus `VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL` on the backend.
+- Modal remains available as a fallback provider through `VF_OPENVOICE_MODAL_RUNTIME_URL`.
 
 The API and worker use the same backend image with role-based startup:
 
@@ -32,6 +35,9 @@ The API and worker use the same backend image with role-based startup:
    - `stripe-webhook-secret`
    - `vf-admin-unlock-signing-secret`
    - `gemini-runtime-admin-token`
+   - `duno-runtime-token` (optional if Duno Modal endpoint is private)
+   - `openvoice-runtime-token`
+   - `openvoice-artifact-secret`
 4. Optional but recommended:
    - Serverless VPC connector (`-VpcConnector`) for Memorystore access.
    - Memorystore Redis URL (`-RedisUrl`, mapped to `VF_REDIS_URL`).
@@ -41,6 +47,13 @@ The API and worker use the same backend image with role-based startup:
 ```powershell
 cd infra/cloudrun
 .\deploy.ps1 -ProjectId "<gcp-project-id>" -Region "us-central1" -VpcConnector "<connector-name>" -RedisUrl "redis://10.0.0.3:6379/0"
+```
+
+If you use hosted Modal runtimes, also set:
+
+```powershell
+$env:VF_DUNO_RUNTIME_URL="https://your-duno-modal-endpoint"
+$env:VF_OPENVOICE_RUNTIME_URL="https://your-openvoice-modal-endpoint"
 ```
 
 Dry run:
@@ -60,10 +73,10 @@ Deploy without rebuilding images:
 `services.default.json` is preconfigured for growth-oriented defaults:
 
 - Default profile: `cloudrun-2vcpu`
+- Seed VC runtime: `min=0`, `max=20`, concurrency `2`, `gpu=1 x nvidia-l4`
 - API: `min=1`, `max=20`, concurrency `16`
 - Worker: `min=1`, `max=12`, concurrency `1`, CPU always allocated
 - Gemini runtime: `min=1`, `max=10`, concurrency `2`
-- Kokoro runtime: `min=0`, `max=6`, concurrency `1`
 - Execution environment: `gen2`
 - Startup CPU boost: enabled
 - Request timeouts: service-specific (`300s` to `1200s`)
@@ -77,6 +90,7 @@ Adjust max instances only after the `cloudrun-2vcpu` load profile is green in st
 - `timeoutSeconds` -> `gcloud run deploy --timeout`
 - `executionEnvironment` -> `gcloud run deploy --execution-environment`
 - `startupCpuBoost` -> `gcloud run deploy --cpu-boost|--no-cpu-boost`
+- `gpuCount` and `gpuType` -> `gcloud run deploy --gpu` and `--gpu-type`
 
 ## Rollout and Rollback
 
@@ -103,7 +117,7 @@ cd infra/cloudrun
   -ProbeUrl "https://voiceflow-api-xxxx.a.run.app/health" `
   -RuntimeHealthUrls @(
     "https://voiceflow-gemini-runtime-xxxx.a.run.app/health",
-    "https://voiceflow-kokoro-runtime-xxxx.a.run.app/health"
+    "https://modal-duno-runtime.example/health"
   ) `
   -QueueMetricsUrl "https://voiceflow-api-xxxx.a.run.app/admin/tts/queue/metrics" `
   -MaxQueueDepth 200 `

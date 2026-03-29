@@ -1,11 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "voice-flow",
-  "main": ".open-next/worker.js",
+  "pages_build_output_dir": "dist",
   "compatibility_date": "2026-03-26",
-  "compatibility_flags": ["nodejs_compat"],
-  "assets": {
-    "directory": ".open-next/assets",
-    "binding": "ASSETS"
-  }
+  "compatibility_flags": ["nodejs_compat"]
 }

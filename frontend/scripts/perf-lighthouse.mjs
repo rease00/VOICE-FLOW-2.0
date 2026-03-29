@@ -14,7 +14,8 @@ const truthy = (value) => {
 
 const main = async () => {
   const targetUrl = String(process.env.VF_LIGHTHOUSE_URL || process.argv[2] || 'http://127.0.0.1:3000').trim();
-  const enforce = truthy(process.env.VF_ENABLE_LIGHTHOUSE);
+  const enforceInCi = truthy(process.env.CI) && !String(process.env.VF_ENABLE_LIGHTHOUSE || '').trim();
+  const enforce = truthy(process.env.VF_ENABLE_LIGHTHOUSE) || enforceInCi;
 
   const report = {
     generatedAt: new Date().toISOString(),
@@ -26,7 +27,7 @@ const main = async () => {
   };
 
   if (!enforce) {
-    report.note = 'Skipped. Set VF_ENABLE_LIGHTHOUSE=1 to run Lighthouse from CI/local.';
+    report.note = 'Skipped. Set VF_ENABLE_LIGHTHOUSE=1 to run Lighthouse locally. CI runs by default.';
     await fs.mkdir(ARTIFACT_DIR, { recursive: true });
     await fs.writeFile(ARTIFACT_PATH, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
     console.log(`[perf:lighthouse] ${report.note}`);

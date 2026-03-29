@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+﻿import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   isRuntimePollCoordinationAvailable,
   readRuntimePollLeaderLease,
@@ -117,14 +117,14 @@ describe('runtimePollCoordinator', () => {
     installWindow(storage);
 
     const payload = {
-      GEM: { state: 'online', detail: 'Runtime online' },
+      PRIME: { state: 'online', detail: 'Runtime online' },
     };
 
     expect(writeRuntimePollSnapshot('tab-a', payload, 7777)).toBe(true);
     const snapshot = readRuntimePollSnapshot<typeof payload>();
     expect(snapshot?.tabId).toBe('tab-a');
     expect(snapshot?.createdAtMs).toBe(7777);
-    expect(snapshot?.payload.GEM.state).toBe('online');
+    expect(snapshot?.payload.PRIME.state).toBe('online');
   });
 
   it('returns unavailable when storage throws', () => {
@@ -148,9 +148,10 @@ describe('runtimePollCoordinator', () => {
     installWindow(storage);
 
     tryAcquireRuntimePollLeadership('tab-a', 1000, 1000);
-    writeRuntimePollSnapshot('tab-a', { GEM: { state: 'online', detail: 'ok' } }, 1200);
+    writeRuntimePollSnapshot('tab-a', { PRIME: { state: 'online', detail: 'ok' } }, 1200);
 
     expect(storage.getItem(RUNTIME_POLL_LEADER_KEY)).toBeTruthy();
     expect(storage.getItem(RUNTIME_POLL_SNAPSHOT_KEY)).toBeTruthy();
   });
 });
+

@@ -81,28 +81,32 @@ export const useManagedTabs = <T extends ManagedTabKey>({
   const getTabId = useCallback((tabId: T) => `${baseId}-tab-${tabId}`, [baseId]);
   const getPanelId = useCallback((tabId: T) => `${baseId}-panel-${tabId}`, [baseId]);
 
-  const getTabProps = useCallback((tabId: T, disabled = false) => ({
-    id: getTabId(tabId),
-    role: 'tab' as const,
-    'aria-selected': activeId === tabId,
-    'aria-controls': getPanelId(tabId),
-    tabIndex: activeId === tabId ? 0 : -1,
-    disabled,
-    ref: (element: HTMLButtonElement | null) => {
-      tabRefs.current[tabId] = element;
-    },
-    onClick: () => {
-      if (disabled) return;
-      onChange(tabId);
-    },
-    onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-      if (disabled) return;
-      const nextId = getManagedTabNavigationTarget(items, tabId, event.key, orientation);
-      if (!nextId || nextId === tabId) return;
-      event.preventDefault();
-      selectTab(nextId);
-    },
-  }), [activeId, getPanelId, getTabId, items, onChange, orientation, selectTab]);
+  const getTabProps = useCallback((tabId: T, disabled?: boolean) => {
+    const itemDisabled = Boolean(items.find((item) => item.id === tabId)?.disabled);
+    const tabDisabled = itemDisabled || Boolean(disabled);
+    return {
+      id: getTabId(tabId),
+      role: 'tab' as const,
+      'aria-selected': activeId === tabId,
+      'aria-controls': getPanelId(tabId),
+      tabIndex: activeId === tabId ? 0 : -1,
+      disabled: tabDisabled,
+      ref: (element: HTMLButtonElement | null) => {
+        tabRefs.current[tabId] = element;
+      },
+      onClick: () => {
+        if (tabDisabled) return;
+        onChange(tabId);
+      },
+      onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+        if (tabDisabled) return;
+        const nextId = getManagedTabNavigationTarget(items, tabId, event.key, orientation);
+        if (!nextId || nextId === tabId) return;
+        event.preventDefault();
+        selectTab(nextId);
+      },
+    };
+  }, [activeId, getPanelId, getTabId, items, onChange, orientation, selectTab]);
 
   const getPanelProps = useCallback((tabId: T) => ({
     id: getPanelId(tabId),

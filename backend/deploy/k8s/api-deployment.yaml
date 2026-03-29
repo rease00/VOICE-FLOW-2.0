@@ -15,8 +15,21 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/voiceflow/backend:latest
+          image: ghcr.io/voiceflow/backend-api:latest
           imagePullPolicy: IfNotPresent
+          env:
+            - name: VF_SERVICE_ROLE
+              value: "api"
+            - name: VF_ENV
+              value: "production"
+            - name: VF_TTS_QUEUE_WORKER_COUNT
+              value: "0"
+            - name: VF_AUTH_ENFORCE
+              value: "1"
+            - name: VF_DEV_UID_HEADER_ENABLED
+              value: "0"
+            - name: VF_ENABLE_DEV_ADMIN_LOGIN
+              value: "0"
           command:
             - python
             - -m

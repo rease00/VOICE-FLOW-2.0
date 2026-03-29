@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import app as backend_app
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    raw = path.read_text(encoding="utf-8")
+    return json.loads(raw.lstrip("\ufeff"))
 
 
 def test_resolve_gem_runtime_voice_name_supports_alias_tokens() -> None:
@@ -12,9 +20,9 @@ def test_resolve_gem_runtime_voice_name_supports_alias_tokens() -> None:
 
 
 def test_resolve_mapped_profile_supports_normalized_tokens() -> None:
-    profile_a = backend_app._resolve_mapped_profile("GEM", "\"v1\"", voice_name="\"Fenrir\"")
-    profile_b = backend_app._resolve_mapped_profile("NEURAL2", "v1", voice_name="fenrir")
-    profile_c = backend_app._resolve_mapped_profile("GEM", "fenir", voice_name="fenir")
+    profile_a = backend_app._resolve_mapped_profile("PRIME", "\"v1\"", voice_name="\"Fenrir\"")
+    profile_b = backend_app._resolve_mapped_profile("VECTOR", "v1", voice_name="fenrir")
+    profile_c = backend_app._resolve_mapped_profile("PRIME", "fenir", voice_name="fenir")
     assert isinstance(profile_a, dict)
     assert isinstance(profile_b, dict)
     assert isinstance(profile_c, dict)
@@ -25,20 +33,68 @@ def test_resolve_mapped_profile_supports_normalized_tokens() -> None:
 
 def test_resolve_history_voice_fields_uses_canonical_id_and_human_display() -> None:
     voice_id, voice_name = backend_app._resolve_history_voice_fields(
-        engine="GEM",
+        engine="PRIME",
         voice_id="",
         voice_name="fenir",
     )
     assert voice_id == "Fenrir"
-    assert voice_name == "Rohan"
+    assert voice_name == "Arjun India Male"
 
     fallback_id, fallback_name = backend_app._resolve_history_voice_fields(
-        engine="GEM",
+        engine="PRIME",
         voice_id="custom_voice",
         voice_name="",
     )
     assert fallback_id == "custom_voice"
     assert fallback_name == "custom_voice"
+
+
+def test_apply_mapped_voice_fields_prefers_public_display_name() -> None:
+    mapped = backend_app._apply_mapped_voice_fields(
+        "PRIME",
+        "Fenrir",
+        {
+            "voice_id": "Fenrir",
+            "voice": "Fenrir",
+            "name": "Rohan",
+        },
+    )
+
+    assert mapped["name"] == "Arjun India Male"
+    assert mapped["displayName"] == "Arjun India Male"
+    assert mapped["mapped_name"] == "Arjun India Male"
+    assert mapped["profile_id"] == "p01_india_m_adult"
+
+
+def test_resolve_mapped_profile_keeps_alias_gender_pairs_consistent() -> None:
+    expected = {
+        "Kore": ("Meera India Female", "Female"),
+        "Achird": ("Adi India Boy", "Male"),
+        "Schedar": ("Claire France Female", "Female"),
+        "Umbriel": ("Leila UAE Female", "Female"),
+        "Zubenelgenubi": ("Alina Russia Female", "Female"),
+    }
+
+    for voice_name, (display_name, gender) in expected.items():
+        profile = backend_app._resolve_mapped_profile("PRIME", voice_name, voice_name=voice_name)
+        assert isinstance(profile, dict)
+        assert str(profile.get("displayName") or "") == display_name
+        assert str(profile.get("gender") or "") == gender
+
+
+def test_history_sanitize_item_exposes_display_name() -> None:
+    sanitized = backend_app._history_sanitize_item(
+        {
+            "engine": "PRIME",
+            "voiceName": "Rohan",
+            "voiceId": "v1",
+            "textPreview": "hello",
+        }
+    )
+
+    assert sanitized["voiceName"] == "Arjun India Male"
+    assert sanitized["displayName"] == "Arjun India Male"
+    assert sanitized["voiceId"] == "Fenrir"
 
 
 def test_resolve_llvc_model_name_for_runtime_aliases_legacy_profile_ids(monkeypatch) -> None:
@@ -75,3 +131,35 @@ def test_build_preferred_voice_map_for_segments_matches_display_labels() -> None
         "SPEAKER_01": "voice_b",
         "default": "voice_default",
     }
+
+
+def test_runtime_voice_catalog_matches_profile_bank_genders() -> None:
+    root = Path(__file__).resolve().parents[1]
+    voice_map = _read_json(root / "config" / "voice_id_map.v1.json")
+    profile_bank = _read_json(root / "config" / "voice_profile_bank.v1.json")
+    profiles = {
+        str(profile.get("profileId") or ""): profile
+        for profile in list(profile_bank.get("profiles") or [])
+        if isinstance(profile, dict)
+    }
+
+    mismatches: list[str] = []
+    for row in list(voice_map.get("engines", {}).get("PRIME", {}).get("runtimeVoices") or []):
+        if not isinstance(row, dict):
+            continue
+        voice_id = str(row.get("voice_id") or "").strip()
+        voice_name = str(row.get("voice") or "").strip()
+        profile_id = str(
+          voice_map.get("engines", {}).get("PRIME", {}).get("voiceToProfile", {}).get(voice_name)
+          or voice_map.get("engines", {}).get("PRIME", {}).get("voiceToProfile", {}).get(voice_id)
+          or ""
+        ).strip()
+        profile = profiles.get(profile_id)
+        if not profile:
+            continue
+        declared_gender = str(row.get("gender") or "").strip().lower()
+        profile_gender = str(profile.get("gender") or "").strip().lower()
+        if declared_gender and profile_gender and declared_gender != profile_gender:
+            mismatches.append(voice_id)
+
+    assert mismatches == []

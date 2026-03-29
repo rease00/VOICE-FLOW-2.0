@@ -9,6 +9,12 @@ describe('resolvePublicSurface', () => {
     expect(result.legalDocument).toBeNull();
   });
 
+  it('routes /landing on root domain to landing surface', () => {
+    const result = resolvePublicSurface('v-flow-ai.com', '/landing');
+    expect(result.surface).toBe('landing');
+    expect(result.legalDocument).toBeNull();
+  });
+
   it('routes app path on root domain to app surface', () => {
     const result = resolvePublicSurface('v-flow-ai.com', '/app');
     expect(result.surface).toBe('app');

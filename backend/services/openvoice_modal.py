@@ -5,6 +5,10 @@ import hashlib
 import hmac
 import os
 import re
+import binascii
+import json
+import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -21,7 +25,24 @@ OPENVOICE_DEFAULT_TIMEOUT_SEC = max(
 OPENVOICE_DEFAULT_RUNTIME_URL = str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
 OPENVOICE_RUNTIME_TOKEN = str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
 OPENVOICE_ARTIFACT_SECRET = str(os.getenv("VF_OPENVOICE_ARTIFACT_SECRET") or "").strip()
-OPENVOICE_ARTIFACT_EPHEMERAL_SECRET = hashlib.sha256(os.urandom(32)).hexdigest()
+OPENVOICE_DEV_ALLOW_EPHEMERAL_SECRET = str(
+    os.getenv("VF_OPENVOICE_ALLOW_EPHEMERAL_ARTIFACT_SECRET")
+    or os.getenv("VF_OPENVOICE_ALLOW_EPHEMERAL_SECRET")
+    or ""
+).strip().lower() in {"1", "true", "yes", "on"}
+OPENVOICE_ARTIFACT_SIGNATURE_VERSION = 1
+OPENVOICE_ARTIFACT_SIGNATURE_TTL_SEC = max(
+    30,
+    int(
+        (os.getenv("VF_OPENVOICE_ARTIFACT_SIGNATURE_TTL_SEC") or "120").strip()
+        or "120"
+    ),
+)
+OPENVOICE_MAX_AUDIO_BYTES = max(
+    64_000,
+    int((os.getenv("VF_OPENVOICE_MAX_AUDIO_BYTES") or str(12 * 1024 * 1024)).strip() or str(12 * 1024 * 1024)),
+)
+OPENVOICE_MAX_AUDIO_BASE64_CHARS = max(85_000, int((os.getenv("VF_OPENVOICE_MAX_AUDIO_BASE64_CHARS") or str(((OPENVOICE_MAX_AUDIO_BYTES * 4) // 3) + 16)).strip() or str(((OPENVOICE_MAX_AUDIO_BYTES * 4) // 3) + 16)))
 OPENVOICE_ARTIFACT_ROOT = Path(
     str(
         os.getenv(
@@ -61,7 +82,15 @@ def decode_openvoice_audio_base64(value: object) -> bytes:
     token = str(value or "").strip()
     if not token:
         return b""
-    return base64.b64decode(token.encode("utf-8"), validate=False)
+    if len(token) > OPENVOICE_MAX_AUDIO_BASE64_CHARS:
+        raise ValueError("audio payload exceeds the maximum allowed size.")
+    try:
+        decoded = base64.b64decode(token.encode("utf-8"), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("audio payload must be valid base64.") from exc
+    if len(decoded) > OPENVOICE_MAX_AUDIO_BYTES:
+        raise ValueError("audio payload exceeds the maximum allowed size.")
+    return decoded
 
 
 def encode_openvoice_audio_base64(value: bytes) -> str:
@@ -87,30 +116,158 @@ def normalize_openvoice_artifact_id(value: object, *, fallback: str = "") -> str
     return token[:OPENVOICE_ARTIFACT_ID_MAX_LEN]
 
 
+def _is_openvoice_production() -> bool:
+    return str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower() in {"prod", "production"}
+
+
 def _resolve_openvoice_artifact_secret(secret: str | None = None) -> str:
-    return str(
-        secret
-        or OPENVOICE_ARTIFACT_SECRET
-        or OPENVOICE_RUNTIME_TOKEN
-        or OPENVOICE_ARTIFACT_EPHEMERAL_SECRET
-    ).strip()
+    candidate = str(secret or OPENVOICE_ARTIFACT_SECRET or "").strip()
+    if candidate:
+        return candidate
+    if _is_openvoice_production():
+        raise RuntimeError("VF_OPENVOICE_ARTIFACT_SECRET is required for OpenVoice artifact signing in production.")
+    if OPENVOICE_DEV_ALLOW_EPHEMERAL_SECRET and OPENVOICE_RUNTIME_TOKEN:
+        return OPENVOICE_RUNTIME_TOKEN
+    raise RuntimeError("VF_OPENVOICE_ARTIFACT_SECRET is required for OpenVoice artifact signing.")
 
 
-def build_openvoice_artifact_signature(artifact_id: str, secret: str | None = None) -> str:
+def _openvoice_uid_prefix(uid: object) -> str:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        return ""
+    return hashlib.sha256(safe_uid.encode("utf-8")).hexdigest()[:12]
+
+
+def _extract_openvoice_artifact_uid_prefix(artifact_id: str) -> str:
+    match = re.match(r"^([0-9a-f]{12})_", str(artifact_id or "").strip().lower())
+    return str(match.group(1) or "") if match else ""
+
+
+def _openvoice_base64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+
+
+def _openvoice_base64url_decode(token: str) -> bytes:
+    safe_token = str(token or "").strip()
+    if not safe_token:
+        return b""
+    padding = "=" * (-len(safe_token) % 4)
+    return base64.urlsafe_b64decode((safe_token + padding).encode("ascii"))
+
+
+def extract_openvoice_artifact_signature_payload(signature: str) -> dict[str, Any] | None:
+    safe_signature = str(signature or "").strip()
+    payload_token, separator, signature_token = safe_signature.partition(".")
+    if not payload_token or separator != "." or not signature_token:
+        return None
+    try:
+        payload_raw = _openvoice_base64url_decode(payload_token)
+        payload = json.loads(payload_raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def build_openvoice_artifact_signature(
+    artifact_id: str,
+    secret: str | None = None,
+    *,
+    uid: str | None = None,
+    exp: int | None = None,
+    ttl_sec: int | None = None,
+    jti: str | None = None,
+) -> str:
     safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
     if not safe_artifact_id:
         raise ValueError("artifact_id is required.")
     safe_secret = _resolve_openvoice_artifact_secret(secret)
-    payload = safe_artifact_id.encode("utf-8")
-    return hmac.new(safe_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    safe_uid = str(uid or "").strip()
+    ttl_seconds = max(30, int(ttl_sec or OPENVOICE_ARTIFACT_SIGNATURE_TTL_SEC))
+    exp_unix = int(exp) if exp is not None else int(time.time()) + ttl_seconds
+    if exp_unix <= 0:
+        raise ValueError("exp must be a positive unix timestamp.")
+
+    payload_data: dict[str, Any] = {
+        "v": OPENVOICE_ARTIFACT_SIGNATURE_VERSION,
+        "aid": safe_artifact_id,
+        "exp": exp_unix,
+        "jti": str(jti or "").strip()[:64] or secrets.token_urlsafe(12),
+    }
+    if safe_uid:
+        payload_data["uid"] = safe_uid
+    payload_raw = json.dumps(payload_data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_token = _openvoice_base64url_encode(payload_raw)
+    payload_to_sign = f"ovsig.{payload_token}".encode("ascii")
+    signature_raw = hmac.new(
+        safe_secret.encode("utf-8"),
+        payload_to_sign,
+        hashlib.sha256,
+    ).digest()
+    signature_token = _openvoice_base64url_encode(signature_raw)
+    return f"{payload_token}.{signature_token}"
 
 
-def verify_openvoice_artifact_signature(artifact_id: str, signature: str, secret: str | None = None) -> bool:
+def verify_openvoice_artifact_signature(
+    artifact_id: str,
+    signature: str,
+    secret: str | None = None,
+    *,
+    uid: str | None = None,
+    now_ts: int | None = None,
+) -> bool:
     safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
-    if not safe_artifact_id:
+    safe_signature = str(signature or "").strip()
+    if not safe_artifact_id or not safe_signature:
         return False
-    expected = build_openvoice_artifact_signature(safe_artifact_id, secret=secret)
-    return hmac.compare_digest(expected, str(signature or "").strip())
+    payload_token, separator, signature_token = safe_signature.partition(".")
+    if not payload_token or separator != "." or not signature_token:
+        return False
+
+    safe_secret = _resolve_openvoice_artifact_secret(secret)
+    expected_signature_raw = hmac.new(
+        safe_secret.encode("utf-8"),
+        f"ovsig.{payload_token}".encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    expected_signature_token = _openvoice_base64url_encode(expected_signature_raw)
+    if not hmac.compare_digest(expected_signature_token, signature_token):
+        return False
+
+    payload = extract_openvoice_artifact_signature_payload(safe_signature)
+    if not isinstance(payload, dict):
+        return False
+
+    payload_version = int(payload.get("v") or 0)
+    if payload_version != OPENVOICE_ARTIFACT_SIGNATURE_VERSION:
+        return False
+    payload_artifact_id = normalize_openvoice_artifact_id(payload.get("aid") or "")
+    if payload_artifact_id != safe_artifact_id:
+        return False
+
+    current_unix = int(time.time()) if now_ts is None else int(now_ts)
+    payload_exp = int(payload.get("exp") or 0)
+    if payload_exp <= current_unix:
+        return False
+
+    expected_uid = str(uid or "").strip()
+    payload_uid = str(payload.get("uid") or "").strip()
+    if expected_uid and not payload_uid:
+        return False
+    if expected_uid and payload_uid and not hmac.compare_digest(expected_uid, payload_uid):
+        return False
+    if payload_uid:
+        artifact_prefix = _extract_openvoice_artifact_uid_prefix(safe_artifact_id)
+        expected_prefix = _openvoice_uid_prefix(payload_uid)
+        if artifact_prefix and not hmac.compare_digest(artifact_prefix, expected_prefix):
+            return False
+    if expected_uid:
+        artifact_prefix = _extract_openvoice_artifact_uid_prefix(safe_artifact_id)
+        expected_prefix = _openvoice_uid_prefix(expected_uid)
+        if artifact_prefix and not hmac.compare_digest(artifact_prefix, expected_prefix):
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -132,21 +289,26 @@ class OpenVoiceBenchmarkRequest(BaseModel):
     mode: Literal["tts", "vc", "tts_then_vc"] = "tts"
     runKind: Literal["warm", "cold"] = "warm"
     durationSec: int = Field(default=15, ge=1, le=600)
-    language: str = "EN"
-    text: str = ""
-    sourceVoiceId: str = ""
-    sourceVoiceName: str = ""
-    sourceVoiceEngine: str = ""
-    referenceAudioBase64: str = ""
-    referenceAudioName: str = ""
-    referenceAudioUrl: str = ""
-    sourceAudioBase64: str = ""
-    sourceAudioName: str = ""
+    language: str = Field(default="EN", max_length=32)
+    text: str = Field(default="", max_length=100_000)
+    sourceVoiceId: str = Field(default="", max_length=128)
+    sourceVoiceName: str = Field(default="", max_length=128)
+    sourceVoiceEngine: str = Field(default="", max_length=64)
+    referenceAudioBase64: str = Field(default="", max_length=OPENVOICE_MAX_AUDIO_BASE64_CHARS)
+    referenceAudioName: str = Field(default="", max_length=256)
+    referenceAudioUrl: str = Field(default="", max_length=2_048)
+    sourceAudioBase64: str = Field(default="", max_length=OPENVOICE_MAX_AUDIO_BASE64_CHARS)
+    sourceAudioName: str = Field(default="", max_length=256)
+    extractSourceVocals: bool = False
+    sourceSeparationModel: str = Field(default="", max_length=64)
+    sourceSeparationDevice: str = Field(default="", max_length=32)
+    sourceTrimStartSec: Optional[float] = Field(default=None, ge=0.0)
+    sourceTrimEndSec: Optional[float] = Field(default=None, ge=0.0)
     speed: float = 1.0
-    requestId: str = ""
-    traceId: str = ""
-    regionHint: str = ""
-    regionSource: str = ""
+    requestId: str = Field(default="", max_length=128)
+    traceId: str = Field(default="", max_length=128)
+    regionHint: str = Field(default="", max_length=64)
+    regionSource: str = Field(default="", max_length=64)
     costMultiplier: float = OPENVOICE_DEFAULT_COST_MULTIPLIER
 
 
@@ -249,9 +411,23 @@ def save_openvoice_artifact(audio_bytes: bytes, artifact_id: str, *, root: Path 
     )
 
 
-def build_openvoice_artifact_url(artifact_id: str, *, base_path: str = "/voice-lab/openvoice/artifacts", secret: str | None = None) -> str:
+def build_openvoice_artifact_url(
+    artifact_id: str,
+    *,
+    base_path: str = "/voice-lab/openvoice/artifacts",
+    secret: str | None = None,
+    uid: str | None = None,
+    exp: int | None = None,
+    ttl_sec: int | None = None,
+) -> str:
     safe_artifact_id = normalize_openvoice_artifact_id(artifact_id)
     if not safe_artifact_id:
         return ""
-    signature = build_openvoice_artifact_signature(safe_artifact_id, secret=secret)
+    signature = build_openvoice_artifact_signature(
+        safe_artifact_id,
+        secret=secret,
+        uid=uid,
+        exp=exp,
+        ttl_sec=ttl_sec,
+    )
     return f"{base_path.rstrip('/')}/{safe_artifact_id}?sig={signature}"

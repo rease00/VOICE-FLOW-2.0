@@ -96,7 +96,7 @@ def test_reader_preferences_and_restore_state_round_trip(monkeypatch) -> None:
     assert saved_session["restoreState"]["activeItemIndex"] == 0
     assert saved_session["restoreState"]["activeUnitId"] == "window-1"
     assert saved_session["restoreState"]["viewportAnchor"] == "window-1"
-    assert saved_session["restoreState"].get("activeReaderTab", "text") == "text"
+    assert saved_session["restoreState"]["activeReaderTab"] == "text"
 
     progress_response = client.post(
         f"/reader/sessions/{session_id}/progress",
@@ -113,8 +113,8 @@ def test_reader_preferences_and_restore_state_round_trip(monkeypatch) -> None:
 
     assert progress_session["restoreState"]["activeItemIndex"] == 0
     assert progress_session["restoreState"]["viewportAnchor"] == "window-1"
-    assert progress_session["restoreState"].get("activeReaderTab", "text") == "text"
+    assert progress_session["restoreState"]["activeReaderTab"] == "text"
 
     reloaded = client.get(f"/reader/sessions/{session_id}", headers=headers)
     assert reloaded.status_code == 200
-    assert reloaded.json()["session"]["restoreState"].get("activeReaderTab", "text") == "text"
+    assert reloaded.json()["session"]["restoreState"]["activeReaderTab"] == "text"

@@ -40,20 +40,20 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     path: '/legal/terms',
     title: 'Terms of Service',
     description:
-      'Rules for accessing and using VoiceFlow services, products, and websites.',
+      'Rules for accessing and using V FLOW AI services, products, and websites.',
     lastUpdated: 'March 14, 2026',
     sections: [
       {
         heading: '1. Agreement and scope',
         paragraphs: [
-          'By using VoiceFlow, you agree to these Terms. If you do not agree, do not use the service.',
-          'These Terms apply to the VoiceFlow website, app, APIs, and related services provided under the VoiceFlow brand.',
+          'By using V FLOW AI, you agree to these Terms. If you do not agree, do not use the service.',
+          'These Terms apply to the V FLOW AI website, app, APIs, and related services provided under the V FLOW AI brand.',
         ],
       },
       {
         heading: '2. Eligibility',
         paragraphs: [
-          'VoiceFlow is intended for users aged 13 and above.',
+          'V FLOW AI is intended for users aged 13 and above.',
           'If you are under 18, you confirm that a parent or legal guardian has reviewed and consented to your use of the service.',
         ],
       },
@@ -67,36 +67,36 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '4. Acceptable use',
         paragraphs: [
-          'You may not use VoiceFlow for unlawful, infringing, deceptive, abusive, or harmful activity.',
-          'You may not attempt to bypass limits, extract other users’ data, reverse engineer protected systems, or disrupt platform availability.',
+          'You may not use V FLOW AI for unlawful, infringing, deceptive, abusive, or harmful activity.',
+          "You may not attempt to bypass limits, extract other users' data, reverse engineer protected systems, or disrupt platform availability.",
         ],
       },
       {
         heading: '5. AI and service outputs',
         paragraphs: [
-          'VoiceFlow uses a mix of in-house and third-party AI technologies. Provider stack, models, and implementation details may change at any time to improve quality, reliability, or compliance.',
+          'V FLOW AI uses a mix of in-house and third-party AI technologies. Provider stack, models, and implementation details may change at any time to improve quality, reliability, or compliance.',
           'Outputs are probabilistic and may contain errors. You are responsible for review, editorial decisions, and legal compliance before publishing or distributing generated content.',
         ],
       },
       {
         heading: '6. Intellectual property',
         paragraphs: [
-          'VoiceFlow and related branding, software, and product design remain property of the platform operator and licensors.',
+          'V FLOW AI and related branding, software, and product design remain property of the platform operator and licensors.',
           'You must only upload or generate content you have the rights or permissions to use.',
         ],
       },
       {
         heading: '7. Suspension and termination',
         paragraphs: [
-          'VoiceFlow may suspend or terminate access for Terms violations, abuse, legal requests, fraud risk, or platform security concerns.',
+          'V FLOW AI may suspend or terminate access for Terms violations, abuse, legal requests, fraud risk, or platform security concerns.',
           'You may stop using the service at any time.',
         ],
       },
       {
         heading: '8. Disclaimer and liability limits',
         paragraphs: [
-          'VoiceFlow is provided on an “as available” basis without warranties of uninterrupted operation or specific commercial outcomes.',
-          'To the maximum extent allowed by law, VoiceFlow is not liable for indirect, consequential, special, or punitive damages.',
+          "V FLOW AI is provided on an \"as available\" basis without warranties of uninterrupted operation or specific commercial outcomes.",
+          'To the maximum extent allowed by law, V FLOW AI is not liable for indirect, consequential, special, or punitive damages.',
         ],
       },
       {
@@ -113,7 +113,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     path: '/legal/privacy',
     title: 'Privacy Policy',
     description:
-      'How VoiceFlow collects, uses, stores, and protects personal data.',
+      'How V FLOW AI collects, uses, stores, and protects personal data.',
     lastUpdated: 'March 14, 2026',
     sections: [
       {
@@ -126,7 +126,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '2. Why we process data',
         paragraphs: [
-          'We process data to provide, secure, maintain, and improve VoiceFlow features.',
+          'We process data to provide, secure, maintain, and improve V FLOW AI features.',
           'We also process data for abuse prevention, reliability monitoring, billing operations, and legal compliance.',
         ],
       },
@@ -161,7 +161,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '7. Cross-border handling',
         paragraphs: [
-          'VoiceFlow may process data in multiple jurisdictions through secure infrastructure and approved providers.',
+          'V FLOW AI may process data in multiple jurisdictions through secure infrastructure and approved providers.',
           'Where required, we use contractual and operational safeguards for lawful cross-border processing.',
         ],
       },
@@ -175,7 +175,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '9. Children and minors',
         paragraphs: [
-          'VoiceFlow is not intended for children under 13.',
+          'V FLOW AI is not intended for children under 13.',
           'For users under 18, guardian consent is required.',
         ],
       },
@@ -193,13 +193,13 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     path: '/legal/acceptable-use',
     title: 'Acceptable Use Policy',
     description:
-      'Rules for safe, lawful, and responsible use of VoiceFlow.',
+      'Rules for safe, lawful, and responsible use of V FLOW AI.',
     lastUpdated: 'March 14, 2026',
     sections: [
       {
         heading: '1. Prohibited content and behavior',
         paragraphs: [
-          'Do not use VoiceFlow for unlawful conduct, harassment, hate speech, explicit non-consensual content, fraud, impersonation, or deceptive manipulation.',
+          'Do not use V FLOW AI for unlawful conduct, harassment, hate speech, explicit non-consensual content, fraud, impersonation, or deceptive manipulation.',
           'Do not upload or generate content that infringes intellectual property or violates privacy/personality rights.',
         ],
       },
@@ -213,7 +213,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '3. High-risk use restrictions',
         paragraphs: [
-          'VoiceFlow is not intended as a sole decision system for legal, medical, emergency, or life-critical outcomes.',
+          'V FLOW AI is not intended as a sole decision system for legal, medical, emergency, or life-critical outcomes.',
           'You must include appropriate human review and safeguards for any high-impact workflow.',
         ],
       },
@@ -221,7 +221,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
         heading: '4. Enforcement',
         paragraphs: [
           'Violations may result in content removal, temporary suspension, permanent termination, or legal escalation.',
-          'VoiceFlow may investigate suspected abuse and cooperate with lawful requests from competent authorities.',
+          'V FLOW AI may investigate suspected abuse and cooperate with lawful requests from competent authorities.',
         ],
       },
     ],
@@ -231,7 +231,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     path: '/legal/cookies',
     title: 'Cookie Policy',
     description:
-      'How cookies and similar technologies are used on VoiceFlow properties.',
+      'How cookies and similar technologies are used on V FLOW AI properties.',
     lastUpdated: 'March 14, 2026',
     sections: [
       {
@@ -269,14 +269,14 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     path: '/legal/billing-refunds',
     title: 'Billing and Refund Policy',
     description:
-      'Current free access terms and paid-plan policy framework for future rollout.',
+      'How billing, renewals, and refunds work for V FLOW AI plans.',
     lastUpdated: 'March 14, 2026',
     sections: [
       {
         heading: '1. Current product state',
         paragraphs: [
-          'VoiceFlow currently supports free access tiers with platform limits.',
-          'Paid plans, token packs, or subscriptions may be introduced or changed later with notice in product interfaces or policy updates.',
+          'V FLOW AI supports free access tiers, paid subscriptions, and token packs in the product.',
+          'Pricing, credits, renewals, and refund terms are shown in the app and may be updated over time with notice.',
         ],
       },
       {
@@ -321,7 +321,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
         heading: '1. Ownership',
         paragraphs: [
           'You retain rights to content you lawfully own and submit, subject to rights needed for service operation.',
-          'VoiceFlow branding, software, and platform materials remain protected intellectual property of the platform operator and licensors.',
+          'V FLOW AI branding, software, and platform materials remain protected intellectual property of the platform operator and licensors.',
         ],
       },
       {
@@ -341,7 +341,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       {
         heading: '4. Repeat infringement policy',
         paragraphs: [
-          'VoiceFlow may remove content and suspend or terminate repeat infringers.',
+          'V FLOW AI may remove content and suspend or terminate repeat infringers.',
           'We may preserve relevant evidence and cooperate with lawful legal requests.',
         ],
       },
@@ -370,3 +370,4 @@ export const isLegalPath = (pathname: string): boolean => {
 };
 
 export const getLegalDocuments = (): LegalDocument[] => LEGAL_DOCUMENTS.slice();
+

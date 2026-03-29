@@ -73,9 +73,9 @@ def test_runtime_contract_script_allows_auth_challenge_preflight() -> None:
             if self.path == "/tts/engines/capabilities":
                 payload = {
                     "engines": {
-                        "GEM": _engine_capability("GEMINI"),
-                        "NEURAL2": _engine_capability("NEURAL2"),
-                        "KOKORO": _engine_capability("KOKORO"),
+                        "PRIME": _engine_capability("GEMINI"),
+                        "VECTOR": _engine_capability("VECTOR"),
+                        "DUNO": _engine_capability("DUNO"),
                     }
                 }
                 body = json.dumps(payload).encode("utf-8")
@@ -127,9 +127,9 @@ def test_runtime_contract_script_retries_timeout_and_recovers() -> None:
                     time.sleep(0.35)
                 payload = {
                     "engines": {
-                        "GEM": _engine_capability("GEMINI"),
-                        "NEURAL2": _engine_capability("NEURAL2"),
-                        "KOKORO": _engine_capability("KOKORO"),
+                        "PRIME": _engine_capability("GEMINI"),
+                        "VECTOR": _engine_capability("VECTOR"),
+                        "DUNO": _engine_capability("DUNO"),
                     }
                 }
                 body = json.dumps(payload).encode("utf-8")
@@ -179,7 +179,7 @@ def test_runtime_contract_script_reports_schema_violation() -> None:
                 self.wfile.write(body)
                 return
             if self.path == "/tts/engines/capabilities":
-                body = json.dumps({"engines": {"GEM": {"engine": "GEM"}}}).encode("utf-8")
+                body = json.dumps({"engines": {"PRIME": {"engine": "PRIME"}}}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(body)))

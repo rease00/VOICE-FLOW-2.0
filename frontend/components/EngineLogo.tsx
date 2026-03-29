@@ -1,5 +1,5 @@
-import React from 'react';
-import { Crown, Leaf, Zap } from 'lucide-react';
+﻿import React from 'react';
+import { Crown, Mic2, Zap } from 'lucide-react';
 import { GenerationSettings } from '../types';
 
 type LogoSize = 'sm' | 'md' | 'lg';
@@ -28,23 +28,23 @@ const ENGINE_STYLE: Record<
     Icon: React.ComponentType<{ size?: number; className?: string }>;
   }
 > = {
-  GEM: {
+  PRIME: {
     gradient: 'from-indigo-500 via-violet-500 to-fuchsia-500',
     glow: 'shadow-[0_0_18px_rgba(139,92,246,0.45)]',
     ring: 'ring-indigo-200/70',
     Icon: Crown,
   },
-  NEURAL2: {
+  DUNO: {
+    gradient: 'from-sky-500 via-cyan-500 to-teal-500',
+    glow: 'shadow-[0_0_18px_rgba(14,165,233,0.4)]',
+    ring: 'ring-cyan-200/70',
+    Icon: Mic2,
+  },
+  VECTOR: {
     gradient: 'from-amber-500 via-orange-500 to-red-500',
     glow: 'shadow-[0_0_18px_rgba(249,115,22,0.4)]',
     ring: 'ring-orange-200/70',
     Icon: Zap,
-  },
-  KOKORO: {
-    gradient: 'from-cyan-500 via-emerald-500 to-teal-500',
-    glow: 'shadow-[0_0_18px_rgba(16,185,129,0.4)]',
-    ring: 'ring-emerald-200/70',
-    Icon: Leaf,
   },
 };
 
@@ -70,3 +70,4 @@ export const EngineLogo: React.FC<EngineLogoProps> = ({
     </span>
   );
 };
+

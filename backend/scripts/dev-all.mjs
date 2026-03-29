@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,10 +9,12 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_ROOT = path.resolve(ROOT, "..");
 const PID_DIR = path.join(ROOT, ".runtime", "pids");
+const STATE_DIR = path.join(ROOT, ".runtime", "state");
+const DEV_ALL_SESSION_FILE = path.join(STATE_DIR, "dev-all-session.json");
+const DEV_ALL_SESSION_ID = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const SERVICE_CATALOG = [
   { id: "media-backend", name: "Media Backend", logFile: ".runtime/logs/media-backend.log" },
   { id: "gemini-runtime", name: "Gemini Runtime", logFile: ".runtime/logs/gemini-runtime.log" },
-  { id: "kokoro-runtime", name: "Kokoro Runtime", logFile: ".runtime/logs/kokoro-runtime.log" },
 ];
 const SERVICES = SERVICE_CATALOG;
 
@@ -25,11 +27,25 @@ const SERVICE_RESTART_MAX = sanitizePositiveInt(process.env.VF_DEV_SERVICE_RESTA
 const CRASH_WINDOW_MS = sanitizePositiveInt(process.env.VF_DEV_CRASH_WINDOW_MS, 120000);
 const MONITOR_INTERVAL_MS = 2500;
 const AUTO_SEED_FIREBASE_ADMINS = toBool(process.env.VF_DEV_AUTO_SEED_FIREBASE_ADMINS, false);
+const WATCHDOG_ENABLED = !KEEP_SERVICES && toBool(process.env.VF_DEV_ENABLE_WATCHDOG, true);
+const WATCHDOG_POLL_MS = sanitizePositiveInt(process.env.VF_DEV_WATCHDOG_POLL_MS, 2000);
+const WATCHDOG_GRACE_MS = sanitizePositiveInt(process.env.VF_DEV_WATCHDOG_GRACE_MS, 5000);
+const UI_SESSION_MONITOR_ENABLED = !KEEP_SERVICES && toBool(process.env.VF_DEV_UI_SESSION_MONITOR_ENABLED, true);
+const UI_SESSION_STATUS_URL = String(process.env.VF_DEV_UI_SESSION_STATUS_URL || "http://127.0.0.1:3000/api/dev/session").trim();
+const UI_SESSION_MONITOR_INTERVAL_MS = sanitizePositiveInt(process.env.VF_DEV_UI_SESSION_MONITOR_INTERVAL_MS, 5000);
+const UI_SESSION_IDLE_SHUTDOWN_MS = sanitizePositiveInt(process.env.VF_DEV_UI_IDLE_SHUTDOWN_MS, 45000);
+const UI_SESSION_STATUS_TIMEOUT_MS = sanitizePositiveInt(process.env.VF_DEV_UI_SESSION_STATUS_TIMEOUT_MS, 2000);
+const VITE_EXIT_WAIT_MS = sanitizePositiveInt(process.env.VF_DEV_VITE_EXIT_WAIT_MS, 2000);
 
 let shuttingDown = false;
+let servicesDownAttempted = false;
 let viteChild = null;
 let monitorTimer = null;
 let monitorBusy = false;
+let uiSessionMonitorTimer = null;
+let uiSessionMonitorBusy = false;
+let uiSessionSeen = false;
+let uiSessionIdleSinceMs = 0;
 
 const restartState = new Map();
 const unhealthyServices = new Set();
@@ -49,6 +65,67 @@ function toBool(raw, fallback) {
   if (["1", "true", "yes", "on"].includes(token)) return true;
   if (["0", "false", "no", "off"].includes(token)) return false;
   return fallback;
+}
+
+function ensureRuntimeStateDir() {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+}
+
+function writeSessionLease() {
+  if (!WATCHDOG_ENABLED) return;
+  ensureRuntimeStateDir();
+  const payload = {
+    sessionId: DEV_ALL_SESSION_ID,
+    ownerPid: process.pid,
+    startedAtMs: Date.now(),
+  };
+  fs.writeFileSync(DEV_ALL_SESSION_FILE, `${JSON.stringify(payload)}\n`, "utf8");
+}
+
+function clearSessionLease() {
+  if (!WATCHDOG_ENABLED) return;
+  try {
+    if (!fs.existsSync(DEV_ALL_SESSION_FILE)) return;
+    const raw = fs.readFileSync(DEV_ALL_SESSION_FILE, "utf8");
+    const parsed = JSON.parse(String(raw || "{}"));
+    if (String(parsed?.sessionId || "") !== DEV_ALL_SESSION_ID) return;
+    fs.rmSync(DEV_ALL_SESSION_FILE, { force: true });
+  } catch {
+    // ignore lease cleanup errors
+  }
+}
+
+function startWatchdog() {
+  if (!WATCHDOG_ENABLED) return;
+  writeSessionLease();
+  const args = [
+    "scripts/dev-all-watchdog.mjs",
+    "--owner-pid",
+    String(process.pid),
+    "--session-id",
+    DEV_ALL_SESSION_ID,
+    "--session-file",
+    DEV_ALL_SESSION_FILE,
+    "--poll-ms",
+    String(WATCHDOG_POLL_MS),
+    "--grace-ms",
+    String(WATCHDOG_GRACE_MS),
+  ];
+  try {
+    const child = spawn(process.execPath, args, {
+      cwd: ROOT,
+      env: process.env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    console.log(`[dev-all] stage=watchdog status=armed pid=${child.pid}`);
+  } catch (error) {
+    console.error(
+      `[dev-all] stage=watchdog status=warn cause="${error instanceof Error ? error.message : String(error)}"`
+    );
+  }
 }
 
 function isPidAlive(pid) {
@@ -315,6 +392,27 @@ function runServicesDown() {
   });
 }
 
+function runServicesDownSyncIfNeeded(reason = "unexpected_exit") {
+  if (KEEP_SERVICES || servicesDownAttempted) return;
+  servicesDownAttempted = true;
+  try {
+    const args = buildBootstrapArgs("down");
+    const result = spawnSync(process.execPath, args, {
+      cwd: ROOT,
+      stdio: "ignore",
+      env: process.env,
+      windowsHide: true,
+    });
+    if (result.status !== 0) {
+      console.error(`[dev-all] stage=shutdown-sync status=warn reason=${reason} code=${result.status ?? "unknown"}`);
+    }
+  } catch (error) {
+    console.error(
+      `[dev-all] stage=shutdown-sync status=warn reason=${reason} cause="${error instanceof Error ? error.message : String(error)}"`
+    );
+  }
+}
+
 async function monitorServicesTick() {
   if (shuttingDown) return;
   if (monitorBusy) return;
@@ -396,8 +494,134 @@ function stopMonitor() {
   }
 }
 
+async function fetchActiveUiSessionCount() {
+  if (!UI_SESSION_STATUS_URL) return null;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch {
+      // ignore abort failures
+    }
+  }, UI_SESSION_STATUS_TIMEOUT_MS);
+  try {
+    const response = await fetch(UI_SESSION_STATUS_URL, {
+      method: "GET",
+      cache: "no-store",
+      headers: { "cache-control": "no-store" },
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const count = Number(payload?.activeSessions || 0);
+    if (!Number.isFinite(count) || count < 0) return 0;
+    return Math.floor(count);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function monitorUiSessionsTick() {
+  if (!UI_SESSION_MONITOR_ENABLED || shuttingDown) return;
+  if (uiSessionMonitorBusy) return;
+  uiSessionMonitorBusy = true;
+  try {
+    const activeCount = await fetchActiveUiSessionCount();
+    if (activeCount === null) {
+      return;
+    }
+    if (activeCount > 0) {
+      uiSessionSeen = true;
+      uiSessionIdleSinceMs = 0;
+      return;
+    }
+    if (!uiSessionSeen) {
+      return;
+    }
+    if (!uiSessionIdleSinceMs) {
+      uiSessionIdleSinceMs = Date.now();
+      return;
+    }
+    const idleForMs = Date.now() - uiSessionIdleSinceMs;
+    if (idleForMs < UI_SESSION_IDLE_SHUTDOWN_MS) return;
+    console.log(
+      `[dev-all] stage=ui-session-monitor status=idle active_sessions=0 idle_ms=${idleForMs} -> shutting down`
+    );
+    void shutdown(0);
+  } finally {
+    uiSessionMonitorBusy = false;
+  }
+}
+
+function startUiSessionMonitor() {
+  if (!UI_SESSION_MONITOR_ENABLED) return;
+  uiSessionMonitorTimer = setInterval(() => {
+    void monitorUiSessionsTick();
+  }, UI_SESSION_MONITOR_INTERVAL_MS);
+}
+
+function stopUiSessionMonitor() {
+  if (!uiSessionMonitorTimer) return;
+  clearInterval(uiSessionMonitorTimer);
+  uiSessionMonitorTimer = null;
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (!child) return Promise.resolve(true);
+  if (child.exitCode !== null || child.signalCode) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), Math.max(1, Math.floor(Number(timeoutMs || 0))));
+    child.once("exit", onExit);
+  });
+}
+
+function forceKillProcessTree(pid) {
+  const safePid = Number(pid);
+  if (!Number.isFinite(safePid) || safePid <= 0) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(safePid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(safePid, "SIGKILL");
+  } catch {
+    // ignore
+  }
+}
+
+async function stopViteChild() {
+  if (!viteChild) return;
+  const child = viteChild;
+  viteChild = null;
+  if (child.exitCode !== null || child.signalCode) return;
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    // ignore
+  }
+  const exitedGracefully = await waitForChildExit(child, VITE_EXIT_WAIT_MS);
+  if (exitedGracefully) return;
+  forceKillProcessTree(child.pid);
+  await waitForChildExit(child, 1000);
+}
+
 async function cleanupSessionServices() {
   stopMonitor();
+  stopUiSessionMonitor();
 }
 
 function startVite() {
@@ -447,17 +671,12 @@ async function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  if (viteChild && !viteChild.killed) {
-    try {
-      viteChild.kill("SIGTERM");
-    } catch {
-      // ignore
-    }
-  }
+  await stopViteChild();
   await cleanupSessionServices();
   if (KEEP_SERVICES) {
     console.log("[dev-all] info=services remain active (VF_DEV_KEEP_SERVICES=1). Use `npm run services:down` to stop them.");
   } else {
+    servicesDownAttempted = true;
     console.log("[dev-all] info=stopping local services (default auto-stop behavior).");
     const downResult = await runServicesDown();
     if (!downResult.ok) {
@@ -467,6 +686,7 @@ async function shutdown(exitCode = 0) {
       printNextSteps();
     }
   }
+  clearSessionLease();
   process.exit(exitCode);
 }
 
@@ -478,7 +698,27 @@ process.on("SIGTERM", () => {
   void shutdown(0);
 });
 
+process.on("SIGHUP", () => {
+  void shutdown(0);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error(`[dev-all] stage=orchestrator status=panic cause="${error instanceof Error ? error.stack || error.message : String(error)}"`);
+  void shutdown(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error(`[dev-all] stage=orchestrator status=panic cause="${reason instanceof Error ? reason.stack || reason.message : String(reason)}"`);
+  void shutdown(1);
+});
+
+process.on("exit", () => {
+  clearSessionLease();
+  runServicesDownSyncIfNeeded("process_exit");
+});
+
 async function main() {
+  startWatchdog();
   preSnapshot = snapshotRunningServices();
   const bootOk = await runBootstrapWithRetry();
   if (!bootOk) {
@@ -505,6 +745,7 @@ async function main() {
   );
 
   startMonitor();
+  startUiSessionMonitor();
   const viteExit = await startVite();
   await shutdown(viteExit);
 }

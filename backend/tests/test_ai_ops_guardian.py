@@ -40,7 +40,7 @@ def _next_engine_for_health_url(
 ) -> str:
     engines = list(health_map.get(url) or [])
     if not engines:
-        return "GEM"
+        return "PRIME"
     seen = int(call_counts.get(url) or 0)
     call_counts[url] = seen + 1
     return engines[seen % len(engines)]
@@ -77,7 +77,7 @@ def test_guardian_scan_auto_fixes_single_offline_runtime(monkeypatch) -> None:
     def _probe(url: str, timeout_sec: float = 2.5):
         _ = timeout_sec
         engine = _next_engine_for_health_url(health_map, call_counts, url)
-        if engine == "GEM" and engine not in switched:
+        if engine == "PRIME" and engine not in switched:
             return False, "offline"
         return True, "Runtime online"
 
@@ -100,7 +100,7 @@ def test_guardian_scan_auto_fixes_single_offline_runtime(monkeypatch) -> None:
     payload = response.json()
     assert any(item.get("id") == "runtime_single_offline" for item in payload.get("detectedIssues", []))
     assert any(item.get("action") == "restart_runtime" for item in payload.get("autoFixActions", []))
-    assert switch_calls == ["GEM"]
+    assert switch_calls == ["PRIME"]
 
 
 def test_guardian_major_action_queues_approval_when_admin_token_missing(monkeypatch) -> None:

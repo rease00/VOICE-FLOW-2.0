@@ -24,6 +24,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qQyJJgWzAPyyxA7ZA5J-aZ
    - Optional: set `VF_DEV_AUTO_SEED_FIREBASE_ADMINS=1` to seed allowlisted Firebase admins before the UI starts.
 4. Frontend-only mode (no service orchestration):
    `npm run dev:ui`
+   - In local dev, the frontend canonicalizes `127.0.0.1` to `localhost` so Firebase Google sign-in uses an authorized auth domain.
 
 ## Separated Frontend/Backend Commands
 
@@ -79,9 +80,10 @@ Production requirement: keep `VF_AUTH_ENFORCE=1` and `NEXT_PUBLIC_ENABLE_DEV_UID
 - `VF_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000` (and add deployed frontend origins in remote environments)
 
 2. Set frontend admin mapping in `.env` (optional but recommended):
-- `VITE_ADMIN_LOGIN_EMAIL=<your-admin-email>`
-- Optional: `VITE_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>`
-- Optional: `VITE_ADMIN_UID_ALLOWLIST=<comma-separated-uids>`
+- `NEXT_PUBLIC_ADMIN_LOGIN_EMAIL=<your-admin-email>`
+- Optional: `NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST=<comma-separated-emails>`
+- Optional: `NEXT_PUBLIC_ADMIN_UID_ALLOWLIST=<comma-separated-uids>`
+- Transitional aliases still honored during migration: `VITE_ADMIN_LOGIN_EMAIL`, `VITE_ADMIN_EMAIL_ALLOWLIST`, `VITE_ADMIN_UID_ALLOWLIST`
 
 3. In Firebase (Firestore), mark the admin user for UI/admin role resolution:
 - Document path: `users/<uid>`
@@ -112,9 +114,10 @@ python scripts/firebase_seed_admins.py --password "<strong_admin_password>"
 
 Defaults:
 - Password: required via `--password` or `FIREBASE_SEED_ADMIN_PASSWORD` from env/`.env`/`.env.local`.
-- Reads allowlists from env or `.env`: `VF_ADMIN_APPROVER_UIDS`, `VITE_ADMIN_UID_ALLOWLIST`, `VITE_ADMIN_EMAIL_ALLOWLIST`, `VITE_ADMIN_LOGIN_EMAIL`.
+- Reads allowlists from env or `.env`: `VF_ADMIN_APPROVER_UIDS`, `NEXT_PUBLIC_ADMIN_UID_ALLOWLIST`, `VITE_ADMIN_UID_ALLOWLIST`, `NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST`, `VITE_ADMIN_EMAIL_ALLOWLIST`, `NEXT_PUBLIC_ADMIN_LOGIN_EMAIL`, `VITE_ADMIN_LOGIN_EMAIL`.
 - For local dev, `firebase_seed_admins.py` also falls back to repo root `.env.local` and `backend/.env.local`.
 - When `VF_DEV_AUTO_SEED_FIREBASE_ADMINS=1` is set, `npm run dev` will invoke this seed step before the frontend starts.
+- Seeded admin Firebase Auth records are marked `emailVerified=true` so verified-email gates do not block local admin logins.
 - Writes:
   - Firebase custom claim: `admin=true`
   - Firestore: `users/{uid}` with `isAdmin/admin/role/roles`
@@ -140,19 +143,20 @@ python scripts/firebase_project_wipe.py --apply --confirm WIPE_FIREBASE_NOW
 
 ## Isolated Python Runtimes (Per-Engine venv)
 
-All backends now run locally using Python, each in its own virtual environment:
+The local backend services run in isolated Python virtual environments:
 - `Media backend` on `7800`
 - `Gemini runtime` on `7810`
-- `Kokoro runtime` on `7820` (full Kokoro path, Hindi-enabled with tuned chunk/token flow)
+- `Duno` is served through the backend TTS gateway and the Modal-hosted runtime configured by `VF_DUNO_RUNTIME_URL`
+- `OpenVoice/Seed-VC` is served through the backend voice-clone routes and the Modal-hosted runtime configured by `VF_OPENVOICE_RUNTIME_URL`
 
-Runtime/backend URLs are wired internally to local defaults in the app.
+Runtime/backend URLs are wired internally to local defaults for the backend and Gemini runtime, while Duno resolves through the backend gateway.
 
 ### One-click backend + TTS bootstrap
 
 Create/update venvs, start all local services, and validate endpoints:
 - `npm run services:bootstrap`
 
-GPU-capable host (Gemini can prefer GPU; Kokoro remains CPU-only):
+GPU-capable host (Gemini can prefer GPU; Duno stays on the Modal-hosted endpoint):
 - `npm run services:bootstrap:gpu`
 
 Validate endpoints only:
@@ -165,7 +169,7 @@ Stop all bootstrapped services:
 - `npm run services:down`
 
 Dev orchestration env knobs (optional):
-- `VF_DEV_BOOTSTRAP_MODE=cpu|gpu` (default `cpu`; Kokoro stays CPU-only in both modes)
+- `VF_DEV_BOOTSTRAP_MODE=cpu|gpu` (default `cpu`; Duno still uses the Modal-hosted endpoint in both modes)
 - `VF_DEV_BOOTSTRAP_RETRIES=<n>` (default `3`)
 - `VF_DEV_RETRY_BASE_MS=<ms>` (default `1500`)
 - `VF_DEV_RETRY_MAX_MS=<ms>` (default `10000`)
@@ -177,18 +181,17 @@ Dev orchestration env knobs (optional):
 - auto-restarts crashed session-owned services (up to capped attempts)
 - prints concise actionable errors and points to `backend/.runtime/logs/*.log`
 
-Health checks include:
+Health and capability checks include:
 - `http://127.0.0.1:7800/health` (media backend)
 - `http://127.0.0.1:7810/health` (Gemini runtime)
-- `http://127.0.0.1:7820/health` (Kokoro runtime)
+- `http://127.0.0.1:7800/tts/engines/capabilities` (Duno via backend gateway)
 
 Notes:
 - Each runtime gets an isolated venv under `backend/.venvs/`.
 - First bootstrap installs Python dependencies for each runtime.
-- `services:bootstrap:gpu` sets GPU-first runtime envs for eligible runtimes; Kokoro ignores GPU mode and stays on CPU.
-- Kokoro runtime includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and runs in strict no-fallback mode.
-- `KOKORO_DEVICE` is retained for compatibility, but the Kokoro runtime is hard-pinned to CPU.
-- Browser-side Kokoro execution is disabled by default for normal app flows. The dedicated Kokoro browser audit harness opt-in uses same-origin `/kokoro-assets/` resources for frontend-local inference.
+- `services:bootstrap:gpu` sets GPU-first runtime envs for eligible local runtimes; Duno uses the Modal-hosted endpoint either way.
+- Duno voice coverage includes Hindi voices (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) and follows the backend gateway's no-fallback behavior.
+- Duno is served through the backend TTS gateway and Modal-hosted runtime; there is no local/browser Duno execution path in the app.
 - Runtime PID files are reconciled against live port listeners to avoid Windows launcher-PID drift.
 - Service logs auto-rotate on startup/restart.
 
@@ -197,7 +200,6 @@ Notes:
 Set these only when you need hard interpreter isolation:
 - `VF_PYTHON_BIN_MEDIA_BACKEND`
 - `VF_PYTHON_BIN_GEMINI_RUNTIME`
-- `VF_PYTHON_BIN_KOKORO_RUNTIME`
 
 ### Bootstrap Log Rotation
 
@@ -239,7 +241,7 @@ Audit report output:
 - `backend/artifacts/frontend_backend_connectivity_audit.json`
 - `backend/artifacts/k8s_manifest_validation_report.json`
 
-### TTS Audits (GEM + KOKORO)
+### TTS Audits (PRIME + DUNO)
 
 Run Hindi emotion coverage audit:
 - `npm run audit:tts:hindi`
@@ -250,21 +252,16 @@ Run long-text smoke audit:
 Run long-text matrix audit:
 - `npm run audit:tts:longtext:matrix`
 
-Run browser-only Kokoro 16-voice ASR audit:
-- `npm run audit:kokoro:browser:asr`
-
 Full strict reliability pipeline (type checks + all required audits/contracts):
 - `npm run ci:reliability`
 
 Primary outputs:
 - `backend/artifacts/tts_hi_30s_report.json`
 - `backend/artifacts/runtime_contract_conformance_report.json`
-- `output/audits/kokoro-browser-speakers-asr-*.json`
-- `output/audits/kokoro-browser-speaker-audio/*.wav`
 
 Notes:
 - Reliability runbook: `docs/RELIABILITY_RUNBOOK.md`
-- Browser Kokoro audit starts a dedicated frontend server with `NEXT_PUBLIC_ENABLE_KOKORO_AUDIT_HARNESS=1`, serves Kokoro model files from `backend/models/onnx-community/Kokoro-82M-v1.0-ONNX/`, and serves the ONNX WASM runtime from same-origin `/kokoro-assets/runtime/`.
+- Duno now uses the backend TTS gateway and Modal endpoint configured in the backend env; the browser audit harness and `/duno-assets/` local inference path have been removed.
 - ASR scoring uses `backend/scripts/transcribe-audio-asr.py` with the media-backend venv when present (`backend/.venvs/media-backend`) or falls back to `python` on `PATH`.
 - Auth-first audit scripts:
   - `AUDIT_BEARER_TOKEN=<firebase_id_token>` (primary)
@@ -291,7 +288,7 @@ Notes:
 
 - Canonical plans: `Free`, `Starter`, `Creator`, `Pro`, `Scale`.
 - TTS engine access:
-  - Free: `KOKORO`, `NEURAL2` only (Prime `GEM` blocked).
+  - Free: `DUNO`, `VECTOR` only (Prime `PRIME` blocked).
   - Paid (`Starter|Creator|Pro|Scale`): all engines.
 - Per-generation character cap:
   - Free: `8,000`

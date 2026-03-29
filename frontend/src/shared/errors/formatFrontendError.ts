@@ -63,11 +63,28 @@ const AUTH_PATTERNS = [
   'authentication failed',
   'auth token',
   'unauthorized',
-  'forbidden',
-  'credential',
+  'invalid email or password',
+  'email verification required',
   'token used too early',
   'token is not yet valid',
   'clock is out of sync',
+];
+
+const ADMIN_RESTRICTION_PATTERNS = [
+  'uid_not_allowlisted',
+  'missing permission',
+  'permission denied',
+  'forbidden',
+];
+
+const SERVICE_ACCOUNT_CREDENTIAL_PATTERNS = [
+  'service account',
+  'google_application_credentials',
+  'credential_path',
+  'credentials path',
+  'credentials file',
+  'application default credentials',
+  'metadata server',
 ];
 
 const PROFILE_PATTERNS = [
@@ -171,6 +188,12 @@ const SENSITIVE_TECHNICAL_PATTERNS = [
   'slot set',
   'upstream_model_failed',
   'upstream model failed',
+  'missing permission',
+  'permission denied',
+  'service account',
+  'google_application_credentials',
+  'credentials path',
+  'application default credentials',
 ];
 
 const TECHNICAL_TOKENS = [
@@ -201,9 +224,21 @@ const JSON_PATTERN = /^\s*[{[][\s\S]*[}\]]\s*$/;
 const JSON_FIELD_PATTERN = /"[^"]+"\s*:/;
 const STATUS_PATTERN = /\b(?:status(?:\s+code)?|http)\s*(?:=|:)?\s*(4\d{2}|5\d{2})\b/i;
 const PORT_PATTERN = /\b[A-Za-z0-9._-]+:\d{2,5}\b/;
+const FIREBASE_AUTH_CODE_RE = /\bauth\/[a-z0-9-]+\b/i;
+const FIREBASE_PERMISSION_RE = /\bpermission[-_/]denied\b/i;
 
 const matchesAny = (value: string, tokens: string[]): boolean =>
   tokens.some((token) => value.includes(token));
+
+const PASS_THROUGH_BLOCK_PATTERNS = [
+  ...AUTH_PATTERNS,
+  ...ADMIN_RESTRICTION_PATTERNS,
+  ...SERVICE_ACCOUNT_CREDENTIAL_PATTERNS,
+  'authentication failed',
+  'authentication required',
+  'forbidden',
+  'unauthorized',
+];
 
 const networkCopyForContext = (context: FrontendErrorContext): string => {
   if (context === 'billing') return 'Billing is temporarily unavailable. Check your connection and try again.';
@@ -290,6 +325,9 @@ const isSafePassThrough = (input: string): boolean => {
   if (!raw) return false;
   if (raw.length > 220) return false;
   if (raw.includes('\n')) return false;
+  const lowered = raw.toLowerCase();
+  if (matchesAny(lowered, PASS_THROUGH_BLOCK_PATTERNS)) return false;
+  if (FIREBASE_AUTH_CODE_RE.test(raw) || FIREBASE_PERMISSION_RE.test(raw)) return false;
   return !isLikelyTechnicalErrorText(raw);
 };
 
@@ -335,13 +373,25 @@ export const formatFrontendError = (
   } else if (lowered.includes('uid_not_allowlisted')) {
     publicMessage = 'This admin action is restricted for your account.';
   } else if (
+    lowered.includes('x-admin-unlock')
+    || lowered.includes('admin session unlock')
+    || lowered.includes('admin-unlock')
+  ) {
+    publicMessage = 'This action requires an active admin session unlock.';
+  } else if (matchesAny(lowered, ADMIN_RESTRICTION_PATTERNS)) {
+    publicMessage = 'This action is restricted for your account permissions.';
+  } else if (matchesAny(lowered, SERVICE_ACCOUNT_CREDENTIAL_PATTERNS)) {
+    publicMessage = 'Runtime credentials are not configured correctly. Ask an admin to verify service-account settings.';
+  } else if (
     lowered.includes('complete your user id')
     || lowered.includes('complete your userid')
     || lowered.includes('requireduserid')
   ) {
     publicMessage = 'Complete your user ID setup to continue.';
-  } else if (matchesAny(lowered, AUTH_PATTERNS)) {
+  } else if (FIREBASE_AUTH_CODE_RE.test(lowered) || matchesAny(lowered, AUTH_PATTERNS)) {
     publicMessage = DEFAULT_CONTEXT_COPY.auth;
+  } else if (FIREBASE_PERMISSION_RE.test(lowered)) {
+    publicMessage = 'This action is restricted for your account permissions.';
   } else if (matchesAny(lowered, PROFILE_PATTERNS)) {
     publicMessage = profileCopyForContext(context);
   } else if (matchesAny(lowered, QUOTA_PATTERNS)) {
@@ -366,12 +416,6 @@ export const formatFrontendError = (
     publicMessage = DEFAULT_CONTEXT_COPY.support;
   } else if (matchesAny(lowered, MEDIA_PATTERNS)) {
     publicMessage = DEFAULT_CONTEXT_COPY.media;
-  } else if (
-    lowered.includes('x-admin-unlock')
-    || lowered.includes('admin session unlock')
-    || lowered.includes('admin-unlock')
-  ) {
-    publicMessage = 'This action requires an active admin session unlock.';
   } else if (matchesAny(lowered, RUNTIME_PATTERNS)) {
     publicMessage = DEFAULT_CONTEXT_COPY.runtime;
   } else if (JSON_PATTERN.test(rawMessage) || JSON_FIELD_PATTERN.test(rawMessage)) {

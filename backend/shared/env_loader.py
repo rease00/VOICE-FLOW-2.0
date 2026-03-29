@@ -87,7 +87,12 @@ def load_backend_env_files(current_file: Optional[Path] = None) -> list[Path]:
     anchor = Path(current_file or __file__).resolve()
     backend_root = _resolve_backend_root(anchor)
     workspace_root = backend_root.parent
-    env_files = [backend_root / ".env", workspace_root / ".env"]
+    env_files = [
+        backend_root / ".env.local",
+        workspace_root / ".env.local",
+        backend_root / ".env",
+        workspace_root / ".env",
+    ]
     for env_path in env_files:
         _load_env_file(env_path)
     return env_files

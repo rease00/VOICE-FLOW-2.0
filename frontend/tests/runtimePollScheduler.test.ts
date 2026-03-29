@@ -2,25 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { resolveRuntimePollMode } from '../src/shared/runtime/runtimePollScheduler';
 
 describe('resolveRuntimePollMode', () => {
-  it('returns none when session is missing or tab is hidden', () => {
+  it('ignores session identity and only gates on visibility and leadership', () => {
     expect(
       resolveRuntimePollMode({
         nowMs: 1000,
-        isBusy: false,
+        isBusy: true,
         activeUntilMs: 0,
         cooldownUntilMs: 0,
-        hasSessionIdentity: false,
         isVisible: true,
         isLeader: true,
       })
-    ).toBe('none');
+    ).toBe('active');
     expect(
       resolveRuntimePollMode({
         nowMs: 1000,
         isBusy: false,
         activeUntilMs: 0,
         cooldownUntilMs: 0,
-        hasSessionIdentity: true,
         isVisible: false,
         isLeader: true,
       })
@@ -34,7 +32,6 @@ describe('resolveRuntimePollMode', () => {
         isBusy: true,
         activeUntilMs: 0,
         cooldownUntilMs: 0,
-        hasSessionIdentity: true,
         isVisible: true,
         isLeader: true,
       })
@@ -45,7 +42,6 @@ describe('resolveRuntimePollMode', () => {
         isBusy: false,
         activeUntilMs: 2000,
         cooldownUntilMs: 0,
-        hasSessionIdentity: true,
         isVisible: true,
         isLeader: true,
       })
@@ -59,7 +55,6 @@ describe('resolveRuntimePollMode', () => {
         isBusy: false,
         activeUntilMs: 1000,
         cooldownUntilMs: 4000,
-        hasSessionIdentity: true,
         isVisible: true,
         isLeader: true,
       })
@@ -70,7 +65,6 @@ describe('resolveRuntimePollMode', () => {
         isBusy: false,
         activeUntilMs: 1000,
         cooldownUntilMs: 4000,
-        hasSessionIdentity: true,
         isVisible: true,
         isLeader: true,
       })
@@ -84,7 +78,6 @@ describe('resolveRuntimePollMode', () => {
         isBusy: true,
         activeUntilMs: 0,
         cooldownUntilMs: 0,
-        hasSessionIdentity: true,
         isVisible: true,
         isLeader: false,
       })

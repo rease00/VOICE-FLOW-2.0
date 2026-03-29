@@ -113,7 +113,12 @@ from services.reader_domain import (
     should_schedule_next_panel_batch,
     should_schedule_next_text_window,
 )
-from services.admission.redis_limits import SuccessQuotaDecision, SuccessQuotaLimiter
+from services.admission.redis_limits import (
+    SuccessQuotaDecision,
+    SuccessQuotaLimiter,
+    SuccessQuotaReservation,
+    SuccessQuotaSnapshot,
+)
 from services.errors.codes import (
     ENGINE_OVERLOADED,
     LIVE_FIRST_CHUNK_SLA_FALLBACK,
@@ -135,6 +140,7 @@ from services.openvoice_modal import (
     compute_openvoice_gpu_cost_usd,
     decode_openvoice_audio_base64,
     encode_openvoice_audio_base64,
+    extract_openvoice_artifact_signature_payload,
     normalize_openvoice_mode,
     normalize_openvoice_language,
     normalize_openvoice_run_kind,
@@ -166,17 +172,6 @@ LOCAL_MODEL_MIRROR_ROOT = Path(
     (os.getenv("VF_LOCAL_MODEL_MIRROR_DIR") or str(APP_ROOT / "models")).strip()
     or str(APP_ROOT / "models")
 ).resolve()
-KOKORO_MODEL_REPO_ID = (os.getenv("VF_KOKORO_MODEL_REPO_ID") or "onnx-community/Kokoro-82M-v1.0-ONNX").strip() or "onnx-community/Kokoro-82M-v1.0-ONNX"
-KOKORO_MODEL_REVISION = (os.getenv("VF_KOKORO_MODEL_REVISION") or "main").strip() or "main"
-KOKORO_MODEL_MIRROR_DIR = (LOCAL_MODEL_MIRROR_ROOT / KOKORO_MODEL_REPO_ID).resolve()
-KOKORO_MODEL_REQUIRED_FILES: tuple[str, ...] = (
-    "config.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "onnx/model_quantized.onnx",
-    "voices/af_heart.bin",
-    "voices/hf_alpha.bin",
-)
 BOOTSTRAP_SCRIPT = PROJECT_ROOT / "scripts" / "bootstrap-services.mjs"
 WHISPER_MODEL_SIZE = os.getenv("VF_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("VF_WHISPER_DEVICE", "cpu")
@@ -218,7 +213,7 @@ COMMERCIAL_PROVIDER_BLOCKLIST_DEFAULT = frozenset(
     {"freesound", "pixabay", "project_gutenberg", "standard_ebooks"}
 )
 COMMERCIAL_PROVIDER_ALWAYS_ALLOWED = frozenset(
-    {"voiceflow_upload", "pepper_carrot", "voiceflow_seed"}
+    {"voiceflow_upload", "pepper_carrot", "voiceflow_seed", "voiceflow_admin_catalog"}
 )
 COMMERCIAL_PROVIDER_LICENSE_GATED = frozenset(
     {"openverse", "wikisource", "gutendex", "openlibrary", "google_books"}
@@ -445,9 +440,14 @@ TTS_EMOTION_HELPER_TIMEOUT_SEC = max(
     float((os.getenv("VF_TTS_EMOTION_HELPER_TIMEOUT_SEC") or "14").strip() or "14"),
 )
 GEMINI_RUNTIME_URL = (os.getenv("VF_GEMINI_RUNTIME_URL") or "http://127.0.0.1:7810").strip().rstrip("/")
-KOKORO_RUNTIME_URL = (os.getenv("VF_KOKORO_RUNTIME_URL") or "http://127.0.0.1:7820").strip().rstrip("/")
+DUNO_RUNTIME_URL = (os.getenv("VF_DUNO_RUNTIME_URL") or "").strip().rstrip("/")
+DUNO_RUNTIME_TOKEN = (os.getenv("VF_DUNO_RUNTIME_TOKEN") or "").strip()
 LLVC_RUNTIME_URL = (os.getenv("VF_VOICE_TRANSFER_RUNTIME_URL") or "http://127.0.0.1:7830").strip().rstrip("/")
 GEMINI_RUNTIME_ADMIN_TOKEN = (os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
+VF_OPENVOICE_ARTIFACT_ONE_TIME = (
+    (os.getenv("VF_OPENVOICE_ARTIFACT_ONE_TIME") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 VF_LLVC_PRESET_DEFAULT = (
     str(os.getenv("VF_VOICE_TRANSFER_PRESET_DEFAULT") or "voice_transfer_hq_cpu").strip()
     or "voice_transfer_hq_cpu"
@@ -631,6 +631,12 @@ VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED = (
     (os.getenv("VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED") or "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+# Legacy compatibility alias used by older test/contracts.
+VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED = VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED
+VF_BILLING_WEBHOOK_MAX_BODY_BYTES = max(
+    1024,
+    int((os.getenv("VF_BILLING_WEBHOOK_MAX_BODY_BYTES") or str(512 * 1024)).strip() or str(512 * 1024)),
+)
 ACCOUNTING_DISPLAY_CURRENCY = (os.getenv("VF_ACCOUNTING_CURRENCY") or "INR").strip().upper() or "INR"
 ACCOUNTING_TIMEZONE = (os.getenv("VF_ACCOUNTING_TIMEZONE") or "Asia/Kolkata").strip() or "Asia/Kolkata"
 try:
@@ -712,38 +718,49 @@ VF_TOKEN_PACK_VALIDITY_MONTHS = max(
     1,
     int((os.getenv("VF_TOKEN_PACK_VALIDITY_MONTHS") or "3").strip() or "3"),
 )
+# Legacy wallet/vc compatibility knobs.
+VF_VC_CONVERSION_RATE = max(
+    0.0,
+    float((os.getenv("VF_VC_CONVERSION_RATE") or "0").strip() or "0"),
+)
+VC_FREE_MONTHLY_GRANT_BY_PLAN: dict[str, float] = {
+    "free": 0.0,
+    "launcher": 0.0,
+    "starter": 0.0,
+    "creator": 0.0,
+    "pro": max(0.0, float((os.getenv("VC_FREE_MONTHLY_GRANT_PRO") or "500").strip() or "500")),
+    "scale": max(0.0, float((os.getenv("VC_FREE_MONTHLY_GRANT_SCALE") or "1200").strip() or "1200")),
+}
+VC_TOKEN_PACK_CATALOG: dict[str, dict[str, int]] = {
+    "standard": {
+        "vc": max(1, int((os.getenv("VC_TOKEN_PACK_STANDARD_VC") or "750").strip() or "750")),
+        "priceInr": max(1, int((os.getenv("VC_TOKEN_PACK_STANDARD_INR") or "699").strip() or "699")),
+    }
+}
 ENGINE_TIER_REGISTRY: dict[str, dict[str, Any]] = {
-    "KOKORO": {"label": "BASIC", "rate": 0.7},
-    "NEURAL2": {"label": "HD", "rate": 1.2},
-    "GEM": {"label": "PRIME", "rate": 1.5},
+    "DUNO": {"label": "DUNO", "rate": 0.5},
+    "VECTOR": {"label": "VECTOR", "rate": 1.2},
+    "PRIME": {"label": "PRIME", "rate": 1.5},
 }
 VF_ENGINE_RATES = {
     engine: max(0.0, float(meta.get("rate") or 0.0)) or 1.0
     for engine, meta in ENGINE_TIER_REGISTRY.items()
 }
 TTS_ENGINE_KEYS: tuple[str, ...] = tuple(VF_ENGINE_RATES.keys())
-GEM_RUNTIME_ENGINE_KEYS = frozenset({"GEM", "NEURAL2"})
+TTS_UPSTREAM_PROVIDER_RUNTIME = "runtime"
+VF_TTS_UPSTREAM_PROVIDER = (
+    str(os.getenv("VF_TTS_UPSTREAM_PROVIDER") or TTS_UPSTREAM_PROVIDER_RUNTIME).strip().lower()
+    or TTS_UPSTREAM_PROVIDER_RUNTIME
+)
+VF_TTS_TEXTTOSPEECH_ONLY = (
+    str(os.getenv("VF_TTS_TEXTTOSPEECH_ONLY") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VECTOR_RUNTIME_ENGINE_KEYS = frozenset({"VECTOR", "PRIME"})
 FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
-    "GEM": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
-    "NEURAL2": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
-    "KOKORO": (
-        "af_heart",
-        "af_bella",
-        "af_nova",
-        "af_sarah",
-        "am_fenrir",
-        "am_michael",
-        "am_onyx",
-        "am_echo",
-        "bf_emma",
-        "bf_isabella",
-        "bm_george",
-        "bm_fable",
-        "hf_alpha",
-        "hf_beta",
-        "hm_omega",
-        "hm_psi",
-    ),
+    "VECTOR": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
+    "PRIME": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
+    "DUNO": ("af_heart", "hf_beta"),
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 1000},
@@ -756,13 +773,20 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
 PAID_PLAN_KEYS: tuple[str, ...] = ("launcher", "starter", "creator", "pro", "scale")
 PLAN_PRICE_POLICY: dict[str, dict[str, int]] = {
     "launcher": {"firstCycleInr": 129, "recurringInr": 129},
-    "starter": {"firstCycleInr": 450, "recurringInr": 450},
-    "creator": {"firstCycleInr": 1499, "recurringInr": 1499},
-    "pro": {"firstCycleInr": 2999, "recurringInr": 2999},
-    "scale": {"firstCycleInr": 4500, "recurringInr": 4500},
+    "starter": {"firstCycleInr": 450, "recurringInr": 428},
+    "creator": {"firstCycleInr": 1499, "recurringInr": 1424},
+    "pro": {"firstCycleInr": 2999, "recurringInr": 2699},
+    "scale": {"firstCycleInr": 4500, "recurringInr": 3825},
+}
+PLAN_RECURRING_DISCOUNT_PCT_BY_KEY: dict[str, int] = {
+    "launcher": 0,
+    "starter": 5,
+    "creator": 5,
+    "pro": 10,
+    "scale": 15,
 }
 PLAN_FEATURE_FLAGS: dict[str, dict[str, Any]] = {
-    "free": {"allowedEngines": ("KOKORO", "NEURAL2"), "earlyAccess": False},
+    "free": {"allowedEngines": ("DUNO", "VECTOR"), "earlyAccess": False},
     "launcher": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "starter": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
     "creator": {"allowedEngines": tuple(TTS_ENGINE_KEYS), "earlyAccess": False},
@@ -850,7 +874,13 @@ TOKEN_PACK_CATALOG: dict[str, dict[str, int]] = {
     "mega": {"vf": 300000, "priceInr": 2900},
     "ultra": {"vf": 600000, "priceInr": 5200},
 }
-TOKEN_PACK_SCALE_DISCOUNT_PCT = 20
+TOKEN_PACK_DISCOUNT_PCT_BY_KEY: dict[str, int] = {
+    "launcher": 0,
+    "starter": 5,
+    "creator": 5,
+    "pro": 10,
+    "scale": 15,
+}
 # Deprecated env compatibility values (legacy one-pack flow).
 VF_TOKEN_PACK_VF_AMOUNT = max(1, int((os.getenv("VF_TOKEN_PACK_VF_AMOUNT") or "100000").strip() or "100000"))
 VF_TOKEN_PACK_BASE_INR = max(1, int((os.getenv("VF_TOKEN_PACK_BASE_INR") or "499").strip() or "499"))
@@ -1036,40 +1066,45 @@ READER_REMOTE_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 READER_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+VF_TTS_STATUS_PROBE_TIMEOUT_LOCAL_SEC = max(
+    1.0,
+    float((os.getenv("VF_TTS_STATUS_PROBE_TIMEOUT_LOCAL_SEC") or "2.5").strip() or "2.5"),
+)
+VF_TTS_STATUS_PROBE_TIMEOUT_REMOTE_SEC = max(
+    VF_TTS_STATUS_PROBE_TIMEOUT_LOCAL_SEC,
+    float((os.getenv("VF_TTS_STATUS_PROBE_TIMEOUT_REMOTE_SEC") or "4.0").strip() or "4.0"),
+)
+
+def _runtime_endpoint(base_url: str, suffix: str) -> str:
+    safe_base = str(base_url or "").strip().rstrip("/")
+    if not safe_base:
+        return ""
+    return f"{safe_base}{suffix}"
+
+
 TTS_ENGINE_HEALTH_URLS = {
-    "GEM": "http://127.0.0.1:7810/health",
-    "NEURAL2": "http://127.0.0.1:7810/health",
-    "KOKORO": "http://127.0.0.1:7820/health",
+    "VECTOR": _runtime_endpoint(GEMINI_RUNTIME_URL, "/health"),
+    "PRIME": _runtime_endpoint(GEMINI_RUNTIME_URL, "/health"),
+    "DUNO": _runtime_endpoint(DUNO_RUNTIME_URL, "/health"),
 }
 TTS_ENGINE_CAPABILITIES_URLS = {
-    engine: health_url.rsplit("/health", 1)[0] + "/v1/capabilities"
-    for engine, health_url in TTS_ENGINE_HEALTH_URLS.items()
+    "VECTOR": _runtime_endpoint(GEMINI_RUNTIME_URL, "/v1/capabilities"),
+    "PRIME": _runtime_endpoint(GEMINI_RUNTIME_URL, "/v1/capabilities"),
+    "DUNO": _runtime_endpoint(DUNO_RUNTIME_URL, "/v1/capabilities"),
 }
 DUBBING_PREPARE_ENGINE_WAIT_MS = {
-    "GEM": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
-    "NEURAL2": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
-    "KOKORO": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_KOKORO_MS") or "90000").strip() or "90000")),
+    "VECTOR": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
+    "PRIME": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_GEM_MS") or "20000").strip() or "20000")),
+    "DUNO": max(5_000, int((os.getenv("VF_DUBBING_PREPARE_WAIT_DUNO_MS") or "90000").strip() or "90000")),
 }
 DUBBING_PREPARE_POLL_INTERVAL_MS = max(
     250,
     int((os.getenv("VF_DUBBING_PREPARE_POLL_INTERVAL_MS") or "1200").strip() or "1200"),
 )
 TTS_ENGINE_ALIASES = {
-    "GEM": "GEM",
-    "GEMINI": "GEM",
-    "GOOD": "GEM",
-    "GOOD_LITE": "GEM",
-    "PRIME": "GEM",
-    "PR": "GEM",
-    "NEURAL2": "NEURAL2",
-    "NEURAL_2": "NEURAL2",
-    "NURAL2": "NEURAL2",
-    "NURAL_2": "NEURAL2",
-    "HD": "NEURAL2",
-    "KOKORO": "KOKORO",
-    "KOKORO_RUNTIME": "KOKORO",
-    "BASIC": "KOKORO",
-    "BS": "KOKORO",
+    "DUNO": "DUNO",
+    "VECTOR": "VECTOR",
+    "PRIME": "PRIME",
 }
 ENGINE_DISPLAY_NAMES = {
     engine: str(meta.get("label") or engine).strip().upper() or engine
@@ -1083,7 +1118,7 @@ EXECUTED_ENGINE_DISPLAY_NAMES = {
 RUNTIME_LOG_FILES = {
     "media-backend": RUNTIME_LOG_DIR / "media-backend.log",
     "gemini-runtime": RUNTIME_LOG_DIR / "gemini-runtime.log",
-    "kokoro-runtime": RUNTIME_LOG_DIR / "kokoro-runtime.log",
+    "duno-runtime": RUNTIME_LOG_DIR / "duno-runtime.log",
 }
 RUNTIME_LOG_ALIASES = {
     "backend": "media-backend",
@@ -1092,8 +1127,8 @@ RUNTIME_LOG_ALIASES = {
     "gem": "gemini-runtime",
     "gemini": "gemini-runtime",
     "gemini-runtime": "gemini-runtime",
-    "kokoro": "kokoro-runtime",
-    "kokoro-runtime": "kokoro-runtime",
+    "duno": "duno-runtime",
+    "duno-runtime": "duno-runtime",
 }
 RUNTIME_LOG_MAX_BYTES = 262_144
 RUNTIME_LOG_MAX_LINES = 400
@@ -1197,13 +1232,17 @@ if _vf_tts_worker_count_raw:
 else:
     _vf_tts_worker_count = 8 if VF_SERVICE_IS_WORKER else 0
 VF_TTS_QUEUE_WORKER_COUNT = max(0, int(_vf_tts_worker_count))
-VF_TTS_ENGINE_CONCURRENCY_GEM = max(
+VF_TTS_ENGINE_CONCURRENCY_VECTOR = max(
     1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_GEM") or "16").strip() or "16"),
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_VECTOR") or "16").strip() or "16"),
 )
-VF_TTS_ENGINE_CONCURRENCY_KOKORO = max(
+VF_TTS_ENGINE_CONCURRENCY_PRIME = max(
     1,
-    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_KOKORO") or "12").strip() or "12"),
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_PRIME") or "16").strip() or "16"),
+)
+VF_TTS_ENGINE_CONCURRENCY_DUNO = max(
+    1,
+    int((os.getenv("VF_TTS_ENGINE_CONCURRENCY_DUNO") or "12").strip() or "12"),
 )
 VF_TTS_QUEUE_METRICS_WINDOW = max(
     20,
@@ -1237,27 +1276,19 @@ VF_ADMIN_USAGE_TOTAL_SAMPLE_CAP = max(
 USAGE_WINDOW_24H_MS = 24 * 60 * 60 * 1000
 USAGE_WINDOW_7D_MS = 7 * 24 * 60 * 60 * 1000
 VF_ADMIN_APPROVAL_TOKEN = (os.getenv("VF_ADMIN_APPROVAL_TOKEN") or "").strip()
-VF_ADMIN_APPROVER_UIDS = frozenset(
-    {
-        token
-        for token in [item.strip() for item in (os.getenv("VF_ADMIN_APPROVER_UIDS") or "").split(",")]
-        if token
-    }
-)
-VF_ADMIN_APPROVER_EMAILS = frozenset(
-    {
-        token.lower()
-        for token in [
-            item.strip()
-            for item in (
-                os.getenv("VF_ADMIN_APPROVER_EMAILS")
-                or os.getenv("VITE_ADMIN_EMAIL_ALLOWLIST")
-                or ""
-            ).split(",")
-        ]
-        if token
-    }
-)
+
+def _server_only_allowlist_env(name: str) -> frozenset[str]:
+    safe_name = str(name or "").strip()
+    if not safe_name:
+        return frozenset()
+    raw = os.getenv(safe_name)
+    if raw is None:
+        return frozenset()
+    return frozenset(token for token in [item.strip() for item in str(raw).split(",")] if token)
+
+
+VF_ADMIN_APPROVER_UIDS = _server_only_allowlist_env("VF_ADMIN_APPROVER_UIDS")
+VF_ADMIN_APPROVER_EMAILS = frozenset(token.lower() for token in _server_only_allowlist_env("VF_ADMIN_APPROVER_EMAILS"))
 VF_ADMIN_UNLOCK_TTL_SECONDS = max(
     60,
     int((os.getenv("VF_ADMIN_UNLOCK_TTL_SECONDS") or "900").strip() or "900"),
@@ -1475,6 +1506,7 @@ SUPPORT_CONVERSATIONS_COLLECTION = "support_conversations"
 SUPPORT_MESSAGES_COLLECTION = "support_messages"
 SUPPORT_AI_RUNS_COLLECTION = "support_ai_runs"
 SUPPORT_AI_POLICY_COLLECTION = "support_ai_policy"
+OPENVOICE_RUNTIME_CONFIG_COLLECTION = "openvoice_runtime_config"
 ADMIN_SESSION_UNLOCK_COLLECTION = "admin_session_unlock"
 NOTIFICATION_INBOX_COLLECTION = "notification_inbox"
 NOTIFICATION_PREFERENCES_COLLECTION = "notification_preferences"
@@ -1486,6 +1518,7 @@ READER_UPLOADS_COLLECTION = "reader_uploads"
 READER_PROGRESS_COLLECTION = "reader_progress"
 READER_CAST_MEMORY_COLLECTION = "reader_cast_memory"
 READER_TRANSLATION_COLLECTION = "reader_translation_cache"
+READER_ADMIN_CATALOG_COLLECTION = "reader_admin_catalog"
 AUDIT_HASH_ALGO = "sha256"
 AUDIT_GENESIS_HASH = "GENESIS"
 ALERT_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
@@ -1667,7 +1700,7 @@ def _engine_display_name(engine: str) -> str:
 
 
 def _is_gem_runtime_engine(engine: str) -> bool:
-    return str(engine or "").strip().upper() in GEM_RUNTIME_ENGINE_KEYS
+    return str(engine or "").strip().upper() in VECTOR_RUNTIME_ENGINE_KEYS
 
 
 def _executed_engine_display_name(engine_executed: str) -> str:
@@ -1857,7 +1890,9 @@ def _load_voice_id_map() -> dict[str, Any]:
     engines = payload.get("engines") if isinstance(payload.get("engines"), dict) else {}
     normalized_engines: dict[str, dict[str, Any]] = {}
     for engine_key, raw_engine_payload in engines.items():
-        normalized_engine = _normalize_engine_name(str(engine_key or "GEM"))
+        normalized_engine = _canonicalize_engine_token(str(engine_key or ""))
+        if not normalized_engine:
+            continue
         source = raw_engine_payload if isinstance(raw_engine_payload, dict) else {}
         voice_to_profile_raw = source.get("voiceToProfile") if isinstance(source.get("voiceToProfile"), dict) else {}
         voice_to_profile: dict[str, str] = {}
@@ -1918,7 +1953,7 @@ def _resolve_gem_runtime_voice_name(value: str, fallback: str = "Fenrir") -> str
         return str(fallback or "Fenrir").strip() or "Fenrir"
     mapping = _load_voice_id_map()
     engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
-    gem_payload = engines.get("GEM") if isinstance(engines.get("GEM"), dict) else {}
+    gem_payload = engines.get("PRIME") if isinstance(engines.get("PRIME"), dict) else {}
     runtime_voices = gem_payload.get("runtimeVoices") if isinstance(gem_payload.get("runtimeVoices"), list) else []
     normalized_targets = set(_voice_lookup_candidates(token))
     normalized_targets.add(token.lower())
@@ -1942,7 +1977,9 @@ def _plan_allowed_voice_tokens(engine: str, plan_key: str) -> tuple[set[str], st
     normalized_plan = str(plan_key or "").strip().lower()
     if normalized_plan != "free":
         return set(), ""
-    normalized_engine = _normalize_engine_name(engine)
+    normalized_engine = _resolve_internal_engine_token(engine)
+    if not normalized_engine:
+        return set(), ""
     allowlist = list(FREE_TIER_ALLOWED_VOICE_IDS.get(normalized_engine) or [])
     if not allowlist:
         return set(), ""
@@ -1989,12 +2026,251 @@ def _sanitize_tts_voice_selection_for_plan(
         resolved = _resolve_gem_runtime_voice_name(requested_token, fallback="Fenrir")
         return resolved, resolved, gated
 
-    if normalized_engine == "KOKORO":
+    if normalized_engine == "DUNO":
         resolved = requested_token or fallback_token or "hf_alpha"
         return resolved, raw_voice_name or resolved, gated
 
     resolved = requested_token or raw_voice_id or raw_voice_name
     return resolved, raw_voice_name or resolved, gated
+
+
+DUNO_DEFAULT_MODEL = "ResembleAI/chatterbox-turbo"
+_DUNO_EMOTION_TAG_MAP: dict[str, str] = {
+    "happy": "laugh",
+    "playful": "chuckle",
+    "sad": "sigh",
+    "fearful": "gasp",
+    "shocked": "gasp",
+    "surprised": "gasp",
+    "angry": "clearthroat",
+    "furious": "clearthroat",
+}
+_DUNO_SUPPORTED_TAGS = frozenset({"laugh", "chuckle", "sigh", "cough", "gasp", "clearthroat"})
+
+
+def _duno_clone_cache_key(uid: str, speaker: str, reference_hash: str, model: str) -> str:
+    safe_uid = str(uid or "").strip().lower()
+    safe_speaker = str(speaker or "").strip().lower() or "default"
+    safe_reference_hash = str(reference_hash or "").strip().lower()
+    safe_model = str(model or DUNO_DEFAULT_MODEL).strip().lower() or DUNO_DEFAULT_MODEL.lower()
+    return f"{safe_uid}:{safe_speaker}:{safe_reference_hash}:{safe_model}"
+
+
+def _duno_reference_hash(*, reference_audio_url: str = "", reference_audio_name: str = "", reference_audio_base64: str = "") -> str:
+    safe_url = str(reference_audio_url or "").strip()
+    safe_name = str(reference_audio_name or "").strip()
+    safe_base64 = str(reference_audio_base64 or "").strip()
+    if not (safe_url or safe_name or safe_base64):
+        return ""
+    digest = hashlib.sha256()
+    digest.update(safe_url.encode("utf-8"))
+    digest.update(b"\n")
+    digest.update(safe_name.encode("utf-8"))
+    digest.update(b"\n")
+    digest.update(safe_base64.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _duno_lookup_cached_voice_id(*, uid: str, speaker: str, reference_hash: str, model: str) -> str:
+    safe_uid = str(uid or "").strip()
+    safe_reference_hash = str(reference_hash or "").strip()
+    if not safe_uid or not safe_reference_hash:
+        return ""
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(safe_uid))
+    clone_map = entitlement.get("dunoVoiceCloneMap") if isinstance(entitlement.get("dunoVoiceCloneMap"), dict) else {}
+    key = _duno_clone_cache_key(safe_uid, speaker, safe_reference_hash, model)
+    row = clone_map.get(key) if isinstance(clone_map, dict) else {}
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("voiceId") or row.get("voice_id") or "").strip()
+
+
+def _duno_store_cached_voice_id(
+    *,
+    uid: str,
+    speaker: str,
+    reference_hash: str,
+    model: str,
+    voice_id: str,
+) -> None:
+    safe_uid = str(uid or "").strip()
+    safe_reference_hash = str(reference_hash or "").strip()
+    safe_voice_id = str(voice_id or "").strip()
+    if not safe_uid or not safe_reference_hash or not safe_voice_id:
+        return
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(safe_uid))
+    clone_map = entitlement.get("dunoVoiceCloneMap") if isinstance(entitlement.get("dunoVoiceCloneMap"), dict) else {}
+    next_clone_map = dict(clone_map or {})
+    key = _duno_clone_cache_key(safe_uid, speaker, safe_reference_hash, model)
+    next_clone_map[key] = {
+        "voiceId": safe_voice_id,
+        "speaker": str(speaker or "").strip(),
+        "referenceHash": safe_reference_hash,
+        "model": str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
+        "updatedAt": _utc_now().isoformat(),
+    }
+    _write_entitlement(safe_uid, {"dunoVoiceCloneMap": next_clone_map})
+
+
+def _extract_voice_id_from_payload(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("voice_id", "voiceId", "id"):
+        token = str(payload.get(key) or "").strip()
+        if token:
+            return token
+    nested = payload.get("voice")
+    if isinstance(nested, dict):
+        nested_id = _extract_voice_id_from_payload(nested)
+        if nested_id:
+            return nested_id
+    voices = payload.get("voices")
+    if isinstance(voices, list):
+        for row in voices:
+            nested_id = _extract_voice_id_from_payload(row)
+            if nested_id:
+                return nested_id
+    return ""
+
+
+def _duno_create_voice_via_runtime(
+    *,
+    model: str,
+    speaker: str,
+    reference_audio_url: str,
+    reference_audio_name: str,
+    reference_audio_base64: str,
+    source_voice_id: str,
+    source_voice_name: str,
+) -> str:
+    runtime_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    if not runtime_base:
+        return ""
+    request_payload = {
+        "model": str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
+        "speaker": str(speaker or "").strip(),
+        "referenceAudioUrl": str(reference_audio_url or "").strip(),
+        "referenceAudioName": str(reference_audio_name or "").strip(),
+        "referenceAudioBase64": str(reference_audio_base64 or "").strip(),
+        "sourceVoiceId": str(source_voice_id or "").strip(),
+        "sourceVoiceName": str(source_voice_name or "").strip(),
+    }
+    request_payload = {
+        key: value
+        for key, value in request_payload.items()
+        if str(value or "").strip()
+    }
+    endpoints = ("/v1/voices/add", "/v1/voices/clone", "/v1/voices")
+    for endpoint in endpoints:
+        url = f"{runtime_base}{endpoint}"
+        try:
+            headers = {
+                "content-type": "application/json",
+                "ngrok-skip-browser-warning": "true",
+            }
+            auth_headers = _runtime_auth_headers_for_url(url, include_accept=True)
+            headers.update(auth_headers)
+            response = _runtime_http_request(
+                "POST",
+                url,
+                timeout=max(8, int(VF_TTS_RUNTIME_TIMEOUT_SEC)),
+                json=request_payload,
+                headers=headers,
+            )
+            if not bool(getattr(response, "ok", False)):
+                continue
+            parsed_payload = response.json() if hasattr(response, "json") else {}
+            voice_id = _extract_voice_id_from_payload(parsed_payload)
+            if not voice_id:
+                voice_id = str(
+                    response.headers.get("x-voice-id")
+                    or response.headers.get("x-voiceflow-voice-id")
+                    or ""
+                ).strip()
+            if voice_id:
+                return voice_id
+        except Exception:
+            continue
+    return ""
+
+
+def _resolve_duno_expressive_tag(*, emotion: str, cue: str) -> str:
+    safe_emotion = str(_canonical_emotion_label(emotion) or "Neutral").strip().lower()
+    safe_cue = str(cue or "").strip().lower()
+    for tag in _DUNO_SUPPORTED_TAGS:
+        if tag in safe_cue:
+            return tag
+    return str(_DUNO_EMOTION_TAG_MAP.get(safe_emotion) or "").strip()
+
+
+def _prepare_duno_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = dict(payload or {})
+    engine = _resolve_internal_engine_token(str(safe_payload.get("engine") or "PRIME")) or "PRIME"
+    if engine != "DUNO":
+        return safe_payload
+
+    text = str(safe_payload.get("text") or "").strip()
+    emotion = str(safe_payload.get("emotion") or "").strip()
+    cue = str(safe_payload.get("cue") or safe_payload.get("style") or "").strip()
+    expressive_tag = _resolve_duno_expressive_tag(emotion=emotion, cue=cue)
+    if expressive_tag and expressive_tag in _DUNO_SUPPORTED_TAGS and text:
+        tag_token = f"[{expressive_tag}]"
+        if tag_token.lower() not in text.lower():
+            safe_payload["text"] = f"{tag_token} {text}".strip()
+    if not emotion:
+        safe_payload["emotion"] = "Neutral"
+    else:
+        safe_payload["emotion"] = _canonical_emotion_label(emotion)
+
+    uid = str(safe_payload.get("uid") or "").strip()
+    speaker = str(safe_payload.get("speaker_name") or safe_payload.get("speaker") or "").strip()
+    model = str(safe_payload.get("model") or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
+    safe_payload["model"] = model
+
+    reference_audio_url = str(safe_payload.get("referenceAudioUrl") or safe_payload.get("reference_audio_url") or "").strip()
+    reference_audio_name = str(safe_payload.get("referenceAudioName") or safe_payload.get("reference_audio_name") or "").strip()
+    reference_audio_base64 = str(safe_payload.get("referenceAudioBase64") or safe_payload.get("reference_audio_base64") or "").strip()
+    source_voice_id = str(safe_payload.get("sourceVoiceId") or safe_payload.get("source_voice_id") or "").strip()
+    source_voice_name = str(safe_payload.get("sourceVoiceName") or safe_payload.get("source_voice_name") or "").strip()
+
+    reference_hash = _duno_reference_hash(
+        reference_audio_url=reference_audio_url,
+        reference_audio_name=reference_audio_name,
+        reference_audio_base64=reference_audio_base64,
+    )
+    if not reference_hash:
+        return safe_payload
+
+    resolved_voice_id = str(safe_payload.get("voice_id") or safe_payload.get("voiceId") or "").strip()
+    if not resolved_voice_id:
+        resolved_voice_id = _duno_lookup_cached_voice_id(
+            uid=uid,
+            speaker=speaker,
+            reference_hash=reference_hash,
+            model=model,
+        )
+    if not resolved_voice_id and (reference_audio_url or reference_audio_base64):
+        resolved_voice_id = _duno_create_voice_via_runtime(
+            model=model,
+            speaker=speaker,
+            reference_audio_url=reference_audio_url,
+            reference_audio_name=reference_audio_name,
+            reference_audio_base64=reference_audio_base64,
+            source_voice_id=source_voice_id,
+            source_voice_name=source_voice_name,
+        )
+    if resolved_voice_id:
+        safe_payload["voice_id"] = resolved_voice_id
+        safe_payload["voiceId"] = resolved_voice_id
+        if uid:
+            _duno_store_cached_voice_id(
+                uid=uid,
+                speaker=speaker,
+                reference_hash=reference_hash,
+                model=model,
+                voice_id=resolved_voice_id,
+            )
+    return safe_payload
 
 
 def _profile_index() -> dict[str, dict[str, Any]]:
@@ -2070,7 +2346,9 @@ def _decorate_profile_with_reference(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_voice_access_tier(engine: str, voice_id: str) -> str:
-    normalized_engine = _normalize_engine_name(engine)
+    normalized_engine = _resolve_internal_engine_token(engine)
+    if not normalized_engine:
+        return "pro"
     allow_tokens, _ = _plan_allowed_voice_tokens(normalized_engine, "free")
     if not allow_tokens:
         return "pro"
@@ -2097,8 +2375,10 @@ def _resolve_mapped_profile(
 ) -> Optional[dict[str, Any]]:
     mapping = _load_voice_id_map()
     engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
-    safe_engine = _normalize_engine_name(engine)
-    mapping_engine = "GEM" if _is_gem_runtime_engine(safe_engine) else safe_engine
+    safe_engine = _resolve_internal_engine_token(engine)
+    if not safe_engine:
+        return None
+    mapping_engine = "PRIME" if _is_gem_runtime_engine(safe_engine) else safe_engine
     engine_payload = engines.get(mapping_engine) if isinstance(engines.get(mapping_engine), dict) else {}
     voice_to_profile = engine_payload.get("voiceToProfile") if isinstance(engine_payload.get("voiceToProfile"), dict) else {}
     raw_voice_id = str(voice_id or "").strip()
@@ -2144,17 +2424,14 @@ def _resolve_history_voice_fields(
     voice_id: str = "",
     voice_name: str = "",
 ) -> tuple[str, str]:
-    try:
-        safe_engine = _normalize_engine_name(engine)
-    except Exception:
-        safe_engine = "GEM"
+    safe_engine = _resolve_internal_engine_token(engine) or "PRIME"
 
     raw_voice_id = str(voice_id or "").strip()
     raw_voice_name = str(voice_name or "").strip()
 
     if _is_gem_runtime_engine(safe_engine):
         canonical_voice_id = _resolve_gem_runtime_voice_name(raw_voice_id or raw_voice_name, fallback="Fenrir")
-    elif safe_engine == "KOKORO":
+    elif safe_engine == "DUNO":
         canonical_voice_id = raw_voice_id or raw_voice_name or "hf_alpha"
     else:
         canonical_voice_id = raw_voice_id or raw_voice_name
@@ -2248,12 +2525,17 @@ def _apply_mapped_voice_fields(
     preserve_runtime_identity: bool = False,
 ) -> dict[str, Any]:
     out = dict(base)
+    out["displayName"] = (
+        str(out.get("displayName") or out.get("name") or out.get("voice") or voice_id).strip()
+        or voice_id
+    )
     profile = _resolve_mapped_profile(engine, voice_id, voice_name=str(base.get("voice") or ""))
     if not isinstance(profile, dict):
         return out
     mapped_name = str(profile.get("displayName") or "").strip()
     if mapped_name and not preserve_runtime_identity:
         out["name"] = mapped_name
+        out["displayName"] = mapped_name
         out["mapped_name"] = mapped_name
     out["profile_id"] = str(profile.get("profileId") or "").strip()
     if not preserve_runtime_identity:
@@ -3020,13 +3302,32 @@ def _mix_audio_arrays(speech: Any, background: Optional[Any]) -> Any:
         return speech
 
 
-class KokoroModalClient:
-    def __init__(self, base_url: str | None = None, *, timeout_sec: float = 90.0) -> None:
-        resolved_base_url = str(base_url or KOKORO_RUNTIME_URL).strip().rstrip("/")
+class DunoModalClient:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        token: str | None = None,
+        timeout_sec: float = 90.0,
+    ) -> None:
+        resolved_base_url = str(base_url or DUNO_RUNTIME_URL).strip().rstrip("/")
+        resolved_token = (
+            str(token).strip()
+            if token is not None and str(token).strip()
+            else str(DUNO_RUNTIME_TOKEN or "").strip()
+        )
         self.base_url = resolved_base_url
+        self.token = resolved_token
         self.timeout_sec = max(3.0, float(timeout_sec or 90.0))
         self._session = requests.Session()
-        self._session.headers.update({"user-agent": "voiceflow-kokoro-modal-client/1.0"})
+        self._session.headers.update({"user-agent": "voiceflow-duno-modal-client/1.0"})
+        if self.token:
+            auth_header = (
+                self.token
+                if self.token.lower().startswith("bearer ")
+                else f"Bearer {self.token}"
+            )
+            self._session.headers.update({"authorization": auth_header})
 
     def _request_json(
         self,
@@ -3037,7 +3338,7 @@ class KokoroModalClient:
         timeout_sec: Optional[float] = None,
     ) -> dict[str, Any]:
         if not self.base_url:
-            raise RuntimeError("Kokoro runtime is not configured. Set VF_KOKORO_RUNTIME_URL.")
+            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
         url = f"{self.base_url}{path}"
         try:
             response = self._session.request(
@@ -3047,14 +3348,14 @@ class KokoroModalClient:
                 timeout=float(timeout_sec or self.timeout_sec),
             )
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Kokoro runtime unreachable: {exc}") from exc
+            raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
         if not response.ok:
             detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"Kokoro runtime {path} failed: {detail}")
+            raise RuntimeError(f"DUNO runtime {path} failed: {detail}")
         try:
             payload = response.json()
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Kokoro runtime {path} returned invalid JSON: {exc}") from exc
+            raise RuntimeError(f"DUNO runtime {path} returned invalid JSON: {exc}") from exc
         return payload if isinstance(payload, dict) else {"value": payload}
 
     def health(self) -> dict[str, Any]:
@@ -3074,7 +3375,7 @@ class KokoroModalClient:
         **kwargs: Any,
     ) -> tuple[bytes, dict[str, Any]]:
         if not self.base_url:
-            raise RuntimeError("Kokoro runtime is not configured. Set VF_KOKORO_RUNTIME_URL.")
+            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
         payload: dict[str, Any] = {
             "text": str(text or ""),
             "voiceId": str(voice_id or ""),
@@ -3092,16 +3393,16 @@ class KokoroModalClient:
                 timeout=float(self.timeout_sec),
             )
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Kokoro runtime unreachable: {exc}") from exc
+            raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
         if not response.ok:
             detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"Kokoro runtime /synthesize failed: {detail}")
+            raise RuntimeError(f"DUNO runtime /synthesize failed: {detail}")
         audio_bytes = bytes(response.content or b"")
         meta = {
             "contentType": str(response.headers.get("content-type") or "audio/wav"),
             "headers": {str(key): str(value) for key, value in dict(response.headers or {}).items()},
             "traceId": str(response.headers.get("x-voiceflow-trace-id") or trace_id or ""),
-            "provider": "kokoro-modal",
+            "provider": "duno-modal",
         }
         return audio_bytes, meta
 
@@ -3286,97 +3587,23 @@ class SourceSeparationRuntime:
             return model
 
 
-def _iter_kokoro_model_files() -> list[Path]:
-    if not KOKORO_MODEL_MIRROR_DIR.exists():
-        return []
-    files: list[Path] = []
-    for entry in KOKORO_MODEL_MIRROR_DIR.rglob("*"):
-        if entry.is_file():
-            files.append(entry)
-    files.sort(key=lambda item: str(item.relative_to(KOKORO_MODEL_MIRROR_DIR)).lower())
-    return files
-
-
-def _kokoro_model_status_payload() -> dict[str, Any]:
-    required = list(KOKORO_MODEL_REQUIRED_FILES)
-    missing: list[str] = []
-    for rel in required:
-        candidate = (KOKORO_MODEL_MIRROR_DIR / rel).resolve()
-        if not candidate.exists() or not candidate.is_file():
-            missing.append(rel)
-
-    files = _iter_kokoro_model_files()
-    total_bytes = 0
-    hash_feed = hashlib.sha256()
-    file_entries: list[dict[str, Any]] = []
-    for file_path in files:
-        rel_path = str(file_path.relative_to(KOKORO_MODEL_MIRROR_DIR)).replace("\\", "/")
-        try:
-            stat = file_path.stat()
-            file_size = int(stat.st_size)
-        except Exception:
-            file_size = 0
-        total_bytes += max(0, file_size)
-        hash_feed.update(rel_path.encode("utf-8", errors="ignore"))
-        hash_feed.update(b":")
-        hash_feed.update(str(file_size).encode("utf-8", errors="ignore"))
-        hash_feed.update(b";")
-        file_entries.append({
-            "path": rel_path,
-            "size": file_size,
-        })
-
-    available = KOKORO_MODEL_MIRROR_DIR.exists()
-    ready = available and len(missing) == 0
-    detail = ""
-    if not available:
-        detail = f"Mirror directory is missing: {KOKORO_MODEL_MIRROR_DIR}"
-    elif missing:
-        detail = f"Mirror missing required files: {', '.join(missing)}"
-    else:
-        detail = "Kokoro local mirror ready."
-
-    return {
-        "ok": True,
-        "available": available,
-        "repoId": KOKORO_MODEL_REPO_ID,
-        "revision": KOKORO_MODEL_REVISION,
-        "modelPath": str(KOKORO_MODEL_MIRROR_DIR),
-        "fileCount": len(files),
-        "totalBytes": total_bytes,
-        "required": required,
-        "missing": missing,
-        "ready": ready,
-        "runtime": {
-            "device": "cpu",
-            "dtype": "q8",
-            "modelFile": "onnx/model_quantized.onnx",
-        },
-        "hash": hash_feed.hexdigest(),
-        "files": file_entries,
-        "detail": detail,
-        "fetchedAt": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _log_kokoro_model_mirror_status() -> None:
-    try:
-        payload = _kokoro_model_status_payload()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[models.kokoro] status probe failed: {exc}")
+def _log_duno_runtime_bootstrap_status() -> None:
+    runtime_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    if not runtime_base:
+        print("[runtime.duno] configured=False detail=Set VF_DUNO_RUNTIME_URL to enable DUNO runtime.")
         return
-
-    print(
-        "[models.kokoro] "
-        f"ready={payload.get('ready')} "
-        f"path={payload.get('modelPath')} "
-        f"files={payload.get('fileCount')} "
-        f"bytes={payload.get('totalBytes')} "
-        f"missing={len(payload.get('missing') or [])}"
+    health_url = f"{runtime_base}/health"
+    healthy, detail = _probe_runtime_health(
+        health_url,
+        timeout_sec=_runtime_health_probe_timeout_sec(health_url),
     )
-    if not payload.get("ready"):
-        detail = str(payload.get("detail") or "Mirror unavailable.")
-        print(f"[models.kokoro] detail={detail}")
+    print(
+        "[runtime.duno] "
+        f"configured=True "
+        f"url={runtime_base} "
+        f"healthy={healthy} "
+        f"detail={str(detail or 'Runtime status checked.').strip()}"
+    )
 
 
 llvc_runtime = LlvcRuntime()
@@ -3530,7 +3757,7 @@ def _phase2_background_warmups() -> None:
     except Exception:
         pass
     try:
-        _log_kokoro_model_mirror_status()
+        _log_duno_runtime_bootstrap_status()
     except Exception:
         pass
     if VF_SERVICE_IS_API and VF_SUPPORT_INBOX_ENABLED:
@@ -3617,6 +3844,7 @@ _INMEMORY_SUPPORT_CONVERSATIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_MESSAGES: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_RUNS: dict[str, dict[str, Any]] = {}
 _INMEMORY_SUPPORT_AI_POLICY: dict[str, Any] = {}
+_INMEMORY_OPENVOICE_RUNTIME_CONFIG: dict[str, Any] = {}
 _INMEMORY_ADMIN_SESSION_UNLOCK: dict[str, dict[str, Any]] = {}
 _INMEMORY_NOTIFICATION_INBOX: dict[str, dict[str, dict[str, Any]]] = {}
 _INMEMORY_NOTIFICATION_PREFERENCES: dict[str, dict[str, Any]] = {}
@@ -3627,6 +3855,7 @@ _INMEMORY_READER_UPLOADS: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_PROGRESS: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_CAST_MEMORY: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_TRANSLATIONS: dict[str, dict[str, Any]] = {}
+_INMEMORY_READER_ADMIN_CATALOG: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_CATALOG_CACHE: dict[str, dict[str, Any]] = {}
 _INMEMORY_READER_SESSIONS: dict[str, dict[str, Any]] = {}
 _INMEMORY_TTS_V2_SESSIONS: dict[str, dict[str, Any]] = {}
@@ -3685,8 +3914,9 @@ _TTS_V2_ENGINE = TtsV2Engine(
 _TTS_JOB_WORKER_LOCK = threading.Lock()
 _TTS_JOB_WORKER_THREADS: list[threading.Thread] = []
 _TTS_ENGINE_CONCURRENCY_LIMITS: dict[str, int] = {
-    "GEM": int(VF_TTS_ENGINE_CONCURRENCY_GEM),
-    "KOKORO": int(VF_TTS_ENGINE_CONCURRENCY_KOKORO),
+    "VECTOR": int(VF_TTS_ENGINE_CONCURRENCY_VECTOR),
+    "PRIME": int(VF_TTS_ENGINE_CONCURRENCY_PRIME),
+    "DUNO": int(VF_TTS_ENGINE_CONCURRENCY_DUNO),
 }
 _TTS_ENGINE_SEMAPHORES: dict[str, threading.Semaphore] = {
     engine: threading.Semaphore(max(1, int(limit)))
@@ -3716,12 +3946,14 @@ _TTS_QUEUE_TELEMETRY: dict[str, Any] = {
     "liveChunkLlvcLatencyMs": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "terminalEvents": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     "runtimeLatencyByEngine": {
-        "GEM": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-        "KOKORO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "VECTOR": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "PRIME": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "DUNO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
     "semaphoreWaitByEngine": {
-        "GEM": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
-        "KOKORO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "VECTOR": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "PRIME": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
+        "DUNO": deque(maxlen=VF_TTS_QUEUE_METRICS_WINDOW),
     },
 }
 _REQUESTS_GET_BASE = requests.get
@@ -3730,8 +3962,260 @@ _REQUESTS_PUT_BASE = requests.put
 _REQUESTS_PATCH_BASE = requests.patch
 _REQUESTS_DELETE_BASE = requests.delete
 _RUNTIME_HTTP_CLIENT = RuntimeHttpClient(pool_connections=64, pool_maxsize=64)
-KOKORO_MODAL_CLIENT = KokoroModalClient()
-OPENVOICE_MODAL_CLIENT = OpenVoiceModalClient()
+DUNO_MODAL_CLIENT = DunoModalClient()
+OPENVOICE_PROVIDER_MODAL = "modal"
+OPENVOICE_PROVIDER_CLOUD_RUN = "cloud_run"
+OPENVOICE_PROVIDER_VALUES = frozenset({OPENVOICE_PROVIDER_MODAL, OPENVOICE_PROVIDER_CLOUD_RUN})
+OPENVOICE_PROVIDER_DEFAULT = str(os.getenv("VF_OPENVOICE_PROVIDER_DEFAULT") or OPENVOICE_PROVIDER_CLOUD_RUN).strip().lower() or OPENVOICE_PROVIDER_CLOUD_RUN
+
+
+def _normalize_openvoice_provider(value: object, *, fallback: str = OPENVOICE_PROVIDER_CLOUD_RUN) -> str:
+    token = str(value or "").strip().lower().replace("-", "_")
+    if token in {"cloud_run", "cloudrun", "run", "seed_vc_cloud_run", "seedvc_cloud_run"}:
+        return OPENVOICE_PROVIDER_CLOUD_RUN
+    if token in {"modal", "seed_vc_modal", "seedvc_modal"}:
+        return OPENVOICE_PROVIDER_MODAL
+    safe_fallback = str(fallback or "").strip().lower()
+    if safe_fallback in OPENVOICE_PROVIDER_VALUES:
+        return safe_fallback
+    raise ValueError("activeProvider must be one of: cloud_run, modal.")
+
+
+def _openvoice_provider_default() -> str:
+    try:
+        return _normalize_openvoice_provider(
+            str(os.getenv("VF_OPENVOICE_PROVIDER_DEFAULT") or OPENVOICE_PROVIDER_DEFAULT).strip(),
+            fallback=OPENVOICE_PROVIDER_CLOUD_RUN,
+        )
+    except ValueError:
+        return OPENVOICE_PROVIDER_CLOUD_RUN
+
+
+def _openvoice_provider_env_url(provider: str) -> str:
+    safe_provider = _normalize_openvoice_provider(provider)
+    if safe_provider == OPENVOICE_PROVIDER_CLOUD_RUN:
+        return (
+            str(os.getenv("VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL") or "").strip().rstrip("/")
+            or str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
+        )
+    return (
+        str(os.getenv("VF_OPENVOICE_MODAL_RUNTIME_URL") or "").strip().rstrip("/")
+        or str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
+    )
+
+
+def _openvoice_provider_env_token(provider: str) -> str:
+    safe_provider = _normalize_openvoice_provider(provider)
+    if safe_provider == OPENVOICE_PROVIDER_CLOUD_RUN:
+        return (
+            str(os.getenv("VF_OPENVOICE_CLOUD_RUN_RUNTIME_TOKEN") or "").strip()
+            or str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
+        )
+    return (
+        str(os.getenv("VF_OPENVOICE_MODAL_RUNTIME_TOKEN") or "").strip()
+        or str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
+    )
+
+
+def _openvoice_client_for_provider(provider: str) -> OpenVoiceModalClient:
+    safe_provider = _normalize_openvoice_provider(provider)
+    return OpenVoiceModalClient(
+        base_url=_openvoice_provider_env_url(safe_provider),
+        token=_openvoice_provider_env_token(safe_provider),
+    )
+
+
+OPENVOICE_MODAL_CLIENT = _openvoice_client_for_provider(OPENVOICE_PROVIDER_MODAL)
+OPENVOICE_CLOUD_RUN_CLIENT = _openvoice_client_for_provider(OPENVOICE_PROVIDER_CLOUD_RUN)
+_OPENVOICE_ARTIFACT_SIGNATURE_LOCK = threading.Lock()
+_OPENVOICE_USED_ARTIFACT_SIGNATURES: dict[str, int] = {}
+_VOICE_CLONE_STRESS_LOCK = threading.Lock()
+_VOICE_CLONE_STRESS_JOBS: dict[str, dict[str, Any]] = {}
+VOICE_CLONE_STRESS_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+VOICE_CLONE_STRESS_JOB_TTL_SEC = max(
+    300,
+    int((os.getenv("VF_VOICE_CLONE_STRESS_JOB_TTL_SEC") or "1800").strip() or "1800"),
+)
+VOICE_CLONE_STRESS_MAX_REQUESTS_PER_STEP = max(
+    10,
+    int((os.getenv("VF_VOICE_CLONE_STRESS_MAX_REQUESTS_PER_STEP") or "1200").strip() or "1200"),
+)
+VOICE_CLONE_STRESS_MAX_TOTAL_RUNTIME_SEC = max(
+    60,
+    int((os.getenv("VF_VOICE_CLONE_STRESS_MAX_TOTAL_RUNTIME_SEC") or "1800").strip() or "1800"),
+)
+VOICE_CLONE_STRESS_DEFAULT_PROMPT = (
+    str(os.getenv("VF_VOICE_CLONE_STRESS_DEFAULT_PROMPT") or "VoiceFlow stress test benchmark sample for Gemini Flash throughput.").strip()
+    or "VoiceFlow stress test benchmark sample for Gemini Flash throughput."
+)
+
+
+def _openvoice_provider_vc_label(provider: str) -> str:
+    safe_provider = _normalize_openvoice_provider(provider)
+    return "openvoice-cloud-run" if safe_provider == OPENVOICE_PROVIDER_CLOUD_RUN else "openvoice-modal"
+
+
+def _openvoice_runtime_config_default_payload() -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "revision": 0,
+        "activeProvider": _openvoice_provider_default(),
+        "updatedAt": _utc_now().isoformat(),
+        "updatedBy": "system",
+    }
+
+
+def _openvoice_runtime_config_get() -> dict[str, Any]:
+    collection = _firestore_collection(OPENVOICE_RUNTIME_CONFIG_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            if not _INMEMORY_OPENVOICE_RUNTIME_CONFIG:
+                _INMEMORY_OPENVOICE_RUNTIME_CONFIG.update(_openvoice_runtime_config_default_payload())
+            payload = dict(_INMEMORY_OPENVOICE_RUNTIME_CONFIG)
+    else:
+        try:
+            doc = collection.document("current").get()
+        except Exception:
+            payload = {}
+        else:
+            payload = doc.to_dict() or {}
+            if not doc.exists:
+                payload = _openvoice_runtime_config_default_payload()
+                try:
+                    collection.document("current").set(payload, merge=True)
+                except Exception:
+                    pass
+
+    merged = _openvoice_runtime_config_default_payload()
+    merged.update(payload)
+    merged["activeProvider"] = _normalize_openvoice_provider(
+        merged.get("activeProvider"),
+        fallback=_openvoice_provider_default(),
+    )
+    merged["revision"] = max(0, int(merged.get("revision") or 0))
+    merged["updatedAt"] = str(merged.get("updatedAt") or _utc_now().isoformat()).strip() or _utc_now().isoformat()
+    merged["updatedBy"] = str(merged.get("updatedBy") or "system").strip() or "system"
+    return merged
+
+
+def _openvoice_runtime_config_patch(*, active_provider: str, updated_by: str) -> dict[str, Any]:
+    current = _openvoice_runtime_config_get()
+    next_payload = dict(current)
+    next_payload["activeProvider"] = _normalize_openvoice_provider(
+        active_provider,
+        fallback=_openvoice_provider_default(),
+    )
+    next_payload["revision"] = max(0, int(current.get("revision") or 0)) + 1
+    next_payload["updatedAt"] = _utc_now().isoformat()
+    next_payload["updatedBy"] = str(updated_by or "").strip()[:160] or "system"
+    collection = _firestore_collection(OPENVOICE_RUNTIME_CONFIG_COLLECTION)
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_OPENVOICE_RUNTIME_CONFIG.clear()
+            _INMEMORY_OPENVOICE_RUNTIME_CONFIG.update(next_payload)
+        return next_payload
+    collection.document("current").set(next_payload, merge=True)
+    return next_payload
+
+
+def _openvoice_provider_client_instance(provider: str) -> Any:
+    safe_provider = _normalize_openvoice_provider(provider)
+    desired_url = _openvoice_provider_env_url(safe_provider)
+    desired_token = _openvoice_provider_env_token(safe_provider)
+    if safe_provider == OPENVOICE_PROVIDER_MODAL:
+        global OPENVOICE_MODAL_CLIENT
+        candidate = OPENVOICE_MODAL_CLIENT
+        if isinstance(candidate, OpenVoiceModalClient):
+            if str(candidate.base_url or "").strip().rstrip("/") != str(desired_url or "").strip().rstrip("/") or str(candidate.token or "").strip() != str(desired_token or "").strip():
+                candidate = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
+                OPENVOICE_MODAL_CLIENT = candidate
+            return candidate
+        if candidate is not None:
+            return candidate
+        OPENVOICE_MODAL_CLIENT = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
+        return OPENVOICE_MODAL_CLIENT
+
+    global OPENVOICE_CLOUD_RUN_CLIENT
+    candidate = OPENVOICE_CLOUD_RUN_CLIENT
+    if isinstance(candidate, OpenVoiceModalClient):
+        if str(candidate.base_url or "").strip().rstrip("/") != str(desired_url or "").strip().rstrip("/") or str(candidate.token or "").strip() != str(desired_token or "").strip():
+            candidate = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
+            OPENVOICE_CLOUD_RUN_CLIENT = candidate
+        return candidate
+    if candidate is not None:
+        return candidate
+    OPENVOICE_CLOUD_RUN_CLIENT = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
+    return OPENVOICE_CLOUD_RUN_CLIENT
+
+
+def _resolve_openvoice_provider(provider_override: Optional[str] = None) -> str:
+    if provider_override is not None and str(provider_override).strip():
+        return _normalize_openvoice_provider(provider_override, fallback=_openvoice_provider_default())
+    config = _openvoice_runtime_config_get()
+    return _normalize_openvoice_provider(
+        config.get("activeProvider"),
+        fallback=_openvoice_provider_default(),
+    )
+
+
+def _resolve_openvoice_client(provider_override: Optional[str] = None) -> tuple[str, Any]:
+    active_provider = _resolve_openvoice_provider(provider_override)
+    return active_provider, _openvoice_provider_client_instance(active_provider)
+
+
+def _openvoice_provider_runtime_probe(provider: str) -> dict[str, Any]:
+    safe_provider = _normalize_openvoice_provider(provider)
+    runtime_url = _openvoice_provider_env_url(safe_provider)
+    configured = bool(str(runtime_url or "").strip())
+    if not configured:
+        return {
+            "configured": False,
+            "ready": False,
+            "detail": "Runtime URL is not configured.",
+            "device": "",
+        }
+    client = _openvoice_provider_client_instance(safe_provider)
+    try:
+        health = client.health()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "configured": True,
+            "ready": False,
+            "detail": str(exc),
+            "device": "",
+        }
+    try:
+        capabilities = client.capabilities()
+    except Exception:
+        capabilities = {}
+    supports_vc = bool(capabilities.get("supportsVC", capabilities.get("ok", False)))
+    ready = bool(health.get("ok", True)) and supports_vc
+    return {
+        "configured": True,
+        "ready": bool(ready),
+        "detail": str(health.get("detail") or capabilities.get("detail") or ""),
+        "device": str(health.get("device") or capabilities.get("device") or "").strip(),
+    }
+
+
+def _openvoice_provider_status_payload() -> dict[str, Any]:
+    config = _openvoice_runtime_config_get()
+    active_provider = _normalize_openvoice_provider(
+        config.get("activeProvider"),
+        fallback=_openvoice_provider_default(),
+    )
+    return {
+        "ok": True,
+        "activeProvider": active_provider,
+        "defaultProvider": _openvoice_provider_default(),
+        "revision": max(0, int(config.get("revision") or 0)),
+        "updatedAt": str(config.get("updatedAt") or "").strip(),
+        "updatedBy": str(config.get("updatedBy") or "").strip(),
+        "providers": {
+            OPENVOICE_PROVIDER_CLOUD_RUN: _openvoice_provider_runtime_probe(OPENVOICE_PROVIDER_CLOUD_RUN),
+            OPENVOICE_PROVIDER_MODAL: _openvoice_provider_runtime_probe(OPENVOICE_PROVIDER_MODAL),
+        },
+    }
 
 
 class _UnifiedTtsProviderClient:
@@ -3782,6 +4266,24 @@ def _openvoice_scoped_artifact_id(uid: str, request_id: str) -> str:
     return f"{prefix}_{normalized_request_id}"
 
 
+def _register_openvoice_artifact_signature_use(signature: str) -> bool:
+    safe_signature = str(signature or "").strip()
+    if not safe_signature:
+        return False
+    payload = extract_openvoice_artifact_signature_payload(safe_signature) or {}
+    now_unix = int(time.time())
+    exp_unix = int(payload.get("exp") or (now_unix + 120))
+    with _OPENVOICE_ARTIFACT_SIGNATURE_LOCK:
+        for token, expiry in list(_OPENVOICE_USED_ARTIFACT_SIGNATURES.items()):
+            if int(expiry or 0) <= now_unix:
+                _OPENVOICE_USED_ARTIFACT_SIGNATURES.pop(token, None)
+        existing_expiry = int(_OPENVOICE_USED_ARTIFACT_SIGNATURES.get(safe_signature) or 0)
+        if existing_expiry > now_unix:
+            return False
+        _OPENVOICE_USED_ARTIFACT_SIGNATURES[safe_signature] = max(exp_unix, now_unix + 30)
+    return True
+
+
 def _openvoice_clone_voice_payload(
     *,
     request_id: str,
@@ -3805,7 +4307,7 @@ def _openvoice_clone_voice_payload(
         "gender": str(cloned_voice.get("gender") or "Unknown").strip() or "Unknown",
         "accent": str(cloned_voice.get("accent") or "Neutral").strip() or "Neutral",
         "geminiVoiceName": str(cloned_voice.get("geminiVoiceName") or source_label or request_id).strip() or request_id,
-        "engine": str(cloned_voice.get("engine") or source_engine or "GEM").strip() or "GEM",
+        "engine": str(cloned_voice.get("engine") or source_engine or "PRIME").strip() or "PRIME",
         "source": str(cloned_voice.get("source") or "openvoice").strip() or "openvoice",
         "isDownloaded": bool(cloned_voice.get("isDownloaded", True)),
         "isCloned": True,
@@ -3847,6 +4349,25 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
     cost_multiplier = max(0.0, float(safe_payload.get("costMultiplier") or payload.costMultiplier or 1.0))
     region_hint = str(safe_payload.get("regionHint") or payload.regionHint or "").strip()
     region_source = str(safe_payload.get("regionSource") or payload.regionSource or "").strip()
+    extract_source_vocals = bool(safe_payload.get("extractSourceVocals") or getattr(payload, "extractSourceVocals", False))
+    source_separation_model = str(
+        safe_payload.get("sourceSeparationModel")
+        or getattr(payload, "sourceSeparationModel", "")
+        or SEPARATION_MODEL
+    ).strip() or SEPARATION_MODEL
+    source_separation_device = str(
+        safe_payload.get("sourceSeparationDevice")
+        or getattr(payload, "sourceSeparationDevice", "")
+        or SEPARATION_DEVICE
+    ).strip() or SEPARATION_DEVICE
+    trim_requested = False
+    trim_start_ms = 0
+    trim_end_ms = 0
+    trim_window_key = ""
+    trim_start_sec: Optional[float] = None
+    trim_end_sec: Optional[float] = None
+    source_separation_elapsed_ms = 0
+    source_separation_runtime: dict[str, Any] = {"enabled": False}
     notes: list[str] = []
 
     if not reference_audio_bytes and not reference_audio_url:
@@ -3859,7 +4380,7 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
     if not source_audio_base64 and text:
         synth_start = time.perf_counter()
         try:
-            source_audio_bytes, _ = KOKORO_MODAL_CLIENT.synthesize(
+            source_audio_bytes, _ = DUNO_MODAL_CLIENT.synthesize(
                 text=text,
                 voice_id=source_voice_id or source_voice_name or "Fenrir",
                 speed=speed,
@@ -3876,20 +4397,97 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
             source_audio_generated = True
             source_tts_elapsed_ms = max(1, int((time.perf_counter() - synth_start) * 1000))
             source_audio_base64 = encode_openvoice_audio_base64(source_audio_bytes)
-            notes.append("source_audio_synthesized_with_kokoro")
+            notes.append("source_audio_synthesized_with_duno")
         except Exception as exc:  # noqa: BLE001
             if mode in {"vc", "tts_then_vc"}:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             raise
 
+    if extract_source_vocals and source_audio_bytes:
+        (
+            trim_requested,
+            trim_start_ms,
+            trim_end_ms,
+            trim_window_key,
+            trim_start_sec,
+            trim_end_sec,
+        ) = _resolve_openvoice_trim_window(
+            start_sec_raw=safe_payload.get("sourceTrimStartSec")
+            if "sourceTrimStartSec" in safe_payload
+            else getattr(payload, "sourceTrimStartSec", None),
+            end_sec_raw=safe_payload.get("sourceTrimEndSec")
+            if "sourceTrimEndSec" in safe_payload
+            else getattr(payload, "sourceTrimEndSec", None),
+        )
+        separation_started_at = time.perf_counter()
+        temp_dir = tempfile.mkdtemp(prefix="vf_openvoice_vc_source_")
+        try:
+            source_suffix = Path(str(source_audio_name or "").strip()).suffix
+            if not source_suffix:
+                source_suffix = ".wav"
+            source_input_path = Path(temp_dir) / f"source_input{source_suffix}"
+            source_input_path.write_bytes(source_audio_bytes)
+            source_path_for_separation = source_input_path
+            if trim_requested:
+                trimmed_source_path = Path(temp_dir) / f"source_trimmed{source_suffix}"
+                source_path_for_separation = _trim_media_to_clip_window(
+                    source_input_path,
+                    trimmed_source_path,
+                    start_ms=trim_start_ms,
+                    end_ms=trim_end_ms,
+                )
+            speech_path, _background_path, cache_key = _ensure_source_separation(
+                source_path_for_separation,
+                source_separation_model,
+                device_preference=source_separation_device,
+                trim_window_key=trim_window_key,
+            )
+            source_audio_bytes = speech_path.read_bytes()
+            source_audio_base64 = encode_openvoice_audio_base64(source_audio_bytes)
+            base_name = Path(source_audio_name).stem or "source"
+            source_audio_name = f"{base_name}_vocals.wav"
+            source_separation_elapsed_ms = max(1, int((time.perf_counter() - separation_started_at) * 1000))
+            source_separation_runtime = {
+                "enabled": True,
+                "pipeline": "demucs",
+                "model": source_separation_model,
+                "device": source_separation_device,
+                "cacheKey": cache_key,
+                "timeoutSec": int(SEPARATION_TIMEOUT_SEC),
+                "trimApplied": bool(trim_requested),
+            }
+            if trim_requested:
+                source_separation_runtime.update(
+                    {
+                        "trimStartSec": trim_start_sec,
+                        "trimEndSec": trim_end_sec,
+                        "trimWindowKey": trim_window_key,
+                    }
+                )
+            if source_separation_device.lower() in {"cpu", "cpu_only"}:
+                notes.append("source_audio_vocals_extracted_demucs_cpu_fast")
+            else:
+                notes.append("source_audio_vocals_extracted_demucs")
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        finally:
+            _cleanup_paths(temp_dir)
+
+    source_audio_base64 = encode_openvoice_audio_base64(source_audio_bytes)
     if not source_audio_base64:
         raise HTTPException(status_code=400, detail="Source audio could not be prepared.")
 
     if mode in {"vc", "tts_then_vc"} and not reference_audio_bytes:
         raise HTTPException(status_code=400, detail="Reference audio is required for voice conversion.")
 
+    active_provider = _resolve_openvoice_provider()
+    active_provider_label = _openvoice_provider_vc_label(active_provider)
     if mode in {"vc", "tts_then_vc"}:
         vc_start = time.perf_counter()
+        active_provider, openvoice_client = _resolve_openvoice_client(active_provider)
+        active_provider_label = _openvoice_provider_vc_label(active_provider)
         vc_payload = {
             "mode": "vc",
             "runKind": "warm",
@@ -3913,7 +4511,10 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
             "uid": uid,
         }
         try:
-            runtime_payload = OPENVOICE_MODAL_CLIENT.vc(vc_payload, timeout_sec=OPENVOICE_MODAL_CLIENT.timeout_sec if hasattr(OPENVOICE_MODAL_CLIENT, "timeout_sec") else None)
+            runtime_payload = openvoice_client.vc(
+                vc_payload,
+                timeout_sec=openvoice_client.timeout_sec if hasattr(openvoice_client, "timeout_sec") else None,
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         vc_elapsed_ms = max(1, int((time.perf_counter() - vc_start) * 1000))
@@ -3965,6 +4566,7 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
     timings = {
         **runtime_timings,
         "loadMs": int(runtime_timings.get("loadMs") or 0),
+        "sourceSeparationMs": int(runtime_timings.get("sourceSeparationMs") or source_separation_elapsed_ms or 0),
         "ttsMs": max(0, int(runtime_timings.get("ttsMs") or source_tts_elapsed_ms or (1 if source_audio_generated else 0))),
         "vcMs": max(0, int(runtime_timings.get("vcMs") or vc_elapsed_ms or (1 if mode in {"vc", "tts_then_vc"} else 0))),
         "queueWaitMs": int(runtime_timings.get("queueWaitMs") or 0),
@@ -3989,13 +4591,14 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
         "device": str(
             (runtime_payload.get("runtime") or {}).get("device")
             or runtime_payload.get("device")
-            or "modal"
+            or active_provider_label
         ),
         "warmStartObserved": True,
         "referenceCacheEntries": int((runtime_payload.get("runtime") or {}).get("referenceCacheEntries") or (1 if reference_audio_bytes else 0)),
         "sourceCacheEntries": int((runtime_payload.get("runtime") or {}).get("sourceCacheEntries") or (1 if source_audio_bytes else 0)),
         "loadedLanguages": list((runtime_payload.get("runtime") or {}).get("loadedLanguages") or [language.lower()]),
-        "vcProvider": str((runtime_payload.get("runtime") or {}).get("vcProvider") or "openvoice-modal").strip() or "openvoice-modal",
+        "vcProvider": str((runtime_payload.get("runtime") or {}).get("vcProvider") or active_provider_label).strip() or active_provider_label,
+        "sourceSeparation": source_separation_runtime,
     }
     notes = [*list(runtime_payload.get("notes") or []), *notes]
     cloned_voice = _openvoice_clone_voice_payload(
@@ -4015,7 +4618,7 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
                 "id": request_id,
                 "name": source_voice_name or text or request_id,
                 "geminiVoiceName": source_voice_name or text or request_id,
-                "engine": source_voice_engine or "GEM",
+                "engine": source_voice_engine or "PRIME",
                 "source": "openvoice",
                 "isDownloaded": True,
                 "isCloned": True,
@@ -4063,14 +4666,17 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
 
 @app.get("/voice-clone/openvoice/status")
 async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
+    active_provider, client = _resolve_openvoice_client()
     try:
-        health = OPENVOICE_MODAL_CLIENT.health()
+        health = client.health()
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
             content={
                 "ok": False,
                 "state": "offline",
+                "activeProvider": active_provider,
+                "defaultProvider": _openvoice_provider_default(),
                 "detail": str(exc),
                 "device": "",
                 "warm": False,
@@ -4082,7 +4688,7 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
             },
         )
     try:
-        capabilities = OPENVOICE_MODAL_CLIENT.capabilities()
+        capabilities = client.capabilities()
     except Exception:
         capabilities = {}
     supports_vc = bool(capabilities.get("supportsVC", capabilities.get("ok", False)))
@@ -4091,6 +4697,8 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
         content={
             "ok": True,
             "state": str(health.get("state") or ("online" if ready else "offline")),
+            "activeProvider": active_provider,
+            "defaultProvider": _openvoice_provider_default(),
             "detail": str(health.get("detail") or capabilities.get("detail") or "OpenVoice runtime ready."),
             "device": str(health.get("device") or capabilities.get("device") or ""),
             "warm": bool(health.get("warm", True)),
@@ -4111,6 +4719,893 @@ def voice_clone_openvoice(payload: OpenVoiceBenchmarkRequest, request: Request) 
     return JSONResponse(content=_openvoice_benchmark_payload(forced_payload, request=request))
 
 
+class OpenVoiceStemSeparationRequest(BaseModel):
+    sourceAudioBase64: str = Field(default="", min_length=1, max_length=20_000_000)
+    sourceAudioName: str = Field(default="source.wav", max_length=256)
+    sourceSeparationModel: str = Field(default="", max_length=64)
+    sourceSeparationDevice: str = Field(default="", max_length=32)
+    sourceTrimStartSec: Optional[float] = Field(default=None, ge=0.0)
+    sourceTrimEndSec: Optional[float] = Field(default=None, ge=0.0)
+    requestId: str = Field(default="", max_length=128)
+    traceId: str = Field(default="", max_length=128)
+
+
+class VoiceCloneStressConfig(BaseModel):
+    startRpm: int = Field(default=20, ge=1, le=2_000)
+    stepRpm: int = Field(default=10, ge=1, le=500)
+    maxRpm: int = Field(default=120, ge=1, le=4_000)
+    stepDurationSec: int = Field(default=30, ge=5, le=300)
+    concurrency: int = Field(default=4, ge=1, le=64)
+    maxFailureRate: float = Field(default=0.05, ge=0.0, le=1.0)
+    maxP95Ms: int = Field(default=20_000, ge=500, le=180_000)
+    warmupRequests: int = Field(default=2, ge=0, le=50)
+    requestTimeoutSec: float = Field(default=60.0, ge=1.0, le=300.0)
+
+
+class VoiceCloneStressStartRequest(BaseModel):
+    benchmarkTarget: str = Field(default="OPENVOICE_L4_VC", max_length=64)
+    config: VoiceCloneStressConfig = Field(default_factory=VoiceCloneStressConfig)
+    referenceAudioBase64: str = Field(default="", max_length=20_000_000)
+    referenceAudioName: str = Field(default="reference.wav", max_length=256)
+    sourceAudioBase64: str = Field(default="", max_length=20_000_000)
+    sourceAudioName: str = Field(default="source.wav", max_length=256)
+    text: str = Field(default=VOICE_CLONE_STRESS_DEFAULT_PROMPT, max_length=8_000)
+    voiceName: str = Field(default="Fenrir", max_length=128)
+
+
+class VoiceCloneProviderPatchRequest(BaseModel):
+    activeProvider: str = Field(default=OPENVOICE_PROVIDER_DEFAULT, max_length=64)
+
+
+@app.post("/voice-clone/openvoice/separate")
+def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    request_id = str(safe_payload.get("requestId") or payload.requestId or "").strip() or f"sep_{uuid.uuid4().hex[:12]}"
+    trace_id = str(safe_payload.get("traceId") or payload.traceId or request_id).strip() or request_id
+    scoped_request_id = _openvoice_scoped_artifact_id(uid, request_id)
+    source_audio_name = str(safe_payload.get("sourceAudioName") or payload.sourceAudioName or "source.wav").strip() or "source.wav"
+    source_separation_model = str(
+        safe_payload.get("sourceSeparationModel")
+        or payload.sourceSeparationModel
+        or SEPARATION_MODEL
+    ).strip() or SEPARATION_MODEL
+    source_separation_device = str(
+        safe_payload.get("sourceSeparationDevice")
+        or payload.sourceSeparationDevice
+        or SEPARATION_DEVICE
+    ).strip() or SEPARATION_DEVICE
+
+    try:
+        source_audio_bytes = decode_openvoice_audio_base64(
+            safe_payload.get("sourceAudioBase64") or payload.sourceAudioBase64 or ""
+        )
+    except ValueError as exc:
+        if "maximum allowed size" in str(exc).lower():
+            raise HTTPException(status_code=413, detail="Source audio payload exceeds the maximum allowed size.") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not source_audio_bytes:
+        raise HTTPException(status_code=400, detail="Source audio is required.")
+
+    (
+        trim_requested,
+        trim_start_ms,
+        trim_end_ms,
+        trim_window_key,
+        trim_start_sec,
+        trim_end_sec,
+    ) = _resolve_openvoice_trim_window(
+        start_sec_raw=safe_payload.get("sourceTrimStartSec") if "sourceTrimStartSec" in safe_payload else payload.sourceTrimStartSec,
+        end_sec_raw=safe_payload.get("sourceTrimEndSec") if "sourceTrimEndSec" in safe_payload else payload.sourceTrimEndSec,
+    )
+
+    preflight_artifact_id = f"{scoped_request_id}_vocals"
+    try:
+        build_openvoice_artifact_url(preflight_artifact_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    temp_dir = tempfile.mkdtemp(prefix="vf_openvoice_sep_")
+    separation_elapsed_ms = 0
+    try:
+        source_suffix = Path(source_audio_name).suffix or ".wav"
+        source_input_path = Path(temp_dir) / f"source_input{source_suffix}"
+        source_input_path.write_bytes(source_audio_bytes)
+        source_path_for_separation = source_input_path
+        if trim_requested:
+            trimmed_source_path = Path(temp_dir) / f"source_trimmed{source_suffix}"
+            source_path_for_separation = _trim_media_to_clip_window(
+                source_input_path,
+                trimmed_source_path,
+                start_ms=trim_start_ms,
+                end_ms=trim_end_ms,
+            )
+
+        separation_started_at = time.perf_counter()
+        speech_path, background_path, cache_key = _ensure_source_separation(
+            source_path_for_separation,
+            source_separation_model,
+            device_preference=source_separation_device,
+            trim_window_key=trim_window_key,
+        )
+        separation_elapsed_ms = max(1, int((time.perf_counter() - separation_started_at) * 1000))
+        vocals_bytes = speech_path.read_bytes()
+        background_bytes = background_path.read_bytes()
+
+        vocals_artifact = save_openvoice_artifact(vocals_bytes, f"{scoped_request_id}_vocals")
+        background_artifact = save_openvoice_artifact(background_bytes, f"{scoped_request_id}_background")
+        try:
+            vocals_artifact_payload = _openvoice_artifact_payload(vocals_artifact)
+            background_artifact_payload = _openvoice_artifact_payload(background_artifact)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        _cleanup_paths(temp_dir)
+
+    runtime_source_separation = {
+        "enabled": True,
+        "pipeline": "demucs",
+        "model": source_separation_model,
+        "device": source_separation_device,
+        "cacheKey": cache_key,
+        "timeoutSec": int(SEPARATION_TIMEOUT_SEC),
+        "trimApplied": bool(trim_requested),
+    }
+    if trim_requested:
+        runtime_source_separation.update(
+            {
+                "trimStartSec": trim_start_sec,
+                "trimEndSec": trim_end_sec,
+                "trimWindowKey": trim_window_key,
+            }
+        )
+
+    return JSONResponse(
+        content={
+            "ok": True,
+            "status": "completed",
+            "requestId": request_id,
+            "traceId": trace_id,
+            "sourceAudioName": source_audio_name,
+            "timings": {
+                "sourceSeparationMs": separation_elapsed_ms,
+                "totalMs": separation_elapsed_ms,
+            },
+            "runtime": {
+                "sourceSeparation": runtime_source_separation,
+            },
+            "vocalsArtifact": vocals_artifact_payload,
+            "backgroundArtifact": background_artifact_payload,
+            "notes": ["source_audio_vocals_extracted_demucs_cpu_fast"]
+            if source_separation_device.lower() in {"cpu", "cpu_only"}
+            else ["source_audio_vocals_extracted_demucs"],
+            "message": "",
+        }
+    )
+
+
+def _voice_clone_stress_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _voice_clone_stress_cleanup_locked(now_unix: Optional[int] = None) -> None:
+    now = int(now_unix or int(time.time()))
+    for job_id, row in list(_VOICE_CLONE_STRESS_JOBS.items()):
+        if str((row or {}).get("status") or "").strip().lower() not in VOICE_CLONE_STRESS_TERMINAL_STATUSES:
+            continue
+        expires_at_unix = int((row or {}).get("expiresAtUnix") or 0)
+        if expires_at_unix <= 0:
+            continue
+        if expires_at_unix <= now:
+            _VOICE_CLONE_STRESS_JOBS.pop(job_id, None)
+
+
+def _voice_clone_stress_normalize_target(raw_value: object) -> str:
+    token = str(raw_value or "").strip().upper()
+    if token in {"OPENVOICE", "OPENVOICE_L4", "OPENVOICE_L4_VC", "L4", "VC"}:
+        return "OPENVOICE_L4_VC"
+    if token in {"GEMINI", "GEMINI_FLASH", "GEMINI_FLASH_TTS", "FLASH"}:
+        return "GEMINI_FLASH_TTS"
+    raise HTTPException(status_code=400, detail="benchmarkTarget must be OPENVOICE_L4_VC or GEMINI_FLASH_TTS.")
+
+
+def _voice_clone_stress_percentile_ms(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    safe_percentile = max(0.0, min(100.0, float(percentile or 0.0)))
+    sorted_values = sorted(max(0, int(value or 0)) for value in values)
+    index = int(round((len(sorted_values) - 1) * (safe_percentile / 100.0)))
+    index = max(0, min(len(sorted_values) - 1, index))
+    return int(sorted_values[index])
+
+
+def _voice_clone_stress_collect_done(
+    futures: set[Future[dict[str, Any]]],
+    *,
+    timeout_sec: float = 0.0,
+) -> list[dict[str, Any]]:
+    if not futures:
+        return []
+    done, _ = wait(
+        futures,
+        timeout=max(0.0, float(timeout_sec or 0.0)),
+        return_when=FIRST_COMPLETED,
+    )
+    results: list[dict[str, Any]] = []
+    for item in list(done):
+        futures.discard(item)
+        try:
+            payload = item.result()
+            results.append(dict(payload) if isinstance(payload, dict) else {"ok": False, "errorClass": "invalid_result"})
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                {
+                    "ok": False,
+                    "durationMs": 0,
+                    "gpuSeconds": 0.0,
+                    "device": "",
+                    "errorClass": f"future_exception:{type(exc).__name__}",
+                    "errorDetail": str(exc),
+                }
+            )
+    return results
+
+
+def _voice_clone_stress_openvoice_call(
+    *,
+    request_payload: dict[str, Any],
+    timeout_sec: float,
+    request_id: str,
+    provider: Optional[str] = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    payload = dict(request_payload)
+    payload["requestId"] = request_id
+    payload["traceId"] = request_id
+    active_provider, client = _resolve_openvoice_client(provider)
+    try:
+        response = client.vc(payload, timeout_sec=float(timeout_sec))
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = max(1, int((time.perf_counter() - started) * 1000))
+        return {
+            "ok": False,
+            "durationMs": elapsed_ms,
+            "gpuSeconds": 0.0,
+            "device": "",
+            "errorClass": f"runtime_error:{type(exc).__name__}",
+            "errorDetail": str(exc),
+        }
+
+    timings = response.get("timings") if isinstance(response.get("timings"), dict) else {}
+    runtime = response.get("runtime") if isinstance(response.get("runtime"), dict) else {}
+    gpu_seconds = float(timings.get("gpuSeconds") or 0.0)
+    if gpu_seconds < 0:
+        gpu_seconds = 0.0
+    elapsed_ms = max(1, int((time.perf_counter() - started) * 1000))
+    response_duration_ms = int(timings.get("totalMs") or timings.get("vcMs") or 0)
+    if response_duration_ms > 0:
+        elapsed_ms = response_duration_ms
+    device = str(runtime.get("device") or response.get("device") or "").strip()
+    provider_label = str(runtime.get("vcProvider") or _openvoice_provider_vc_label(active_provider) or "").strip()
+    return {
+        "ok": True,
+        "durationMs": elapsed_ms,
+        "gpuSeconds": float(gpu_seconds),
+        "device": device,
+        "provider": provider_label,
+        "errorClass": "",
+        "errorDetail": "",
+    }
+
+
+def _voice_clone_stress_gemini_flash_call(
+    *,
+    text: str,
+    voice_name: str,
+    request_id: str,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    payload_base = {
+        "engine": "PRIME",
+        "model": "gemini-2.5-flash",
+        "modelCandidates": ["gemini-2.5-flash"],
+        "voiceName": str(voice_name or "Fenrir").strip() or "Fenrir",
+        "voiceId": str(voice_name or "Fenrir").strip() or "Fenrir",
+        "voice_id": str(voice_name or "Fenrir").strip() or "Fenrir",
+        "request_id": request_id,
+        "trace_id": request_id,
+        "text": str(text or "").strip() or VOICE_CLONE_STRESS_DEFAULT_PROMPT,
+    }
+    try:
+        _tts_v2_synthesize_chunk(payload_base, text=payload_base["text"])
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = max(1, int((time.perf_counter() - started) * 1000))
+        return {
+            "ok": False,
+            "durationMs": elapsed_ms,
+            "gpuSeconds": 0.0,
+            "device": "gemini-runtime",
+            "errorClass": f"runtime_error:{type(exc).__name__}",
+            "errorDetail": str(exc),
+        }
+    elapsed_ms = max(1, int((time.perf_counter() - started) * 1000))
+    return {
+        "ok": True,
+        "durationMs": elapsed_ms,
+        "gpuSeconds": 0.0,
+        "device": "gemini-runtime",
+        "errorClass": "",
+        "errorDetail": "",
+    }
+
+
+def _voice_clone_stress_runtime_preflight(target: str, provider: Optional[str] = None) -> dict[str, Any]:
+    safe_target = _voice_clone_stress_normalize_target(target)
+    if safe_target == "OPENVOICE_L4_VC":
+        active_provider, client = _resolve_openvoice_client(provider)
+        try:
+            health = client.health()
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "target": safe_target,
+                "provider": active_provider,
+                "ready": False,
+                "detail": str(exc),
+                "device": "",
+                "health": {},
+                "capabilities": {},
+            }
+        try:
+            capabilities = client.capabilities()
+        except Exception:
+            capabilities = {}
+        supports_vc = bool(capabilities.get("supportsVC", capabilities.get("ok", False)))
+        ready = bool(health.get("ok", True)) and bool(supports_vc)
+        return {
+            "target": safe_target,
+            "provider": active_provider,
+            "ready": ready,
+            "detail": str(health.get("detail") or capabilities.get("detail") or ""),
+            "device": str(health.get("device") or capabilities.get("device") or "").strip(),
+            "health": health,
+            "capabilities": capabilities,
+        }
+    entry = _engine_status_entry("PRIME", force_refresh=True)
+    return {
+        "target": safe_target,
+        "ready": bool(entry.get("ready")),
+        "detail": str(entry.get("detail") or "").strip(),
+        "device": str(
+            ((entry.get("capabilities") or {}).get("metadata") or {}).get("device")
+            or (entry.get("capabilities") or {}).get("device")
+            or ""
+        ).strip(),
+        "engineStatus": entry,
+        "model": "gemini-2.5-flash",
+    }
+
+
+def _voice_clone_stress_status_payload(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "jobId": str(job.get("jobId") or ""),
+        "benchmarkTarget": str(job.get("benchmarkTarget") or ""),
+        "providerSnapshot": str(job.get("providerSnapshot") or ""),
+        "status": str(job.get("status") or "unknown"),
+        "createdAtMs": int(job.get("createdAtMs") or 0),
+        "updatedAtMs": int(job.get("updatedAtMs") or 0),
+        "startedAtMs": int(job.get("startedAtMs") or 0),
+        "finishedAtMs": int(job.get("finishedAtMs") or 0),
+        "createdAt": str(job.get("createdAt") or ""),
+        "updatedAt": str(job.get("updatedAt") or ""),
+        "startedAt": str(job.get("startedAt") or ""),
+        "finishedAt": str(job.get("finishedAt") or ""),
+        "config": dict(job.get("config") or {}),
+        "progress": dict(job.get("progress") or {}),
+        "runtimePreflight": dict(job.get("runtimePreflight") or {}),
+        "runtimeDeviceSamples": list(job.get("runtimeDeviceSamples") or []),
+        "steps": list(job.get("steps") or []),
+        "summary": dict(job.get("summary") or {}),
+    }
+
+
+def _voice_clone_stress_is_cancel_requested(job_id: str) -> bool:
+    with _VOICE_CLONE_STRESS_LOCK:
+        row = _VOICE_CLONE_STRESS_JOBS.get(str(job_id or "").strip()) or {}
+        return bool(row.get("_cancelRequested"))
+
+
+def _voice_clone_stress_finalize_job(
+    *,
+    job_id: str,
+    status: str,
+    steps: list[dict[str, Any]],
+    summary: dict[str, Any],
+    runtime_devices: set[str],
+) -> None:
+    now_ms = int(time.time() * 1000)
+    now_iso = _voice_clone_stress_now_iso()
+    with _VOICE_CLONE_STRESS_LOCK:
+        row = _VOICE_CLONE_STRESS_JOBS.get(str(job_id or "").strip())
+        if not isinstance(row, dict):
+            return
+        row["status"] = str(status or "failed")
+        row["steps"] = list(steps)
+        row["summary"] = dict(summary or {})
+        row["runtimeDeviceSamples"] = sorted({str(item or "").strip() for item in runtime_devices if str(item or "").strip()})
+        row["finishedAtMs"] = now_ms
+        row["finishedAt"] = now_iso
+        row["updatedAtMs"] = now_ms
+        row["updatedAt"] = now_iso
+        row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_STRESS_JOB_TTL_SEC)
+        row.pop("_requestPayload", None)
+        _voice_clone_stress_cleanup_locked()
+
+
+def _run_voice_clone_stress_job(job_id: str) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    started_ms = int(time.time() * 1000)
+    started_iso = _voice_clone_stress_now_iso()
+    with _VOICE_CLONE_STRESS_LOCK:
+        row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            return
+        row["status"] = "running"
+        row["startedAtMs"] = started_ms
+        row["startedAt"] = started_iso
+        row["updatedAtMs"] = started_ms
+        row["updatedAt"] = started_iso
+        request_payload = dict(row.get("_requestPayload") or {})
+        config = dict(row.get("config") or {})
+        target = str(row.get("benchmarkTarget") or "")
+        provider_snapshot = _resolve_openvoice_provider(row.get("providerSnapshot"))
+        row["providerSnapshot"] = provider_snapshot
+    runtime_preflight = _voice_clone_stress_runtime_preflight(target, provider_snapshot)
+    if str(runtime_preflight.get("provider") or "").strip():
+        provider_snapshot = _normalize_openvoice_provider(runtime_preflight.get("provider"), fallback=provider_snapshot)
+    else:
+        runtime_preflight["provider"] = provider_snapshot
+    with _VOICE_CLONE_STRESS_LOCK:
+        row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            return
+        row["runtimePreflight"] = dict(runtime_preflight or {})
+        row["updatedAtMs"] = int(time.time() * 1000)
+        row["updatedAt"] = _voice_clone_stress_now_iso()
+
+    if not bool(runtime_preflight.get("ready", False)):
+        summary = {
+            "maxSustainableRpm": 0.0,
+            "lastPassingStepIndex": 0,
+            "totalRequests": 0,
+            "totalSuccess": 0,
+            "totalFailure": 0,
+            "stopReason": "runtime_preflight_unavailable",
+            "startedAtMs": started_ms,
+            "finishedAtMs": int(time.time() * 1000),
+        }
+        _voice_clone_stress_finalize_job(
+            job_id=safe_job_id,
+            status="failed",
+            steps=[],
+            summary=summary,
+            runtime_devices={str(runtime_preflight.get("device") or "").strip()},
+        )
+        return
+
+    start_rpm = int(config.get("startRpm") or 1)
+    step_rpm = int(config.get("stepRpm") or 1)
+    max_rpm = int(config.get("maxRpm") or start_rpm)
+    step_duration_sec = max(1, int(config.get("stepDurationSec") or 1))
+    concurrency = max(1, int(config.get("concurrency") or 1))
+    max_failure_rate = float(config.get("maxFailureRate") or 0.05)
+    max_p95_ms = max(1, int(config.get("maxP95Ms") or 1))
+    warmup_requests = max(0, int(config.get("warmupRequests") or 0))
+    request_timeout_sec = max(1.0, float(config.get("requestTimeoutSec") or 60.0))
+    total_runtime_deadline = time.perf_counter() + float(VOICE_CLONE_STRESS_MAX_TOTAL_RUNTIME_SEC)
+    text_payload = str(request_payload.get("text") or VOICE_CLONE_STRESS_DEFAULT_PROMPT).strip() or VOICE_CLONE_STRESS_DEFAULT_PROMPT
+    voice_name = str(request_payload.get("voiceName") or "Fenrir").strip() or "Fenrir"
+
+    steps: list[dict[str, Any]] = []
+    runtime_devices: set[str] = {str(runtime_preflight.get("device") or "").strip()}
+    stop_reason = ""
+    last_passing_step_index = 0
+    max_sustainable_rpm = 0.0
+    total_requests = 0
+    total_success = 0
+    total_failure = 0
+    now_ms = int(time.time() * 1000)
+    total_steps = max(1, int(math.floor((max_rpm - start_rpm) / max(1, step_rpm))) + 1)
+    with _VOICE_CLONE_STRESS_LOCK:
+        row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+        if isinstance(row, dict):
+            row["progress"] = {
+                "currentStep": 0,
+                "stepsCompleted": 0,
+                "totalSteps": total_steps,
+            }
+            row["updatedAtMs"] = now_ms
+            row["updatedAt"] = _voice_clone_stress_now_iso()
+
+    for warmup_index in range(warmup_requests):
+        if _voice_clone_stress_is_cancel_requested(safe_job_id):
+            stop_reason = "cancel_requested"
+            break
+        warmup_request_id = f"{safe_job_id}_warmup_{warmup_index + 1}_{uuid.uuid4().hex[:6]}"
+        if target == "OPENVOICE_L4_VC":
+            warmup_result = _voice_clone_stress_openvoice_call(
+                request_payload=request_payload,
+                timeout_sec=request_timeout_sec,
+                request_id=warmup_request_id,
+                provider=provider_snapshot,
+            )
+        else:
+            warmup_result = _voice_clone_stress_gemini_flash_call(
+                text=text_payload,
+                voice_name=voice_name,
+                request_id=warmup_request_id,
+            )
+        if str(warmup_result.get("device") or "").strip():
+            runtime_devices.add(str(warmup_result.get("device") or "").strip())
+
+    if not stop_reason:
+        step_index = 0
+        for target_rpm in range(start_rpm, max_rpm + 1, max(1, step_rpm)):
+            step_index += 1
+            if _voice_clone_stress_is_cancel_requested(safe_job_id):
+                stop_reason = "cancel_requested"
+                break
+            if time.perf_counter() >= total_runtime_deadline:
+                stop_reason = "max_total_runtime_exceeded"
+                break
+
+            planned_requests = int(math.ceil((float(target_rpm) * float(step_duration_sec)) / 60.0))
+            planned_requests = max(1, min(planned_requests, int(VOICE_CLONE_STRESS_MAX_REQUESTS_PER_STEP)))
+            dispatch_interval_sec = max(0.001, 60.0 / max(1, int(target_rpm)))
+
+            successes = 0
+            latencies_ms: list[int] = []
+            gpu_seconds_total = 0.0
+            error_buckets: dict[str, int] = defaultdict(int)
+            step_started = time.perf_counter()
+            futures: set[Future[dict[str, Any]]] = set()
+
+            with ThreadPoolExecutor(max_workers=max(1, concurrency), thread_name_prefix=f"vc-stress-{step_index}") as executor:
+                next_dispatch_at = step_started
+                dispatched = 0
+                while dispatched < planned_requests:
+                    if _voice_clone_stress_is_cancel_requested(safe_job_id):
+                        stop_reason = "cancel_requested"
+                        break
+
+                    now_perf = time.perf_counter()
+                    if now_perf < next_dispatch_at:
+                        for result in _voice_clone_stress_collect_done(
+                            futures,
+                            timeout_sec=min(0.05, max(0.0, next_dispatch_at - now_perf)),
+                        ):
+                            if bool(result.get("ok")):
+                                successes += 1
+                                latencies_ms.append(max(1, int(result.get("durationMs") or 0)))
+                                gpu_seconds_total += max(0.0, float(result.get("gpuSeconds") or 0.0))
+                                if str(result.get("device") or "").strip():
+                                    runtime_devices.add(str(result.get("device") or "").strip())
+                            else:
+                                error_key = str(result.get("errorClass") or "unknown_error").strip() or "unknown_error"
+                                error_buckets[error_key] += 1
+                        continue
+
+                    request_id = f"{safe_job_id}_s{step_index}_{dispatched + 1}_{uuid.uuid4().hex[:6]}"
+                    if target == "OPENVOICE_L4_VC":
+                        future = executor.submit(
+                            _voice_clone_stress_openvoice_call,
+                            request_payload=request_payload,
+                            timeout_sec=request_timeout_sec,
+                            request_id=request_id,
+                            provider=provider_snapshot,
+                        )
+                    else:
+                        future = executor.submit(
+                            _voice_clone_stress_gemini_flash_call,
+                            text=text_payload,
+                            voice_name=voice_name,
+                            request_id=request_id,
+                        )
+                    futures.add(future)
+                    dispatched += 1
+                    next_dispatch_at += dispatch_interval_sec
+
+                while futures:
+                    for result in _voice_clone_stress_collect_done(futures, timeout_sec=0.05):
+                        if bool(result.get("ok")):
+                            successes += 1
+                            latencies_ms.append(max(1, int(result.get("durationMs") or 0)))
+                            gpu_seconds_total += max(0.0, float(result.get("gpuSeconds") or 0.0))
+                            if str(result.get("device") or "").strip():
+                                runtime_devices.add(str(result.get("device") or "").strip())
+                        else:
+                            error_key = str(result.get("errorClass") or "unknown_error").strip() or "unknown_error"
+                            error_buckets[error_key] += 1
+                    if _voice_clone_stress_is_cancel_requested(safe_job_id) and not stop_reason:
+                        stop_reason = "cancel_requested"
+
+            elapsed_ms = max(1, int((time.perf_counter() - step_started) * 1000))
+            request_count = int(successes + sum(error_buckets.values()))
+            failures = int(max(0, request_count - successes))
+            success_rate = float((successes / request_count) if request_count > 0 else 0.0)
+            p95_ms = _voice_clone_stress_percentile_ms(latencies_ms, 95.0)
+            achieved_rpm = float((successes * 60000.0) / max(1, elapsed_ms))
+            step_pass = bool(
+                request_count > 0
+                and success_rate >= (1.0 - max_failure_rate)
+                and (p95_ms <= max_p95_ms if p95_ms > 0 else True)
+            )
+
+            total_requests += request_count
+            total_success += int(successes)
+            total_failure += failures
+
+            step_payload = {
+                "step": step_index,
+                "targetRpm": int(target_rpm),
+                "achievedRpm": round(achieved_rpm, 3),
+                "successRate": round(success_rate, 6),
+                "p95Ms": int(p95_ms),
+                "requestCount": int(request_count),
+                "successCount": int(successes),
+                "errorCount": int(failures),
+                "errorBuckets": {str(key): int(value) for key, value in sorted(error_buckets.items())},
+                "gpuSecondsTotal": round(float(gpu_seconds_total), 6),
+                "durationMs": int(elapsed_ms),
+                "pass": bool(step_pass),
+            }
+            steps.append(step_payload)
+            now_ms = int(time.time() * 1000)
+            with _VOICE_CLONE_STRESS_LOCK:
+                row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+                if isinstance(row, dict):
+                    row["steps"] = list(steps)
+                    row["progress"] = {
+                        "currentStep": int(step_index),
+                        "stepsCompleted": int(step_index),
+                        "totalSteps": int(total_steps),
+                    }
+                    row["runtimeDeviceSamples"] = sorted(
+                        {str(item or "").strip() for item in runtime_devices if str(item or "").strip()}
+                    )
+                    row["updatedAtMs"] = now_ms
+                    row["updatedAt"] = _voice_clone_stress_now_iso()
+
+            if step_pass:
+                last_passing_step_index = step_index
+                max_sustainable_rpm = float(target_rpm)
+            else:
+                stop_reason = "threshold_breach"
+                break
+
+            if time.perf_counter() >= total_runtime_deadline:
+                stop_reason = "max_total_runtime_exceeded"
+                break
+
+    if not stop_reason and _voice_clone_stress_is_cancel_requested(safe_job_id):
+        stop_reason = "cancel_requested"
+    if not stop_reason:
+        stop_reason = "max_rpm_reached"
+
+    final_status = "completed"
+    if stop_reason == "cancel_requested":
+        final_status = "cancelled"
+    summary = {
+        "maxSustainableRpm": round(float(max_sustainable_rpm), 3),
+        "lastPassingStepIndex": int(last_passing_step_index),
+        "totalRequests": int(total_requests),
+        "totalSuccess": int(total_success),
+        "totalFailure": int(total_failure),
+        "stopReason": str(stop_reason),
+        "startedAtMs": int(started_ms),
+        "finishedAtMs": int(time.time() * 1000),
+    }
+    _voice_clone_stress_finalize_job(
+        job_id=safe_job_id,
+        status=final_status,
+        steps=steps,
+        summary=summary,
+        runtime_devices=runtime_devices,
+    )
+
+
+def _launch_voice_clone_stress_job(job_id: str) -> None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id:
+        return
+    thread = threading.Thread(
+        target=_run_voice_clone_stress_job,
+        args=(safe_job_id,),
+        daemon=True,
+        name=f"vc-stress-{safe_job_id[:10]}",
+    )
+    thread.start()
+    with _VOICE_CLONE_STRESS_LOCK:
+        row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+        if isinstance(row, dict):
+            row["_thread"] = thread
+
+
+@app.post("/v1/admin/voice-clone/stress/start")
+@app.post("/admin/voice-clone/stress/start")
+def admin_voice_clone_stress_start(payload: VoiceCloneStressStartRequest, request: Request) -> JSONResponse:
+    actor_uid, _actor = _require_permission(request, PERM_OPS_MUTATE)
+    target = _voice_clone_stress_normalize_target(payload.benchmarkTarget)
+    config = payload.config.model_dump(exclude_none=True) if hasattr(payload.config, "model_dump") else payload.config.dict(exclude_none=True)
+    start_rpm = int(config.get("startRpm") or 1)
+    step_rpm = int(config.get("stepRpm") or 1)
+    max_rpm = int(config.get("maxRpm") or start_rpm)
+    if max_rpm < start_rpm:
+        raise HTTPException(status_code=400, detail="maxRpm must be greater than or equal to startRpm.")
+    if step_rpm <= 0:
+        raise HTTPException(status_code=400, detail="stepRpm must be greater than 0.")
+
+    request_payload: dict[str, Any] = {}
+    if target == "OPENVOICE_L4_VC":
+        try:
+            reference_audio_bytes = decode_openvoice_audio_base64(payload.referenceAudioBase64 or "")
+            source_audio_bytes = decode_openvoice_audio_base64(payload.sourceAudioBase64 or "")
+        except ValueError as exc:
+            if "maximum allowed size" in str(exc).lower():
+                raise HTTPException(status_code=413, detail="Stress-test audio payload exceeds the maximum allowed size.") from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not reference_audio_bytes:
+            raise HTTPException(status_code=400, detail="referenceAudioBase64 is required for OPENVOICE_L4_VC.")
+        if not source_audio_bytes:
+            raise HTTPException(status_code=400, detail="sourceAudioBase64 is required for OPENVOICE_L4_VC.")
+        request_payload = {
+            "mode": "vc",
+            "runKind": "warm",
+            "durationSec": 15,
+            "language": "EN",
+            "text": "",
+            "sourceVoiceId": "",
+            "sourceVoiceName": "stress-test",
+            "sourceVoiceEngine": "PRIME",
+            "referenceAudioBase64": encode_openvoice_audio_base64(reference_audio_bytes),
+            "referenceAudioName": str(payload.referenceAudioName or "reference.wav").strip() or "reference.wav",
+            "referenceAudioUrl": "",
+            "sourceAudioBase64": encode_openvoice_audio_base64(source_audio_bytes),
+            "sourceAudioName": str(payload.sourceAudioName or "source.wav").strip() or "source.wav",
+            "speed": 1.0,
+            "regionHint": "",
+            "regionSource": "admin-stress",
+            "costMultiplier": 1.0,
+            "uid": str(actor_uid or "").strip(),
+        }
+    else:
+        request_payload = {
+            "text": str(payload.text or VOICE_CLONE_STRESS_DEFAULT_PROMPT).strip() or VOICE_CLONE_STRESS_DEFAULT_PROMPT,
+            "voiceName": str(payload.voiceName or "Fenrir").strip() or "Fenrir",
+        }
+
+    now_ms = int(time.time() * 1000)
+    now_iso = _voice_clone_stress_now_iso()
+    job_id = f"vcs_{uuid.uuid4().hex[:20]}"
+    provider_snapshot = _resolve_openvoice_provider()
+    total_steps = max(1, int(math.floor((max_rpm - start_rpm) / max(1, step_rpm))) + 1)
+    row = {
+        "jobId": job_id,
+        "benchmarkTarget": target,
+        "providerSnapshot": provider_snapshot,
+        "status": "queued",
+        "config": config,
+        "progress": {
+            "currentStep": 0,
+            "stepsCompleted": 0,
+            "totalSteps": total_steps,
+        },
+        "runtimePreflight": {},
+        "runtimeDeviceSamples": [],
+        "steps": [],
+        "summary": {},
+        "createdAtMs": now_ms,
+        "updatedAtMs": now_ms,
+        "startedAtMs": 0,
+        "finishedAtMs": 0,
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+        "startedAt": "",
+        "finishedAt": "",
+        "_requestPayload": request_payload,
+        "_actorUid": str(actor_uid or "").strip(),
+        "_cancelRequested": False,
+        "expiresAtUnix": 0,
+    }
+    with _VOICE_CLONE_STRESS_LOCK:
+        _voice_clone_stress_cleanup_locked()
+        _VOICE_CLONE_STRESS_JOBS[job_id] = row
+    _launch_voice_clone_stress_job(job_id)
+    return JSONResponse(_voice_clone_stress_status_payload(row), status_code=202)
+
+
+@app.get("/v1/admin/voice-clone/stress/{job_id}")
+@app.get("/admin/voice-clone/stress/{job_id}")
+def admin_voice_clone_stress_status(job_id: str, request: Request) -> JSONResponse:
+    _require_permission(request, PERM_OPS_MUTATE)
+    safe_job_id = str(job_id or "").strip()
+    with _VOICE_CLONE_STRESS_LOCK:
+        _voice_clone_stress_cleanup_locked()
+        row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="Stress job not found.")
+        payload = _voice_clone_stress_status_payload(row)
+    return JSONResponse(payload)
+
+
+@app.post("/v1/admin/voice-clone/stress/{job_id}/cancel")
+@app.post("/admin/voice-clone/stress/{job_id}/cancel")
+def admin_voice_clone_stress_cancel(job_id: str, request: Request) -> JSONResponse:
+    _require_permission(request, PERM_OPS_MUTATE)
+    safe_job_id = str(job_id or "").strip()
+    now_ms = int(time.time() * 1000)
+    now_iso = _voice_clone_stress_now_iso()
+    with _VOICE_CLONE_STRESS_LOCK:
+        _voice_clone_stress_cleanup_locked()
+        row = _VOICE_CLONE_STRESS_JOBS.get(safe_job_id)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="Stress job not found.")
+        row["_cancelRequested"] = True
+        if str(row.get("status") or "").strip().lower() == "queued":
+            row["status"] = "cancelled"
+            row["summary"] = {
+                "maxSustainableRpm": 0.0,
+                "lastPassingStepIndex": 0,
+                "totalRequests": 0,
+                "totalSuccess": 0,
+                "totalFailure": 0,
+                "stopReason": "cancel_requested",
+                "startedAtMs": int(row.get("startedAtMs") or 0),
+                "finishedAtMs": now_ms,
+            }
+            row["finishedAtMs"] = now_ms
+            row["finishedAt"] = now_iso
+            row["expiresAtUnix"] = int(time.time()) + int(VOICE_CLONE_STRESS_JOB_TTL_SEC)
+            row.pop("_requestPayload", None)
+        row["updatedAtMs"] = now_ms
+        row["updatedAt"] = now_iso
+        payload = _voice_clone_stress_status_payload(row)
+    return JSONResponse(payload)
+
+
+@app.get("/v1/admin/voice-clone/provider")
+@app.get("/admin/voice-clone/provider")
+def admin_voice_clone_provider(request: Request) -> JSONResponse:
+    _require_permission(request, PERM_OPS_READ)
+    return JSONResponse(_openvoice_provider_status_payload())
+
+
+@app.patch("/v1/admin/voice-clone/provider")
+@app.patch("/admin/voice-clone/provider")
+def admin_patch_voice_clone_provider(payload: VoiceCloneProviderPatchRequest, request: Request) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    before = _openvoice_runtime_config_get()
+    after = _openvoice_runtime_config_patch(active_provider=payload.activeProvider, updated_by=actor_uid)
+    _audit_append_event(
+        action="admin_voice_clone_provider_patch",
+        resource_type="voice_clone_provider_config",
+        resource_id="current",
+        before=before,
+        after=after,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(_openvoice_provider_status_payload())
+
+
 @app.get("/voice-lab/openvoice/artifacts/{artifact_id}")
 async def voice_lab_openvoice_artifact(
     artifact_id: str,
@@ -4128,6 +5623,8 @@ async def voice_lab_openvoice_artifact(
             raise HTTPException(status_code=403, detail="Not authorized to access this artifact.")
     if not verify_openvoice_artifact_signature(safe_artifact_id, sig):
         raise HTTPException(status_code=403, detail="Invalid artifact signature.")
+    if VF_OPENVOICE_ARTIFACT_ONE_TIME and not _register_openvoice_artifact_signature_use(sig):
+        raise HTTPException(status_code=403, detail="Artifact signature already used.")
     artifact_path = (OPENVOICE_ARTIFACT_ROOT / f"{safe_artifact_id}.wav").resolve()
     try:
         artifact_path.relative_to(OPENVOICE_ARTIFACT_ROOT.resolve())
@@ -4282,6 +5779,67 @@ def _stripe_available() -> bool:
     return bool(STRIPE_SECRET_KEY) and _ensure_stripe_sdk_imported()
 
 
+class _RazorpayBillingCompat:
+    def create_customer(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"customer_id": "", "id": ""}
+
+    def create_subscription(self, *args: Any, **_kwargs: Any) -> dict[str, Any]:
+        _ = args
+        return {"subscription_id": "", "id": ""}
+
+    def create_one_time_order(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"order_id": "", "id": ""}
+
+    def fetch_customer(self, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    def fetch_subscription(self, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    def list_customer_payments(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"items": []}
+
+    def list_customer_subscriptions(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"items": []}
+
+
+razorpay_billing = _RazorpayBillingCompat()
+
+
+def _razorpay_available() -> bool:
+    return bool(
+        os.getenv("VF_RAZORPAY_KEY_ID")
+        or os.getenv("VF_RAZORPAY_KEY_SECRET")
+        or os.getenv("VF_RAZORPAY_WEBHOOK_SECRET")
+    )
+
+
+def _razorpay_key_id() -> str:
+    return str(
+        os.getenv("VF_RAZORPAY_KEY_ID")
+        or os.getenv("STRIPE_PUBLISHABLE_KEY")
+        or ""
+    ).strip()
+
+
+def _razorpay_key_secret() -> str:
+    return str(os.getenv("VF_RAZORPAY_KEY_SECRET") or STRIPE_SECRET_KEY or "").strip()
+
+
+def _razorpay_webhook_secret() -> str:
+    return str(os.getenv("VF_RAZORPAY_WEBHOOK_SECRET") or STRIPE_WEBHOOK_SECRET or "").strip()
+
+
+def _razorpay_plan_id_for_plan(plan: str, phase: str = "recurring") -> str:
+    safe_plan = _plan_key_from_name(str(plan or "").strip().lower() or "free")
+    safe_phase = str(phase or "recurring").strip().lower() or "recurring"
+    env_key = f"VF_RAZORPAY_PLAN_{safe_plan.upper()}_{safe_phase.upper()}"
+    configured = str(os.getenv(env_key) or "").strip()
+    if configured:
+        return configured
+    return f"{safe_plan}_{safe_phase}_plan"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -4313,6 +5871,10 @@ def _wallet_month_key(now: Optional[datetime] = None) -> str:
 
 def _safe_now_iso(now: Optional[datetime] = None) -> str:
     return (now or _utc_now()).isoformat()
+
+
+_USER_PROFILE_LOCAL_FALLBACK_FLAG = "__localFallback"
+_USER_ID_INDEX_LOCAL_FALLBACK_FLAG = "__localFallback"
 
 
 def _persist_inmemory_user_profile_store_locked() -> None:
@@ -4383,24 +5945,30 @@ def _load_inmemory_user_profile_store() -> None:
         owner_uid = str(row.get("uid") or "").strip()
         if not owner_uid:
             continue
-        hydrated_index[safe_user_id] = {
+        index_row = {
             "userId": safe_user_id,
             "uid": owner_uid,
             "createdAt": str(row.get("createdAt") or ""),
             "updatedAt": str(row.get("updatedAt") or ""),
         }
+        if bool(row.get(_USER_ID_INDEX_LOCAL_FALLBACK_FLAG)):
+            index_row[_USER_ID_INDEX_LOCAL_FALLBACK_FLAG] = True
+        hydrated_index[safe_user_id] = index_row
 
     for uid_value, row in hydrated_profiles.items():
         user_id = str(row.get("userId") or "").strip().lower()
         if not user_id:
             continue
         index_row = hydrated_index.get(user_id) or {}
-        hydrated_index[user_id] = {
+        merged_index_row = {
             "userId": user_id,
             "uid": uid_value,
             "createdAt": str(index_row.get("createdAt") or row.get("createdAt") or ""),
             "updatedAt": str(index_row.get("updatedAt") or row.get("updatedAt") or ""),
         }
+        if bool(index_row.get(_USER_ID_INDEX_LOCAL_FALLBACK_FLAG)):
+            merged_index_row[_USER_ID_INDEX_LOCAL_FALLBACK_FLAG] = True
+        hydrated_index[user_id] = merged_index_row
 
     if not hydrated_profiles and not hydrated_index:
         return
@@ -4414,7 +5982,7 @@ _load_inmemory_user_profile_store()
 
 def _history_sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
     safe = dict(item or {})
-    safe_engine = str(safe.get("engine") or "GEM").strip().upper() or "GEM"
+    safe_engine = _resolve_internal_engine_token(str(safe.get("engine") or "PRIME")) or "PRIME"
     raw_voice_name = str(safe.get("voiceName") or safe.get("voice_name") or "").strip()
     raw_voice_id = str(safe.get("voiceId") or safe.get("voice_id") or "").strip()
     canonical_voice_id, display_voice_name = _resolve_history_voice_fields(
@@ -4590,6 +6158,7 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "status": "free_active",
         "monthlyVfLimit": defaults["monthlyVfLimit"],
         "stripeCustomerId": None,
+        "razorpayCustomerId": None,
         "subscriptionId": None,
         "latestInvoiceId": None,
         "currencyMode": "INR_BASE_AUTO_FX",
@@ -4599,6 +6168,12 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "vffBalance": free_vff_grant,
         "vffMonthKey": month_key,
         "vffGrantMonthKey": month_key,
+        "vcFreeBalance": 0.0,
+        "vcPaidBalance": 0.0,
+        "vcMonthKey": month_key,
+        "vcGrantMonthKey": month_key,
+        "launcherOfferConsumed": False,
+        "dunoVoiceCloneMap": {},
         "updatedAt": _safe_now_iso(),
     }
 
@@ -4706,6 +6281,127 @@ def _success_rate_limit_headers(snapshot: Any) -> dict[str, str]:
     }
 
 
+def _serialize_tts_success_quota_reservation(
+    reservation: SuccessQuotaReservation,
+    *,
+    uid: str,
+    plan_name: str,
+    plan_key: str,
+    trace_id: str,
+    request_fingerprint: str,
+) -> dict[str, Any]:
+    snapshot = reservation.snapshot
+    return {
+        "uid": str(uid or "").strip(),
+        "planName": str(plan_name or "Free").strip() or "Free",
+        "planKey": str(plan_key or "free").strip().lower() or "free",
+        "traceId": str(trace_id or "").strip(),
+        "requestFingerprint": str(request_fingerprint or "").strip(),
+        "reservationId": str(reservation.reservation_id or "").strip(),
+        "allowed": bool(reservation.allowed),
+        "reserved": bool(reservation.reserved),
+        "committed": bool(reservation.committed),
+        "released": bool(reservation.released),
+        "counted": bool(reservation.counted),
+        "idempotentReuse": bool(reservation.idempotent_reuse),
+        "backend": str(reservation.backend or "memory"),
+        "redisAvailable": bool(reservation.redis_available),
+        "redisRequired": bool(reservation.redis_required),
+        "error": str(reservation.error or ""),
+        "snapshot": {
+            "limit": int(snapshot.limit),
+            "used": int(snapshot.used),
+            "remaining": int(snapshot.remaining),
+            "resetAtMs": int(snapshot.reset_at_ms),
+            "windowSeconds": int(snapshot.window_seconds),
+        },
+    }
+
+
+def _deserialize_tts_success_quota_reservation(value: Any) -> Optional[SuccessQuotaReservation]:
+    if not isinstance(value, dict):
+        return None
+    reservation_id = str(value.get("reservationId") or value.get("reservation_id") or "").strip()
+    if not reservation_id:
+        return None
+    snapshot_raw = value.get("snapshot") if isinstance(value.get("snapshot"), dict) else {}
+    snapshot = SuccessQuotaSnapshot(
+        limit=max(1, int(snapshot_raw.get("limit") or 1)),
+        used=max(0, int(snapshot_raw.get("used") or 0)),
+        remaining=max(0, int(snapshot_raw.get("remaining") or 0)),
+        reset_at_ms=max(0, int(snapshot_raw.get("resetAtMs") or snapshot_raw.get("reset_at_ms") or 0)),
+        window_seconds=max(1, int(snapshot_raw.get("windowSeconds") or snapshot_raw.get("window_seconds") or 60)),
+    )
+    return SuccessQuotaReservation(
+        allowed=bool(value.get("allowed", True)),
+        reserved=bool(value.get("reserved", True)),
+        committed=bool(value.get("committed", False)),
+        released=bool(value.get("released", False)),
+        counted=bool(value.get("counted", False)),
+        idempotent_reuse=bool(value.get("idempotentReuse", value.get("idempotent_reuse", False))),
+        reservation_id=reservation_id,
+        backend=str(value.get("backend") or "memory"),
+        redis_available=bool(value.get("redisAvailable", value.get("redis_available", False))),
+        redis_required=bool(value.get("redisRequired", value.get("redis_required", False))),
+        snapshot=snapshot,
+        error=str(value.get("error") or ""),
+    )
+
+
+def _extract_tts_success_quota_reservation_payload(job: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(job, dict):
+        return None
+    direct = job.get("successQuotaReservation")
+    if isinstance(direct, dict):
+        return dict(direct)
+    payload = job.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("successQuotaReservation"), dict):
+        return dict(payload.get("successQuotaReservation") or {})
+    return None
+
+
+def _reserve_tts_success_quota(
+    uid: str,
+    plan_name: str,
+    plan_key: str,
+    trace_id: str,
+    *,
+    request_fingerprint: str,
+) -> tuple[SuccessQuotaReservation, dict[str, str]]:
+    quota_bucket = _tts_success_bucket_for_plan(plan_key)
+    reservation = _TTS_SUCCESS_LIMITER.reserve_success(uid, quota_bucket, request_fingerprint=request_fingerprint)
+    if reservation.allowed:
+        return reservation, _success_rate_limit_headers(reservation.snapshot)
+    retry_after_ms = max(250, int(reservation.snapshot.reset_at_ms) - int(time.time() * 1000))
+    detail = {
+        "errorCode": RATE_LIMIT_USER,
+        "reason": "plan_success_limit_exceeded",
+        "plan": plan_name,
+        "windowSeconds": int(reservation.snapshot.window_seconds),
+        "limit": int(reservation.snapshot.limit),
+        "used": int(reservation.snapshot.used),
+        "retryAfterMs": retry_after_ms,
+        "trace_id": trace_id,
+    }
+    headers = _success_rate_limit_headers(reservation.snapshot)
+    headers["Retry-After"] = str(max(1, int((retry_after_ms + 999) // 1000)))
+    raise HTTPException(status_code=429, detail=detail, headers=headers)
+
+
+def _commit_tts_success_quota_reservation(payload: Any) -> Optional[SuccessQuotaReservation]:
+    reservation = _deserialize_tts_success_quota_reservation(payload)
+    if reservation is None:
+        return None
+    return _TTS_SUCCESS_LIMITER.commit_success_reservation(reservation)
+
+
+def _release_tts_success_quota_reservation(payload: Any) -> Optional[SuccessQuotaReservation]:
+    reservation = _deserialize_tts_success_quota_reservation(payload)
+    if reservation is None:
+        return None
+    return _TTS_SUCCESS_LIMITER.release_success_reservation(reservation)
+
+
 def _enforce_tts_plan_guardrails(
     uid: str,
     text_chars: int,
@@ -4719,7 +6415,7 @@ def _enforce_tts_plan_guardrails(
     plan_key, guardrails = _tts_guardrail_for_plan(plan_name)
     if bypass:
         return plan_name, plan_key, guardrails
-    safe_engine = _normalize_engine_name(engine)
+    safe_engine = _resolve_internal_engine_token(engine) or _normalize_engine_name(engine)
     if safe_engine not in set(_plan_allowed_engines(plan_key)):
         raise HTTPException(
             status_code=403,
@@ -4799,7 +6495,7 @@ def _commit_tts_success_quota(
 
 
 def _engine_rate(engine: str) -> float:
-    engine_key = str(engine or "").strip().upper()
+    engine_key = _resolve_internal_engine_token(engine)
     return _as_positive_number(VF_ENGINE_RATES.get(engine_key)) or 1.0
 
 
@@ -4837,7 +6533,7 @@ def _verify_firebase_id_token(id_token: str) -> dict[str, Any]:
     if not _firebase_ready():
         raise RuntimeError(_FIREBASE_INIT_ERROR or "Firebase is not configured.")
     assert firebase_auth is not None
-    claims = firebase_auth.verify_id_token(id_token)  # type: ignore[no-any-return]
+    claims = firebase_auth.verify_id_token(id_token, check_revoked=True)  # type: ignore[no-any-return]
     if not isinstance(claims, dict):
         raise RuntimeError("Invalid auth claims.")
     return claims
@@ -4900,16 +6596,10 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 def _auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip()
-    public_model_repo_prefix = "/models/" + str(KOKORO_MODEL_REPO_ID or "").strip("/").replace("\\", "/") + "/"
     public_paths = {
         "/health",
         "/system/version",
         "/billing/webhook",
-        "/tts/engines/status",
-        "/tts/engines/capabilities",
-        "/tts/engines/voices",
-        "/tts/voice-mapping/catalog",
-        "/models/kokoro/status",
     }
     if VF_DOCS_ENABLE:
         public_paths.update(
@@ -4921,8 +6611,6 @@ def _auth_exempt_path(path: str) -> bool:
             }
         )
     if normalized in public_paths:
-        return True
-    if public_model_repo_prefix != "/models//" and normalized.startswith(public_model_repo_prefix):
         return True
     return bool(VF_DOCS_ENABLE and normalized.startswith("/docs"))
 
@@ -5168,21 +6856,36 @@ def _user_profile_backfill_candidates(uid: str, email: str = "", display_name: s
     return candidates
 
 
+def _sanitize_user_profile_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row or {})
+    payload.pop(_USER_PROFILE_LOCAL_FALLBACK_FLAG, None)
+    return payload
+
+
 def _user_profile_read(uid: str) -> Optional[dict[str, Any]]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         return None
-    collection = _firestore_collection(USER_PROFILES_COLLECTION)
-    if collection is None:
+
+    def _read_inmemory_fallback(*, require_local_fallback_marker: bool = False) -> Optional[dict[str, Any]]:
         with _INMEMORY_LOCK:
             row = _INMEMORY_USER_PROFILES.get(safe_uid)
-            return dict(row) if isinstance(row, dict) else None
+            if not isinstance(row, dict):
+                return None
+            if require_local_fallback_marker and not bool(row.get(_USER_PROFILE_LOCAL_FALLBACK_FLAG)):
+                return None
+            return _sanitize_user_profile_row(row)
+
+    collection = _firestore_collection(USER_PROFILES_COLLECTION)
+    if collection is None:
+        return _read_inmemory_fallback()
     try:
-        doc = collection.document(safe_uid).get()
+        doc_ref = collection.document(safe_uid)
+        doc = doc_ref.get() if hasattr(doc_ref, "get") else doc_ref
     except Exception:
-        return None
-    if not doc.exists:
-        return None
+        return _read_inmemory_fallback()
+    if not bool(getattr(doc, "exists", False)):
+        return _read_inmemory_fallback(require_local_fallback_marker=True)
     payload = doc.to_dict() or {}
     payload["uid"] = safe_uid
     return payload
@@ -5207,7 +6910,14 @@ def _user_profile_find_by_user_id(user_id: str) -> Optional[dict[str, Any]]:
     except Exception:
         return None
     if not index_doc.exists:
-        return None
+        with _INMEMORY_LOCK:
+            row = _INMEMORY_USER_ID_INDEX.get(safe_user_id)
+            if not isinstance(row, dict) or not bool(row.get(_USER_ID_INDEX_LOCAL_FALLBACK_FLAG)):
+                return None
+            uid = str(row.get("uid") or "").strip()
+        if not uid:
+            return None
+        return _user_profile_read(uid)
     idx = index_doc.to_dict() or {}
     uid = str(idx.get("uid") or "").strip()
     if not uid:
@@ -5334,6 +7044,7 @@ def _user_profile_upsert(
     def _apply_inmemory_upsert(*, reason: Optional[Exception] = None) -> dict[str, Any]:
         if reason is not None:
             _log_user_profile_write_error("inmemory_fallback", safe_uid, next_user_id, reason)
+        mark_local_fallback = bool(reason is not None and _is_user_profile_store_unavailable_error(reason))
         with _INMEMORY_LOCK:
             existing = dict(_INMEMORY_USER_PROFILES.get(safe_uid) or {})
             existing_user_id = str(existing.get("userId") or "").strip().lower()
@@ -5345,13 +7056,19 @@ def _user_profile_upsert(
                 raise HTTPException(status_code=409, detail="userId already exists.")
             if existing_user_id and existing_user_id != next_user_id:
                 _INMEMORY_USER_ID_INDEX.pop(existing_user_id, None)
-            _INMEMORY_USER_ID_INDEX[next_user_id] = {
+            index_row = {
                 "userId": next_user_id,
                 "uid": safe_uid,
                 "createdAt": str(owner.get("createdAt") or now_iso),
                 "updatedAt": now_iso,
             }
-            _INMEMORY_USER_PROFILES[safe_uid] = dict(row)
+            if mark_local_fallback:
+                index_row[_USER_ID_INDEX_LOCAL_FALLBACK_FLAG] = True
+            _INMEMORY_USER_ID_INDEX[next_user_id] = dict(index_row)
+            profile_row = dict(row)
+            if mark_local_fallback:
+                profile_row[_USER_PROFILE_LOCAL_FALLBACK_FLAG] = True
+            _INMEMORY_USER_PROFILES[safe_uid] = dict(profile_row)
             _persist_inmemory_user_profile_store_locked()
             return dict(row)
 
@@ -7232,11 +8949,8 @@ def _notification_emit_tts_job_terminal(job: dict[str, Any], *, status: str, det
     if not uid:
         return
     job_id = str(safe_job.get("jobId") or safe_job.get("requestId") or "").strip()
-    raw_engine = str(safe_job.get("engine") or "GEM").strip()
-    try:
-        engine = _normalize_engine_name(raw_engine or "GEM")
-    except Exception:
-        engine = "GEM"
+    raw_engine = str(safe_job.get("engine") or "PRIME").strip()
+    engine = _resolve_internal_engine_token(raw_engine or "PRIME") or "PRIME"
     created_at_ms = max(0, int(safe_job.get("createdAtMs") or 0))
     finished_at_ms = max(created_at_ms, int(safe_job.get("finishedAtMs") or int(time.time() * 1000)))
     duration_ms = max(0, finished_at_ms - created_at_ms)
@@ -7678,6 +9392,44 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
     normalized["vffBalance"] = _as_positive_number(current_vff)
     normalized["vffMonthKey"] = saved_month or month_key
     normalized["vffGrantMonthKey"] = grant_month or month_key
+
+    vc_paid_balance = _as_positive_number(normalized.get("vcPaidBalance"))
+    normalized["vcPaidBalance"] = vc_paid_balance
+    vc_saved_month = str(normalized.get("vcMonthKey") or "").strip()
+    vc_grant_month = str(normalized.get("vcGrantMonthKey") or "").strip()
+    vc_free_balance = _as_positive_number(normalized.get("vcFreeBalance"))
+    vc_grant_for_plan = _as_positive_number(VC_FREE_MONTHLY_GRANT_BY_PLAN.get(plan_key, 0.0))
+    if vc_saved_month != month_key:
+        vc_free_balance = 0.0
+        vc_saved_month = month_key
+    if vc_grant_month != month_key:
+        vc_free_balance = max(vc_free_balance, vc_grant_for_plan)
+        vc_grant_month = month_key
+    normalized["vcFreeBalance"] = _as_positive_number(vc_free_balance)
+    normalized["vcMonthKey"] = vc_saved_month or month_key
+    normalized["vcGrantMonthKey"] = vc_grant_month or month_key
+    normalized["launcherOfferConsumed"] = bool(normalized.get("launcherOfferConsumed"))
+
+    raw_clone_map = normalized.get("dunoVoiceCloneMap")
+    if isinstance(raw_clone_map, dict):
+        normalized_clone_map: dict[str, dict[str, Any]] = {}
+        for raw_key, raw_value in raw_clone_map.items():
+            key = str(raw_key or "").strip()
+            if not key or not isinstance(raw_value, dict):
+                continue
+            voice_id = str(raw_value.get("voiceId") or raw_value.get("voice_id") or "").strip()
+            if not voice_id:
+                continue
+            normalized_clone_map[key] = {
+                "voiceId": voice_id,
+                "speaker": str(raw_value.get("speaker") or "").strip(),
+                "referenceHash": str(raw_value.get("referenceHash") or "").strip(),
+                "model": str(raw_value.get("model") or "").strip(),
+                "updatedAt": str(raw_value.get("updatedAt") or "").strip() or current.isoformat(),
+            }
+        normalized["dunoVoiceCloneMap"] = normalized_clone_map
+    else:
+        normalized["dunoVoiceCloneMap"] = {}
     return normalized
 
 
@@ -7688,7 +9440,7 @@ def _monthly_free_remaining(entitlement: dict[str, Any], monthly: dict[str, Any]
 
 
 def _wallet_spendable_now(entitlement: dict[str, Any], monthly: dict[str, Any], engine: str) -> float:
-    safe_engine = str(engine or "").strip().upper()
+    safe_engine = _resolve_internal_engine_token(engine)
     monthly_remaining = _monthly_free_remaining(entitlement, monthly)
     paid_balance = _as_positive_number(entitlement.get("paidVfBalance"))
     vff_balance = _as_positive_number(entitlement.get("vffBalance"))
@@ -7775,6 +9527,10 @@ def _write_entitlement(uid: str, payload: dict[str, Any]) -> None:
     patch.pop("dailyGenerationLimit", None)
     if "paidVfBalance" in patch:
         patch["paidVfBalance"] = _as_positive_number(patch.get("paidVfBalance"))
+    if "vcPaidBalance" in patch:
+        patch["vcPaidBalance"] = _as_positive_number(patch.get("vcPaidBalance"))
+    if "vcFreeBalance" in patch:
+        patch["vcFreeBalance"] = _as_positive_number(patch.get("vcFreeBalance"))
     if "paidVfLots" in patch and not isinstance(patch.get("paidVfLots"), list):
         patch["paidVfLots"] = []
     if "vffBalance" in patch:
@@ -7894,7 +9650,7 @@ def _reserve_usage(
 ) -> dict[str, Any]:
     safe_engine = str(engine or "").strip().upper()
     if safe_engine not in VF_ENGINE_RATES:
-        safe_engine = "GEM"
+        safe_engine = "PRIME"
     safe_chars = _as_positive_int(char_count)
     now = _utc_now()
     monthly_doc_id = _inmemory_usage_month_doc_id(uid, now)
@@ -8125,7 +9881,7 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
                 monthly = _INMEMORY_USAGE_MONTHLY.get(str(event.get("monthDocId") or ""))
                 daily = _INMEMORY_USAGE_DAILY.get(str(event.get("dayDocId") or ""))
                 entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
-                engine = str(event.get("engine") or "GEM").upper()
+                engine = str(event.get("engine") or "PRIME").upper()
                 vf_cost = _as_positive_number(event.get("vfCost"))
                 chars = _as_positive_int(event.get("chars"))
                 charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
@@ -8197,7 +9953,7 @@ def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str 
         entitlement = _normalize_entitlement_wallet(
             entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
         )
-        engine = str(event.get("engine") or "GEM").upper()
+        engine = str(event.get("engine") or "PRIME").upper()
         vf_cost = _as_positive_number(event.get("vfCost"))
         chars = _as_positive_int(event.get("chars"))
         charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
@@ -8314,6 +10070,7 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
             },
             "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 1)),
             "allowedEngines": allowed_engines,
+            "tokenPackDiscountPercent": _token_pack_discount_percent_for_plan(plan_name),
         },
         "features": {
             "earlyAccess": _plan_has_early_access(plan_key),
@@ -8428,6 +10185,10 @@ class BillingTokenPackCheckoutSessionRequest(BaseModel):
     pack: Optional[str] = "standard"
     successUrl: Optional[str] = None
     cancelUrl: Optional[str] = None
+
+
+class WalletVcConvertRequest(BaseModel):
+    vfAmount: float
 
 
 class CouponCreateRequest(BaseModel):
@@ -8557,6 +10318,10 @@ class AdminSessionUnlockVerifyRequest(BaseModel):
     unlockKey: str
 
 
+class EngineCanonicalizationMigrationRequest(BaseModel):
+    mode: str = "dry_run"
+
+
 class AlertPolicyCreateRequest(BaseModel):
     name: str
     metricKey: str
@@ -8628,7 +10393,7 @@ class AccountingMonitorRunRequest(BaseModel):
 
 
 class TtsSynthesizeRequest(BaseModel):
-    engine: str = "GEM"
+    engine: str = "PRIME"
     text: str
     model: Optional[str] = None
     modelCandidates: Optional[list[str]] = None
@@ -8638,6 +10403,7 @@ class TtsSynthesizeRequest(BaseModel):
     language: Optional[str] = None
     speed: Optional[float] = None
     emotion: Optional[str] = None
+    cue: Optional[str] = None
     style: Optional[str] = None
     trace_id: Optional[str] = None
     request_id: Optional[str] = None
@@ -8654,13 +10420,19 @@ class TtsSynthesizeRequest(BaseModel):
     multi_speaker_max_concurrency: Optional[int] = None
     multi_speaker_retry_once: Optional[bool] = None
     multi_speaker_line_map: Optional[list[dict[str, Any]]] = None
+    referenceAudioUrl: Optional[str] = None
+    referenceAudioName: Optional[str] = None
+    referenceAudioBase64: Optional[str] = None
+    sourceVoiceId: Optional[str] = None
+    sourceVoiceName: Optional[str] = None
+    sourceVoiceEngine: Optional[str] = None
     post_tts_disable: Optional[bool] = None
 
 
 class TtsV2CreateJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: Optional[str] = None
-    engine: str = "GEM"
+    engine: str = "PRIME"
     mode: str = "single_speaker"
     text: str
     model: Optional[str] = None
@@ -8671,6 +10443,7 @@ class TtsV2CreateJobRequest(BaseModel):
     language: Optional[str] = None
     speed: Optional[float] = None
     emotion: Optional[str] = None
+    cue: Optional[str] = None
     style: Optional[str] = None
     trace_id: Optional[str] = None
     speaker: Optional[str] = None
@@ -8685,6 +10458,12 @@ class TtsV2CreateJobRequest(BaseModel):
     multi_speaker_max_concurrency: Optional[int] = None
     multi_speaker_retry_once: Optional[bool] = None
     multi_speaker_line_map: Optional[list[dict[str, Any]]] = None
+    referenceAudioUrl: Optional[str] = None
+    referenceAudioName: Optional[str] = None
+    referenceAudioBase64: Optional[str] = None
+    sourceVoiceId: Optional[str] = None
+    sourceVoiceName: Optional[str] = None
+    sourceVoiceEngine: Optional[str] = None
     post_tts_disable: Optional[bool] = None
 
 
@@ -9025,7 +10804,7 @@ def _admin_usage_record_runtime_call(
     elapsed_ms: int,
 ) -> None:
     engine_key = str(engine or "").strip().upper()
-    integration = "gemini-runtime" if _is_gem_runtime_engine(engine_key) else "kokoro-runtime" if engine_key == "KOKORO" else "tts-runtime"
+    integration = "gemini-runtime" if _is_gem_runtime_engine(engine_key) else "duno-runtime" if engine_key == "DUNO" else "tts-runtime"
     _admin_usage_record_event(
         integration=integration,
         endpoint=str(endpoint or "/synthesize"),
@@ -9942,7 +11721,10 @@ def _ai_ops_runtime_snapshot() -> dict[str, Any]:
     engines: dict[str, Any] = {}
     offline: list[str] = []
     for engine, health_url in TTS_ENGINE_HEALTH_URLS.items():
-        healthy, detail = _probe_runtime_health(health_url, timeout_sec=2.5)
+        healthy, detail = _probe_runtime_health(
+            health_url,
+            timeout_sec=_runtime_health_probe_timeout_sec(health_url),
+        )
         item = {
             "engine": engine,
             "healthUrl": health_url,
@@ -10178,7 +11960,10 @@ def _ai_ops_execute_action(
             effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
             command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
             health_url = TTS_ENGINE_HEALTH_URLS[engine]
-            healthy, detail = _probe_runtime_health(health_url, timeout_sec=2.5)
+            healthy, detail = _probe_runtime_health(
+                health_url,
+                timeout_sec=_runtime_health_probe_timeout_sec(health_url),
+            )
             execution.update(
                 {
                     "ok": bool(healthy),
@@ -10222,11 +12007,15 @@ def _ai_ops_execute_action(
         elif normalized_action == "restart_all_runtimes":
             items: list[dict[str, Any]] = []
             overall_ok = True
-            for engine in ["GEM", "KOKORO"]:
+            for engine in ["PRIME", "VECTOR", "DUNO"]:
                 try:
                     effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
                     command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-                    healthy, detail = _probe_runtime_health(TTS_ENGINE_HEALTH_URLS[engine], timeout_sec=2.5)
+                    probe_url = str(TTS_ENGINE_HEALTH_URLS[engine] or "").strip()
+                    healthy, detail = _probe_runtime_health(
+                        probe_url,
+                        timeout_sec=_runtime_health_probe_timeout_sec(probe_url),
+                    )
                     item_ok = bool(healthy)
                     overall_ok = overall_ok and item_ok
                     items.append(
@@ -11468,15 +13257,60 @@ def _normalize_engine_name(raw_engine: str) -> str:
     normalized = normalized.strip("_")
     engine = TTS_ENGINE_ALIASES.get(normalized)
     if not engine:
-        raise ValueError("Invalid engine. Use KOKORO, NEURAL2, or GEM.")
+        raise ValueError("Invalid engine. Use DUNO, VECTOR, or PRIME.")
     return engine
+
+
+def _canonicalize_engine_token(raw_engine: str) -> str:
+    normalized = "".join(ch if ch.isalnum() else "_" for ch in (raw_engine or "").strip().upper())
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    normalized = normalized.strip("_")
+    if normalized in {"DUNO", "VECTOR", "PRIME"}:
+        return normalized
+    legacy_map = {
+        "GEMINI": "PRIME",
+        "GOOD": "PRIME",
+        "GOOD_LITE": "PRIME",
+        "PR": "PRIME",
+        "GPR": "PRIME",
+        "PRIME": "PRIME",
+        "GEM": "PRIME",
+        "GEM_PRO": "PRIME",
+        "GEMPRO": "PRIME",
+        "PRIME_LITE": "PRIME",
+        "VECTOR": "VECTOR",
+        "NEURAL_2": "VECTOR",
+        "NEURAL2": "VECTOR",
+        "NURAL2": "VECTOR",
+        "NURAL_2": "VECTOR",
+        "HD": "VECTOR",
+        "GEM1": "VECTOR",
+        "G1": "VECTOR",
+        "KOKORO": "DUNO",
+        "DUNO": "DUNO",
+        "BASIC": "DUNO",
+        "KOKORO_RUNTIME": "DUNO",
+        "DUN": "DUNO",
+        "DUNO_RUNTIME": "DUNO",
+    }
+    return legacy_map.get(normalized, "")
+
+
+def _resolve_internal_engine_token(raw_engine: str) -> str:
+    try:
+        return _normalize_engine_name(raw_engine)
+    except Exception:
+        return _canonicalize_engine_token(raw_engine)
 
 
 def _runtime_url_for_engine(engine: str) -> str:
     normalized = _normalize_engine_name(engine)
+    if normalized == "DUNO":
+        return DUNO_RUNTIME_URL
     if _is_gem_runtime_engine(normalized):
         return GEMINI_RUNTIME_URL
-    return KOKORO_RUNTIME_URL
+    raise ValueError("Invalid engine. Use DUNO, VECTOR, or PRIME.")
 
 
 def _runtime_synthesize_path_for_engine(engine: str) -> str:
@@ -11588,14 +13422,21 @@ def _token_pack_config(pack_key: str) -> dict[str, int]:
     return TOKEN_PACK_CATALOG[key]
 
 
-def _token_pack_amount_inr_for_plan(plan_name: str, pack_key: str) -> int:
+def _token_pack_discount_percent_for_plan(plan_name: str) -> int:
     plan_key = _plan_key_from_name(plan_name)
+    if plan_key not in set(PAID_PLAN_KEYS):
+        return 0
+    return max(0, int(TOKEN_PACK_DISCOUNT_PCT_BY_KEY.get(plan_key, 0)))
+
+
+def _token_pack_amount_inr_for_plan(plan_name: str, pack_key: str) -> int:
     pack = _token_pack_config(pack_key)
     amount = max(1, int(pack.get("priceInr") or 1))
-    if plan_key == "scale":
-        discount_factor = max(0.0, 1.0 - (float(TOKEN_PACK_SCALE_DISCOUNT_PCT) / 100.0))
-        return _round_inr(amount * discount_factor)
-    return amount
+    discount_pct = _token_pack_discount_percent_for_plan(plan_name)
+    if discount_pct <= 0:
+        return amount
+    discount_factor = max(0.0, 1.0 - (float(discount_pct) / 100.0))
+    return _round_inr(amount * discount_factor)
 
 
 def _token_pack_vf_for_pack(pack_key: str) -> int:
@@ -12991,7 +14832,7 @@ def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[di
         if updated_at is None or updated_at < from_dt or updated_at > to_dt:
             continue
         engine = str(row.get("engine") or "").strip().upper()
-        if engine not in {"GEM", "NEURAL2"}:
+        if engine not in {"PRIME", "VECTOR"}:
             continue
         runtime_usage = row.get("runtimeUsage") if isinstance(row.get("runtimeUsage"), dict) else {}
         prompt_tokens = max(0, _safe_int(runtime_usage.get("promptTokens"), 0))
@@ -13813,6 +15654,71 @@ def _credit_paid_vf(
     return _apply(transaction)
 
 
+def _credit_paid_vc(
+    *,
+    uid: str,
+    amount: float,
+    reason: str,
+    transaction_id: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> tuple[bool, dict[str, Any]]:
+    safe_uid = str(uid or "").strip()
+    credit_amount = _as_positive_number(amount)
+    if not safe_uid or credit_amount <= 0:
+        return False, _load_entitlement(safe_uid or "")
+    now = _utc_now()
+    tx_id = str(transaction_id or "").strip()
+    tx_payload = {
+        "uid": safe_uid,
+        "kind": "credit",
+        "bucket": "vcPaid",
+        "amount": credit_amount,
+        "reason": str(reason or "credit"),
+        "metadata": metadata or {},
+        "createdAt": now.isoformat(),
+    }
+
+    transactions = _firestore_collection("wallet_transactions")
+    entitlements = _firestore_collection("entitlements")
+    if transactions is None or entitlements is None or _FIRESTORE_DB is None or firebase_firestore is None:
+        with _INMEMORY_LOCK:
+            if tx_id and tx_id in _INMEMORY_WALLET_TRANSACTIONS:
+                return False, _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid))
+            entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(safe_uid) or _default_entitlement(safe_uid), now)
+            entitlement["vcPaidBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vcPaidBalance")) + credit_amount)
+            entitlement["updatedAt"] = now.isoformat()
+            _INMEMORY_ENTITLEMENTS[safe_uid] = entitlement
+            if tx_id:
+                _INMEMORY_WALLET_TRANSACTIONS[tx_id] = {**tx_payload, "id": tx_id}
+            return True, entitlement
+
+    ent_ref = _FIRESTORE_DB.collection("entitlements").document(safe_uid)
+    tx_ref = _FIRESTORE_DB.collection("wallet_transactions").document(tx_id or f"wallet_{uuid.uuid4().hex}")
+    transaction = _FIRESTORE_DB.transaction()
+
+    @firebase_firestore.transactional
+    def _apply(transaction_obj: Any) -> tuple[bool, dict[str, Any]]:
+        if tx_id:
+            existing_tx = tx_ref.get(transaction=transaction_obj)
+            if existing_tx.exists:
+                current_doc = ent_ref.get(transaction=transaction_obj)
+                current_ent = _normalize_entitlement_wallet(
+                    current_doc.to_dict() if current_doc.exists else _default_entitlement(safe_uid),
+                    now,
+                )
+                return False, current_ent
+
+        ent_doc = ent_ref.get(transaction=transaction_obj)
+        entitlement = _normalize_entitlement_wallet(ent_doc.to_dict() if ent_doc.exists else _default_entitlement(safe_uid), now)
+        entitlement["vcPaidBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vcPaidBalance")) + credit_amount)
+        entitlement["updatedAt"] = now.isoformat()
+        transaction_obj.set(ent_ref, entitlement, merge=True)
+        transaction_obj.set(tx_ref, {**tx_payload, "id": tx_ref.id}, merge=True)
+        return True, entitlement
+
+    return _apply(transaction)
+
+
 def _normalize_dubbing_processing_profile(raw_profile: str, default: str = "cpu_quality") -> str:
     token = str(raw_profile or "").strip().lower().replace("-", "_")
     if token not in {"cpu_quality", "cpu_balanced", "cpu_fast"}:
@@ -13983,7 +15889,8 @@ def _select_dubbing_qos_state(
 
 
 def _effective_tts_gpu_mode(engine: str, requested_gpu_mode: bool) -> bool:
-    return bool(requested_gpu_mode) and str(engine or "").strip().upper() != "KOKORO"
+    normalized = _resolve_internal_engine_token(engine) or "PRIME"
+    return bool(requested_gpu_mode) and normalized != "DUNO"
 
 
 def _trim_media_to_clip_window(
@@ -14017,6 +15924,39 @@ def _trim_media_to_clip_window(
     if not output_path.exists() or output_path.stat().st_size <= 0:
         raise RuntimeError("clip_window_trim_failed")
     return output_path
+
+
+def _resolve_openvoice_trim_window(
+    *,
+    start_sec_raw: Any,
+    end_sec_raw: Any,
+) -> tuple[bool, int, int, str, Optional[float], Optional[float]]:
+    start_provided = start_sec_raw is not None and str(start_sec_raw).strip() != ""
+    end_provided = end_sec_raw is not None and str(end_sec_raw).strip() != ""
+    if not start_provided and not end_provided:
+        return False, 0, 0, "", None, None
+    if start_provided != end_provided:
+        raise HTTPException(
+            status_code=400,
+            detail="Both source trim start and source trim end are required when trimming source audio.",
+        )
+    try:
+        start_sec = float(start_sec_raw)
+        end_sec = float(end_sec_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Source trim start/end must be valid numbers.") from exc
+    if not math.isfinite(start_sec) or not math.isfinite(end_sec):
+        raise HTTPException(status_code=400, detail="Source trim start/end must be finite numbers.")
+    if start_sec < 0 or end_sec < 0:
+        raise HTTPException(status_code=400, detail="Source trim start/end must be >= 0.")
+    if end_sec <= start_sec:
+        raise HTTPException(status_code=400, detail="Source trim end must be greater than source trim start.")
+    start_ms = int(round(start_sec * 1000.0))
+    end_ms = int(round(end_sec * 1000.0))
+    if end_ms <= start_ms:
+        raise HTTPException(status_code=400, detail="Source trim end must be greater than source trim start.")
+    trim_window_key = f"{start_ms}:{end_ms}"
+    return True, start_ms, end_ms, trim_window_key, start_sec, end_sec
 
 
 def _resolve_runtime_log_service(raw_service: str) -> str:
@@ -14106,10 +16046,52 @@ def _run_tts_switch_with_retry(
     raise RuntimeError(" | ".join(failures))
 
 
-def _probe_runtime_health(url: str, timeout_sec: float = 2.5) -> tuple[bool, str]:
-    req = urllib_request.Request(url, method="GET", headers={"Accept": "application/json"})
+def _runtime_health_probe_timeout_sec(url: str) -> float:
+    parsed = urlparse(str(url or "").strip())
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return VF_TTS_STATUS_PROBE_TIMEOUT_LOCAL_SEC
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return VF_TTS_STATUS_PROBE_TIMEOUT_LOCAL_SEC
+    return VF_TTS_STATUS_PROBE_TIMEOUT_REMOTE_SEC
+
+
+def _runtime_bearer_auth_header_value(token: str) -> str:
+    safe_token = str(token or "").strip()
+    if not safe_token:
+        return ""
+    if safe_token.lower().startswith("bearer "):
+        return safe_token
+    return f"Bearer {safe_token}"
+
+
+def _duno_runtime_auth_header_value() -> str:
+    token = str(DUNO_RUNTIME_TOKEN or "").strip()
+    return _runtime_bearer_auth_header_value(token)
+
+
+def _runtime_auth_headers_for_url(url: str, *, include_accept: bool = False) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if include_accept:
+        headers["Accept"] = "application/json"
+    safe_url = str(url or "").strip()
+    duno_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    if duno_base and safe_url.lower().startswith(duno_base.lower()):
+        auth_value = _duno_runtime_auth_header_value()
+        if auth_value:
+            headers["Authorization"] = auth_value
+    return headers
+
+
+def _probe_runtime_health(url: str, timeout_sec: float | None = None) -> tuple[bool, str]:
+    request_timeout = float(timeout_sec) if timeout_sec is not None else float(_runtime_health_probe_timeout_sec(url))
+    req = urllib_request.Request(
+        url,
+        method="GET",
+        headers=_runtime_auth_headers_for_url(url, include_accept=True),
+    )
     try:
-        with urllib_request.urlopen(req, timeout=timeout_sec) as response:
+        with urllib_request.urlopen(req, timeout=request_timeout) as response:
             payload_bytes = response.read()
             payload: Any = None
             if payload_bytes:
@@ -14166,7 +16148,10 @@ def _wait_for_runtime_online(
     waited_ms = 0
     last_detail = "Runtime is still starting."
     while waited_ms <= safe_timeout_ms:
-        online, detail = _probe_runtime_health(url, timeout_sec=2.5)
+        online, detail = _probe_runtime_health(
+            url,
+            timeout_sec=_runtime_health_probe_timeout_sec(url),
+        )
         last_detail = detail
         if online:
             return True, detail, waited_ms
@@ -14177,10 +16162,18 @@ def _wait_for_runtime_online(
     return False, last_detail, waited_ms
 
 
-def _fetch_runtime_json(url: str, timeout_sec: float = 3.0) -> tuple[bool, Any, str]:
-    req = urllib_request.Request(url, method="GET", headers={"Accept": "application/json"})
+def _fetch_runtime_json(url: str, timeout_sec: float | None = None) -> tuple[bool, Any, str]:
+    request_timeout = float(timeout_sec) if timeout_sec is not None else max(
+        3.0,
+        float(_runtime_health_probe_timeout_sec(url)),
+    )
+    req = urllib_request.Request(
+        url,
+        method="GET",
+        headers=_runtime_auth_headers_for_url(url, include_accept=True),
+    )
     try:
-        with urllib_request.urlopen(req, timeout=timeout_sec) as response:
+        with urllib_request.urlopen(req, timeout=request_timeout) as response:
             body = response.read()
             if not body:
                 return False, None, "empty response"
@@ -14197,11 +16190,12 @@ def _fetch_runtime_json(url: str, timeout_sec: float = 3.0) -> tuple[bool, Any, 
 
 
 def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    safe_engine = _resolve_internal_engine_token(engine) or "PRIME"
     ready = bool((health_payload or {}).get("ok", False))
-    runtime = str((health_payload or {}).get("engine", "")).strip() or f"{engine.lower()}-runtime"
+    runtime = str((health_payload or {}).get("engine", "")).strip() or f"{safe_engine.lower()}-runtime"
     model = (health_payload or {}).get("model")
     default_chunking: dict[str, Any]
-    if engine == "KOKORO":
+    if safe_engine == "DUNO":
         default_chunking = {
             "hi": {"hard_char_cap": 200, "target_char_cap": 150, "max_words_per_chunk": 34},
             "default": {"hard_char_cap": 180, "target_char_cap": 140, "max_words_per_chunk": 32},
@@ -14212,12 +16206,12 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
             "default": {"hard_char_cap": 360, "target_char_cap": 260, "max_words_per_chunk": 56},
         }
     return {
-        "engine": engine,
+        "engine": safe_engine,
         "runtime": runtime,
         "ready": ready,
-        "languages": ["en", "hi"] if engine == "KOKORO" else ["multilingual"],
+        "languages": ["en", "hi"] if safe_engine == "DUNO" else ["multilingual"],
         "speed": {"min": 0.7, "max": 1.35, "default": 1.0},
-        "supportsEmotion": engine == "KOKORO",
+        "supportsEmotion": safe_engine == "DUNO",
         "supportsStyle": False,
         "supportsSpeakerWav": False,
         "model": model,
@@ -14225,7 +16219,7 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
         "emotionCount": (health_payload or {}).get("emotionCount"),
         "metadata": {
             "source": "fallback",
-            "maxWordsPerRequest": 80 if engine == "KOKORO" else 5000,
+            "maxWordsPerRequest": 80 if safe_engine == "DUNO" else 5000,
             "segmentationProfile": "latency-balanced",
             "chunking": default_chunking,
         },
@@ -14267,10 +16261,18 @@ def _probe_runtime_capabilities(engine: str, timeout_sec: float = 3.0) -> dict[s
     return fallback
 
 
-def _build_source_separation_cache_key(source_path: Path, model_name: str, device_hint: str = "") -> str:
+def _build_source_separation_cache_key(
+    source_path: Path,
+    model_name: str,
+    device_hint: str = "",
+    trim_window_key: str = "",
+) -> str:
     source_hash = _hash_file(source_path)
     safe_device_hint = str(device_hint or SEPARATION_DEVICE).strip().lower() or SEPARATION_DEVICE.lower()
-    seed = f"{source_hash}:{model_name}:{SEPARATION_SAMPLE_RATE}:{safe_device_hint}".encode("utf-8")
+    safe_trim_window_key = str(trim_window_key or "").strip()
+    seed = (
+        f"{source_hash}:{model_name}:{SEPARATION_SAMPLE_RATE}:{safe_device_hint}:{safe_trim_window_key}"
+    ).encode("utf-8")
     return hashlib.sha256(seed).hexdigest()[:40]
 
 
@@ -14279,13 +16281,20 @@ def _ensure_source_separation(
     model_name: str,
     *,
     device_preference: Optional[str] = None,
+    trim_window_key: str = "",
 ) -> tuple[Path, Path, str]:
     if not source_separation_runtime.ensure_available():
         raise RuntimeError(source_separation_runtime.import_error or "Demucs runtime unavailable.")
 
     normalized_model = (model_name or "").strip() or SEPARATION_MODEL
     normalized_device_preference = str(device_preference or SEPARATION_DEVICE).strip().lower() or SEPARATION_DEVICE.lower()
-    cache_key = _build_source_separation_cache_key(source_path, normalized_model, normalized_device_preference)
+    safe_trim_window_key = str(trim_window_key or "").strip()
+    cache_key = _build_source_separation_cache_key(
+        source_path,
+        normalized_model,
+        normalized_device_preference,
+        safe_trim_window_key,
+    )
     cache_dir = SEPARATION_CACHE_DIR / cache_key
     speech_path = cache_dir / "speech.wav"
     background_path = cache_dir / "background.wav"
@@ -14373,6 +16382,7 @@ def _ensure_source_separation(
                 "device": device,
                 "sampleRate": 48000,
                 "cacheKey": cache_key,
+                "trimWindowKey": safe_trim_window_key,
                 "updatedAt": datetime.now(timezone.utc).isoformat(),
             }
             meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -15570,6 +17580,25 @@ class ReaderSessionSavepointRequest(BaseModel):
     musicTrackId: Optional[str] = None
     audioEngine: Optional[str] = None
     restoreState: Optional[dict[str, Any]] = None
+
+
+class ReaderQueuePrimeRequest(BaseModel):
+    mode: Optional[str] = None
+    lookaheadUnits: Optional[int] = None
+    fromActiveIndex: Optional[int] = None
+
+
+class ReaderAdminCatalogPatchRequest(BaseModel):
+    title: Optional[str] = None
+    author: Optional[str] = None
+    regionId: Optional[str] = None
+    license: Optional[str] = None
+    ownershipBasis: Optional[str] = None
+    direction: Optional[str] = None
+    directionOverride: Optional[str] = None
+    summary: Optional[str] = None
+    collectionLabel: Optional[str] = None
+    publishState: Optional[str] = None
 
 
 def _reader_safe_id(value: str, fallback: str) -> str:
@@ -16982,6 +19011,350 @@ def _reader_catalog_cache_set(cache_key: str, items: list[dict[str, Any]]) -> li
     return safe_items
 
 
+def _reader_catalog_cache_clear() -> None:
+    with _INMEMORY_LOCK:
+        _INMEMORY_READER_CATALOG_CACHE.clear()
+
+
+def _reader_iso_to_ms(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        numeric = int(value)
+        if numeric > 10_000_000_000:
+            return numeric
+        if numeric > 0:
+            return numeric * 1000
+        return 0
+    token = str(value or "").strip()
+    if not token:
+        return 0
+    try:
+        if token.endswith("Z"):
+            token = token[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(token)
+    except Exception:
+        try:
+            return int(float(token))
+        except Exception:
+            return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _reader_resolve_allowed_path(
+    base_dir: Path | str,
+    relative_path: Path | str,
+    *,
+    error_status: int = 403,
+    error_detail: str = "Reader asset path is not allowed.",
+) -> Path:
+    base_path = Path(base_dir).resolve()
+    safe_relative = Path(str(relative_path or "").replace("\\", "/"))
+    candidate = safe_relative if safe_relative.is_absolute() else (base_path / safe_relative)
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(base_path)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=error_status, detail=error_detail) from exc
+    return resolved
+
+
+def _reader_fallback_cover_url(*, content_kind: str = "book", surface: str = "") -> str:
+    safe_kind = normalize_reader_content_kind(content_kind)
+    safe_surface = str(surface or "").strip().lower()
+    if safe_kind == "comic":
+        return "/reader/assets/fallback-covers/comic.svg"
+    if safe_surface == "uploads":
+        return "/reader/assets/fallback-covers/upload-book.svg"
+    return "/reader/assets/fallback-covers/book.svg"
+
+
+def _reader_upload_cover_url(upload_item: dict[str, Any]) -> str:
+    safe_item = dict(upload_item or {})
+    safe_content_kind = normalize_reader_content_kind(safe_item.get("contentKind"))
+    upload_id = str(safe_item.get("id") or "").strip()
+    cover_url = str(safe_item.get("coverUrl") or "").strip()
+    if cover_url:
+        return cover_url
+    if safe_content_kind == "comic":
+        manifest = _reader_read_json_artifact(str(safe_item.get("manifestPath") or ""))
+        if isinstance(manifest, list):
+            for row in manifest:
+                if not isinstance(row, dict):
+                    continue
+                image_path = str(row.get("imagePath") or "").strip()
+                image_url = str(row.get("imageUrl") or row.get("remoteImageUrl") or "").strip()
+                if image_url:
+                    return image_url
+                if image_path:
+                    route = _reader_upload_asset_url(upload_id, image_path)
+                    if route:
+                        return route
+    return _reader_fallback_cover_url(content_kind=safe_content_kind, surface="uploads")
+
+
+def _reader_admin_catalog_collection():
+    return _firestore_collection(READER_ADMIN_CATALOG_COLLECTION)
+
+
+def _reader_admin_catalog_publish_state(value: object) -> str:
+    return "draft" if str(value or "").strip().lower() == "draft" else "published"
+
+
+def _reader_admin_catalog_normalize_item(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = dict(payload or {})
+    safe_item_id = str(safe_payload.get("id") or "").strip() or f"reader_admin_{uuid.uuid4().hex}"
+    region = reader_region(safe_payload.get("regionId") or "english")
+    content_kind = normalize_reader_content_kind(safe_payload.get("contentKind") or safe_payload.get("contentType"))
+    publish_state = _reader_admin_catalog_publish_state(safe_payload.get("publishState"))
+    source_meta = dict(safe_payload.get("sourceMeta") or {})
+    summary = collapse_whitespace(safe_payload.get("summary") or safe_payload.get("excerpt") or "")[:800]
+    if not summary:
+        summary = "Open to preview details and launch the player."
+    collection_label = str(safe_payload.get("collectionLabel") or "").strip()
+    if not collection_label:
+        collection_label = "Recently imported" if str(safe_payload.get("surface") or "").strip() == "uploads" else "Reader Catalog"
+    cover_url = str(safe_payload.get("coverUrl") or "").strip()
+    if not cover_url:
+        cover_url = _reader_fallback_cover_url(content_kind=content_kind, surface=str(safe_payload.get("surface") or ""))
+    sample_text = collapse_whitespace(safe_payload.get("sampleText") or source_meta.get("sampleText") or "")
+    content_url = str(safe_payload.get("contentUrl") or source_meta.get("contentUrl") or "").strip()
+    archive_txt_url = str(safe_payload.get("archiveTxtUrl") or source_meta.get("archiveTxtUrl") or "").strip()
+    panel_manifest = source_meta.get("panelManifest") if isinstance(source_meta.get("panelManifest"), list) else None
+    if not panel_manifest and isinstance(source_meta.get("pageRows"), list):
+        panel_manifest = list(source_meta.get("pageRows") or [])
+    if not sample_text:
+        sample_text = str(source_meta.get("sampleText") or "").strip()
+    return {
+        "id": safe_item_id,
+        "title": str(safe_payload.get("title") or "Untitled").strip() or "Untitled",
+        "author": str(safe_payload.get("author") or "Unknown").strip() or "Unknown",
+        "regionId": str(region.get("id") or "english"),
+        "regionLabel": str(region.get("label") or "English"),
+        "contentKind": content_kind,
+        "surface": "books" if content_kind == "book" else "comics",
+        "provider": str(safe_payload.get("provider") or "voiceflow_admin_catalog").strip() or "voiceflow_admin_catalog",
+        "license": str(safe_payload.get("license") or "").strip(),
+        "sourceUrl": str(safe_payload.get("sourceUrl") or "").strip(),
+        "contentUrl": content_url,
+        "archiveTxtUrl": archive_txt_url,
+        "summary": summary,
+        "excerpt": summary,
+        "sampleText": sample_text,
+        "coverUrl": cover_url,
+        "supportsReadHere": bool(safe_payload.get("supportsReadHere") or sample_text or content_url or archive_txt_url),
+        "sourceMeta": {
+            **source_meta,
+            "panelManifest": [dict(item) for item in list(panel_manifest or []) if isinstance(item, dict)],
+        },
+        "createdAt": str(safe_payload.get("createdAt") or _safe_now_iso()).strip(),
+        "updatedAt": str(safe_payload.get("updatedAt") or _safe_now_iso()).strip(),
+        "direction": str(safe_payload.get("direction") or "").strip(),
+        "readingModeDefault": str(safe_payload.get("readingModeDefault") or "").strip(),
+        "collectionLabel": collection_label,
+        "publishState": publish_state,
+        "publishedAt": str(safe_payload.get("publishedAt") or (_safe_now_iso() if publish_state == "published" else "")).strip(),
+        "ownershipBasis": _reader_normalize_ownership_basis(safe_payload.get("ownershipBasis")),
+        "stats": dict(safe_payload.get("stats") or {}),
+    }
+
+
+def _reader_admin_catalog_write(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _reader_admin_catalog_normalize_item(payload)
+    item_id = str(normalized.get("id") or "").strip()
+    normalized["updatedAt"] = _safe_now_iso()
+    if str(normalized.get("publishState") or "").strip().lower() == "published" and not str(normalized.get("publishedAt") or "").strip():
+        normalized["publishedAt"] = _safe_now_iso()
+    collection = _reader_admin_catalog_collection()
+    if collection is None:
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_ADMIN_CATALOG[item_id] = dict(normalized)
+    else:
+        collection.document(item_id).set(normalized, merge=True)
+        with _INMEMORY_LOCK:
+            _INMEMORY_READER_ADMIN_CATALOG[item_id] = dict(normalized)
+    _reader_catalog_cache_clear()
+    return dict(normalized)
+
+
+def _reader_admin_catalog_get(item_id: str, *, include_drafts: bool = False) -> Optional[dict[str, Any]]:
+    safe_item_id = str(item_id or "").strip()
+    if not safe_item_id:
+        return None
+    with _INMEMORY_LOCK:
+        payload = dict(_INMEMORY_READER_ADMIN_CATALOG.get(safe_item_id) or {})
+    if not payload:
+        collection = _reader_admin_catalog_collection()
+        if collection is not None:
+            try:
+                doc = collection.document(safe_item_id).get()
+            except Exception:
+                doc = None
+            if doc is not None and bool(getattr(doc, "exists", False)):
+                payload = dict(doc.to_dict() or {})
+                with _INMEMORY_LOCK:
+                    _INMEMORY_READER_ADMIN_CATALOG[safe_item_id] = dict(payload)
+    if not payload:
+        return None
+    if not include_drafts and _reader_admin_catalog_publish_state(payload.get("publishState")) != "published":
+        return None
+    return dict(payload)
+
+
+def _reader_admin_catalog_list(*, include_drafts: bool = False) -> list[dict[str, Any]]:
+    with _INMEMORY_LOCK:
+        memory_items = [dict(item) for item in _INMEMORY_READER_ADMIN_CATALOG.values()]
+    collection = _reader_admin_catalog_collection()
+    if collection is not None:
+        try:
+            docs = collection.stream()
+            firestore_items = [dict(doc.to_dict() or {}) for doc in docs]
+        except Exception:
+            firestore_items = []
+        for item in firestore_items:
+            item_id = str(item.get("id") or "").strip()
+            if item_id:
+                with _INMEMORY_LOCK:
+                    _INMEMORY_READER_ADMIN_CATALOG[item_id] = dict(item)
+        if firestore_items:
+            memory_items = [dict(item) for item in _INMEMORY_READER_ADMIN_CATALOG.values()]
+    items = [
+        dict(item)
+        for item in memory_items
+        if include_drafts or _reader_admin_catalog_publish_state(item.get("publishState")) == "published"
+    ]
+    items.sort(
+        key=lambda item: (
+            _reader_iso_to_ms(item.get("updatedAtMs") or item.get("updatedAt")),
+            _reader_iso_to_ms(item.get("publishedAtMs") or item.get("publishedAt")),
+            _reader_iso_to_ms(item.get("createdAtMs") or item.get("createdAt")),
+        ),
+        reverse=True,
+    )
+    return items
+
+
+def _reader_admin_catalog_delete(item_id: str) -> bool:
+    safe_item_id = str(item_id or "").strip()
+    if not safe_item_id:
+        return False
+    removed = False
+    with _INMEMORY_LOCK:
+        removed = safe_item_id in _INMEMORY_READER_ADMIN_CATALOG
+        _INMEMORY_READER_ADMIN_CATALOG.pop(safe_item_id, None)
+    collection = _reader_admin_catalog_collection()
+    if collection is not None:
+        try:
+            collection.document(safe_item_id).delete()
+            removed = True
+        except Exception:
+            pass
+    if removed:
+        _reader_catalog_cache_clear()
+    return removed
+
+
+def _reader_admin_catalog_public_items(region_id: str, *, surface: str, search_query: str = "") -> list[dict[str, Any]]:
+    safe_surface = normalize_reader_surface(surface)
+    safe_search = _reader_search_term(search_query)
+    items: list[dict[str, Any]] = []
+    for item in _reader_admin_catalog_list(include_drafts=False):
+        item_content_kind = normalize_reader_content_kind(item.get("contentKind"))
+        if safe_surface == "books" and item_content_kind != "book":
+            continue
+        if safe_surface == "comics" and item_content_kind != "comic":
+            continue
+        if safe_surface == "uploads" or safe_surface not in {"books", "comics"} and safe_surface != "all":
+            continue
+        search_blob = safe_search.lower()
+        if search_blob:
+            haystack = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("author") or ""),
+                    str(item.get("summary") or ""),
+                    str(item.get("provider") or ""),
+                    str(item.get("collectionLabel") or ""),
+                ]
+            ).lower()
+            if search_blob not in haystack:
+                continue
+        items.append(_commercial_annotate_item(normalize_reader_catalog_item(item)))
+    return items
+
+
+def _reader_dashboard_payload(library: dict[str, Any]) -> dict[str, Any]:
+    safe_library = dict(library or {})
+    shelves = dict(safe_library.get("shelves") or {})
+    continue_reading = [dict(item) for item in list(shelves.get("continueReading") or []) if isinstance(item, dict)]
+    trending = [dict(item) for item in list(shelves.get("trending") or []) if isinstance(item, dict)]
+    new_arrivals = [dict(item) for item in list(shelves.get("newArrivals") or []) if isinstance(item, dict)]
+    recently_imported = [dict(item) for item in list(shelves.get("recentlyImported") or []) if isinstance(item, dict)]
+    spotlight = None
+    for candidate in [*continue_reading, *trending, *new_arrivals, *recently_imported, *list(safe_library.get("items") or [])]:
+        if isinstance(candidate, dict) and str(candidate.get("id") or "").strip():
+            spotlight = dict(candidate)
+            break
+    active_session = safe_library.get("activeSession")
+    active_sessions = list(safe_library.get("activeSessions") or [])
+    active_session_summary = (
+        dict(active_session)
+        if isinstance(active_session, dict)
+        else dict(active_sessions[0])
+        if active_sessions and isinstance(active_sessions[0], dict)
+        else None
+    )
+    counts = dict(safe_library.get("counts") or {})
+    highlights = {
+        "library": int(counts.get("visible") or len(list(safe_library.get("items") or [])) or 0),
+        "resumable": int(counts.get("resumable") or 0),
+        "uploads": int(counts.get("uploads") or 0),
+        "comics": int(counts.get("comics") or 0),
+        "books": int(counts.get("books") or 0),
+    }
+    return {
+        "library": safe_library,
+        "mission": {
+            "title": "Play any novel, manga, or comic with AI TTS",
+            "subtitle": "Jump back into active sessions.",
+            "ctaText": "Open your library and press Play",
+        },
+        "highlights": highlights,
+        "spotlight": spotlight,
+        "shelves": {
+            "continueReading": continue_reading,
+            "trending": trending,
+            "newArrivals": new_arrivals,
+            "recentlyImported": recently_imported,
+        },
+        "activeSessionSummary": active_session_summary,
+        **_commercial_policy_payload([item for item in list(safe_library.get("items") or []) if isinstance(item, dict)]),
+    }
+
+
+def _reader_admin_catalog_placeholder_svg(title: str, subtitle: str = "") -> bytes:
+    safe_title = str(title or "Reader Catalog").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe_subtitle = str(subtitle or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1536" viewBox="0 0 1024 1536">'
+        f'<rect width="1024" height="1536" fill="#111827"/>'
+        f'<rect x="72" y="72" width="880" height="1392" rx="40" fill="#1f2937" stroke="#374151" stroke-width="4"/>'
+        f'<text x="512" y="720" fill="#f9fafb" font-family="Inter, Arial, sans-serif" font-size="64" text-anchor="middle">{safe_title}</text>'
+        f'<text x="512" y="820" fill="#9ca3af" font-family="Inter, Arial, sans-serif" font-size="32" text-anchor="middle">{safe_subtitle}</text>'
+        f'</svg>'
+    ).encode("utf-8")
+
+
+def _reader_admin_catalog_store_public_asset(item_id: str, file_name: str, payload: bytes, mime_type: str) -> tuple[str, str]:
+    safe_item_id = _reader_safe_id(item_id, "reader_admin_catalog")
+    safe_file_name = _reader_safe_id(file_name, "asset")
+    source_url = f"reader_admin_catalog:{safe_item_id}:{safe_file_name}:{hashlib.sha256(bytes(payload or b'')).hexdigest()[:12]}"
+    absolute_path = _reader_cache_remote_asset(source_url, bytes(payload or b""), mime_type)
+    return absolute_path, _reader_remote_asset_url(absolute_path)
+
+
 def _reader_search_term(raw_value: object) -> str:
     safe = re.sub(r"\s+", " ", str(raw_value or "").strip())
     return safe[:120]
@@ -17705,12 +20078,14 @@ def _reader_catalog_items(region_id: str, *, surface: str, search_query: str = "
             safe_region_id,
             content_kind="comic" if safe_surface == "comics" else "book",
         )
+        admin_items = _reader_admin_catalog_public_items(safe_region_id, surface=safe_surface, search_query=safe_search)
+        items = _reader_merge_catalog_items(discovery, admin_items)
         if not safe_search:
-            return discovery
+            return items
         search_blob = safe_search.lower()
         return [
             item
-            for item in discovery
+            for item in items
             if search_blob in " ".join(
                 [
                     str(item.get("title") or ""),
@@ -17733,6 +20108,7 @@ def _reader_catalog_items(region_id: str, *, surface: str, search_query: str = "
         if not safe_search:
             comic_factories.append(lambda: fallback_catalog_items(safe_region_id, content_kind="comic"))
         items = _reader_merge_catalog_items(*_reader_collect_catalog_sources(comic_factories))
+        items = _reader_merge_catalog_items(items, _reader_admin_catalog_public_items(safe_region_id, surface=safe_surface, search_query=safe_search))
         return _reader_catalog_cache_set(cache_key, items)
     book_factories: list[Callable[[], list[dict[str, Any]]]] = [
         lambda: _reader_fetch_gutendex_catalog(safe_region_id, search_query=safe_search),
@@ -17747,13 +20123,17 @@ def _reader_catalog_items(region_id: str, *, surface: str, search_query: str = "
     if not safe_search:
         book_factories.append(lambda: fallback_catalog_items(safe_region_id, content_kind="book"))
     items = _reader_merge_catalog_items(*_reader_collect_catalog_sources(book_factories))
+    items = _reader_merge_catalog_items(items, _reader_admin_catalog_public_items(safe_region_id, surface=safe_surface, search_query=safe_search))
     return _reader_catalog_cache_set(cache_key, items)
 
 
-def _reader_catalog_lookup(item_id: str) -> Optional[dict[str, Any]]:
+def _reader_catalog_lookup(item_id: str, *, include_drafts: bool = False) -> Optional[dict[str, Any]]:
     safe_item_id = str(item_id or "").strip()
     if not safe_item_id:
         return None
+    admin_item = _reader_admin_catalog_get(safe_item_id, include_drafts=include_drafts)
+    if admin_item:
+        return admin_item
     if VF_READER_IMPORTS_ONLY:
         for region in reader_regions():
             safe_region_id = str(region.get("id") or "english")
@@ -18188,6 +20568,7 @@ def _reader_normalize_upload_item(payload: dict[str, Any]) -> dict[str, Any]:
         "collectionLabel": "Recently imported",
         "readingModeDefault": reading_mode_default,
         "sourceLanguage": source_language,
+        "coverUrl": _reader_upload_cover_url(safe_payload),
         "stats": {
             "fileCount": int(stats.get("fileCount") or len(list(safe_payload.get("fileNames") or []))),
             "totalChars": int(stats.get("totalChars") or 0),
@@ -18379,6 +20760,7 @@ def _reader_resume_payload(progress: dict[str, Any], *, session_id: str = "") ->
     consumed_chars = max(0, int(safe_progress.get("consumedChars") or 0))
     current_panel_index = max(0, int(safe_progress.get("currentPanelIndex") or 0))
     updated_at = str(safe_progress.get("updatedAt") or "").strip()
+    updated_at_ms = int(safe_progress.get("updatedAtMs") or 0)
     has_progress = consumed_chars > 0 or current_panel_index > 0
     progress_pct = float(safe_progress.get("progressPct") or 0)
     restore_state = _reader_build_restore_state(
@@ -18393,6 +20775,7 @@ def _reader_resume_payload(progress: dict[str, Any], *, session_id: str = "") ->
         "currentPanelIndex": current_panel_index,
         "progressPct": progress_pct,
         "updatedAt": updated_at,
+        "updatedAtMs": updated_at_ms,
         "sessionId": str(session_id or "").strip(),
         "restoreState": restore_state,
     }
@@ -18565,6 +20948,13 @@ def _reader_decorate_catalog_item(
     safe_item = dict(item or {})
     safe_content_kind = normalize_reader_content_kind(safe_item.get("contentKind"))
     safe_surface = normalize_reader_surface(safe_item.get("surface") or ("comics" if safe_content_kind == "comic" else "books"))
+    safe_item["title"] = str(safe_item.get("title") or "Untitled").strip() or "Untitled"
+    safe_item["author"] = str(safe_item.get("author") or "Unknown").strip() or "Unknown"
+    safe_item["summary"] = str(safe_item.get("summary") or safe_item.get("excerpt") or "Open to preview details and launch the player.").strip()
+    safe_item["coverUrl"] = str(
+        safe_item.get("coverUrl")
+        or _reader_fallback_cover_url(content_kind=safe_content_kind, surface=safe_surface)
+    ).strip()
     work_key = f"{'upload' if safe_surface == 'uploads' else 'catalog'}:{str(safe_item.get('id') or '').strip()}"
     if isinstance(progress_lookup, dict):
         progress = dict(progress_lookup.get(work_key) or {})
@@ -18579,7 +20969,9 @@ def _reader_decorate_catalog_item(
     if safe_content_kind == "book" and int(stats.get("totalChars") or 0) > 0:
         resume["progressPct"] = round((resume["consumedChars"] / max(1, int(stats["totalChars"]))) * 100, 2)
     elif safe_content_kind == "comic" and int(stats.get("totalPanels") or 0) > 0:
-        resume["progressPct"] = round((resume["currentPanelIndex"] / max(1, int(stats["totalPanels"]))) * 100, 2)
+        total_panels = max(1, int(stats["totalPanels"]))
+        current_panel_index = max(0, int(resume.get("currentPanelIndex") or 0))
+        resume["progressPct"] = round((min(total_panels, current_panel_index + 1) / total_panels) * 100, 2)
     if live_session:
         readiness = _reader_session_readiness(live_session)
         prep = _reader_normalize_prep(
@@ -18595,7 +20987,12 @@ def _reader_decorate_catalog_item(
             "label": "Ready to prepare" if supports_read_here else "Read-here unavailable",
             "playableItems": 0,
         }
-        prep = None
+        prep = _reader_normalize_prep(
+            None,
+            total_items=int(stats.get("totalPanels") or stats.get("totalChars") or 0),
+            default_state="ready" if supports_read_here else "blocked",
+            default_stage="audio",
+        )
     provider = str(safe_item.get("provider") or "catalog").strip().lower()
     collection_label = str(safe_item.get("collectionLabel") or "").strip()
     if not collection_label:
@@ -18642,7 +21039,7 @@ def _reader_decorate_catalog_item(
             "resume": resume,
             "sessionId": str(live_session.get("id") or ""),
             "readiness": readiness,
-            **({"prep": prep} if isinstance(prep, dict) else {}),
+            "prep": prep if isinstance(prep, dict) else _reader_normalize_prep(None, default_state="blocked", default_stage="audio"),
             "stats": stats,
             "sourceLanguage": source_language,
             "languageLabel": _reader_language_label(source_language),
@@ -18692,6 +21089,13 @@ def _reader_build_library_payload(uid: str, *, surface: str = "all", region_id: 
         if work_key and work_key not in session_lookup:
             session_lookup[work_key] = saved
         active_sessions.append(_reader_session_public_view(saved))
+    active_sessions.sort(
+        key=lambda item: (
+            _reader_iso_to_ms(item.get("updatedAtMs") or item.get("updatedAt")),
+            _reader_iso_to_ms(item.get("createdAtMs") or item.get("createdAt")),
+        ),
+        reverse=True,
+    )
     all_items_raw = [
         _reader_decorate_catalog_item(uid, item, progress_lookup=progress_lookup, session_lookup=session_lookup)
         for item in [*uploads, *books, *comics]
@@ -18711,13 +21115,20 @@ def _reader_build_library_payload(uid: str, *, surface: str = "all", region_id: 
     ]
     continue_reading.sort(
         key=lambda item: (
+            _reader_iso_to_ms(item.get("updatedAtMs") or (item.get("resume") or {}).get("updatedAtMs")),
+            _reader_iso_to_ms(item.get("updatedAt") or (item.get("resume") or {}).get("updatedAt")),
             float(((item.get("resume") or {}).get("progressPct") or 0)),
-            str(((item.get("resume") or {}).get("updatedAt") or "")),
-            str(item.get("updatedAt") or ""),
         ),
         reverse=True,
     )
-    new_arrivals = sorted(all_items, key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    new_arrivals = sorted(
+        all_items,
+        key=lambda item: (
+            _reader_iso_to_ms(item.get("updatedAtMs") or item.get("updatedAt") or item.get("createdAtMs") or item.get("createdAt")),
+            float(((item.get("resume") or {}).get("progressPct") or 0)),
+        ),
+        reverse=True,
+    )
     recently_imported = sorted(
         [item for item in all_items if str(item.get("surface") or "") == "uploads"],
         key=lambda item: str(item.get("createdAt") or ""),
@@ -18936,7 +21347,7 @@ def _reader_job_status_summary(uid: str, job_id: str) -> dict[str, Any]:
         return {
             "jobId": safe_job_id,
             "status": str(payload.get("status") or "queued"),
-            "engine": str(payload.get("engine") or "GEM"),
+            "engine": str(payload.get("engine") or "PRIME"),
             "chunkCursorNext": int(payload.get("chunkCursorNext") or 0),
             "playableChunks": int((live or {}).get("playableChunks") or 0),
             "playableDurationMs": int((live or {}).get("playableDurationMs") or 0),
@@ -19136,6 +21547,7 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
         source_language=source_language,
         target_language=target_language,
     )
+    safe_content_kind = normalize_reader_content_kind(safe_session.get("contentKind"))
     audio_engine = _reader_normalize_audio_engine(
         safe_session.get("audioEngine"),
         default="native_audio_dialog",
@@ -19147,6 +21559,10 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
     multi_speaker_enabled = _reader_normalize_multi_speaker_enabled(safe_session.get("multiSpeakerEnabled"), default=True)
     return {
         "id": str(safe_session.get("id") or ""),
+        "createdAtMs": int(safe_session.get("createdAtMs") or 0),
+        "updatedAtMs": int(safe_session.get("updatedAtMs") or 0),
+        "createdAt": str(safe_session.get("createdAt") or ""),
+        "updatedAt": str(safe_session.get("updatedAt") or ""),
         "title": str(safe_session.get("title") or "Untitled"),
         "contentKind": str(safe_session.get("contentKind") or "book"),
         "surface": str(safe_session.get("surface") or "books"),
@@ -19187,7 +21603,13 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
         "totalChars": total_chars,
         "currentPanelIndex": current_panel_index,
         "totalPanels": total_panels,
-        "progressPct": round((consumed_chars / total_chars) * 100, 2) if total_chars > 0 else round((current_panel_index / max(1, total_panels)) * 100, 2),
+        "progressPct": (
+            round((min(total_panels, current_panel_index + 1) / max(1, total_panels)) * 100, 2)
+            if safe_content_kind == "comic" and total_panels > 0
+            else round((consumed_chars / total_chars) * 100, 2)
+            if total_chars > 0
+            else round((min(total_panels, current_panel_index + 1) / max(1, total_panels)) * 100, 2)
+        ),
         "cachedChars": int(safe_session.get("cachedChars") or 0),
         "cacheLimitChars": int(READER_SESSION_CACHE_CHAR_LIMIT),
         "deleteAtMs": int(safe_session.get("deleteAtMs") or 0),
@@ -19209,7 +21631,7 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
             "vfPerChar": float(READER_BILLING_VF_PER_CHAR),
             "rule": "1 char = 1.5 VF",
             "label": "Reader pricing: 1 char = 1.5 VF",
-            "engine": "GEM",
+            "engine": "PRIME",
             "engineLabel": "Gemini 2.5 Flash TTS" if audio_engine != "native_audio_dialog" else "Gemini 2.5 Native Audio Dialog",
             "modelRouting": {
                 "primary": VF_READER_TTS_PRIMARY_MODEL,
@@ -19220,13 +21642,13 @@ def _reader_session_public_view(session: dict[str, Any]) -> dict[str, Any]:
                 "selected": audio_engine,
                 "status": audio_engine_status,
                 "tts_hd": {
-                    "engine": "GEM",
+                    "engine": "PRIME",
                     "label": "Gemini 2.5 Flash TTS",
                     "primaryModel": VF_READER_TTS_PRIMARY_MODEL,
                     "fallbackModel": VF_READER_TTS_FALLBACK_MODEL,
                 },
                 "native_audio_dialog": {
-                    "engine": "GEM",
+                    "engine": "PRIME",
                     "label": "Gemini 2.5 Native Audio Dialog",
                     "model": VF_READER_NATIVE_AUDIO_MODEL,
                     "enabled": bool(VF_READER_NATIVE_AUDIO_ENABLED),
@@ -19381,6 +21803,21 @@ def _reader_remote_comic_fallback_title(item: dict[str, Any]) -> str:
 def _reader_catalog_comic_page_sources(item: dict[str, Any]) -> list[str]:
     safe_item = normalize_reader_catalog_item(item)
     provider = str(safe_item.get("provider") or "").strip().lower()
+    if provider == "voiceflow_admin_catalog":
+        source_meta = dict(safe_item.get("sourceMeta") or {})
+        panel_manifest = source_meta.get("panelManifest") if isinstance(source_meta.get("panelManifest"), list) else []
+        page_sources: list[str] = []
+        for row in list(panel_manifest or []):
+            if not isinstance(row, dict):
+                continue
+            image_url = str(row.get("remoteImageUrl") or row.get("imageUrl") or "").strip()
+            if not image_url:
+                image_path = str(row.get("imagePath") or "").strip()
+                if image_path:
+                    image_url = _reader_remote_asset_url(image_path)
+            if image_url:
+                page_sources.append(image_url)
+        return page_sources
     if provider == "openverse":
         source_meta = dict(safe_item.get("sourceMeta") or {})
         image_url = (
@@ -19430,6 +21867,51 @@ def _reader_catalog_comic_page_sources(item: dict[str, Any]) -> list[str]:
 
 def _reader_catalog_comic_manifest(item: dict[str, Any]) -> list[dict[str, Any]]:
     safe_item = normalize_reader_catalog_item(item)
+    provider = str(safe_item.get("provider") or "").strip().lower()
+    if provider == "voiceflow_admin_catalog":
+        source_meta = dict(safe_item.get("sourceMeta") or {})
+        panel_manifest = source_meta.get("panelManifest") if isinstance(source_meta.get("panelManifest"), list) else []
+        if not panel_manifest:
+            return []
+        direction = _reader_reading_mode_to_direction(
+            safe_item.get("readingModeDefault") or safe_item.get("direction"),
+            content_kind="comic",
+        )
+        safe_direction = normalize_reader_direction(direction, content_kind="comic")
+        panels: list[dict[str, Any]] = []
+        for index, row in enumerate(list(panel_manifest or [])):
+            if not isinstance(row, dict):
+                continue
+            image_url = str(row.get("remoteImageUrl") or row.get("imageUrl") or "").strip()
+            if not image_url:
+                image_path = str(row.get("imagePath") or "").strip()
+                if image_path:
+                    image_url = _reader_remote_asset_url(image_path)
+            panels.append(
+                {
+                    "panelId": str(row.get("panelId") or f"panel_{index + 1:04d}"),
+                    "pageId": str(row.get("pageId") or f"page_{index + 1:04d}"),
+                    "index": index,
+                    "direction": safe_direction,
+                    "text": str(row.get("text") or row.get("displayText") or row.get("sourceText") or "").strip(),
+                    "sourceText": str(row.get("sourceText") or row.get("text") or "").strip(),
+                    "displayText": str(row.get("displayText") or row.get("text") or "").strip(),
+                    "translatedText": str(row.get("translatedText") or "").strip(),
+                    "translatedLanguage": str(row.get("translatedLanguage") or "").strip(),
+                    "translationStatus": str(row.get("translationStatus") or "pending").strip() or "pending",
+                    "speaker": str(row.get("speaker") or "Narrator").strip() or "Narrator",
+                    "emotion": str(row.get("emotion") or "").strip(),
+                    "sfx": list(row.get("sfx") or []),
+                    "estimatedReadMs": int(row.get("estimatedReadMs") or 0),
+                    "imageUrl": image_url,
+                    "remoteImageUrl": image_url,
+                    "audioJobId": str(row.get("audioJobId") or "").strip(),
+                    "audioStatus": str(row.get("audioStatus") or "idle").strip() or "idle",
+                    "purged": bool(row.get("purged")),
+                    "prepStatus": str(row.get("prepStatus") or "pending").strip() or "pending",
+                }
+            )
+        return panels
     page_sources = _reader_catalog_comic_page_sources(safe_item)
     if not page_sources:
         return []
@@ -19770,7 +22252,7 @@ def _reader_create_tts_job(
     speaker_voice_rows = [dict(item) for item in list(speaker_voices or []) if isinstance(item, dict)]
     inferred_mode = "multi_speaker" if len(speaker_voice_rows) >= 6 else "single_speaker"
     payload = {
-        "engine": "NEURAL2",
+        "engine": "VECTOR",
         "mode": inferred_mode,
         "text": str(text or "").strip(),
         "model": model,
@@ -20145,7 +22627,7 @@ def reader_legal_ack_status(request: Request) -> JSONResponse:
                 "vfPerChar": float(READER_BILLING_VF_PER_CHAR),
                 "rule": "1 char = 1.5 VF",
                 "label": "Reader pricing: 1 char = 1.5 VF",
-                "engine": "GEM",
+                "engine": "PRIME",
                 "engineLabel": "Gemini 2.5 Flash TTS",
                 "modelRouting": {
                     "primary": VF_READER_TTS_PRIMARY_MODEL,
@@ -20205,6 +22687,18 @@ def reader_library(
     uid = _require_request_uid(request)
     library = _reader_build_library_payload(uid, surface=surface, region_id=regionId, search_query=search)
     return JSONResponse({"ok": True, "library": library})
+
+
+@app.get("/reader/dashboard")
+def reader_dashboard(
+    request: Request,
+    surface: str = Query("all"),
+    regionId: str = Query("english"),
+    search: str = Query(""),
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    library = _reader_build_library_payload(uid, surface=surface, region_id=regionId, search_query=search)
+    return JSONResponse({"ok": True, "dashboard": _reader_dashboard_payload(library)})
 
 
 @app.get("/reader/catalog/items")
@@ -20301,7 +22795,7 @@ def reader_catalog_item_detail(item_id: str, request: Request) -> JSONResponse:
                 "vfPerChar": float(READER_BILLING_VF_PER_CHAR),
                 "rule": "1 char = 1.5 VF",
                 "label": "Reader pricing: 1 char = 1.5 VF",
-                "engine": "GEM",
+                "engine": "PRIME",
                 "engineLabel": "Gemini 2.5 Flash TTS",
                 "modelRouting": {
                     "primary": VF_READER_TTS_PRIMARY_MODEL,
@@ -20313,13 +22807,337 @@ def reader_catalog_item_detail(item_id: str, request: Request) -> JSONResponse:
     )
 
 
+@app.get("/admin/reader/catalog/items")
+def admin_reader_catalog_items(request: Request) -> JSONResponse:
+    _require_permission(request, PERM_OPS_READ)
+    return JSONResponse({"ok": True, "items": _reader_admin_catalog_list(include_drafts=True)})
+
+
+@app.get("/admin/reader/catalog/items/{item_id}")
+def admin_reader_catalog_item(item_id: str, request: Request) -> JSONResponse:
+    _require_permission(request, PERM_OPS_READ)
+    item = _reader_admin_catalog_get(item_id, include_drafts=True)
+    if not item:
+        raise HTTPException(status_code=404, detail="Reader admin catalog item not found.")
+    return JSONResponse({"ok": True, "item": item})
+
+
+@app.post("/admin/reader/catalog/items")
+async def admin_reader_catalog_create(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    title: str = Form(""),
+    author: str = Form(""),
+    contentType: str = Form("novel"),
+    ownershipBasis: str = Form("licensed"),
+    regionId: str = Form("english"),
+    license: str = Form(""),
+    summary: str = Form(""),
+    collectionLabel: str = Form("Reader Library"),
+    directionOverride: str = Form(""),
+    publishState: str = Form("published"),
+) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    safe_content_kind = normalize_reader_content_kind("comic" if str(contentType or "").strip().lower() == "manga" else contentType)
+    safe_region_id = str(reader_region(regionId).get("id") or "english")
+    safe_ownership_basis = _reader_normalize_ownership_basis(ownershipBasis, raise_on_invalid=False)
+    safe_publish_state = _reader_admin_catalog_publish_state(publishState)
+    safe_title = str(title or "").strip() or "Untitled"
+    safe_author = str(author or "").strip() or "Unknown"
+    safe_summary = collapse_whitespace(summary)[:800] or "Open to preview details and launch the player."
+    safe_collection_label = str(collectionLabel or "").strip() or "Reader Library"
+    safe_license = str(license or "").strip()
+    item_id = f"reader_admin_{uuid.uuid4().hex}"
+    safe_direction_override = str(directionOverride or "").strip()
+    if safe_content_kind != "comic":
+        safe_direction_override = ""
+    reading_mode_default = (
+        _reader_normalize_reading_mode(safe_direction_override or "document", content_kind="comic")
+        if safe_content_kind == "comic"
+        else "document"
+    )
+    direction_value = (
+        _reader_reading_mode_to_direction(reading_mode_default, content_kind="comic")
+        if safe_content_kind == "comic"
+        else normalize_reader_direction("vertical-scroll", content_kind="book")
+    )
+    panel_manifest: list[dict[str, Any]] = []
+    sample_text_parts: list[str] = []
+    cover_url = ""
+    file_names: list[str] = []
+    for index, upload in enumerate(list(files or [])):
+        safe_name = _safe_upload_name(upload.filename, f"file_{index + 1}")
+        file_names.append(safe_name)
+        payload = bytes(await upload.read())
+        suffix = Path(safe_name).suffix.lower()
+        mime_type = upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        if safe_content_kind == "comic":
+            if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+                asset_path, image_url = _reader_admin_catalog_store_public_asset(item_id, safe_name, payload, mime_type)
+                panel_manifest.append(
+                    {
+                        "panelId": f"panel_{len(panel_manifest) + 1:04d}",
+                        "pageId": f"page_{len(panel_manifest) + 1:04d}",
+                        "index": len(panel_manifest),
+                        "direction": direction_value,
+                        "text": Path(safe_name).stem.replace("_", " ").strip(),
+                        "sourceText": Path(safe_name).stem.replace("_", " ").strip(),
+                        "displayText": Path(safe_name).stem.replace("_", " ").strip(),
+                        "translatedText": "",
+                        "translatedLanguage": "",
+                        "translationStatus": "pending",
+                        "speaker": "Narrator",
+                        "emotion": "",
+                        "sfx": [],
+                        "estimatedReadMs": 0,
+                        "imagePath": asset_path,
+                        "imageUrl": image_url,
+                        "remoteImageUrl": image_url,
+                        "audioJobId": "",
+                        "audioStatus": "idle",
+                        "purged": False,
+                        "prepStatus": "pending",
+                    }
+                )
+                if not cover_url:
+                    cover_url = image_url
+            elif suffix == ".pdf":
+                rows = _reader_upload_page_rows_from_pdf(payload) or [{"page": 1, "text": safe_title}]
+                for row_index, row in enumerate(rows):
+                    page_number = int(row.get("page") or row_index + 1)
+                    placeholder = _reader_admin_catalog_placeholder_svg(safe_title, f"Page {page_number}")
+                    asset_path, image_url = _reader_admin_catalog_store_public_asset(
+                        item_id,
+                        f"{safe_name}-{page_number}.svg",
+                        placeholder,
+                        "image/svg+xml",
+                    )
+                    panel_text = str(row.get("text") or "").strip()
+                    panel_manifest.append(
+                        {
+                            "panelId": f"panel_{len(panel_manifest) + 1:04d}",
+                            "pageId": f"page_{len(panel_manifest) + 1:04d}",
+                            "index": len(panel_manifest),
+                            "direction": direction_value,
+                            "text": panel_text,
+                            "sourceText": panel_text,
+                            "displayText": panel_text,
+                            "translatedText": "",
+                            "translatedLanguage": "",
+                            "translationStatus": "pending",
+                            "speaker": "Narrator",
+                            "emotion": "",
+                            "sfx": [],
+                            "estimatedReadMs": 0,
+                            "imagePath": asset_path,
+                            "imageUrl": image_url,
+                            "remoteImageUrl": image_url,
+                            "audioJobId": "",
+                            "audioStatus": "idle",
+                            "purged": False,
+                            "prepStatus": "pending",
+                        }
+                    )
+                    if not cover_url:
+                        cover_url = image_url
+            elif suffix in {".txt", ".md", ".docx", ".epub"}:
+                if suffix in {".txt", ".md"}:
+                    sample_text_parts.append(payload.decode("utf-8", errors="replace"))
+                elif suffix == ".docx":
+                    sample_text_parts.append(_reader_extract_docx_text(payload))
+                elif suffix == ".epub":
+                    sample_text_parts.append(_reader_extract_epub_text(payload))
+                else:
+                    sample_text_parts.append(Path(safe_name).stem.replace("_", " "))
+        else:
+            if suffix in {".txt", ".md"}:
+                sample_text_parts.append(payload.decode("utf-8", errors="replace"))
+            elif suffix == ".docx":
+                sample_text_parts.append(_reader_extract_docx_text(payload))
+            elif suffix == ".epub":
+                sample_text_parts.append(_reader_extract_epub_text(payload))
+            elif suffix == ".pdf":
+                rows = _reader_upload_page_rows_from_pdf(payload)
+                sample_text_parts.extend([str(row.get("text") or "") for row in rows if str(row.get("text") or "").strip()])
+            elif suffix in {".png", ".jpg", ".jpeg", ".webp"} and not cover_url:
+                _, cover_url = _reader_admin_catalog_store_public_asset(item_id, safe_name, payload, mime_type)
+
+    if not cover_url:
+        placeholder_label = safe_title or safe_author or "Reader Catalog"
+        cover_url = _reader_admin_catalog_store_public_asset(
+            item_id,
+            f"{item_id}-cover.svg",
+            _reader_admin_catalog_placeholder_svg(placeholder_label, safe_collection_label),
+            "image/svg+xml",
+        )[1]
+    sample_text = collapse_whitespace("\n\n".join([item for item in sample_text_parts if str(item).strip()]))[:10_000]
+    if safe_content_kind == "book" and not sample_text:
+        sample_text = safe_summary
+    if safe_content_kind == "comic" and not panel_manifest:
+        placeholder_asset = _reader_admin_catalog_store_public_asset(
+            item_id,
+            f"{item_id}-page-1.svg",
+            _reader_admin_catalog_placeholder_svg(safe_title, "Page 1"),
+            "image/svg+xml",
+        )
+        panel_manifest.append(
+            {
+                "panelId": "panel_0001",
+                "pageId": "page_0001",
+                "index": 0,
+                "direction": direction_value,
+                "text": "",
+                "sourceText": "",
+                "displayText": "",
+                "translatedText": "",
+                "translatedLanguage": "",
+                "translationStatus": "pending",
+                "speaker": "Narrator",
+                "emotion": "",
+                "sfx": [],
+                "estimatedReadMs": 0,
+                "imagePath": placeholder_asset[0],
+                "imageUrl": placeholder_asset[1],
+                "remoteImageUrl": placeholder_asset[1],
+                "audioJobId": "",
+                "audioStatus": "idle",
+                "purged": False,
+                "prepStatus": "pending",
+            }
+        )
+        cover_url = placeholder_asset[1]
+
+    item_payload = _reader_admin_catalog_write(
+        {
+            "id": item_id,
+            "title": safe_title,
+            "author": safe_author,
+            "regionId": safe_region_id,
+            "contentKind": safe_content_kind,
+            "surface": "comics" if safe_content_kind == "comic" else "books",
+            "provider": "voiceflow_admin_catalog",
+            "license": safe_license,
+            "sourceUrl": "",
+            "contentUrl": cover_url if safe_content_kind == "comic" else "",
+            "archiveTxtUrl": "",
+            "summary": safe_summary,
+            "excerpt": safe_summary,
+            "sampleText": sample_text,
+            "coverUrl": cover_url,
+            "supportsReadHere": bool(sample_text or panel_manifest),
+            "sourceMeta": {
+                "fileNames": file_names,
+                "panelManifest": panel_manifest,
+                "sampleText": sample_text,
+                "contentType": "manga" if safe_content_kind == "comic" else "novel",
+            },
+            "createdAt": _safe_now_iso(),
+            "updatedAt": _safe_now_iso(),
+            "direction": direction_value,
+            "readingModeDefault": reading_mode_default,
+            "collectionLabel": safe_collection_label,
+            "publishState": safe_publish_state,
+            "publishedAt": _safe_now_iso() if safe_publish_state == "published" else "",
+            "ownershipBasis": safe_ownership_basis,
+            "stats": {
+                "fileCount": len(file_names),
+                "pageCount": len(panel_manifest) if safe_content_kind == "comic" else len([item for item in sample_text_parts if str(item).strip()]),
+                "totalPanels": len(panel_manifest) if safe_content_kind == "comic" else 0,
+                "totalChars": len(sample_text),
+            },
+        }
+    )
+    _audit_append_event(
+        action="reader_catalog_item_create",
+        resource_type="reader_catalog_item",
+        resource_id=str(item_payload.get("id") or ""),
+        after={"publishState": str(item_payload.get("publishState") or "")},
+        meta={"contentKind": safe_content_kind},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "item": item_payload})
+
+
+@app.patch("/admin/reader/catalog/items/{item_id}")
+def admin_reader_catalog_patch(
+    item_id: str,
+    payload: ReaderAdminCatalogPatchRequest,
+    request: Request,
+) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    current = _reader_admin_catalog_get(item_id, include_drafts=True)
+    if not current:
+        raise HTTPException(status_code=404, detail="Reader admin catalog item not found.")
+    next_item = dict(current)
+    if payload.title is not None:
+        next_item["title"] = str(payload.title or "").strip() or "Untitled"
+    if payload.author is not None:
+        next_item["author"] = str(payload.author or "").strip() or "Unknown"
+    if payload.regionId is not None:
+        next_item["regionId"] = str(reader_region(payload.regionId).get("id") or "english")
+    if payload.license is not None:
+        next_item["license"] = str(payload.license or "").strip()
+    if payload.ownershipBasis is not None:
+        next_item["ownershipBasis"] = _reader_normalize_ownership_basis(payload.ownershipBasis, raise_on_invalid=False)
+    direction_value = payload.directionOverride if payload.directionOverride is not None else payload.direction
+    if direction_value is not None:
+        safe_direction = str(direction_value or "").strip()
+        next_item["direction"] = safe_direction
+        next_item["readingModeDefault"] = (
+            _reader_normalize_reading_mode(safe_direction, content_kind=normalize_reader_content_kind(next_item.get("contentKind")))
+            if normalize_reader_content_kind(next_item.get("contentKind")) == "comic"
+            else "document"
+        )
+    if payload.summary is not None:
+        next_item["summary"] = collapse_whitespace(payload.summary)[:800] or "Open to preview details and launch the player."
+        next_item["excerpt"] = next_item["summary"]
+    if payload.collectionLabel is not None:
+        next_item["collectionLabel"] = str(payload.collectionLabel or "").strip() or "Reader Library"
+    if payload.publishState is not None:
+        next_item["publishState"] = _reader_admin_catalog_publish_state(payload.publishState)
+    saved = _reader_admin_catalog_write(next_item)
+    _audit_append_event(
+        action="reader_catalog_item_patch",
+        resource_type="reader_catalog_item",
+        resource_id=str(saved.get("id") or item_id),
+        after={"publishState": str(saved.get("publishState") or "")},
+        meta={},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "item": saved})
+
+
+@app.delete("/admin/reader/catalog/items/{item_id}")
+def admin_reader_catalog_delete(item_id: str, request: Request) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    removed = _reader_admin_catalog_delete(item_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Reader admin catalog item not found.")
+    _audit_append_event(
+        action="reader_catalog_item_delete",
+        resource_type="reader_catalog_item",
+        resource_id=str(item_id or ""),
+        after={"deleted": True},
+        meta={},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse({"ok": True, "deleted": True})
+
+
 @app.get("/reader/assets/{asset_path:path}")
 def reader_cached_asset(asset_path: str, request: Request) -> FileResponse:
     _require_request_uid(request)
     base_dir = READER_REMOTE_ASSETS_DIR.resolve()
-    target = (base_dir / str(asset_path or "").replace("\\", "/").lstrip("/")).resolve()
-    if not str(target).startswith(str(base_dir)):
-        raise HTTPException(status_code=403, detail="Reader asset path is not allowed.")
+    target = _reader_resolve_allowed_path(base_dir, asset_path, error_status=403, error_detail="Reader asset path is not allowed.")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Reader asset not found.")
     media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
@@ -20338,9 +23156,7 @@ def reader_upload_asset(upload_id: str, asset_path: str, request: Request) -> Fi
     if not upload_item:
         raise HTTPException(status_code=404, detail="Reader upload not found.")
     base_dir = _reader_upload_dir(upload_id).resolve()
-    target = (base_dir / str(asset_path or "").replace("\\", "/").lstrip("/")).resolve()
-    if not str(target).startswith(str(base_dir)):
-        raise HTTPException(status_code=403, detail="Reader asset path is not allowed.")
+    target = _reader_resolve_allowed_path(base_dir, asset_path, error_status=403, error_detail="Reader asset path is not allowed.")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Reader asset not found.")
     media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
@@ -20375,9 +23191,7 @@ async def reader_upload_create(
         suffix = Path(safe_name).suffix.lower()
         file_names.append(safe_name)
         upload_dir = _reader_upload_dir(upload_id).resolve()
-        original_path = (upload_dir / "originals" / safe_name).resolve()
-        if not str(original_path).startswith(str(upload_dir)):
-            raise HTTPException(status_code=400, detail="Reader upload file path is not allowed.")
+        original_path = _reader_resolve_allowed_path(upload_dir, f"originals/{safe_name}", error_status=400, error_detail="Reader upload file path is not allowed.")
         written_bytes = await _write_upload_file_chunked(
             upload,
             original_path,
@@ -21051,6 +23865,99 @@ def reader_session_savepoint(session_id: str, payload: ReaderSessionSavepointReq
         str(safe_session.get("workKey") or ""),
         _reader_progress_payload_from_session(safe_session),
     )
+    saved = _reader_session_set(safe_session)
+    return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
+
+
+@app.post("/reader/sessions/{session_id}/queue/prime")
+def reader_session_queue_prime(
+    session_id: str,
+    payload: ReaderQueuePrimeRequest,
+    request: Request,
+) -> JSONResponse:
+    uid = _require_request_uid(request)
+    session = _reader_session_get(uid, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Reader session not found.")
+    safe_session = _reader_refresh_session(session)
+    safe_content_kind = normalize_reader_content_kind(safe_session.get("contentKind"))
+    requested_mode = str(payload.mode or "").strip().lower()
+    if requested_mode not in {"book_paragraph", "comic_panel"}:
+        requested_mode = "comic_panel" if safe_content_kind == "comic" else "book_paragraph"
+    lookahead_units = max(0, min(24, int(payload.lookaheadUnits or 0)))
+    from_active_index = max(0, int(payload.fromActiveIndex or 0))
+    units_key = "panels" if safe_content_kind == "comic" else "windows"
+    units = [dict(item) for item in list(safe_session.get(units_key) or []) if isinstance(item, dict)]
+    if not units:
+        return JSONResponse({"ok": True, "session": _reader_session_public_view(_reader_session_set(safe_session))})
+    start_index = min(max(0, len(units)), from_active_index + 1)
+    if start_index >= len(units) or lookahead_units <= 0:
+        saved = _reader_session_set(safe_session)
+        return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
+    cast_memory = dict(safe_session.get("castMemory") or {})
+    safe_session, default_voice_id = _reader_resolve_voice_for_session(
+        safe_session,
+        speaker="Narrator",
+        requested_voice_id=str(cast_memory.get("Narrator") or safe_session.get("defaultVoiceId") or "v22"),
+    )
+    tts_language = (
+        _reader_normalize_language(safe_session.get("targetLanguage"), default="en")
+        if _reader_effective_tts_language_mode(safe_session) == "target"
+        else _reader_normalize_language(safe_session.get("sourceLanguage"), default="en")
+    ) or "en"
+    scheduled = 0
+    for index in range(start_index, min(len(units), start_index + lookahead_units)):
+        item = dict(units[index] or {})
+        if safe_content_kind == "comic":
+            if str(item.get("audioJobId") or "").strip() or bool(item.get("purged")):
+                continue
+            tts_text = _reader_tts_text_for_unit(safe_session, item)
+            if not str(tts_text or "").strip():
+                continue
+        else:
+            if str(item.get("jobId") or "").strip() or bool(item.get("purged")):
+                continue
+            tts_text = _reader_tts_text_for_unit(safe_session, item)
+            if not str(tts_text or "").strip():
+                continue
+        char_count = len(tts_text)
+        safe_session, line_map, resolved_speaker_voices, multi_speaker_mode, _ = _reader_resolve_multi_speaker_payload(
+            safe_session,
+            text=tts_text,
+            cast_memory=cast_memory,
+            default_voice_id=default_voice_id,
+        )
+        cast_memory = dict(safe_session.get("castMemory") or {})
+        safe_session, job_id, routed_engine = _reader_create_tts_job_with_audio_engine_fallback(
+            request,
+            session=safe_session,
+            text=tts_text,
+            request_id=f"{str(safe_session.get('id') or 'reader')}_{'panel' if safe_content_kind == 'comic' else 'window'}_{index}",
+            voice_id=default_voice_id,
+            language=tts_language,
+            multi_speaker_mode=multi_speaker_mode,
+            line_map=line_map or None,
+            speaker_voices=resolved_speaker_voices or None,
+        )
+        if safe_content_kind == "comic":
+            item["audioJobId"] = job_id
+            item["audioStatus"] = "queued"
+            item["audioEngine"] = routed_engine
+            if routed_engine == "tts_hd" and _reader_normalize_audio_engine(safe_session.get("audioEngine"), default="tts_hd") == "native_audio_dialog":
+                item["fallbackFromNativeAudio"] = True
+        else:
+            item["jobId"] = job_id
+            item["status"] = "queued"
+            item["audioEngine"] = routed_engine
+            if routed_engine == "tts_hd" and _reader_normalize_audio_engine(safe_session.get("audioEngine"), default="tts_hd") == "native_audio_dialog":
+                item["fallbackFromNativeAudio"] = True
+        units[index] = item
+        safe_session[units_key] = units
+        safe_session["cachedChars"] = int(safe_session.get("cachedChars") or 0) + char_count
+        scheduled += 1
+        if scheduled >= lookahead_units:
+            break
+    safe_session["updatedAtMs"] = _reader_now_ms()
     saved = _reader_session_set(safe_session)
     return JSONResponse({"ok": True, "session": _reader_session_public_view(saved)})
 
@@ -21811,11 +24718,12 @@ def _stripe_timestamp_to_iso(value: Any) -> Optional[str]:
 
 
 def _plan_pricing_summary(plan_key: str) -> dict[str, Any]:
-    row = PLAN_PRICE_POLICY.get(_plan_key_from_name(plan_key)) or {}
+    normalized_plan_key = _plan_key_from_name(plan_key)
+    row = PLAN_PRICE_POLICY.get(normalized_plan_key) or {}
     first_cycle_inr = max(0, int(row.get("firstCycleInr") or 0))
     recurring_inr = max(0, int(row.get("recurringInr") or 0))
-    discount_percent = 0
-    if first_cycle_inr > 0 and recurring_inr > 0 and recurring_inr < first_cycle_inr:
+    discount_percent = max(0, int(PLAN_RECURRING_DISCOUNT_PCT_BY_KEY.get(normalized_plan_key, 0)))
+    if discount_percent <= 0 and first_cycle_inr > 0 and recurring_inr > 0 and recurring_inr < first_cycle_inr:
         discount_percent = max(0, int(round(((first_cycle_inr - recurring_inr) / first_cycle_inr) * 100)))
     return {
         "firstCycleInr": first_cycle_inr,
@@ -21867,7 +24775,9 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
     pricing = _plan_pricing_summary(plan_key)
     feature_flags = PLAN_FEATURE_FLAGS.get(plan_key) or PLAN_FEATURE_FLAGS["free"]
     guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
-    customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    stripe_customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    razorpay_customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+    customer_id = stripe_customer_id or razorpay_customer_id
     subscription_id = str(entitlement.get("subscriptionId") or "").strip()
     warnings: list[str] = []
     payment_method: Optional[dict[str, Any]] = None
@@ -21886,7 +24796,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
     }
     invoices: list[dict[str, Any]] = []
 
-    if _stripe_available() and customer_id:
+    if _stripe_available() and stripe_customer_id:
         try:
             if not _ensure_stripe_sdk_imported() or stripe is None:
                 raise RuntimeError("stripe_not_available")
@@ -21895,9 +24805,9 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             customer_retrieve = getattr(getattr(stripe, "Customer", None), "retrieve", None)
             if callable(customer_retrieve):
                 try:
-                    customer_obj = customer_retrieve(customer_id, expand=["invoice_settings.default_payment_method"])  # type: ignore[misc]
+                    customer_obj = customer_retrieve(stripe_customer_id, expand=["invoice_settings.default_payment_method"])  # type: ignore[misc]
                 except TypeError:
-                    customer_obj = customer_retrieve(customer_id)
+                    customer_obj = customer_retrieve(stripe_customer_id)
 
             subscription_obj = None
             if subscription_id:
@@ -21943,7 +24853,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             invoice_list = None
             invoice_lister = getattr(getattr(stripe, "Invoice", None), "list", None)
             if callable(invoice_lister):
-                invoice_list = invoice_lister(customer=customer_id, limit=12)
+                invoice_list = invoice_lister(customer=stripe_customer_id, limit=12)
             for row in _stripe_data_list(invoice_list):
                 status_transitions = _stripe_obj_get(row, "status_transitions", {})
                 amount_due = int(_stripe_obj_get(row, "amount_due", 0) or 0)
@@ -21971,6 +24881,80 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
                 )
         except Exception:
             warnings.append("Recent billing activity could not be synced right now.")
+    elif _razorpay_available() and customer_id:
+        try:
+            subscription_obj = razorpay_billing.fetch_subscription(
+                subscription_id=subscription_id,
+                customer_id=customer_id,
+            )
+            if isinstance(subscription_obj, dict) and subscription_obj:
+                sub_status = _billing_status_from_subscription(str(subscription_obj.get("status") or "active"))
+                current_end = _stripe_timestamp_to_iso(
+                    subscription_obj.get("current_end")
+                    or subscription_obj.get("charge_at")
+                )
+                subscription_summary = {
+                    "id": str(subscription_obj.get("subscription_id") or subscription_obj.get("id") or subscription_id) or None,
+                    "status": sub_status,
+                    "active": sub_status == "active",
+                    "cancelAtPeriodEnd": False,
+                    "cancelAt": None,
+                    "currentPeriodStart": _stripe_timestamp_to_iso(
+                        subscription_obj.get("current_start")
+                        or subscription_obj.get("start_at")
+                    ),
+                    "currentPeriodEnd": current_end,
+                    "nextBillingAt": current_end,
+                    "startedAt": _stripe_timestamp_to_iso(subscription_obj.get("start_at")),
+                    "trialEnd": None,
+                    "latestInvoiceId": str(subscription_obj.get("latest_invoice_id") or "").strip() or None,
+                }
+            payments_payload = razorpay_billing.list_customer_payments(customer_id=customer_id, limit=12)
+            payment_rows = payments_payload.get("items") if isinstance(payments_payload, dict) else []
+            if isinstance(payment_rows, list):
+                for idx, row in enumerate(payment_rows):
+                    if not isinstance(row, dict):
+                        continue
+                    raw_card = (row.get("raw") or {}).get("card") if isinstance(row.get("raw"), dict) else {}
+                    if payment_method is None and isinstance(raw_card, dict):
+                        payment_method = {
+                            "id": str((row.get("raw") or {}).get("id") or row.get("payment_id") or row.get("id") or "").strip() or None,
+                            "brand": str(raw_card.get("brand") or "").strip() or None,
+                            "last4": str(raw_card.get("last4") or "").strip() or None,
+                            "funding": str(raw_card.get("funding") or "").strip() or None,
+                            "expMonth": int(raw_card.get("exp_month")) if raw_card.get("exp_month") not in (None, "") else None,
+                            "expYear": int(raw_card.get("exp_year")) if raw_card.get("exp_year") not in (None, "") else None,
+                        }
+                    invoices.append(
+                        {
+                            "id": str(row.get("payment_id") or row.get("id") or "").strip(),
+                            "number": None,
+                            "status": str(row.get("status") or "captured").strip().lower(),
+                            "description": "Razorpay payment",
+                            "currency": str(row.get("currency") or "INR").strip().upper(),
+                            "amountDueMinor": int(row.get("amount_minor") or 0),
+                            "amountPaidMinor": int(row.get("amount_minor") or 0),
+                            "amountRemainingMinor": 0,
+                            "createdAt": _stripe_timestamp_to_iso(row.get("created_at")),
+                            "dueAt": None,
+                            "paidAt": _stripe_timestamp_to_iso(row.get("created_at")),
+                            "periodStart": None,
+                            "periodEnd": None,
+                            "hostedInvoiceUrl": None,
+                            "invoicePdf": None,
+                            "billingReason": "payment",
+                            "sortIndex": idx,
+                        }
+                    )
+            invoices = [
+                {key: value for key, value in row.items() if key != "sortIndex"}
+                for row in invoices
+            ]
+        except Exception:
+            warnings.append("Recent billing activity could not be synced right now.")
+        # Legacy Razorpay summary should not surface Stripe recurring discounts.
+        if pricing.get("discountPercent"):
+            pricing = {**pricing, "discountPercent": 0}
     elif plan_key in set(PAID_PLAN_KEYS) and not customer_id:
         warnings.append("Billing is active, but no Stripe customer is linked to this account yet.")
 
@@ -21996,15 +24980,21 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             "allowedEngines": list(feature_flags.get("allowedEngines") or ()),
             "earlyAccess": bool(feature_flags.get("earlyAccess")),
             "pricing": pricing,
+            "tokenPackDiscountPercent": _token_pack_discount_percent_for_plan(plan_name),
+            "launcherOfferConsumed": bool(entitlement.get("launcherOfferConsumed")),
         },
         "billing": {
             "stripeReady": _stripe_available(),
-            "hasPortalAccess": bool(customer_id) and _stripe_available(),
-            "stripeCustomerId": customer_id or None,
+            "hasPortalAccess": bool(customer_id) and (_stripe_available() or _razorpay_available()),
+            "stripeCustomerId": stripe_customer_id or None,
+            "razorpayCustomerId": razorpay_customer_id or None,
             "billingCountry": billing_country,
             "currencyMode": str(entitlement.get("currencyMode") or "").strip() or None,
         },
         "subscription": subscription_summary,
+        "tokenPack": {
+            "discountPercent": _token_pack_discount_percent_for_plan(plan_name),
+        },
         "paymentMethod": payment_method,
         "invoices": invoices,
         "warnings": warnings,
@@ -23566,6 +26556,263 @@ def _cleanup_entitlements_daily_generation_limit(*, dry_run: bool, requested_by:
     }
 
 
+_ENGINE_CANONICAL_LIST_FIELDS = {"allowedEngines"}
+_ENGINE_CANONICAL_MAP_FIELDS = {
+    "byEngine",
+    "engines",
+    "runtimeLatencyByEngine",
+    "semaphoreWaitByEngine",
+    "spendableNowByEngine",
+    "vfRates",
+}
+_ENGINE_CANONICAL_VALUE_FIELDS = {
+    "engine",
+    "sourceEngine",
+    "sourceVoiceEngine",
+    "targetEngine",
+    "runtimeEngine",
+    "laneEngine",
+    "voiceEngine",
+}
+
+
+def _canonicalize_engine_value_for_migration(raw_value: Any) -> str:
+    token = _resolve_internal_engine_token(str(raw_value or ""))
+    return token or str(raw_value or "").strip()
+
+
+def _canonicalize_engine_map_for_migration(value: Any) -> tuple[dict[str, Any], bool]:
+    if not isinstance(value, dict):
+        return {}, False
+    changed = False
+    out: dict[str, Any] = {}
+    for raw_key, raw_val in value.items():
+        key = _resolve_internal_engine_token(str(raw_key or "")) or str(raw_key or "").strip()
+        if not key:
+            continue
+        if key != str(raw_key or "").strip():
+            changed = True
+        if isinstance(raw_val, dict):
+            next_val, child_changed = _canonicalize_engine_doc_fields_for_migration(raw_val)
+            out[key] = next_val
+            changed = changed or child_changed
+        elif isinstance(raw_val, list):
+            next_list: list[Any] = []
+            list_changed = False
+            for item in raw_val:
+                if isinstance(item, (dict, list)):
+                    next_item, item_changed = _canonicalize_engine_doc_value_for_migration(item)
+                    next_list.append(next_item)
+                    list_changed = list_changed or item_changed
+                else:
+                    next_list.append(item)
+            out[key] = next_list
+            changed = changed or list_changed
+        else:
+            out[key] = raw_val
+    return out, changed
+
+
+def _canonicalize_engine_doc_value_for_migration(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, dict):
+        return _canonicalize_engine_doc_fields_for_migration(value)
+    if isinstance(value, list):
+        out: list[Any] = []
+        changed = False
+        for item in value:
+            if isinstance(item, (dict, list)):
+                next_item, item_changed = _canonicalize_engine_doc_value_for_migration(item)
+                out.append(next_item)
+                changed = changed or item_changed
+            else:
+                out.append(item)
+        return out, changed
+    return value, False
+
+
+def _canonicalize_engine_doc_fields_for_migration(row: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    changed = False
+    out = dict(row or {})
+    for key in list(out.keys()):
+        value = out[key]
+        if key in _ENGINE_CANONICAL_VALUE_FIELDS:
+            next_value = _canonicalize_engine_value_for_migration(value)
+            if next_value != value:
+                out[key] = next_value
+                changed = True
+            continue
+        if key in _ENGINE_CANONICAL_LIST_FIELDS and isinstance(value, list):
+            next_list: list[Any] = []
+            seen: set[str] = set()
+            for item in value:
+                token = _canonicalize_engine_value_for_migration(item)
+                safe_token = str(token or "").strip()
+                if not safe_token or safe_token in seen:
+                    continue
+                seen.add(safe_token)
+                next_list.append(safe_token)
+            if next_list != value:
+                out[key] = next_list
+                changed = True
+            continue
+        if key in _ENGINE_CANONICAL_MAP_FIELDS:
+            next_map, map_changed = _canonicalize_engine_map_for_migration(value)
+            if map_changed or next_map != value:
+                out[key] = next_map
+                changed = True
+            continue
+        if isinstance(value, dict):
+            next_value, child_changed = _canonicalize_engine_doc_fields_for_migration(value)
+            if child_changed:
+                out[key] = next_value
+                changed = True
+        elif isinstance(value, list):
+            next_value, child_changed = _canonicalize_engine_doc_value_for_migration(value)
+            if child_changed:
+                out[key] = next_value
+                changed = True
+    return out, changed
+
+
+def _detect_legacy_engine_tokens(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _ENGINE_CANONICAL_MAP_FIELDS and isinstance(item, dict):
+                for raw_key in item.keys():
+                    raw_token = str(raw_key or "").strip()
+                    if raw_token and _resolve_internal_engine_token(raw_token) != raw_token.upper():
+                        return True
+            if key in _ENGINE_CANONICAL_VALUE_FIELDS and isinstance(item, str):
+                if _resolve_internal_engine_token(item) and _resolve_internal_engine_token(item) != str(item or "").strip().upper():
+                    return True
+            if key in _ENGINE_CANONICAL_LIST_FIELDS and isinstance(item, list):
+                for entry in item:
+                    if isinstance(entry, str):
+                        if _resolve_internal_engine_token(entry) and _resolve_internal_engine_token(entry) != str(entry or "").strip().upper():
+                            return True
+            if _detect_legacy_engine_tokens(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_detect_legacy_engine_tokens(item) for item in value)
+    if isinstance(value, str):
+        token = _resolve_internal_engine_token(value)
+        return bool(token and token != str(value or "").strip().upper())
+    return False
+
+
+def _rewrite_engine_canonicalization_doc(doc: dict[str, Any], *, doc_type: str) -> tuple[dict[str, Any], bool]:
+    payload = dict(doc or {})
+    if doc_type == "generation_history":
+        uid = str(payload.get("uid") or "").strip()
+        items = _history_decode_items_gzip_b64(str(payload.get("itemsGzipB64") or ""), sanitize=False)
+        sanitized_items = _history_prune_expired_items(items)
+        next_payload = _history_row_from_items(uid, sanitized_items, now_iso=str(payload.get("updatedAt") or _safe_now_iso()))
+        next_payload["uid"] = uid
+        changed = next_payload.get("itemsGzipB64") != payload.get("itemsGzipB64")
+        return next_payload, changed
+    next_payload, changed = _canonicalize_engine_doc_fields_for_migration(payload)
+    return next_payload, changed
+
+
+def _engine_canonicalization_migration(*, mode: str, requested_by: str) -> dict[str, Any]:
+    safe_mode = str(mode or "dry_run").strip().lower()
+    if safe_mode not in {"dry_run", "apply", "verify"}:
+        raise ValueError("Invalid migration mode. Use dry_run, apply, or verify.")
+    dry_run = safe_mode == "dry_run"
+    apply_changes = safe_mode == "apply"
+    verify_only = safe_mode == "verify"
+    now_iso = _safe_now_iso()
+    collections = ("entitlements", "generation_history", "usage_monthly", "usage_daily", "usage_events", "audio_generation_audit")
+    summary: dict[str, Any] = {
+        "ok": True,
+        "mode": safe_mode,
+        "dryRun": dry_run,
+        "applied": apply_changes,
+        "verified": verify_only,
+        "requestedBy": str(requested_by or "").strip(),
+        "ranAt": now_iso,
+        "collections": {},
+        "legacyTokensRemaining": 0,
+    }
+
+    for collection_name in collections:
+        collection = _firestore_collection(collection_name)
+        scanned = 0
+        changed = 0
+        legacy_remaining = 0
+        if collection is None:
+            with _INMEMORY_LOCK:
+                if collection_name == "entitlements":
+                    source_items = list(_INMEMORY_ENTITLEMENTS.items())
+                elif collection_name == "generation_history":
+                    source_items = list(_INMEMORY_GENERATION_HISTORY.items())
+                elif collection_name == "usage_monthly":
+                    source_items = list(_INMEMORY_USAGE_MONTHLY.items())
+                elif collection_name == "usage_daily":
+                    source_items = list(_INMEMORY_USAGE_DAILY.items())
+                elif collection_name == "audio_generation_audit":
+                    source_items = list(_INMEMORY_AUDIO_GENERATION_AUDIT.items())
+                else:
+                    source_items = list(_INMEMORY_USAGE_EVENTS.items())
+                scanned = len(source_items)
+                for doc_id, row in source_items:
+                    if not isinstance(row, dict):
+                        continue
+                    next_row, row_changed = _rewrite_engine_canonicalization_doc(row, doc_type=collection_name)
+                    if _detect_legacy_engine_tokens(next_row):
+                        legacy_remaining += 1
+                    if row_changed and apply_changes:
+                        changed += 1
+                        if collection_name == "entitlements":
+                            _INMEMORY_ENTITLEMENTS[doc_id] = next_row
+                        elif collection_name == "generation_history":
+                            _INMEMORY_GENERATION_HISTORY[doc_id] = next_row
+                        elif collection_name == "usage_monthly":
+                            _INMEMORY_USAGE_MONTHLY[doc_id] = next_row
+                        elif collection_name == "usage_daily":
+                            _INMEMORY_USAGE_DAILY[doc_id] = next_row
+                        elif collection_name == "audio_generation_audit":
+                            _INMEMORY_AUDIO_GENERATION_AUDIT[doc_id] = next_row
+                        else:
+                            _INMEMORY_USAGE_EVENTS[doc_id] = next_row
+                    elif row_changed:
+                        changed += 1
+        else:
+            try:
+                docs = list(collection.stream())
+            except Exception:
+                docs = []
+            scanned = len(docs)
+            for doc in docs:
+                row = doc.to_dict() or {}
+                if not isinstance(row, dict):
+                    continue
+                next_row, row_changed = _rewrite_engine_canonicalization_doc(row, doc_type=collection_name)
+                if _detect_legacy_engine_tokens(next_row):
+                    legacy_remaining += 1
+                if row_changed:
+                    changed += 1
+                    if not dry_run:
+                        try:
+                            doc.reference.set(next_row, merge=False)
+                        except Exception:
+                            continue
+        summary["collections"][collection_name] = {
+            "scanned": scanned,
+            "changed": changed,
+            "legacyRemaining": legacy_remaining,
+        }
+        summary["legacyTokensRemaining"] += legacy_remaining
+
+    queue_summary = _TTS_V2_ENGINE.canonicalize_engine_metadata(mode=safe_mode)
+    summary["queueJobMetadata"] = queue_summary
+    summary["legacyTokensRemaining"] += int(queue_summary.get("legacyTokensRemaining") or 0)
+    if verify_only and summary["legacyTokensRemaining"] > 0:
+        summary["ok"] = False
+    return summary
+
+
 @app.post("/admin/session-unlock/issue")
 def admin_session_unlock_issue(request: Request) -> JSONResponse:
     uid = _require_admin_unlock_uid(request)
@@ -23683,6 +26930,30 @@ def admin_cleanup_entitlements_daily_generation_limit(request: Request, dryRun: 
         resource_id="all",
         after=summary if isinstance(summary, dict) else {},
         meta={"dryRun": bool(dryRun)},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(summary)
+
+
+@app.post("/admin/engine-canonicalization/migrate")
+def admin_engine_canonicalization_migrate(
+    payload: EngineCanonicalizationMigrationRequest,
+    request: Request,
+) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    try:
+        summary = _engine_canonicalization_migration(mode=payload.mode, requested_by=admin_uid)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit_append_event(
+        action="engine_canonicalization_migrate",
+        resource_type="admin_ops",
+        resource_id="engine_canonicalization",
+        after=summary if isinstance(summary, dict) else {},
+        meta={"mode": payload.mode},
         request=request,
         actor_uid=admin_uid,
         actor_role=str(actor.get("role") or ""),
@@ -26540,44 +29811,144 @@ def _finalize_subscription_coupon_redemption(
         return {"ok": False, "reason": str(exc)}
 
 
-def _stripe_webhook_event_register(event_id: str, event_type: str) -> bool:
+def _firestore_already_exists_error(exc: Exception) -> bool:
+    lowered = str(exc or "").strip().lower()
+    if not lowered:
+        return False
+    return "already exists" in lowered or "already_exists" in lowered
+
+
+def _stripe_webhook_event_begin(event_id: str, event_type: str) -> tuple[bool, dict[str, Any]]:
     safe_event_id = str(event_id or "").strip()
-    if not safe_event_id:
-        return True
+    safe_event_type = str(event_type or "").strip()
     now_iso = _utc_now().isoformat()
-    row = {
+    if not safe_event_id:
+        return True, {
+            "eventId": "",
+            "eventType": safe_event_type,
+            "state": "processing",
+            "attemptCount": 1,
+            "receivedAt": now_iso,
+            "updatedAt": now_iso,
+        }
+    base_row = {
         "eventId": safe_event_id,
-        "eventType": str(event_type or "").strip(),
+        "eventType": safe_event_type,
+        "state": "processing",
+        "attemptCount": 1,
         "receivedAt": now_iso,
         "updatedAt": now_iso,
+        "lastError": "",
     }
     collection = _firestore_collection(STRIPE_WEBHOOK_EVENTS_COLLECTION)
-    if collection is None or _FIRESTORE_DB is None or firebase_firestore is None:
+    if collection is not None:
+        try:
+            doc_ref = collection.document(safe_event_id)
+            doc_ref.create(dict(base_row))
+            with _INMEMORY_LOCK:
+                _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(base_row)
+            return True, dict(base_row)
+        except Exception as exc:
+            if _firestore_already_exists_error(exc):
+                try:
+                    existing_doc = collection.document(safe_event_id).get()
+                    current = existing_doc.to_dict() or {}
+                except Exception:
+                    current = {}
+                state = str(current.get("state") or "processing").strip().lower()
+                attempt = max(1, _as_positive_int(current.get("attemptCount") or 1))
+                if state in {"succeeded", "processing"}:
+                    current["updatedAt"] = now_iso
+                    try:
+                        collection.document(safe_event_id).set({"updatedAt": now_iso}, merge=True)
+                    except Exception:
+                        pass
+                    with _INMEMORY_LOCK:
+                        _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(current)
+                    return False, dict(current)
+                retry_row = dict(current)
+                retry_row["eventType"] = safe_event_type or str(retry_row.get("eventType") or "")
+                retry_row["state"] = "processing"
+                retry_row["attemptCount"] = attempt + 1
+                retry_row["updatedAt"] = now_iso
+                retry_row["lastError"] = ""
+                try:
+                    collection.document(safe_event_id).set(dict(retry_row), merge=True)
+                except Exception:
+                    pass
+                with _INMEMORY_LOCK:
+                    _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(retry_row)
+                return True, dict(retry_row)
+
+    with _INMEMORY_LOCK:
+        current = dict(_INMEMORY_STRIPE_WEBHOOK_EVENTS.get(safe_event_id) or {})
+        if not current:
+            _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(base_row)
+            return True, dict(base_row)
+        state = str(current.get("state") or "processing").strip().lower()
+        attempt = max(1, _as_positive_int(current.get("attemptCount") or 1))
+        if state in {"succeeded", "processing"}:
+            current["updatedAt"] = now_iso
+            _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(current)
+            return False, dict(current)
+        retry_row = dict(current)
+        retry_row["eventType"] = safe_event_type or str(retry_row.get("eventType") or "")
+        retry_row["state"] = "processing"
+        retry_row["attemptCount"] = attempt + 1
+        retry_row["updatedAt"] = now_iso
+        retry_row["lastError"] = ""
+        _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(retry_row)
+        return True, dict(retry_row)
+
+
+def _stripe_webhook_event_complete(event_id: str, *, status: str, error_detail: str = "") -> dict[str, Any]:
+    safe_event_id = str(event_id or "").strip()
+    safe_status = str(status or "").strip().lower()
+    final_state = "succeeded" if safe_status == "succeeded" else "failed"
+    now_iso = _utc_now().isoformat()
+    if not safe_event_id:
+        return {
+            "eventId": "",
+            "state": final_state,
+            "updatedAt": now_iso,
+            "lastError": str(error_detail or ""),
+        }
+    collection = _firestore_collection(STRIPE_WEBHOOK_EVENTS_COLLECTION)
+    current: dict[str, Any] = {}
+    if collection is not None:
+        try:
+            current_doc = collection.document(safe_event_id).get()
+            if current_doc.exists:
+                current = current_doc.to_dict() or {}
+        except Exception:
+            current = {}
+    if not current:
         with _INMEMORY_LOCK:
-            if safe_event_id in _INMEMORY_STRIPE_WEBHOOK_EVENTS:
-                return False
-            _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(row)
-            return True
+            current = dict(_INMEMORY_STRIPE_WEBHOOK_EVENTS.get(safe_event_id) or {})
+    row = {
+        **current,
+        "eventId": safe_event_id,
+        "state": final_state,
+        "updatedAt": now_iso,
+        "lastError": str(error_detail or ""),
+    }
+    if "receivedAt" not in row:
+        row["receivedAt"] = now_iso
+    if "attemptCount" not in row:
+        row["attemptCount"] = 1
+    if collection is not None:
+        try:
+            collection.document(safe_event_id).set(dict(row), merge=True)
+        except Exception:
+            pass
+    with _INMEMORY_LOCK:
+        _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(row)
+    return row
 
-    event_ref = _FIRESTORE_DB.collection(STRIPE_WEBHOOK_EVENTS_COLLECTION).document(safe_event_id)
-    transaction = _FIRESTORE_DB.transaction()
 
-    @firebase_firestore.transactional
-    def _apply(transaction_obj: Any) -> bool:
-        doc = event_ref.get(transaction=transaction_obj)
-        if doc.exists:
-            return False
-        transaction_obj.set(event_ref, row, merge=False)
-        return True
-
-    try:
-        return bool(_apply(transaction))
-    except Exception:
-        with _INMEMORY_LOCK:
-            if safe_event_id in _INMEMORY_STRIPE_WEBHOOK_EVENTS:
-                return False
-            _INMEMORY_STRIPE_WEBHOOK_EVENTS[safe_event_id] = dict(row)
-            return True
+def _stripe_webhook_event_register(event_id: str, event_type: str) -> bool:
+    allowed, _row = _stripe_webhook_event_begin(event_id, event_type)
+    return bool(allowed)
 
 
 @app.get("/billing/account-summary")
@@ -26588,11 +29959,57 @@ def billing_account_summary(request: Request) -> JSONResponse:
 
 @app.post("/billing/checkout-session")
 def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Request) -> JSONResponse:
-    _require_stripe_ready()
     uid = _require_request_uid(request)
+    if (not _stripe_available()) and _razorpay_available():
+        plan_token = _plan_key_from_name(str(payload.plan or "").strip().lower())
+        if plan_token not in set(PAID_PLAN_KEYS):
+            raise HTTPException(status_code=400, detail="Unsupported plan. Use launcher, starter, creator, pro, or scale.")
+        entitlement = _load_entitlement(uid)
+        customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+        if not customer_id:
+            created = razorpay_billing.create_customer(uid=uid, metadata={"uid": uid})
+            customer_id = str(created.get("customer_id") or created.get("id") or "").strip()
+            if not customer_id:
+                raise HTTPException(status_code=502, detail="Failed to create Razorpay customer.")
+            _write_entitlement(uid, {"razorpayCustomerId": customer_id})
+        coupon_code = _normalize_coupon_code(str(payload.couponCode or ""))
+        subscription = razorpay_billing.create_subscription(
+            customer_id=customer_id,
+            plan_id=_razorpay_plan_id_for_plan(plan_token, phase="recurring"),
+            notes={"uid": uid, "plan": plan_token, "couponCode": coupon_code},
+        )
+        subscription_id = str(subscription.get("subscription_id") or subscription.get("id") or "").strip()
+        if not subscription_id:
+            raise HTTPException(status_code=502, detail="Failed to create Razorpay subscription.")
+        _write_entitlement(uid, {"subscriptionId": subscription_id})
+        return JSONResponse(
+            {
+                "ok": True,
+                "provider": "razorpay",
+                "kind": "subscription",
+                "subscriptionId": subscription_id,
+                "subscriptionOptions": {
+                    "subscription_id": subscription_id,
+                    "key": _razorpay_key_id(),
+                    "notes": {
+                        "uid": uid,
+                        "plan": plan_token,
+                        "couponCode": coupon_code,
+                    },
+                },
+            }
+        )
+
+    _require_stripe_ready()
     plan_token = _plan_key_from_name(str(payload.plan or "").strip().lower())
     if plan_token not in set(PAID_PLAN_KEYS):
         raise HTTPException(status_code=400, detail="Unsupported plan. Use launcher, starter, creator, pro, or scale.")
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    if plan_token == "launcher" and bool(entitlement.get("launcherOfferConsumed")):
+        raise HTTPException(
+            status_code=409,
+            detail="Launcher one-time offer has already been consumed for this user. Upgrade to Starter, Creator, Pro, or Scale.",
+        )
     price_id = _stripe_price_id_for_plan(plan_token, phase="first")
     if not price_id:
         raise HTTPException(status_code=503, detail="Stripe first-cycle price is not configured for selected plan.")
@@ -26639,6 +30056,7 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
 
     success_url = _resolve_checkout_url_override(payload.successUrl, STRIPE_CHECKOUT_SUCCESS_URL)
     cancel_url = _resolve_checkout_url_override(payload.cancelUrl, STRIPE_CHECKOUT_CANCEL_URL)
+    stripe_idempotency_key = str(request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key") or "").strip()
     session_metadata: dict[str, Any] = {"uid": uid, "plan": plan_token}
     subscription_metadata: dict[str, Any] = {"uid": uid, "plan": plan_token}
     discounts_payload: list[dict[str, Any]] = []
@@ -26681,6 +30099,8 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
         }
         if discounts_payload:
             session_payload["discounts"] = discounts_payload
+        if stripe_idempotency_key:
+            session_payload["idempotency_key"] = stripe_idempotency_key
         session = stripe.checkout.Session.create(**session_payload)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
         if reservation_id:
@@ -26716,6 +30136,7 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
     pack_vf = _token_pack_vf_for_pack(pack_key)
     standard_amount_inr = max(1, int(pack_cfg.get("priceInr") or 1))
     final_amount_inr = _token_pack_amount_inr_for_plan(plan_name, pack_key)
+    discount_percent = _token_pack_discount_percent_for_plan(plan_name)
     customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
     if not customer_id:
         try:
@@ -26731,11 +30152,12 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
 
     success_url = _resolve_checkout_url_override(payload.successUrl, STRIPE_CHECKOUT_SUCCESS_URL)
     cancel_url = _resolve_checkout_url_override(payload.cancelUrl, STRIPE_CHECKOUT_CANCEL_URL)
+    stripe_idempotency_key = str(request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key") or "").strip()
     try:
-        session = stripe.checkout.Session.create(  # type: ignore[attr-defined]
-            mode="payment",
-            customer=customer_id,
-            line_items=[
+        session_payload: dict[str, Any] = {
+            "mode": "payment",
+            "customer": customer_id,
+            "line_items": [
                 {
                     "price_data": {
                         "currency": "inr",
@@ -26745,17 +30167,21 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
                     "quantity": 1,
                 }
             ],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata={
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "metadata": {
                 "kind": "token_pack",
                 "uid": uid,
                 "packKey": pack_key,
                 "packVf": str(pack_vf),
                 "standardAmountInr": str(standard_amount_inr),
                 "finalAmountInr": str(final_amount_inr),
+                "discountPercent": str(discount_percent),
             },
-        )
+        }
+        if stripe_idempotency_key:
+            session_payload["idempotency_key"] = stripe_idempotency_key
+        session = stripe.checkout.Session.create(**session_payload)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to create token-pack checkout session: {exc}") from exc
 
@@ -26768,6 +30194,100 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
             "packVf": pack_vf,
             "standardAmountInr": standard_amount_inr,
             "finalAmountInr": final_amount_inr,
+            "discountPercent": discount_percent,
+        }
+    )
+
+
+@app.post("/billing/vc-token-pack/checkout-session")
+def billing_vc_token_pack_checkout_session(payload: BillingTokenPackCheckoutSessionRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    if not _razorpay_available():
+        raise HTTPException(status_code=503, detail="Billing provider is not configured.")
+    if not isinstance(VC_TOKEN_PACK_CATALOG, dict) or not VC_TOKEN_PACK_CATALOG:
+        raise HTTPException(
+            status_code=503,
+            detail={"errorCode": "VC_TOKEN_PACK_CONFIG_REQUIRED", "message": "VC token-pack catalog is not configured."},
+        )
+    pack_key = str(payload.pack or "standard").strip().lower() or "standard"
+    if pack_key not in VC_TOKEN_PACK_CATALOG:
+        raise HTTPException(status_code=400, detail="Unknown VC token pack.")
+    pack_cfg = VC_TOKEN_PACK_CATALOG.get(pack_key) or {}
+    pack_vc = max(1, int(pack_cfg.get("vc") or 0))
+    final_amount_inr = max(1, int(pack_cfg.get("priceInr") or 0))
+    notes = {
+        "kind": "vc_token_pack",
+        "uid": uid,
+        "packKey": pack_key,
+        "packVc": str(pack_vc),
+        "finalAmountInr": str(final_amount_inr),
+    }
+    order = razorpay_billing.create_one_time_order(
+        amount_minor=int(final_amount_inr * 100),
+        currency="INR",
+        receipt=f"vc_{uid}_{pack_key}_{uuid.uuid4().hex[:8]}",
+        notes=notes,
+    )
+    order_id = str(order.get("order_id") or order.get("id") or "").strip()
+    return JSONResponse(
+        {
+            "ok": True,
+            "provider": "razorpay",
+            "kind": "vc_token_pack",
+            "orderId": order_id or None,
+            "packKey": pack_key,
+            "packVc": pack_vc,
+            "finalAmountInr": final_amount_inr,
+            "checkoutOptions": {
+                "key": _razorpay_key_id(),
+                "order_id": order_id or None,
+                "notes": notes,
+            },
+        }
+    )
+
+
+@app.post("/wallet/vc/convert")
+def wallet_vc_convert(payload: WalletVcConvertRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    if _as_positive_number(VF_VC_CONVERSION_RATE) <= 0:
+        raise HTTPException(
+            status_code=503,
+            detail={"errorCode": "VC_CONVERSION_CONFIG_REQUIRED", "message": "VC conversion rate is not configured."},
+        )
+    vf_amount = _as_positive_number(payload.vfAmount)
+    if vf_amount <= 0:
+        raise HTTPException(status_code=400, detail="vfAmount must be greater than 0.")
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    paid_vf_balance = _as_positive_number(entitlement.get("paidVfBalance"))
+    if paid_vf_balance + VF_EPSILON < vf_amount:
+        raise HTTPException(status_code=429, detail="Insufficient paid VF balance for VC conversion.")
+    now = _utc_now()
+    remaining_lots, _lot_debits, spent_amount, remaining_total = _consume_paid_vf_lots(entitlement, vf_amount, now)
+    if spent_amount + VF_EPSILON < vf_amount:
+        raise HTTPException(status_code=429, detail="Insufficient paid VF balance for VC conversion.")
+    vc_credited = _as_positive_number(vf_amount * _as_positive_number(VF_VC_CONVERSION_RATE))
+    next_paid_vf = _as_positive_number(remaining_total)
+    next_vc_paid = _as_positive_number(_as_positive_number(entitlement.get("vcPaidBalance")) + vc_credited)
+    _write_entitlement(
+        uid,
+        {
+            "paidVfBalance": next_paid_vf,
+            "paidVfLots": remaining_lots,
+            "vcPaidBalance": next_vc_paid,
+            "updatedAt": _safe_now_iso(),
+        },
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "vfDebited": vf_amount,
+            "vcCredited": vc_credited,
+            "conversionRate": _as_positive_number(VF_VC_CONVERSION_RATE),
+            "wallet": {
+                "paidVfBalance": next_paid_vf,
+                "vcPaidBalance": next_vc_paid,
+            },
         }
     )
 
@@ -26791,10 +30311,248 @@ def billing_portal_session(payload: BillingPortalSessionRequest, request: Reques
     return JSONResponse({"ok": True, "url": session.get("url")})
 
 
+@app.post("/billing/subscription/cancel")
+def billing_subscription_cancel(request: Request) -> JSONResponse:
+    _require_stripe_ready()
+    uid = _require_request_uid(request)
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    if not subscription_id:
+        raise HTTPException(status_code=400, detail="No active Stripe subscription is linked to this user.")
+    try:
+        subscription_obj = stripe.Subscription.modify(  # type: ignore[attr-defined]
+            subscription_id,
+            cancel_at_period_end=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        lowered = str(exc or "").strip().lower()
+        if "invalid" in lowered or "no such" in lowered or "already" in lowered or "status" in lowered:
+            raise HTTPException(status_code=409, detail=f"Failed to cancel subscription: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Failed to cancel subscription: {exc}") from exc
+    resolved_customer_id = str(_stripe_obj_get(subscription_obj, "customer", "") or "").strip() or customer_id
+    if customer_id and resolved_customer_id and customer_id != resolved_customer_id:
+        raise HTTPException(status_code=409, detail="Stored Stripe customer mapping does not match subscription owner.")
+    items = _stripe_data_list(_stripe_obj_get(subscription_obj, "items", {}))
+    first_item = items[0] if items else {}
+    price_id = str(_stripe_obj_get(_stripe_obj_get(first_item, "price", {}), "id", "") or "").strip()
+    if not price_id:
+        plan_key = _plan_key_from_name(str(entitlement.get("plan") or "free"))
+        price_id = _stripe_price_id_for_plan(plan_key, phase="recurring")
+    _sync_entitlement_from_subscription(
+        uid=uid,
+        customer_id=resolved_customer_id,
+        subscription_id=subscription_id,
+        subscription_status=str(_stripe_obj_get(subscription_obj, "status", "active") or "active"),
+        price_id=price_id,
+        billing_country=str(entitlement.get("billingCountry") or "").strip().upper() or None,
+    )
+    summary = _build_billing_account_summary(uid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "provider": BILLING_PROVIDER_STRIPE,
+            "message": "Subscription cancel request applied.",
+            "subscription": dict(summary.get("subscription") or {"id": subscription_id}),
+        }
+    )
+
+
+@app.post("/billing/subscription/resume")
+def billing_subscription_resume(request: Request) -> JSONResponse:
+    _require_stripe_ready()
+    uid = _require_request_uid(request)
+    entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    if not subscription_id:
+        raise HTTPException(status_code=400, detail="No active Stripe subscription is linked to this user.")
+    try:
+        subscription_obj = stripe.Subscription.modify(  # type: ignore[attr-defined]
+            subscription_id,
+            cancel_at_period_end=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        lowered = str(exc or "").strip().lower()
+        if "invalid" in lowered or "no such" in lowered or "already" in lowered or "status" in lowered:
+            raise HTTPException(status_code=409, detail=f"Failed to resume subscription: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Failed to resume subscription: {exc}") from exc
+    resolved_customer_id = str(_stripe_obj_get(subscription_obj, "customer", "") or "").strip() or customer_id
+    if customer_id and resolved_customer_id and customer_id != resolved_customer_id:
+        raise HTTPException(status_code=409, detail="Stored Stripe customer mapping does not match subscription owner.")
+    items = _stripe_data_list(_stripe_obj_get(subscription_obj, "items", {}))
+    first_item = items[0] if items else {}
+    price_id = str(_stripe_obj_get(_stripe_obj_get(first_item, "price", {}), "id", "") or "").strip()
+    if not price_id:
+        plan_key = _plan_key_from_name(str(entitlement.get("plan") or "free"))
+        price_id = _stripe_price_id_for_plan(plan_key, phase="recurring")
+    _sync_entitlement_from_subscription(
+        uid=uid,
+        customer_id=resolved_customer_id,
+        subscription_id=subscription_id,
+        subscription_status=str(_stripe_obj_get(subscription_obj, "status", "active") or "active"),
+        price_id=price_id,
+        billing_country=str(entitlement.get("billingCountry") or "").strip().upper() or None,
+    )
+    summary = _build_billing_account_summary(uid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "provider": BILLING_PROVIDER_STRIPE,
+            "message": "Subscription resume request applied.",
+            "subscription": dict(summary.get("subscription") or {"id": subscription_id}),
+        }
+    )
+
+
 @app.post("/billing/webhook")
 async def billing_webhook(request: Request) -> JSONResponse:
-    _require_stripe_ready()
     payload_raw = await request.body()
+    if len(payload_raw) > max(1, int(VF_BILLING_WEBHOOK_MAX_BODY_BYTES)):
+        raise HTTPException(status_code=413, detail="Webhook payload is too large.")
+
+    parsed_event: dict[str, Any]
+    try:
+        parsed_event = json.loads(payload_raw.decode("utf-8"))
+    except Exception:
+        parsed_event = {}
+
+    legacy_webhook_mode = isinstance(parsed_event, dict) and (
+        "event" in parsed_event
+        or "payload" in parsed_event
+        or ((not _stripe_available()) and _razorpay_available())
+    )
+    if legacy_webhook_mode:
+        signature = str(request.headers.get("x-razorpay-signature") or "").strip()
+        webhook_secret = _razorpay_webhook_secret()
+        if VF_IS_PRODUCTION and not webhook_secret:
+            raise HTTPException(status_code=503, detail="Razorpay webhook secret is required in production.")
+        if webhook_secret:
+            if not signature:
+                raise HTTPException(status_code=400, detail="Invalid Razorpay webhook signature.")
+            computed = hmac.new(
+                webhook_secret.encode("utf-8"),
+                payload_raw,
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(computed, signature):
+                raise HTTPException(status_code=400, detail="Invalid Razorpay webhook signature.")
+        else:
+            allow_unsigned_webhook = bool(VF_IS_LOCAL_DEV and VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED)
+            if not allow_unsigned_webhook:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unsigned Razorpay webhook payload is only allowed in explicit local development mode.",
+                )
+
+        event = parsed_event
+        event_type = str(event.get("event") or "").strip()
+        event_id = str(event.get("id") or "").strip()
+        if event_id and not _stripe_webhook_event_register(event_id, event_type):
+            return JSONResponse({"ok": True, "duplicate": True, "eventId": event_id})
+
+        try:
+            if event_type == "payment.captured":
+                payment = (((event.get("payload") or {}).get("payment") or {}).get("entity") or {})
+                notes = payment.get("notes") if isinstance(payment.get("notes"), dict) else {}
+                kind = str(notes.get("kind") or "").strip().lower()
+                uid = str(notes.get("uid") or "").strip()
+                if not uid:
+                    uid = _resolve_uid_from_customer(str(payment.get("customer_id") or ""))
+
+                if kind == "token_pack" and uid:
+                    raw_pack_key = str(notes.get("packKey") or "standard")
+                    pack_key = _normalize_token_pack_key(raw_pack_key)
+                    pack_vf = _as_positive_int(notes.get("packVf") or _token_pack_vf_for_pack(pack_key) or VF_TOKEN_PACK_VF_AMOUNT)
+                    standard_amount_inr = _as_positive_int(
+                        notes.get("standardAmountInr")
+                        or (_token_pack_config(pack_key).get("priceInr") if pack_key in TOKEN_PACK_CATALOG else 0)
+                    )
+                    final_amount_inr = _as_positive_int(notes.get("finalAmountInr") or (_as_positive_int(payment.get("amount")) // 100))
+                    payment_id = str(payment.get("id") or "").strip()
+                    _credit_paid_vf(
+                        uid=uid,
+                        amount=pack_vf,
+                        reason="stripe_token_pack",
+                        transaction_id=(f"razorpay_payment_token_pack_{payment_id}" if payment_id else None),
+                        metadata={
+                            "kind": "token_pack",
+                            "eventType": event_type,
+                            "provider": "razorpay",
+                            "paymentId": payment_id,
+                            "orderId": str(payment.get("order_id") or "").strip(),
+                            "packKey": pack_key,
+                            "packVf": pack_vf,
+                            "standardAmountInr": standard_amount_inr,
+                            "finalAmountInr": final_amount_inr,
+                            "amountTotal": _as_positive_int(payment.get("amount")),
+                            "currency": str(payment.get("currency") or "INR"),
+                        },
+                    )
+                elif kind == "vc_token_pack" and uid:
+                    pack_key = str(notes.get("packKey") or "standard").strip().lower() or "standard"
+                    pack_cfg = VC_TOKEN_PACK_CATALOG.get(pack_key) if isinstance(VC_TOKEN_PACK_CATALOG, dict) else None
+                    pack_vc = _as_positive_int(notes.get("packVc") or ((pack_cfg or {}).get("vc") if isinstance(pack_cfg, dict) else 0))
+                    if pack_vc > 0:
+                        payment_id = str(payment.get("id") or "").strip()
+                        order_id = str(payment.get("order_id") or "").strip()
+                        vc_tx_id = ""
+                        if payment_id:
+                            vc_tx_id = f"razorpay_payment_vc_pack_{payment_id}"
+                        elif order_id:
+                            vc_tx_id = f"razorpay_order_vc_pack_{order_id}"
+                        _credit_paid_vc(
+                            uid=uid,
+                            amount=pack_vc,
+                            reason="razorpay_vc_token_pack",
+                            transaction_id=vc_tx_id or None,
+                            metadata={
+                                "kind": "vc_token_pack",
+                                "eventType": event_type,
+                                "provider": "razorpay",
+                                "paymentId": payment_id,
+                                "orderId": order_id,
+                                "packKey": pack_key,
+                                "packVc": pack_vc,
+                                "amountTotal": _as_positive_int(payment.get("amount")),
+                                "currency": str(payment.get("currency") or "INR"),
+                            },
+                        )
+            elif event_type == "subscription.activated":
+                sub = (((event.get("payload") or {}).get("subscription") or {}).get("entity") or {})
+                notes = sub.get("notes") if isinstance(sub.get("notes"), dict) else {}
+                uid = str(notes.get("uid") or "").strip()
+                if not uid:
+                    uid = _resolve_uid_from_customer(str(sub.get("customer_id") or ""))
+                if uid:
+                    next_status = _billing_status_from_subscription(str(sub.get("status") or "active"))
+                    plan_hint = str(sub.get("plan_id") or notes.get("plan") or "free").strip().lower()
+                    plan_key = _plan_key_from_name(plan_hint.split("_")[0] if plan_hint else "free")
+                    _write_entitlement(
+                        uid,
+                        {
+                            "plan": _normalize_plan_name(plan_key),
+                            "monthlyVfLimit": int((PLAN_LIMITS.get(plan_key) or PLAN_LIMITS["free"]).get("monthlyVfLimit") or PLAN_LIMITS["free"]["monthlyVfLimit"]),
+                            "status": next_status,
+                            "subscriptionId": str(sub.get("id") or "").strip() or None,
+                            "razorpayCustomerId": str(sub.get("customer_id") or "").strip() or None,
+                            "latestInvoiceId": str(sub.get("latest_invoice_id") or "").strip() or None,
+                        },
+                    )
+                    if plan_key == "launcher" and next_status == "active":
+                        _write_entitlement(uid, {"launcherOfferConsumed": True})
+        except Exception as exc:  # noqa: BLE001
+            _stripe_webhook_event_complete(
+                event_id,
+                status="failed",
+                error_detail=str(exc),
+            )
+            raise HTTPException(status_code=500, detail=f"Webhook processing failed: {exc}") from exc
+
+        _stripe_webhook_event_complete(event_id, status="succeeded")
+        return JSONResponse({"ok": True})
+
+    _require_stripe_ready()
     signature = request.headers.get("stripe-signature")
     if VF_IS_PRODUCTION and not STRIPE_WEBHOOK_SECRET:
         raise HTTPException(status_code=503, detail="Stripe webhook secret is required in production.")
@@ -26890,6 +30648,8 @@ async def billing_webhook(request: Request) -> JSONResponse:
                         price_id=price_id,
                         billing_country=billing_country,
                     )
+                    if plan_token == "launcher" and str(sub_status or "").strip().lower() == "active":
+                        _write_entitlement(uid, {"launcherOfferConsumed": True})
                     if subscription_id:
                         _ = _ensure_subscription_schedule_for_loyalty(
                             subscription_id=subscription_id,
@@ -26999,8 +30759,14 @@ async def billing_webhook(request: Request) -> JSONResponse:
                     reason="checkout_session_expired" if event_type == "checkout.session.expired" else "checkout_payment_failed",
                 )
     except Exception as exc:  # noqa: BLE001
+        _stripe_webhook_event_complete(
+            event_id,
+            status="failed",
+            error_detail=str(exc),
+        )
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {exc}") from exc
 
+    _stripe_webhook_event_complete(event_id, status="succeeded")
     return JSONResponse({"ok": True})
 
 
@@ -27454,6 +31220,14 @@ def _runtime_tts_request_with_gemini_failover(
     request_kwargs = dict(kwargs)
     if timeout is not None:
         request_kwargs["timeout"] = timeout
+    runtime_auth_headers = _runtime_auth_headers_for_url(url, include_accept=False)
+    if runtime_auth_headers:
+        base_headers = request_kwargs.get("headers")
+        merged_headers = dict(base_headers) if isinstance(base_headers, dict) else {}
+        for key, value in runtime_auth_headers.items():
+            if key not in merged_headers and value:
+                merged_headers[key] = value
+        request_kwargs["headers"] = merged_headers
 
     try:
         response = _runtime_http_request(method, url, **request_kwargs)
@@ -27478,7 +31252,7 @@ def _runtime_tts_request_with_gemini_failover(
     print(
         (
             "[gemini-auto-rotate] rotated free pool after pool exhaustion "
-            f"(engine={str(engine or '').strip().upper() or 'GEM'}, "
+            f"(engine={str(engine or '').strip().upper() or 'PRIME'}, "
             f"jobId={str(job_id or '').strip() or 'n/a'}, "
             f"traceId={str(trace_id or '').strip() or 'n/a'}, "
             f"errorCode={str(extract_error_code(detail) or '')}, "
@@ -27609,7 +31383,7 @@ def _build_tts_upstream_payload(
     if _is_gem_runtime_engine(engine):
         if not upstream_payload.get("voiceName"):
             upstream_payload["voiceName"] = _resolve_gem_runtime_voice_name(voice_id or requested_voice_name or "Fenrir")
-        # Keep GEM runtime payload fully normalized to runtime voice names.
+        # Keep PRIME runtime payload fully normalized to runtime voice names.
         gem_voice_name = _resolve_gem_runtime_voice_name(str(upstream_payload.get("voiceName") or voice_id or "Fenrir"))
         upstream_payload["voiceName"] = gem_voice_name
         upstream_payload["voice_id"] = gem_voice_name
@@ -27630,7 +31404,7 @@ def _build_tts_upstream_payload(
             pools_config,
             _tts_pool_hint_plan_key(plan_key),
         )
-    elif engine == "KOKORO" and voice_id:
+    elif engine == "DUNO" and voice_id:
         upstream_payload["voiceId"] = voice_id
 
     multi_speaker_mode = str(payload.multi_speaker_mode or "").strip().lower()
@@ -27717,16 +31491,16 @@ def _tts_job_retry_backoff_ms(attempt: int) -> int:
 
 def _safe_tts_engine_name(engine: str) -> str:
     try:
-        normalized = _normalize_engine_name(str(engine or "GEM"))
+        normalized = _normalize_engine_name(str(engine or "PRIME"))
     except Exception:
-        normalized = "GEM"
-    return "KOKORO" if normalized == "KOKORO" else "GEM"
+        normalized = _resolve_internal_engine_token(str(engine or "PRIME")) or "PRIME"
+    return normalized
 
 
 def _post_tts_conversion_status_for_engine(*, engine: str) -> str:
     safe_engine = _safe_tts_engine_name(engine)
-    if safe_engine == "KOKORO":
-        return "disabled_for_kokoro"
+    if safe_engine == "DUNO":
+        return "disabled_for_duno"
     return "disabled"
 
 
@@ -27762,7 +31536,7 @@ def _sample_stats(values: list[int]) -> dict[str, int]:
 
 def _default_engine_runtime_ms(engine: str) -> int:
     safe_engine = _safe_tts_engine_name(engine)
-    if safe_engine == "KOKORO":
+    if safe_engine == "DUNO":
         return 2_000
     return 3_200
 
@@ -27787,7 +31561,7 @@ def _record_tts_job_started(*, job: dict[str, Any]) -> None:
     safe_job_id = str(job.get("jobId") or "").strip()
     if not safe_job_id:
         return
-    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "GEM"))
+    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "PRIME"))
     created_at_ms = int(job.get("createdAtMs") or 0)
     started_at_ms = int(job.get("startedAtMs") or 0)
     enqueue_delay_ms = max(0, started_at_ms - created_at_ms) if created_at_ms > 0 and started_at_ms > 0 else 0
@@ -28043,10 +31817,12 @@ def _mark_job_failed_and_revert_usage(
     detail: Any,
     error_tag: str,
 ) -> None:
+    current_job = _TTS_JOB_QUEUE.get(job_id)
+    _release_tts_success_quota_reservation(_extract_tts_success_quota_reservation_payload(current_job))
     _finalize_usage(uid, request_id, success=False, error_detail=error_tag)
     safe_detail = _sanitize_public_tts_error_detail(detail)
     failed_job = _TTS_JOB_QUEUE.mark_failed(job_id, status_code=status_code, error=safe_detail)
-    failed_engine = _safe_tts_engine_name(str((failed_job or {}).get("engine") or "GEM"))
+    failed_engine = _safe_tts_engine_name(str((failed_job or {}).get("engine") or "PRIME"))
     reason = error_tag
     if isinstance(safe_detail, dict):
         reason = str(safe_detail.get("reason") or reason or "failed")
@@ -28086,7 +31862,7 @@ def _tts_job_status_payload(
     created_at_ms = int(job.get("createdAtMs") or 0)
     queue_age_ms = max(0, now_ms - created_at_ms) if created_at_ms > 0 else 0
     queue_depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
-    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "GEM"))
+    safe_engine = _safe_tts_engine_name(str(job.get("engine") or "PRIME"))
     payload: dict[str, Any] = {
         "ok": True,
         "jobId": str(job.get("jobId") or ""),
@@ -28550,7 +32326,7 @@ def _split_text_live_chunks(
     )
     safe_engine = _safe_tts_engine_name(engine)
     source_payload = multi_speaker_payload or {}
-    if safe_engine == "GEM":
+    if safe_engine == "PRIME":
         mode = str(source_payload.get("multi_speaker_mode") or "").strip().lower()
         raw_line_map = source_payload.get("multi_speaker_line_map")
         line_map = normalize_multi_speaker_line_map_shared(raw_line_map)
@@ -28585,7 +32361,7 @@ def _build_gem_chunk_payload(base_payload: dict[str, Any], chunk: dict[str, Any]
 
 def _build_live_chunk_upstream_payload(*, engine: str, base_payload: dict[str, Any], chunk: dict[str, Any]) -> dict[str, Any]:
     safe_engine = _safe_tts_engine_name(engine)
-    if safe_engine == "GEM":
+    if safe_engine == "PRIME":
         return _build_gem_chunk_payload(base_payload, chunk)
     payload = dict(base_payload)
     payload["text"] = str(chunk.get("text") or "").strip()
@@ -28598,15 +32374,17 @@ def _tts_v2_synthesize_chunk(
     text: Optional[str] = None,
     lane_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    safe_text = str(text if text is not None else payload_base.get("text") or "").strip()
+    upstream_payload = dict(payload_base or {})
+    engine = _resolve_internal_engine_token(str(upstream_payload.get("engine") or "PRIME")) or "PRIME"
+    if engine == "DUNO":
+        upstream_payload = _prepare_duno_runtime_payload(upstream_payload)
+    safe_text = str(text if text is not None else upstream_payload.get("text") or "").strip()
     if not safe_text:
         raise V2ValidationError("chunk text is empty.")
-    lane_id = str(lane_id if lane_id is not None else payload_base.get("_lane_id") or "").strip()
-    engine = _normalize_engine_name(str(payload_base.get("engine") or "GEM"))
+    lane_id = str(lane_id if lane_id is not None else upstream_payload.get("_lane_id") or "").strip()
     runtime_base = _runtime_url_for_engine(engine).rstrip("/")
     runtime_path = _runtime_synthesize_path_for_engine(engine)
     upstream_url = f"{runtime_base}{runtime_path}"
-    upstream_payload = dict(payload_base or {})
     upstream_payload["engine"] = engine
     upstream_payload["text"] = safe_text
     upstream_payload.pop("apiKey", None)
@@ -29110,7 +32888,7 @@ def _resolve_tts_job_chunk(job: dict[str, Any], chunk_index: int) -> Optional[di
     if not source_chunks:
         source_chunks = _load_live_chunks_from_artifacts(
             str(job.get("jobId") or ""),
-            engine=_safe_tts_engine_name(str(job.get("engine") or "GEM")),
+            engine=_safe_tts_engine_name(str(job.get("engine") or "PRIME")),
             trace_id=str(job.get("traceId") or ""),
         )
     for item in source_chunks:
@@ -29130,13 +32908,25 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     if not job_id:
         return
     current = _TTS_JOB_QUEUE.mark_running(job_id, worker_id=worker_id) or dict(job)
+    queued_payload = current.get("payload") if isinstance(current.get("payload"), dict) else {}
+    quota_reservation_payload = _extract_tts_success_quota_reservation_payload(current)
+    uid = str(current.get("uid") or queued_payload.get("uid") or "").strip()
+    request_id = str(current.get("requestId") or queued_payload.get("request_id") or job_id).strip() or job_id
+    trace_id = str(
+        current.get("traceId")
+        or queued_payload.get("trace_id")
+        or queued_payload.get("request_id")
+        or request_id
+    ).strip() or request_id
     audio_audit_ids = _audio_generation_audit_ids_from_job(current)
     status = str(current.get("status") or "").strip().lower()
     if status in {"completed", "failed", "cancelled"}:
         if status == "cancelled":
+            _release_tts_success_quota_reservation(quota_reservation_payload)
+            _finalize_usage(uid, request_id, success=False, error_detail="cancelled")
             _record_tts_terminal_event(
                 job_id=job_id,
-                engine=str(current.get("engine") or "GEM"),
+                engine=_resolve_internal_engine_token(str(current.get("engine") or "PRIME")) or "PRIME",
                 status="cancelled",
                 reason="cancelled",
                 status_code=409,
@@ -29148,8 +32938,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                     failure_code="cancelled_by_user",
                     failure_detail="TTS job was cancelled before worker execution.",
                     job_id=job_id,
-                    request_id=str(current.get("requestId") or job_id),
-                    trace_id=str(current.get("traceId") or job_id),
+                    request_id=request_id,
+                    trace_id=trace_id,
                 )
         return
     _record_tts_job_started(job=current)
@@ -29164,11 +32954,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             },
         )
 
-    uid = str(current.get("uid") or "").strip()
-    request_id = str(current.get("requestId") or job_id).strip() or job_id
-    trace_id = str(current.get("traceId") or request_id).strip() or request_id
-    engine = _normalize_engine_name(str(current.get("engine") or "GEM"))
-    text = str(current.get("text") or "")
+    engine = _resolve_internal_engine_token(str(current.get("engine") or "PRIME")) or "PRIME"
+    text = str(current.get("text") or queued_payload.get("text") or "")
     voice_id = str(current.get("voiceId") or "").strip()
     voice_name = str(current.get("voiceName") or "").strip()
     plan_name = str(current.get("planName") or "Free").strip() or "Free"
@@ -29205,7 +32992,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
     runtime_base = str(current.get("runtimeBase") or _runtime_url_for_engine(engine)).strip().rstrip("/")
     runtime_path = str(current.get("runtimePath") or _runtime_synthesize_path_for_engine(engine)).strip()
     upstream_url = f"{runtime_base}{runtime_path}"
-    upstream_payload = dict(current.get("upstreamPayload") or {})
+    upstream_payload = dict(current.get("upstreamPayload") or queued_payload or {})
     safe_engine = _safe_tts_engine_name(engine)
     semaphore = _TTS_ENGINE_SEMAPHORES.get(safe_engine)
     acquired_slot = False
@@ -29353,6 +33140,8 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 return latest_status == "cancelled"
 
             def _mark_live_cancelled() -> None:
+                _release_tts_success_quota_reservation(quota_reservation_payload)
+                _finalize_usage(uid, request_id, success=False, error_detail="cancelled")
                 _record_tts_terminal_event(
                     job_id=job_id,
                     engine=safe_engine,
@@ -29751,49 +33540,7 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 )
                 return
 
-            quota_headers: dict[str, str] = {}
-            if not admin_limit_bypass:
-                fingerprint = idempotency_key or request_id
-                try:
-                    quota_decision = _commit_tts_success_quota(
-                        uid,
-                        plan_name,
-                        plan_key,
-                        trace_id,
-                        request_fingerprint=fingerprint,
-                    )
-                except HTTPException as quota_exc:
-                    _mark_job_failed_and_revert_usage(
-                        job_id=job_id,
-                        uid=uid,
-                        request_id=request_id,
-                        status_code=quota_exc.status_code,
-                        detail=quota_exc.detail,
-                        error_tag="success_quota_exceeded",
-                    )
-                    return
-                quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
-
-            _usage_event_attach_runtime_usage(
-                uid,
-                request_id,
-                runtime_usage_totals,
-                mode="live_stream",
-                trace_id=response_trace_id or trace_id,
-            )
-            _finalize_usage(uid, request_id, success=True)
-            _build_tts_history_item(
-                uid=uid,
-                request_id=request_id,
-                trace_id=response_trace_id or trace_id,
-                engine=engine,
-                voice_name=voice_name,
-                voice_id=voice_id,
-                text=text,
-            )
-
             completed_headers: dict[str, str] = {"x-vf-request-id": request_id}
-            completed_headers.update(quota_headers)
             if response_trace_id:
                 completed_headers["x-voiceflow-trace-id"] = response_trace_id
             if diagnostics_header:
@@ -29819,6 +33566,76 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
                 headers=completed_headers,
                 result_ref=result_ref,
             )
+
+            quota_headers: dict[str, str] = {}
+            if not admin_limit_bypass:
+                if quota_reservation_payload is not None:
+                    committed_reservation = _commit_tts_success_quota_reservation(quota_reservation_payload)
+                    if committed_reservation is None or not committed_reservation.allowed:
+                        fingerprint = idempotency_key or request_id
+                        try:
+                            quota_decision = _commit_tts_success_quota(
+                                uid,
+                                plan_name,
+                                plan_key,
+                                trace_id,
+                                request_fingerprint=fingerprint,
+                            )
+                        except HTTPException as quota_exc:
+                            _mark_job_failed_and_revert_usage(
+                                job_id=job_id,
+                                uid=uid,
+                                request_id=request_id,
+                                status_code=quota_exc.status_code,
+                                detail=quota_exc.detail,
+                                error_tag="success_quota_exceeded",
+                            )
+                            return
+                        quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
+                    else:
+                        quota_headers = _success_rate_limit_headers(committed_reservation.snapshot)
+                else:
+                    fingerprint = idempotency_key or request_id
+                    try:
+                        quota_decision = _commit_tts_success_quota(
+                            uid,
+                            plan_name,
+                            plan_key,
+                            trace_id,
+                            request_fingerprint=fingerprint,
+                        )
+                    except HTTPException as quota_exc:
+                        _mark_job_failed_and_revert_usage(
+                            job_id=job_id,
+                            uid=uid,
+                            request_id=request_id,
+                            status_code=quota_exc.status_code,
+                            detail=quota_exc.detail,
+                            error_tag="success_quota_exceeded",
+                        )
+                        return
+                    quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
+            if quota_headers:
+                _TTS_JOB_QUEUE.update(job_id, {"headers": {**completed_headers, **quota_headers}})
+
+            _usage_event_attach_runtime_usage(
+                uid,
+                request_id,
+                runtime_usage_totals,
+                mode="live_stream",
+                trace_id=response_trace_id or trace_id,
+            )
+            _finalize_usage(uid, request_id, success=True)
+            _build_tts_history_item(
+                uid=uid,
+                request_id=request_id,
+                trace_id=response_trace_id or trace_id,
+                engine=engine,
+                voice_name=voice_name,
+                voice_id=voice_id,
+                text=text,
+            )
+
             audio_created_at = _safe_now_iso()
             for audit_id in _audio_generation_audit_ids_from_job(completed_job or current):
                 _audio_generation_audit_mark_terminal(
@@ -29972,52 +33789,9 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
         if post_tts_conversion_status:
             post_conversion_headers["x-vf-post-tts-conversion"] = post_tts_conversion_status
 
-        quota_headers: dict[str, str] = {}
-        if not admin_limit_bypass:
-            fingerprint = idempotency_key or request_id
-            try:
-                quota_decision = _commit_tts_success_quota(
-                    uid,
-                    plan_name,
-                    plan_key,
-                    trace_id,
-                    request_fingerprint=fingerprint,
-                )
-            except HTTPException as quota_exc:
-                _mark_job_failed_and_revert_usage(
-                    job_id=job_id,
-                    uid=uid,
-                    request_id=request_id,
-                    status_code=quota_exc.status_code,
-                    detail=quota_exc.detail,
-                    error_tag="success_quota_exceeded",
-                )
-                return
-            quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
-
         response_trace_id = str(runtime_response.headers.get("x-voiceflow-trace-id") or "").strip()
         runtime_usage_header = _parse_runtime_usage_header(runtime_response.headers.get("x-voiceflow-usage"))
-        _usage_event_attach_runtime_usage(
-            uid,
-            request_id,
-            runtime_usage_header,
-            mode="standard",
-            trace_id=response_trace_id or trace_id,
-        )
-        _finalize_usage(uid, request_id, success=True)
-
-        _build_tts_history_item(
-            uid=uid,
-            request_id=request_id,
-            trace_id=response_trace_id or trace_id,
-            engine=engine,
-            voice_name=voice_name,
-            voice_id=voice_id,
-            text=text,
-        )
-
         completed_headers: dict[str, str] = {"x-vf-request-id": request_id}
-        completed_headers.update(quota_headers)
         if response_trace_id:
             completed_headers["x-voiceflow-trace-id"] = response_trace_id
         diagnostics = runtime_response.headers.get("x-voiceflow-diagnostics")
@@ -30044,6 +33818,77 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
             headers=completed_headers,
             result_ref=result_ref,
         )
+
+        quota_headers: dict[str, str] = {}
+        if not admin_limit_bypass:
+            if quota_reservation_payload is not None:
+                committed_reservation = _commit_tts_success_quota_reservation(quota_reservation_payload)
+                if committed_reservation is None or not committed_reservation.allowed:
+                    fingerprint = idempotency_key or request_id
+                    try:
+                        quota_decision = _commit_tts_success_quota(
+                            uid,
+                            plan_name,
+                            plan_key,
+                            trace_id,
+                            request_fingerprint=fingerprint,
+                        )
+                    except HTTPException as quota_exc:
+                        _mark_job_failed_and_revert_usage(
+                            job_id=job_id,
+                            uid=uid,
+                            request_id=request_id,
+                            status_code=quota_exc.status_code,
+                            detail=quota_exc.detail,
+                            error_tag="success_quota_exceeded",
+                        )
+                        return
+                    quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
+                else:
+                    quota_headers = _success_rate_limit_headers(committed_reservation.snapshot)
+            else:
+                fingerprint = idempotency_key or request_id
+                try:
+                    quota_decision = _commit_tts_success_quota(
+                        uid,
+                        plan_name,
+                        plan_key,
+                        trace_id,
+                        request_fingerprint=fingerprint,
+                    )
+                except HTTPException as quota_exc:
+                    _mark_job_failed_and_revert_usage(
+                        job_id=job_id,
+                        uid=uid,
+                        request_id=request_id,
+                        status_code=quota_exc.status_code,
+                        detail=quota_exc.detail,
+                        error_tag="success_quota_exceeded",
+                    )
+                    return
+                quota_headers = _success_rate_limit_headers(quota_decision.snapshot)
+        if quota_headers:
+            _TTS_JOB_QUEUE.update(job_id, {"headers": {**completed_headers, **quota_headers}})
+
+        _usage_event_attach_runtime_usage(
+            uid,
+            request_id,
+            runtime_usage_header,
+            mode="standard",
+            trace_id=response_trace_id or trace_id,
+        )
+        _finalize_usage(uid, request_id, success=True)
+
+        _build_tts_history_item(
+            uid=uid,
+            request_id=request_id,
+            trace_id=response_trace_id or trace_id,
+            engine=engine,
+            voice_name=voice_name,
+            voice_id=voice_id,
+            text=text,
+        )
+
         audio_created_at = _safe_now_iso()
         for audit_id in _audio_generation_audit_ids_from_job(completed_job or current):
             _audio_generation_audit_mark_terminal(
@@ -30100,7 +33945,13 @@ def _sanitize_tts_v2_create_payload(payload: dict[str, Any] | TtsV2CreateJobRequ
         "serviceAccountJson",
     ):
         safe_payload.pop(key, None)
-    safe_payload["engine"] = _normalize_engine_name(str(safe_payload.get("engine") or "GEM"))
+    raw_engine = safe_payload.get("engine")
+    if raw_engine is None:
+        raw_engine = "PRIME"
+    try:
+        safe_payload["engine"] = _normalize_engine_name(str(raw_engine))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     safe_payload["text"] = str(safe_payload.get("text") or "").strip()
     safe_payload["mode"] = str(safe_payload.get("mode") or "single_speaker").strip().lower() or "single_speaker"
     return safe_payload
@@ -30117,41 +33968,67 @@ def _create_tts_v2_job_response(
     if require_session:
         _require_tts_v2_session(request, uid)
     raw_payload = _sanitize_tts_v2_create_payload(payload)
+    raw_payload["uid"] = str(uid or "").strip()
     trace_id = str(raw_payload.get("trace_id") or raw_payload.get("request_id") or "").strip()
-    _plan_name, _plan_key, _ = _enforce_tts_plan_guardrails(
+    plan_name, plan_key, _ = _enforce_tts_plan_guardrails(
         uid,
         len(str(raw_payload.get("text") or "")),
         trace_id,
-        engine=str(raw_payload.get("engine") or "GEM"),
+        engine=str(raw_payload.get("engine") or "PRIME"),
         bypass=is_admin,
     )
     request_id = str(raw_payload.get("request_id") or "").strip()
     if not request_id:
         raise HTTPException(status_code=400, detail={"error": "request_id is required."})
-    _reserve_usage(
+
+    reservation, reserve_headers = _reserve_tts_success_quota(
         uid,
-        request_id,
-        str(raw_payload.get("engine") or "GEM"),
-        len(str(raw_payload.get("text") or "")),
-        bypass_limits=is_admin,
-        bypass_reason="admin_request" if is_admin else "",
+        plan_name,
+        plan_key,
+        trace_id or request_id,
+        request_fingerprint=request_id,
     )
+    reservation_payload = _serialize_tts_success_quota_reservation(
+        reservation,
+        uid=uid,
+        plan_name=plan_name,
+        plan_key=plan_key,
+        trace_id=trace_id or request_id,
+        request_fingerprint=request_id,
+    )
+    raw_payload["successQuotaReservation"] = reservation_payload
+    raw_payload["successQuotaReservationToken"] = str(reservation_payload.get("reservationId") or "")
+    try:
+        _reserve_usage(
+            uid,
+            request_id,
+            str(raw_payload.get("engine") or "PRIME"),
+            len(str(raw_payload.get("text") or "")),
+            bypass_limits=is_admin,
+            bypass_reason="admin_request" if is_admin else "",
+        )
+    except Exception:
+        _release_tts_success_quota_reservation(reservation_payload)
+        raise
 
     try:
         job = _TTS_V2_ENGINE.create_job(
             uid=uid,
             is_admin=is_admin,
             payload=raw_payload,
-            plan_key=str(_plan_key or "free").strip().lower() or "free",
+            plan_key=str(plan_key or "free").strip().lower() or "free",
         )
         status_payload = _TTS_V2_ENGINE.status_payload(job=job, include_chunks=False, include_result=False)
     except V2ValidationError as exc:
+        _release_tts_success_quota_reservation(reservation_payload)
         _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
         raise HTTPException(status_code=400, detail={"error": str(exc)})
     except TtsV2RequestConflictError as exc:
+        _release_tts_success_quota_reservation(reservation_payload)
         _finalize_usage(uid, request_id, success=False, error_detail=str(exc))
         raise HTTPException(status_code=409, detail={"error": str(exc), "errorCode": REQUEST_ID_CONFLICT})
     except Exception:
+        _release_tts_success_quota_reservation(reservation_payload)
         _finalize_usage(uid, request_id, success=False, error_detail="tts_v2_create_failed")
         raise
 
@@ -30160,6 +34037,7 @@ def _create_tts_v2_job_response(
         "x-vf-job-id": str(status_payload.get("jobId") or ""),
         "x-vf-tts-v2": "1",
     }
+    headers.update(reserve_headers)
     if is_admin:
         headers["x-vf-admin"] = "1"
     payload_out = dict(status_payload)
@@ -30323,30 +34201,15 @@ def tts_job_cancel(job_id: str, request: Request) -> JSONResponse:
     raise HTTPException(status_code=410, detail="Legacy TTS route removed. Use POST /tts/v2/jobs/{job_id}/cancel.")
 
 
-@app.get("/models/kokoro/status")
-def kokoro_model_status() -> JSONResponse:
-    payload = _kokoro_model_status_payload()
-    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+@app.get("/models/duno/status")
+def duno_model_status() -> JSONResponse:
+    raise HTTPException(status_code=404, detail="Model file not found.")
 
 
 @app.get("/models/{model_path:path}")
 def serve_local_model_file(model_path: str) -> Response:
-    safe_model_path = str(model_path or "").strip().lstrip("/")
-    if not safe_model_path:
-        raise HTTPException(status_code=404, detail="Model file not found.")
-    candidate = (LOCAL_MODEL_MIRROR_ROOT / safe_model_path).resolve()
-    try:
-        candidate.relative_to(LOCAL_MODEL_MIRROR_ROOT)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=404, detail="Model file not found.") from exc
-    if not candidate.exists() or not candidate.is_file():
-        raise HTTPException(status_code=404, detail="Model file not found.")
-    guessed_media_type = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
-    return FileResponse(
-        str(candidate),
-        media_type=guessed_media_type,
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
-    )
+    _ = model_path
+    raise HTTPException(status_code=404, detail="Model file not found.")
 
 
 @app.get("/runtime/logs/tail", response_model=RuntimeLogTailResponse)
@@ -30467,8 +34330,28 @@ def _engine_status_entry_uncached(engine: str) -> dict[str, Any]:
     normalized_engine = _normalize_engine_name(engine)
     health_url = str(TTS_ENGINE_HEALTH_URLS.get(normalized_engine) or "").strip()
     runtime_url = health_url.rsplit("/health", 1)[0] if "/health" in health_url else _runtime_url_for_engine(normalized_engine)
-    capabilities_url = str(TTS_ENGINE_CAPABILITIES_URLS.get(normalized_engine) or f"{runtime_url}/v1/capabilities")
-    healthy, health_detail = _probe_runtime_health(health_url, timeout_sec=3.0)
+    runtime_url = str(runtime_url or "").strip().rstrip("/")
+    capabilities_url = str(TTS_ENGINE_CAPABILITIES_URLS.get(normalized_engine) or _runtime_endpoint(runtime_url, "/v1/capabilities"))
+    if not health_url:
+        detail = (
+            "DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL."
+            if normalized_engine == "DUNO"
+            else "Runtime URL is not configured."
+        )
+        return {
+            "engine": normalized_engine,
+            "runtimeUrl": runtime_url,
+            "healthUrl": "",
+            "capabilitiesUrl": capabilities_url,
+            "ready": False,
+            "state": "not_configured",
+            "detail": detail,
+            "capabilities": _capability_fallback(normalized_engine),
+        }
+    healthy, health_detail = _probe_runtime_health(
+        health_url,
+        timeout_sec=max(3.0, _runtime_health_probe_timeout_sec(health_url)),
+    )
     capabilities = _probe_runtime_capabilities(normalized_engine, timeout_sec=3.0)
     metadata = dict(capabilities.get("metadata") or {}) if isinstance(capabilities.get("metadata"), dict) else {}
 
@@ -30545,6 +34428,7 @@ def _normalize_runtime_voice_entry(raw_voice: dict[str, Any]) -> dict[str, Any]:
         "voice_id": voice_id,
         "voice": voice_name,
         "name": display_name,
+        "displayName": display_name,
         "language": language,
         "gender": gender,
     }
@@ -30556,7 +34440,7 @@ def _normalize_runtime_voice_entry(raw_voice: dict[str, Any]) -> dict[str, Any]:
 def _gem_runtime_voice_catalog() -> list[dict[str, Any]]:
     mapping = _load_voice_id_map()
     engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
-    gem_payload = engines.get("GEM") if isinstance(engines.get("GEM"), dict) else {}
+    gem_payload = engines.get("PRIME") if isinstance(engines.get("PRIME"), dict) else {}
     runtime_voices = gem_payload.get("runtimeVoices") if isinstance(gem_payload.get("runtimeVoices"), list) else []
     normalized: list[dict[str, Any]] = []
     for item in runtime_voices:
@@ -30578,20 +34462,27 @@ def _gem_runtime_voice_catalog() -> list[dict[str, Any]]:
     decorated: list[dict[str, Any]] = []
     for row in normalized:
         voice_id = str(row.get("voice_id") or "").strip()
-        base = _annotate_voice_access_fields("GEM", row)
-        decorated.append(_apply_mapped_voice_fields("GEM", voice_id, base))
+        base = _annotate_voice_access_fields("PRIME", row)
+        decorated.append(_apply_mapped_voice_fields("PRIME", voice_id, base))
     return decorated
 
 
-def _kokoro_runtime_voice_catalog() -> list[dict[str, Any]]:
+def _duno_runtime_voice_catalog() -> list[dict[str, Any]]:
     runtime_voices: list[dict[str, Any]] = []
-    url = f"{KOKORO_RUNTIME_URL}/v1/voices"
+    url = f"{DUNO_RUNTIME_URL}/v1/voices"
+    request_headers = {
+        "Accept": "application/json",
+        "ngrok-skip-browser-warning": "true",
+    }
+    auth_header = _duno_runtime_auth_header_value()
+    if auth_header:
+        request_headers["Authorization"] = auth_header
     try:
         response = _runtime_http_request(
             "GET",
             url,
             timeout=4,
-            headers={"ngrok-skip-browser-warning": "true"},
+            headers=request_headers,
         )
         if bool(getattr(response, "ok", False)):
             payload = response.json()
@@ -30604,8 +34495,8 @@ def _kokoro_runtime_voice_catalog() -> list[dict[str, Any]]:
     if not runtime_voices:
         mapping = _load_voice_id_map()
         engines = mapping.get("engines") if isinstance(mapping.get("engines"), dict) else {}
-        kokoro_payload = engines.get("KOKORO") if isinstance(engines.get("KOKORO"), dict) else {}
-        fallback_voices = kokoro_payload.get("runtimeVoices") if isinstance(kokoro_payload.get("runtimeVoices"), list) else []
+        duno_payload = engines.get("DUNO") if isinstance(engines.get("DUNO"), dict) else {}
+        fallback_voices = duno_payload.get("runtimeVoices") if isinstance(duno_payload.get("runtimeVoices"), list) else []
         runtime_voices = [item for item in fallback_voices if isinstance(item, dict)]
 
     normalized: list[dict[str, Any]] = []
@@ -30613,13 +34504,16 @@ def _kokoro_runtime_voice_catalog() -> list[dict[str, Any]]:
         row = _normalize_runtime_voice_entry(item)
         if not row:
             continue
-        normalized.append(_annotate_voice_access_fields("KOKORO", row))
+        normalized.append(_annotate_voice_access_fields("DUNO", row))
     return normalized
 
 
 @app.get("/tts/engines/status")
 def tts_engines_status(engine: str = Query("all"), force_refresh: bool = Query(False, alias="force")) -> JSONResponse:
-    selected = _resolve_engine_status_selection(engine)
+    try:
+        selected = _resolve_engine_status_selection(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     engines_payload = {
         item: _engine_status_entry(item, force_refresh=bool(force_refresh))
         for item in selected
@@ -30636,7 +34530,10 @@ def tts_engines_status(engine: str = Query("all"), force_refresh: bool = Query(F
 
 @app.get("/tts/engines/capabilities")
 def tts_engines_capabilities(engine: str = Query("all"), force_refresh: bool = Query(False, alias="force")) -> JSONResponse:
-    selected = _resolve_engine_status_selection(engine)
+    try:
+        selected = _resolve_engine_status_selection(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     payload = {
         item: dict(_engine_status_entry(item, force_refresh=bool(force_refresh)).get("capabilities") or {})
         for item in selected
@@ -30652,10 +34549,13 @@ def tts_engines_capabilities(engine: str = Query("all"), force_refresh: bool = Q
 
 
 @app.get("/tts/engines/voices")
-def tts_engines_voices(engine: str = Query("GEM")) -> JSONResponse:
-    normalized_engine = _normalize_engine_name(engine)
-    if normalized_engine == "KOKORO":
-        voices = _kokoro_runtime_voice_catalog()
+def tts_engines_voices(engine: str = Query("PRIME")) -> JSONResponse:
+    try:
+        normalized_engine = _normalize_engine_name(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if normalized_engine == "DUNO":
+        voices = _duno_runtime_voice_catalog()
     else:
         voices = _gem_runtime_voice_catalog()
     return JSONResponse(
@@ -30682,7 +34582,11 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
         effective_gpu_mode = _effective_tts_gpu_mode(engine, payload.gpu)
         _invalidate_tts_status_cache()
         health_url = TTS_ENGINE_HEALTH_URLS[engine]
-        already_online, online_detail = _probe_runtime_health(health_url)
+        probe_timeout_sec = _runtime_health_probe_timeout_sec(health_url)
+        already_online, online_detail = _probe_runtime_health(
+            health_url,
+            timeout_sec=probe_timeout_sec,
+        )
         if already_online:
             return JSONResponse(
                 {
@@ -30698,7 +34602,10 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
             )
 
         command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-        is_online, detail = _probe_runtime_health(health_url)
+        is_online, detail = _probe_runtime_health(
+            health_url,
+            timeout_sec=probe_timeout_sec,
+        )
         _invalidate_tts_status_cache()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

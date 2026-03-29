@@ -7,7 +7,7 @@ afterEach(() => {
 
 describe('admin provisioning hints', () => {
   it('surfaces a seed hint for an unseeded allowlisted admin login', () => {
-    vi.stubEnv('VITE_ADMIN_LOGIN_EMAIL', 'admin1@voiceflow.local');
+    vi.stubEnv('NEXT_PUBLIC_ADMIN_LOGIN_EMAIL', 'admin1@voiceflow.local');
 
     const hint = resolveAdminProvisioningHint('admin1@voiceflow.local', 'auth/user-not-found');
 
@@ -15,7 +15,7 @@ describe('admin provisioning hints', () => {
   });
 
   it('does not hint for wrong-password failures', () => {
-    vi.stubEnv('VITE_ADMIN_LOGIN_EMAIL', 'admin1@voiceflow.local');
+    vi.stubEnv('NEXT_PUBLIC_ADMIN_LOGIN_EMAIL', 'admin1@voiceflow.local');
 
     const hint = resolveAdminProvisioningHint('admin1@voiceflow.local', 'auth/wrong-password');
 
@@ -23,10 +23,18 @@ describe('admin provisioning hints', () => {
   });
 
   it('ignores non-admin emails', () => {
-    vi.stubEnv('VITE_ADMIN_LOGIN_EMAIL', 'admin1@voiceflow.local');
+    vi.stubEnv('NEXT_PUBLIC_ADMIN_LOGIN_EMAIL', 'admin1@voiceflow.local');
 
     const hint = resolveAdminProvisioningHint('user@example.com', 'auth/user-not-found');
 
     expect(hint).toBeNull();
+  });
+
+  it('accepts the browser-safe admin allowlist envs', () => {
+    vi.stubEnv('NEXT_PUBLIC_ADMIN_EMAIL_ALLOWLIST', 'admin2@voiceflow.local');
+
+    const hint = resolveAdminProvisioningHint('admin2@voiceflow.local', 'auth/user-not-found');
+
+    expect(hint).toContain('Firebase admin seed step');
   });
 });

@@ -13,45 +13,47 @@ describe('accountCenterLayout', () => {
   it('shows only change plan for free plans', () => {
     const visibility = getBillingActionVisibility({
       plan: { key: 'free' },
-      billing: { hasPortalAccess: true },
+      billing: { hasBillingManagement: true },
       subscription: { active: false, status: 'inactive', cancelAtPeriodEnd: false },
     } as BillingVisibilityInput);
 
     expect(visibility).toEqual({
       showChangePlan: true,
-      showOpenBillingPortal: false,
       showCancelRecurring: false,
+      showResumeRecurring: false,
     });
   });
 
-  it('shows change plan and billing portal for paid users with portal access', () => {
+  it('shows change plan and cancel action for paid users with billing management', () => {
     const visibility = getBillingActionVisibility({
       plan: { key: 'pro' },
-      billing: { hasPortalAccess: true },
+      billing: { hasBillingManagement: true },
       subscription: { active: false, status: 'incomplete', cancelAtPeriodEnd: false },
     } as BillingVisibilityInput);
 
     expect(visibility).toEqual({
       showChangePlan: true,
-      showOpenBillingPortal: true,
       showCancelRecurring: false,
+      showResumeRecurring: false,
     });
   });
 
   it('includes cancel recurring only when subscription is cancelable', () => {
     const activeVisibility = getBillingActionVisibility({
       plan: { key: 'pro' },
-      billing: { hasPortalAccess: true },
+      billing: { hasBillingManagement: true },
       subscription: { active: true, status: 'active', cancelAtPeriodEnd: false },
     } as BillingVisibilityInput);
     const cancelingVisibility = getBillingActionVisibility({
       plan: { key: 'pro' },
-      billing: { hasPortalAccess: true },
+      billing: { hasBillingManagement: true },
       subscription: { active: true, status: 'active', cancelAtPeriodEnd: true },
     } as BillingVisibilityInput);
 
     expect(activeVisibility.showCancelRecurring).toBe(true);
     expect(cancelingVisibility.showCancelRecurring).toBe(false);
+    expect(activeVisibility.showResumeRecurring).toBe(false);
+    expect(cancelingVisibility.showResumeRecurring).toBe(true);
   });
 
   it('keeps summary labels distinct from account detail labels', () => {

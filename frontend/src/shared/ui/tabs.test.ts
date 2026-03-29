@@ -1,5 +1,7 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { getManagedTabNavigationTarget, type ManagedTabItem } from './tabs';
+import { getManagedTabNavigationTarget, type ManagedTabItem, useManagedTabs } from './tabs';
 
 describe('getManagedTabNavigationTarget', () => {
   const items: ManagedTabItem<'import' | 'settings' | 'translator' | 'cast'>[] = [
@@ -64,5 +66,52 @@ describe('getManagedTabNavigationTarget', () => {
     expect(getManagedTabNavigationTarget(couponItems, 'subscription_discount', 'ArrowRight')).toBe('wallet_credit');
     expect(getManagedTabNavigationTarget(opsItems, 'guardian', 'ArrowRight')).toBe('alerts');
     expect(getManagedTabNavigationTarget(opsItems, 'usage', 'ArrowLeft')).toBe('analytics');
+  });
+
+  it('inherits disabled state from items when getTabProps omits disabled', () => {
+    const Probe = () => {
+      const managedTabs = useManagedTabs({
+        items: [
+          { id: 'first', disabled: true },
+          { id: 'second' },
+        ],
+        activeId: 'second',
+        onChange: () => undefined,
+        label: 'Probe tabs',
+        idBase: 'probe-tabs',
+      });
+      return React.createElement(
+        'div',
+        null,
+        React.createElement('button', { type: 'button', ...managedTabs.getTabProps('first') }, 'First'),
+        React.createElement('button', { type: 'button', ...managedTabs.getTabProps('second') }, 'Second')
+      );
+    };
+    const markup = renderToStaticMarkup(React.createElement(Probe));
+    expect(markup).toMatch(/id="probe-tabs-tab-first"[^>]*disabled=""/);
+    expect(markup).toContain('id="probe-tabs-tab-second"');
+  });
+
+  it('does not re-enable an item-disabled tab when disabled=false is passed', () => {
+    const Probe = () => {
+      const managedTabs = useManagedTabs({
+        items: [
+          { id: 'first', disabled: true },
+          { id: 'second' },
+        ],
+        activeId: 'second',
+        onChange: () => undefined,
+        label: 'Probe tabs override',
+        idBase: 'probe-tabs-override',
+      });
+      return React.createElement(
+        'div',
+        null,
+        React.createElement('button', { type: 'button', ...managedTabs.getTabProps('first', false) }, 'First'),
+        React.createElement('button', { type: 'button', ...managedTabs.getTabProps('second') }, 'Second')
+      );
+    };
+    const markup = renderToStaticMarkup(React.createElement(Probe));
+    expect(markup).toMatch(/id="probe-tabs-override-tab-first"[^>]*disabled=""/);
   });
 });

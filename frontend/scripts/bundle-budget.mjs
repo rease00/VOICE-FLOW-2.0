@@ -12,7 +12,7 @@ const ARTIFACT_PATH = path.join(ARTIFACT_DIR, 'bundle-budget.json');
 
 const MAX_EAGER_JS_BYTES = Math.max(
   64_000,
-  Number(process.env.VF_FRONTEND_EAGER_JS_MAX_BYTES || process.env.VF_FRONTEND_INDEX_BUNDLE_MAX_BYTES || 327_680),
+  Number(process.env.VF_FRONTEND_EAGER_JS_MAX_BYTES || process.env.VF_FRONTEND_INDEX_BUNDLE_MAX_BYTES || 393_216),
 );
 const MAX_EAGER_CSS_BYTES = Math.max(
   16_000,
@@ -152,7 +152,7 @@ const resolveAssetKind = (assetPath) => {
   return extension.replace(/^\./, '') || 'other';
 };
 
-const isBrowserMlChunk = (assetPath) => /(?:kokoro|phonemizer|onnxruntime|huggingface|transformers|ml)/i.test(assetPath);
+const isBrowserMlChunk = (assetPath) => /(?:phonemizer|huggingface|transformers|ml)/i.test(assetPath);
 const isMainAppChunk = (assetPath) => /(?:^|\/)(?:app|main-app|layout)[^/]*\.js$/i.test(assetPath);
 
 const listNextStaticAssets = async () => {

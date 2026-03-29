@@ -49,11 +49,63 @@ describe('authFetch', () => {
 
     const request = authFetch('https://example.com/reader/library', undefined, { timeoutMs: 1200 });
     const expectation = expect(request).rejects.toThrow(
-      'Request to https://example.com timed out after 1s. Verify backend availability and retry.'
+      'Request to https://example.com/reader/library timed out after 1s. Verify backend availability and retry.'
     );
 
     await vi.advanceTimersByTimeAsync(1200);
 
     await expectation;
+  });
+
+  it('propagates caller abort signals through protected requests', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        signal?.addEventListener('abort', abort, { once: true });
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const controller = new AbortController();
+    const request = authFetch(
+      'https://example.com/account/profile',
+      undefined,
+      { signal: controller.signal }
+    );
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-abort when a caller signal is provided without a timeout', async () => {
+    vi.useRealTimers();
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => (
+      new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        signal?.addEventListener('abort', abort, { once: true });
+        setTimeout(() => {
+          signal?.removeEventListener('abort', abort);
+          resolve({ ok: true, status: 200 } as Response);
+        }, 20);
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const controller = new AbortController();
+    const request = authFetch('https://example.com/account/profile/no-timeout-check', undefined, { signal: controller.signal });
+
+    await expect(request).resolves.toMatchObject({ ok: true, status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

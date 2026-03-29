@@ -29,9 +29,6 @@ export const resolveHomeTabItems = (
   if (tab === 'novels') {
     return items.filter((item) => item.contentKind === 'book' && item.surface !== 'uploads');
   }
-  if (tab === 'comics') {
-    return items.filter((item) => item.contentKind === 'comic' && item.surface !== 'uploads');
-  }
   if (tab === 'library') {
     return items.filter((item) => Boolean(item.sessionId || item.resume?.hasProgress));
   }

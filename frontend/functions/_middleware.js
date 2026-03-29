@@ -12,7 +12,7 @@ const unauthorizedResponse = (status, message) =>
       'Cache-Control': 'no-store',
       'Content-Type': 'text/plain; charset=utf-8',
       'X-Robots-Tag': PRIVATE_HEADER_VALUE,
-      'WWW-Authenticate': 'Basic realm="VoiceFlow Private", charset="UTF-8"',
+      'WWW-Authenticate': 'Basic realm="V FLOW AI Private", charset="UTF-8"',
     },
   });
 
@@ -53,7 +53,7 @@ export async function onRequest(context) {
   if (!configuredUser || !configuredPass) {
     return unauthorizedResponse(
       503,
-      'VoiceFlow private mode is enabled, but credentials are not configured yet.',
+      'V FLOW AI private mode is enabled, but credentials are not configured yet.',
     );
   }
 

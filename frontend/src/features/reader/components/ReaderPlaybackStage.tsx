@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ReaderMode } from '../model/tabs';
 import type { ReaderPlayableUnit } from '../model/session';
+import { ReaderCover } from './ReaderCover';
 
 interface ReaderPlaybackStageProps {
   mode: ReaderMode;
@@ -68,7 +69,17 @@ export const ReaderPlaybackStage: React.FC<ReaderPlaybackStageProps> = ({
             </div>
           </div>
           <div className="vf-reader-v2-stage__cover">
-            {coverUrl ? <img src={coverUrl} alt={title} /> : <div className="vf-reader-v2-stage__cover-fallback">{title}</div>}
+            <ReaderCover
+              src={coverUrl}
+              title={title}
+              subtitle={summary || statusLabel}
+              eyebrow={mode === 'novel' ? 'Novel Reader' : 'Comic Reader'}
+              alt={title}
+              variant="stage"
+              loading="eager"
+              fetchPriority="high"
+              className="vf-reader-v2-stage__cover-shell"
+            />
           </div>
         </header>
 

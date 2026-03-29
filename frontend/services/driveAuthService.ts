@@ -39,6 +39,7 @@ export interface DriveTokenResult {
 
 interface CachedDriveToken {
   token: string;
+  uid: string;
   expiresAtMs: number;
 }
 
@@ -73,23 +74,37 @@ const hasGoogleIdentity = (user: User | null): boolean => {
   return (user.providerData || []).some((provider) => String(provider?.providerId || '') === 'google.com');
 };
 
-const readCachedToken = (): CachedDriveToken | null => {
+const readCachedToken = (expectedUid?: string): CachedDriveToken | null => {
   try {
     const raw = localStorage.getItem(DRIVE_TOKEN_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CachedDriveToken | null;
     if (!parsed || typeof parsed.token !== 'string' || typeof parsed.expiresAtMs !== 'number') return null;
+    if (typeof parsed.uid !== 'string') return null;
     if (parsed.expiresAtMs <= Date.now()) return null;
+    const safeExpectedUid = String(expectedUid || '').trim();
+    if (safeExpectedUid && String(parsed.uid || '').trim() !== safeExpectedUid) return null;
     return parsed;
   } catch {
     return null;
   }
 };
 
-const writeCachedToken = (token: string): void => {
+export const clearDriveTokenCache = (): void => {
+  try {
+    localStorage.removeItem(DRIVE_TOKEN_CACHE_KEY);
+  } catch {
+    // no-op
+  }
+};
+
+const writeCachedToken = (token: string, uid: string): void => {
   if (!token) return;
+  const safeUid = String(uid || '').trim();
+  if (!safeUid) return;
   const payload: CachedDriveToken = {
     token,
+    uid: safeUid,
     expiresAtMs: Date.now() + 55 * 60 * 1000,
   };
   try {
@@ -115,7 +130,7 @@ const withDriveConsent = async (user: User, mode: 'link' | 'signin'): Promise<st
   if (!token) {
     throw new Error('Google OAuth did not return a Drive access token.');
   }
-  writeCachedToken(token);
+  writeCachedToken(token, user.uid);
   return token;
 };
 
@@ -138,7 +153,7 @@ export const getDriveProviderToken = async (): Promise<DriveTokenResult> => {
       };
     }
 
-    const cached = readCachedToken();
+    const cached = readCachedToken(user.uid);
     if (cached?.token) {
       return {
         ok: true,
@@ -180,8 +195,9 @@ export const reconsentDriveScopes = async (): Promise<void> => {
 
 export const warmDriveTokenFromGoogleSignIn = (credential: OAuthCredential | null): void => {
   const token = extractAccessToken(credential);
-  if (token) {
-    writeCachedToken(token);
+  const uid = String(firebaseAuth.currentUser?.uid || '').trim();
+  if (token && uid) {
+    writeCachedToken(token, uid);
   }
 };
 

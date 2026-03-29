@@ -7,11 +7,13 @@ describe('workspace tab contract reader v2', () => {
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
       WorkspaceTab.READER,
+      WorkspaceTab.VOICE_CLONING,
       WorkspaceTab.NOVEL,
       WorkspaceTab.CHARACTERS,
       WorkspaceTab.HISTORY,
     ]);
     expect(tabs.some((item) => item.id === WorkspaceTab.READER && item.label === 'Reader')).toBe(true);
+    expect(tabs.some((item) => item.id === WorkspaceTab.VOICE_CLONING && item.label === 'Voice Cloning')).toBe(true);
   });
 
   it('appends admin only for admin users', () => {

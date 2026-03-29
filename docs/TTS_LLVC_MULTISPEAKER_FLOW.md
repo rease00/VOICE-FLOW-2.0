@@ -8,10 +8,10 @@ flowchart LR
     FE -->|GET /tts/engines/voices| MB
     FE -->|GET /tts/voice-mapping/catalog| MB
 
-    MB -->|"engine=GEM"| GEM["gemini-runtime :7810"]
-    MB -->|"engine=KOKORO"| KOK["kokoro-runtime :7820"]
+    MB -->|"engine=PRIME"| PRIME["gemini-runtime :7810"]
+    MB -->|"engine=DUNO"| KOK["duno-modal endpoint"]
 
-    GEM -->|"WAV bytes"| MB
+    PRIME -->|"WAV bytes"| MB
     KOK -->|"WAV bytes"| MB
 
     MB -->|"resolve canonical voiceId + profile displayName"| MAP["Voice Mapping Catalog"]
@@ -20,9 +20,9 @@ flowchart LR
     MB -->|"audio/wav + x-vf-post-tts-conversion=disabled* "| FE
 ```
 
-\* For Kokoro responses, `x-vf-post-tts-conversion=disabled_for_kokoro`.
+\* For Duno responses, `x-vf-post-tts-conversion=disabled_for_duno`.
 
-## Multi-Speaker (GEM) Internal Flow
+## Multi-Speaker (PRIME) Internal Flow
 
 ```mermaid
 flowchart LR
@@ -40,7 +40,7 @@ flowchart LR
 sequenceDiagram
     participant U as Frontend
     participant M as media-backend
-    participant T as GEM/KOK runtime
+    participant T as PRIME/KOK runtime
 
     U->>M: POST /tts/synthesize
     M->>T: POST /synthesize

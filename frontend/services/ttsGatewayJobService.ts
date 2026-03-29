@@ -13,6 +13,7 @@ export const TTS_GATEWAY_AUDIO_CHUNK_EVENT = 'voiceflow:tts-gateway-audio-chunk'
 
 export interface GatewayJobProgressPayload {
   jobId: string;
+  requestId?: string | undefined;
   status: string;
   engine?: string | undefined;
   queueAgeMs?: number | undefined;
@@ -23,6 +24,7 @@ export interface GatewayJobProgressPayload {
 
 export interface GatewayAudioChunkPayload {
   jobId: string;
+  requestId?: string | undefined;
   index: number;
   engine?: string | undefined;
   contentType?: string | undefined;
@@ -76,9 +78,40 @@ interface GatewayJobClient {
   ) => Promise<{ audioBytes: ArrayBuffer; responseHeaders?: Record<string, string> }>;
 }
 
-const DEFAULT_TTS_GATEWAY_JOB_POLL_MS = 500;
-const DEFAULT_TTS_GATEWAY_JOB_POLL_MAX_MS = 2500;
+const DEFAULT_TTS_GATEWAY_JOB_POLL_MS = 2000;
+const DEFAULT_TTS_GATEWAY_JOB_POLL_MAX_MS = 12000;
+const DEFAULT_TTS_GATEWAY_JOB_HIDDEN_POLL_MS = 5000;
 const DEFAULT_TTS_GATEWAY_JOB_TIMEOUT_MS = 180000;
+const TTS_GATEWAY_JOB_POLL_BACKOFF_FACTOR = 1.7;
+
+export const resolveTtsGatewayJobPollDelayMs = (input: {
+  currentDelayMs?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  reset?: boolean;
+}): number => {
+  const baseDelayMs = Math.max(0, Math.floor(input.baseDelayMs ?? DEFAULT_TTS_GATEWAY_JOB_POLL_MS));
+  const maxDelayMs = Math.max(baseDelayMs, Math.floor(input.maxDelayMs ?? DEFAULT_TTS_GATEWAY_JOB_POLL_MAX_MS));
+  if (input.reset) return Math.min(baseDelayMs, maxDelayMs);
+  const currentDelayMs = Math.max(0, Math.floor(input.currentDelayMs ?? baseDelayMs));
+  return Math.min(maxDelayMs, Math.max(baseDelayMs, Math.round(currentDelayMs * TTS_GATEWAY_JOB_POLL_BACKOFF_FACTOR)));
+};
+
+const isGatewayPollHiddenTab = (): boolean => {
+  if (typeof document === 'undefined') return false;
+  return document.visibilityState === 'hidden';
+};
+
+const resolveHiddenTabGatewayJobPollDelayMs = (input: {
+  currentDelayMs?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+}): number => {
+  const visibleDelayMs = resolveTtsGatewayJobPollDelayMs(input);
+  const maxDelayMs = Math.max(0, Math.floor(input.maxDelayMs ?? DEFAULT_TTS_GATEWAY_JOB_POLL_MAX_MS));
+  if (maxDelayMs <= 0) return visibleDelayMs;
+  return Math.min(maxDelayMs, Math.max(DEFAULT_TTS_GATEWAY_JOB_HIDDEN_POLL_MS, visibleDelayMs));
+};
 
 const DEFAULT_GATEWAY_JOB_CLIENT: GatewayJobClient = {
   getJob: (jobId, options) => getTtsJob(jobId, options),
@@ -176,11 +209,12 @@ export const pollTtsGatewayJobForAudio = async (
   let cancelled = false;
   let chunkCursor = 0;
   let chunkSupportEnabled = true;
-  let chunkInlineAudioFallback = false;
+  const chunkInlineAudioFallback = false;
   let chunkDownloadEnabled = true;
-  let pollDelayMs = pollMs;
+  let pollDelayMs = resolveTtsGatewayJobPollDelayMs({ reset: true, baseDelayMs: pollMs, maxDelayMs: pollMaxMs });
   let lastStatus = '';
   const emittedChunkKeys = new Set<string>();
+  const resetPollDelayMs = () => resolveTtsGatewayJobPollDelayMs({ reset: true, baseDelayMs: pollMs, maxDelayMs: pollMaxMs });
 
   while (Date.now() - startedAt < timeoutMs) {
     if (signal?.aborted) {
@@ -194,6 +228,9 @@ export const pollTtsGatewayJobForAudio = async (
       }
       throw new DOMException('Aborted', 'AbortError');
     }
+    const hiddenTabPollDelayMs = isGatewayPollHiddenTab()
+      ? resolveHiddenTabGatewayJobPollDelayMs({ currentDelayMs: pollDelayMs, baseDelayMs: pollMs, maxDelayMs: pollMaxMs })
+      : pollDelayMs;
 
     let payload;
     try {
@@ -207,7 +244,7 @@ export const pollTtsGatewayJobForAudio = async (
       });
     } catch (error: any) {
       const statusCode = Number(error?.status || error?.cause?.status || 0);
-      if (chunkSupportEnabled && (statusCode === 400 || statusCode === 404 || statusCode === 422)) {
+      if (chunkSupportEnabled && (statusCode === 400 || statusCode === 422)) {
         chunkSupportEnabled = false;
         continue;
       }
@@ -216,9 +253,12 @@ export const pollTtsGatewayJobForAudio = async (
     }
 
     const status = String(payload?.status || '').trim().toLowerCase();
+    const requestId = String(payload?.requestId || '').trim();
+    let progressObservedThisPoll = false;
     if (status && status !== lastStatus) {
-      pollDelayMs = pollMs;
+      pollDelayMs = resetPollDelayMs();
       lastStatus = status;
+      progressObservedThisPoll = true;
     }
     const queueAgeMs = Number(payload?.queueAgeMs || 0);
     const queueDepth = Number(payload?.queueDepthAtRead || 0);
@@ -229,6 +269,7 @@ export const pollTtsGatewayJobForAudio = async (
     );
     emitGatewayProgress({
       jobId,
+      ...(requestId ? { requestId } : {}),
       status,
       engine,
       queueAgeMs: Number.isFinite(queueAgeMs) ? queueAgeMs : 0,
@@ -272,7 +313,6 @@ export const pollTtsGatewayJobForAudio = async (
               audioBase64 = await arrayBufferToBase64(chunkBytes);
             } catch {
               chunkDownloadEnabled = false;
-              chunkInlineAudioFallback = true;
             }
           }
           if (!audioBase64) continue;
@@ -280,6 +320,7 @@ export const pollTtsGatewayJobForAudio = async (
           emittedChunkKeys.add(key);
           emitGatewayAudioChunk({
             jobId,
+            ...(requestId ? { requestId } : {}),
             index: safeIndex,
             engine,
             contentType: String(rawChunk.contentType || 'audio/wav'),
@@ -356,11 +397,19 @@ export const pollTtsGatewayJobForAudio = async (
     }
 
     if (emittedInThisPoll > 0) {
-      pollDelayMs = pollMs;
-    } else {
-      pollDelayMs = Math.min(pollMaxMs, Math.max(pollMs, Math.round(pollDelayMs * 1.35)));
+      progressObservedThisPoll = true;
     }
-    await sleepMs(pollDelayMs);
+
+    if (progressObservedThisPoll) {
+      pollDelayMs = resetPollDelayMs();
+    } else {
+      pollDelayMs = resolveTtsGatewayJobPollDelayMs({
+        currentDelayMs: pollDelayMs,
+        baseDelayMs: pollMs,
+        maxDelayMs: pollMaxMs,
+      });
+    }
+    await sleepMs(hiddenTabPollDelayMs);
   }
 
   if (!cancelled) {

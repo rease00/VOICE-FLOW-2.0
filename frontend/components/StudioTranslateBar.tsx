@@ -32,19 +32,19 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
         <div className={`vf-translate-shell vf-translate-tabs p-0.5 shadow-sm custom-scrollbar ${isPhone ? 'flex min-w-0 items-center gap-1 overflow-x-auto rounded-xl' : 'flex items-center gap-1 overflow-x-auto'}`}>
           <button
             onClick={() => onTargetLang('Hinglish')}
-            className={`vf-translate-chip rounded-md px-3 py-1 text-[10px] font-bold transition-all whitespace-nowrap ${targetLang === 'Hinglish' ? 'vf-translate-chip--active' : ''}`}
+            className={`vf-translate-chip rounded-md px-3 py-1 text-[10px] font-bold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] whitespace-nowrap ${targetLang === 'Hinglish' ? 'vf-translate-chip--active' : ''}`}
           >
             Hinglish
           </button>
           <button
             onClick={() => onTargetLang('English')}
-            className={`vf-translate-chip px-2 py-1 text-[10px] font-bold rounded-md transition-all whitespace-nowrap ${targetLang === 'English' ? 'vf-translate-chip--active' : ''}`}
+            className={`vf-translate-chip px-2 py-1 text-[10px] font-bold rounded-md transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] whitespace-nowrap ${targetLang === 'English' ? 'vf-translate-chip--active' : ''}`}
           >
             English
           </button>
           <button
             onClick={() => onTargetLang('Hindi')}
-            className={`vf-translate-chip px-2 py-1 text-[10px] font-bold rounded-md transition-all whitespace-nowrap ${targetLang === 'Hindi' ? 'vf-translate-chip--active' : ''}`}
+            className={`vf-translate-chip px-2 py-1 text-[10px] font-bold rounded-md transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] whitespace-nowrap ${targetLang === 'Hindi' ? 'vf-translate-chip--active' : ''}`}
           >
             Hindi
           </button>

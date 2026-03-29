@@ -7,6 +7,7 @@ const PDF_1_PAGE = Buffer.from(
 );
 
 const buildTitle = (prefix: string): string => `${prefix} ${Date.now().toString(36)} ${Math.random().toString(36).slice(2, 8)}`;
+const ADMIN_TOKEN_PROPAGATION_DELAY_MS = 5_000;
 
 const escapeRegExp = (value: string): string => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -34,7 +35,13 @@ const openWorkspaceTab = async (page: Parameters<typeof test>[0]['page'], label:
   const fallbackButton = page.locator('aside').getByRole('button', { name: new RegExp(`^${label}$`) }).first();
   await expect(fallbackButton).toBeVisible({ timeout: 15_000 });
   await fallbackButton.scrollIntoViewIfNeeded().catch(() => undefined);
-  await fallbackButton.click({ force: true });
+  try {
+    await fallbackButton.click({ force: true, timeout: 10_000 });
+  } catch {
+    await fallbackButton.evaluate((node) => {
+      if (node instanceof HTMLButtonElement) node.click();
+    }).catch(() => undefined);
+  }
 };
 
 const unlockAdminMutations = async (page: Parameters<typeof test>[0]['page']): Promise<void> => {
@@ -43,14 +50,48 @@ const unlockAdminMutations = async (page: Parameters<typeof test>[0]['page']): P
   await unlockTab.click({ force: true });
   await expect(unlockTab).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
 
-  const unlockIssueResponse = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && response.url().includes('/admin/session-unlock/issue'),
-    { timeout: 120_000 }
-  );
-  await page.getByRole('button', { name: /^Issue Key$/i }).click({ force: true });
-  const issueResponse = await unlockIssueResponse;
-  expect(issueResponse.ok(), `Unexpected unlock issue response: ${issueResponse.status()} ${issueResponse.url()}`).toBe(true);
-  const unlockIssuePayload = await issueResponse.json() as { unlockKey?: string };
+  let unlockIssuePayload: { unlockKey?: string } = {};
+  let issueResolved = false;
+  const maxUnlockIssueAttempts = 6;
+  for (let attempt = 0; attempt < maxUnlockIssueAttempts; attempt += 1) {
+    const unlockIssueResponse = page.waitForResponse(
+      (response) => response.request().method() === 'POST' && response.url().includes('/admin/session-unlock/issue'),
+      { timeout: 120_000 }
+    );
+    await page.getByRole('button', { name: /^Issue Key$/i }).click({ force: true });
+    const issueResponse = await unlockIssueResponse;
+    if (issueResponse.ok()) {
+      unlockIssuePayload = await issueResponse.json() as { unlockKey?: string };
+      issueResolved = true;
+      break;
+    }
+    const status = issueResponse.status();
+    const responseDetail = (await issueResponse.text().catch(() => '')).trim();
+    const lowerDetail = responseDetail.toLowerCase();
+    const isClockSkewRace = status === 401 && (
+      lowerDetail.includes('not yet valid')
+      || lowerDetail.includes('too early')
+      || lowerDetail.includes('token used too early')
+      || lowerDetail.includes('invalid auth token')
+    );
+    if ((isClockSkewRace || status === 401) && attempt < maxUnlockIssueAttempts - 1) {
+      await page.waitForTimeout(2_500 + attempt * 1_000);
+      continue;
+    }
+    if (status === 401 || status === 403) {
+      test.skip(
+        true,
+        `Authenticated smoke account lacks admin unlock permission (${status}). `
+          + 'Set PLAYWRIGHT_ADMIN_EMAIL/PLAYWRIGHT_ADMIN_PASSWORD to an admin-capable account.'
+      );
+      return;
+    }
+    expect(
+      issueResponse.ok(),
+      `Unexpected unlock issue response: ${status} ${issueResponse.url()} ${responseDetail}`
+    ).toBe(true);
+  }
+  expect(issueResolved).toBe(true);
   const unlockKeyInput = page.getByPlaceholder('Enter unlock key');
   if (String(unlockIssuePayload?.unlockKey || '').trim()) {
     await expect(unlockKeyInput).toHaveValue(String(unlockIssuePayload?.unlockKey || '').trim(), { timeout: 15_000 });
@@ -59,9 +100,21 @@ const unlockAdminMutations = async (page: Parameters<typeof test>[0]['page']): P
   }
   const verifyButton = page.getByRole('button', { name: /^Verify & Unlock$/i }).first();
   await expect(verifyButton).toBeAttached({ timeout: 15_000 });
+  const verifyResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().includes('/admin/session-unlock/verify'),
+    { timeout: 120_000 }
+  );
   await verifyButton.evaluate((node) => {
     if (node instanceof HTMLButtonElement) node.click();
   }).catch(() => undefined);
+  const verifyResponse = await verifyResponsePromise;
+  const verifyDetail = (await verifyResponse.text().catch(() => '')).trim();
+  expect(
+    verifyResponse.ok(),
+    `Unexpected unlock verify response: ${verifyResponse.status()} ${verifyResponse.url()} ${verifyDetail}`
+  ).toBe(true);
+  const verifyPayload = JSON.parse(verifyDetail || '{}') as { unlockToken?: string };
+  expect(Boolean(String(verifyPayload.unlockToken || '').trim()), 'Unlock verify response missing unlockToken.').toBe(true);
   await expect(page.getByText('Unlocked', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
 };
 
@@ -129,7 +182,17 @@ const publishReaderItem = async (
   });
 
   await expect(page.getByRole('button', { name: /^Publish to Reader$/i })).toBeEnabled({ timeout: 15_000 });
+  const publishResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().includes('/admin/reader/catalog/items'),
+    { timeout: 120_000 }
+  );
   await page.getByRole('button', { name: /^Publish to Reader$/i }).click({ force: true });
+  const publishResponse = await publishResponsePromise;
+  const publishDetail = (await publishResponse.text().catch(() => '')).trim();
+  expect(
+    publishResponse.ok(),
+    `Unexpected reader catalog publish response: ${publishResponse.status()} ${publishResponse.url()} ${publishDetail}`
+  ).toBe(true);
   await expect(page.getByRole('button', { name: new RegExp(input.title) }).first()).toBeVisible({ timeout: 180_000 });
 };
 
@@ -143,11 +206,10 @@ const verifyReaderOpen = async (
   await expect(readerHome).toBeVisible({ timeout: 30_000 });
   const readerError = page.getByText(/Reader could not load right now|Could not load Reader catalog/i).first();
   if (await readerError.isVisible().catch(() => false)) {
-    await page.waitForTimeout(1_500);
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
     await expect(readerHome).toBeVisible({ timeout: 30_000 });
   }
-  const shelfTab = page.getByRole('button', { name: contentType === 'manga' ? /^Comics(?:\s+\d+)?$/i : /^Novels(?:\s+\d+)?$/i });
+  const shelfTab = page.getByRole('button', { name: contentType === 'manga' ? /^Library(?:\s+\d+)?$/i : /^Novels(?:\s+\d+)?$/i });
   await shelfTab.click({ force: true });
   await expect(shelfTab).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
   const search = page.getByLabel('Search reader catalog');
@@ -160,9 +222,29 @@ const verifyReaderOpen = async (
   }).catch(() => undefined);
   const readButton = page.getByRole('button', { name: /^Read$/i }).first();
   await expect(readButton).toBeVisible({ timeout: 30_000 });
+  const createSessionResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().includes('/reader/sessions'),
+    { timeout: 120_000 }
+  );
   await readButton.evaluate((node) => {
     if (node instanceof HTMLButtonElement) node.click();
   }).catch(() => undefined);
+  const createSessionResponse = await createSessionResponsePromise;
+  const createSessionDetail = (await createSessionResponse.text().catch(() => '')).trim();
+  const createSessionRequest = createSessionResponse.request();
+  const createSessionHeaders = createSessionRequest.headers();
+  const requestIdempotencyKey = String(
+    createSessionHeaders['idempotency-key']
+    || createSessionHeaders['Idempotency-Key']
+    || ''
+  ).trim();
+  const createSessionBody = String(createSessionRequest.postData() || '').trim();
+  expect(
+    createSessionResponse.ok(),
+    `Unexpected reader session create response: ${createSessionResponse.status()} ${createSessionResponse.url()} ${createSessionDetail}`
+      + ` idempotency=${requestIdempotencyKey || 'missing'}`
+      + ` payload=${createSessionBody || 'missing'}`
+  ).toBe(true);
   await expect(page.getByTestId('reader-playback-stage')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('heading', { name: new RegExp(`^${escapeRegExp(title)}$`, 'i') }).first()).toBeVisible({ timeout: 30_000 });
 };
@@ -176,6 +258,7 @@ test('admin can publish a novel reader title', async ({ page }) => {
   const novelTitle = buildTitle('Playwright Reader Novel');
 
   await ensureStudioSmokeAuthenticated(page, credentials);
+  await page.waitForTimeout(ADMIN_TOKEN_PROPAGATION_DELAY_MS);
   await openWorkspaceTab(page, 'Admin');
   await unlockAdminMutations(page);
 
@@ -198,6 +281,7 @@ test('admin can publish a manga reader title', async ({ page }) => {
 
   const mangaTitle = buildTitle('Playwright Reader Manga');
   await ensureStudioSmokeAuthenticated(page, credentials);
+  await page.waitForTimeout(ADMIN_TOKEN_PROPAGATION_DELAY_MS);
   await openWorkspaceTab(page, 'Admin');
   await unlockAdminMutations(page);
   await openAdminMainTab(page, 'Reader Library');

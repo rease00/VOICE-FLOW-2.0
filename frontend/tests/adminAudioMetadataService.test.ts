@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockAuthFetch } = vi.hoisted(() => ({
   mockAuthFetch: vi.fn(),
@@ -38,7 +38,7 @@ describe('admin audio metadata service', () => {
       identityValue: 'user@example.com',
       paymentRef: 'pi_123',
       status: 'completed',
-      engine: 'GEM',
+      engine: 'PRIME',
       from: '2026-03-01',
       to: '2026-03-07',
       cursor: 'cursor_1',
@@ -46,7 +46,7 @@ describe('admin audio metadata service', () => {
     });
 
     expect(mockAuthFetch).toHaveBeenCalledWith(
-      'http://backend.test/admin/audio-metadata/records?uid=uid_1&userId=user_1&identityValue=user%40example.com&paymentRef=pi_123&status=completed&engine=GEM&from=2026-03-01&to=2026-03-07&cursor=cursor_1&limit=50',
+      'http://backend.test/admin/audio-metadata/records?uid=uid_1&userId=user_1&identityValue=user%40example.com&paymentRef=pi_123&status=completed&engine=PRIME&from=2026-03-01&to=2026-03-07&cursor=cursor_1&limit=50',
       undefined,
       expect.objectContaining({ requireAuth: true, timeoutMs: 12_000 })
     );
@@ -65,14 +65,15 @@ describe('admin audio metadata service', () => {
     const blob = await exportAdminAudioMetadataCsv('http://backend.test', {
       uid: 'uid_1',
       status: 'failed',
-      engine: 'KOKORO',
+      engine: 'DUNO',
     });
 
     expect(mockAuthFetch).toHaveBeenCalledWith(
-      'http://backend.test/admin/audio-metadata/export.csv?uid=uid_1&status=failed&engine=KOKORO',
+      'http://backend.test/admin/audio-metadata/export.csv?uid=uid_1&status=failed&engine=DUNO',
       undefined,
       expect.objectContaining({ requireAuth: true, timeoutMs: 12_000 })
     );
     await expect(blob.text()).resolves.toContain('auditId,uid');
   });
 });
+

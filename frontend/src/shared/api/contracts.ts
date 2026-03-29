@@ -5,7 +5,7 @@ import type {
 
 export interface EngineStatusItem {
   engine: GenerationSettings['engine'];
-  state: 'online' | 'starting' | 'offline';
+  state: 'online' | 'starting' | 'warming' | 'offline' | 'not_configured' | 'standby';
   detail: string;
   ready: boolean;
   healthUrl: string;
@@ -21,6 +21,8 @@ export interface TtsEngineStatusResponse {
 export interface RuntimeVoiceItem {
   voice_id: string;
   name: string;
+  displayName?: string;
+  display_name?: string;
   voice?: string;
   language?: string;
   accent?: string;
@@ -73,7 +75,7 @@ export interface RuntimeLogTailResponse {
 export interface TtsEngineSwitchResponse {
   ok: boolean;
   engine: GenerationSettings['engine'];
-  state: 'online' | 'starting';
+  state: 'online' | 'starting' | 'offline' | 'not_configured';
   detail: string;
   healthUrl: string;
   gpuMode: boolean;
@@ -114,6 +116,7 @@ export interface TtsJobStatusResponse {
   requestId?: string;
   traceId?: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  statusReason?: string;
   engine?: string;
   lane?: string;
   attempts?: number;
@@ -126,10 +129,29 @@ export interface TtsJobStatusResponse {
   queueAgeMs?: number;
   queueDepthAtRead?: number;
   engineConcurrencyAtRead?: number;
+  lastClientSeenAtMs?: number;
+  leaseExpiresAtMs?: number;
+  disconnectGraceMs?: number;
   statusCode?: number;
   error?: string | Record<string, unknown>;
   queue?: Record<string, unknown>;
+  reservedChars?: number;
+  reservedVfCost?: number;
+  processedChars?: number;
+  billedChars?: number;
+  billedVfCost?: number;
+  refundedVfCost?: number;
+  settlementKind?: 'pending' | 'none' | 'partial' | 'full' | string;
+  terminalReason?: string;
   billing?: {
+    reservedChars?: number;
+    reservedVfCost?: number;
+    processedChars?: number;
+    billedChars?: number;
+    billedVfCost?: number;
+    refundedVfCost?: number;
+    settlementKind?: 'pending' | 'none' | 'partial' | 'full' | string;
+    terminalReason?: string;
     charsProcessed?: number;
     chunksGenerated?: number;
   };

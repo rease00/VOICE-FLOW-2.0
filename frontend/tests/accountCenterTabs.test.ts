@@ -23,9 +23,11 @@ describe('accountCenterTabs', () => {
     expect(resolveAccountTabFromSearch('?vf-screen=profile&vf-tab=weird')).toBe('account');
   });
 
-  it('marks support as the only lazy tab', () => {
+  it('marks account as the only eager tab', () => {
+    expect(shouldLazyLoadAccountTab('account')).toBe(false);
     expect(shouldLazyLoadAccountTab('support')).toBe(true);
-    expect(shouldLazyLoadAccountTab('billing')).toBe(false);
+    expect(shouldLazyLoadAccountTab('billing')).toBe(true);
+    expect(shouldLazyLoadAccountTab('usage')).toBe(true);
     expect(shouldKeepConversationSelection('support')).toBe(true);
     expect(shouldKeepConversationSelection('activity')).toBe(false);
   });

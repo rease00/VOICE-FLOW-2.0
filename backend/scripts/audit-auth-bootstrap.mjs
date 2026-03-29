@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fetchJsonWithTimeout, normalizeBaseUrl, parseBool } from './lib/audit-helpers.mjs';
+import { fetchJsonWithTimeout, normalizeBaseUrl } from './lib/audit-helpers.mjs';
 
 const ROOT = process.cwd();
 const ARTIFACT_PATH = path.join(ROOT, 'artifacts', 'audit_auth_bootstrap.json');
@@ -18,7 +18,6 @@ const FIREBASE_API_KEY = String(
 ).trim();
 const FIREBASE_EMAIL = String(process.env.AUDIT_FIREBASE_EMAIL || process.env.VF_KEY_BURST_ADMIN_EMAIL || '').trim().toLowerCase();
 const FIREBASE_PASSWORD = String(process.env.AUDIT_FIREBASE_PASSWORD || process.env.VF_KEY_BURST_ADMIN_PASSWORD || '').trim();
-const INCLUDE_TOKEN_IN_ARTIFACT = parseBool(process.env.AUDIT_BOOTSTRAP_INCLUDE_TOKEN_IN_ARTIFACT, false);
 
 const maskToken = (token) => {
   const raw = String(token || '').trim();
@@ -273,14 +272,13 @@ const main = async () => {
     report.selectedAuth = {
       mode: selected.mode,
       tokenMasked: maskToken(selected.token),
-      ...(INCLUDE_TOKEN_IN_ARTIFACT ? { token: selected.token } : {}),
       profile: selected.profile,
       actor: selected.actor,
     };
     report.guidance.push('Set AUDIT_BEARER_TOKEN to the resolved bearer token for protected audit scripts.');
     console.log(`[audit:auth:bootstrap] ok=true mode=${selected.mode}`);
     console.log(`[audit:auth:bootstrap] profile_uid=${selected.profile.uid || '-'} actor_role=${selected.actor.role || '-'}`);
-    console.log(`[audit:auth:bootstrap] PowerShell: $env:AUDIT_BEARER_TOKEN='${selected.token}'`);
+    console.log(`[audit:auth:bootstrap] token_masked=${maskToken(selected.token)}`);
   } else {
     report.guidance.push('Provide AUDIT_BEARER_TOKEN directly, or set AUDIT_FIREBASE_CUSTOM_TOKEN + AUDIT_FIREBASE_API_KEY.');
     report.guidance.push('Fallback supported: AUDIT_FIREBASE_EMAIL + AUDIT_FIREBASE_PASSWORD + AUDIT_FIREBASE_API_KEY.');

@@ -16,10 +16,10 @@ export const LegalCenter: React.FC<LegalCenterProps> = ({ activeDocument }) => {
         <header className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-sky-100/60 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <BrandLogo size="sm" tone="dark" />
+              <BrandLogo size="sm" tone="dark" showWordmark={false} />
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">
-                  VoiceFlow Legal
+                  V FLOW AI
                 </p>
                 <h1 className="text-xl font-extrabold sm:text-2xl">
                   {activeDocument ? activeDocument.title : 'Legal Center'}
@@ -50,8 +50,7 @@ export const LegalCenter: React.FC<LegalCenterProps> = ({ activeDocument }) => {
           <section className="mt-6 rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg shadow-sky-100/60 sm:p-8">
             <h2 className="text-lg font-bold">All policy pages</h2>
             <p className="mt-2 text-sm text-gray-600">
-              Use the links below to view policy documents. These pages are drafted for operational transparency and
-              must be reviewed by qualified legal counsel before production use.
+              Use the links below to review policy documents, billing terms, and usage rules for V FLOW AI.
             </p>
             <ul className="mt-5 grid gap-3 sm:grid-cols-2">
               {legalDocs.map((document) => (
@@ -87,9 +86,8 @@ export const LegalCenter: React.FC<LegalCenterProps> = ({ activeDocument }) => {
                 </section>
               ))}
             </div>
-            <div className="mt-8 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-900">
-              Internal compliance note: This policy draft is operational guidance and not legal advice. Final publication
-              should follow independent legal review.
+            <div className="mt-8 rounded-2xl border border-sky-100 bg-sky-50 p-4 text-xs leading-relaxed text-sky-800">
+              Questions about these policies can be sent to legal@v-flow-ai.com.
             </div>
           </article>
         )}

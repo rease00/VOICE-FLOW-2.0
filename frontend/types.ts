@@ -6,6 +6,8 @@ export enum AppScreen {
   PROFILE = 'PROFILE',
 }
 
+export type TtsEngineKey = 'DUNO' | 'VECTOR' | 'PRIME';
+
 export interface VoiceOption {
   id: string;
   name: string;
@@ -14,7 +16,7 @@ export interface VoiceOption {
   geminiVoiceName: string;
   country?: string;
   ageGroup?: string;
-  engine?: 'GEM' | 'NEURAL2' | 'KOKORO';
+  engine?: TtsEngineKey;
   source?: string;
   isDownloaded?: boolean;
   isCloned?: boolean;
@@ -30,9 +32,10 @@ export interface ClonedVoice extends VoiceOption {
   referenceText?: string;
   referenceAudioUrl?: string;
   referenceAudioName?: string;
+  referenceArtifactId?: string;
   sourceVoiceId?: string;
   sourceVoiceName?: string;
-  sourceVoiceEngine?: 'GEM' | 'NEURAL2' | 'KOKORO' | string;
+  sourceVoiceEngine?: TtsEngineKey | string;
 }
 
 export interface RemoteSpeaker {
@@ -92,7 +95,7 @@ export interface GenerationSettings {
   emotionStrength?: number | undefined;
 
   // TTS engine
-  engine: 'GEM' | 'NEURAL2' | 'KOKORO';
+  engine: TtsEngineKey;
 
   // Assistant provider
   helperProvider: 'GEMINI' | 'PERPLEXITY' | 'LOCAL';
@@ -107,8 +110,7 @@ export interface GenerationSettings {
   backendApiKey?: string | undefined;
   voiceModel?: string | undefined;
   geminiTtsServiceUrl?: string | undefined;
-  kokoroTtsServiceUrl?: string | undefined;
-  kokoroStandbyIdleMs?: number | undefined;
+  runtimeProvider?: string | undefined;
 
   // Studio controls
   musicTrackId?: string | undefined;
@@ -293,6 +295,7 @@ export interface StudioQueueItem {
   status: StudioQueueItemStatus;
   sourceText: string;
   charCount: number;
+  requestId?: string | undefined;
   jobId?: string | undefined;
   audioCacheKey?: string | undefined;
   error?: string | undefined;
@@ -315,6 +318,14 @@ export interface StudioQueueState {
   masterStatus: StudioQueueMasterStatus;
   queueModeEnabled: boolean;
   sourceHash: string;
+}
+
+export interface StudioSingleInflightGenerationLedger {
+  mode: 'single';
+  requestId?: string | undefined;
+  jobId?: string | undefined;
+  textSnapshot: string;
+  startedAtMs: number;
 }
 
 export interface CharacterProfile {
@@ -424,7 +435,7 @@ export interface HistoryItem {
   voiceId?: string | undefined;
   timestamp: number;
   duration?: string | undefined;
-  engine?: 'GEM' | 'NEURAL2' | 'KOKORO' | undefined;
+  engine?: TtsEngineKey | undefined;
   chars?: number | undefined;
   requestId?: string | undefined;
   traceId?: string | undefined;
@@ -499,7 +510,7 @@ export interface LanguageOption {
 }
 
 export interface RuntimeCapabilities {
-  engine: GenerationSettings['engine'];
+  engine: TtsEngineKey;
   runtime: string;
   ready: boolean;
   languages: string[];
@@ -795,6 +806,38 @@ export interface ReaderLibrary {
   };
 }
 
+export interface ReaderDashboardMission {
+  title: string;
+  subtitle: string;
+  ctaText: string;
+}
+
+export interface ReaderDashboardHighlights {
+  library: number;
+  resumable: number;
+  uploads: number;
+  comics: number;
+  books: number;
+}
+
+export interface ReaderDashboardShelves {
+  continueReading: ReaderCatalogItem[];
+  trending: ReaderCatalogItem[];
+  newArrivals: ReaderCatalogItem[];
+  recentlyImported: ReaderCatalogItem[];
+}
+
+export interface ReaderDashboardPayload {
+  library: ReaderLibrary;
+  mission: ReaderDashboardMission;
+  highlights: ReaderDashboardHighlights;
+  spotlight: ReaderCatalogItem | null;
+  shelves: ReaderDashboardShelves;
+  activeSessionSummary: ReaderSession | null;
+  commercialPolicyVersion?: string;
+  blockedProviders?: string[];
+}
+
 export interface ReaderVoiceCast {
   [speaker: string]: string;
 }
@@ -871,8 +914,8 @@ export interface ReaderPanelManifest {
   };
 }
 
-export type ReaderAudioEngine = 'tts_hd' | 'native_audio_dialog';
-export type ReaderAudioEngineStatus = 'active' | 'fallback_to_tts' | 'unavailable' | string;
+export type ReaderAudioEngine = 'tts_hd';
+export type ReaderAudioEngineStatus = 'active' | string;
 
 export interface ReaderRestoreState {
   activeItemIndex: number;

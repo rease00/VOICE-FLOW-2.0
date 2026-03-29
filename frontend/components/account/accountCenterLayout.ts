@@ -2,22 +2,23 @@ import type { AccountBillingSummary } from '../../services/accountService';
 
 export interface BillingActionVisibility {
   showChangePlan: boolean;
-  showOpenBillingPortal: boolean;
   showCancelRecurring: boolean;
+  showResumeRecurring: boolean;
 }
 
 export const getBillingActionVisibility = (
   summary: Pick<AccountBillingSummary, 'plan' | 'billing' | 'subscription'>
 ): BillingActionVisibility => {
   const isPaidPlan = summary.plan.key !== 'free';
-  const hasPortalAccess = Boolean(summary.billing.hasPortalAccess);
+  const hasBillingManagement = Boolean(summary.billing.hasBillingManagement ?? summary.billing.hasPortalAccess);
   const subscriptionStatus = String(summary.subscription.status || '').trim().toLowerCase();
   const hasRecurringSubscription = Boolean(summary.subscription.active) || ['active', 'trialing', 'past_due'].includes(subscriptionStatus);
   const canCancelRecurring = hasRecurringSubscription && !summary.subscription.cancelAtPeriodEnd;
+  const canResumeRecurring = hasRecurringSubscription && summary.subscription.cancelAtPeriodEnd;
   return {
     showChangePlan: true,
-    showOpenBillingPortal: isPaidPlan && hasPortalAccess,
-    showCancelRecurring: isPaidPlan && hasPortalAccess && canCancelRecurring,
+    showCancelRecurring: isPaidPlan && hasBillingManagement && canCancelRecurring,
+    showResumeRecurring: isPaidPlan && hasBillingManagement && canResumeRecurring,
   };
 };
 

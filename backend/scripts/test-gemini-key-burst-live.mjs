@@ -23,9 +23,9 @@ const JOB_POLL_TIMEOUT_MS = parseIntegerInRange(process.env.VF_KEY_BURST_JOB_TIM
 const JOB_POLL_INTERVAL_MS = parseIntegerInRange(process.env.VF_KEY_BURST_JOB_POLL_MS, 1_200, 200, 5_000);
 const REQUEST_COUNT = parseIntegerInRange(process.env.VF_KEY_BURST_REQUESTS, 8, 2, 20);
 const FORCED_MODEL = normalizeModelId(
-  process.env.VF_KEY_BURST_MODEL || 'gemini-2.5-flash-preview-tts'
+  process.env.VF_KEY_BURST_MODEL || 'gemini-2.5-flash-tts'
 );
-const FORCED_ENGINE = String(process.env.VF_KEY_BURST_ENGINE || 'GEM').trim().toUpperCase() || 'GEM';
+const FORCED_ENGINE = String(process.env.VF_KEY_BURST_ENGINE || 'PRIME').trim().toUpperCase() || 'PRIME';
 const TEST_MODE = normalizeTestMode(process.env.VF_KEY_BURST_MODE || 'single');
 const AUTH_EMAIL = String(
   process.env.VF_KEY_BURST_ADMIN_EMAIL ||
@@ -339,7 +339,7 @@ function chooseGemVoicePair(voicesPayload) {
     if (runtimeVoices.length >= 2) return runtimeVoices;
   }
   if (runtimeVoices.length < 2) {
-    throw new ProbeError('Could not determine two GEM runtime voices for live key-burst test.');
+    throw new ProbeError('Could not determine two PRIME runtime voices for live key-burst test.');
   }
   return runtimeVoices.slice(0, 2);
 }
@@ -819,7 +819,7 @@ async function main() {
 
     const [health, gemVoicesPayload, profile] = await Promise.all([
       fetchJson(`${BACKEND_URL}/health`),
-      fetchJson(`${BACKEND_URL}/tts/engines/voices?engine=GEM`, authContext.headers),
+      fetchJson(`${BACKEND_URL}/tts/engines/voices?engine=PRIME`, authContext.headers),
       fetchProfileSummary(authContext.headers),
     ]);
     report.healthOk = Boolean(health?.ok);

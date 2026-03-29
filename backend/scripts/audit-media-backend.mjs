@@ -12,7 +12,10 @@ const ROOT = process.cwd();
 const ARTIFACT_PATH = path.join(ROOT, 'artifacts', 'media_backend_audit.json');
 const BACKEND_BASE_URL = normalizeBaseUrl(process.env.VF_MEDIA_BACKEND_URL, 'http://127.0.0.1:7800');
 const GEMINI_RUNTIME_URL = normalizeBaseUrl(process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
-const KOKORO_RUNTIME_URL = normalizeBaseUrl(process.env.VF_KOKORO_RUNTIME_URL, 'http://127.0.0.1:7820');
+const DUNO_RUNTIME_URL = normalizeBaseUrl(
+  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL,
+  ''
+);
 
 const toBlob = async (filePath) => {
   const data = await fs.readFile(filePath);
@@ -63,7 +66,7 @@ const main = async () => {
     backendBaseUrl: BACKEND_BASE_URL,
     runtimes: {
       GEMINI_RUNTIME: GEMINI_RUNTIME_URL,
-      KOKORO_RUNTIME: KOKORO_RUNTIME_URL,
+      DUNO_RUNTIME: DUNO_RUNTIME_URL || null,
     },
     passed: false,
     checks: [],
@@ -112,19 +115,27 @@ const main = async () => {
       method: 'GET',
       headers: { Accept: 'application/json' },
     }),
-    fetchCheck('runtime_health_kokoro', `${KOKORO_RUNTIME_URL}/health`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    }),
     fetchCheck('tts_queue_metrics', `${BACKEND_BASE_URL}/admin/tts/queue/metrics`, {
       method: 'GET',
       headers: authHeaders,
     }),
+    ...(DUNO_RUNTIME_URL
+      ? [
+          fetchCheck('runtime_health_duno', `${DUNO_RUNTIME_URL}/health`, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+          }),
+        ]
+      : []),
   ]);
 
   report.checks = checks;
   for (const item of checks) {
     if (!item.ok) report.summary.failed += 1;
+  }
+  if (!DUNO_RUNTIME_URL) {
+    report.summary.warnings.push('VF_DUNO_RUNTIME_URL is not set; Duno runtime health check was skipped.');
+    report.summary.skippedOptional.push('Duno runtime health check skipped because VF_DUNO_RUNTIME_URL is empty.');
   }
 
   const auditVideoPath = String(process.env.VF_AUDIT_VIDEO || '').trim();

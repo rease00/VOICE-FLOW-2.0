@@ -10,6 +10,10 @@ const REPO_ROOT = String(
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const SELF_SCRIPT_PATH = 'scripts/scan-staged-secrets.mjs';
+const SKIP_PATHS = new Set([
+  SELF_SCRIPT_PATH,
+  'backend/scripts/scan-tracked-secrets.mjs',
+]);
 
 const SECRET_PATTERNS = [
   { id: 'private_key_block', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/i },
@@ -77,7 +81,7 @@ const run = async () => {
   const findings = [];
 
   for (const filePath of stagedFiles) {
-    if (filePath.replace(/\\/g, '/') === SELF_SCRIPT_PATH) {
+    if (SKIP_PATHS.has(filePath.replace(/\\/g, '/'))) {
       continue;
     }
     let text = '';

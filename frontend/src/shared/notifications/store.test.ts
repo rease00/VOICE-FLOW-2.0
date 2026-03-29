@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   applyPrefsFilter,
   archiveResolved,
@@ -137,7 +137,7 @@ describe('notification store', () => {
       createNotification({
         id: 'other',
         eventCode: 'runtime.offline',
-        entityKey: 'GEM',
+        entityKey: 'PRIME',
         status: 'active',
       }),
     ];
@@ -195,3 +195,4 @@ describe('notification store', () => {
     expect(archived.map((item) => item.id)).toEqual(['critical-resolved', 'active']);
   });
 });
+

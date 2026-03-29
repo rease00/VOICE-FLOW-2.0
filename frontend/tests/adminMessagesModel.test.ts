@@ -11,18 +11,20 @@ import {
 
 describe('admin messages model', () => {
   it('keeps messages tab order and default contract', () => {
-    expect(ADMIN_MESSAGES_TAB_ORDER).toEqual(['critical', 'users']);
+    expect(ADMIN_MESSAGES_TAB_ORDER).toEqual(['critical', 'users', 'broadcast']);
     expect(DEFAULT_ADMIN_MESSAGES_TAB).toBe('critical');
     expect(resolveAdminMessagesTab(undefined)).toBe('critical');
     expect(resolveAdminMessagesTab('users')).toBe('users');
+    expect(resolveAdminMessagesTab('broadcast')).toBe('broadcast');
   });
 
   it('supports keyboard navigation for message subtabs', () => {
     const items = ADMIN_MESSAGES_TAB_ORDER.map((id) => ({ id }));
     expect(getManagedTabNavigationTarget(items, 'critical', 'ArrowRight')).toBe('users');
-    expect(getManagedTabNavigationTarget(items, 'users', 'ArrowRight')).toBe('critical');
+    expect(getManagedTabNavigationTarget(items, 'users', 'ArrowRight')).toBe('broadcast');
+    expect(getManagedTabNavigationTarget(items, 'broadcast', 'ArrowRight')).toBe('critical');
     expect(getManagedTabNavigationTarget(items, 'users', 'Home')).toBe('critical');
-    expect(getManagedTabNavigationTarget(items, 'critical', 'End')).toBe('users');
+    expect(getManagedTabNavigationTarget(items, 'critical', 'End')).toBe('broadcast');
   });
 
   it('classifies critical conversations using needs_human or non-green priority', () => {

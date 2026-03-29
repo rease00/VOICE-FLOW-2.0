@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { usePathname } from 'next/navigation';
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { UploadDropzone } from '../components/ui/UploadDropzone';
-import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, KOKORO_VOICES } from '../constants';
+import { VOICES, MUSIC_TRACKS, LANGUAGES, EMOTIONS, DUNO_VOICES } from '../constants';
 import {
   GenerationSettings,
   AppScreen,
@@ -32,6 +32,10 @@ import {
 import { USER_CONTEXT_CHARACTER_SYNC_WARNING_EVENT, useUser } from '../contexts/UserContext';
 import { refreshStudioSpeakerVoices } from '../src/shared/voices/castAssignment';
 import { getEngineDisplayName } from '../services/engineDisplay';
+import { STORAGE_KEYS } from '../src/shared/storage/keys';
+import { readStorageJson, readStorageString, removeStorageKey, writeStorageJson, writeStorageString } from '../src/shared/storage/localStore';
+import { UI_BRAND_THEME_CONFIGS, UI_BRAND_THEME_ORDER, type UiBrandThemeId } from '../src/shared/theme/brandThemes';
+import { applyBrandThemeToDocument, applyThemeModeToDocument } from '../src/shared/theme/themeDom';
 import { EngineRuntimeStrip } from '../components/EngineRuntimeStrip';
 import { ProofreadCluster } from '../components/ProofreadCluster';
 import { StudioTranslateBar } from '../components/StudioTranslateBar';
@@ -41,8 +45,6 @@ import { MorphingGenerateButton } from '../components/studio/MorphingGenerateBut
 import { DirectorPreview } from '../components/studio/DirectorPreview';
 import { normalizeDirectorPreviewComparisonText } from '../components/studio/directorPreviewDiff';
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
-import { STORAGE_KEYS } from '../src/shared/storage/keys';
-import { readStorageJson, readStorageString, removeStorageKey, writeStorageJson, writeStorageString } from '../src/shared/storage/localStore';
 import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
 import { cancelTtsJob, createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
@@ -66,7 +68,7 @@ import {
   normalizePreferUserGeminiKey,
 } from '../src/shared/settings/assistantProvider';
 import { hasAdminConsoleAccess as canUseAdminConsole } from '../src/shared/auth/adminAccess';
-import { formatFrontendError } from '../src/shared/errors/formatFrontendError';
+import { formatFrontendError, type FrontendErrorContext } from '../src/shared/errors/formatFrontendError';
 import { joinUiFragments, sanitizeUiText } from '../src/shared/ui/terminology';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { NOTIFICATION_DEEP_LINK_EVENT, readNotificationDeepLink } from '../src/shared/notifications/deepLink';
@@ -96,6 +98,7 @@ import {
   parseMultiSpeakerScript,
   pickLowestLatencyRuntimeEngine,
   resolveAdminOpsTabFromUrl,
+  resolveEngineToken,
   resolveInitialStudioDraftText,
   resolveInitialWorkspaceTab,
   resolveTokenPackDiscountPercent,
@@ -749,9 +752,9 @@ const createSelectedEngineTelemetry = (
 });
 
 const createInitialSelectedEngineTelemetry = (): Record<GenerationSettings['engine'], SelectedEngineTelemetry> => ({
-  GEM: createSelectedEngineTelemetry(),
-  NEURAL2: createSelectedEngineTelemetry(),
-  KOKORO: createSelectedEngineTelemetry(),
+  PRIME: createSelectedEngineTelemetry(),
+  VECTOR: createSelectedEngineTelemetry(),
+  DUNO: createSelectedEngineTelemetry(),
 });
 
 const ENGINE_RUNTIME_STATE_SET: ReadonlySet<EngineRuntimeState> = new Set([
@@ -939,8 +942,12 @@ interface DubbingUiState {
   updatedAt: number;
 }
 
-const ENGINE_ORDER: GenerationSettings['engine'][] = ['KOKORO', 'NEURAL2', 'GEM'];
-const FALLBACK_RUNTIME_URLS: Record<GenerationSettings['engine'], string> = { GEM: 'http://127.0.0.1:7810', NEURAL2: 'http://127.0.0.1:7810', KOKORO: '' };
+const ENGINE_ORDER: GenerationSettings['engine'][] = ['DUNO', 'VECTOR', 'PRIME'];
+const FALLBACK_RUNTIME_URLS: Record<GenerationSettings['engine'], string> = {
+  PRIME: 'http://127.0.0.1:7810',
+  VECTOR: 'http://127.0.0.1:7810',
+  DUNO: 'http://127.0.0.1:7840',
+};
 const DEFAULT_MEDIA_BACKEND_URL = getDefaultApiBaseUrl();
 const readPositiveIntEnv = (value: unknown, fallback: number): number => { const parsed = Number(value); if (!Number.isFinite(parsed) || parsed <= 0) return fallback; return Math.floor(parsed); };
 const RUNTIME_STATUS_ACTIVE_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_ACTIVE_POLL_MS ?? process.env.VITE_RUNTIME_STATUS_ACTIVE_POLL_MS, 3000);
@@ -949,14 +956,14 @@ const RUNTIME_STATUS_COOLDOWN_POLL_MS = readPositiveIntEnv(process.env.NEXT_PUBL
 const RUNTIME_STATUS_COOLDOWN_WINDOW_MS = readPositiveIntEnv(process.env.NEXT_PUBLIC_RUNTIME_STATUS_COOLDOWN_WINDOW_MS ?? process.env.VITE_RUNTIME_STATUS_COOLDOWN_WINDOW_MS, 120000);
 const RUNTIME_STATUS_LEADER_HEARTBEAT_MS = 10000;
 const RUNTIME_STATUS_LEADER_LEASE_MS = 40000;
-const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]> = { GEM: [], NEURAL2: [], KOKORO: [] };
+const EMPTY_RUNTIME_CATALOG: Record<GenerationSettings['engine'], VoiceOption[]> = { PRIME: [], VECTOR: [], DUNO: [] };
 const DEFAULT_GEM_VOICE_ID = VOICES[0]?.id ?? 'gem_default_voice';
-const DEFAULT_KOKORO_VOICE_ID = KOKORO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
-const BUILT_IN_VOICE_IDS = new Set([...VOICES.map((voice) => voice.id), ...KOKORO_VOICES.map((voice) => voice.id)]);
+const DEFAULT_DUNO_VOICE_ID = DUNO_VOICES[0]?.id ?? DEFAULT_GEM_VOICE_ID;
+const BUILT_IN_VOICE_IDS = new Set([...VOICES.map((voice) => voice.id), ...DUNO_VOICES.map((voice) => voice.id)]);
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
-  GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
+  PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  DUNO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
 };
 
 const DEFAULT_SETTINGS: GenerationSettings = {
@@ -968,7 +975,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   style: 'default',
   emotionRefId: '',
   emotionStrength: 0.35,
-  engine: 'GEM',
+  engine: 'PRIME',
   helperProvider: 'GEMINI',
   assistantProviderControlsEnabled: false,
   preferUserGeminiKey: false,
@@ -978,7 +985,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   mediaBackendUrl: DEFAULT_MEDIA_BACKEND_URL,
   backendApiKey: '',
   voiceModel: '',
-  geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.GEM,
+  geminiTtsServiceUrl: FALLBACK_RUNTIME_URLS.PRIME,
 
   musicTrackId: 'm_none',
   musicVolume: 0.3,
@@ -1000,8 +1007,8 @@ const normalizeServiceSetting = (value: unknown, fallback: string): string => (
 const normalizeSettings = (input: unknown): GenerationSettings => {
   const value = (input && typeof input === 'object') ? input as Record<string, any> : {};
   const engine = normalizeEngineToken(value.engine, DEFAULT_SETTINGS.engine);
-  const defaultVoice = engine === 'KOKORO'
-    ? DEFAULT_KOKORO_VOICE_ID
+  const defaultVoice = engine === 'DUNO'
+    ? DEFAULT_DUNO_VOICE_ID
     : DEFAULT_GEM_VOICE_ID;
   const rawMediaBackendUrl = typeof value.mediaBackendUrl === 'string' ? value.mediaBackendUrl : '';
   const mediaBackendSanitized = sanitizeConfiguredApiBaseUrl(rawMediaBackendUrl, DEFAULT_MEDIA_BACKEND_URL);
@@ -1053,7 +1060,7 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
     mediaBackendUrl: mediaBackendSanitized.value,
     backendApiKey: typeof value.backendApiKey === 'string' ? value.backendApiKey.trim() : DEFAULT_SETTINGS.backendApiKey,
     voiceModel: typeof value.voiceModel === 'string' ? value.voiceModel : DEFAULT_SETTINGS.voiceModel,
-    geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.GEM),
+    geminiTtsServiceUrl: normalizeServiceSetting(value.geminiTtsServiceUrl, DEFAULT_SETTINGS.geminiTtsServiceUrl || FALLBACK_RUNTIME_URLS.PRIME),
     autoPlayGeneratedAudio: typeof value.autoPlayGeneratedAudio === 'boolean'
       ? value.autoPlayGeneratedAudio
       : (DEFAULT_SETTINGS.autoPlayGeneratedAudio !== false),
@@ -1061,7 +1068,7 @@ const normalizeSettings = (input: unknown): GenerationSettings => {
 
   const validVoiceIds = new Set([
     ...VOICES.map(v => v.id),
-    ...KOKORO_VOICES.map(v => v.id),
+    ...DUNO_VOICES.map(v => v.id),
 
     ...((value.clonedVoices || []) as any[]).map(v => v?.id).filter(Boolean),
   ]);
@@ -1252,7 +1259,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     setCenterOpen,
   } = useNotifications();
   const { mode: viewportMode, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
-  const hasSessionIdentity = Boolean(String(user.uid || user.email || '').trim());
+  const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const hasAdminConsoleAccess = useMemo(() => canUseAdminConsole(user), [user]);
 
   useEffect(() => {
@@ -1396,9 +1403,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     createStudioObjectUrlRegistry({ maxTracked: STUDIO_OBJECT_URL_REGISTRY_MAX })
   );
   const lastRuntimeStatesRef = useRef<Record<GenerationSettings['engine'], EngineRuntimeState>>({
-    GEM: 'checking',
-    NEURAL2: 'checking',
-    KOKORO: 'checking',
+    PRIME: 'checking',
+    VECTOR: 'checking',
+    DUNO: 'checking',
   });
   const lastBackendHealthyRef = useRef<boolean | null>(null);
   const quotaNoticeRef = useRef<Record<string, boolean>>({});
@@ -1427,6 +1434,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     return 'dark';
   });
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('dark');
+  const [uiBrandTheme, setUiBrandTheme] = useState<UiBrandThemeId>(() => {
+    const saved = readStorageString(STORAGE_KEYS.uiBrandTheme);
+    return saved === 'aurora' || saved === 'sunset' || saved === 'emerald' || saved === 'neon' ? saved : 'neon';
+  });
   const [uiDensity, setUiDensity] = useState<UiDensity>(() => {
     const saved = readStorageString(STORAGE_KEYS.uiDensity);
     return saved === 'comfortable' ? 'comfortable' : 'compact';
@@ -1800,9 +1811,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const [engineSwitchInProgress, setEngineSwitchInProgress] = useState<GenerationSettings['engine'] | null>(null);
   const [managedActiveEngine, setManagedActiveEngine] = useState<GenerationSettings['engine'] | null>(null);
   const [ttsRuntimeStatus, setTtsRuntimeStatus] = useState<Record<GenerationSettings['engine'], EngineRuntimeStatus>>({
-    GEM: { state: 'checking', detail: 'Checking...' },
-    NEURAL2: { state: 'checking', detail: 'Checking...' },
-    KOKORO: { state: 'checking', detail: 'Checking...' },
+    PRIME: { state: 'checking', detail: 'Checking...' },
+    VECTOR: { state: 'checking', detail: 'Checking...' },
+    DUNO: { state: 'checking', detail: 'Checking...' },
   });
   const ttsRuntimeStatusRef = useRef(ttsRuntimeStatus);
   const [ttsAccessState, setTtsAccessState] = useState<TtsAccessState>({
@@ -1842,10 +1853,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         : entitlementAllowedEngines.length > 0
           ? entitlementAllowedEngines
           : normalizedPlanToken === 'launcher'
-            ? ['KOKORO', 'NEURAL2']
+            ? ['DUNO', 'VECTOR']
             : isPaidBillingPlan
             ? [...ENGINE_ORDER]
-            : ['KOKORO', 'NEURAL2']
+            : ['DUNO', 'VECTOR']
     ),
     [entitlementAllowedEngines, hasUnlimitedAccess, isPaidBillingPlan, normalizedPlanToken]
   );
@@ -1873,7 +1884,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     0,
     Number(stats.wallet?.spendableNowByEngine?.[settings.engine] || 0)
   );
-  const canRunKokoroWithoutWallet = settings.engine === 'KOKORO';
+  const canRunDunoWithoutWallet = settings.engine === 'DUNO';
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
   const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
@@ -1894,6 +1905,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       lowered.includes('authentication required') ||
       lowered.includes('missing bearer token') ||
       lowered.includes('invalid auth token') ||
+      lowered.includes('unauthorized') ||
       lowered.includes('auth token did not include uid') ||
       lowered.includes('authentication failed') ||
       lowered.includes('complete your userid') ||
@@ -1996,7 +2008,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const safeDetail = detail || 'Sign in again to enable AI/TTS requests.';
           const shouldBlockForAuth = isAuthOrProfileBlockingMessage(safeDetail);
           if (shouldBlockForAuth) {
-            const hasSessionIdentity = Boolean(String(user.uid || user.email || '').trim());
+            const hasSessionIdentity = Boolean(String(user.uid || '').trim());
             const previous = ttsAccessProbeRef.current;
             const recentAuthenticatedProbe =
               Boolean(previous?.ok) && now - Number(previous?.checkedAt || 0) < 90_000;
@@ -2073,17 +2085,80 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     },
     [isAuthOrProfileBlockingMessage, mapTtsAccessBlockReason]
   );
-  const showToast = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
+  const showToast = useCallback((
+    msg: string,
+    type: 'success' | 'error' | 'info' = 'info',
+    options?: { context?: FrontendErrorContext; category?: 'system' | 'activity' | 'security' | 'tips' }
+  ) => {
+    const inferContextFromMessage = (value: string): FrontendErrorContext => {
+      const lowered = String(value || '').trim().toLowerCase();
+      if (!lowered) return 'generic';
+      if (
+        lowered.includes('authentication')
+        || lowered.includes('missing bearer token')
+        || lowered.includes('invalid auth token')
+        || lowered.includes('unauthorized')
+        || lowered.includes('invalid email or password')
+        || lowered.includes('email verification required')
+        || lowered.includes('token used too early')
+        || lowered.includes('token is not yet valid')
+        || lowered.includes('clock is out of sync')
+      ) {
+        return 'auth';
+      }
+      if (lowered.includes('billing') || lowered.includes('stripe') || lowered.includes('checkout') || lowered.includes('coupon')) {
+        return 'billing';
+      }
+      if (lowered.includes('support')) return 'support';
+      if (
+        lowered.includes('media')
+        || lowered.includes('upload')
+        || lowered.includes('download')
+        || lowered.includes('audio')
+        || lowered.includes('video')
+      ) {
+        return 'media';
+      }
+      if (
+        lowered.includes('runtime')
+        || lowered.includes('slot set')
+        || lowered.includes('uid_not_allowlisted')
+        || lowered.includes('admin-unlock')
+        || lowered.includes('x-admin-unlock')
+        || lowered.includes('forbidden')
+        || lowered.includes('permission denied')
+        || lowered.includes('missing permission')
+        || lowered.includes('service account')
+        || lowered.includes('google_application_credentials')
+        || lowered.includes('provider_error')
+        || lowered.includes('chunk_')
+      ) {
+        return 'runtime';
+      }
+      if (lowered.includes('generation') || lowered.includes('synthesis')) return 'generation';
+      return 'generic';
+    };
+
+    const resolvedContext = options?.context || inferContextFromMessage(msg);
     const formatted = type === 'error'
-      ? formatFrontendError(msg, { fallback: msg, context: 'generic', isAdmin: hasAdminConsoleAccess })
+      ? formatFrontendError(msg, { context: resolvedContext, isAdmin: hasAdminConsoleAccess })
       : { publicMessage: sanitizeUiText(msg), adminDetails: undefined };
     const safeMessage = formatted.publicMessage;
     if (!safeMessage) return;
+    const loweredSafeMessage = safeMessage.toLowerCase();
+    const isSecurityError = type === 'error' && (
+      resolvedContext === 'auth'
+      || loweredSafeMessage.includes('restricted for your account')
+      || loweredSafeMessage.includes('admin session unlock')
+      || loweredSafeMessage.includes('service-account settings')
+    );
+    const category = options?.category
+      || (isSecurityError ? 'security' : type === 'error' ? 'system' : 'activity');
     emit('custom.message', {
       message: safeMessage,
       ...(formatted.adminDetails ? { details: formatted.adminDetails } : {}),
       severity: type === 'success' ? 'success' : type === 'error' ? 'error' : 'info',
-      category: type === 'error' ? 'system' : 'activity',
+      category,
       channel: 'toast',
     });
   }, [emit, hasAdminConsoleAccess]);
@@ -2204,7 +2279,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [pumpDubbingLivePlayback]);
   const billingActions = useBillingActions({ baseUrl: mediaBackendUrl, returnPath: APP_ROUTE_PATHS.buy });
   const isGemRuntimeEngine = useCallback(
-    (engine: GenerationSettings['engine']) => engine === 'GEM' || engine === 'NEURAL2',
+    (engine: GenerationSettings['engine']) => engine === 'PRIME' || engine === 'VECTOR',
     []
   );
   const normalizeRuntimeUrl = (url?: string): string => (url || '').trim().replace(/\/+$/, '');
@@ -2216,7 +2291,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         const configured = normalizeRuntimeUrl(settings.geminiTtsServiceUrl);
         if (configured) return configured;
       }
-      if (engine === 'KOKORO') {
+      if (engine === 'DUNO') {
         const backendGateway = normalizeRuntimeUrl(mediaBackendUrl);
         if (backendGateway) return backendGateway;
       }
@@ -2445,7 +2520,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const clonedCatalog = clonedVoices.filter((voice) => {
           const sourceEngine = String(voice.sourceVoiceEngine || '').trim();
           if (!sourceEngine) return true;
-          return normalizeEngineToken(sourceEngine, engine) === engine;
+          return resolveEngineToken(sourceEngine) === engine;
       });
       return [
           ...getStaticVoiceFallback(engine).map((voice) => withVoiceMeta(voice, engine)),
@@ -2485,7 +2560,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const cloneVoices = clonedVoices.filter((voice) => {
               const sourceEngine = String(voice.sourceVoiceEngine || '').trim();
               if (!sourceEngine) return true;
-              return normalizeEngineToken(sourceEngine, engine) === engine;
+              return resolveEngineToken(sourceEngine) === engine;
           }).map((voice) =>
               withVoiceMeta(
                   {
@@ -2549,7 +2624,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   useEffect(() => {
       if (isEnginePlanAllowed(settings.engine)) return;
-      const fallbackEngine = planAllowedEngines[0] || 'KOKORO';
+      const fallbackEngine = planAllowedEngines[0] || 'DUNO';
       const fallbackVoiceId = getValidVoiceIdForEngine(fallbackEngine, settings.voiceId);
       setSettings((prev) => ({ ...prev, engine: fallbackEngine, voiceId: fallbackVoiceId }));
   }, [
@@ -3195,15 +3270,15 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
     const probeAllRuntimesAndAutoSelect = async (): Promise<void> => {
       try {
-        const kokoroProbeStartedAtMs = Date.now();
+        const dunoProbeStartedAtMs = Date.now();
         const statusProbeStartedAtMs = Date.now();
-        const [kokoroProbeResult, statusResult] = await Promise.allSettled([
-          probeRuntimeStatus('KOKORO', {
+        const [dunoProbeResult, statusResult] = await Promise.allSettled([
+          probeRuntimeStatus('DUNO', {
             timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
             signal: controller.signal,
           }).then((status) => ({
             status,
-            latencyMs: Math.max(0, Date.now() - kokoroProbeStartedAtMs),
+            latencyMs: Math.max(0, Date.now() - dunoProbeStartedAtMs),
           })),
           fetchTtsEnginesStatus(undefined, mediaBackendUrl, {
             timeoutMs: RUNTIME_STATUS_LATENCY_TIMEOUT_MS,
@@ -3216,28 +3291,28 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
         if (cancelled) return;
 
-        const kokoroProbe = kokoroProbeResult.status === 'fulfilled' ? kokoroProbeResult.value : null;
+        const dunoProbe = dunoProbeResult.status === 'fulfilled' ? dunoProbeResult.value : null;
         const statusProbe = statusResult.status === 'fulfilled' ? statusResult.value : null;
-        const kokoroStatus = kokoroProbe?.status || null;
+        const dunoStatus = dunoProbe?.status || null;
         const statusPayload = statusProbe?.payload || null;
         const statusPayloadLatencyMs = statusProbe ? Math.max(0, Math.floor(statusProbe.latencyMs)) : null;
-        if (!kokoroStatus && !statusPayload) return;
+        if (!dunoStatus && !statusPayload) return;
 
         const nextStatuses = { ...ttsRuntimeStatusRef.current };
         const candidateLatencies: Partial<Record<GenerationSettings['engine'], { state?: string; latencyMs?: number | null }>> = {};
 
-        if (kokoroStatus) {
-          nextStatuses.KOKORO = mergeRuntimeStatus(nextStatuses.KOKORO, kokoroStatus);
-          const kokoroAutoSelectState = String(kokoroStatus.state || '').trim().toLowerCase();
-          const kokoroLatencyMs = Math.max(0, Math.floor(Number(kokoroProbe?.latencyMs || 0)));
-          candidateLatencies.KOKORO = {
-            state: kokoroAutoSelectState,
-            latencyMs: kokoroAutoSelectState === 'online' ? kokoroLatencyMs : null,
+        if (dunoStatus) {
+          nextStatuses.DUNO = mergeRuntimeStatus(nextStatuses.DUNO, dunoStatus);
+          const dunoAutoSelectState = String(dunoStatus.state || '').trim().toLowerCase();
+          const dunoLatencyMs = Math.max(0, Math.floor(Number(dunoProbe?.latencyMs || 0)));
+          candidateLatencies.DUNO = {
+            state: dunoAutoSelectState,
+            latencyMs: dunoAutoSelectState === 'online' ? dunoLatencyMs : null,
           };
         }
 
         const enginePayloads = statusPayload?.engines || {};
-        for (const engine of ['GEM', 'NEURAL2'] as const) {
+        for (const engine of ['PRIME', 'VECTOR'] as const) {
           const payload = enginePayloads[engine];
           if (!payload || typeof payload !== 'object') continue;
           const runtimeStatus = toRuntimeStatus(engine, payload);
@@ -3601,6 +3676,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   // --- Effects ---
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiTheme, uiTheme); }, [uiTheme]);
+  useEffect(() => { writeStorageString(STORAGE_KEYS.uiBrandTheme, uiBrandTheme); }, [uiBrandTheme]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiDensity, uiDensity); }, [uiDensity]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.studioSidebarMode, sidebarMode); }, [sidebarMode]);
   useEffect(() => { writeStorageString(STORAGE_KEYS.uiFontScale, String(uiFontScale)); }, [uiFontScale]);
@@ -3872,7 +3948,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               title: 'TTS Access Blocked',
               message: sanitizeUiText(ttsAccessState.detail || 'Sign in again to enable AI/TTS requests.'),
               severity: 'warning',
-              category: 'system',
+              category: 'security',
               sticky: true,
               dedupeKey: 'tts-access-blocked',
               channel: 'toast',
@@ -3971,7 +4047,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setSettings((prev) => {
           const next = {
               ...prev,
-              geminiTtsServiceUrl: normalizeServiceSetting(prev.geminiTtsServiceUrl, FALLBACK_RUNTIME_URLS.GEM),
+              geminiTtsServiceUrl: normalizeServiceSetting(prev.geminiTtsServiceUrl, FALLBACK_RUNTIME_URLS.PRIME),
           };
           if (
               next.geminiTtsServiceUrl === prev.geminiTtsServiceUrl
@@ -4015,26 +4091,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           };
       }
       void (async () => {
-          const authStateReady = (firebaseAuth as { authStateReady?: () => Promise<void> }).authStateReady;
-          if (typeof authStateReady === 'function') {
-              await authStateReady.call(firebaseAuth).catch(() => undefined);
+          try {
+              const authStateReady = (firebaseAuth as { authStateReady?: () => Promise<void> }).authStateReady;
+              if (typeof authStateReady === 'function') {
+                  await authStateReady.call(firebaseAuth).catch(() => undefined);
+              }
+              if (cancelled) return;
+              await bootstrapLoginSeasonPinning({ signal: startupProbeController.signal });
+              if (cancelled) return;
+              await refreshTtsAccessState(true, { signal: startupProbeController.signal });
+          } catch (error: unknown) {
+              if (error instanceof Error && error.name === 'AbortError') return;
+              const detail = sanitizeUiText(
+                mapTtsAccessBlockReason(error instanceof Error ? error.message : error, 'Sign in again to enable AI/TTS requests.')
+              ) || 'Sign in again to enable AI/TTS requests.';
+              const checkedAt = Date.now();
+              ttsAccessProbeRef.current = { ok: false, detail, checkedAt };
+              setTtsAccessState({ blocked: true, detail, checkedAt });
+              console.warn('[studio.auth_startup_probe]', error);
           }
-          if (cancelled) return;
-          await bootstrapLoginSeasonPinning({ signal: startupProbeController.signal }).catch((error: unknown) => {
-            if (error instanceof Error && error.name === 'AbortError') return;
-            throw error;
-          });
-          if (cancelled) return;
-          await refreshTtsAccessState(true, { signal: startupProbeController.signal }).catch((error: unknown) => {
-            if (error instanceof Error && error.name === 'AbortError') return;
-            throw error;
-          });
       })();
       return () => {
           cancelled = true;
           startupProbeController.abort();
       };
-  }, [hasSessionIdentity, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
+  }, [hasSessionIdentity, mapTtsAccessBlockReason, mediaBackendUrl, refreshTtsAccessState, user.uid, user.userId, user.email]);
 
   useEffect(() => {
       const busy = isGenerating || Boolean(engineSwitchInProgress);
@@ -4328,7 +4409,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           }
 
           const engineLabel = String(detail.engine || '').trim()
-            ? getEngineDisplayName(normalizeEngineToken(detail.engine, 'GEM'))
+            ? getEngineDisplayName(resolveEngineToken(detail.engine) as GenerationSettings['engine'])
             : sanitizeUiText(String(detail.runtimeLabel || 'TTS Runtime').trim());
           emit('runtime.recovered', {
             title: 'Runtime Recovery',
@@ -4351,9 +4432,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const activeQueueItem = activeQueueItemId
               ? queueState?.items.find((item) => item.id === activeQueueItemId) || null
               : null;
-          const expectedEngine = normalizeEngineToken(activeQueueItem?.settingsSnapshot.engine || settings.engine || 'GEM');
+          const expectedEngine = resolveEngineToken(activeQueueItem?.settingsSnapshot.engine || settings.engine || 'PRIME');
           const detailEngine = String(detail.engine || '').trim()
-            ? normalizeEngineToken(detail.engine, expectedEngine)
+            ? resolveEngineToken(detail.engine)
             : '';
           if (detailEngine && expectedEngine && detailEngine !== expectedEngine) return;
           const detailRequestId = String(detail.requestId || '').trim();
@@ -4460,9 +4541,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const activeQueueItem = activeQueueItemId
               ? queueState?.items.find((item) => item.id === activeQueueItemId) || null
               : null;
-          const expectedEngine = normalizeEngineToken(activeQueueItem?.settingsSnapshot.engine || settings.engine || 'GEM');
+          const expectedEngine = resolveEngineToken(activeQueueItem?.settingsSnapshot.engine || settings.engine || 'PRIME');
           const detailEngine = String(detail.engine || '').trim()
-            ? normalizeEngineToken(detail.engine, expectedEngine)
+            ? resolveEngineToken(detail.engine)
             : '';
           if (detailEngine && expectedEngine && detailEngine !== expectedEngine) {
               disposeUnclaimedAudioUrl();
@@ -4539,7 +4620,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const nextChunk: LiveAudioChunkItem = {
               jobId: resolvedJobId,
               index: Math.round(index),
-              engine: (detailEngine || normalizeEngineToken(settings.engine, 'GEM')),
+              engine: (detailEngine || resolveEngineToken(settings.engine)) as GenerationSettings['engine'],
               contentType: String(detail.contentType || 'audio/wav'),
               durationMs: Number(detail.durationMs || 0),
               textChars: Number(detail.textChars || 0),
@@ -4639,9 +4720,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [renderedDubVideoUrl, dubbingJobResultUrl, dubbingReportUrl, resetDubbingLivePlayback]);
 
   useEffect(() => {
-      document.body.classList.toggle('theme-dark', resolvedTheme === 'dark');
-      return () => document.body.classList.remove('theme-dark');
-  }, [resolvedTheme]);
+      if (typeof document === 'undefined') return undefined;
+      return applyThemeModeToDocument(document, uiTheme, resolvedTheme);
+  }, [uiTheme, resolvedTheme]);
+
+  useEffect(() => {
+      if (typeof document === 'undefined') return undefined;
+      return applyBrandThemeToDocument(document, uiBrandTheme);
+  }, [uiBrandTheme]);
 
   useEffect(() => {
       const previousCompact = document.body.dataset.compact;
@@ -5279,10 +5365,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ): Promise<void> => {
       const itemStartedAtMs = Date.now();
       const audioCacheKey = item.audioCacheKey || `studio-queue:${item.id}`;
-      const normalizedQueueEngine = normalizeEngineToken(item.settingsSnapshot.engine, 'GEM');
+      const normalizedQueueEngine = resolveEngineToken(item.settingsSnapshot.engine);
       const persistedRequestId = String(item.requestId || '').trim();
       const initialKnownJobId = String(item.jobId || '').trim();
-      const runRequestId = persistedRequestId || initialKnownJobId || createSynthesisTraceId(normalizedQueueEngine);
+      const runRequestId = persistedRequestId || initialKnownJobId || createSynthesisTraceId(normalizedQueueEngine as GenerationSettings['engine']);
       activeStudioQueueItemIdRef.current = item.id;
       syncActiveGatewayIds(runRequestId, initialKnownJobId);
       generationRunStartedAtRef.current = itemStartedAtMs;
@@ -5337,8 +5423,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       const queuedResult = await pollTtsGatewayJobForAudio({
                           baseUrl: resolveMediaBackendUrl(runSettings),
                           jobId: currentJobId,
-                          runtimeLabel: getEngineDisplayName(normalizedQueueEngine),
-                          engine: normalizedQueueEngine,
+                          runtimeLabel: getEngineDisplayName(normalizedQueueEngine as GenerationSettings['engine']),
+                          engine: normalizedQueueEngine as GenerationSettings['engine'],
                           signal: controller.signal,
                       });
                       const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
@@ -5943,7 +6029,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       );
       const selectedVoice = getVoiceById(voiceId);
       const voiceNameDisplay = selectedVoice?.name || 'AI Voice';
-      const engineVoiceName = studioSettings.engine === 'KOKORO'
+      const engineVoiceName = studioSettings.engine === 'DUNO'
         ? voiceId
         : (selectedVoice?.geminiVoiceName || voiceId || 'Fenrir');
       const generationSettings = {
@@ -6017,7 +6103,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       generationFirstAudioAtRef.current = 0;
       setGenerationTiming(null);
       const generationRequestId = String(inflightLedger?.requestId || '').trim()
-          || createSynthesisTraceId(normalizeEngineToken(settings.engine, 'GEM'));
+          || createSynthesisTraceId(resolveEngineToken(settings.engine) as GenerationSettings['engine']);
       let currentJobId = String(inflightLedger?.jobId || '').trim();
       patchSingleInflightGenerationLedger({
           mode: 'single',
@@ -6036,7 +6122,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       const generationNotificationKey = `single:${settings.engine}`;
       const preparingLabel = options?.treatAsRecovery
           ? 'Reconnecting generation...'
-          : (settings.engine === 'KOKORO' ? 'Preparing Kokoro Modal synthesis...' : 'Preparing generation...');
+          : (settings.engine === 'DUNO' ? 'Preparing DUNO synthesis...' : 'Preparing generation...');
       startSimulation(estTime, preparingLabel, 'live');
       emit('generation.started', {
         title: 'Generation Started',
@@ -6053,13 +6139,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               try {
                   if (currentJobId) {
                       const runSettings = normalizeSettings(buildStudioGenerationSettings(settings));
-                      const normalizedRunEngine = normalizeEngineToken(runSettings.engine, 'GEM');
+                      const normalizedRunEngine = resolveEngineToken(runSettings.engine);
                       const { pollTtsGatewayJobForAudio } = await loadTtsGatewayJobService();
                       const queuedResult = await pollTtsGatewayJobForAudio({
                           baseUrl: resolveMediaBackendUrl(runSettings),
                           jobId: currentJobId,
-                          runtimeLabel: getEngineDisplayName(normalizedRunEngine),
-                          engine: normalizedRunEngine,
+                          runtimeLabel: getEngineDisplayName(normalizedRunEngine as GenerationSettings['engine']),
+                          engine: normalizedRunEngine as GenerationSettings['engine'],
                           signal: controller.signal,
                       });
                       const decoded = await getAudioContext().decodeAudioData(queuedResult.audioBytes.slice(0));
@@ -6264,7 +6350,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       await startStudioQueuedGeneration();
       return;
     }
-    if (isWalletBlocked && !canRunKokoroWithoutWallet) {
+    if (isWalletBlocked && !canRunDunoWithoutWallet) {
       showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Buy to top up or upgrade.`, 'error');
       openBuyCenter();
       return;
@@ -6338,7 +6424,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   // --- VOICE PREVIEW LOGIC ---
   const handleVoicePreview = async (voiceId: string, name: string) => {
       const voice = getVoiceById(voiceId);
-      const engine: GenerationSettings['engine'] = normalizeEngineToken(voice?.engine, 'GEM');
+      const engine: GenerationSettings['engine'] = resolveEngineToken(voice?.engine) as GenerationSettings['engine'];
       await playVoiceSample(voiceId, name, engine);
   };
 
@@ -6363,7 +6449,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const buildVoiceSampleSource = useCallback(async (
       voiceId: string,
       name: string,
-      engine: GenerationSettings['engine'] = 'GEM'
+      engine: GenerationSettings['engine'] = 'PRIME'
   ): Promise<{ url: string; needsCleanup: boolean }> => {
       const selectedVoice = getVoiceById(voiceId);
       const fallbackPreviewUrl = resolveVoicePreviewUrl(selectedVoice);
@@ -6396,7 +6482,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
 
       const { generateSpeech } = await loadGeminiService();
-      const previewRequestId = `voice-preview:${normalizeEngineToken(engine, 'GEM')}:${String(voiceId || name || 'voice').trim().replace(/\s+/g, '_')}`;
+      const previewRequestId = `voice-preview:${resolveEngineToken(engine)}:${String(voiceId || name || 'voice').trim().replace(/\s+/g, '_')}`;
       const buffer = await generateSpeech(
           text,
           voiceParam,
@@ -6409,7 +6495,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return { url: URL.createObjectURL(blob), needsCleanup: true };
   }, [clonedVoices, ensureEngineOnline, getVoiceById, isGemRuntimeEngine, resolveClonedVoicePlaybackUrl, resolveVoicePreviewUrl, settings]);
 
-  const playVoiceSample = async (voiceId: string, name: string, engine: GenerationSettings['engine'] = 'GEM') => {
+  const playVoiceSample = async (voiceId: string, name: string, engine: GenerationSettings['engine'] = 'PRIME') => {
       // Stop current
       if (previewAudioRef.current) {
           previewAudioRef.current.pause();
@@ -6473,8 +6559,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handlePreviewCharacter = async (char: CharacterProfile) => {
      const vid = char.voiceId;
-      const engine: GenerationSettings['engine'] = normalizeEngineToken(getVoiceById(vid)?.engine, 'GEM');
-     await playVoiceSample(char.voiceId, char.name, engine);
+       const engine: GenerationSettings['engine'] = resolveEngineToken(getVoiceById(vid)?.engine) as GenerationSettings['engine'];
+      await playVoiceSample(char.voiceId, char.name, engine);
   };
 
   // --- Video Dubbing Functions ---
@@ -6788,7 +6874,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   const handleGenerateDub = async () => {
       if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
-      if (isWalletBlocked && !canRunKokoroWithoutWallet) {
+      if (isWalletBlocked && !canRunDunoWithoutWallet) {
           showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Buy to top up or upgrade.`, 'error');
           openBuyCenter();
           return;
@@ -6819,7 +6905,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           acoustic_isolation: 'Phase 1/6: Acoustic isolation',
           speaker_segmentation: 'Phase 2/6: Speaker segmentation',
           translation: 'Phase 3/6: Segment translation',
-          tts: 'Phase 4/6: Prime TTS',
+          tts: 'Phase 4/6: PRIME TTS',
           voice_transfer: 'Phase 5/6: Voice transfer',
           video_lipsync: 'Phase 6/6: Video lip-sync',
           preflight: 'Preflight checks',
@@ -7580,6 +7666,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   function buildStudioGenerationSettings(baseSettings: GenerationSettings): GenerationSettings {
       return {
           ...baseSettings,
+          runtimeProvider: ttsRuntimeStatus[baseSettings.engine]?.provider || '',
           speakerMapping: {
               ...(baseSettings.speakerMapping || {}),
           },
@@ -7687,23 +7774,25 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
   const getEngineLabel = (engine: GenerationSettings['engine']) => getEngineDisplayName(engine);
   const getEngineSubLabel = (engine: GenerationSettings['engine']) => (
-    engine === 'KOKORO'
-      ? 'Kokoro Runtime'
+    engine === 'DUNO'
+      ? 'DeepInfra Runtime'
+      : engine === 'VECTOR'
+      ? 'Cloud Runtime'
       : 'Cloud Runtime'
   );
   const getEngineDescription = (engine: GenerationSettings['engine']) => {
-    if (engine === 'KOKORO') return 'Modal-hosted voice engine routed through the backend gateway for fast startup and low live latency.';
-    if (engine === 'NEURAL2') return 'Balanced cloud engine for clean narration and reliable multilingual output.';
-    return 'Premium cloud engine for richer expressiveness, direction fidelity, and complex scenes.';
+    if (engine === 'DUNO') return 'Backend-routed DUNO engine tuned for fast startup, built-in voice cloning, and low-latency playback.';
+    if (engine === 'VECTOR') return 'Balanced cloud engine for clear narration and dependable multilingual output.';
+    return 'Premium cloud engine for richer expression, stronger direction follow-through, and complex scenes.';
   };
   const getRuntimeOfflineMessage = (engine: GenerationSettings['engine']) => (
-    engine === 'KOKORO'
-      ? 'Kokoro Modal runtime is unavailable. Check the Modal endpoint or retry once it recovers.'
+    engine === 'DUNO'
+      ? 'DUNO runtime is unavailable. Check the runtime endpoint or retry once it recovers.'
       : `${getEngineDisplayName(engine)} runtime is offline. Start services or retry activation.`
   );
   const getRuntimeNotConfiguredMessage = (engine: GenerationSettings['engine']) => (
-    engine === 'KOKORO'
-      ? 'Kokoro Modal runtime is not configured. Add VF_KOKORO_RUNTIME_URL in backend settings.'
+    engine === 'DUNO'
+      ? 'DUNO runtime is not configured. Add `VF_DUNO_RUNTIME_URL` in backend settings.'
       : `${getEngineDisplayName(engine)} runtime is not configured.`
   );
   const formatCompactRate = (value: number): string => {
@@ -7748,12 +7837,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     return 'bg-gray-50 text-gray-600 border-gray-200';
   };
   const activateTtsEngine = async (engine: GenerationSettings['engine']) => {
-      const targetEngine = normalizeEngineToken(engine, settings.engine || 'GEM');
+      const targetEngine = resolveEngineToken(engine) as GenerationSettings['engine'];
       if (engineSwitchInProgress) return;
       if (!isEnginePlanAllowed(targetEngine)) {
           if (!hasUnlimitedAccess && !isPaidBillingPlan) {
               setShowSubscriptionModal(true);
-              showToast('Prime engine is available on paid plans. Upgrade to continue.', 'info');
+              showToast(`${getEngineDisplayName(targetEngine)} is available on paid plans. Upgrade to continue.`, 'info');
           } else {
               showToast(`${getEngineLabel(targetEngine)} is not enabled for this plan.`, 'info');
           }
@@ -7779,7 +7868,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       });
 
       try {
-          if (targetEngine !== 'KOKORO') {
+          if (targetEngine !== 'DUNO') {
               await ensureEngineOnline(targetEngine, { syncVoiceId: nextVoiceId });
               return;
           }
@@ -8600,7 +8689,43 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       <Laptop size={12} /> System
                                   </button>
                               </div>
-                              <div className={`text-[10px] mt-2 ${isDarkUi ? 'text-slate-400' : 'text-gray-400'}`}>Active: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}</div>
+                              <div className="mt-4">
+                                  <div className={`mb-2 flex items-center gap-1 text-[10px] font-bold uppercase ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                      <Sparkles size={12} /> Brand palette
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                      {UI_BRAND_THEME_ORDER.map((brandId) => {
+                                          const theme = UI_BRAND_THEME_CONFIGS[brandId];
+                                          const active = uiBrandTheme === brandId;
+                                                  return (
+                                                  <button
+                                                          key={brandId}
+                                                          type="button"
+                                                          onClick={() => setUiBrandTheme(brandId)}
+                                                  className={`vf-brand-chip flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[11px] font-semibold transition-colors ${
+                                                      active
+                                                        ? 'text-white border-transparent'
+                                                        : 'bg-[color:var(--vf-surface-soft)] text-[color:var(--vf-text-muted)] border-[color:var(--vf-border)] hover:bg-[color:var(--vf-surface-muted)]'
+                                                  }`}
+                                                  aria-pressed={active}
+                                                  data-active={active}
+                                                  data-brand-theme={brandId}
+                                                  >
+                                                      <span
+                                                      className="vf-brand-swatch h-3.5 w-3.5 shrink-0 rounded-full border border-white/30"
+                                                      style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 55%, ${theme.accent3} 100%)` }}
+                                                      aria-hidden="true"
+                                                  />
+                                                  <span className="min-w-0">
+                                                      <span className="block truncate">{theme.label}</span>
+                                                      <span className="block truncate text-[10px] font-medium text-[color:var(--vf-text-muted)]">{theme.description}</span>
+                                                  </span>
+                                              </button>
+                                          );
+                                      })}
+                                  </div>
+                              </div>
+                              <div className="mt-2 text-[10px] text-[color:var(--vf-text-muted)]">Active: {uiTheme === 'system' ? `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})` : uiTheme === 'dark' ? 'Dark' : 'Light'} · {UI_BRAND_THEME_CONFIGS[uiBrandTheme].label}</div>
                           </div>
 
                           <div className={`flex items-center justify-between p-2.5 rounded-lg border ${isDarkUi ? 'bg-slate-800 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
@@ -8687,7 +8812,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       if (switchLocked || pending) return;
                                       if (planLockedEngine) {
                                           setShowSubscriptionModal(true);
-                                          showToast('Prime engine is available on paid plans. Upgrade to continue.', 'info');
+                                          showToast(`${getEngineDisplayName(engine)} is available on paid plans. Upgrade to continue.`, 'info');
                                           return;
                                       }
                                       void activateTtsEngine(engine);
@@ -8702,9 +8827,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             : 'border-gray-200 bg-white hover:border-indigo-200'
                                       } ${(switchLocked || pending || planLockedEngine) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
                                   >
-                                      {engine === 'GEM' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
-                                      {engine === 'NEURAL2' && <Zap size={18} className={`shrink-0 ${isActive ? 'text-amber-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
-                                      {engine === 'KOKORO' && <Cpu size={18} className={`shrink-0 ${isActive ? 'text-cyan-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
+                                      {engine === 'PRIME' && <Sparkles size={18} className={`shrink-0 ${isActive ? 'text-indigo-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
+                                      {engine === 'VECTOR' && <Zap size={18} className={`shrink-0 ${isActive ? 'text-amber-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
+                                      {engine === 'DUNO' && <Cpu size={18} className={`shrink-0 ${isActive ? 'text-cyan-500' : isDarkUi ? 'text-slate-400' : 'text-gray-400'}`} />}
                                       <div className="flex-1 min-w-0">
                                           <div className={`font-semibold text-xs ${isDarkUi ? 'text-slate-100' : 'text-slate-800'}`}>{getEngineLabel(engine)} Runtime</div>
                                           <div className={`text-[10px] ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>{getEngineSubLabel(engine)}</div>
@@ -9286,54 +9411,56 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 		                            {studioRailTab === 'voice' && (
 	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
-                                        <button
-                                            type="button"
-                                            onClick={() => toggleStudioMobilePanel('speaker')}
-                                            className="flex w-full items-start justify-between gap-3 text-left"
-                                        >
-                                            <div>
-                                                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Speaker</h3>
-                                                <div className="mt-1 flex items-center gap-2">
-                                                    <span className={`text-xs font-bold ${
-                                                        settings.engine === 'KOKORO'
-                                                          ? 'text-cyan-600'
-                                                          : settings.engine === 'NEURAL2'
-                                                            ? 'text-amber-600'
-                                                            : 'text-indigo-600'
-                                                    }`}>
-                                                        {getEngineDisplayName(settings.engine)}
-                                                    </span>
-                                                    <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openVoiceConversionForVoiceId(
-                                                          settings.voiceId,
-                                                          characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
-                                                          characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id
-                                                        )}
-                                                        className={`inline-flex h-8 min-w-[4.8rem] items-center justify-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold transition ${
-                                                          isDarkUi
-                                                            ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
-                                                            : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
-                                                        }`}
-                                                        title="Clone this speaker with reference audio"
-                                                        aria-label="Clone this speaker with reference audio"
-                                                    >
-                                                        <Mic2 size={13} />
-                                                        <span>Clone</span>
-                                                    </button>
+                                        <div className="flex w-full items-start justify-between gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => toggleStudioMobilePanel('speaker')}
+                                                className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
+                                            >
+                                                <div>
+                                                    <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Speaker</h3>
+                                                    <div className="mt-1 flex items-center gap-2">
+                                                        <span className={`text-xs font-bold ${
+                                                            settings.engine === 'DUNO'
+                                                              ? 'text-cyan-600'
+                                                              : settings.engine === 'VECTOR'
+                                                                ? 'text-amber-600'
+                                                                : 'text-indigo-600'
+                                                        }`}>
+                                                            {getEngineDisplayName(settings.engine)}
+                                                        </span>
+                                                        <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
+                                                    </div>
                                                 </div>
-                                            </div>
-                                            {studioMobilePanels.speaker ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-                                        </button>
+                                                {studioMobilePanels.speaker ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => openVoiceConversionForVoiceId(
+                                                  settings.voiceId,
+                                                  characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
+                                                  characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id
+                                                )}
+                                                className={`inline-flex h-8 min-w-[4.8rem] items-center justify-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold transition ${
+                                                  isDarkUi
+                                                    ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                    : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
+                                                }`}
+                                                title="Clone this speaker with reference audio"
+                                                aria-label="Clone this speaker with reference audio"
+                                            >
+                                                <Mic2 size={13} />
+                                                <span>Clone</span>
+                                            </button>
+                                        </div>
                                     ) : (
 	                                    <div className="mb-4 flex items-center justify-between">
 	                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speaker</h3>
                                             <div className="flex items-center gap-2">
                                                 <span className={`text-xs font-bold ${
-                                                        settings.engine === 'KOKORO'
+                                                        settings.engine === 'DUNO'
                                                           ? 'text-cyan-600'
-                                                          : settings.engine === 'NEURAL2'
+                                                          : settings.engine === 'VECTOR'
                                                             ? 'text-amber-600'
                                                             : 'text-indigo-600'
                                                     }`}>
@@ -10248,11 +10375,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                             {history.map((item, index) => {
                               const itemKey = `${item.id || 'history'}_${index}`;
                               const isExpanded = expandedHistoryItemKey === itemKey;
-                              const historyEngine: GenerationSettings['engine'] = item.engine === 'KOKORO'
-                                ? 'KOKORO'
-                                : item.engine === 'NEURAL2'
-                                  ? 'NEURAL2'
-                                  : 'GEM';
+                              const historyEngine: GenerationSettings['engine'] = item.engine === 'DUNO'
+                                ? 'DUNO'
+                                : item.engine === 'VECTOR'
+                                  ? 'VECTOR'
+                                  : 'PRIME';
                               const voiceLabel = resolveHistoryVoiceLabel(item);
                               const normalizedPreview = String(item.text || '').replace(/\s+/g, ' ').trim();
                               const previewText = normalizedPreview || 'No text preview.';
@@ -10273,11 +10400,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     }`}
                                   >
                                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                      historyEngine === 'KOKORO'
+                                      historyEngine === 'DUNO'
                                         ? isDarkUi
                                           ? 'bg-emerald-500/20 text-emerald-200'
                                           : 'bg-emerald-100 text-emerald-700'
-                                        : historyEngine === 'NEURAL2'
+                                        : historyEngine === 'VECTOR'
                                           ? isDarkUi
                                             ? 'bg-amber-500/20 text-amber-100'
                                             : 'bg-amber-100 text-amber-700'
@@ -10656,4 +10783,5 @@ const StoreIcon = ({ size, className }: { size?: number, className?: string }) =
       <path d="M22 7v3a2 2 0 0 1-2 2v0a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7" />
     </svg>
 );
+
 

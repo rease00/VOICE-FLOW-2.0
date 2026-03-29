@@ -74,7 +74,6 @@ const validateApiManifest = (manifest) => {
 const main = async () => {
   const files = await Promise.all([
     readFileText('runtime-gemini.yaml'),
-    readFileText('runtime-kokoro.yaml'),
     readFileText('worker-deployment.yaml'),
     readFileText('api-deployment.yaml'),
     readFileText('kustomization.yaml'),
@@ -93,15 +92,9 @@ const main = async () => {
   };
 
   const geminiValidation = validateRuntimeManifest(index['runtime-gemini.yaml'], { runtimeName: 'gemini', port: 7810 });
-  const kokoroValidation = validateRuntimeManifest(index['runtime-kokoro.yaml'], { runtimeName: 'kokoro', port: 7820 });
-
   report.checks.push({
     file: 'runtime-gemini.yaml',
     ...geminiValidation,
-  });
-  report.checks.push({
-    file: 'runtime-kokoro.yaml',
-    ...kokoroValidation,
   });
 
   const workerText = index['worker-deployment.yaml'].content;
@@ -123,6 +116,9 @@ const main = async () => {
   const kustomizationFailures = [];
   if (!has(kustomizationText, /runtime-admin-secret\.example\.yaml/i)) {
     kustomizationFailures.push('kustomization.yaml is missing runtime-admin-secret.example.yaml resource.');
+  }
+  if (has(kustomizationText, /runtime-duno\.yaml/i)) {
+    kustomizationFailures.push('kustomization.yaml still references runtime-duno.yaml.');
   }
   report.checks.push({ file: 'kustomization.yaml', failures: kustomizationFailures, warnings: [] });
 

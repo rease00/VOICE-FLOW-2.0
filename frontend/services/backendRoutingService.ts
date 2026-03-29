@@ -1,17 +1,25 @@
 import type { GenerationSettings } from '../types';
-import { fetchRoutingBackendCandidates } from '../src/shared/api/gatewayClient';
+import { fetchRoutingBackendCandidates, issueTtsV2SessionKey } from '../src/shared/api/gatewayClient';
 import { resolveApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson } from '../src/shared/storage/localStore';
 import {
   clearGeminiRegionSelection,
   deriveGeminiRegionSelectionFromLocation,
+  resolveGeminiRegionSelection,
   setGeminiRegionSelection,
 } from './geminiRegionRouting';
 
 const LOGIN_ROUTING_SESSION_FLAG = 'vf_backend_routing_login_once_v1';
+const LOGIN_TTS_SESSION_BOOTSTRAP_FLAG = 'vf_tts_v2_login_season_pin_once_v1';
 const DEFAULT_PROBE_TIMEOUT_MS = 3500;
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 2500;
+
+const createAbortError = (): Error => {
+  const error = new Error('Operation aborted');
+  error.name = 'AbortError';
+  return error;
+};
 
 export const BACKEND_ROUTING_APPLIED_EVENT = 'vf:backend-routing-applied';
 
@@ -43,11 +51,23 @@ const hasSessionRoutingRun = (): boolean => {
   }
 };
 
-const probeCandidateRtt = async (baseUrl: string, timeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS): Promise<number> => {
+const probeCandidateRtt = async (
+  baseUrl: string,
+  timeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS,
+  signal?: AbortSignal
+): Promise<number> => {
   const safeBase = String(baseUrl || '').trim().replace(/\/+$/, '');
   if (!safeBase) return Number.POSITIVE_INFINITY;
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
+  const forwardAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      window.clearTimeout(timer);
+      throw createAbortError();
+    }
+    signal.addEventListener('abort', forwardAbort, { once: true });
+  }
   const startedAt = performance.now();
   try {
     const response = await fetch(`${safeBase}/health`, {
@@ -58,10 +78,16 @@ const probeCandidateRtt = async (baseUrl: string, timeoutMs: number = DEFAULT_PR
     });
     if (!response.ok) return Number.POSITIVE_INFINITY;
     return Math.max(0, performance.now() - startedAt);
-  } catch {
+  } catch (error: unknown) {
+    if (signal?.aborted || controller.signal.aborted) {
+      throw error instanceof Error && error.name === 'AbortError' ? error : createAbortError();
+    }
     return Number.POSITIVE_INFINITY;
   } finally {
     window.clearTimeout(timer);
+    if (signal) {
+      signal.removeEventListener('abort', forwardAbort);
+    }
   }
 };
 
@@ -86,9 +112,18 @@ interface LoginRoutingResult {
   regionSource?: string;
 }
 
-export const applyNearestBackendRoutingOnLogin = async (): Promise<LoginRoutingResult> => {
+export interface LoginSeasonPinBootstrapResult extends LoginRoutingResult {
+  sessionKey?: string;
+  sessionIssued?: boolean;
+  sessionReason?: string;
+}
+
+export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: AbortSignal }): Promise<LoginRoutingResult> => {
   if (typeof window === 'undefined') {
     return { applied: false, reason: 'window_unavailable' };
+  }
+  if (options?.signal?.aborted) {
+    throw createAbortError();
   }
   if (hasSessionRoutingRun()) {
     return { applied: false, reason: 'already_ran' };
@@ -102,8 +137,12 @@ export const applyNearestBackendRoutingOnLogin = async (): Promise<LoginRoutingR
       baseUrl: discoveryBase,
       timeoutMs: DEFAULT_DISCOVERY_TIMEOUT_MS,
       force: true,
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
   } catch {
+    if (options?.signal?.aborted) {
+      throw createAbortError();
+    }
     return { applied: false, reason: 'discovery_failed' };
   }
 
@@ -125,7 +164,7 @@ export const applyNearestBackendRoutingOnLogin = async (): Promise<LoginRoutingR
   const probes = await Promise.all(
     candidatePool.map(async (candidate) => {
       const baseUrl = String(candidate.baseUrl || '').trim();
-      const rttMs = await probeCandidateRtt(baseUrl);
+      const rttMs = await probeCandidateRtt(baseUrl, DEFAULT_PROBE_TIMEOUT_MS, options?.signal);
       return {
         baseUrl,
         region: String(candidate.region || '').trim(),
@@ -189,9 +228,70 @@ export const applyNearestBackendRoutingOnLogin = async (): Promise<LoginRoutingR
   };
 };
 
+const hasSessionTtsBootstrapRun = (): boolean => {
+  try {
+    return sessionStorage.getItem(LOGIN_TTS_SESSION_BOOTSTRAP_FLAG) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const markSessionTtsBootstrapRun = (): void => {
+  try {
+    sessionStorage.setItem(LOGIN_TTS_SESSION_BOOTSTRAP_FLAG, '1');
+  } catch {
+    // no-op
+  }
+};
+
+export const bootstrapLoginSeasonPinning = async (options?: { signal?: AbortSignal }): Promise<LoginSeasonPinBootstrapResult> => {
+  if (typeof window === 'undefined') {
+    return { applied: false, reason: 'window_unavailable', sessionIssued: false, sessionReason: 'window_unavailable' };
+  }
+  if (options?.signal?.aborted) {
+    throw createAbortError();
+  }
+  if (hasSessionTtsBootstrapRun()) {
+    return { applied: false, reason: 'already_ran', sessionIssued: false, sessionReason: 'already_ran' };
+  }
+  markSessionTtsBootstrapRun();
+
+  const routingResult = await applyNearestBackendRoutingOnLogin(
+    options?.signal ? { signal: options.signal } : undefined
+  );
+  const regionSelection = resolveGeminiRegionSelection();
+  const baseUrl = String(routingResult.baseUrl || readCurrentBackendUrl()).trim();
+
+  try {
+    const sessionKey = await issueTtsV2SessionKey({
+      baseUrl,
+      force: true,
+      regionHint: regionSelection.regionHint,
+      regionSource: regionSelection.regionSource,
+      probeAllSlotRegions: true,
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    return {
+      ...routingResult,
+      sessionKey,
+      sessionIssued: true,
+    };
+  } catch {
+    if (options?.signal?.aborted) {
+      throw createAbortError();
+    }
+    return {
+      ...routingResult,
+      sessionIssued: false,
+      sessionReason: 'session_issue_failed',
+    };
+  }
+};
+
 export const clearNearestBackendRoutingState = (): void => {
   try {
     sessionStorage.removeItem(LOGIN_ROUTING_SESSION_FLAG);
+    sessionStorage.removeItem(LOGIN_TTS_SESSION_BOOTSTRAP_FLAG);
   } catch {
     // no-op
   }

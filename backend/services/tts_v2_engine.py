@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 import wave
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -21,6 +22,13 @@ try:
     import redis  # type: ignore
 except Exception:  # pragma: no cover
     redis = None  # type: ignore
+
+from services.queue.redis_queue import TtsJobQueue
+from shared.tts_chunk_scheduler import (
+    DEFAULT_LANE_IDS,
+    build_single_speaker_chunk_plan,
+    plan_text_chunks,
+)
 
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 TERMINAL = {"completed", "failed", "cancelled"}
@@ -258,11 +266,116 @@ def _now_ms() -> int:
 
 def _norm_engine(value: Any) -> str:
     token = str(value or "").strip().upper()
-    if token in {"KOKORO", "KOKORO_RUNTIME"}:
-        return "KOKORO"
-    if token in {"NEURAL2", "NEURAL_2", "NURAL2", "NURAL_2"}:
-        return "NEURAL2"
-    return "GEM"
+    if token in {"DUNO", "DUNO_RUNTIME"}:
+        return "DUNO"
+    if token in {"VECTOR", "NEURAL_2", "NURAL2", "NURAL_2"}:
+        return "VECTOR"
+    return "PRIME"
+
+
+def _strict_engine(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    if token in {"DUNO", "VECTOR", "PRIME"}:
+        return token
+    raise V2ValidationError("Invalid engine. Use DUNO, VECTOR, or PRIME.")
+
+
+def _canonicalize_engine_token(value: Any) -> str:
+    token = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip().upper())
+    while "__" in token:
+        token = token.replace("__", "_")
+    token = token.strip("_")
+    if token in {"DUNO", "VECTOR", "PRIME"}:
+        return token
+    legacy_map = {
+        "GEMINI": "PRIME",
+        "GOOD": "PRIME",
+        "GOOD_LITE": "PRIME",
+        "PR": "PRIME",
+        "GPR": "PRIME",
+        "PRIME_LITE": "PRIME",
+        "GEM": "PRIME",
+        "GEM_PRO": "PRIME",
+        "GEMPRO": "PRIME",
+        "NEURAL_2": "VECTOR",
+        "NEURAL2": "VECTOR",
+        "NURAL2": "VECTOR",
+        "NURAL_2": "VECTOR",
+        "HD": "VECTOR",
+        "GEM1": "VECTOR",
+        "G1": "VECTOR",
+        "KOKORO": "DUNO",
+        "BASIC": "DUNO",
+        "KOKORO_RUNTIME": "DUNO",
+        "DUN": "DUNO",
+        "DUNO_RUNTIME": "DUNO",
+    }
+    return legacy_map.get(token, "")
+
+
+def _canonicalize_engine_record_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        changed = False
+        for key, item in value.items():
+            next_item, item_changed = _canonicalize_engine_record_field(key, item)
+            out[key] = next_item
+            changed = changed or item_changed
+        return out, changed
+    if isinstance(value, list):
+        out: list[Any] = []
+        changed = False
+        for item in value:
+            next_item, item_changed = _canonicalize_engine_record_value(item)
+            out.append(next_item)
+            changed = changed or item_changed
+        return out, changed
+    return value, False
+
+
+def _canonicalize_engine_record_field(key: Any, value: Any) -> tuple[Any, bool]:
+    token_key = str(key or "").strip().lower()
+    canonicalize = token_key.endswith("engine") or token_key.endswith("engines")
+    if canonicalize and isinstance(value, str):
+        token = _canonicalize_engine_token(value)
+        if token and token != str(value or "").strip().upper():
+            return token, True
+        return value, False
+    if canonicalize and isinstance(value, list):
+        out: list[str] = []
+        changed = False
+        seen: set[str] = set()
+        for item in value:
+            token = _canonicalize_engine_token(item)
+            safe_token = str(token or "").strip()
+            if not safe_token or safe_token in seen:
+                continue
+            seen.add(safe_token)
+            out.append(safe_token)
+            if safe_token != str(item or "").strip().upper():
+                changed = True
+        return out if changed or out != value else value, changed or out != value
+    if canonicalize and isinstance(value, dict):
+        return _canonicalize_engine_record_value(value)
+    if isinstance(value, dict):
+        return _canonicalize_engine_record_value(value)
+    if isinstance(value, list):
+        return _canonicalize_engine_record_value(value)
+    return value, False
+
+
+def _record_has_legacy_engine_tokens(value: Any, *, key: str = "") -> bool:
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            if _record_has_legacy_engine_tokens(child_value, key=str(child_key)):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_record_has_legacy_engine_tokens(item, key=key) for item in value)
+    if isinstance(value, str) and (str(key or "").strip().lower().endswith("engine") or str(key or "").strip().lower().endswith("engines")):
+        token = _canonicalize_engine_token(value)
+        return bool(token and token != str(value or "").strip().upper())
+    return False
 
 def _norm_mode(value: Any, speakers_count: int) -> str:
     token = str(value or "").strip().lower()
@@ -562,31 +675,28 @@ def _strip_turn_metadata(text: str) -> tuple[str, str, str, str]:
         speaker_name, emotion, cue, pause_policy = _parse_label_metadata("")
     return body, speaker_name, emotion or "Neutral", cue, pause_policy
 
-def _chunk_text(text: str, unit_index: int) -> list[str]:
+def _planned_chunk_specs(text: str, unit_index: int, *, mode: str) -> list[dict[str, Any]]:
     value = str(text or "").strip()
     if not value:
         return []
-    if unit_index == 0:
-        targets, tail = [500, 1000], 3000
-    elif len(value) <= 1500:
-        return [value]
-    else:
-        targets, tail = [1500], 3000
-    chunks: list[str] = []
-    rest = value
-    for target in targets:
-        if not rest:
-            break
-        pieces = _split_for_target(rest, target)
-        first = pieces[0] if pieces else rest[:target]
-        chunks.append(first.strip())
-        rest = " ".join(pieces[1:]).strip() if len(pieces) > 1 else ""
-    while rest:
-        pieces = _split_for_target(rest, tail)
-        first = pieces[0] if pieces else rest[:tail]
-        chunks.append(first.strip())
-        rest = " ".join(pieces[1:]).strip() if len(pieces) > 1 else ""
-    return [c for c in chunks if c]
+    if str(mode or "").strip().lower() == "single":
+        return [dict(item) for item in build_single_speaker_chunk_plan(value, lane_ids=DEFAULT_LANE_IDS)]
+    safe_lanes = list(DEFAULT_LANE_IDS)
+    lane_id = safe_lanes[unit_index % len(safe_lanes)]
+    seed_targets = [500, 500, 3000] if unit_index == 0 else []
+    return [
+        {"text": chunk, "laneId": lane_id}
+        for chunk in plan_text_chunks(value, seed_targets=seed_targets, tail_target=4000)
+        if str(chunk or "").strip()
+    ] or [{"text": value, "laneId": lane_id}]
+
+
+def _chunk_text(text: str, unit_index: int, *, mode: str) -> list[str]:
+    return [
+        str(item.get("text") or "").strip()
+        for item in _planned_chunk_specs(text, unit_index, mode=mode)
+        if str(item.get("text") or "").strip()
+    ]
 
 def _allow_relaxed_wav_validation() -> bool:
     if str(os.getenv("PYTEST_CURRENT_TEST") or "").strip():
@@ -657,6 +767,7 @@ class TtsV2Engine:
         idempotency_ttl_s: Optional[int] = None,
         result_ttl_ms: int = 900_000,
         max_payload_bytes: int = 12_000,
+        queue_key_prefix: str = "",
     ) -> None:
         self._synthesize = synthesize_fn
         root = output_root or (Path(__file__).resolve().parents[2] / "output" / "tts-v2")
@@ -669,8 +780,23 @@ class TtsV2Engine:
         self._max_payload_bytes = max(1200, int(max_payload_bytes))
         self._jobs: dict[str, Job] = {}
         self._request_to_job: dict[str, str] = {}
+        self._job_cache_order: deque[str] = deque()
+        self._max_cached_jobs = max(
+            100,
+            int(str(os.getenv("VF_TTS_V2_CACHE_MAX_JOBS") or "5000").strip() or "5000"),
+        )
         self._idem_local: dict[str, tuple[str, int]] = {}
         self._jobs_lock = threading.RLock()
+        resolved_queue_prefix = str(
+            queue_key_prefix
+            or os.getenv("VF_TTS_QUEUE_KEY_PREFIX")
+            or "vf:tts:v2:jobs"
+        ).strip() or "vf:tts:v2:jobs"
+        self._queue = TtsJobQueue(
+            redis_url=redis_url,
+            key_prefix=resolved_queue_prefix,
+            result_ttl_ms=result_ttl_ms,
+        )
         self._lanes = {name: Lane(name, rpm=lane_rpm, max_inflight=lane_inflight) for name in ("L1", "L2", "L3")}
         self._lane_rr = deque(["L1", "L2", "L3"])
         self._lane_lock = threading.Lock()
@@ -687,6 +813,54 @@ class TtsV2Engine:
     def _idem_key(self, request_id: str) -> str:
         return f"vf:tts:v2:idem:{request_id}"
 
+    def _cache_job_locked(self, job: Job) -> None:
+        self._jobs[job.id] = job
+        self._request_to_job[job.request_id] = job.id
+        try:
+            self._job_cache_order.remove(job.id)
+        except ValueError:
+            pass
+        self._job_cache_order.append(job.id)
+        while len(self._job_cache_order) > self._max_cached_jobs:
+            evict_id = str(self._job_cache_order.popleft() or "").strip()
+            if not evict_id or evict_id == job.id:
+                continue
+            evicted = self._jobs.pop(evict_id, None)
+            if evicted is not None:
+                self._request_to_job.pop(str(getattr(evicted, "request_id", "") or ""), None)
+
+    def _release_idempotency(self, request_id: str, uid: str) -> None:
+        key = self._idem_key(request_id)
+        if self._redis is not None:
+            try:
+                owner = str(self._redis.get(key) or "").strip()
+                if owner == str(uid or "").strip():
+                    self._redis.delete(key)
+            except Exception:
+                return
+            return
+        with self._jobs_lock:
+            owner, _ts = self._idem_local.get(key, ("", 0))
+            if str(owner or "").strip() == str(uid or "").strip():
+                self._idem_local.pop(key, None)
+
+    def _resolve_existing_queue_job(
+        self,
+        *,
+        request_id: str,
+        uid: str,
+        is_admin: bool,
+        fallback_job: Optional[Job] = None,
+    ) -> Optional[Job]:
+        queue_record = self._queue.get(str(request_id or "").strip())
+        if not isinstance(queue_record, dict):
+            return None
+        job = self._job_from_queue_record(queue_record, fallback_job=fallback_job)
+        self._auth(job, uid, is_admin)
+        with self._jobs_lock:
+            self._cache_job_locked(job)
+        return job
+
     def _claim_idempotency(self, request_id: str, uid: str) -> tuple[bool, str]:
         key = self._idem_key(request_id)
         if self._redis is not None:
@@ -697,7 +871,7 @@ class TtsV2Engine:
                 owner = str(self._redis.get(key) or "").strip()
                 return (False, owner)
             except Exception:
-                pass
+                raise TtsV2Error("Redis idempotency store is unavailable.")
         now = _now_ms()
         with self._jobs_lock:
             ttl_ms = self._idem_ttl_sec * 1000
@@ -714,6 +888,14 @@ class TtsV2Engine:
         path = self._output_root / safe
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _write_bytes_atomic(self, path: Path, data: bytes) -> None:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        suffix = f".{uuid.uuid4().hex}.tmp"
+        tmp_path = target.with_name(f"{target.name}{suffix}")
+        tmp_path.write_bytes(bytes(data or b""))
+        tmp_path.replace(target)
 
     def _parse_units(
         self,
@@ -760,10 +942,15 @@ class TtsV2Engine:
     def _build_chunks(self, units: list[dict[str, Any]]) -> list[Chunk]:
         serial = 0
         out: list[Chunk] = []
+        multi_speaker_mode = "multi" if len(units) > 1 else "single"
         for unit_idx, unit in enumerate(units):
             chunk_no = 0
-            for text in _chunk_text(str(unit.get("text") or ""), unit_idx):
-                planned_piece = str(text or "").strip()
+            for spec in _planned_chunk_specs(
+                str(unit.get("text") or ""),
+                unit_idx,
+                mode=multi_speaker_mode,
+            ):
+                planned_piece = str(spec.get("text") or "").strip()
                 if len(planned_piece.encode("utf-8")) > self._max_payload_bytes:
                     raise V2SizeError(f"Planned chunk exceeds payload budget ({self._max_payload_bytes} bytes).")
                 chunk_no += 1
@@ -785,6 +972,7 @@ class TtsV2Engine:
                         planned_text=planned_piece,
                         planned_bytes=len(planned_piece.encode("utf-8")),
                         planned_ms=int(unit.get("planned_ms") or _estimate_chunk_duration_ms(planned_piece)),
+                        lane=str(spec.get("laneId") or ""),
                     )
                 )
                 serial += 1
@@ -796,6 +984,350 @@ class TtsV2Engine:
                 raise V2SizeError(
                     f"Chunk {chunk.serial_index} exceeds payload budget ({self._max_payload_bytes} bytes)."
                 )
+
+    def build_queue_submission(
+        self,
+        *,
+        payload: dict[str, Any],
+        uid: str,
+        is_admin: bool = False,
+        plan_key: str = "free",
+        lane: str = "free",
+    ) -> dict[str, Any]:
+        request_id = str(payload.get("request_id") or payload.get("requestId") or "").strip()
+        if not request_id or not REQUEST_ID_RE.match(request_id):
+            raise V2ValidationError("request_id is required and must match [A-Za-z0-9._:-]{8,128}.")
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise V2ValidationError("text is required.")
+        claimed, owner = self._claim_idempotency(request_id, uid)
+        if not claimed and owner and owner != uid and not is_admin:
+            raise RequestConflictError("request_id is already associated with a different user.")
+        if not claimed and owner and owner == uid:
+            pass
+        speaker_profiles = _speaker_profile_index(payload.get("speaker_profiles") or payload.get("speaker_voices") or [])
+        default_profile = _default_speaker_profile_from_payload(payload)
+        if default_profile.get("speaker"):
+            speaker_profiles.setdefault(_normalize_profile_key(default_profile.get("speaker")), dict(default_profile))
+        if default_profile.get("profile_id"):
+            speaker_profiles.setdefault(_normalize_profile_key(default_profile.get("profile_id")), dict(default_profile))
+        speakers = len(list(payload.get("speaker_profiles") or payload.get("speaker_voices") or []))
+        mode = _norm_mode(payload.get("mode"), speakers)
+        now = _now_ms()
+        safe_payload = {k: v for k, v in dict(payload or {}).items() if str(k) not in {"apiKey", "api_key"}}
+        for key in REQUEST_SENSITIVE_KEYS:
+            safe_payload.pop(key, None)
+        safe_payload["request_id"] = request_id
+        safe_payload["trace_id"] = str(payload.get("trace_id") or payload.get("traceId") or request_id).strip() or request_id
+        safe_payload["uid"] = str(uid or "").strip()
+        safe_payload["plan_key"] = str(plan_key or "free").strip().lower() or "free"
+        safe_payload["lane"] = str(lane or "free").strip() or "free"
+        safe_payload["mode"] = mode
+        safe_payload["text"] = text
+        if str(payload.get("engine") or "").strip():
+            safe_payload["engine"] = _norm_engine(payload.get("engine"))
+        return {
+            "jobId": request_id,
+            "idempotencyKey": request_id,
+            "uid": str(uid or "").strip(),
+            "requestId": request_id,
+            "traceId": safe_payload["trace_id"],
+            "lane": str(lane or "free").strip() or "free",
+            "createdAtMs": now,
+            "updatedAtMs": now,
+            "status": "queued",
+            "attempts": 0,
+            "cancelRequested": False,
+            "planKey": str(plan_key or "free").strip().lower() or "free",
+            "engine": _norm_engine(payload.get("engine")),
+            "mode": mode,
+            "text": text,
+            "payload": {
+                **safe_payload,
+                "speakerProfiles": speaker_profiles,
+                "defaultSpeakerProfile": default_profile,
+            },
+            "result": {},
+            "error": {},
+            "statusCode": 0,
+            "expiresAtMs": now + self._result_ttl_ms,
+        }
+
+    def submit_queue_job(
+        self,
+        *,
+        payload: dict[str, Any],
+        uid: str,
+        is_admin: bool = False,
+        plan_key: str = "free",
+        lane: str = "free",
+    ) -> dict[str, Any]:
+        queue_payload = self.build_queue_submission(
+            payload=payload,
+            uid=uid,
+            is_admin=is_admin,
+            plan_key=plan_key,
+            lane=lane,
+        )
+        return self._queue.submit(lane=lane, payload=queue_payload)
+
+    def poll_queue_job(self, job_id: str) -> Optional[dict[str, Any]]:
+        return self._queue.get(job_id)
+
+    def _queue_lane_for_plan_key(self, plan_key: str, *, live_stream: bool = False) -> str:
+        token = str(plan_key or "").strip().lower()
+        if token in {"launch", "launcher"}:
+            token = "launcher"
+        lane = "free"
+        if token in {"scale", "pro_plus", "plus"}:
+            lane = "pro_plus"
+        elif token in {"pro", "starter", "creator", "launcher"}:
+            lane = "pro"
+        if live_stream:
+            if lane == "free":
+                lane = "pro"
+            elif lane == "pro":
+                lane = "pro_plus"
+        return lane
+
+    def _job_from_queue_record(self, record: dict[str, Any], *, fallback_job: Optional[Job] = None) -> Job:
+        safe_record = dict(record or {})
+        payload = dict(safe_record.get("payload") or {}) if isinstance(safe_record.get("payload"), dict) else {}
+        live_state = safe_record.get("liveState") if isinstance(safe_record.get("liveState"), dict) else {}
+        result = safe_record.get("result") if isinstance(safe_record.get("result"), dict) else {}
+        payload, _ = _canonicalize_engine_record_value(payload)
+        live_state, _ = _canonicalize_engine_record_value(live_state)
+        result, _ = _canonicalize_engine_record_value(result)
+
+        def _as_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except Exception:
+                return int(default)
+
+        def _as_str(value: Any, default: str = "") -> str:
+            token = str(value if value is not None else default).strip()
+            return token or str(default)
+
+        job = fallback_job
+        if job is None:
+            created_at = _as_int(safe_record.get("createdAtMs"), _now_ms())
+            job = Job(
+                id=_as_str(safe_record.get("jobId") or safe_record.get("id") or payload.get("request_id") or payload.get("requestId")),
+                request_id=_as_str(safe_record.get("requestId") or payload.get("request_id") or payload.get("requestId")),
+                trace_id=_as_str(safe_record.get("traceId") or payload.get("trace_id") or payload.get("traceId") or safe_record.get("requestId") or payload.get("request_id")),
+                uid=_as_str(safe_record.get("uid") or payload.get("uid")),
+                is_admin=bool(safe_record.get("isAdmin") or payload.get("is_admin") or payload.get("isAdmin") or False),
+                engine=_norm_engine(_as_str(safe_record.get("engine") or payload.get("engine") or "PRIME")),
+                mode=_as_str(safe_record.get("mode") or payload.get("mode") or "single_speaker"),
+                text=_as_str(safe_record.get("text") or payload.get("text")),
+                payload=dict(payload),
+                plan_key=_as_str(safe_record.get("planKey") or payload.get("plan_key") or "free").lower() or "free",
+                created_at=created_at,
+                updated_at=_as_int(safe_record.get("updatedAtMs"), created_at),
+                chunks=[],
+                turn_nodes=[],
+                speaker_profiles={},
+                planned_chunks=_as_int(safe_record.get("plannedChunks"), 0),
+                upstream_call_budget=_as_int(safe_record.get("upstreamCallBudget"), 0),
+                contiguous_ready_target_ms=_as_int(safe_record.get("contiguousReadyTargetMs"), DEFAULT_CONTIGUOUS_READY_MS),
+                contiguous_ready_ceiling_ms=_as_int(safe_record.get("contiguousReadyCeilingMs"), MAX_CONTIGUOUS_READY_MS),
+                billing_chars=_as_int(safe_record.get("billingChars"), len(str(safe_record.get("text") or payload.get("text") or ""))),
+            )
+
+        with job.lock:
+            job.id = _as_str(safe_record.get("jobId") or safe_record.get("id") or job.id)
+            job.request_id = _as_str(safe_record.get("requestId") or job.request_id or payload.get("request_id") or payload.get("requestId"))
+            job.trace_id = _as_str(safe_record.get("traceId") or job.trace_id or payload.get("trace_id") or payload.get("traceId") or job.request_id)
+            job.uid = _as_str(safe_record.get("uid") or job.uid or payload.get("uid"))
+            job.is_admin = bool(safe_record.get("isAdmin") or getattr(job, "is_admin", False))
+            job.engine = _norm_engine(_as_str(safe_record.get("engine") or job.engine or payload.get("engine") or "PRIME"))
+            job.mode = _as_str(safe_record.get("mode") or job.mode or payload.get("mode") or "single_speaker")
+            job.text = _as_str(safe_record.get("text") or job.text or payload.get("text"))
+            job.payload = dict(payload or getattr(job, "payload", {}) or {})
+            if isinstance(job.payload, dict):
+                job.payload, _ = _canonicalize_engine_record_value(job.payload)
+            job.plan_key = _as_str(safe_record.get("planKey") or job.plan_key or payload.get("plan_key") or "free").lower() or "free"
+            job.created_at = _as_int(safe_record.get("createdAtMs"), job.created_at)
+            job.updated_at = _as_int(safe_record.get("updatedAtMs"), job.updated_at)
+            job.status = _as_str(safe_record.get("status") or job.status or "queued").lower() or "queued"
+            job.status_code = _as_int(safe_record.get("statusCode"), job.status_code)
+            job.error = safe_record.get("error") if safe_record.get("error") is not None else job.error
+            job.started_at = _as_int(safe_record.get("startedAtMs"), job.started_at)
+            job.finished_at = _as_int(safe_record.get("finishedAtMs"), job.finished_at)
+            job.cancel_requested = bool(safe_record.get("cancelRequested") or job.cancel_requested)
+            job.planned_chunks = _as_int(safe_record.get("plannedChunks"), job.planned_chunks or len(job.chunks))
+            job.upstream_call_budget = _as_int(safe_record.get("upstreamCallBudget"), job.upstream_call_budget)
+            job.contiguous_ready_target_ms = _as_int(safe_record.get("contiguousReadyTargetMs"), job.contiguous_ready_target_ms)
+            job.contiguous_ready_ceiling_ms = _as_int(safe_record.get("contiguousReadyCeilingMs"), job.contiguous_ready_ceiling_ms)
+            job.billing_chars = _as_int(safe_record.get("billingChars"), job.billing_chars or len(job.text))
+            job.billing_tokens = _as_int(safe_record.get("billingTokens"), job.billing_tokens)
+            job.upstream_calls = _as_int(safe_record.get("upstreamCalls"), job.upstream_calls)
+            job.turn_nodes = list(getattr(job, "turn_nodes", []) or [])
+            job.speaker_profiles = dict(getattr(job, "speaker_profiles", {}) or {})
+
+            live_chunks = [
+                dict(item)
+                for item in list((live_state or {}).get("chunks") or [])
+                if isinstance(item, dict)
+            ]
+            if live_chunks:
+                hydrated_chunks: list[Chunk] = []
+                for fallback_index, item in enumerate(live_chunks):
+                    serial_index = _as_int(item.get("index"), fallback_index)
+                    text = _as_str(item.get("text") or item.get("chunkText") or "")
+                    hydrated_chunks.append(
+                        Chunk(
+                            serial_index=serial_index,
+                            dialogue_id=_as_int(item.get("dialogueId") or item.get("dialogue_id"), serial_index + 1),
+                            turn_id=_as_int(item.get("turnId") or item.get("turn_id"), serial_index + 1),
+                            chunk_id=_as_int(item.get("chunkId") or item.get("chunk_id"), serial_index + 1),
+                            unit_id=_as_str(item.get("unitId") or item.get("unit_id") or f"C{serial_index + 1:04d}"),
+                            text=text,
+                            speaker_id=_as_str(item.get("speakerId") or item.get("speaker_id")),
+                            speaker_name=_as_str(item.get("speakerName") or item.get("speaker_name")),
+                            speaker_profile_id=_as_str(item.get("speakerProfileId") or item.get("speaker_profile_id")),
+                            emotion=_as_str(item.get("emotion") or "Neutral"),
+                            cue=_as_str(item.get("cue") or ""),
+                            pause_policy=_as_str(item.get("pausePolicy") or item.get("pause_policy") or "default"),
+                            planned_text=_as_str(item.get("plannedText") or text),
+                            planned_bytes=_as_int(item.get("plannedBytes"), len(text.encode("utf-8")) if text else 0),
+                            planned_ms=_as_int(item.get("plannedMs"), 0),
+                            status=_as_str(item.get("status") or job.status or "queued").lower() or "queued",
+                            lane=_as_str(item.get("lane") or safe_record.get("lane") or ""),
+                            duration_ms=_as_int(item.get("durationMs"), 0),
+                            sample_rate=_as_int(item.get("sampleRate"), 0),
+                            content_type=_as_str(item.get("contentType") or "audio/wav"),
+                            audio_path=_as_str(item.get("path") or item.get("audioPath") or ""),
+                            error=_as_str(item.get("error") or ""),
+                            attempts=_as_int(item.get("attempts"), 0),
+                            usage_tokens=_as_int(item.get("usageTokens"), 0),
+                        )
+                    )
+                job.chunks = hydrated_chunks
+                job.playable_chunks = _as_int((live_state or {}).get("playableChunks"), len(hydrated_chunks))
+                job.playable_ms = _as_int((live_state or {}).get("playableDurationMs"), 0)
+                job.next_required = _as_int((live_state or {}).get("chunkCursorNext"), 0)
+            elif fallback_job is not None and getattr(fallback_job, "chunks", None):
+                job.chunks = [Chunk(**dict(chunk.__dict__)) for chunk in fallback_job.chunks]
+                job.playable_chunks = getattr(fallback_job, "playable_chunks", 0)
+                job.playable_ms = getattr(fallback_job, "playable_ms", 0)
+                job.next_required = getattr(fallback_job, "next_required", 0)
+
+            result_ref = result.get("audioRef") if isinstance(result.get("audioRef"), dict) else {}
+            job.result_path = _as_str(result_ref.get("path") or safe_record.get("resultPath") or getattr(job, "result_path", ""))
+            if not job.result_path and fallback_job is not None:
+                job.result_path = str(getattr(fallback_job, "result_path", "") or "")
+
+        return job
+
+    def canonicalize_engine_metadata(self, *, mode: str = "apply") -> dict[str, Any]:
+        safe_mode = str(mode or "apply").strip().lower()
+        if safe_mode not in {"dry_run", "apply", "verify"}:
+            raise ValueError("Invalid migration mode. Use dry_run, apply, or verify.")
+        apply_changes = safe_mode == "apply"
+        verify_only = safe_mode == "verify"
+        dry_run = safe_mode == "dry_run"
+        summary: dict[str, Any] = {
+            "ok": True,
+            "mode": safe_mode,
+            "dryRun": dry_run,
+            "applied": apply_changes,
+            "verified": verify_only,
+            "jobCache": {"scanned": 0, "changed": 0, "legacyRemaining": 0},
+            "queueRecords": {"scanned": 0, "changed": 0, "legacyRemaining": 0},
+            "legacyTokensRemaining": 0,
+        }
+
+        with self._jobs_lock:
+            cached_jobs = list(self._jobs.items())
+        for job_id, job in cached_jobs:
+            if not isinstance(job, Job):
+                continue
+            summary["jobCache"]["scanned"] += 1
+            with job.lock:
+                current_engine = str(job.engine or "")
+                current_payload = dict(job.payload) if isinstance(job.payload, dict) else {}
+            next_engine = _norm_engine(current_engine)
+            next_payload, payload_changed = _canonicalize_engine_record_value(current_payload)
+            changed = next_engine != current_engine or payload_changed
+            if _record_has_legacy_engine_tokens({"engine": next_engine, "payload": next_payload}):
+                summary["jobCache"]["legacyRemaining"] += 1
+            if changed:
+                summary["jobCache"]["changed"] += 1
+                if apply_changes:
+                    with job.lock:
+                        job.engine = next_engine
+                        if isinstance(next_payload, dict):
+                            job.payload = dict(next_payload)
+                    with self._jobs_lock:
+                        self._jobs[job_id] = job
+
+        queue = self._queue
+        queue_records: list[tuple[str, dict[str, Any]]] = []
+        if getattr(queue, "_redis", None) is not None:
+            redis_client = queue._redis
+            try:
+                keys = list(redis_client.scan_iter(match=f"{queue.key_prefix}:job:*"))
+            except Exception:
+                keys = []
+            for key in keys:
+                try:
+                    raw_record = redis_client.get(key)
+                except Exception:
+                    continue
+                if not raw_record:
+                    continue
+                record = queue._deserialize_record(raw_record)
+                if not isinstance(record, dict):
+                    continue
+                queue_records.append((key, record))
+        else:
+            with queue._lock:
+                queue_records = [(queue._job_key(job_id), dict(record)) for job_id, record in queue._jobs.items()]
+
+        for key, record in queue_records:
+            summary["queueRecords"]["scanned"] += 1
+            next_record, changed = _canonicalize_engine_record_value(record)
+            if _record_has_legacy_engine_tokens(next_record):
+                summary["queueRecords"]["legacyRemaining"] += 1
+            if changed:
+                summary["queueRecords"]["changed"] += 1
+                if apply_changes:
+                    if getattr(queue, "_redis", None) is not None:
+                        redis_client = queue._redis
+                        try:
+                            ttl_ms = int(redis_client.pttl(key) or -1)
+                        except Exception:
+                            ttl_ms = -1
+                        try:
+                            if ttl_ms > 0:
+                                redis_client.set(key, queue._serialize_record(next_record), px=ttl_ms)
+                            else:
+                                redis_client.set(key, queue._serialize_record(next_record))
+                            queue._store_memory_record(next_record)
+                        except Exception:
+                            continue
+                    else:
+                        with queue._lock:
+                            job_id = str(next_record.get("jobId") or "").strip()
+                            if job_id:
+                                queue._jobs[job_id] = dict(next_record)
+                                queue._job_lanes[job_id] = str(next_record.get("lane") or "free")
+
+        if apply_changes and getattr(queue, "_redis", None) is None:
+            compat_queue_cls = queue._compat_queue.__class__
+            rebuilt = compat_queue_cls(queue._weights)
+            with queue._lock:
+                for record in queue._jobs.values():
+                    if isinstance(record, dict):
+                        rebuilt.push(str(record.get("lane") or "free"), dict(record))
+                queue._compat_queue = rebuilt
+
+        summary["legacyTokensRemaining"] = int(summary["jobCache"]["legacyRemaining"]) + int(summary["queueRecords"]["legacyRemaining"])
+        if verify_only and summary["legacyTokensRemaining"] > 0:
+            summary["ok"] = False
+        return summary
 
     def create_job(self, *, payload: dict[str, Any], uid: str, is_admin: bool = False, plan_key: str = "free") -> Job:
         request_id = str(payload.get("request_id") or "").strip()
@@ -816,7 +1348,14 @@ class TtsV2Engine:
             if not claimed:
                 if owner and owner != uid and not is_admin:
                     raise RequestConflictError("request_id is already associated with a different user.")
-                # Fail closed when a claim exists but no local job mapping is available yet.
+                existing = self._resolve_existing_queue_job(
+                    request_id=request_id,
+                    uid=uid,
+                    is_admin=is_admin,
+                )
+                if existing is not None:
+                    return existing
+                # Fail closed only when the durable queue record is not yet available.
                 raise RequestConflictError("request_id is already in use. Retry after idempotency TTL if needed.")
             speaker_profiles = _speaker_profile_index(payload.get("speaker_profiles") or payload.get("speaker_voices") or [])
             default_profile = _default_speaker_profile_from_payload(payload)
@@ -843,7 +1382,7 @@ class TtsV2Engine:
                 trace_id=str(payload.get("trace_id") or request_id).strip() or request_id,
                 uid=str(uid or "").strip(),
                 is_admin=bool(is_admin),
-                engine=_norm_engine(payload.get("engine")),
+                engine=_strict_engine(payload.get("engine")),
                 mode=mode,
                 text=text,
                 payload={k: v for k, v in dict(payload or {}).items() if str(k) not in {"apiKey", "api_key"}},
@@ -861,8 +1400,26 @@ class TtsV2Engine:
             )
             job.playable_chunks = 0
             job.playable_ms = 0
-            self._jobs[job.id] = job
-            self._request_to_job[request_id] = job.id
+            self._cache_job_locked(job)
+            if self._queue.is_redis_enabled():
+                try:
+                    queued = self.submit_queue_job(
+                        payload=job.payload,
+                        uid=uid,
+                        is_admin=is_admin,
+                        plan_key=plan_key,
+                        lane=self._queue_lane_for_plan_key(plan_key, live_stream=bool(payload.get("liveStream"))),
+                    )
+                except Exception:
+                    with self._jobs_lock:
+                        self._jobs.pop(job.id, None)
+                        self._request_to_job.pop(request_id, None)
+                    self._release_idempotency(request_id, uid)
+                    raise
+                job = self._job_from_queue_record(queued, fallback_job=job)
+                with self._jobs_lock:
+                    self._cache_job_locked(job)
+                return job
             thread = threading.Thread(target=self._run_job, args=(job.id,), daemon=True, name=f"tts-v2-{job.id[:8]}")
             thread.start()
             self._threads[job.id] = thread
@@ -875,6 +1432,14 @@ class TtsV2Engine:
             raise AuthorizationError("Not authorized to access this job.")
 
     def _get_job_record(self, *, job_id: str, uid: str, is_admin: bool) -> Job:
+        if self._queue.is_redis_enabled():
+            queue_record = self._queue.get(str(job_id or "").strip())
+            if isinstance(queue_record, dict):
+                job = self._job_from_queue_record(queue_record)
+                self._auth(job, uid, is_admin)
+                with self._jobs_lock:
+                    self._cache_job_locked(job)
+                return job
         with self._jobs_lock:
             job = self._jobs.get(str(job_id or "").strip())
         if not isinstance(job, Job):
@@ -898,7 +1463,15 @@ class TtsV2Engine:
         return self._get_job_record(job_id=job_id, uid=uid, is_admin=is_admin)
 
     def cancel_job(self, *, uid: str, is_admin: bool, job_id: str) -> Job:
-        job = self._get_job_record(job_id=job_id, uid=uid, is_admin=is_admin)
+        authorized_job = self._get_job_record(job_id=job_id, uid=uid, is_admin=is_admin)
+        if self._queue.is_redis_enabled():
+            queue_record = self._queue.cancel(str(job_id or "").strip())
+            if isinstance(queue_record, dict):
+                job = self._job_from_queue_record(queue_record, fallback_job=authorized_job)
+                with self._jobs_lock:
+                    self._cache_job_locked(job)
+                return job
+        job = authorized_job
         with job.lock:
             if job.status in TERMINAL:
                 return job
@@ -921,10 +1494,29 @@ class TtsV2Engine:
             return order
 
     def _pick_lane(self, job: Job, chunk: Chunk) -> Optional[Lane]:
+        payload = dict(job.payload or {})
+        session_pinned_lane = str(payload.get("_sessionPinnedLaneId") or "").strip().upper()
+        if session_pinned_lane and session_pinned_lane in self._lanes:
+            pinned_slot = str(payload.get("_sessionPinnedVertexSlotId") or "").strip().lower()
+            expected_slot = str(LANE_VERTEX_SLOT_BY_ID.get(session_pinned_lane) or "").strip().lower()
+            if pinned_slot and expected_slot and pinned_slot != expected_slot:
+                session_pinned_lane = ""
+        else:
+            session_pinned_lane = ""
+        planned_lane = str(chunk.lane or "").strip().upper()
+        if session_pinned_lane:
+            preferred = self._lanes[session_pinned_lane]
+            if preferred.healthy():
+                job.unit_lane[chunk.unit_id] = session_pinned_lane
+                return preferred
+        if planned_lane and planned_lane in self._lanes and self._lanes[planned_lane].healthy():
+            return self._lanes[planned_lane]
         pinned = str(job.unit_lane.get(chunk.unit_id) or "")
         if pinned and pinned in self._lanes and self._lanes[pinned].healthy():
             return self._lanes[pinned]
         for lane_id in self._next_lanes():
+            if session_pinned_lane and lane_id == session_pinned_lane:
+                continue
             lane = self._lanes[lane_id]
             if lane.healthy():
                 job.unit_lane[chunk.unit_id] = lane_id
@@ -945,7 +1537,8 @@ class TtsV2Engine:
             startup_indices: list[int] = []
             first_unit = ordered_units[0]
             first_unit_chunks = [c.serial_index for c in sorted(job.chunks, key=lambda item: item.serial_index) if c.unit_id == first_unit]
-            startup_indices.extend(first_unit_chunks[:2])
+            first_unit_priority = 3 if len(ordered_units) > 1 else 2
+            startup_indices.extend(first_unit_chunks[:first_unit_priority])
             for unit_id in ordered_units[1:3]:
                 unit_chunks = [c.serial_index for c in sorted(job.chunks, key=lambda item: item.serial_index) if c.unit_id == unit_id]
                 if unit_chunks:
@@ -1047,7 +1640,7 @@ class TtsV2Engine:
         source_policy = dict(existing_source_policy) if isinstance(existing_source_policy, dict) else {}
         for key in REQUEST_SENSITIVE_SOURCE_POLICY_KEYS:
             source_policy.pop(key, None)
-        if str(job.engine or "").strip().upper() in {"GEM", "NEURAL2"}:
+        if str(job.engine or "").strip().upper() in {"PRIME", "VECTOR"}:
             lane_slot = str(LANE_VERTEX_SLOT_BY_ID.get(str(chunk.lane or "").strip()) or "").strip()
             if lane_slot:
                 source_policy["selectedVertexSlotId"] = lane_slot
@@ -1190,7 +1783,18 @@ class TtsV2Engine:
                         chunk.status = "running"
                         chunk.lane = lane.id
                         chunk.attempts += 1
-                        fut = self._executor.submit(self._execute_chunk, job, chunk)
+                        try:
+                            fut = self._executor.submit(self._execute_chunk, job, chunk)
+                        except Exception as exc:
+                            lane.finish(False, unhealthy=False)
+                            chunk.status = "failed"
+                            chunk.error = _sanitize_public_tts_error_text(exc, fallback="chunk dispatch failed")
+                            job.status = "failed"
+                            job.status_code = 500
+                            job.error = _sanitize_public_tts_error_detail(exc, fallback=str(chunk.error or "chunk dispatch failed"))
+                            job.finished_at = _now_ms()
+                            job.updated_at = job.finished_at
+                            break
                         inflight[idx] = (fut, lane.id)
 
             done_indices: list[int] = []
@@ -1204,93 +1808,105 @@ class TtsV2Engine:
                 except Exception as exc:
                     result = {"action": "failed", "error": str(exc), "detail": str(exc), "statusCode": 500, "attempts": 1}
                 action = str(result.get("action") or "")
-                with job.lock:
-                    chunk = job.chunks[idx]
-                    if job.status == "cancelled":
-                        if chunk.status == "running":
-                            chunk.status = "cancelled"
-                        if not chunk.error:
-                            chunk.error = "cancelled"
-                        if lane:
-                            lane.finish(True)
-                    elif job.status == "failed":
-                        if chunk.status == "running":
+                release_ok: Optional[bool] = None
+                release_unhealthy = False
+                try:
+                    with job.lock:
+                        chunk = job.chunks[idx]
+                        if job.status == "cancelled":
+                            if chunk.status == "running":
+                                chunk.status = "cancelled"
+                            if not chunk.error:
+                                chunk.error = "cancelled"
+                            release_ok = True
+                        elif job.status == "failed":
+                            if chunk.status == "running":
+                                chunk.status = "failed"
+                            if not chunk.error:
+                                chunk.error = "job_failed"
+                            release_ok = True
+                        elif action == "complete":
+                            path = self._job_dir(job.id) / f"chunk_{idx:06d}.wav"
+                            self._write_bytes_atomic(path, bytes(result.get("audio") or b""))
+                            chunk.audio_path = str(path)
+                            chunk.sample_rate = int(result.get("sampleRate") or 0)
+                            chunk.duration_ms = int(result.get("durationMs") or 0)
+                            chunk.content_type = str(result.get("mediaType") or "audio/wav")
+                            chunk.usage_tokens = int(result.get("usageTokens") or 0)
+                            chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
+                            chunk.status = "completed"
+                            job.billing_tokens += max(0, chunk.usage_tokens)
+                            playable = 0
+                            playable_ms = 0
+                            for c in sorted(job.chunks, key=lambda x: x.serial_index):
+                                if c.status != "completed":
+                                    break
+                                playable += 1
+                                playable_ms += max(0, int(c.duration_ms))
+                            job.playable_chunks = playable
+                            job.playable_ms = playable_ms
+                            job.updated_at = _now_ms()
+                            release_ok = True
+                        elif action == "retry":
+                            if int(chunk.attempts or 0) >= 2:
+                                chunk.status = "failed"
+                                chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk retry budget exceeded")
+                                job.status = "failed"
+                                job.status_code = max(400, int(result.get("statusCode") or 500))
+                                job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "chunk retry budget exceeded"))
+                                job.finished_at = _now_ms()
+                                job.updated_at = job.finished_at
+                            else:
+                                chunk.status = "queued"
+                                chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk retry")
+                                chunk.lane = str(lane.id if lane else chunk.lane)
+                                chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
+                            release_ok = False
+                        elif action == "failover":
+                            release_unhealthy = True
+                            if int(chunk.attempts or 0) >= 2:
+                                chunk.status = "failed"
+                                chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="lane failover budget exceeded")
+                                job.status = "failed"
+                                job.status_code = max(400, int(result.get("statusCode") or 500))
+                                job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "lane failover budget exceeded"))
+                                job.finished_at = _now_ms()
+                                job.updated_at = job.finished_at
+                            else:
+                                chunk.status = "queued"
+                                chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="lane failover")
+                                chunk.lane = ""
+                                chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
+                                job.unit_lane.pop(chunk.unit_id, None)
+                            release_ok = False
+                        else:
+                            release_unhealthy = True
                             chunk.status = "failed"
-                        if not chunk.error:
-                            chunk.error = "job_failed"
-                        if lane:
-                            lane.finish(True)
-                    elif action == "complete":
-                        path = self._job_dir(job.id) / f"chunk_{idx:06d}.wav"
-                        path.write_bytes(bytes(result.get("audio") or b""))
-                        chunk.audio_path = str(path)
-                        chunk.sample_rate = int(result.get("sampleRate") or 0)
-                        chunk.duration_ms = int(result.get("durationMs") or 0)
-                        chunk.content_type = str(result.get("mediaType") or "audio/wav")
-                        chunk.usage_tokens = int(result.get("usageTokens") or 0)
-                        chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
-                        chunk.status = "completed"
-                        job.billing_tokens += max(0, chunk.usage_tokens)
-                        playable = 0
-                        playable_ms = 0
-                        for c in sorted(job.chunks, key=lambda x: x.serial_index):
-                            if c.status != "completed":
-                                break
-                            playable += 1
-                            playable_ms += max(0, int(c.duration_ms))
-                        job.playable_chunks = playable
-                        job.playable_ms = playable_ms
-                        job.updated_at = _now_ms()
-                        if lane:
-                            lane.finish(True)
-                    elif action == "retry":
-                        if int(chunk.attempts or 0) >= 2:
-                            chunk.status = "failed"
-                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk retry budget exceeded")
+                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk failed")
+                            chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
                             job.status = "failed"
                             job.status_code = max(400, int(result.get("statusCode") or 500))
-                            job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "chunk retry budget exceeded"))
+                            job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "chunk failed"))
                             job.finished_at = _now_ms()
                             job.updated_at = job.finished_at
-                            if lane:
-                                lane.finish(False, unhealthy=False)
-                        else:
-                            chunk.status = "queued"
-                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk retry")
-                            chunk.lane = str(lane.id if lane else chunk.lane)
-                            chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
-                            if lane:
-                                lane.finish(False, unhealthy=False)
-                    elif action == "failover":
-                        if int(chunk.attempts or 0) >= 2:
+                            release_ok = False
+                except Exception as exc:
+                    with job.lock:
+                        chunk = job.chunks[idx]
+                        if chunk.status == "running":
                             chunk.status = "failed"
-                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="lane failover budget exceeded")
-                            job.status = "failed"
-                            job.status_code = max(400, int(result.get("statusCode") or 500))
-                            job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "lane failover budget exceeded"))
-                            job.finished_at = _now_ms()
-                            job.updated_at = job.finished_at
-                            if lane:
-                                lane.finish(False, unhealthy=True)
-                        else:
-                            chunk.status = "queued"
-                            chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="lane failover")
-                            chunk.lane = ""
-                            chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
-                            job.unit_lane.pop(chunk.unit_id, None)
-                            if lane:
-                                lane.finish(False, unhealthy=True)
-                    else:
-                        chunk.status = "failed"
-                        chunk.error = _sanitize_public_tts_error_text(result.get("error"), fallback="chunk failed")
+                        chunk.error = _sanitize_public_tts_error_text(exc, fallback="chunk finalize failed")
                         chunk.attempts = max(int(chunk.attempts or 0), int(result.get("attempts") or 1))
                         job.status = "failed"
-                        job.status_code = max(400, int(result.get("statusCode") or 500))
-                        job.error = _sanitize_public_tts_error_detail(result.get("detail") or chunk.error, fallback=str(chunk.error or "chunk failed"))
+                        job.status_code = 500
+                        job.error = _sanitize_public_tts_error_detail(exc, fallback=str(chunk.error or "chunk finalize failed"))
                         job.finished_at = _now_ms()
                         job.updated_at = job.finished_at
-                        if lane:
-                            lane.finish(False, unhealthy=True)
+                    release_ok = False
+                    release_unhealthy = True
+                finally:
+                    if lane and release_ok is not None:
+                        lane.finish(bool(release_ok), unhealthy=bool(release_unhealthy))
                 if job.status == "failed" and not inflight:
                     break
 
@@ -1331,7 +1947,7 @@ class TtsV2Engine:
                             job.updated_at = job.finished_at
                             break
                         rp = self._job_dir(job.id) / "result.wav"
-                        rp.write_bytes(result)
+                        self._write_bytes_atomic(rp, result)
                         job.result_path = str(rp)
                         job.status = "completed"
                         job.finished_at = _now_ms()

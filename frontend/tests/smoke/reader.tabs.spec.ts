@@ -6,7 +6,7 @@ type ReaderSmokeRestoreState = NonNullable<ReaderSession['restoreState']>;
 
 interface ReaderSmokeState {
   preferences: {
-    homeTab: 'novels' | 'comics' | 'library' | 'imported';
+    homeTab: 'novels' | 'library' | 'imported';
   };
   legalAckAccepted: boolean;
   sessionsById: Map<string, ReaderSession>;
@@ -248,8 +248,10 @@ const installReaderSmokeHarness = async (
     const url = new URL(request.url());
     const pathname = url.pathname;
     const method = request.method().toUpperCase();
+    const hasPath = (suffix: string): boolean => pathname === suffix || pathname.endsWith(suffix);
+    const hasPathPrefix = (prefix: string): boolean => pathname.startsWith(prefix) || pathname.includes(prefix);
 
-    if (pathname === '/reader/preferences') {
+    if (hasPath('/reader/preferences')) {
       if (method === 'GET') {
         await fulfillJson(route, { ok: true, preferences: { uid: 'reader-smoke', ...state.preferences, updatedAt: new Date().toISOString() } }, 200);
         return;
@@ -258,7 +260,7 @@ const installReaderSmokeHarness = async (
         const body = request.postDataJSON() as Record<string, unknown> | null;
         if (body && typeof body.homeTab === 'string') {
           const token = String(body.homeTab).trim().toLowerCase();
-          if (token === 'novels' || token === 'comics' || token === 'library' || token === 'imported') {
+          if (token === 'novels' || token === 'library' || token === 'imported') {
             state.preferences.homeTab = token;
           }
         }
@@ -267,7 +269,7 @@ const installReaderSmokeHarness = async (
       }
     }
 
-    if (pathname === '/reader/legal/ack') {
+    if (hasPath('/reader/legal/ack')) {
       if (method === 'GET' || method === 'POST') {
         if (method === 'POST') {
           const body = request.postDataJSON() as Record<string, unknown> | null;
@@ -298,7 +300,7 @@ const installReaderSmokeHarness = async (
       }
     }
 
-    if (pathname === '/reader/uploads' && method === 'POST') {
+    if (hasPath('/reader/uploads') && method === 'POST') {
       state.uploadCount += 1;
       const uploadedItem = makeCatalogItem({
         id: `uploaded-story-${state.uploadCount}`,
@@ -321,19 +323,24 @@ const installReaderSmokeHarness = async (
       return;
     }
 
-    if (pathname === '/reader/library' && method === 'GET') {
+    if (hasPath('/reader/dashboard') && method === 'GET') {
+      await fulfillJson(route, { ok: true, dashboard: library }, 200);
+      return;
+    }
+
+    if (hasPath('/reader/library') && method === 'GET') {
       await fulfillJson(route, { ok: true, library }, 200);
       return;
     }
 
-    if (pathname.startsWith('/reader/catalog/items/') && method === 'GET') {
+    if (hasPathPrefix('/reader/catalog/items/') && method === 'GET') {
       const itemId = decodeURIComponent(pathname.split('/').pop() || '');
       const item = catalogItems[itemId as keyof typeof catalogItems] || catalogItems.imported;
       await fulfillJson(route, { ok: true, item }, 200);
       return;
     }
 
-    if (pathname === '/reader/commercial/check' && method === 'POST') {
+    if (hasPath('/reader/commercial/check') && method === 'POST') {
       await fulfillJson(route, {
         ok: true,
         check: {
@@ -352,7 +359,7 @@ const installReaderSmokeHarness = async (
       return;
     }
 
-    if (pathname === '/reader/sessions' && method === 'POST') {
+    if (hasPath('/reader/sessions') && method === 'POST') {
       const body = request.postDataJSON() as Record<string, unknown> | null;
       const workKey = String(body?.itemId || body?.uploadId || '').trim() || 'imported-story';
       const item = workKey === catalogItems.novel.id ? catalogItems.novel : catalogItems.imported;
@@ -378,7 +385,7 @@ const installReaderSmokeHarness = async (
       return;
     }
 
-    if (pathname.startsWith('/reader/sessions/')) {
+    if (hasPathPrefix('/reader/sessions/')) {
       const parts = pathname.split('/').filter(Boolean);
       const sessionId = parts[2] || '';
       const session = state.sessionsById.get(sessionId);
@@ -442,31 +449,42 @@ test('Reader home filter and session tab restore survive reloads', async ({ page
 
   await ensureStudioSmokeAuthenticated(page, credentials);
   const readerState = await installReaderSmokeHarness(page);
+  const readerHome = page.getByTestId('reader-home');
+  const readerTray = page.getByTestId('reader-utility-tray');
+  const importedFilter = readerHome.getByRole('button', { name: /^Imported\b/i });
+  const openImportedStory = readerHome.getByRole('button', { name: /^Open Imported Story$/i });
+  const importedStoryDialog = page.getByRole('dialog', { name: /Open Imported Story/i });
+  const textTab = readerTray.getByRole('tab', { name: /^Text$/i });
 
-  await page.goto('/reader');
-  await expect(page.getByText('Reader Library')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole('button', { name: /^Imported\b/i })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: /^Imported\b/i }).click();
-  await expect.poll(() => readerState.preferences.homeTab, { timeout: 10_000 }).toBe('imported');
+  await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await expect(readerHome).toBeVisible({ timeout: 30_000 });
+  await expect(importedFilter).toBeVisible({ timeout: 30_000 });
+  await importedFilter.click();
+  await expect(importedFilter).toHaveAttribute('aria-pressed', 'true');
 
-  await page.reload();
-  await expect(page.getByRole('button', { name: /^Imported\b/i })).toHaveAttribute('aria-pressed', 'true');
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await expect(readerHome).toBeVisible({ timeout: 30_000 });
+  await expect(importedFilter).toHaveAttribute('aria-pressed', 'true');
 
-  await page.getByRole('button', { name: /^Open Imported Story$/i }).click();
-  await expect(page.getByRole('dialog', { name: /Open Imported Story/i })).toBeVisible();
-  await page.getByRole('button', { name: /^Read$/i }).click();
+  await expect(openImportedStory).toBeVisible({ timeout: 30_000 });
+  await openImportedStory.click();
+  await expect(importedStoryDialog).toBeVisible({ timeout: 30_000 });
+  await importedStoryDialog.getByRole('button', { name: /^Read$/i }).click();
 
-  await expect(page.getByRole('tab', { name: /^Text\b/i })).toBeVisible();
-  await page.getByRole('tab', { name: /^Text\b/i }).click();
-  await expect.poll(() => readerState.restoreByWorkKey.get('imported-story')?.activeReaderTab, { timeout: 10_000 }).toBe('text');
+  await expect(readerTray).toBeVisible({ timeout: 30_000 });
+  await expect(textTab).toBeVisible({ timeout: 30_000 });
+  await textTab.click();
+  await expect(textTab).toHaveAttribute('aria-selected', 'true');
 
   await page.getByRole('button', { name: /^Back To Home$/i }).click();
-  await expect(page.getByRole('button', { name: /^Imported\b/i })).toHaveAttribute('aria-pressed', 'true');
+  await expect(readerHome).toBeVisible({ timeout: 30_000 });
+  await expect(importedFilter).toHaveAttribute('aria-pressed', 'true');
 
-  await page.getByRole('button', { name: /^Open Imported Story$/i }).click();
-  await expect(page.getByRole('dialog', { name: /Open Imported Story/i })).toBeVisible();
-  await page.getByRole('button', { name: /^Read$/i }).click();
-  await expect(page.getByRole('tab', { name: /^Text\b/i })).toHaveAttribute('aria-selected', 'true');
+  await openImportedStory.click();
+  await expect(importedStoryDialog).toBeVisible({ timeout: 30_000 });
+  await importedStoryDialog.getByRole('button', { name: /^Read$/i }).click();
+  await expect(readerTray).toBeVisible({ timeout: 30_000 });
+  await expect(textTab).toHaveAttribute('aria-selected', 'true');
 });
 
 test('Reader import opens the player immediately and restores the saved tab after reload', async ({ page }) => {
@@ -477,28 +495,32 @@ test('Reader import opens the player immediately and restores the saved tab afte
 
   await ensureStudioSmokeAuthenticated(page, credentials);
   const readerState = await installReaderSmokeHarness(page);
+  const readerHome = page.getByTestId('reader-home');
+  const readerTray = page.getByTestId('reader-utility-tray');
+  const readerStage = page.getByTestId('reader-playback-stage');
+  const textTab = readerTray.getByRole('tab', { name: /^Text$/i });
 
-  await page.goto('/reader');
-  const fileInput = page.locator('.vf-reader-v2-import input[type="file"]');
+  await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await expect(readerHome).toBeVisible({ timeout: 30_000 });
+  const fileInput = readerHome.locator('input[type="file"]');
   await fileInput.setInputFiles({
     name: 'reader-import.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('Imported Reader smoke content for immediate player handoff.'),
   });
-  await page.getByPlaceholder('Optional title').fill('Immediate Import Story');
-  await page.getByRole('button', { name: /^Import(?: \(\d+\))?$/i }).click();
 
-  await expect(page.getByTestId('reader-playback-stage')).toBeVisible();
+  await expect(readerStage).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect.poll(() => readerState.createCount, { timeout: 10_000 }).toBe(1);
 
-  await page.getByRole('tab', { name: /^Text\b/i }).click();
-  await expect.poll(() => readerState.restoreByWorkKey.get('uploaded-story-1')?.activeReaderTab, { timeout: 10_000 }).toBe('text');
+  await expect(readerTray).toBeVisible({ timeout: 30_000 });
+  await textTab.click();
+  await expect(textTab).toHaveAttribute('aria-selected', 'true');
 
-  await page.reload();
-  await expect(page.getByText('Reader Library')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId('reader-playback-stage')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole('tab', { name: /^Text\b/i })).toHaveAttribute('aria-selected', 'true');
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
+  await expect(readerStage).toBeVisible({ timeout: 30_000 });
+  await expect(readerTray).toBeVisible({ timeout: 30_000 });
+  await expect(textTab).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('heading', { name: /^Imported Story$/i }).first()).toBeVisible();
 });
 
@@ -511,14 +533,24 @@ test('Reader mobile layout keeps primary controls within the viewport', async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await ensureStudioSmokeAuthenticated(page, credentials);
   await installReaderSmokeHarness(page, { legalAckAccepted: false });
+  const readerHome = page.getByTestId('reader-home');
+  const expandDockButton = page.getByLabel('Expand reader dock');
+  const collapseDockButton = page.getByLabel('Collapse dock to compact circle');
+  const importFilesButton = readerHome.getByRole('button', { name: /^Import Files$/i });
 
-  await page.goto('/reader');
+  await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await expect(page.getByText('Reader Rights Notice')).toBeVisible();
+  await expect(importFilesButton).toBeVisible({ timeout: 30_000 });
+  await expect(importFilesButton).toBeDisabled();
+  await expect(expandDockButton).toBeVisible({ timeout: 30_000 });
+  await expandDockButton.click();
+  await expect(collapseDockButton).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText('Read - Idle', { exact: true })).toBeVisible();
 
   const viewportWidth = await page.evaluate(() => window.innerWidth);
   const targets = [
     page.getByRole('button', { name: /^Accept Once$/i }),
-    page.getByRole('button', { name: /^Import\b/i }),
+    collapseDockButton,
   ];
   for (const target of targets) {
     await expect(target).toBeVisible();

@@ -1,0 +1,188 @@
+﻿{
+  "generatedAt": "2026-03-28T06:24:28.724Z",
+  "runtimeSynthesizeUrl": "http://127.0.0.1:7810/synthesize",
+  "engine": "VECTOR",
+  "voiceName": "Fenrir",
+  "samples": [
+    {
+      "slug": "en-us",
+      "language": "English (US)",
+      "country": "United States",
+      "code": "en-US",
+      "file": "/audio/vector-demo/en-us.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "en-US"
+      }
+    },
+    {
+      "slug": "hi",
+      "language": "Hindi",
+      "country": "India",
+      "code": "hi",
+      "file": "/audio/vector-demo/hi.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "hi"
+      }
+    },
+    {
+      "slug": "bn",
+      "language": "Bengali",
+      "country": "Bangladesh / India",
+      "code": "bn",
+      "file": "/audio/vector-demo/bn.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "bn"
+      }
+    },
+    {
+      "slug": "ta",
+      "language": "Tamil",
+      "country": "India / Sri Lanka",
+      "code": "ta",
+      "file": "/audio/vector-demo/ta.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "ta"
+      }
+    },
+    {
+      "slug": "es",
+      "language": "Spanish",
+      "country": "Spain",
+      "code": "es",
+      "file": "/audio/vector-demo/es.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "es"
+      }
+    },
+    {
+      "slug": "fr",
+      "language": "French",
+      "country": "France",
+      "code": "fr",
+      "file": "/audio/vector-demo/fr.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "fr"
+      }
+    },
+    {
+      "slug": "de",
+      "language": "German",
+      "country": "Germany",
+      "code": "de",
+      "file": "/audio/vector-demo/de.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "de"
+      }
+    },
+    {
+      "slug": "it",
+      "language": "Italian",
+      "country": "Italy",
+      "code": "it",
+      "file": "/audio/vector-demo/it.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "it"
+      }
+    },
+    {
+      "slug": "pt-br",
+      "language": "Portuguese (Brazil)",
+      "country": "Brazil",
+      "code": "pt-BR",
+      "file": "/audio/vector-demo/pt-br.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "pt-BR"
+      }
+    },
+    {
+      "slug": "ar",
+      "language": "Arabic",
+      "country": "United Arab Emirates",
+      "code": "ar",
+      "file": "/audio/vector-demo/ar.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "ar"
+      }
+    },
+    {
+      "slug": "ru",
+      "language": "Russian",
+      "country": "Russia",
+      "code": "ru",
+      "file": "/audio/vector-demo/ru.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "ru"
+      }
+    },
+    {
+      "slug": "tr",
+      "language": "Turkish",
+      "country": "Turkey",
+      "code": "tr",
+      "file": "/audio/vector-demo/tr.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "tr"
+      }
+    },
+    {
+      "slug": "ja",
+      "language": "Japanese",
+      "country": "Japan",
+      "code": "ja",
+      "file": "/audio/vector-demo/ja.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "ja"
+      }
+    },
+    {
+      "slug": "ko",
+      "language": "Korean",
+      "country": "South Korea",
+      "code": "ko",
+      "file": "/audio/vector-demo/ko.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "ko"
+      }
+    },
+    {
+      "slug": "zh-cn",
+      "language": "Chinese (Simplified)",
+      "country": "China",
+      "code": "zh",
+      "file": "/audio/vector-demo/zh-cn.wav",
+      "generatedWith": {
+        "engine": "VECTOR",
+        "voiceName": "Fenrir",
+        "payloadLanguage": "zh"
+      }
+    }
+  ]
+}

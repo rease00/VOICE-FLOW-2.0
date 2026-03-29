@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 import time
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app as backend_app
+from services.admission.redis_limits import SuccessQuotaDecision, SuccessQuotaLimiter, SuccessQuotaReservation, SuccessQuotaSnapshot
+from services.queue.redis_queue import WeightedInMemoryQueue
 
 
 class _DummyRuntimeResponse:
@@ -26,20 +31,57 @@ class _DummyRuntimeResponse:
 
 
 def _reset_inmemory_state() -> None:
-    backend_app._INMEMORY_ENTITLEMENTS.clear()
-    backend_app._INMEMORY_USAGE_MONTHLY.clear()
-    backend_app._INMEMORY_USAGE_DAILY.clear()
-    backend_app._INMEMORY_USAGE_EVENTS.clear()
-    backend_app._INMEMORY_USER_PROFILES.clear()
-    backend_app._INMEMORY_USER_ID_INDEX.clear()
-    backend_app._INMEMORY_GENERATION_HISTORY.clear()
-    backend_app._INMEMORY_DAILY_USAGE_RESET_STATUS.clear()
-    backend_app._INMEMORY_STRIPE_CUSTOMERS.clear()
-    backend_app._INMEMORY_WALLET_DAILY.clear()
-    backend_app._INMEMORY_WALLET_TRANSACTIONS.clear()
-    backend_app._INMEMORY_COUPONS.clear()
-    backend_app._INMEMORY_COUPON_REDEMPTIONS.clear()
+    for name in (
+        "_INMEMORY_ENTITLEMENTS",
+        "_INMEMORY_USAGE_MONTHLY",
+        "_INMEMORY_USAGE_DAILY",
+        "_INMEMORY_USAGE_EVENTS",
+        "_INMEMORY_USER_PROFILES",
+        "_INMEMORY_USER_ID_INDEX",
+        "_INMEMORY_GENERATION_HISTORY",
+        "_INMEMORY_DAILY_USAGE_RESET_STATUS",
+        "_INMEMORY_STRIPE_CUSTOMERS",
+        "_INMEMORY_WALLET_DAILY",
+        "_INMEMORY_WALLET_TRANSACTIONS",
+        "_INMEMORY_COUPONS",
+        "_INMEMORY_COUPON_REDEMPTIONS",
+        "_INMEMORY_STRIPE_WEBHOOK_EVENTS",
+        "_INMEMORY_VC_USAGE_EVENTS",
+    ):
+        store = getattr(backend_app, name, None)
+        if hasattr(store, "clear"):
+            store.clear()
     backend_app._TTS_SUCCESS_LIMITER.clear_all_local_state()
+
+    engine = backend_app._TTS_V2_ENGINE
+    queue = getattr(engine, "_queue", None)
+    with engine._jobs_lock:
+        engine._jobs.clear()
+        engine._request_to_job.clear()
+        engine._idem_local.clear()
+        engine._threads.clear()
+        engine._job_cache_order.clear()
+    with engine._lane_lock:
+        engine._lane_rr = deque(["L1", "L2", "L3"])
+    for lane in list(getattr(engine, "_lanes", {}).values()):
+        with lane.lock:
+            lane.unhealthy_until_ms = 0
+            lane.inflight = 0
+            lane.failures = 0
+            lane.starts.clear()
+            lane.sem = type(lane.sem)(max(1, int(lane.max_inflight)))
+    if queue is not None:
+        with getattr(queue, "_lock", engine._jobs_lock):
+            getattr(queue, "_jobs", {}).clear()
+            getattr(queue, "_job_lanes", {}).clear()
+            getattr(queue, "_job_cache_order", deque()).clear()
+            if hasattr(queue, "_lane_rr"):
+                queue._lane_rr = deque(queue._weighted_lane_order())
+            if hasattr(queue, "_compat_queue"):
+                queue._compat_queue = WeightedInMemoryQueue(getattr(queue, "_weights", None))
+    with backend_app._TTS_V2_SESSION_LOCK:
+        backend_app._INMEMORY_TTS_V2_SESSIONS.clear()
+        backend_app._INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.clear()
 
 
 def _submit_tts_and_wait_status(
@@ -59,6 +101,8 @@ def _submit_tts_and_wait_status(
     safe_payload = dict(payload or {})
     if not str(safe_payload.get("request_id") or "").strip():
         safe_payload["request_id"] = f"test_{uuid.uuid4().hex}"
+    if not str(safe_headers.get("Idempotency-Key") or "").strip():
+        safe_headers["Idempotency-Key"] = str(safe_payload["request_id"])
     if not str(safe_payload.get("mode") or "").strip():
         safe_payload["mode"] = "single_speaker"
     submit = client.post("/tts/v2/jobs", json=safe_payload, headers=safe_headers)
@@ -187,14 +231,30 @@ def test_auth_enforcement_allows_phone_only_token_without_email_claim(monkeypatc
     assert payload["entitlements"]["uid"] == "firebase_phone_user"
 
 
-def test_runtime_status_endpoint_is_auth_exempt(monkeypatch) -> None:
+def test_verify_firebase_id_token_checks_revocation(monkeypatch) -> None:
+    _reset_inmemory_state()
+    backend_app._FIREBASE_APP = object()
+    calls: list[tuple[str, bool]] = []
+
+    class _FirebaseAuth:
+        @staticmethod
+        def verify_id_token(id_token, check_revoked=False):
+            calls.append((str(id_token), bool(check_revoked)))
+            return {"uid": "revocation_user"}
+
+    monkeypatch.setattr(backend_app, "firebase_auth", _FirebaseAuth())
+
+    claims = backend_app._verify_firebase_id_token("token_123")
+    assert claims["uid"] == "revocation_user"
+    assert calls == [("token_123", True)]
+
+
+def test_runtime_status_endpoint_requires_auth_when_enforced(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
     client = TestClient(backend_app.app)
-    response = client.get("/tts/engines/status", params={"engine": "GEM"})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload.get("engines", {}).get("GEM", {}).get("engine") == "GEM"
+    response = client.get("/tts/engines/status", params={"engine": "PRIME"})
+    assert response.status_code == 401
 
 
 def test_protected_preflight_returns_cors_success(monkeypatch) -> None:
@@ -225,6 +285,8 @@ def test_auth_401_response_includes_cors_headers(monkeypatch) -> None:
 def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_UPSTREAM_PROVIDER", "runtime")
+    monkeypatch.setattr(backend_app, "VF_TTS_TEXTTOSPEECH_ONLY", False)
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
     uid = "quota_user_daily"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
@@ -237,17 +299,17 @@ def test_tts_synthesize_does_not_enforce_daily_limit(monkeypatch) -> None:
     headers = {"x-dev-uid": uid}
     first_code, _ = _submit_tts_and_wait_status(
         client,
-        payload={"engine": "GEM", "text": "hello"},
+        payload={"engine": "PRIME", "text": "hello"},
         headers=headers,
     )
     second_code, _ = _submit_tts_and_wait_status(
         client,
-        payload={"engine": "GEM", "text": "again"},
+        payload={"engine": "PRIME", "text": "again"},
         headers=headers,
     )
     third_code, _ = _submit_tts_and_wait_status(
         client,
-        payload={"engine": "GEM", "text": "third run should pass"},
+        payload={"engine": "PRIME", "text": "third run should pass"},
         headers=headers,
     )
 
@@ -274,13 +336,18 @@ def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     assert session.status_code == 201
     session_key = str(session.json().get("sessionKey") or "").strip()
     assert session_key
+    request_id = f"test_{uuid.uuid4().hex}"
     response = client.post(
         "/tts/v2/jobs",
-        headers={"x-dev-uid": "free_gem_block_user", "x-vf-tts-session-key": session_key},
+        headers={
+            "x-dev-uid": "free_gem_block_user",
+            "x-vf-tts-session-key": session_key,
+            "Idempotency-Key": request_id,
+        },
         json={
-            "request_id": f"test_{uuid.uuid4().hex}",
+            "request_id": request_id,
             "mode": "single_speaker",
-            "engine": "GEM",
+            "engine": "PRIME",
             "text": "forbidden on free plan",
             "voice_id": "Fenrir",
         },
@@ -289,8 +356,8 @@ def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     detail = response.json().get("detail") or {}
     assert detail.get("errorCode") == "VF_TTS_ENGINE_PLAN_FORBIDDEN"
     assert detail.get("plan") == "Free"
-    assert detail.get("engine") == "GEM"
-    assert set(detail.get("allowedEngines") or []) == {"KOKORO", "NEURAL2"}
+    assert detail.get("engine") == "PRIME"
+    assert set(detail.get("allowedEngines") or []) == {"DUNO", "VECTOR"}
 
 
 def test_default_entitlement_uses_free_wallet_policy() -> None:
@@ -336,6 +403,8 @@ def test_normalize_entitlement_wallet_migrates_free_vff_grant_and_cap() -> None:
 def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_UPSTREAM_PROVIDER", "runtime")
+    monkeypatch.setattr(backend_app, "VF_TTS_TEXTTOSPEECH_ONLY", False)
     uid = "quota_user_revert"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
         **backend_app._default_entitlement(uid),
@@ -351,7 +420,7 @@ def test_tts_synthesize_reverts_usage_on_runtime_failure(monkeypatch) -> None:
     headers = {"x-dev-uid": uid}
     failed_code, _ = _submit_tts_and_wait_status(
         client,
-        payload={"engine": "NEURAL2", "text": "runtime fail"},
+        payload={"engine": "VECTOR", "text": "runtime fail"},
         headers=headers,
     )
     assert failed_code == 500
@@ -391,19 +460,21 @@ def test_entitlements_include_engine_char_caps_and_early_access(monkeypatch) -> 
     scale_ent = scale_response.json()["entitlements"]
     assert bool((scale_ent.get("features") or {}).get("earlyAccess")) is True
     assert int((scale_ent.get("limits") or {}).get("maxCharsPerGeneration") or 0) == 15000
-    assert "GEM" in list((scale_ent.get("limits") or {}).get("allowedEngines") or [])
+    assert "PRIME" in list((scale_ent.get("limits") or {}).get("allowedEngines") or [])
 
     free_response = client.get("/account/entitlements", headers={"x-dev-uid": free_uid})
     assert free_response.status_code == 200
     free_ent = free_response.json()["entitlements"]
     assert bool((free_ent.get("features") or {}).get("earlyAccess")) is False
     assert int((free_ent.get("limits") or {}).get("maxCharsPerGeneration") or 0) == 8000
-    assert "GEM" not in list((free_ent.get("limits") or {}).get("allowedEngines") or [])
+    assert "PRIME" not in list((free_ent.get("limits") or {}).get("allowedEngines") or [])
 
 
 def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_UPSTREAM_PROVIDER", "runtime")
+    monkeypatch.setattr(backend_app, "VF_TTS_TEXTTOSPEECH_ONLY", False)
     monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
     uid = "local_admin_unlimited"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
@@ -418,7 +489,7 @@ def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> 
     for i in range(3):
         response_code, _ = _submit_tts_and_wait_status(
             client,
-            payload={"engine": "GEM", "text": f"admin run {i}", "request_id": f"admin_req_{i}"},
+            payload={"engine": "PRIME", "text": f"admin run {i}", "request_id": f"admin_req_{i}"},
             headers=headers,
         )
         assert response_code == 200
@@ -560,22 +631,33 @@ def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
     monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
-    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
-    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
-    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
-    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_MAX_INR", "price_pro_max_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
+    monkeypatch.setattr(backend_app, "VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
+    monkeypatch.setattr(
+        backend_app,
+        "_razorpay_plan_id_for_plan",
+        lambda plan, phase="recurring": f"{plan}_{phase}_plan",
+    )
 
     client = TestClient(backend_app.app)
     event_payload = {
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "metadata": {"uid": "stripe_user_1", "plan": "pro"},
-                "customer": "cus_test_123",
-                "subscription": "sub_test_123",
-                "customer_details": {"address": {"country": "IN"}},
+        "id": "evt_sub_1",
+        "event": "subscription.activated",
+        "payload": {
+            "subscription": {
+                "entity": {
+                    "id": "sub_test_123",
+                    "plan_id": "pro_recurring_plan",
+                    "customer_id": "cus_test_123",
+                    "status": "active",
+                    "notes": {"uid": "stripe_user_1"},
+                    "current_start": 1761955200,
+                    "current_end": 1764547200,
+                    "start_at": 1761955200,
+                    "charge_at": 1764547200,
+                    "latest_invoice_id": "in_test_001",
+                }
             }
         },
     }
@@ -586,13 +668,293 @@ def test_billing_webhook_updates_entitlement(monkeypatch) -> None:
     assert ent["monthlyVfLimit"] == backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"]
 
 
+def test_tts_v2_create_prechecks_success_quota_before_reserving_usage(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    reserve_attempts: list[tuple[str, str, str]] = []
+    usage_calls: list[tuple[str, str]] = []
+
+    def _fail_reserve(uid, plan_name, plan_key, trace_id, *, request_fingerprint):
+        reserve_attempts.append((uid, plan_name, request_fingerprint))
+        raise backend_app.HTTPException(status_code=429, detail={"errorCode": "VF_TEST_QUOTA"})
+
+    monkeypatch.setattr(backend_app, "_reserve_tts_success_quota", _fail_reserve)
+    monkeypatch.setattr(
+        backend_app,
+        "_reserve_usage",
+        lambda uid, request_id, *_args, **_kwargs: usage_calls.append((uid, request_id)),
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_V2_ENGINE,
+        "create_job",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("create_job should not run after quota precheck failure")),
+    )
+
+    client = TestClient(backend_app.app)
+    session_response = client.post("/tts/v2/sessions", headers={"x-dev-uid": "quota_precheck_user"})
+    assert session_response.status_code == 201
+    session_key = str(session_response.json().get("sessionKey") or "").strip()
+    request_id = f"test_{uuid.uuid4().hex}"
+    response = client.post(
+        "/tts/v2/jobs",
+        headers={
+            "x-dev-uid": "quota_precheck_user",
+            "x-vf-tts-session-key": session_key,
+            "Idempotency-Key": request_id,
+        },
+        json={
+            "request_id": request_id,
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "hello world",
+        },
+    )
+    assert response.status_code == 429
+    assert reserve_attempts == [("quota_precheck_user", "Free", request_id)]
+    assert usage_calls == []
+
+
+def test_tts_v2_create_attaches_success_quota_reservation_payload(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    reservation = SuccessQuotaReservation(
+        allowed=True,
+        reserved=True,
+        committed=False,
+        released=False,
+        counted=True,
+        idempotent_reuse=False,
+        reservation_id="reservation-123",
+        backend="memory",
+        redis_available=False,
+        redis_required=False,
+        snapshot=SuccessQuotaSnapshot(limit=2, used=1, remaining=1, reset_at_ms=1_762_000_000_000, window_seconds=60),
+        error="",
+    )
+    reserve_headers = {"X-RateLimit-Success-Limit": "2", "X-RateLimit-Success-Remaining": "1", "X-RateLimit-Success-Reset": "1762000000"}
+    monkeypatch.setattr(backend_app, "_reserve_tts_success_quota", lambda *args, **kwargs: (reservation, reserve_headers))
+    monkeypatch.setattr(backend_app, "_reserve_usage", lambda *args, **kwargs: None)
+
+    captured: dict[str, object] = {}
+
+    def _fake_create_job(**kwargs):
+        captured["payload"] = dict(kwargs.get("payload") or {})
+        return {
+            "jobId": "job_reservation_1",
+            "requestId": str((kwargs.get("payload") or {}).get("request_id") or ""),
+            "traceId": str((kwargs.get("payload") or {}).get("trace_id") or ""),
+            "status": "queued",
+            "engine": str((kwargs.get("payload") or {}).get("engine") or "PRIME"),
+            "payload": dict(kwargs.get("payload") or {}),
+        }
+
+    monkeypatch.setattr(backend_app._TTS_V2_ENGINE, "create_job", _fake_create_job)
+    monkeypatch.setattr(
+        backend_app._TTS_V2_ENGINE,
+        "status_payload",
+        lambda job, include_chunks=False, include_result=False: {
+            "ok": True,
+            "accepted": True,
+            "jobId": str((job or {}).get("jobId") or "job_reservation_1"),
+            "requestId": str((job or {}).get("requestId") or ""),
+            "traceId": str((job or {}).get("traceId") or ""),
+            "status": "queued",
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    session_response = client.post("/tts/v2/sessions", headers={"x-dev-uid": "reservation_payload_user"})
+    assert session_response.status_code == 201
+    session_key = str(session_response.json().get("sessionKey") or "").strip()
+    request_id = f"test_{uuid.uuid4().hex}"
+    response = client.post(
+        "/tts/v2/jobs",
+        headers={
+            "x-dev-uid": "reservation_payload_user",
+            "x-vf-tts-session-key": session_key,
+            "Idempotency-Key": request_id,
+        },
+        json={
+            "request_id": request_id,
+            "mode": "single_speaker",
+            "engine": "VECTOR",
+            "text": "hello world",
+        },
+    )
+    assert response.status_code == 202
+    payload = captured.get("payload") or {}
+    assert isinstance(payload, dict)
+    quota_payload = payload.get("successQuotaReservation") or {}
+    assert isinstance(quota_payload, dict)
+    assert quota_payload["reservationId"] == "reservation-123"
+    assert payload["successQuotaReservationToken"] == "reservation-123"
+    assert int(quota_payload.get("snapshot", {}).get("used") or 0) == 1
+
+
+def test_success_quota_reservation_lifecycle_uses_memory_fallback() -> None:
+    limiter = SuccessQuotaLimiter(redis_url="", window_seconds=30, idempotency_ttl_seconds=120)
+
+    first = limiter.reserve_success("quota_user", "free", "fp-1")
+    assert first.allowed is True
+    assert first.reserved is True
+    assert first.committed is False
+    assert first.counted is True
+    assert first.idempotent_reuse is False
+    assert first.backend == "memory"
+    assert first.redis_available is False
+    assert first.snapshot.used == 1
+
+    reused = limiter.reserve_success("quota_user", "free", "fp-1")
+    assert reused.allowed is True
+    assert reused.reserved is False
+    assert reused.committed is False
+    assert reused.counted is False
+    assert reused.idempotent_reuse is True
+    assert reused.reservation_id == first.reservation_id
+    assert reused.snapshot.used == 1
+
+    committed = limiter.commit_success_reservation(first)
+    assert committed.allowed is True
+    assert committed.reserved is False
+    assert committed.committed is True
+    assert committed.released is False
+    assert committed.snapshot.used == 1
+
+    legacy = limiter.commit_success("quota_user", "free", "fp-1")
+    assert legacy.allowed is True
+    assert legacy.counted is False
+    assert legacy.idempotent_reuse is True
+    assert legacy.snapshot.used == 1
+
+    second = limiter.reserve_success("quota_user", "free", "fp-2")
+    assert second.allowed is True
+    assert second.reserved is True
+    assert second.counted is True
+    assert second.snapshot.used == 2
+
+    released = limiter.release_success_reservation(second)
+    assert released.allowed is True
+    assert released.released is True
+    assert released.snapshot.used == 1
+
+    after_release = limiter.reserve_success("quota_user", "free", "fp-3")
+    assert after_release.allowed is True
+    assert after_release.counted is True
+    assert after_release.snapshot.used == 2
+
+
+def test_success_quota_reservation_requires_redis_when_configured() -> None:
+    limiter = SuccessQuotaLimiter(redis_url="", require_redis=True)
+
+    assert limiter.is_redis_enabled() is False
+    assert limiter.is_redis_required() is True
+
+    with pytest.raises(RuntimeError):
+        limiter.reserve_success("quota_user", "free", "fp-1")
+
+    with pytest.raises(RuntimeError):
+        limiter.commit_success("quota_user", "free", "fp-1")
+
+    with pytest.raises(RuntimeError):
+        limiter.peek("quota_user", "free")
+
+
 def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
-    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_MAX_INR", "price_pro_max_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_key_id", lambda: "rzp_test_key")
+    monkeypatch.setattr(backend_app, "_razorpay_key_secret", lambda: "rzp_test_secret")
+    monkeypatch.setattr(
+        backend_app,
+        "_razorpay_plan_id_for_plan",
+        lambda plan, phase="recurring": f"{plan}_{phase}_plan",
+    )
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "fetch_customer",
+        lambda **_kwargs: {"customer_id": "cus_test_123", "id": "cus_test_123", "name": "Summary User"},
+    )
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "fetch_subscription",
+        lambda **_kwargs: {
+            "subscription_id": "sub_test_123",
+            "plan_id": "pro_recurring_plan",
+            "customer_id": "cus_test_123",
+            "status": "active",
+            "current_start": 1761955200,
+            "current_end": 1764547200,
+            "start_at": 1761955200,
+            "charge_at": 1764547200,
+            "latest_invoice_id": "in_test_001",
+        },
+    )
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "list_customer_payments",
+        lambda *_args, **_kwargs: {
+            "items": [
+                {
+                    "payment_id": "pay_test_001",
+                    "id": "pay_test_001",
+                    "status": "captured",
+                    "amount_minor": 216000,
+                    "currency": "INR",
+                    "method": "card",
+                    "created_at": 1759276800,
+                    "raw": {
+                        "id": "pm_test_123",
+                        "card": {
+                            "brand": "visa",
+                            "last4": "4242",
+                            "exp_month": 12,
+                            "exp_year": 2030,
+                            "funding": "credit",
+                        },
+                    },
+                },
+                {
+                    "payment_id": "pay_test_002",
+                    "id": "pay_test_002",
+                    "status": "captured",
+                    "amount_minor": 120000,
+                    "currency": "INR",
+                    "method": "card",
+                    "created_at": 1759190400,
+                    "raw": {
+                        "id": "pm_test_456",
+                        "card": {
+                            "brand": "visa",
+                            "last4": "1111",
+                            "exp_month": 11,
+                            "exp_year": 2031,
+                            "funding": "debit",
+                        },
+                    },
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "list_customer_subscriptions",
+        lambda *_args, **_kwargs: {
+            "items": [
+                {
+                    "subscription_id": "sub_test_123",
+                    "plan_id": "pro_recurring_plan",
+                    "customer_id": "cus_test_123",
+                    "status": "active",
+                    "current_start": 1761955200,
+                    "current_end": 1764547200,
+                    "start_at": 1761955200,
+                    "charge_at": 1764547200,
+                    "latest_invoice_id": "in_test_001",
+                }
+            ]
+        },
+    )
 
     uid = "billing_summary_user"
     backend_app._INMEMORY_ENTITLEMENTS[uid] = {
@@ -600,7 +962,7 @@ def test_billing_account_summary_returns_subscription_and_invoices(monkeypatch) 
         "plan": "Pro",
         "status": "active",
         "monthlyVfLimit": backend_app.PLAN_LIMITS["pro"]["monthlyVfLimit"],
-        "stripeCustomerId": "cus_test_123",
+        "razorpayCustomerId": "cus_test_123",
         "subscriptionId": "sub_test_123",
         "billingCountry": "IN",
     }
@@ -689,30 +1051,33 @@ def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
     monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
     monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
-    monkeypatch.setattr(backend_app, "VF_STRIPE_WEBHOOK_ALLOW_UNSIGNED", True)
-    monkeypatch.setattr(backend_app, "stripe", _DummyStripe)
-    monkeypatch.setattr(backend_app, "STRIPE_SECRET_KEY", "sk_test_123")
-    monkeypatch.setattr(backend_app, "STRIPE_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(backend_app, "VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
 
     client = TestClient(backend_app.app)
     event_payload = {
-        "type": "checkout.session.completed",
-        "data": {
-            "object": {
-                "id": "cs_token_pack_1",
-                "metadata": {
-                    "kind": "token_pack",
-                    "uid": "wallet_user_1",
-                    "packKey": "micro",
-                    "packVf": "50000",
-                    "standardAmountInr": "550",
-                    "finalAmountInr": "550",
-                },
-                "customer": "cus_wallet_1",
-                "amount_total": 55000,
-                "currency": "inr",
+        "id": "evt_token_pack_1",
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_token_pack_1",
+                    "order_id": "order_token_pack_1",
+                    "notes": {
+                        "kind": "token_pack",
+                        "uid": "wallet_user_1",
+                        "packKey": "micro",
+                        "packVf": "50000",
+                        "standardAmountInr": "550",
+                        "finalAmountInr": "550",
+                    },
+                    "customer_id": "cus_wallet_1",
+                    "amount": 55000,
+                    "currency": "INR",
+                }
             }
-        },
+        }
     }
     first = client.post("/billing/webhook", json=event_payload)
     second = client.post("/billing/webhook", json=event_payload)
@@ -725,6 +1090,750 @@ def test_token_pack_webhook_is_idempotent(monkeypatch) -> None:
     lot = lots[0]
     assert lot.get("source") == "token_pack"
     assert str(lot.get("expiresAt") or "").strip()
+
+
+def test_token_pack_webhook_uses_amount_fallback_when_final_amount_missing(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
+    monkeypatch.setattr(backend_app, "VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
+    monkeypatch.setattr(backend_app, "_firestore_collection", lambda _name: None)
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        backend_app,
+        "_credit_paid_vf",
+        lambda **kwargs: captured.append(dict(kwargs)),
+    )
+
+    client = TestClient(backend_app.app)
+    event_payload = {
+        "id": "evt_token_pack_fallback_1",
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_token_pack_fallback_1",
+                    "order_id": "order_token_pack_fallback_1",
+                    "notes": {
+                        "kind": "token_pack",
+                        "uid": "wallet_fallback_user",
+                        "packKey": "micro",
+                        "packVf": "50000",
+                        "standardAmountInr": "550",
+                    },
+                    "customer_id": "cus_wallet_fallback_1",
+                    "amount": 55000,
+                    "currency": "INR",
+                }
+            }
+        },
+    }
+    response = client.post("/billing/webhook", json=event_payload)
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert captured[0]["amount"] == 50000
+    assert int((captured[0].get("metadata") or {}).get("finalAmountInr") or 0) == 550
+
+
+def test_vc_token_pack_webhook_credits_vc_wallet(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
+    monkeypatch.setattr(backend_app, "VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
+
+    client = TestClient(backend_app.app)
+    event_payload = {
+        "id": "evt_vc_token_pack_1",
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_vc_token_pack_1",
+                    "order_id": "order_vc_token_pack_1",
+                    "notes": {
+                        "kind": "vc_token_pack",
+                        "uid": "vc_wallet_user_1",
+                        "packKey": "standard",
+                        "packVc": "750",
+                        "finalAmountInr": "699",
+                    },
+                    "customer_id": "cus_vc_wallet_1",
+                    "amount": 69900,
+                    "currency": "INR",
+                }
+            }
+        },
+    }
+    first = client.post("/billing/webhook", json=event_payload)
+    second = client.post("/billing/webhook", json=event_payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    entitlement = backend_app._load_entitlement("vc_wallet_user_1")
+    assert entitlement["vcPaidBalance"] == 750
+
+
+def test_wallet_vc_convert_requires_config(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_VC_CONVERSION_RATE", 0.0)
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/wallet/vc/convert",
+        json={"vfAmount": 10},
+        headers={"x-dev-uid": "vc_convert_user"},
+    )
+    assert response.status_code == 503
+    detail = response.json().get("detail") or {}
+    assert str(detail.get("errorCode") or "") == "VC_CONVERSION_CONFIG_REQUIRED"
+
+
+def test_wallet_vc_convert_debits_paid_vf_and_credits_vc(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_VC_CONVERSION_RATE", 2.5)
+    uid = "vc_convert_success_user"
+    backend_app._credit_paid_vf(
+        uid=uid,
+        amount=120,
+        reason="seed_wallet",
+        transaction_id="seed_wallet_credit",
+        metadata={"kind": "seed"},
+    )
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/wallet/vc/convert",
+        json={"vfAmount": 40},
+        headers={"x-dev-uid": uid},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert float(payload["vfDebited"]) == 40.0
+    assert float(payload["vcCredited"]) == 100.0
+    entitlement = backend_app._load_entitlement(uid)
+    assert float(entitlement["paidVfBalance"]) == 80.0
+    assert float(entitlement["vcPaidBalance"]) == 100.0
+
+
+def test_wallet_vc_convert_returns_429_when_paid_vf_is_insufficient(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_VC_CONVERSION_RATE", 1.0)
+    uid = "vc_convert_insufficient_user"
+    backend_app._credit_paid_vf(
+        uid=uid,
+        amount=5,
+        reason="seed_wallet",
+        transaction_id="seed_wallet_credit_insufficient",
+        metadata={"kind": "seed"},
+    )
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/wallet/vc/convert",
+        json={"vfAmount": 15},
+        headers={"x-dev-uid": uid},
+    )
+    assert response.status_code == 429
+
+
+def test_vc_token_pack_checkout_requires_config(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "VC_TOKEN_PACK_CATALOG", {})
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/vc-token-pack/checkout-session",
+        json={"pack": "standard"},
+        headers={"x-dev-uid": "vc_checkout_user", "Idempotency-Key": "vc_checkout_user:vc:standard:1"},
+    )
+    assert response.status_code == 503
+    detail = response.json().get("detail") or {}
+    assert str(detail.get("errorCode") or "") == "VC_TOKEN_PACK_CONFIG_REQUIRED"
+
+
+def test_vc_token_pack_checkout_session_returns_razorpay_payload(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "VC_TOKEN_PACK_CATALOG",
+        {
+            "starter": {"vc": 650, "priceInr": 499},
+        },
+    )
+    captured_orders: list[dict] = []
+
+    def _fake_create_one_time_order(**kwargs):
+        captured_orders.append(dict(kwargs))
+        return {"id": "order_vc_pack_1", "order_id": "order_vc_pack_1"}
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "create_one_time_order", _fake_create_one_time_order)
+
+    client = TestClient(backend_app.app)
+    response = client.post(
+        "/billing/vc-token-pack/checkout-session",
+        json={"pack": "starter"},
+        headers={"x-dev-uid": "vc_checkout_success_user", "Idempotency-Key": "vc_checkout_success_user:vc:starter:1"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["packKey"] == "starter"
+    assert int(body["packVc"]) == 650
+    assert int(body["finalAmountInr"]) == 499
+    assert len(captured_orders) == 1
+    notes = captured_orders[0].get("notes") or {}
+    assert str(notes.get("kind") or "") == "vc_token_pack"
+
+
+def test_vc_monthly_grants_normalized_for_pro_and_scale() -> None:
+    _reset_inmemory_state()
+    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    month_key = backend_app._wallet_month_key(now)
+
+    pro_wallet = backend_app._normalize_entitlement_wallet(
+        {
+            "uid": "pro_user",
+            "plan": "Pro",
+            "vcMonthKey": "2026-02",
+            "vcGrantMonthKey": "2026-02",
+            "vcFreeBalance": 0,
+            "vcPaidBalance": 0,
+        },
+        now,
+    )
+    scale_wallet = backend_app._normalize_entitlement_wallet(
+        {
+            "uid": "scale_user",
+            "plan": "Scale",
+            "vcMonthKey": "2026-02",
+            "vcGrantMonthKey": "2026-02",
+            "vcFreeBalance": 0,
+            "vcPaidBalance": 0,
+        },
+        now,
+    )
+    free_wallet = backend_app._normalize_entitlement_wallet(
+        {
+            "uid": "free_user",
+            "plan": "Free",
+            "vcMonthKey": "2026-02",
+            "vcGrantMonthKey": "2026-02",
+            "vcFreeBalance": 0,
+            "vcPaidBalance": 0,
+        },
+        now,
+    )
+
+    assert str(pro_wallet.get("vcMonthKey") or "") == month_key
+    assert str(scale_wallet.get("vcMonthKey") or "") == month_key
+    assert str(free_wallet.get("vcMonthKey") or "") == month_key
+    assert float(pro_wallet.get("vcFreeBalance") or 0) == float(backend_app.VC_FREE_MONTHLY_GRANT_BY_PLAN["pro"])
+    assert float(scale_wallet.get("vcFreeBalance") or 0) == float(backend_app.VC_FREE_MONTHLY_GRANT_BY_PLAN["scale"])
+    assert float(free_wallet.get("vcFreeBalance") or 0) == 0.0
+
+
+def test_billing_webhook_rejects_oversized_payload(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_IS_PRODUCTION", False)
+    monkeypatch.setattr(backend_app, "VF_IS_LOCAL_DEV", True)
+    monkeypatch.setattr(backend_app, "VF_RAZORPAY_WEBHOOK_ALLOW_UNSIGNED", True)
+    monkeypatch.setattr(backend_app, "VF_BILLING_WEBHOOK_MAX_BODY_BYTES", 128)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_webhook_secret", lambda: "")
+
+    client = TestClient(backend_app.app)
+    oversized = "x" * 512
+    response = client.post(
+        "/billing/webhook",
+        data=oversized,
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 413
+
+
+def test_reader_cached_asset_blocks_prefix_collision_traversal(monkeypatch, tmp_path) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    base_dir = tmp_path / "reader-assets"
+    sibling_dir = tmp_path / "reader-assets-escape"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    sibling_dir.mkdir(parents=True, exist_ok=True)
+    secret_file = sibling_dir / "secret.txt"
+    secret_file.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(backend_app, "READER_REMOTE_ASSETS_DIR", Path(base_dir))
+
+    try:
+        backend_app._reader_resolve_allowed_path(base_dir, "../reader-assets-escape/secret.txt", error_status=403)
+        raise AssertionError("Expected traversal containment to fail.")
+    except backend_app.HTTPException as exc:
+        assert exc.status_code == 403
+
+
+def test_process_tts_job_finalizes_cancelled_usage(monkeypatch) -> None:
+    _reset_inmemory_state()
+    finalize_calls: list[tuple[str, str, bool, str]] = []
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "cancel_req_1",
+            "traceId": "cancel_req_1",
+            "uid": "cancel_user",
+            "engine": "VECTOR",
+            "status": "cancelled",
+        },
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda _job: [])
+    monkeypatch.setattr(
+        backend_app,
+        "_finalize_usage",
+        lambda uid, request_id, success, error_detail="": finalize_calls.append((uid, request_id, bool(success), str(error_detail))),
+    )
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", lambda *args, **kwargs: None)
+
+    backend_app._process_tts_job({"jobId": "cancel_req_1"}, "worker-1")
+    assert finalize_calls == [("cancel_user", "cancel_req_1", False, "cancelled")]
+
+
+def test_process_tts_job_finalizes_after_mark_completed(monkeypatch) -> None:
+    _reset_inmemory_state()
+    call_order: list[str] = []
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "success_req_1",
+            "traceId": "success_req_1",
+            "uid": "success_user",
+            "engine": "VECTOR",
+            "status": "queued",
+            "text": "hello",
+            "voiceId": "voice_1",
+            "voiceName": "Voice 1",
+            "planName": "Free",
+            "planKey": "free",
+            "payload": {"engine": "VECTOR", "text": "hello"},
+            "adminLimitBypass": True,
+        },
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda _job: [])
+    monkeypatch.setattr(backend_app, "_record_tts_job_started", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_runtime_url_for_engine", lambda _engine: "http://runtime")
+    monkeypatch.setattr(backend_app, "_runtime_synthesize_path_for_engine", lambda _engine: "/v1/synthesize")
+    monkeypatch.setattr(backend_app, "_post_tts_conversion_status_for_engine", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        backend_app,
+        "_runtime_tts_request_with_gemini_failover",
+        lambda *args, **kwargs: _DummyRuntimeResponse(content=_DummyRuntimeResponse().content),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_persist_tts_result_audio",
+        lambda *args, **kwargs: call_order.append("persist") or {"path": "result.wav"},
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_completed",
+        lambda *args, **kwargs: call_order.append("mark_completed") or {"jobId": "success_req_1", "requestId": "success_req_1"},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_usage_event_attach_runtime_usage",
+        lambda *args, **kwargs: call_order.append("attach_usage"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_finalize_usage",
+        lambda *args, **kwargs: call_order.append("finalize"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_build_tts_history_item",
+        lambda *args, **kwargs: call_order.append("history"),
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_notification_emit_tts_job_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_runtime_latency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_admin_usage_record_runtime_call", lambda *args, **kwargs: None)
+
+    backend_app._process_tts_job({"jobId": "success_req_1"}, "worker-1")
+    assert call_order[:4] == ["persist", "mark_completed", "attach_usage", "finalize"]
+
+
+def test_process_tts_job_uses_payload_when_upstream_payload_missing(monkeypatch) -> None:
+    _reset_inmemory_state()
+    call_order: list[str] = []
+    captured_runtime_payload: dict[str, object] = {}
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "payload_req_1",
+            "traceId": "payload_req_1",
+            "uid": "payload_user",
+            "engine": "VECTOR",
+            "status": "queued",
+            "text": "hello",
+            "voiceId": "voice_1",
+            "voiceName": "Voice 1",
+            "planName": "Free",
+            "planKey": "free",
+            "payload": {"engine": "VECTOR", "text": "hello from payload"},
+            "adminLimitBypass": True,
+        },
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda _job: [])
+    monkeypatch.setattr(backend_app, "_record_tts_job_started", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_runtime_url_for_engine", lambda _engine: "http://runtime")
+    monkeypatch.setattr(backend_app, "_runtime_synthesize_path_for_engine", lambda _engine: "/v1/synthesize")
+    monkeypatch.setattr(backend_app, "_post_tts_conversion_status_for_engine", lambda **_kwargs: "")
+
+    def _fake_runtime_request(*args, **kwargs):
+        _ = args
+        captured_runtime_payload.update(dict(kwargs.get("json") or {}))
+        return _DummyRuntimeResponse(content=_DummyRuntimeResponse().content)
+
+    monkeypatch.setattr(backend_app, "_runtime_tts_request_with_gemini_failover", _fake_runtime_request)
+    monkeypatch.setattr(
+        backend_app,
+        "_persist_tts_result_audio",
+        lambda *args, **kwargs: call_order.append("persist") or {"path": "result.wav"},
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_completed",
+        lambda *args, **kwargs: call_order.append("mark_completed") or {"jobId": "payload_req_1", "requestId": "payload_req_1"},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_usage_event_attach_runtime_usage",
+        lambda *args, **kwargs: call_order.append("attach_usage"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_finalize_usage",
+        lambda *args, **kwargs: call_order.append("finalize"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_build_tts_history_item",
+        lambda *args, **kwargs: call_order.append("history"),
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_notification_emit_tts_job_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_runtime_latency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_admin_usage_record_runtime_call", lambda *args, **kwargs: None)
+
+    backend_app._process_tts_job({"jobId": "payload_req_1"}, "worker-1")
+    assert captured_runtime_payload["text"] == "hello from payload"
+    assert captured_runtime_payload["engine"] == "VECTOR"
+    assert call_order[:4] == ["persist", "mark_completed", "attach_usage", "finalize"]
+
+
+def test_process_tts_job_commits_success_quota_reservation_on_success(monkeypatch) -> None:
+    _reset_inmemory_state()
+    call_order: list[str] = []
+    reservation = SuccessQuotaReservation(
+        allowed=True,
+        reserved=True,
+        committed=False,
+        released=False,
+        counted=True,
+        idempotent_reuse=False,
+        reservation_id="reservation-worker-success",
+        backend="memory",
+        redis_available=False,
+        redis_required=False,
+        snapshot=SuccessQuotaSnapshot(limit=2, used=1, remaining=1, reset_at_ms=1_762_000_000_000, window_seconds=60),
+        error="",
+    )
+
+    class _FakeLimiter:
+        def __init__(self) -> None:
+            self.commits: list[SuccessQuotaReservation] = []
+            self.releases: list[SuccessQuotaReservation] = []
+
+        def commit_success_reservation(self, value):
+            self.commits.append(value)
+            call_order.append("commit_reservation")
+            data = dict(value.__dict__)
+            data["committed"] = True
+            data["reserved"] = False
+            data["counted"] = False
+            return SuccessQuotaReservation(**data)
+
+        def release_success_reservation(self, value):
+            self.releases.append(value)
+            call_order.append("release_reservation")
+            data = dict(value.__dict__)
+            data["released"] = True
+            data["reserved"] = False
+            data["counted"] = False
+            return SuccessQuotaReservation(**data)
+
+        def commit_success(self, *args, **kwargs):
+            raise AssertionError("legacy commit path should not run when reservation is present")
+
+        def peek(self, *args, **kwargs):
+            return reservation.snapshot
+
+    fake_limiter = _FakeLimiter()
+    monkeypatch.setattr(backend_app, "_TTS_SUCCESS_LIMITER", fake_limiter)
+    reservation_payload = backend_app._serialize_tts_success_quota_reservation(
+        reservation,
+        uid="worker_success_user",
+        plan_name="Free",
+        plan_key="free",
+        trace_id="success_req_1",
+        request_fingerprint="success_req_1",
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "success_req_1",
+            "traceId": "success_req_1",
+            "uid": "worker_success_user",
+            "engine": "VECTOR",
+            "status": "queued",
+            "planName": "Free",
+            "planKey": "free",
+            "payload": {
+                "request_id": "success_req_1",
+                "trace_id": "success_req_1",
+                "engine": "VECTOR",
+                "text": "hello",
+                "successQuotaReservation": reservation_payload,
+            },
+        },
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda _job: [])
+    monkeypatch.setattr(backend_app, "_record_tts_job_started", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_runtime_url_for_engine", lambda _engine: "http://runtime")
+    monkeypatch.setattr(backend_app, "_runtime_synthesize_path_for_engine", lambda _engine: "/v1/synthesize")
+    monkeypatch.setattr(backend_app, "_post_tts_conversion_status_for_engine", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        backend_app,
+        "_runtime_tts_request_with_gemini_failover",
+        lambda *args, **kwargs: _DummyRuntimeResponse(content=_DummyRuntimeResponse().content),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_persist_tts_result_audio",
+        lambda *args, **kwargs: call_order.append("persist") or {"path": "result.wav"},
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_completed",
+        lambda *args, **kwargs: call_order.append("mark_completed") or {"jobId": "success_req_1", "requestId": "success_req_1", "status": "completed"},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_usage_event_attach_runtime_usage",
+        lambda *args, **kwargs: call_order.append("attach_usage"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_finalize_usage",
+        lambda *args, **kwargs: call_order.append("finalize"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_build_tts_history_item",
+        lambda *args, **kwargs: call_order.append("history"),
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_notification_emit_tts_job_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_runtime_latency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_admin_usage_record_runtime_call", lambda *args, **kwargs: None)
+
+    backend_app._process_tts_job({"jobId": "success_req_1"}, "worker-1")
+    assert call_order[:5] == ["persist", "mark_completed", "commit_reservation", "attach_usage", "finalize"]
+    assert len(fake_limiter.commits) == 1
+    assert len(fake_limiter.releases) == 0
+
+
+def test_process_tts_job_releases_success_quota_reservation_on_cancel(monkeypatch) -> None:
+    _reset_inmemory_state()
+    release_calls: list[SuccessQuotaReservation] = []
+    reservation = SuccessQuotaReservation(
+        allowed=True,
+        reserved=True,
+        committed=False,
+        released=False,
+        counted=True,
+        idempotent_reuse=False,
+        reservation_id="reservation-worker-cancel",
+        backend="memory",
+        redis_available=False,
+        redis_required=False,
+        snapshot=SuccessQuotaSnapshot(limit=2, used=1, remaining=1, reset_at_ms=1_762_000_000_000, window_seconds=60),
+        error="",
+    )
+    reservation_payload = backend_app._serialize_tts_success_quota_reservation(
+        reservation,
+        uid="worker_cancel_user",
+        plan_name="Free",
+        plan_key="free",
+        trace_id="cancel_req_1",
+        request_fingerprint="cancel_req_1",
+    )
+
+    class _FakeLimiter:
+        def release_success_reservation(self, value):
+            release_calls.append(value)
+            return value
+
+    monkeypatch.setattr(backend_app, "_TTS_SUCCESS_LIMITER", _FakeLimiter())
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "cancel_req_1",
+            "traceId": "cancel_req_1",
+            "uid": "worker_cancel_user",
+            "engine": "VECTOR",
+            "status": "cancelled",
+            "planName": "Free",
+            "planKey": "free",
+            "payload": {
+                "request_id": "cancel_req_1",
+                "trace_id": "cancel_req_1",
+                "engine": "VECTOR",
+                "text": "hello",
+                "successQuotaReservation": reservation_payload,
+            },
+        },
+    )
+    finalize_calls: list[tuple[str, str, bool, str]] = []
+    monkeypatch.setattr(
+        backend_app,
+        "_finalize_usage",
+        lambda uid, request_id, success, error_detail="": finalize_calls.append((uid, request_id, bool(success), str(error_detail))),
+    )
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda _job: [])
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", lambda *args, **kwargs: None)
+
+    backend_app._process_tts_job({"jobId": "cancel_req_1"}, "worker-1")
+    assert finalize_calls == [("worker_cancel_user", "cancel_req_1", False, "cancelled")]
+    assert len(release_calls) == 1
+
+
+def test_process_tts_job_falls_back_to_direct_success_commit_when_reservation_commit_is_none(monkeypatch) -> None:
+    _reset_inmemory_state()
+    call_order: list[str] = []
+    direct_commit_calls: list[dict] = []
+    snapshot = SuccessQuotaSnapshot(limit=2, used=1, remaining=1, reset_at_ms=1_762_000_000_000, window_seconds=60)
+
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_running",
+        lambda job_id, worker_id=None: {
+            "jobId": job_id,
+            "requestId": "fallback_req_1",
+            "traceId": "fallback_req_1",
+            "uid": "worker_fallback_user",
+            "engine": "VECTOR",
+            "status": "queued",
+            "planName": "Free",
+            "planKey": "free",
+            "payload": {
+                "request_id": "fallback_req_1",
+                "trace_id": "fallback_req_1",
+                "engine": "VECTOR",
+                "text": "hello",
+                "successQuotaReservation": {"reservationId": "invalid_payload"},
+            },
+        },
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_ids_from_job", lambda _job: [])
+    monkeypatch.setattr(backend_app, "_record_tts_job_started", lambda **_kwargs: None)
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_runtime_url_for_engine", lambda _engine: "http://runtime")
+    monkeypatch.setattr(backend_app, "_runtime_synthesize_path_for_engine", lambda _engine: "/v1/synthesize")
+    monkeypatch.setattr(backend_app, "_post_tts_conversion_status_for_engine", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        backend_app,
+        "_runtime_tts_request_with_gemini_failover",
+        lambda *args, **kwargs: _DummyRuntimeResponse(content=_DummyRuntimeResponse().content),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_persist_tts_result_audio",
+        lambda *args, **kwargs: call_order.append("persist") or {"path": "result.wav"},
+    )
+    monkeypatch.setattr(
+        backend_app._TTS_JOB_QUEUE,
+        "mark_completed",
+        lambda *args, **kwargs: call_order.append("mark_completed") or {"jobId": "fallback_req_1", "requestId": "fallback_req_1", "status": "completed"},
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_usage_event_attach_runtime_usage",
+        lambda *args, **kwargs: call_order.append("attach_usage"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_finalize_usage",
+        lambda *args, **kwargs: call_order.append("finalize"),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_build_tts_history_item",
+        lambda *args, **kwargs: call_order.append("history"),
+    )
+    monkeypatch.setattr(backend_app, "_audio_generation_audit_mark_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_terminal_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_notification_emit_tts_job_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_record_tts_runtime_latency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_admin_usage_record_runtime_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "_commit_tts_success_quota_reservation", lambda _payload: None)
+
+    def _fake_commit_tts_success_quota(uid, plan_name, plan_key, trace_id, *, request_fingerprint):
+        direct_commit_calls.append(
+            {
+                "uid": uid,
+                "plan_name": plan_name,
+                "plan_key": plan_key,
+                "trace_id": trace_id,
+                "request_fingerprint": request_fingerprint,
+            }
+        )
+        call_order.append("commit_direct")
+        return SuccessQuotaDecision(
+            allowed=True,
+            counted=True,
+            idempotent_reuse=False,
+            snapshot=snapshot,
+        )
+
+    monkeypatch.setattr(backend_app, "_commit_tts_success_quota", _fake_commit_tts_success_quota)
+
+    backend_app._process_tts_job({"jobId": "fallback_req_1"}, "worker-1")
+
+    assert len(direct_commit_calls) == 1
+    assert call_order[:5] == ["persist", "mark_completed", "commit_direct", "attach_usage", "finalize"]
 
 
 def test_token_pack_lot_has_6_month_expiry_window() -> None:
@@ -836,7 +1945,7 @@ def test_usage_reserve_revert_restores_paid_vf_lot_debits() -> None:
     _reset_inmemory_state()
     uid = "usage_revert_paid_lot_user"
     request_id = "usage_revert_paid_lot_request"
-    engine = "GEM"
+    engine = "PRIME"
     char_count = 10
     now = backend_app._utc_now()
     month_doc_id = backend_app._inmemory_usage_month_doc_id(uid, now)

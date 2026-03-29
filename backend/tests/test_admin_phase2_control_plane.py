@@ -245,7 +245,7 @@ def test_audio_metadata_admin_endpoints_require_audit_read_and_log_exports(monke
             "email": "user@example.com",
             "submittedAt": backend_app._utc_now().isoformat(),
             "status": "completed",
-            "engine": "GEM",
+            "engine": "PRIME",
             "requestId": "req_audio_meta_1",
             "jobId": "req_audio_meta_1",
             "traceId": "trace_audio_meta_1",
@@ -351,18 +351,16 @@ def test_analytics_rate_math_definitions() -> None:
 def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypatch) -> None:
     _reset_phase2_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
-    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_STARTER_MAX_INR", "price_starter_max_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_STARTER_RECURRING_INR", "price_starter_recurring_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_CREATOR_MAX_INR", "price_creator_max_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_CREATOR_RECURRING_INR", "price_creator_recurring_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_MAX_INR", "price_pro_max_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_PRO_RECURRING_INR", "price_pro_recurring_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_SCALE_MAX_INR", "price_scale_max_test")
-    monkeypatch.setattr(backend_app, "STRIPE_PRICE_SCALE_RECURRING_INR", "price_scale_recurring_test")
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(backend_app, "_razorpay_key_id", lambda: "rzp_test_key")
+    monkeypatch.setattr(backend_app, "_razorpay_key_secret", lambda: "rzp_test_secret")
+    monkeypatch.setattr(
+        backend_app,
+        "_razorpay_plan_id_for_plan",
+        lambda plan, phase="recurring": f"{plan}_{phase}_plan",
+    )
 
     stripe_coupon_calls: list[dict] = []
-    checkout_payloads: list[dict] = []
 
     class _FakeCoupon:
         counter = 0
@@ -386,12 +384,6 @@ def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypat
         def modify(_promotion_id: str, **_kwargs):
             return {"ok": True}
 
-    class _FakeCheckoutSession:
-        @staticmethod
-        def create(**kwargs):
-            checkout_payloads.append(dict(kwargs))
-            return {"id": "cs_phase2_1", "url": "https://example.test/checkout"}
-
     class _FakeCustomer:
         @staticmethod
         def create(**_kwargs):
@@ -403,11 +395,20 @@ def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypat
         {
             "Coupon": _FakeCoupon,
             "PromotionCode": _FakePromotionCode,
-            "checkout": type("CheckoutNS", (), {"Session": _FakeCheckoutSession}),
             "Customer": _FakeCustomer,
         },
     )()
     monkeypatch.setattr(backend_app, "stripe", fake_stripe, raising=False)
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "create_customer",
+        lambda **_kwargs: {"customer_id": "cus_phase2_1", "id": "cus_phase2_1"},
+    )
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "create_subscription",
+        lambda *args, **_kwargs: {"subscription_id": "scale_recurring_plan", "id": "scale_recurring_plan"},
+    )
 
     client = TestClient(backend_app.app)
     created = client.post(
@@ -434,12 +435,15 @@ def test_subscription_coupon_plan_specific_discount_checkout_selection(monkeypat
 
     checkout = client.post(
         "/billing/checkout-session",
-        headers={"x-dev-uid": "user_plus_1"},
+        headers={"x-dev-uid": "user_plus_1", "Idempotency-Key": "user_plus_1:plus:multiplan50"},
         json={"plan": "plus", "couponCode": "MULTIPLAN50"},
     )
     assert checkout.status_code == 200
-    assert checkout_payloads, "expected Stripe checkout payload"
-    discounts = checkout_payloads[0].get("discounts") or []
-    assert discounts and isinstance(discounts, list)
-    selected_coupon_id = str(discounts[0].get("coupon") or "")
-    assert selected_coupon_id == coupon["stripeCouponsByPlan"]["scale"]
+    payload = checkout.json()
+    assert payload["provider"] == "razorpay"
+    assert payload["kind"] == "subscription"
+    assert payload["subscriptionId"] == "scale_recurring_plan"
+    assert payload["subscriptionOptions"]["subscription_id"] == "scale_recurring_plan"
+    assert payload["subscriptionOptions"]["key"] == "rzp_test_key"
+    assert payload["subscriptionOptions"]["notes"]["plan"] == "scale"
+    assert payload["subscriptionOptions"]["notes"]["couponCode"] == "MULTIPLAN50"

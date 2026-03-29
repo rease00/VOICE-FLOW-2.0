@@ -12,7 +12,7 @@ const TEST_SETTINGS: GenerationSettings = {
   speed: 1,
   pitch: 'Medium',
   language: 'Auto',
-  engine: 'GEM',
+  engine: 'PRIME',
   helperProvider: 'GEMINI',
   musicTrackId: 'm_none',
   musicVolume: 0.3,
@@ -84,27 +84,41 @@ describe('studio queue model', () => {
 
     expect(normalized).not.toBeNull();
     expect(normalized?.items[0]?.audioCacheKey).toBe('');
-    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('GEM');
+    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('PRIME');
     expect(normalized?.masterOrder).toBe('1');
     expect(normalized?.masterStatus).toBe('idle');
+  });
+
+  it('preserves legacy engine tokens when building outbound queue items', () => {
+    const items = buildStudioQueueItems(
+      'Hello there. This should become one queued item.',
+      120,
+      {
+        ...TEST_SETTINGS,
+        engine: 'prime_v2',
+      } as any
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.settingsSnapshot.engine).toBe('prime_v2');
   });
 
   it('accepts production engine labels when rebuilding persisted queue state', () => {
     const rawState = {
       items: [
         {
-          id: 'item-basic',
+          id: 'item-standard',
           order: 0,
           label: 'Part 1',
           status: 'queued',
-          sourceText: 'Basic engine text.',
+          sourceText: 'DUNO engine text.',
           charCount: 18,
           settingsSnapshot: {
             voiceId: 'legacy_voice',
             speed: 1,
             pitch: 'Medium',
             language: 'Auto',
-            engine: 'Basic',
+            engine: 'DUNO',
             helperProvider: 'GEMINI',
           },
           createdAt: Date.now(),
@@ -114,14 +128,14 @@ describe('studio queue model', () => {
           order: 1,
           label: 'Part 2',
           status: 'queued',
-          sourceText: 'Vector engine text.',
+          sourceText: 'VECTOR engine text.',
           charCount: 19,
           settingsSnapshot: {
             voiceId: 'legacy_voice',
             speed: 1,
             pitch: 'Medium',
             language: 'Auto',
-            engine: 'Vector',
+            engine: 'VECTOR',
             helperProvider: 'GEMINI',
           },
           createdAt: Date.now(),
@@ -133,7 +147,8 @@ describe('studio queue model', () => {
 
     const normalized = normalizeStoredStudioQueueState(rawState);
 
-    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('KOKORO');
-    expect(normalized?.items[1]?.settingsSnapshot.engine).toBe('NEURAL2');
+    expect(normalized?.items[0]?.settingsSnapshot.engine).toBe('DUNO');
+    expect(normalized?.items[1]?.settingsSnapshot.engine).toBe('VECTOR');
   });
 });
+

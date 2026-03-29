@@ -8,24 +8,27 @@ import {
 } from '../services/engineDisplay';
 
 describe('engineDisplay', () => {
-  it('maps all public engine names to the approved labels', () => {
-    expect(getEngineDisplayName('KOKORO')).toBe('Basic');
-    expect(getEngineDisplayName('NEURAL2')).toBe('Vector');
-    expect(getEngineDisplayName('GEM')).toBe('Prime');
+  it('maps all public engine names to canonical labels', () => {
+    expect(getEngineDisplayName('DUNO')).toBe('DUNO');
+    expect(getEngineDisplayName('VECTOR')).toBe('VECTOR');
+    expect(getEngineDisplayName('PRIME')).toBe('PRIME');
   });
 
-  it('provides compact and runtime labels for chips and cards', () => {
-    expect(getEngineCompactLabel('KOKORO')).toBe('Bas');
-    expect(getEngineCompactLabel('NEURAL2')).toBe('Vec');
-    expect(getEngineCompactLabel('GEM')).toBe('Pri');
-    expect(getEngineRuntimeLabel('NEURAL2')).toBe('Vector Runtime');
-    expect(getEngineRuntimeSubLabel('GEM')).toBe('Flagship voice engine');
+  it('uses canonical labels in compact and runtime helpers', () => {
+    expect(getEngineCompactLabel('DUNO')).toBe('DUNO');
+    expect(getEngineCompactLabel('VECTOR')).toBe('VECTOR');
+    expect(getEngineCompactLabel('PRIME')).toBe('PRIME');
+    expect(getEngineRuntimeLabel('DUNO')).toBe('DUNO Runtime');
+    expect(getEngineRuntimeLabel('VECTOR')).toBe('VECTOR Runtime');
+    expect(getEngineRuntimeLabel('PRIME')).toBe('PRIME Runtime');
+    expect(getEngineRuntimeSubLabel('DUNO')).toBe('DUNO voice engine');
+    expect(getEngineRuntimeSubLabel('PRIME')).toBe('PRIME voice engine');
   });
 
-  it('sanitizes raw engine/runtime text into product labels', () => {
-    expect(sanitizeTtsEngineText('Kokoro runtime offline')).toBe('Basic Runtime offline');
-    expect(sanitizeTtsEngineText('NEURAL2 recovered')).toBe('Vector recovered');
-    expect(sanitizeTtsEngineText('GEM ready')).toBe('Prime ready');
-    expect(sanitizeTtsEngineText('Gemini TTS queued')).toBe('Prime voice queued');
+  it('sanitizes engine text into canonical labels', () => {
+    expect(sanitizeTtsEngineText('DUNO runtime offline')).toBe('DUNO Runtime offline');
+    expect(sanitizeTtsEngineText('VECTOR recovered')).toBe('VECTOR recovered');
+    expect(sanitizeTtsEngineText('PRIME ready')).toBe('PRIME ready');
+    expect(sanitizeTtsEngineText('Gemini TTS queued')).toBe('Gemini TTS queued');
   });
 });

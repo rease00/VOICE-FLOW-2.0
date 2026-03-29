@@ -44,8 +44,8 @@ const resolveCurrentPlanCard = (planName: string): PlanCardConfig['id'] | null =
 
 export const SubscriptionModal: React.FC = () => {
   const { showSubscriptionModal, setShowSubscriptionModal, stats, refreshEntitlements } = useUser();
-  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl() });
-  const [isLoading, setIsLoading] = useState<BillingPlanKey | 'portal' | null>(null);
+  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath: '/app/buy' });
+  const [isLoading, setIsLoading] = useState<BillingPlanKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshingUsage, setIsRefreshingUsage] = useState(false);
   const [subscriptionCouponCode, setSubscriptionCouponCode] = useState('');
@@ -118,24 +118,18 @@ export const SubscriptionModal: React.FC = () => {
     setIsLoading(plan);
     try {
       const code = subscriptionCouponCode.trim();
-      const { url } = await billingActions.startPlanCheckout(plan, code || undefined);
-      if (!url) throw new Error('Checkout URL is missing.');
-      window.location.href = url;
+      const checkout = await billingActions.startPlanCheckout(plan, code || undefined);
+      await billingActions.launchCheckout(checkout, {
+        onSuccess: () => {
+          void refreshEntitlements();
+          handleClose();
+        },
+        onDismiss: () => {
+          setIsLoading(null);
+        },
+      });
     } catch (checkoutError: any) {
       setError(checkoutError?.message || 'Could not start checkout.');
-      setIsLoading(null);
-    }
-  };
-
-  const openPortal = async () => {
-    setError(null);
-    setIsLoading('portal');
-    try {
-      const { url } = await billingActions.openBillingPortal();
-      if (!url) throw new Error('Billing portal URL is missing.');
-      window.location.href = url;
-    } catch (portalError: any) {
-      setError(portalError?.message || 'Could not open billing portal.');
       setIsLoading(null);
     }
   };
@@ -247,7 +241,7 @@ export const SubscriptionModal: React.FC = () => {
               ].join(' ')}
             />
             <p className={`mt-2 text-[11px] ${isDarkUi ? 'text-slate-400' : 'text-slate-500'}`}>
-              If valid, this applies to the first invoice. Stripe promotion codes still work at checkout.
+              If valid, this applies to the first invoice. Provider discounts are applied at checkout when supported.
             </p>
           </div>
 
@@ -264,7 +258,7 @@ export const SubscriptionModal: React.FC = () => {
                 <article
                   key={plan.id}
                   className={[
-                    'vf-surface-card relative flex h-full flex-col rounded-[1.5rem] border p-5 transition-all duration-200',
+                    'vf-surface-card relative flex h-full flex-col rounded-[1.5rem] border p-5 transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] duration-200',
                     plan.highlight ? 'translate-y-0 sm:-translate-y-1' : '',
                     isCurrent
                       ? (isDarkUi
@@ -354,8 +348,20 @@ export const SubscriptionModal: React.FC = () => {
           <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Button
               fullWidth
-              onClick={() => void openPortal()}
-              isLoading={isLoading === 'portal'}
+              onClick={() => void refreshUsage()}
+              isLoading={isRefreshingUsage}
+              disabled={isBusy}
+              className="h-11 rounded-xl bg-indigo-600 hover:bg-indigo-500"
+            >
+              <RefreshCw size={15} className="mr-2" />
+              Refresh Usage
+            </Button>
+            <Button
+              fullWidth
+              onClick={() => {
+                setShowSubscriptionModal(false);
+                window.location.href = '/app/buy';
+              }}
               disabled={isBusy}
               variant="secondary"
               className={[
@@ -366,22 +372,12 @@ export const SubscriptionModal: React.FC = () => {
               ].join(' ')}
             >
               <Wallet size={15} className="mr-2" />
-              Open Billing Portal
-            </Button>
-            <Button
-              fullWidth
-              onClick={() => void refreshUsage()}
-              isLoading={isRefreshingUsage}
-              disabled={isBusy}
-              className="h-11 rounded-xl bg-indigo-600 hover:bg-indigo-500"
-            >
-              <RefreshCw size={15} className="mr-2" />
-              Refresh Usage
+              Open Buy Center
             </Button>
           </div>
 
           <div className={`mt-4 flex items-center justify-center gap-2 text-xs ${isDarkUi ? 'text-slate-400' : 'text-slate-500'}`}>
-            <ShieldCheck size={12} /> Secure Stripe checkout with INR base pricing
+            <ShieldCheck size={12} /> Secure checkout with INR base pricing
           </div>
         </div>
       </div>

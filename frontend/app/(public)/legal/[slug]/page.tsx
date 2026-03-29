@@ -21,12 +21,12 @@ export async function generateMetadata({ params }: LegalDocPageProps): Promise<M
   const document = resolveLegalDocument(`/legal/${slug}`);
   if (!document) {
     return {
-      title: 'VoiceFlow Legal Center',
-      description: 'VoiceFlow policy center for terms, privacy, cookies, billing, and acceptable-use documents.',
+      title: 'V FLOW AI Legal Center',
+      description: 'V FLOW AI policy center for terms, privacy, cookies, billing, and acceptable-use documents.',
     };
   }
   return {
-    title: `${document.title} | VoiceFlow`,
+    title: `${document.title} | V FLOW AI`,
     description: document.description,
     alternates: {
       canonical: document.path,

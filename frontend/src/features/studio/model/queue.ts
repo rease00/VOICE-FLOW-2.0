@@ -1,31 +1,33 @@
 import type { GenerationSettings, StudioQueueItem, StudioQueueState } from '../../../../types';
 import { buildSentenceAlignedCharWindows } from '../../../../services/ttsLongTextService';
 
+const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['DUNO', 'VECTOR', 'PRIME']);
+
+const normalizeQueueEngineTokenKey = (
+  value: unknown,
+): string => (
+  String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+);
+
+const resolveQueueEngineToken = (value: unknown): string => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const canonical = normalizeQueueEngineTokenKey(raw);
+  return CANONICAL_ENGINE_TOKENS.has(canonical as GenerationSettings['engine'])
+    ? canonical
+    : raw;
+};
+
 const normalizeQueueEngineToken = (
   value: unknown,
-  fallback: GenerationSettings['engine'] = 'GEM'
+  fallback: GenerationSettings['engine'] = 'PRIME'
 ): GenerationSettings['engine'] => {
-  const token = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  if (!token) return fallback;
-  if (token === 'KOKORO' || token === 'KOKORO_RUNTIME' || token === 'BASIC' || token === 'BAS' || token === 'BS') return 'KOKORO';
-  if (
-    token === 'NEURAL2' ||
-    token === 'NEURAL_2' ||
-    token === 'NURAL2' ||
-    token === 'NURAL_2' ||
-    token === 'VECTOR' ||
-    token === 'VEC' ||
-    token === 'HD'
-  ) return 'NEURAL2';
-  if (
-    token === 'GEM' ||
-    token === 'GEMINI' ||
-    token === 'GOOD' ||
-    token === 'GOOD_LITE' ||
-    token === 'PRIME' ||
-    token === 'PRI' ||
-    token === 'PR'
-  ) return 'GEM';
+  const token = resolveQueueEngineToken(value);
+  if (token === 'DUNO' || token === 'VECTOR' || token === 'PRIME') return token;
   return fallback;
 };
 
@@ -56,9 +58,10 @@ export const buildStudioQueueItems = (
   maxCharsPerGeneration: number,
   settings: GenerationSettings
 ): StudioQueueItem[] => {
+  const engine = resolveQueueEngineToken(settings.engine);
   const normalizedSettings = {
     ...settings,
-    engine: normalizeQueueEngineToken(settings.engine, 'GEM'),
+    engine: (engine || 'PRIME') as GenerationSettings['engine'],
   } as GenerationSettings;
   const chunks = buildSentenceAlignedCharWindows(text, maxCharsPerGeneration);
   return chunks.map((chunk, index) => ({
@@ -112,6 +115,7 @@ export const normalizeStoredStudioQueueState = (value: unknown): StudioQueueStat
       status: item.status || 'queued',
       sourceText: String(item.sourceText || ''),
       charCount: Number.isFinite(item.charCount) ? Number(item.charCount) : String(item.sourceText || '').length,
+      requestId: typeof item.requestId === 'string' ? (String(item.requestId).trim() || undefined) : undefined,
       audioCacheKey: typeof item.audioCacheKey === 'string' ? item.audioCacheKey : '',
       settingsSnapshot: (() => {
         const base = (item.settingsSnapshot || {
@@ -119,12 +123,12 @@ export const normalizeStoredStudioQueueState = (value: unknown): StudioQueueStat
           speed: 1,
           pitch: 'Medium',
           language: 'Auto',
-          engine: 'GEM',
+          engine: 'PRIME',
           helperProvider: 'GEMINI',
         }) as GenerationSettings;
         return {
           ...base,
-          engine: normalizeQueueEngineToken(base.engine, 'GEM'),
+          engine: normalizeQueueEngineToken(base.engine, 'PRIME'),
         } as GenerationSettings;
       })(),
       createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),

@@ -1,9 +1,9 @@
 {
   "generatedAt": "2026-03-01T19:42:18.381Z",
-  "note": "Voice profile reference clips generated from runtime mappings with GEM primary and Kokoro fallback.",
+  "note": "Voice profile reference clips generated from runtime mappings with PRIME primary and Modal-backed Duno.",
   "runtimeUrls": {
     "gem": "http://127.0.0.1:7810",
-    "kokoro": "http://127.0.0.1:7820"
+    "duno": "https://your-duno-modal-endpoint"
   },
   "rows": [
     {

@@ -5,6 +5,35 @@
   "profileContractPath": "infra/cloudrun/profiles.cloudrun-2vcpu.json",
   "services": [
     {
+      "name": "voiceflow-seed-vc-runtime",
+      "imageName": "voiceflow-seed-vc-runtime",
+      "dockerfile": "infra/cloudrun/docker/Dockerfile.seed-vc-runtime",
+      "ingress": "internal",
+      "allowUnauthenticated": true,
+      "minInstances": 0,
+      "maxInstances": 20,
+      "concurrency": 2,
+      "cpu": "4",
+      "memory": "16Gi",
+      "timeoutSeconds": 1200,
+      "executionEnvironment": "gen2",
+      "startupCpuBoost": true,
+      "cpuAlwaysAllocated": true,
+      "gpuType": "nvidia-l4",
+      "gpuCount": 1,
+      "env": {
+        "PORT": "8080",
+        "VF_OPENVOICE_RUNTIME_DEVICE": "cuda:L4",
+        "VF_OPENVOICE_RUNTIME_MODEL": "seed-vc-l4",
+        "VF_OPENVOICE_RUNTIME_SAMPLE_RATE": "24000",
+        "VF_OPENVOICE_RUNTIME_DEFAULT_DURATION_SEC": "6",
+        "VF_OPENVOICE_RUNTIME_MAX_DURATION_SEC": "30"
+      },
+      "secretEnv": {
+        "VF_OPENVOICE_RUNTIME_TOKEN": "openvoice-runtime-token"
+      }
+    },
+    {
       "name": "voiceflow-gemini-runtime",
       "imageName": "voiceflow-gemini-runtime",
       "dockerfile": "infra/cloudrun/docker/Dockerfile.gemini-runtime",
@@ -31,36 +60,8 @@
       }
     },
     {
-      "name": "voiceflow-kokoro-runtime",
-      "imageName": "voiceflow-kokoro-runtime",
-      "dockerfile": "infra/cloudrun/docker/Dockerfile.kokoro-runtime",
-      "ingress": "internal",
-      "allowUnauthenticated": true,
-      "minInstances": 0,
-      "maxInstances": 6,
-      "concurrency": 1,
-      "cpu": "2",
-      "memory": "4Gi",
-      "timeoutSeconds": 900,
-      "executionEnvironment": "gen2",
-      "startupCpuBoost": true,
-      "cpuAlwaysAllocated": false,
-      "env": {
-        "PORT": "8080",
-        "KOKORO_DEVICE": "cpu",
-        "KOKORO_IDLE_UNLOAD_MS": "90000",
-        "KOKORO_BATCH_DEFAULT_PARALLEL": "1",
-        "KOKORO_BATCH_MAX_PARALLEL": "2",
-        "KOKORO_MAX_ACTIVE_SYNTH": "1",
-        "KOKORO_ORT_INTRA_OP_THREADS": "1",
-        "KOKORO_ORT_INTER_OP_THREADS": "1",
-        "CUDA_VISIBLE_DEVICES": ""
-      },
-      "secretEnv": {}
-    },
-    {
       "name": "voiceflow-api",
-      "imageName": "voiceflow-backend",
+      "imageName": "voiceflow-backend-api",
       "dockerfile": "infra/cloudrun/docker/Dockerfile.backend",
       "ingress": "all",
       "allowUnauthenticated": true,
@@ -78,9 +79,20 @@
         "VF_ENV": "production",
         "VF_SERVICE_ROLE": "api",
         "VF_TTS_QUEUE_WORKER_COUNT": "0",
+        "VF_TTS_QUEUE_KEY_PREFIX": "vf:tts:v2:jobs",
+        "VF_TTS_QUEUE_JOB_TTL_MS": "300000",
         "VF_TTS_GATEWAY_MAX_ACTIVE": "20",
         "VF_TTS_GATEWAY_QUEUE_MAX": "80",
         "VF_TTS_QUEUE_MAX_DEPTH": "200",
+        "VF_TTS_QUEUE_MAX_QUEUED_PER_USER": "12",
+        "VF_TTS_QUEUE_MAX_QUEUED_PER_LANE": "120",
+        "VF_TTS_QUEUE_MIRROR_MAX_JOBS": "500",
+        "VF_TTS_QUEUE_RESERVE_ANOMALY_TTL_SEC": "86400",
+        "VF_TTS_QUEUE_MAX_RECOVERY_ATTEMPTS": "3",
+        "VF_TTS_QUEUE_RETRY_AFTER_SECONDS": "2",
+        "VF_TTS_V2_REQUEST_MAX_BODY_BYTES": "524288",
+        "VF_BILLING_WEBHOOK_MAX_BODY_BYTES": "262144",
+        "VF_BILLING_WEBHOOK_PROCESSING_LEASE_SECONDS": "900",
         "VF_AI_OPS_CONCURRENCY_SOFT_LIMIT": "8",
         "VF_AI_OPS_CONCURRENCY_HARD_LIMIT": "12",
         "VF_AUTH_ENFORCE": "1",
@@ -88,7 +100,11 @@
         "VF_ENABLE_DEV_ADMIN_LOGIN": "0",
         "VF_REDIS_URL": "__REDIS_URL__",
         "VF_GEMINI_RUNTIME_URL": "__GEMINI_RUNTIME_URL__",
-        "VF_KOKORO_RUNTIME_URL": "__KOKORO_RUNTIME_URL__",
+        "VF_DUNO_RUNTIME_URL": "__DUNO_RUNTIME_URL__",
+        "VF_OPENVOICE_PROVIDER_DEFAULT": "cloud_run",
+        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL": "__OPENVOICE_RUNTIME_URL__",
+        "VF_OPENVOICE_MODAL_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
+        "VF_OPENVOICE_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
         "VF_WHISPER_DEVICE": "cpu",
         "VF_WHISPER_COMPUTE": "int8",
         "CUDA_VISIBLE_DEVICES": ""
@@ -98,12 +114,17 @@
         "STRIPE_SECRET_KEY": "stripe-secret-key",
         "STRIPE_WEBHOOK_SECRET": "stripe-webhook-secret",
         "VF_ADMIN_UNLOCK_SIGNING_SECRET": "vf-admin-unlock-signing-secret",
-        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token"
+        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token",
+        "VF_DUNO_RUNTIME_TOKEN": "duno-runtime-token",
+        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_TOKEN": "openvoice-runtime-token",
+        "VF_OPENVOICE_MODAL_RUNTIME_TOKEN": "openvoice-runtime-token",
+        "VF_OPENVOICE_RUNTIME_TOKEN": "openvoice-runtime-token",
+        "VF_OPENVOICE_ARTIFACT_SECRET": "openvoice-artifact-secret"
       }
     },
     {
       "name": "voiceflow-worker",
-      "imageName": "voiceflow-backend",
+      "imageName": "voiceflow-backend-worker",
       "dockerfile": "infra/cloudrun/docker/Dockerfile.backend-worker",
       "ingress": "internal",
       "allowUnauthenticated": true,
@@ -121,8 +142,17 @@
         "VF_ENV": "production",
         "VF_SERVICE_ROLE": "worker",
         "VF_TTS_QUEUE_WORKER_COUNT": "2",
+        "VF_TTS_QUEUE_KEY_PREFIX": "vf:tts:v2:jobs",
+        "VF_TTS_QUEUE_JOB_TTL_MS": "300000",
+        "VF_TTS_QUEUE_MAX_DEPTH": "200",
+        "VF_TTS_QUEUE_MAX_QUEUED_PER_USER": "12",
+        "VF_TTS_QUEUE_MAX_QUEUED_PER_LANE": "120",
+        "VF_TTS_QUEUE_MIRROR_MAX_JOBS": "500",
+        "VF_TTS_QUEUE_RESERVE_ANOMALY_TTL_SEC": "86400",
+        "VF_TTS_QUEUE_MAX_RECOVERY_ATTEMPTS": "3",
+        "VF_TTS_WORKER_HEALTH_MAX_STALE_MS": "60000",
         "VF_TTS_ENGINE_CONCURRENCY_GEM": "2",
-        "VF_TTS_ENGINE_CONCURRENCY_KOKORO": "1",
+        "VF_TTS_ENGINE_CONCURRENCY_DUNO": "1",
         "VF_TTS_LIVE_SYNTH_CONCURRENCY": "1",
         "VF_TTS_LIVE_LLVC_CONCURRENCY": "1",
         "VF_TTS_LIVE_LLVC_GLOBAL_CONCURRENCY": "1",
@@ -131,7 +161,11 @@
         "VF_ENABLE_DEV_ADMIN_LOGIN": "0",
         "VF_REDIS_URL": "__REDIS_URL__",
         "VF_GEMINI_RUNTIME_URL": "__GEMINI_RUNTIME_URL__",
-        "VF_KOKORO_RUNTIME_URL": "__KOKORO_RUNTIME_URL__",
+        "VF_DUNO_RUNTIME_URL": "__DUNO_RUNTIME_URL__",
+        "VF_OPENVOICE_PROVIDER_DEFAULT": "cloud_run",
+        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL": "__OPENVOICE_RUNTIME_URL__",
+        "VF_OPENVOICE_MODAL_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
+        "VF_OPENVOICE_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
         "VF_WHISPER_DEVICE": "cpu",
         "VF_WHISPER_COMPUTE": "int8",
         "CUDA_VISIBLE_DEVICES": ""
@@ -139,7 +173,12 @@
       "secretEnv": {
         "FIREBASE_SERVICE_ACCOUNT_JSON": "firebase-service-account-json",
         "VF_ADMIN_UNLOCK_SIGNING_SECRET": "vf-admin-unlock-signing-secret",
-        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token"
+        "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token",
+        "VF_DUNO_RUNTIME_TOKEN": "duno-runtime-token",
+        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_TOKEN": "openvoice-runtime-token",
+        "VF_OPENVOICE_MODAL_RUNTIME_TOKEN": "openvoice-runtime-token",
+        "VF_OPENVOICE_RUNTIME_TOKEN": "openvoice-runtime-token",
+        "VF_OPENVOICE_ARTIFACT_SECRET": "openvoice-artifact-secret"
       }
     }
   ]

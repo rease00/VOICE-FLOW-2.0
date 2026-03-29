@@ -1,4 +1,4 @@
-export type EngineRuntimeUiState =
+﻿export type EngineRuntimeUiState =
   | 'checking'
   | 'starting'
   | 'warming'
@@ -40,9 +40,12 @@ const RUNTIME_PROVIDER_LABELS: Record<string, string> = {
 };
 
 const RUNTIME_LANE_LABELS: Record<string, string> = {
-  vector: 'Vector',
-  prime: 'Prime',
-  kokoro: 'Kokoro',
+  duno: 'DUNO',
+  vector: 'VECTOR',
+  vec: 'VECTOR',
+  prime: 'PRIME',
+  PRIME: 'PRIME',
+  gemini: 'PRIME',
 };
 
 const GCP_REGION_LABELS: Record<string, string> = {
@@ -207,3 +210,4 @@ export const mapGatewayEngineRuntimeToUiStatus = (engineItem: unknown): EngineRu
   }
   return buildUiStatus('offline', detail, metadataSource);
 };
+

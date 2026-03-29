@@ -230,6 +230,7 @@ class GeminiRateAllocator:
         auth_disable_ms: int = 600_000,
         wait_slice_ms: int = 500,
         key_rotation_burst: Optional[int] = None,
+        disable_rate_limits: bool = False,
     ) -> None:
         self.config = config
         self._window_ms = int(config.window_seconds) * 1000
@@ -240,6 +241,7 @@ class GeminiRateAllocator:
             if key_rotation_burst is not None
             else None
         )
+        self._disable_rate_limits = bool(disable_rate_limits)
 
         self._lock = threading.Lock()
         self._lane_states: dict[tuple[str, str], _LaneState] = {}
@@ -402,6 +404,9 @@ class GeminiRateAllocator:
         if lane.temp_block_until_ms > now_ms:
             return max(1, lane.temp_block_until_ms - now_ms)
 
+        if self._disable_rate_limits:
+            return 0
+
         limit = self.config.models[model_id]
         window_reset_ms = max(1, (int(lane.window_started_ms) + self._window_ms) - now_ms)
 
@@ -551,7 +556,10 @@ class GeminiRateAllocator:
         if lease is None:
             return
         now_ms = int(time.time() * 1000)
-        safe_used_tokens = max(int(lease.reserved_tokens), int(used_tokens or lease.reserved_tokens))
+        if used_tokens is None:
+            safe_used_tokens = int(lease.reserved_tokens)
+        else:
+            safe_used_tokens = max(0, int(used_tokens))
         with self._lock:
             key_state = self._key_state(lease.key)
             lane = self._lane_state(lease.key, lease.model_id)
@@ -786,6 +794,7 @@ class GeminiRateAllocator:
                     "version": self.config.version,
                     "defaultWaitTimeoutMs": int(self.config.default_wait_timeout_ms),
                     "windowSeconds": int(self.config.window_seconds),
+                    "rateLimitsDisabled": bool(self._disable_rate_limits),
                 },
                 "pool": {
                     "keyCount": len(safe_pool),

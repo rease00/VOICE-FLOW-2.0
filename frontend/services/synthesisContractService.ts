@@ -1,4 +1,4 @@
-import { GenerationSettings, NormalizedSynthesisRequest } from '../types';
+﻿import { GenerationSettings, NormalizedSynthesisRequest } from '../types';
 import { normalizeEmotionTag } from './emotionTagRules';
 
 export const MAX_SYNTHESIS_WORDS = 5000;
@@ -7,9 +7,9 @@ const ENGINE_SPEED_BOUNDS: Record<
   GenerationSettings['engine'],
   { min: number; max: number; default: number }
 > = {
-  GEM: { min: 0.7, max: 1.3, default: 1.0 },
-  NEURAL2: { min: 0.7, max: 1.3, default: 1.0 },
-  KOKORO: { min: 0.75, max: 1.35, default: 1.0 },
+  PRIME: { min: 0.7, max: 1.3, default: 1.0 },
+  VECTOR: { min: 0.7, max: 1.3, default: 1.0 },
+  DUNO: { min: 0.7, max: 1.3, default: 1.0 },
 };
 
 const clampNumber = (value: number, min: number, max: number): number => {
@@ -59,7 +59,7 @@ export const normalizeSynthesisRequest = (input: {
   traceId?: string | undefined;
   requestId?: string | undefined;
 }): NormalizedSynthesisRequest => {
-  const speedBounds = ENGINE_SPEED_BOUNDS[input.engine] || ENGINE_SPEED_BOUNDS.GEM;
+  const speedBounds = ENGINE_SPEED_BOUNDS[input.engine] || ENGINE_SPEED_BOUNDS.PRIME;
   const text = String(input.text || '').replace(/\s+/g, ' ').trim();
   const voiceId = String(input.voiceId || '').trim();
   const detectedLanguage = input.language
@@ -91,3 +91,4 @@ export const normalizeSynthesisRequest = (input: {
     request_id,
   };
 };
+

@@ -227,7 +227,7 @@ def test_sensitive_ops_and_runtime_routes_require_admin(monkeypatch) -> None:
     plain_headers = {"x-dev-uid": "plain_user"}
 
     assert client.get("/runtime/logs/tail?service=media-backend", headers=plain_headers).status_code == 403
-    assert client.post("/tts/engines/switch", headers=plain_headers, json={"engine": "GEM", "gpu": False}).status_code == 403
+    assert client.post("/tts/engines/switch", headers=plain_headers, json={"engine": "PRIME", "gpu": False}).status_code == 403
     assert client.post("/services/dubbing/prepare", headers=plain_headers, json={"gpu": False}).status_code == 404
     assert client.post("/ops/guardian/scan", headers=plain_headers, json={"autoFixMinor": False}).status_code == 403
     assert client.get("/ops/guardian/approvals", headers=plain_headers).status_code == 403

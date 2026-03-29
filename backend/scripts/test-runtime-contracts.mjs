@@ -176,7 +176,7 @@ const validateCapabilitiesPayload = (engine, payload) => {
 
   const normalizedEngine = String(payload.engine || '').trim().toUpperCase();
   if (normalizedEngine && normalizedEngine !== engine) {
-    if (!(engine === 'GEM' && normalizedEngine === 'GEMINI')) {
+    if (!(engine === 'PRIME' && normalizedEngine === 'GEMINI')) {
       violations.push(`engine_mismatch_${normalizedEngine}`);
     }
   }
@@ -244,7 +244,7 @@ const main = async () => {
     }
 
     const engines = payload.engines;
-    for (const engine of ['GEM', 'NEURAL2', 'KOKORO']) {
+    for (const engine of ['PRIME', 'VECTOR', 'DUNO']) {
       const cap = engines[engine];
       const violations = validateCapabilitiesPayload(engine, cap);
       report.checks.push({

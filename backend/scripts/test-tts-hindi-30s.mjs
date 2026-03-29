@@ -39,6 +39,9 @@ if (!AUDIT_AUTH.tokenPresent) {
 
 const REPORT_BASENAME = TARGET_SECONDS === 30 ? 'tts_hi_30s_report.json' : `tts_hi_${TARGET_SECONDS}s_report.json`;
 const REPORT_PATH = path.join(ARTIFACT_DIR, REPORT_BASENAME);
+const DUNO_RUNTIME_URL = String(
+  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL || ''
+).trim();
 
 const CORE_EMOTIONS = ['Neutral', 'Happy', 'Sad', 'Angry', 'Calm', 'Excited'];
 
@@ -83,7 +86,7 @@ const resolveRuntimeUrls = (primaryEnv, fallbackEnv, fallback) => {
 const ENGINE_CONFIGS = [
   {
     id: 'GEMINI_RUNTIME',
-    switchEngine: 'GEM',
+    switchEngine: 'PRIME',
     runtimeUrls: resolveRuntimeUrls(process.env.VF_TTS_AUDIT_GEMINI_URLS, process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810'),
     synthPath: '/synthesize',
     buildPayload: ({ text, emotion }) => ({
@@ -95,20 +98,24 @@ const ENGINE_CONFIGS = [
       speed: 1.0,
     }),
   },
-  {
-    id: 'KOKORO_RUNTIME',
-    switchEngine: 'KOKORO',
-    runtimeUrls: resolveRuntimeUrls(process.env.VF_TTS_AUDIT_KOKORO_URLS, process.env.VF_KOKORO_RUNTIME_URL, 'http://127.0.0.1:7820'),
-    synthPath: '/synthesize',
-    buildPayload: ({ text, emotion }) => ({
-      text,
-      voiceId: process.env.VF_TTS_AUDIT_KOKORO_VOICE || 'hf_alpha',
-      voice_id: process.env.VF_TTS_AUDIT_KOKORO_VOICE || 'hf_alpha',
-      language: 'hi',
-      emotion,
-      speed: 1.0,
-    }),
-  },
+  ...(
+    DUNO_RUNTIME_URL
+      ? [{
+          id: 'DUNO_RUNTIME',
+          switchEngine: 'DUNO',
+          runtimeUrls: resolveRuntimeUrls(process.env.VF_TTS_AUDIT_DUNO_URLS, DUNO_RUNTIME_URL, ''),
+          synthPath: '/synthesize',
+          buildPayload: ({ text, emotion }) => ({
+            text,
+            voiceId: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'hf_alpha',
+            voice_id: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'hf_alpha',
+            language: 'hi',
+            emotion,
+            speed: 1.0,
+          }),
+        }]
+      : []
+  ),
 ];
 
 const round3 = (value) => Math.round(Number(value || 0) * 1000) / 1000;
@@ -541,10 +548,6 @@ const main = async () => {
     targetSeconds: TARGET_SECONDS,
     durationBandSeconds: [MIN_SECONDS, MAX_SECONDS],
     charsPerSecond: CHARS_PER_SECOND,
-    runtimes: {
-      GEMINI_RUNTIME: ENGINE_CONFIGS[0].runtimeUrls,
-      KOKORO_RUNTIME: ENGINE_CONFIGS[1].runtimeUrls,
-    },
     skipRuntimeSwitch: SKIP_RUNTIME_SWITCH,
     authMode: AUDIT_AUTH.mode,
     preflight,
@@ -557,6 +560,9 @@ const main = async () => {
       passedAll: failed.length === 0,
       byEngine,
     },
+    runtimes: Object.fromEntries(
+      ENGINE_CONFIGS.map((config) => [config.id, config.runtimeUrls])
+    ),
   };
 
   await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');

@@ -40,7 +40,7 @@ The highest-risk issues are deployment drift in the Cloud Run rollout path after
 
 ## Environment Snapshot
 
-- Local stack expected in scope: `3000`, `5173`, `7800`, `7810`, `7820`, `7830`
+- Local stack expected in scope: `3000`, `5173`, `7800`, `7810`, `7830`, plus the Modal-hosted Duno endpoint configured via `VF_DUNO_RUNTIME_URL`
 - Major churn areas in this release candidate:
   - `backend/app.py`
   - `backend/engines/**`
@@ -101,7 +101,7 @@ The highest-risk issues are deployment drift in the Cloud Run rollout path after
   - `manual-probe-media-capabilities-curl.txt` shows `http://127.0.0.1:7800/tts/engines/capabilities` timing out
   - Direct child runtime probes stayed healthy:
     - `manual-probe-gemini-health.txt`
-    - `manual-probe-kokoro-health.txt`
+    - `manual-probe-duno-health.txt`
     - `manual-probe-voice-transfer-health.txt`
   - The backend health route in `backend/app.py` performs synchronous downstream checks, including `llvc_runtime.ensure_engine()` and source-separation/video asset status work, instead of staying shallow
 - Impact:
@@ -216,7 +216,7 @@ The highest-risk issues are deployment drift in the Cloud Run rollout path after
 
 ## Rerun Checklist
 
-1. Bring up the same local stack on `3000`, `5173`, `7800`, `7810`, `7820`, and `7830`.
+1. Bring up the same local stack on `3000`, `5173`, `7800`, `7810`, and `7830`, and confirm the Modal-hosted Duno endpoint is reachable via the backend gateway configuration.
 2. Export a real `AUDIT_BEARER_TOKEN` for a test user with the intended privileges. Do not use `AUDIT_ALLOW_DEV_UID=1` for the production verdict.
 3. Re-run the command matrix in the same order:
    - `npm run audit:secrets:tracked-config`

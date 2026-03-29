@@ -6,14 +6,20 @@ export default [
   {
     ignores: [
       '.next/**',
+      '.next-buildcheck/**',
+      '.next-ci/**',
+      '.next-playwright/**',
       '.open-next/**',
+      '.wrangler/**',
       'artifacts/**',
       'dist/**',
       'node_modules/**',
+      'out/**',
       'playwright-report/**',
       'tmp_dir/**',
       'test-results/**',
       'coverage/**',
+      'storybook-static/**',
     ],
   },
   {

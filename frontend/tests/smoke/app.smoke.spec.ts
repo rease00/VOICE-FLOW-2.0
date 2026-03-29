@@ -42,9 +42,9 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/',
     title: 'marketing landing',
     expect: async (page) => {
-      await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('heading', { name: /Create voice content that sounds production-ready from day one\./i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('banner').getByRole('link', { name: 'Start Free' })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('banner').getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByTestId('landing-hero-heading')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('banner').getByRole('link', { name: 'Start Free in Studio' })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -52,7 +52,7 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'billing landing',
     expect: async (page) => {
       await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText('Billing Center', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Buy Center', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
       await expect(page.getByRole('heading', { name: /Subscription, Token Buy, and Credit Rules/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
@@ -84,15 +84,17 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/app/login',
     title: 'login',
     expect: async (page) => {
-      await expect(page.getByText('Secure sign-in for your VoiceFlow workspace.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('button', { name: /Sign In|Create Account/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('button', { name: 'Sign Up', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
     path: '/app/onboarding',
     title: 'onboarding',
     expect: async (page) => {
-      await expect(page.getByRole('button', { name: /Get Started/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('button', { name: /Create Account/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -108,8 +110,8 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'user id setup',
     expect: async (page) => {
       await expect(page).toHaveURL(/\/app\/login(?:\?.*)?$/);
-      await expect(page.getByText('Secure sign-in for your VoiceFlow workspace.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('button', { name: /Sign In/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Secure access to your V FLOW AI account.', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
 ];

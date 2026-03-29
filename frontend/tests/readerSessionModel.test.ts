@@ -1,15 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
-  READER_BILLING_RULE,
   getReaderDeleteCountdownLabel,
+  resolveReaderBillingDisplay,
   shouldRunReaderBackgroundPolling,
   shouldTriggerReaderPanelPrefetch,
   shouldTriggerReaderWindowPrefetch,
 } from '../src/features/reader/model/session';
 
 describe('reader session model', () => {
-  it('exposes billing text and prefetch gates', () => {
-    expect(READER_BILLING_RULE).toBe('1 char = 1 VF');
+  it('reads billing text from the backend session payload and preserves prefetch gates', () => {
+    expect(resolveReaderBillingDisplay({
+      billing: {
+        vfPerChar: 2,
+        rule: '2 chars = 1 VF',
+        label: 'Reader billing synced from backend',
+      },
+    } as never)).toEqual({
+      vfPerChar: 2,
+      rule: '2 chars = 1 VF',
+      label: 'Reader billing synced from backend',
+    });
     expect(shouldTriggerReaderWindowPrefetch({ consumedChars: 500, scheduledWindowEndChar: 1500 })).toBe(true);
     expect(shouldTriggerReaderWindowPrefetch({ consumedChars: 100, scheduledWindowEndChar: 1500 })).toBe(false);
     expect(shouldTriggerReaderPanelPrefetch({ currentPanelIndex: 5, scheduledPanelCount: 10 })).toBe(true);

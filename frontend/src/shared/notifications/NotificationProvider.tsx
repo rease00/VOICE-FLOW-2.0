@@ -66,6 +66,10 @@ const GENERATION_FAILURE_WINDOW_MS = 3 * 60 * 1000;
 const GENERATION_FAILURE_ESCALATION_MS = 5 * 60 * 1000;
 const NOTIFICATION_STORAGE_VERSION = 'v2_server_inbox';
 const NOTIFICATION_POLL_MS = 60_000;
+const NOTIFICATION_POLL_HIDDEN_MS = 5 * 60_000;
+const NOTIFICATION_POLL_ERROR_BASE_MS = 75_000;
+const NOTIFICATION_POLL_ERROR_MAX_MS = 10 * 60_000;
+const NOTIFICATION_SYNC_MIN_GAP_MS = 15_000;
 const NON_RUNTIME_GENERATION_FAILURE_HINTS = [
   'sign in',
   'authentication',
@@ -87,6 +91,23 @@ export const shouldEscalateRepeatedGenerationFailure = (message: string): boolea
   const lowered = sanitizeUiText(String(message || '').trim()).toLowerCase();
   if (!lowered) return true;
   return !NON_RUNTIME_GENERATION_FAILURE_HINTS.some((token) => lowered.includes(token));
+};
+
+export const resolveNotificationPollDelayMs = (
+  input: {
+    visibilityState?: DocumentVisibilityState | string;
+    errorCount?: number;
+  } = {}
+): number => {
+  if (String(input.visibilityState || '').trim() === 'hidden') {
+    return NOTIFICATION_POLL_HIDDEN_MS;
+  }
+
+  const errorCount = Math.max(0, Math.floor(Number(input.errorCount || 0)));
+  if (errorCount <= 0) return NOTIFICATION_POLL_MS;
+
+  const exponent = Math.max(0, errorCount - 1);
+  return Math.min(NOTIFICATION_POLL_ERROR_MAX_MS, Math.round(NOTIFICATION_POLL_ERROR_BASE_MS * (2 ** exponent)));
 };
 
 const readSettingsBackendUrl = (): string => {
@@ -145,7 +166,7 @@ const defaultTitleForSeverity = (severity: NotificationSeverity): string => {
   return 'Info';
 };
 
-const coercePersistedNotification = (input: NotificationWireItem, nowMs: number): AppNotification | null => {
+export const coercePersistedNotification = (input: NotificationWireItem, nowMs: number): AppNotification | null => {
   const id = String(input?.id || '').trim();
   const eventCandidate = String(input?.eventCode || '').trim();
   const eventCode: NotificationEventCode = isNotificationEventCode(eventCandidate) ? eventCandidate : 'custom.message';
@@ -156,6 +177,7 @@ const coercePersistedNotification = (input: NotificationWireItem, nowMs: number)
   if (!['success', 'info', 'warning', 'error', 'critical'].includes(severity)) return null;
   if (!['system', 'activity', 'security', 'tips'].includes(category)) return null;
   const createdAt = toTimestampMs(input?.createdAt, nowMs);
+  const expiresAt = input?.expiresAt != null ? toTimestampMs(input.expiresAt, createdAt + (30 * 24 * 60 * 60 * 1000)) : createdAt + (30 * 24 * 60 * 60 * 1000);
   return {
     id,
     eventCode,
@@ -172,7 +194,7 @@ const coercePersistedNotification = (input: NotificationWireItem, nowMs: number)
     resolvedAt: input?.resolvedAt ? toTimestampMs(input.resolvedAt, createdAt) : null,
     resolvedBy: String(input?.resolvedBy || '').trim() || null,
     createdAt,
-    expiresAt: createdAt + (30 * 24 * 60 * 60 * 1000),
+    expiresAt,
     readAt: input?.readAt ? toTimestampMs(input.readAt, createdAt) : null,
     dismissedAt: input?.dismissedAt ? toTimestampMs(input.dismissedAt, createdAt) : null,
     sticky: input?.sticky === true || severity === 'critical',
@@ -259,7 +281,7 @@ const NotificationsContext = createContext<NotificationsContextValue | undefined
 
 export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user } = useUser();
-  const hasSessionIdentity = Boolean(String(user.uid || user.email || '').trim());
+  const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const canSeeAdminNotifications = hasAdminConsoleAccess(user);
   const initialPrefs = useMemo(
     () => coerceNotificationPrefs({ ...DEFAULT_NOTIFICATION_PREFS, ...(readStorageJson(STORAGE_KEYS.notificationPrefs) || {}) }),
@@ -274,6 +296,11 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
   const prefsRef = useRef<NotificationPrefs>(initialPrefs);
   const emitRef = useRef<(eventCode: NotificationEventCode, payload?: NotificationEmitPayload, options?: EmitOptions) => string>(() => '');
   const lastToastAtRef = useRef(0);
+  const lastPersistedSyncAtRef = useRef(0);
+  const persistedSyncInFlightRef = useRef(false);
+  const persistedSyncQueuedRef = useRef(false);
+  const persistedSyncErrorCountRef = useRef(0);
+  const persistedSyncTimerRef = useRef<number | null>(null);
   const generationFailuresRef = useRef<Record<string, number[]>>({});
   const generationEscalationUntilRef = useRef<Record<string, number>>({});
 
@@ -298,12 +325,45 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     if (action.target) applyNotificationActionTarget(action.target);
   }, []);
 
-  const syncPersistedNotifications = useCallback(async () => {
+  const clearPersistedSyncTimer = useCallback(() => {
+    if (persistedSyncTimerRef.current == null) return;
+    window.clearTimeout(persistedSyncTimerRef.current);
+    persistedSyncTimerRef.current = null;
+  }, []);
+
+  const schedulePersistedNotificationSync = useCallback((delayMs?: number) => {
+    if (!hasSessionIdentity || typeof window === 'undefined') return;
+    clearPersistedSyncTimer();
+    const nextDelay = Math.max(
+      0,
+      Math.floor(
+        delayMs ?? resolveNotificationPollDelayMs({
+          visibilityState: document.visibilityState,
+          errorCount: persistedSyncErrorCountRef.current,
+        })
+      )
+    );
+    persistedSyncTimerRef.current = window.setTimeout(() => {
+      void syncPersistedNotifications({ force: true, source: 'timer' });
+    }, nextDelay);
+  }, [clearPersistedSyncTimer, hasSessionIdentity]);
+
+  const syncPersistedNotifications = useCallback(async (options?: { force?: boolean; source?: string }): Promise<boolean> => {
     if (!hasSessionIdentity) {
       notificationsRef.current = [];
       setNotifications([]);
-      return;
+      lastPersistedSyncAtRef.current = Date.now();
+      return true;
     }
+    const nowMs = Date.now();
+    const shouldSkipForFreshSync = options?.force !== true
+      && nowMs - lastPersistedSyncAtRef.current < NOTIFICATION_SYNC_MIN_GAP_MS;
+    if (shouldSkipForFreshSync) return true;
+    if (persistedSyncInFlightRef.current) {
+      persistedSyncQueuedRef.current = true;
+      return true;
+    }
+    persistedSyncInFlightRef.current = true;
     try {
       const rows = await fetchAccountNotifications(readSettingsBackendUrl(), { limit: 150 });
       const normalized = rows
@@ -311,8 +371,20 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
         .filter((row): row is AppNotification => Boolean(row));
       notificationsRef.current = normalized;
       setNotifications(normalized);
-    } catch {}
-  }, [hasSessionIdentity]);
+      persistedSyncErrorCountRef.current = 0;
+      lastPersistedSyncAtRef.current = Date.now();
+      return true;
+    } catch {
+      persistedSyncErrorCountRef.current = Math.min(persistedSyncErrorCountRef.current + 1, 10);
+      return false;
+    } finally {
+      persistedSyncInFlightRef.current = false;
+      if (persistedSyncQueuedRef.current) {
+        persistedSyncQueuedRef.current = false;
+      }
+      schedulePersistedNotificationSync();
+    }
+  }, [hasSessionIdentity, schedulePersistedNotificationSync]);
 
   const syncPreferences = useCallback(async () => {
     if (!hasSessionIdentity) return;
@@ -326,25 +398,35 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     if (!hasSessionIdentity) {
       notificationsRef.current = [];
       setNotifications([]);
+      clearPersistedSyncTimer();
+      persistedSyncErrorCountRef.current = 0;
       return;
     }
-    void syncPersistedNotifications();
+    void syncPersistedNotifications({ force: true, source: 'identity' });
     void syncPreferences();
-  }, [hasSessionIdentity, user.uid, syncPersistedNotifications, syncPreferences]);
+  }, [clearPersistedSyncTimer, hasSessionIdentity, syncPersistedNotifications, syncPreferences, user.uid]);
 
   useEffect(() => {
     if (!hasSessionIdentity || !isCenterOpen) return;
-    void syncPersistedNotifications();
+    void syncPersistedNotifications({ source: 'center-open' });
   }, [hasSessionIdentity, isCenterOpen, syncPersistedNotifications]);
 
   useEffect(() => {
     if (!hasSessionIdentity || typeof window === 'undefined') return undefined;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      void syncPersistedNotifications();
-    }, NOTIFICATION_POLL_MS);
-    return () => window.clearInterval(interval);
-  }, [hasSessionIdentity, syncPersistedNotifications]);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        schedulePersistedNotificationSync(NOTIFICATION_POLL_HIDDEN_MS);
+        return;
+      }
+      void syncPersistedNotifications({ force: true, source: 'visibility' });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    schedulePersistedNotificationSync();
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      clearPersistedSyncTimer();
+    };
+  }, [clearPersistedSyncTimer, hasSessionIdentity, schedulePersistedNotificationSync, syncPersistedNotifications]);
 
   const commitToastNotifications = useCallback((next: AppNotification[]) => {
     const normalized = limitNotifications(pruneExpiredNotifications(next), NOTIFICATION_MAX_ITEMS);

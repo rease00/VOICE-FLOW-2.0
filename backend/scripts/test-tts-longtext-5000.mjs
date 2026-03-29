@@ -10,19 +10,22 @@ const MODE = process.argv.includes('--mode')
 
 const REPORT_PATH = path.join(ROOT, 'artifacts', 'tts_longtext_5000_audit_report.json');
 const GEM_URL = normalizeBaseUrl(process.env.VF_GEMINI_RUNTIME_URL, 'http://127.0.0.1:7810');
-const KOKORO_URL = normalizeBaseUrl(process.env.VF_KOKORO_RUNTIME_URL, 'http://127.0.0.1:7820');
+const DUNO_URL = normalizeBaseUrl(
+  process.env.VF_DUNO_RUNTIME_URL || process.env.VF_DUNO_MODAL_RUNTIME_URL,
+  ''
+);
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_TTS_LONGTEXT_TIMEOUT_MS || 240000);
-const KOKORO_REQUEST_TIMEOUT_MS = Math.max(
+const DUNO_REQUEST_TIMEOUT_MS = Math.max(
   REQUEST_TIMEOUT_MS,
-  Number(process.env.VF_TTS_LONGTEXT_KOKORO_TIMEOUT_MS || 300000),
+  Number(process.env.VF_TTS_LONGTEXT_DUNO_TIMEOUT_MS || 300000),
 );
 const GEM_MAX_WORDS_PER_REQUEST = Math.max(
   120,
   Number(process.env.VF_TTS_LONGTEXT_GEM_MAX_WORDS_PER_REQUEST || 160),
 );
-const KOKORO_MAX_WORDS_PER_REQUEST = Math.max(
+const DUNO_MAX_WORDS_PER_REQUEST = Math.max(
   80,
-  Number(process.env.VF_TTS_LONGTEXT_KOKORO_MAX_WORDS_PER_REQUEST || 80),
+  Number(process.env.VF_TTS_LONGTEXT_DUNO_MAX_WORDS_PER_REQUEST || 80),
 );
 const MAX_ACCEPTABLE_WORDS_PER_SEC = Math.max(
   1.0,
@@ -62,29 +65,33 @@ const HI_UNITS = [
 ];
 
 const ENGINES = {
-  GEM: {
+  PRIME: {
     url: `${GEM_URL}/synthesize`,
     voice: 'Fenrir',
     language: { en: 'en', hi: 'hi' },
   },
-  KOKORO: {
-    url: `${KOKORO_URL}/synthesize`,
-    voice: 'hf_alpha',
-    language: { en: 'en', hi: 'hi' },
-  },
+  ...(DUNO_URL
+    ? {
+        DUNO: {
+          url: `${DUNO_URL}/synthesize`,
+          voice: 'hf_alpha',
+          language: { en: 'en', hi: 'hi' },
+        },
+      }
+    : {}),
 };
 
 const requestedLongtextEngines = String(process.env.VF_TTS_LONGTEXT_ENGINES || '')
   .split(',')
   .map((item) => String(item || '').trim().toUpperCase())
   .filter(Boolean);
-const defaultLongtextEngines = MODE === 'matrix' ? ['GEM', 'KOKORO'] : ['GEM'];
+const defaultLongtextEngines = MODE === 'matrix' && DUNO_URL ? ['PRIME', 'DUNO'] : ['PRIME'];
 const ACTIVE_ENGINES = Array.from(new Set(requestedLongtextEngines.length > 0 ? requestedLongtextEngines : defaultLongtextEngines))
   .filter((engine) => Object.prototype.hasOwnProperty.call(ENGINES, engine));
-const PRIMARY_GEM_ENGINE = ACTIVE_ENGINES.find((engine) => engine !== "KOKORO") || ACTIVE_ENGINES[0] || "GEM";
+const PRIMARY_GEM_ENGINE = ACTIVE_ENGINES.find((engine) => engine !== "DUNO") || ACTIVE_ENGINES[0] || "PRIME";
 const ENGINE_MAX_WORDS_PER_REQUEST = {
-  GEM: GEM_MAX_WORDS_PER_REQUEST,
-  KOKORO: KOKORO_MAX_WORDS_PER_REQUEST,
+  PRIME: GEM_MAX_WORDS_PER_REQUEST,
+  ...(DUNO_URL ? { DUNO: DUNO_MAX_WORDS_PER_REQUEST } : {}),
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -337,8 +344,8 @@ const postJsonWithTimeout = async (url, payload, timeoutMs = REQUEST_TIMEOUT_MS)
 
 const runRuntimePreflight = async () => {
   const runtimes = [
-    { name: 'GEM', url: `${GEM_URL}/health` },
-    { name: 'KOKORO', url: `${KOKORO_URL}/health` },
+    { name: 'PRIME', url: `${GEM_URL}/health` },
+    ...(DUNO_URL ? [{ name: 'DUNO', url: `${DUNO_URL}/health` }] : []),
   ];
   const checks = [];
 
@@ -383,7 +390,7 @@ const synthesizeSingle = async ({
   const normalizedWords = countWords(text);
   const languageCode = runtime.language[language];
 
-  const payload = engine === 'GEM'
+  const payload = engine === 'PRIME'
     ? {
         text,
         voiceName: runtime.voice,
@@ -460,7 +467,7 @@ const synthesizeSingle = async ({
 };
 
 const synthesize = async ({ engine, language, words, traceId }) => {
-  const timeoutMs = engine === 'KOKORO' ? KOKORO_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+  const timeoutMs = engine === 'DUNO' ? DUNO_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
   const maxWordsPerRequest = Math.max(
     1,
     Number(ENGINE_MAX_WORDS_PER_REQUEST[engine] || words || 1),
@@ -637,8 +644,8 @@ const main = async () => {
     },
     tuning: {
       requestTimeoutMs: REQUEST_TIMEOUT_MS,
-      kokoroRequestTimeoutMs: KOKORO_REQUEST_TIMEOUT_MS,
-      kokoroMaxWordsPerRequest: KOKORO_MAX_WORDS_PER_REQUEST,
+      dunoRequestTimeoutMs: DUNO_REQUEST_TIMEOUT_MS,
+      dunoMaxWordsPerRequest: DUNO_MAX_WORDS_PER_REQUEST,
       geminiQuotaPrecheckWords: GEMINI_QUOTA_PREFLIGHT_WORDS,
       geminiQuotaPrecheckTimeoutMs: GEMINI_QUOTA_PREFLIGHT_TIMEOUT_MS,
       engines: ACTIVE_ENGINES,
@@ -650,8 +657,8 @@ const main = async () => {
       maxAcceptableWordsPerSec: MAX_ACCEPTABLE_WORDS_PER_SEC,
     },
     runtimes: {
-      GEM: GEM_URL,
-      KOKORO: KOKORO_URL,
+      PRIME: GEM_URL,
+      DUNO: DUNO_URL,
     },
     tests: [],
     quotaPrecheck: null,

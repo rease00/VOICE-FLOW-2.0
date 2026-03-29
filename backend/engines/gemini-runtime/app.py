@@ -30,6 +30,14 @@ _SEGMENTATION_MODULE = importlib.util.module_from_spec(_SEGMENTATION_SPEC)
 _SEGMENTATION_SPEC.loader.exec_module(_SEGMENTATION_MODULE)
 MAX_WORDS_PER_REQUEST = _SEGMENTATION_MODULE.MAX_WORDS_PER_REQUEST
 SEGMENTATION_PROFILE = _SEGMENTATION_MODULE.SEGMENTATION_PROFILE
+THREE_LANE_IDS = _SEGMENTATION_MODULE.THREE_LANE_IDS
+MULTI_SPEAKER_FIRST_DIALOG_TRIGGER_CHARS = _SEGMENTATION_MODULE.MULTI_SPEAKER_FIRST_DIALOG_TRIGGER_CHARS
+MULTI_SPEAKER_FIRST_DIALOG_STAGE_TARGETS = _SEGMENTATION_MODULE.MULTI_SPEAKER_FIRST_DIALOG_STAGE_TARGETS
+MULTI_SPEAKER_FIRST_DIALOG_STAGE_HARD_CAPS = _SEGMENTATION_MODULE.MULTI_SPEAKER_FIRST_DIALOG_STAGE_HARD_CAPS
+MULTI_SPEAKER_CONTINUATION_TARGET_CHARS = _SEGMENTATION_MODULE.MULTI_SPEAKER_CONTINUATION_TARGET_CHARS
+MULTI_SPEAKER_CONTINUATION_HARD_CAP = _SEGMENTATION_MODULE.MULTI_SPEAKER_CONTINUATION_HARD_CAP
+SINGLE_SPEAKER_STAGE_PLAN = _SEGMENTATION_MODULE.SINGLE_SPEAKER_STAGE_PLAN
+build_progressive_sentence_aware_chunks = _SEGMENTATION_MODULE.build_progressive_sentence_aware_chunks
 chunk_text_for_tts = _SEGMENTATION_MODULE.chunk_text_for_tts
 count_words = _SEGMENTATION_MODULE.count_words
 resolve_chunk_profile = _SEGMENTATION_MODULE.resolve_chunk_profile
@@ -87,8 +95,20 @@ try:
 except Exception:
     google_oauth2_credentials = None
 
+try:
+    from google.cloud import texttospeech_v1 as google_texttospeech
+except Exception:
+    google_texttospeech = None
+
+try:
+    from google.oauth2 import service_account as google_service_account
+except Exception:
+    google_service_account = None
+
 APP_NAME = "gemini-runtime"
 GEMINI_RUNTIME_ADMIN_TOKEN = str(os.getenv("GEMINI_RUNTIME_ADMIN_TOKEN") or "").strip()
+TTS_UPSTREAM_PROVIDER_RUNTIME = "runtime"
+TTS_UPSTREAM_PROVIDER_CLOUD_TTS = "texttospeech"
 VF_GEMINI_SINGLE_POOL_ENFORCE = (
     str(os.getenv("VF_GEMINI_SINGLE_POOL_ENFORCE") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -184,31 +204,38 @@ GEMINI_VERTEX_ACCESS_TOKEN_FILE = str(
     os.getenv("VF_GEMINI_VERTEX_ACCESS_TOKEN_FILE")
     or (GEMINI_VERTEX_SECRET_DIR / "vertex-access-token.txt")
 ).strip()
+VF_TTS_UPSTREAM_PROVIDER = str(os.getenv("VF_TTS_UPSTREAM_PROVIDER") or TTS_UPSTREAM_PROVIDER_RUNTIME).strip().lower()
+VF_TTS_TEXTTOSPEECH_ONLY = (
+    str(os.getenv("VF_TTS_TEXTTOSPEECH_ONLY") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_TTS_TEXTTOSPEECH_VOICE_CACHE_TTL_SECONDS = max(
+    60,
+    int(os.getenv("VF_TTS_TEXTTOSPEECH_VOICE_CACHE_TTL_SECONDS", "1800")),
+)
 TTS_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["tts"])
 TEXT_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["text"])
 OCR_MODEL_FALLBACKS = list(ALLOCATOR_CONFIG.routes["ocr"])
-TTS_ENGINE_DEFAULT = "GEM"
-TTS_ENGINE_KEYS = frozenset({"GEM", "NEURAL2", "KOKORO"})
+TTS_ENGINE_DEFAULT = "PRIME"
+TTS_ENGINE_KEYS = frozenset({"PRIME", "VECTOR", "DUNO"})
 TTS_MODEL_CANDIDATES_BY_AUTH_MODE: Dict[str, Dict[str, list[str]]] = {
     SOURCE_POLICY_PROVIDER_GEMINI_API: {
-        "NEURAL2": [
-            "gemini-2.5-flash-preview-tts",
+        "VECTOR": [
             "gemini-2.5-flash-tts",
+            "gemini-2.5-pro-tts",
         ],
-        "GEM": [
-            "gemini-2.5-flash-lite-preview-tts",
-            "gemini-2.5-flash-preview-tts",
+        "PRIME": [
+            "gemini-2.5-flash-tts",
             "gemini-2.5-pro-tts",
         ],
     },
     SOURCE_POLICY_PROVIDER_VERTEX: {
-        "NEURAL2": [
-            "gemini-2.5-flash-preview-tts",
+        "VECTOR": [
             "gemini-2.5-flash-tts",
+            "gemini-2.5-pro-tts",
         ],
-        "GEM": [
-            "gemini-2.5-flash-lite-preview-tts",
-            "gemini-2.5-flash-preview-tts",
+        "PRIME": [
+            "gemini-2.5-flash-tts",
             "gemini-2.5-pro-tts",
         ],
     },
@@ -226,6 +253,10 @@ KEY_TOTAL_TIMEOUT_MS = max(
 )
 KEY_AUTH_DISABLE_MS = max(60_000, int(os.getenv("GEMINI_KEY_AUTH_DISABLE_MS", "600000")))
 ALLOCATOR_WAIT_SLICE_MS = max(100, int(os.getenv("GEMINI_ALLOCATOR_WAIT_SLICE_MS", "250")))
+GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS = (
+    (os.getenv("GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS = max(
     1000,
     int(os.getenv("GEMINI_TTS_SINGLE_REQUEST_TIMEOUT_MS", "22000")),
@@ -271,6 +302,42 @@ GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS = max(
     0,
     int(os.getenv("GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS", "30")),
 )
+_CLOUD_TTS_CLIENTS: dict[str, Any] = {}
+_CLOUD_TTS_CLIENT_LOCK = threading.Lock()
+_CLOUD_TTS_VOICE_CACHE: dict[str, dict[str, Any]] = {}
+_CLOUD_TTS_VOICE_CACHE_LOCK = threading.Lock()
+_KNOWN_GEMINI_VOICE_GENDERS: dict[str, str] = {
+    "fenrir": "male",
+    "kore": "female",
+    "alnilam": "male",
+    "leda": "female",
+    "iapetus": "male",
+    "autonoe": "female",
+    "enceladus": "male",
+    "erinome": "female",
+    "puck": "male",
+    "charon": "male",
+    "achernar": "female",
+    "despina": "female",
+    "algenib": "male",
+    "algieba": "male",
+    "zephyr": "female",
+    "callirrhoe": "female",
+    "achird": "male",
+    "aoede": "female",
+    "gacrux": "female",
+    "laomedeia": "female",
+    "orus": "male",
+    "pulcherrima": "female",
+    "rasalgethi": "male",
+    "sadachbia": "male",
+    "sadaltager": "male",
+    "schedar": "male",
+    "sulafat": "female",
+    "umbriel": "male",
+    "vindemiatrix": "female",
+    "zubenelgenubi": "male",
+}
 KEY_DAILY_LIMIT = max(0, int(os.getenv("GEMINI_KEY_DAILY_LIMIT", "0")))
 POOL_OVERALL_DAILY_LIMIT = max(0, int(os.getenv("GEMINI_POOL_OVERALL_DAILY_LIMIT", "0")))
 _DISCOVERED_TTS_MODELS_CACHE: Dict[str, Dict[str, object]] = {}
@@ -289,6 +356,7 @@ _RUNTIME_ALLOCATOR = GeminiRateAllocator(
     auth_disable_ms=KEY_AUTH_DISABLE_MS,
     wait_slice_ms=ALLOCATOR_WAIT_SLICE_MS,
     key_rotation_burst=GEMINI_KEY_ROTATION_BURST,
+    disable_rate_limits=GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
 )
 GEMINI_SPEAKER_KEY_AFFINITY_ENABLED = (
     (os.getenv("GEMINI_SPEAKER_KEY_AFFINITY_ENABLED") or "1").strip().lower()
@@ -588,6 +656,7 @@ class SynthesizeRequest(BaseModel):
     trace_id: Optional[str] = None
     return_line_chunks: Optional[bool] = None
     poolHint: Optional[str] = None
+    sourcePolicy: Optional[Dict[str, Any]] = None
 
 
 class BatchSynthesizeItem(SynthesizeRequest):
@@ -810,13 +879,333 @@ def _normalize_model_name(model_name: str) -> str:
 
 def _normalize_runtime_engine(raw_engine: object, default: str = TTS_ENGINE_DEFAULT) -> str:
     token = str(raw_engine or "").strip().upper()
-    if token in {"GEM", "GEMINI"}:
-        return "GEM"
-    if token in {"NEURAL2", "NEURAL_2", "NURAL2", "NURAL_2"}:
-        return "NEURAL2"
-    if token in {"KOKORO", "KOKORO_RUNTIME"}:
-        return "KOKORO"
-    return str(default or TTS_ENGINE_DEFAULT).strip().upper() or TTS_ENGINE_DEFAULT
+    if not token:
+        return str(default or TTS_ENGINE_DEFAULT).strip().upper() or TTS_ENGINE_DEFAULT
+    if token in TTS_ENGINE_KEYS:
+        return token
+    raise HTTPException(status_code=400, detail="Invalid engine. Use DUNO, VECTOR, or PRIME.")
+
+
+def _normalize_tts_upstream_provider(raw_provider: object) -> str:
+    token = str(raw_provider or "").strip().lower()
+    if token in {
+        TTS_UPSTREAM_PROVIDER_CLOUD_TTS,
+        "cloud_tts",
+        "cloud-tts",
+        "cloud-text-to-speech",
+    }:
+        return TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    return TTS_UPSTREAM_PROVIDER_RUNTIME
+
+
+def _tts_upstream_provider_for_engine(engine: str) -> str:
+    safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
+    if safe_engine in {"PRIME", "VECTOR"} and (
+        VF_TTS_TEXTTOSPEECH_ONLY
+        or _normalize_tts_upstream_provider(VF_TTS_UPSTREAM_PROVIDER) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    ):
+        return TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    return TTS_UPSTREAM_PROVIDER_RUNTIME
+
+
+def _tts_provider_label(*, engine: str, auth_mode: str) -> str:
+    upstream_provider = _tts_upstream_provider_for_engine(engine)
+    if upstream_provider == TTS_UPSTREAM_PROVIDER_CLOUD_TTS:
+        return "cloud-text-to-speech"
+    return "gemini-api" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex-ai"
+
+
+def _resolve_cloud_tts_credentials_path(source_policy: Optional[dict[str, Any]] = None) -> Optional[Path]:
+    policy = dict(source_policy or {})
+    selected_slot_id = str(policy.get("selectedVertexSlotId") or policy.get("vertexSlotId") or "").strip()
+    accounts = [dict(item) for item in list(policy.get("vertexAccounts") or []) if isinstance(item, dict)]
+    raw_candidates: list[object] = []
+    normalized_selected_slot_id = selected_slot_id.lower()
+    if normalized_selected_slot_id:
+        for account in accounts:
+            slot_id = str(account.get("memberId") or account.get("slotId") or account.get("id") or "").strip().lower()
+            if slot_id and slot_id == normalized_selected_slot_id:
+                raw_candidates.extend(
+                    [
+                        account.get("vertexServiceAccountRef"),
+                        account.get("serviceAccountRef"),
+                        account.get("credentialsPath"),
+                    ]
+                )
+                break
+    raw_candidates.extend(
+        [
+            policy.get("vertexServiceAccountRef"),
+            policy.get("serviceAccountRef"),
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            GEMINI_VERTEX_SERVICE_ACCOUNT_FILE,
+        ]
+    )
+    for raw_value in raw_candidates:
+        raw_path = str(raw_value or "").strip()
+        if not raw_path:
+            continue
+        path = Path(raw_path).expanduser()
+        candidates: list[Path] = []
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.extend(
+                [
+                    (WORKSPACE_ROOT / path).resolve(),
+                    (RUNTIME_ROOT / path).resolve(),
+                    (Path(__file__).resolve().parent / path).resolve(),
+                ]
+            )
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def _cloud_tts_client_cache_key(source_policy: Optional[dict[str, Any]] = None) -> str:
+    credentials_path = _resolve_cloud_tts_credentials_path(source_policy=source_policy)
+    if credentials_path is None:
+        return "default"
+    return str(credentials_path)
+
+
+def _build_cloud_tts_client(source_policy: Optional[dict[str, Any]] = None) -> Any:
+    if google_texttospeech is None:
+        raise RuntimeError("google-cloud-texttospeech is unavailable in runtime.")
+
+    client_kwargs: Dict[str, Any] = {}
+    credentials_path = _resolve_cloud_tts_credentials_path(source_policy=source_policy)
+    if credentials_path is not None:
+        if google_service_account is None:
+            raise RuntimeError("google.oauth2.service_account is unavailable in runtime.")
+        client_kwargs["credentials"] = google_service_account.Credentials.from_service_account_file(
+            str(credentials_path)
+        )
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
+    return google_texttospeech.TextToSpeechClient(**client_kwargs)
+
+
+def _cloud_tts_client(source_policy: Optional[dict[str, Any]] = None) -> Any:
+    cache_key = _cloud_tts_client_cache_key(source_policy=source_policy)
+    cached = _CLOUD_TTS_CLIENTS.get(cache_key)
+    if cached is not None:
+        return cached
+    with _CLOUD_TTS_CLIENT_LOCK:
+        cached = _CLOUD_TTS_CLIENTS.get(cache_key)
+        if cached is None:
+            cached = _build_cloud_tts_client(source_policy=source_policy)
+            _CLOUD_TTS_CLIENTS[cache_key] = cached
+        return cached
+
+
+def _cloud_tts_client_ready(source_policy: Optional[dict[str, Any]] = None) -> bool:
+    if google_texttospeech is None:
+        return False
+    return _resolve_cloud_tts_credentials_path(source_policy=source_policy) is not None
+
+
+def _cloud_tts_gender_hint(requested_voice: str) -> int:
+    token = str(requested_voice or "").strip().lower()
+    if not token:
+        return int(getattr(google_texttospeech.SsmlVoiceGender, "NEUTRAL", 3)) if google_texttospeech is not None else 3
+    if any(label in token for label in {"female", "woman", "girl"}):
+        return int(getattr(google_texttospeech.SsmlVoiceGender, "FEMALE", 2)) if google_texttospeech is not None else 2
+    if any(label in token for label in {"male", "man", "boy"}):
+        return int(getattr(google_texttospeech.SsmlVoiceGender, "MALE", 1)) if google_texttospeech is not None else 1
+    mapped = _KNOWN_GEMINI_VOICE_GENDERS.get(token)
+    if mapped == "female":
+        return int(getattr(google_texttospeech.SsmlVoiceGender, "FEMALE", 2)) if google_texttospeech is not None else 2
+    if mapped == "male":
+        return int(getattr(google_texttospeech.SsmlVoiceGender, "MALE", 1)) if google_texttospeech is not None else 1
+    return int(getattr(google_texttospeech.SsmlVoiceGender, "NEUTRAL", 3)) if google_texttospeech is not None else 3
+
+
+def _cloud_tts_list_voices(
+    *,
+    client: Any,
+    language_code: str,
+    source_policy: Optional[dict[str, Any]] = None,
+) -> list[Any]:
+    cache_key = f"{_cloud_tts_client_cache_key(source_policy=source_policy)}::{str(language_code or '').strip().lower() or 'default'}"
+    now_ms = int(time.time() * 1000)
+    with _CLOUD_TTS_VOICE_CACHE_LOCK:
+        cached = dict(_CLOUD_TTS_VOICE_CACHE.get(cache_key) or {})
+        if cached and (now_ms - int(cached.get("updatedAtMs") or 0)) < (VF_TTS_TEXTTOSPEECH_VOICE_CACHE_TTL_SECONDS * 1000):
+            return list(cached.get("voices") or [])
+    response = client.list_voices(language_code=language_code)
+    voices = list(getattr(response, "voices", []) or [])
+    with _CLOUD_TTS_VOICE_CACHE_LOCK:
+        _CLOUD_TTS_VOICE_CACHE[cache_key] = {
+            "updatedAtMs": now_ms,
+            "voices": list(voices),
+        }
+    return voices
+
+
+def _cloud_tts_voice_rank(name: str, *, engine: str, language_code: str) -> tuple[int, int]:
+    safe_name = str(name or "").strip()
+    lowered_name = safe_name.lower()
+    locale_prefix = str(language_code or "").strip().lower()
+    locale_score = 0 if lowered_name.startswith(locale_prefix) else 1
+    if engine == "VECTOR":
+        if "neural2" in lowered_name:
+            return (locale_score, 0)
+        if "studio" in lowered_name or "journey" in lowered_name:
+            return (locale_score, 1)
+        if "wavenet" in lowered_name:
+            return (locale_score, 2)
+        if "standard" in lowered_name:
+            return (locale_score, 3)
+        return (locale_score, 4)
+    if "studio" in lowered_name or "journey" in lowered_name:
+        return (locale_score, 0)
+    if "neural2" in lowered_name:
+        return (locale_score, 1)
+    if "wavenet" in lowered_name:
+        return (locale_score, 2)
+    if "standard" in lowered_name:
+        return (locale_score, 3)
+    return (locale_score, 4)
+
+
+def _select_cloud_tts_voice(
+    *,
+    client: Any,
+    language_code: str,
+    requested_voice: str,
+    engine: str,
+    source_policy: Optional[dict[str, Any]] = None,
+) -> tuple[Any, Dict[str, Any]]:
+    desired_gender = _cloud_tts_gender_hint(requested_voice)
+    voices = _cloud_tts_list_voices(client=client, language_code=language_code, source_policy=source_policy)
+    compatible = [voice for voice in voices if list(getattr(voice, "language_codes", []) or [])]
+    if not compatible:
+        params = google_texttospeech.VoiceSelectionParams(language_code=language_code)
+        return params, {"requestedVoice": requested_voice, "resolvedVoice": "", "languageCode": language_code}
+
+    gender_filtered = [
+        voice for voice in compatible if int(getattr(voice, "ssml_gender", 0) or 0) == int(desired_gender)
+    ]
+    if gender_filtered:
+        compatible = gender_filtered
+    compatible = sorted(
+        compatible,
+        key=lambda voice: (
+            _cloud_tts_voice_rank(str(getattr(voice, "name", "")), engine=engine, language_code=language_code),
+            str(getattr(voice, "name", "")),
+        ),
+    )
+    seed = str(requested_voice or language_code or engine).strip().lower() or language_code.lower()
+    pick_index = int(hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest(), 16) % len(compatible)
+    selected = compatible[pick_index]
+    selected_name = str(getattr(selected, "name", "") or "").strip()
+    selected_language = list(getattr(selected, "language_codes", []) or [])
+    selected_language_code = str(selected_language[0] if selected_language else language_code).strip() or language_code
+    params = google_texttospeech.VoiceSelectionParams(
+        language_code=selected_language_code,
+        name=selected_name or None,
+        ssml_gender=getattr(selected, "ssml_gender", None),
+    )
+    return params, {
+        "requestedVoice": requested_voice,
+        "resolvedVoice": selected_name,
+        "languageCode": selected_language_code,
+        "gender": int(getattr(selected, "ssml_gender", 0) or 0),
+    }
+
+
+def _synthesize_window_with_cloud_tts(
+    *,
+    source_policy: dict[str, Any],
+    text: str,
+    requested_voice: str,
+    language_code: str,
+    speed: float,
+    engine: str,
+) -> tuple[bytes, Dict[str, Any]]:
+    if google_texttospeech is None:
+        raise RuntimeError("google-cloud-texttospeech is unavailable in runtime.")
+    client = _cloud_tts_client(source_policy=source_policy)
+    voice_params, voice_meta = _select_cloud_tts_voice(
+        client=client,
+        language_code=language_code,
+        requested_voice=requested_voice,
+        engine=engine,
+        source_policy=source_policy,
+    )
+    bounded_speed = max(0.25, min(2.0, float(speed or 1.0)))
+    response = client.synthesize_speech(
+        request={
+            "input": google_texttospeech.SynthesisInput(text=text),
+            "voice": voice_params,
+            "audio_config": google_texttospeech.AudioConfig(
+                audio_encoding=google_texttospeech.AudioEncoding.LINEAR16,
+                speaking_rate=bounded_speed,
+            ),
+        }
+    )
+    audio_content = bytes(getattr(response, "audio_content", b"") or b"")
+    if not audio_content:
+        raise RuntimeError("Cloud Text-to-Speech returned empty audio.")
+    return audio_content, voice_meta
+
+
+def _concat_wav_fragments(
+    wav_chunks: list[bytes],
+    *,
+    pause_ms: int = 0,
+) -> bytes:
+    if not wav_chunks:
+        return b""
+    if len(wav_chunks) == 1 and pause_ms <= 0:
+        return bytes(wav_chunks[0] or b"")
+
+    output = io.BytesIO()
+    sample_rate = 0
+    sample_width = 0
+    channels = 0
+    with wave.open(output, "wb") as writer:
+        for index, chunk in enumerate(wav_chunks):
+            with wave.open(io.BytesIO(bytes(chunk or b"")), "rb") as reader:
+                current_channels = int(reader.getnchannels() or 0)
+                current_width = int(reader.getsampwidth() or 0)
+                current_rate = int(reader.getframerate() or 0)
+                if index == 0:
+                    sample_rate = current_rate
+                    sample_width = current_width
+                    channels = current_channels
+                    writer.setnchannels(channels)
+                    writer.setsampwidth(sample_width)
+                    writer.setframerate(sample_rate)
+                elif (current_channels, current_width, current_rate) != (channels, sample_width, sample_rate):
+                    raise RuntimeError("Cloud Text-to-Speech returned mismatched WAV fragments.")
+                writer.writeframes(reader.readframes(int(reader.getnframes() or 0)))
+            if pause_ms > 0 and index < (len(wav_chunks) - 1):
+                pause_frames = int(round((float(sample_rate) * float(pause_ms)) / 1000.0))
+                if pause_frames > 0:
+                    writer.writeframes(b"\x00" * pause_frames * sample_width * channels)
+    return output.getvalue()
+
+
+def _wav_bytes_to_pcm16(wav_bytes: bytes) -> tuple[bytes, int]:
+    with wave.open(io.BytesIO(bytes(wav_bytes or b"")), "rb") as reader:
+        channels = max(1, int(reader.getnchannels() or 1))
+        sample_width = max(1, int(reader.getsampwidth() or 2))
+        sample_rate = max(1, int(reader.getframerate() or 24000))
+        frames = bytes(reader.readframes(int(reader.getnframes() or 0)) or b"")
+    if sample_width != 2:
+        raise RuntimeError("Expected 16-bit PCM WAV from Cloud Text-to-Speech.")
+    if channels == 2:
+        try:
+            import audioop
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("audioop is unavailable for WAV downmix.") from exc
+        frames = audioop.tomono(frames, 2, 0.5, 0.5)
+        channels = 1
+    if channels != 1:
+        raise RuntimeError(f"Unsupported Cloud TTS channel count: {channels}")
+    return frames, sample_rate
 
 
 def _normalize_runtime_auth_mode(
@@ -1559,7 +1948,7 @@ def resolve_tts_model_candidates(
     _ = client
     _ = api_key
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine == "KOKORO":
+    if safe_engine == "DUNO":
         return []
 
     policy = dict(source_policy or _runtime_source_policy())
@@ -1568,6 +1957,11 @@ def resolve_tts_model_candidates(
     configured = _normalize_model_name(str(TTS_MODEL or ""))
     route = list(TTS_MODEL_FALLBACKS)
     allocator_route = list(ALLOCATOR_CONFIG.routes.get("tts") or [])
+    strict_tts_route = {
+        _normalize_model_name(item)
+        for item in list(ALLOCATOR_CONFIG.routes.get("tts") or [])
+        if _normalize_model_name(item)
+    }
     allow_fallback = _tts_model_fallback_enabled(policy)
     primary_candidates = [*preferred, configured, *route, *allocator_route]
 
@@ -1576,6 +1970,8 @@ def resolve_tts_model_candidates(
     for raw in primary_candidates:
         token = _normalize_model_name(str(raw or ""))
         if not token:
+            continue
+        if strict_tts_route and token not in strict_tts_route:
             continue
         if token in seen:
             continue
@@ -1603,6 +1999,11 @@ def _resolve_explicit_model_candidates(
     single = str(raw_model or "").strip()
     if single:
         requested = [single, *requested]
+    strict_task_route = {
+        _normalize_model_name(item)
+        for item in list(ALLOCATOR_CONFIG.routes.get(task) or [])
+        if _normalize_model_name(item)
+    }
 
     for candidate in requested:
         token = _normalize_model_name(candidate)
@@ -1611,6 +2012,9 @@ def _resolve_explicit_model_candidates(
         if token in seen:
             continue
         seen.add(token)
+        if strict_task_route and token not in strict_task_route:
+            invalid.append(token)
+            continue
         model_limit = ALLOCATOR_CONFIG.models.get(token)
         if model_limit is None or task not in model_limit.enabled_for:
             invalid.append(token)
@@ -1692,6 +2096,26 @@ def extract_usage_metadata(response: object) -> Optional[Dict[str, int]]:
         "outputTokens": max(0, output_tokens),
         "totalTokens": max(0, total_tokens),
     }
+
+
+def _usage_metadata_totals(usage_metadata: Optional[Dict[str, int]]) -> Dict[str, int]:
+    if not isinstance(usage_metadata, dict):
+        return {"promptTokens": 0, "outputTokens": 0, "totalTokens": 0}
+    prompt_tokens = max(0, int(usage_metadata.get("promptTokens") or 0))
+    output_tokens = max(0, int(usage_metadata.get("outputTokens") or 0))
+    total_tokens = max(0, int(usage_metadata.get("totalTokens") or 0))
+    if total_tokens <= 0:
+        total_tokens = max(0, prompt_tokens + output_tokens)
+    return {
+        "promptTokens": prompt_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+    }
+
+
+def _provider_usage_reported(usage_metadata: Optional[Dict[str, int]]) -> bool:
+    totals = _usage_metadata_totals(usage_metadata)
+    return any(int(totals.get(key) or 0) > 0 for key in ("promptTokens", "outputTokens", "totalTokens"))
 
 
 def _merge_usage_metadata(items: list[Dict[str, int]]) -> Optional[Dict[str, int]]:
@@ -1814,12 +2238,23 @@ def _effective_tts_route_limits(model_candidates: Optional[list[str]] = None) ->
         )
     tts_model = _resolve_tts_route_model(effective_candidates)
     model_limit = ALLOCATOR_CONFIG.models.get(tts_model)
+    rpm_limit = (
+        -1
+        if GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS
+        else (max(0, int(model_limit.rpm)) if model_limit is not None else 0)
+    )
+    tpm_limit = (
+        -1
+        if GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS
+        else (max(0, int(model_limit.tpm)) if model_limit is not None else 0)
+    )
     return {
         "model": tts_model,
-        "rpm": max(0, int(model_limit.rpm)) if model_limit is not None else 0,
-        "tpm": max(0, int(model_limit.tpm)) if model_limit is not None else 0,
+        "rpm": rpm_limit,
+        "tpm": tpm_limit,
         "windowSeconds": max(1, int(ALLOCATOR_CONFIG.window_seconds)),
         "defaultWaitTimeoutMs": max(1, int(ALLOCATOR_CONFIG.default_wait_timeout_ms)),
+        "rateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
     }
 
 
@@ -2446,7 +2881,13 @@ def _resolve_adaptive_group_concurrency(
         requested_tokens=group_token_estimate,
         model_candidates=model_candidates,
     )
-    available_lanes = max(1, int(pressure.get("availableLanes") or 0))
+    available_lanes = max(0, int(pressure.get("availableLanes") or 0))
+    estimated_wait_ms = max(0, int(pressure.get("estimatedWaitMs") or 0))
+    if available_lanes <= 0 and estimated_wait_ms <= 0:
+        # When the allocator snapshot cannot see live lanes but there is no
+        # wait pressure, fall back to the key pool size so we do not cap
+        # grouped synthesis to a single worker.
+        available_lanes = max(1, len(effective_key_pool))
     effective_concurrency = min(
         concurrency_cap,
         GEMINI_STUDIO_PAIR_GROUP_MAX_CONCURRENCY,
@@ -2874,36 +3315,20 @@ def _build_line_map_single_speaker_windows(
     normalized_line_map: list[Dict[str, Any]],
     speaker_voices: list[Dict[str, str]],
     target_voice: str,
+    language_code: str,
 ) -> list[Dict[str, Any]]:
-    voice_map: Dict[str, str] = {}
-    for entry in speaker_voices:
-        speaker = str(entry.get("speaker") or "").strip().lower()
-        if not speaker:
-            continue
-        voice_name = str(entry.get("voiceName") or target_voice).strip() or target_voice
-        voice_map[speaker] = voice_name
-
-    windows: list[Dict[str, Any]] = []
-    for line in normalized_line_map:
-        text = _normalize_synthesis_text(str(line.get("text") or ""))
-        if not text:
-            continue
-        speaker = str(line.get("speaker") or "").strip()
-        speaker_entries: list[Dict[str, str]] = []
-        if speaker:
-            speaker_entries = [
-                {
-                    "speaker": speaker,
-                    "voiceName": voice_map.get(speaker.lower(), target_voice),
-                }
-            ]
-        windows.append(
-            {
-                "text": text,
-                "speakerVoices": speaker_entries,
-            }
-        )
+    windows, _ = _build_multi_speaker_dialogue_lane_windows(
+        normalized_line_map=normalized_line_map,
+        speaker_voices=speaker_voices,
+        target_voice=target_voice,
+        language_code=language_code,
+    )
     return windows
+
+
+def _lane_affinity_speakers(lane_id: object) -> list[str]:
+    safe_lane_id = re.sub(r"[^a-z0-9]+", "", str(lane_id or "").strip().lower()) or "l1"
+    return [f"lane:{safe_lane_id}"]
 
 
 def _build_realtime_metrics(wav_bytes: bytes, processing_ms: int) -> Dict[str, Any]:
@@ -2942,33 +3367,383 @@ def _build_single_speaker_segment_windows(
             "chunkCount": 0,
             "maxWordsPerChunk": MAX_WORDS_PER_REQUEST,
             "joinCrossfadeMs": 0,
+            "laneCount": 0,
+            "laneAssignments": [],
+            "strategies": ["single_speaker_three_lane_scheduler"],
         }
 
     chunk_profile = resolve_chunk_profile(language_code, normalized_text)
-    planned_chunks = [
-        _normalize_synthesis_text(chunk)
-        for chunk in chunk_text_for_tts(text=normalized_text, language_code=language_code)
+    stage_plan = [dict(item) for item in list(chunk_profile.get("single_lane_plan") or list(SINGLE_SPEAKER_STAGE_PLAN))]
+    stage_specs = [
+        (
+            max(1, int(stage.get("targetChars") or 4000)),
+            max(1, int(stage.get("hardCharCap") or stage.get("targetChars") or 4000)),
+        )
+        for stage in stage_plan
     ]
-    chunks = [chunk for chunk in planned_chunks if chunk]
+    continuation_spec = stage_specs[-1] if stage_specs else (4000, 4000)
+    chunks = [
+        _normalize_synthesis_text(chunk)
+        for chunk in build_progressive_sentence_aware_chunks(
+            normalized_text,
+            stages=stage_specs,
+            continuation=continuation_spec,
+            max_words_per_chunk=int(chunk_profile.get("max_words_per_chunk") or MAX_WORDS_PER_REQUEST),
+        )
+    ]
+    chunks = [chunk for chunk in chunks if chunk]
     if not chunks:
         chunks = [normalized_text]
 
-    return (
-        [
+    lane_loads: Dict[str, int] = {lane_id: 0 for lane_id in THREE_LANE_IDS}
+    windows: list[Dict[str, Any]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        if chunk_index < len(stage_plan):
+            lane_id = str(stage_plan[chunk_index].get("laneId") or THREE_LANE_IDS[min(chunk_index, len(THREE_LANE_IDS) - 1)]).upper()
+        else:
+            lane_id = min(
+                THREE_LANE_IDS,
+                key=lambda candidate: (int(lane_loads.get(candidate, 0)), THREE_LANE_IDS.index(candidate)),
+            )
+        lane_loads[lane_id] = int(lane_loads.get(lane_id, 0)) + len(chunk)
+        windows.append(
             {
+                "windowIndex": len(windows) + 1,
+                "laneId": lane_id,
                 "text": chunk,
                 "speakerVoices": list(speaker_voices),
+                "affinitySpeakers": _lane_affinity_speakers(lane_id),
+                "pauseAfterMs": 0,
+                "chunkIndex": chunk_index,
+                "dialogueIndex": 0,
             }
-            for chunk in chunks
-        ],
+        )
+
+    lane_assignments = [str(window.get("laneId") or "") for window in windows]
+    lane_count = len({lane for lane in lane_assignments if lane})
+    return (
+        windows,
         {
             "enabled": len(chunks) > 1,
             "profile": SEGMENTATION_PROFILE if len(chunks) > 1 else None,
             "chunkCount": len(chunks),
             "maxWordsPerChunk": int(chunk_profile.get("max_words_per_chunk") or MAX_WORDS_PER_REQUEST),
             "joinCrossfadeMs": int(chunk_profile.get("join_crossfade_ms") or 0),
+            "laneCount": lane_count,
+            "laneAssignments": lane_assignments,
+            "strategies": ["single_speaker_three_lane_scheduler", "sentence_aware_chunking"],
         },
     )
+
+
+def _build_multi_speaker_dialogue_lane_windows(
+    *,
+    normalized_line_map: list[Dict[str, Any]],
+    speaker_voices: list[Dict[str, str]],
+    target_voice: str,
+    language_code: str,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+    voice_map: Dict[str, str] = {}
+    for entry in speaker_voices:
+        speaker = str(entry.get("speaker") or "").strip().lower()
+        if not speaker:
+            continue
+        voice_map[speaker] = str(entry.get("voiceName") or target_voice).strip() or target_voice
+
+    chunk_profile = resolve_chunk_profile(language_code, "\n".join(str(line.get("text") or "") for line in normalized_line_map))
+    max_words_per_chunk = int(chunk_profile.get("max_words_per_chunk") or MAX_WORDS_PER_REQUEST)
+    windows: list[Dict[str, Any]] = []
+    dialogue_lanes: Dict[int, str] = {}
+
+    for dialogue_index, line in enumerate(normalized_line_map):
+        speaker = str(line.get("speaker") or "").strip()
+        text = _normalize_synthesis_text(str(line.get("text") or ""))
+        if not speaker or not text:
+            continue
+        line_index = int(line.get("lineIndex", dialogue_index))
+        lane_id = THREE_LANE_IDS[dialogue_index % len(THREE_LANE_IDS)]
+        dialogue_lanes[line_index] = lane_id
+        voice_name = voice_map.get(speaker.lower(), target_voice)
+        if dialogue_index == 0 and len(text) > MULTI_SPEAKER_FIRST_DIALOG_TRIGGER_CHARS:
+            stages = list(zip(MULTI_SPEAKER_FIRST_DIALOG_STAGE_TARGETS, MULTI_SPEAKER_FIRST_DIALOG_STAGE_HARD_CAPS))
+        else:
+            stages = [(MULTI_SPEAKER_CONTINUATION_TARGET_CHARS, MULTI_SPEAKER_CONTINUATION_HARD_CAP)]
+        chunks = [
+            _normalize_synthesis_text(chunk)
+            for chunk in build_progressive_sentence_aware_chunks(
+                text,
+                stages=stages,
+                continuation=(MULTI_SPEAKER_CONTINUATION_TARGET_CHARS, MULTI_SPEAKER_CONTINUATION_HARD_CAP),
+                max_words_per_chunk=max_words_per_chunk,
+            )
+        ]
+        chunks = [chunk for chunk in chunks if chunk]
+        if not chunks:
+            chunks = [text]
+        for chunk_index, chunk in enumerate(chunks):
+            is_last_chunk_for_line = chunk_index == (len(chunks) - 1)
+            pause_after_ms = GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS if is_last_chunk_for_line else 0
+            windows.append(
+                {
+                    "windowIndex": len(windows) + 1,
+                    "laneId": lane_id,
+                    "text": chunk,
+                    "speakerVoices": [
+                        {
+                            "speaker": speaker,
+                            "voiceName": voice_name,
+                        }
+                    ],
+                    "speaker": speaker,
+                    "lineIndex": line_index,
+                    "dialogueIndex": dialogue_index,
+                    "chunkIndex": chunk_index,
+                    "pauseAfterMs": pause_after_ms,
+                    "affinitySpeakers": _lane_affinity_speakers(lane_id),
+                }
+            )
+
+    lane_assignments = [str(window.get("laneId") or "") for window in windows]
+    lane_count = len({lane for lane in lane_assignments if lane})
+    return (
+        windows,
+        {
+            "profile": SEGMENTATION_PROFILE,
+            "chunkCount": len(windows),
+            "dialogueCount": len(normalized_line_map),
+            "laneCount": lane_count,
+            "laneAssignments": lane_assignments,
+            "dialogueLanes": {str(key): value for key, value in dialogue_lanes.items()},
+            "strategies": ["dialogue_three_lane_scheduler", "sentence_aware_chunking"],
+        },
+    )
+
+
+def _execute_scheduled_window_plan(
+    *,
+    trace_id: str,
+    safe_engine: str,
+    requested_speech_mode: str,
+    speech_mode_used: str,
+    provider_label: str,
+    windows: list[Dict[str, Any]],
+    single_speaker_segmentation: Dict[str, Any],
+    strategy_tokens: list[str],
+    started_at_ms: int,
+    key_pool_size: int,
+    include_line_chunks: bool,
+    synthesize_window_fn,
+) -> Dict[str, Any]:
+    if not windows:
+        raise RuntimeError("Scheduled window plan is empty.")
+
+    lane_windows: Dict[str, list[Dict[str, Any]]] = {}
+    for window in windows:
+        lane_id = str(window.get("laneId") or THREE_LANE_IDS[0]).upper()
+        lane_windows.setdefault(lane_id, []).append(window)
+
+    ordered_lane_ids = [lane_id for lane_id in THREE_LANE_IDS if lane_id in lane_windows]
+    if not ordered_lane_ids:
+        ordered_lane_ids = sorted(lane_windows.keys())
+
+    def _run_lane(lane_id: str) -> list[Dict[str, Any]]:
+        out: list[Dict[str, Any]] = []
+        for lane_window in list(lane_windows.get(lane_id) or []):
+            out.append(dict(synthesize_window_fn(lane_window) or {}))
+        return out
+
+    window_results: list[Dict[str, Any]] = []
+    max_workers = max(1, min(len(ordered_lane_ids), len(THREE_LANE_IDS)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_run_lane, lane_id): lane_id for lane_id in ordered_lane_ids}
+        for future in concurrent.futures.as_completed(future_map):
+            window_results.extend(list(future.result() or []))
+
+    result_by_index: Dict[int, Dict[str, Any]] = {}
+    models_used: list[str] = []
+    speech_modes_used: list[str] = []
+    key_indexes_used: list[int] = []
+    attempt_key_indexes_used: list[int] = []
+    attempt_error_kinds: list[str] = []
+    attempt_statuses: list[str] = []
+    usage_items: list[Dict[str, int]] = []
+    resolved_voices: list[str] = []
+
+    for result in window_results:
+        window_index = int(result.get("windowIndex", -1))
+        if window_index < 1:
+            continue
+        result_by_index[window_index] = result
+
+    ordered_windows = sorted(windows, key=lambda item: int(item.get("windowIndex", 0)))
+    final_pcm_chunks: list[bytes] = []
+    line_pcm_by_index: Dict[int, list[bytes]] = {}
+
+    for window in ordered_windows:
+        window_index = int(window.get("windowIndex", -1))
+        if window_index < 1 or window_index not in result_by_index:
+            raise RuntimeError(f"Scheduled window result is missing for window {window_index}.")
+        result = result_by_index[window_index]
+        pcm_bytes = bytes(result.get("pcmBytes") or b"")
+        if not pcm_bytes:
+            raise RuntimeError(f"Scheduled window {window_index} returned empty audio.")
+        model_used = str(result.get("model") or "").strip()
+        if model_used:
+            models_used.append(model_used)
+        speech_mode = str(result.get("speechMode") or "").strip()
+        if speech_mode:
+            speech_modes_used.append(speech_mode)
+        try:
+            key_index = int(result.get("keyIndex", -1))
+        except Exception:
+            key_index = -1
+        if key_index >= 0:
+            key_indexes_used.append(key_index)
+        attempt_metadata = result.get("attemptMetadata") if isinstance(result.get("attemptMetadata"), dict) else {}
+        for raw_index in list(attempt_metadata.get("attemptKeySelectionIndexes") or []):
+            try:
+                safe_index = int(raw_index)
+            except Exception:
+                continue
+            if safe_index >= 0:
+                attempt_key_indexes_used.append(safe_index)
+        for raw_error_kind in list(attempt_metadata.get("attemptErrorKinds") or []):
+            attempt_error_kinds.append(str(raw_error_kind or "").strip().lower())
+        for raw_status in list(attempt_metadata.get("attemptStatuses") or []):
+            attempt_statuses.append(str(raw_status or "").strip().lower())
+        usage_metadata = result.get("usageMetadata")
+        if isinstance(usage_metadata, dict):
+            usage_items.append(dict(usage_metadata))
+        resolved_voice = str(result.get("resolvedVoice") or "").strip()
+        if resolved_voice:
+            resolved_voices.append(resolved_voice)
+        final_pcm_chunks.append(pcm_bytes)
+        line_index = int(window.get("lineIndex", -1))
+        if line_index >= 0:
+            line_pcm_by_index.setdefault(line_index, []).append(pcm_bytes)
+        pause_after_ms = max(0, int(window.get("pauseAfterMs") or 0))
+        if pause_after_ms > 0 and window_index < len(ordered_windows):
+            pause_samples = int(round((24000 * float(pause_after_ms)) / 1000.0))
+            if pause_samples > 0:
+                final_pcm_chunks.append(b"\x00\x00" * pause_samples)
+
+    final_pcm_bytes = b"".join(final_pcm_chunks)
+    if not final_pcm_bytes:
+        raise RuntimeError("Scheduled window plan returned empty audio.")
+
+    wav_bytes = pcm16_to_wav(final_pcm_bytes, sample_rate=24000)
+    model_header = next((item for item in models_used if item), "google-cloud-text-to-speech" if provider_label == "cloud-text-to-speech" else _normalize_model_name(TTS_MODEL))
+    key_selection_meta = _build_key_selection_metadata(key_indexes_used)
+    key_selection_index = int(key_selection_meta["finalKeySelectionIndex"])
+    initial_key_selection_index = (
+        int(attempt_key_indexes_used[0])
+        if attempt_key_indexes_used
+        else int(key_selection_meta["firstKeySelectionIndex"])
+    )
+    attempt_count = len(attempt_statuses) if attempt_statuses else len(ordered_windows)
+    lane_assignments = [str(window.get("laneId") or "") for window in ordered_windows]
+    line_chunks = [
+        {
+            "lineIndex": line_index,
+            "pcmBytes": b"".join(list(line_pcm_by_index.get(line_index) or [])),
+            "splitMode": "sentence_aware_lane_plan",
+            "silenceFallback": False,
+        }
+        for line_index in sorted(line_pcm_by_index.keys())
+    ]
+    diagnostics_payload: Dict[str, Any] = {
+        "engine": safe_engine,
+        "traceId": trace_id,
+        "chunkCount": len(ordered_windows),
+        "windowCount": len(ordered_windows),
+        "strategies": list(strategy_tokens or []),
+        "recoveryUsed": False,
+        "keyPoolSize": key_pool_size,
+        "keySelectionIndex": key_selection_index,
+        "initialKeySelectionIndex": initial_key_selection_index,
+        "attemptCount": attempt_count,
+        "attemptKeySelectionIndexes": attempt_key_indexes_used,
+        "attemptErrorKinds": attempt_error_kinds,
+        "attemptStatuses": attempt_statuses or ["success"] * len(ordered_windows),
+        "segmentation": {
+            "enabled": bool(single_speaker_segmentation.get("enabled")),
+            "profile": single_speaker_segmentation.get("profile"),
+            "chunkCount": int(single_speaker_segmentation.get("chunkCount") or len(ordered_windows)),
+            "maxWordsPerChunk": int(single_speaker_segmentation.get("maxWordsPerChunk") or MAX_WORDS_PER_REQUEST),
+            "joinCrossfadeMs": int(single_speaker_segmentation.get("joinCrossfadeMs") or 0),
+            "laneCount": int(single_speaker_segmentation.get("laneCount") or len({lane for lane in lane_assignments if lane})),
+            "laneAssignments": lane_assignments,
+        },
+        "model": model_header,
+        "speechModeUsed": speech_mode_used,
+        "provider": provider_label,
+        "laneCount": len({lane for lane in lane_assignments if lane}),
+        "lanesUsed": sorted({lane for lane in lane_assignments if lane}),
+        "schedulerProfile": SEGMENTATION_PROFILE,
+        "lineChunkCount": len(line_chunks),
+    }
+    diagnostics_payload.update(key_selection_meta)
+    if resolved_voices:
+        diagnostics_payload["resolvedVoices"] = resolved_voices
+    diagnostics_payload.update(
+        _build_realtime_metrics(
+            wav_bytes=wav_bytes,
+            processing_ms=max(0, int(time.time() * 1000) - started_at_ms),
+        )
+    )
+    merged_usage_metadata = _merge_usage_metadata(usage_items)
+    provider_usage_reported = _provider_usage_reported(merged_usage_metadata)
+    usage_totals = _usage_metadata_totals(merged_usage_metadata)
+    if provider_usage_reported:
+        diagnostics_payload["usageMetadata"] = merged_usage_metadata
+
+    _emit_stage_event(
+        trace_id,
+        "completed",
+        "ok",
+        {
+            "bytes": len(wav_bytes),
+            "model": model_header,
+            "speechModeUsed": speech_mode_used,
+            "speechModes": speech_modes_used or [speech_mode_used],
+            "windowCount": len(ordered_windows),
+            "keySelectionIndex": key_selection_index,
+            "initialKeySelectionIndex": initial_key_selection_index,
+            "attemptCount": attempt_count,
+            "keyPoolSize": key_pool_size,
+            "speakerHint": None,
+            "providerUsageReported": provider_usage_reported,
+            "promptTokens": int(usage_totals.get("promptTokens") or 0),
+            "outputTokens": int(usage_totals.get("outputTokens") or 0),
+            "totalTokens": int(usage_totals.get("totalTokens") or 0),
+            "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
+            "provider": provider_label,
+        },
+    )
+    return {
+        "wavBytes": wav_bytes,
+        "sampleRate": 24000,
+        "lineChunks": line_chunks if include_line_chunks else [],
+        "traceId": trace_id,
+        "model": model_header,
+        "speechModeUsed": speech_mode_used,
+        "speechModes": speech_modes_used or [speech_mode_used],
+        "speechModeRequested": requested_speech_mode,
+        "keySelectionIndex": key_selection_index,
+        "initialKeySelectionIndex": initial_key_selection_index,
+        "attemptCount": attempt_count,
+        "attemptKeySelectionIndexes": attempt_key_indexes_used,
+        "attemptErrorKinds": attempt_error_kinds,
+        "attemptStatuses": attempt_statuses or ["success"] * len(ordered_windows),
+        "firstKeySelectionIndex": int(key_selection_meta["firstKeySelectionIndex"]),
+        "finalKeySelectionIndex": int(key_selection_meta["finalKeySelectionIndex"]),
+        "keySelectionIndexes": list(key_selection_meta.get("keySelectionIndexes") or []),
+        "keyPoolSize": key_pool_size,
+        "speakerHint": None,
+        "windowCount": len(ordered_windows),
+        "diagnostics": diagnostics_payload,
+        "usageMetadata": merged_usage_metadata,
+    }
 
 
 def _synthesize_studio_pair_group_windows(
@@ -3438,6 +4213,9 @@ def _synthesize_pcm_with_key_pool(
             "synthesis",
             "retry",
             {
+                "attemptNumber": attempt,
+                "attemptKind": "retry" if attempt > 1 else "initial",
+                "isRetry": bool(attempt > 1),
                 "retryAttempt": attempt,
                 "keyPoolSize": len(effective_key_pool),
                 "keySelectionIndex": int(lease.key_index),
@@ -3476,13 +4254,17 @@ def _synthesize_pcm_with_key_pool(
                 )
                 pcm_bytes = extract_pcm_bytes(response)
                 usage_metadata = extract_usage_metadata(response)
-            used_tokens = int(usage_metadata.get("totalTokens") or 0) if isinstance(usage_metadata, dict) else token_estimate
+            usage_totals = _usage_metadata_totals(usage_metadata)
+            provider_usage_reported = _provider_usage_reported(usage_metadata)
+            used_tokens = int(usage_totals.get("totalTokens") or 0) if provider_usage_reported else token_estimate
             _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=used_tokens)
             _bind_speakers_to_key(affinity_speakers, lease.key)
             attempt_entry["status"] = "success"
             attempt_entry["errorKind"] = ""
             attempt_entry["requestTimeoutMs"] = request_timeout_ms
             normalized_usage = dict(usage_metadata) if isinstance(usage_metadata, dict) else None
+            attempt_entry["providerUsageReported"] = provider_usage_reported
+            attempt_entry["usageMetadata"] = usage_totals if provider_usage_reported else None
             if include_attempt_metadata:
                 return (
                     pcm_bytes,
@@ -3537,7 +4319,7 @@ def _synthesize_pcm_with_key_pool(
             _RUNTIME_ALLOCATOR.release(
                 lease,
                 success=False,
-                used_tokens=token_estimate,
+                used_tokens=0,
                 error_kind=allocator_error_kind,
             )
             model_attempts.append(
@@ -3605,13 +4387,188 @@ def _normalize_error_payload(raw_error: str) -> Dict[str, Any] | None:
     return None
 
 
+def _synthesize_windows_with_cloud_tts(
+    *,
+    source_policy: dict[str, Any],
+    safe_engine: str,
+    trace_id: str,
+    text: str,
+    target_voice: str,
+    language_code: str,
+    speaker_hint: str,
+    requested_speech_mode: str,
+    windows: list[Dict[str, Any]],
+    single_speaker_segmentation: Dict[str, Any],
+    pair_group_fallback_used: bool,
+    pair_group_fallback_detail: str,
+    use_windowed_multi: bool,
+    speed: float,
+    started_at_ms: int,
+) -> Dict[str, Any]:
+    wav_fragments: list[bytes] = []
+    speech_modes_used: list[str] = []
+    resolved_voices: list[str] = []
+    attempt_statuses: list[str] = []
+
+    for index, window in enumerate(windows, start=1):
+        speaker_voices = list(window.get("speakerVoices") or [])
+        requested_voice = (
+            str(speaker_voices[0].get("voiceName") or target_voice).strip()
+            if speaker_voices
+            else target_voice
+        ) or target_voice
+        _emit_stage_event(
+            trace_id,
+            "synthesis",
+            "retry",
+            {
+                "attemptNumber": index,
+                "attemptKind": "retry" if index > 1 else "initial",
+                "isRetry": bool(index > 1),
+                "retryAttempt": index,
+                "keyPoolSize": 0,
+                "keySelectionIndex": -1,
+                "keyFingerprint": "cloud_tts",
+                "model": "google-cloud-text-to-speech",
+                "speechMode": "single-speaker",
+                "speakerHint": speaker_hint or None,
+                "windowIndex": index,
+                "windowTotal": len(windows),
+                "requestedVoice": requested_voice,
+            },
+        )
+        wav_bytes, voice_meta = _synthesize_window_with_cloud_tts(
+            source_policy=source_policy,
+            text=str(window.get("text") or ""),
+            requested_voice=requested_voice,
+            language_code=language_code,
+            speed=speed,
+            engine=safe_engine,
+        )
+        wav_fragments.append(wav_bytes)
+        speech_modes_used.append("single-speaker")
+        attempt_statuses.append("success")
+        resolved_voice = str(voice_meta.get("resolvedVoice") or requested_voice).strip() or requested_voice
+        resolved_voices.append(resolved_voice)
+
+    wav_bytes = _concat_wav_fragments(
+        wav_fragments,
+        pause_ms=GEMINI_MULTI_SPEAKER_WINDOW_PAUSE_MS if len(wav_fragments) > 1 else 0,
+    )
+    if not wav_bytes:
+        raise RuntimeError("Cloud Text-to-Speech returned empty audio.")
+
+    if pair_group_fallback_used:
+        speech_mode_used = "pair_group_split_fallback"
+    elif use_windowed_multi:
+        speech_mode_used = "text-order-two-speaker-windows"
+    elif bool(single_speaker_segmentation.get("enabled")):
+        speech_mode_used = "single-speaker-segmented"
+    else:
+        speech_mode_used = "single-speaker"
+
+    diagnostics_payload: Dict[str, Any] = {
+        "engine": safe_engine,
+        "traceId": trace_id,
+        "chunkCount": len(windows),
+        "strategies": (
+            ["pair_group_split_fallback", "single_speaker_line_windows"]
+            if pair_group_fallback_used
+            else (
+                ["single_speaker_segmentation"]
+                if bool(single_speaker_segmentation.get("enabled"))
+                else ["single_speaker_cloud_tts"]
+            )
+        ),
+        "recoveryUsed": bool(pair_group_fallback_used),
+        "keyPoolSize": 0,
+        "keySelectionIndex": -1,
+        "initialKeySelectionIndex": -1,
+        "attemptCount": len(windows),
+        "attemptKeySelectionIndexes": [],
+        "attemptErrorKinds": [],
+        "attemptStatuses": attempt_statuses,
+        "segmentation": {
+            "enabled": bool(single_speaker_segmentation.get("enabled")),
+            "profile": single_speaker_segmentation.get("profile"),
+            "chunkCount": int(single_speaker_segmentation.get("chunkCount") or len(windows)),
+            "maxWordsPerChunk": int(
+                single_speaker_segmentation.get("maxWordsPerChunk") or MAX_WORDS_PER_REQUEST
+            ),
+            "joinCrossfadeMs": int(single_speaker_segmentation.get("joinCrossfadeMs") or 0),
+        },
+        "model": "google-cloud-text-to-speech",
+        "speechModeUsed": speech_mode_used,
+        "provider": "cloud-text-to-speech",
+        "resolvedVoices": resolved_voices,
+    }
+    if pair_group_fallback_detail:
+        diagnostics_payload["recoveryReason"] = pair_group_fallback_detail
+    diagnostics_payload.update(
+        _build_realtime_metrics(
+            wav_bytes=wav_bytes,
+            processing_ms=max(0, int(time.time() * 1000) - started_at_ms),
+        )
+    )
+
+    _emit_stage_event(
+        trace_id,
+        "completed",
+        "ok",
+        {
+            "bytes": len(wav_bytes),
+            "model": "google-cloud-text-to-speech",
+            "speechModeUsed": speech_mode_used,
+            "speechModes": speech_modes_used,
+            "windowCount": len(windows),
+            "keySelectionIndex": -1,
+            "initialKeySelectionIndex": -1,
+            "attemptCount": len(windows),
+            "keyPoolSize": 0,
+            "speakerHint": speaker_hint or None,
+            "providerUsageReported": False,
+            "promptTokens": 0,
+            "outputTokens": 0,
+            "totalTokens": 0,
+            "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
+            "recoveryUsed": bool(pair_group_fallback_used),
+            "provider": "cloud-text-to-speech",
+        },
+    )
+    return {
+        "wavBytes": wav_bytes,
+        "sampleRate": 24000,
+        "lineChunks": [],
+        "traceId": trace_id,
+        "model": "google-cloud-text-to-speech",
+        "speechModeUsed": speech_mode_used,
+        "speechModes": speech_modes_used,
+        "speechModeRequested": requested_speech_mode,
+        "keySelectionIndex": -1,
+        "initialKeySelectionIndex": -1,
+        "attemptCount": len(windows),
+        "attemptKeySelectionIndexes": [],
+        "attemptErrorKinds": [],
+        "attemptStatuses": attempt_statuses,
+        "firstKeySelectionIndex": -1,
+        "finalKeySelectionIndex": -1,
+        "keySelectionIndexes": [],
+        "keyPoolSize": 0,
+        "speakerHint": speaker_hint or None,
+        "windowCount": len(windows),
+        "diagnostics": diagnostics_payload,
+        "usageMetadata": {},
+    }
+
+
 def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     started_at_ms = int(time.time() * 1000)
     safe_engine = _normalize_runtime_engine(payload.engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine not in {"GEM", "NEURAL2"}:
-        safe_engine = TTS_ENGINE_DEFAULT
-    source_policy = _runtime_source_policy()
+    source_policy = dict(_runtime_source_policy())
+    if isinstance(payload.sourcePolicy, dict):
+        source_policy = {**source_policy, **dict(payload.sourcePolicy)}
     auth_mode = _normalize_runtime_auth_mode(payload.authMode, source_policy=source_policy)
+    cloud_tts_enabled = _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
     text = _normalize_synthesis_text(payload.text)
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty.")
@@ -3680,15 +4637,21 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     else:
         requested_speech_mode = "single-speaker"
 
-    primary_key_pool, fallback_request_key, effective_key_pool = _resolve_tts_key_pool(
-        payload.apiKey,
-        trace_id=trace_id,
-        pool_hint=payload.poolHint,
-    )
+    if cloud_tts_enabled:
+        primary_key_pool = []
+        fallback_request_key = None
+        effective_key_pool: list[str] = []
+    else:
+        primary_key_pool, fallback_request_key, effective_key_pool = _resolve_tts_key_pool(
+            payload.apiKey,
+            trace_id=trace_id,
+            pool_hint=payload.poolHint,
+        )
     language_code = resolve_language_code(text, payload.language)
     speaker_hint = re.sub(r"\s+", " ", str(payload.speaker or "")).strip()
     word_count = count_words(text)
-    if word_count > MAX_WORDS_PER_REQUEST and not use_studio_pair_groups:
+    allow_windowed_word_split = bool(cloud_tts_enabled and len(normalized_line_map) >= 2)
+    if word_count > MAX_WORDS_PER_REQUEST and not use_studio_pair_groups and not allow_windowed_word_split:
         raise HTTPException(
             status_code=400,
             detail={
@@ -3700,67 +4663,51 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
 
     pair_group_fallback_used = False
     pair_group_fallback_detail = ""
-    fallback_windows: Optional[list[Dict[str, Any]]] = None
-    if use_studio_pair_groups:
-        try:
-            return _synthesize_studio_pair_group_windows(
-                engine=safe_engine,
-                auth_mode=auth_mode,
-                source_policy=source_policy,
-                trace_id=trace_id,
-                target_voice=target_voice,
-                language_code=language_code,
-                speaker_hint=speaker_hint,
-                normalized_speaker_voices=normalized_speaker_voices,
-                normalized_line_map=normalized_line_map,
-                primary_key_pool=primary_key_pool,
-                fallback_request_key=fallback_request_key,
-                effective_key_pool=effective_key_pool,
-                requested_concurrency=requested_pair_concurrency,
-                retry_once=retry_group_once,
-                started_at_ms=started_at_ms,
-                include_line_chunks=return_line_chunks_requested,
-                model_candidates_override=model_candidates_override,
-            )
-        except Exception as pair_exc:  # noqa: BLE001
-            fallback_windows = _build_line_map_single_speaker_windows(
-                normalized_line_map=normalized_line_map,
-                speaker_voices=normalized_speaker_voices,
-                target_voice=target_voice,
-            )
-            if not fallback_windows:
-                raise
-            pair_group_fallback_used = True
-            pair_group_fallback_detail = str(pair_exc).strip()[:220]
-            requested_speech_mode = "pair_group_split_fallback"
-
     single_speaker_segmentation: Dict[str, Any] = {
         "enabled": False,
         "profile": None,
         "chunkCount": 1,
         "maxWordsPerChunk": MAX_WORDS_PER_REQUEST,
         "joinCrossfadeMs": 0,
+        "laneCount": 0,
+        "laneAssignments": [],
+        "strategies": [],
     }
+    scheduled_windows: Optional[list[Dict[str, Any]]] = None
+    scheduled_strategy_tokens: list[str] = []
+    scheduled_speech_mode_used = ""
+    if use_studio_pair_groups:
+        scheduled_windows, scheduled_meta = _build_multi_speaker_dialogue_lane_windows(
+            normalized_line_map=normalized_line_map,
+            speaker_voices=normalized_speaker_voices,
+            target_voice=target_voice,
+            language_code=language_code,
+        )
+        scheduled_strategy_tokens = [str(item or "").strip() for item in list(scheduled_meta.get("strategies") or []) if str(item or "").strip()]
+        scheduled_speech_mode_used = requested_speech_mode
+    elif requested_speech_mode == "single-speaker":
+        scheduled_windows, single_speaker_segmentation = _build_single_speaker_segment_windows(
+            text=text,
+            language_code=language_code,
+            speaker_voices=normalized_speaker_voices,
+        )
+        scheduled_strategy_tokens = [str(item or "").strip() for item in list(single_speaker_segmentation.get("strategies") or []) if str(item or "").strip()]
+        scheduled_speech_mode_used = "single-speaker-segmented" if bool(single_speaker_segmentation.get("enabled")) else "single-speaker"
+
     raw_windows: list[Dict[str, Any]]
-    if isinstance(fallback_windows, list) and fallback_windows:
-        raw_windows = fallback_windows
+    if isinstance(scheduled_windows, list) and scheduled_windows:
+        raw_windows = scheduled_windows
     elif use_windowed_multi:
         raw_windows = _build_text_order_two_speaker_windows(
             text=text,
             speaker_voices=normalized_speaker_voices,
             target_voice=target_voice,
         )
-    elif requested_speech_mode == "single-speaker":
-        raw_windows, single_speaker_segmentation = _build_single_speaker_segment_windows(
-            text=text,
-            language_code=language_code,
-            speaker_voices=normalized_speaker_voices,
-        )
     else:
         raw_windows = [{"text": text, "speakerVoices": normalized_speaker_voices}]
 
     windows: list[Dict[str, Any]] = []
-    for window in raw_windows:
+    for index, window in enumerate(raw_windows, start=1):
         window_text = _normalize_synthesis_text(str(window.get("text") or ""))
         if not window_text:
             continue
@@ -3768,10 +4715,22 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             window.get("speakerVoices") or [],
             target_voice=target_voice,
         )
+        safe_lane_id = str(window.get("laneId") or THREE_LANE_IDS[0]).upper()
         windows.append(
             {
+                "windowIndex": int(window.get("windowIndex") or index),
+                "laneId": safe_lane_id,
                 "text": window_text,
                 "speakerVoices": window_speaker_voices[:2],
+                "lineIndex": int(window.get("lineIndex", -1)),
+                "dialogueIndex": int(window.get("dialogueIndex", max(0, index - 1))),
+                "chunkIndex": int(window.get("chunkIndex", 0)),
+                "pauseAfterMs": max(0, int(window.get("pauseAfterMs") or 0)),
+                "affinitySpeakers": [
+                    str(item or "").strip()
+                    for item in list(window.get("affinitySpeakers") or _lane_affinity_speakers(safe_lane_id))
+                    if str(item or "").strip()
+                ],
             }
         )
     if not windows:
@@ -3795,8 +4754,9 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "speechModeRequested": requested_speech_mode,
             "speakerCount": len(normalized_speaker_voices),
             "windowCount": len(windows),
-            "keyPoolSize": len(effective_key_pool),
+            "keyPoolSize": 0 if cloud_tts_enabled else len(effective_key_pool),
             "speakerHint": speaker_hint or None,
+            "provider": "cloud-text-to-speech" if cloud_tts_enabled else _tts_provider_label(engine=safe_engine, auth_mode=auth_mode),
         },
     )
     _emit_stage_event(
@@ -3808,10 +4768,150 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             "textChars": len(text),
             "speechModeRequested": requested_speech_mode,
             "windowCount": len(windows),
-            "keyPoolSize": len(effective_key_pool),
+            "keyPoolSize": 0 if cloud_tts_enabled else len(effective_key_pool),
             "speakerHint": speaker_hint or None,
+            "provider": "cloud-text-to-speech" if cloud_tts_enabled else _tts_provider_label(engine=safe_engine, auth_mode=auth_mode),
         },
     )
+
+    if isinstance(scheduled_windows, list) and windows:
+        provider_label = "cloud-text-to-speech" if cloud_tts_enabled else _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
+
+        if cloud_tts_enabled:
+            def _synthesize_scheduled_window(window: Dict[str, Any]) -> Dict[str, Any]:
+                speaker_voices = list(window.get("speakerVoices") or [])
+                requested_voice = (
+                    str(speaker_voices[0].get("voiceName") or target_voice).strip()
+                    if speaker_voices
+                    else target_voice
+                ) or target_voice
+                window_index = int(window.get("windowIndex") or 1)
+                lane_id = str(window.get("laneId") or "").strip().upper()
+                window_source_policy = dict(source_policy)
+                if lane_id in {"L1", "L2", "L3"}:
+                    window_source_policy["selectedVertexSlotId"] = f"slot_{lane_id[-1]}"
+                _emit_stage_event(
+                    trace_id,
+                    "synthesis",
+                    "retry",
+                    {
+                        "attemptNumber": window_index,
+                        "attemptKind": "initial",
+                        "isRetry": False,
+                        "retryAttempt": 1,
+                        "keyPoolSize": 0,
+                        "keySelectionIndex": -1,
+                        "keyFingerprint": "cloud_tts",
+                        "model": "google-cloud-text-to-speech",
+                        "speechMode": "single-speaker",
+                        "speakerHint": speaker_hint or None,
+                        "windowIndex": window_index,
+                        "windowTotal": len(windows),
+                        "requestedVoice": requested_voice,
+                        "laneId": str(window.get("laneId") or ""),
+                    },
+                )
+                wav_bytes, voice_meta = _synthesize_window_with_cloud_tts(
+                    source_policy=window_source_policy,
+                    text=str(window.get("text") or ""),
+                    requested_voice=requested_voice,
+                    language_code=language_code,
+                    speed=float(payload.speed or 1.0),
+                    engine=safe_engine,
+                )
+                pcm_bytes, _sample_rate = _wav_bytes_to_pcm16(wav_bytes)
+                return {
+                    "windowIndex": window_index,
+                    "pcmBytes": pcm_bytes,
+                    "model": "google-cloud-text-to-speech",
+                    "speechMode": "single-speaker",
+                    "keyIndex": -1,
+                    "attemptMetadata": {},
+                    "usageMetadata": {},
+                    "resolvedVoice": str((voice_meta or {}).get("resolvedVoice") or requested_voice).strip() or requested_voice,
+                }
+        else:
+            def _synthesize_scheduled_window(window: Dict[str, Any]) -> Dict[str, Any]:
+                window_index = int(window.get("windowIndex") or 1)
+                window_speaker_voices = list(window.get("speakerVoices") or [])
+                local_speaker_hint = ", ".join(
+                    str(item.get("speaker") or "").strip()
+                    for item in window_speaker_voices
+                    if str(item.get("speaker") or "").strip()
+                ).strip() or speaker_hint
+                (
+                    pcm_bytes,
+                    model_used,
+                    speech_mode,
+                    key_index,
+                    usage_metadata,
+                    attempt_metadata,
+                ) = _synthesize_pcm_result_with_attempts(
+                    _synthesize_pcm_with_key_pool(
+                        engine=safe_engine,
+                        auth_mode=auth_mode,
+                        source_policy=source_policy,
+                        text_input=str(window.get("text") or ""),
+                        trace_id=trace_id,
+                        speaker_hint=local_speaker_hint,
+                        language_code=language_code,
+                        target_voice=target_voice,
+                        speaker_voices=window_speaker_voices,
+                        primary_key_pool=primary_key_pool,
+                        fallback_request_key=fallback_request_key,
+                        effective_key_pool=effective_key_pool,
+                        speech_mode_requested=requested_speech_mode,
+                        window_index=window_index,
+                        window_total=len(windows),
+                        affinity_speakers=[str(item or "").strip() for item in list(window.get("affinitySpeakers") or []) if str(item or "").strip()],
+                        model_candidates_override=model_candidates_override,
+                        include_usage_metadata=True,
+                        include_attempt_metadata=True,
+                    )
+                )
+                return {
+                    "windowIndex": window_index,
+                    "pcmBytes": pcm_bytes,
+                    "model": model_used,
+                    "speechMode": speech_mode,
+                    "keyIndex": int(key_index),
+                    "attemptMetadata": dict(attempt_metadata or {}),
+                    "usageMetadata": dict(usage_metadata or {}) if isinstance(usage_metadata, dict) else {},
+                }
+
+        return _execute_scheduled_window_plan(
+            trace_id=trace_id,
+            safe_engine=safe_engine,
+            requested_speech_mode=requested_speech_mode,
+            speech_mode_used=scheduled_speech_mode_used or requested_speech_mode,
+            provider_label=provider_label,
+            windows=windows,
+            single_speaker_segmentation=single_speaker_segmentation,
+            strategy_tokens=scheduled_strategy_tokens,
+            started_at_ms=started_at_ms,
+            key_pool_size=0 if cloud_tts_enabled else len(effective_key_pool),
+            include_line_chunks=return_line_chunks_requested,
+            synthesize_window_fn=_synthesize_scheduled_window,
+        )
+
+    if cloud_tts_enabled:
+        return _synthesize_windows_with_cloud_tts(
+            source_policy=source_policy,
+            safe_engine=safe_engine,
+            trace_id=trace_id,
+            text=text,
+            target_voice=target_voice,
+            language_code=language_code,
+            speaker_hint=speaker_hint,
+            requested_speech_mode=requested_speech_mode,
+            windows=windows,
+            single_speaker_segmentation=single_speaker_segmentation,
+            pair_group_fallback_used=pair_group_fallback_used,
+            pair_group_fallback_detail=pair_group_fallback_detail,
+            use_windowed_multi=use_windowed_multi,
+            speed=float(payload.speed or 1.0),
+            started_at_ms=started_at_ms,
+        )
 
     try:
         pcm_fragments: list[bytes] = []
@@ -3946,7 +5046,9 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
             )
         )
         merged_usage_metadata = _merge_usage_metadata(usage_items)
-        if isinstance(merged_usage_metadata, dict):
+        provider_usage_reported = _provider_usage_reported(merged_usage_metadata)
+        usage_totals = _usage_metadata_totals(merged_usage_metadata)
+        if provider_usage_reported:
             diagnostics_payload["usageMetadata"] = merged_usage_metadata
 
         _emit_stage_event(
@@ -3964,6 +5066,10 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                 "attemptCount": len(attempt_key_indexes_used),
                 "keyPoolSize": len(effective_key_pool),
                 "speakerHint": speaker_hint or None,
+                "providerUsageReported": provider_usage_reported,
+                "promptTokens": int(usage_totals.get("promptTokens") or 0),
+                "outputTokens": int(usage_totals.get("outputTokens") or 0),
+                "totalTokens": int(usage_totals.get("totalTokens") or 0),
                 "realtimeFactorX": diagnostics_payload.get("realtimeFactorX"),
                 "recoveryUsed": bool(pair_group_fallback_used),
             },
@@ -4057,8 +5163,7 @@ def health(engine: Optional[str] = None) -> JSONResponse:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine not in {"GEM", "NEURAL2"}:
-        safe_engine = TTS_ENGINE_DEFAULT
+    cloud_tts_enabled = _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
     model_candidates = resolve_tts_model_candidates(
         engine=safe_engine,
         auth_mode=auth_mode,
@@ -4066,25 +5171,29 @@ def health(engine: Optional[str] = None) -> JSONResponse:
     )
     model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
     configured_pool = resolve_request_api_key_pool("")
-    provider = "gemini-api" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex-ai"
+    provider = _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
+    tts_ready = _cloud_tts_client_ready(source_policy=source_policy) if cloud_tts_enabled else (genai is not None and types is not None)
     return JSONResponse(
         {
-            "ok": genai is not None and types is not None,
+            "ok": tts_ready,
             "engine": APP_NAME,
             "requestedEngine": safe_engine,
             "authMode": auth_mode,
-            "model": model,
+            "model": "google-cloud-text-to-speech" if cloud_tts_enabled else model,
             "modelCandidates": model_candidates,
-            "supportsMultiSpeaker": True,
-            "multiSpeakerMaxSpeakers": 2,
+            "supportsMultiSpeaker": not cloud_tts_enabled,
+            "multiSpeakerMaxSpeakers": 0 if cloud_tts_enabled else 2,
             "geminiAvailable": genai is not None,
             "apiKeyConfigured": bool(configured_pool),
             "keyPoolSize": len(configured_pool),
             "ttsModelFallbackEnabled": _tts_model_fallback_enabled(source_policy),
-            "mode": "gemini-only",
+            "ttsAllocatorRateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
+            "mode": "cloud-text-to-speech" if cloud_tts_enabled else "gemini-only",
             "device": "hosted",
             "device_mode": "remote",
             "provider": provider,
+            "textProvider": "vertex-ai" if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX else "gemini-api",
+            "ttsProvider": provider,
             "provider_preference": ["hosted"],
             "gpu_enabled": False,
             "openvino_enabled": False,
@@ -4101,8 +5210,7 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
     source_policy = _runtime_source_policy()
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     safe_engine = _normalize_runtime_engine(engine, default=TTS_ENGINE_DEFAULT)
-    if safe_engine not in {"GEM", "NEURAL2"}:
-        safe_engine = TTS_ENGINE_DEFAULT
+    cloud_tts_enabled = _tts_upstream_provider_for_engine(safe_engine) == TTS_UPSTREAM_PROVIDER_CLOUD_TTS
     model_candidates = resolve_tts_model_candidates(
         engine=safe_engine,
         auth_mode=auth_mode,
@@ -4110,22 +5218,22 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
     )
     model = model_candidates[0] if model_candidates else _resolve_tts_route_model()
     configured_pool = resolve_request_api_key_pool("")
-    provider = "gemini-api" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex-ai"
+    provider = _tts_provider_label(engine=safe_engine, auth_mode=auth_mode)
     default_segmentation_profile = resolve_chunk_profile("en", "segment capabilities")
     hindi_segmentation_profile = resolve_chunk_profile("hi", "यह सेगमेंट प्रोफाइल है")
     return JSONResponse(
         {
             "engine": safe_engine,
             "runtime": APP_NAME,
-            "ready": genai is not None and types is not None,
+            "ready": _cloud_tts_client_ready(source_policy=source_policy) if cloud_tts_enabled else (genai is not None and types is not None),
             "languages": ["multilingual"],
             "speed": {"min": 0.7, "max": 1.3, "default": 1.0},
             "supportsEmotion": False,
             "supportsStyle": False,
             "supportsSpeakerWav": False,
-            "model": model,
+            "model": "google-cloud-text-to-speech" if cloud_tts_enabled else model,
             "modelCandidates": model_candidates,
-            "supportsMultiSpeaker": True,
+            "supportsMultiSpeaker": not cloud_tts_enabled,
             "supportsBatchSynthesis": True,
             "batchEndpoint": "/synthesize/batch",
             "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
@@ -4136,11 +5244,14 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
             "metadata": {
                 "apiKeyConfigured": bool(configured_pool),
                 "keyPoolSize": len(configured_pool),
-                "mode": "gemini-only" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex",
+                "mode": "cloud-text-to-speech" if cloud_tts_enabled else ("gemini-only" if auth_mode == SOURCE_POLICY_PROVIDER_GEMINI_API else "vertex"),
                 "authMode": auth_mode,
+                "ttsAllocatorRateLimitsDisabled": GEMINI_ALLOCATOR_DISABLE_RATE_LIMITS,
                 "device": "hosted",
                 "deviceMode": "remote",
                 "provider": provider,
+                "textProvider": "vertex-ai" if auth_mode == SOURCE_POLICY_PROVIDER_VERTEX else "gemini-api",
+                "ttsProvider": provider,
                 "providerPreference": ["hosted"],
                 "gpuEnabled": False,
                 "openvinoEnabled": False,
@@ -4153,15 +5264,15 @@ def capabilities(engine: Optional[str] = None) -> JSONResponse:
                     "default": default_segmentation_profile,
                     "hi": hindi_segmentation_profile,
                 },
-                "multiSpeakerMaxSpeakers": 2,
+                "multiSpeakerMaxSpeakers": 0 if cloud_tts_enabled else 2,
                 "supportsBatchSynthesis": True,
                 "batchEndpoint": "/synthesize/batch",
                 "structuredEndpoint": "/synthesize/structured",
                 "batchMaxItems": GEMINI_BATCH_MAX_ITEMS,
                 "batchDefaultParallelism": GEMINI_BATCH_DEFAULT_PARALLEL,
                 "batchMaxParallelism": GEMINI_BATCH_MAX_PARALLEL,
-                "multiSpeakerMaxSpeakersPerCall": 2,
-                "multiSpeakerBatchingMode": "studio_pair_groups_with_line_map_windows",
+                "multiSpeakerMaxSpeakersPerCall": 0 if cloud_tts_enabled else 2,
+                "multiSpeakerBatchingMode": "single_speaker_windows" if cloud_tts_enabled else "studio_pair_groups_with_line_map_windows",
             },
         }
     )
@@ -4392,7 +5503,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
     auth_mode = _normalize_runtime_auth_mode(None, source_policy=source_policy)
     primary_key_pool, fallback_request_key, effective_key_pool = _ensure_runtime_pool_or_raise(
         trace_id=trace_id,
-        api_key=str(payload.apiKey or "").strip(),
+        api_key="",
         pool_hint=None,
     )
     _ = primary_key_pool
@@ -4492,7 +5603,9 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
             if not text:
                 raise RuntimeError(f'{lease.model_id} returned empty text.')
             usage_metadata = extract_usage_metadata(response)
-            used_tokens = int(usage_metadata.get("totalTokens") or 0) if isinstance(usage_metadata, dict) else token_estimate
+            usage_totals = _usage_metadata_totals(usage_metadata)
+            provider_usage_reported = _provider_usage_reported(usage_metadata)
+            used_tokens = int(usage_totals.get("totalTokens") or 0) if provider_usage_reported else token_estimate
             _RUNTIME_ALLOCATOR.release(lease, success=True, used_tokens=used_tokens)
             return JSONResponse(
                 {
@@ -4521,7 +5634,7 @@ def generate_text(payload: TextGenerateRequest) -> JSONResponse:
             _RUNTIME_ALLOCATOR.release(
                 lease,
                 success=False,
-                used_tokens=token_estimate,
+                used_tokens=0,
                 error_kind=error_kind,
             )
             model_attempts.append(
@@ -4675,8 +5788,12 @@ def synthesize(payload: SynthesizeRequest) -> Response:
         )
     usage_metadata = synthesis_result.get("usageMetadata")
     if isinstance(usage_metadata, dict) and usage_metadata:
+        usage_header_payload = {
+            **usage_metadata,
+            "providerReported": True,
+        }
         headers["X-VoiceFlow-Usage"] = quote(
-            json.dumps(usage_metadata, ensure_ascii=True, separators=(",", ":")),
+            json.dumps(usage_header_payload, ensure_ascii=True, separators=(",", ":")),
             safe="",
         )
     return Response(

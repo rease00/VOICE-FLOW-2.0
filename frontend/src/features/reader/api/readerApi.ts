@@ -2,6 +2,7 @@ import type {
   ReaderCatalogItem,
   ReaderCatalogRegion,
   ReaderCommercialPolicy,
+  ReaderDashboardPayload,
   ReaderLegalAck,
   ReaderLibrary,
   ReaderOwnershipBasis,
@@ -11,6 +12,7 @@ import type {
 import { authFetch } from '../../../../services/authHttpClient';
 import { resolveApiUrl } from '../../../shared/api/config';
 import { fetchTtsJobResult, getTtsJob } from '../../../shared/api/gatewayClient';
+import { buildReaderDashboardPayloadFromLibrary, normalizeReaderDashboardPayload } from '../model/dashboard';
 import type { ReaderHomeTab, ReaderTab } from '../model/tabs';
 
 type ReaderSurface = 'all' | 'books' | 'comics' | 'uploads';
@@ -91,6 +93,19 @@ const readerFetchJson = async <T>(
   return response.json() as Promise<T>;
 };
 
+const isDashboardUnavailableError = (error: unknown): boolean => {
+  const status = Number((error as { status?: number } | null | undefined)?.status || 0);
+  return status === 404 || status === 501;
+};
+
+const buildReaderQueryString = (params: { surface?: ReaderSurface; regionId?: string; search?: string }): string => {
+  const search = new URLSearchParams();
+  if (params.surface) search.set('surface', params.surface);
+  if (params.regionId) search.set('regionId', params.regionId);
+  if (params.search) search.set('search', params.search);
+  return search.toString();
+};
+
 export const getReaderLegalAck = async (backendBaseUrl: string): Promise<{
   ack: ReaderLegalAck;
   billing: { vfPerChar: number; rule: string; label: string };
@@ -145,12 +160,9 @@ export const listReaderItems = async (
   backendBaseUrl: string,
   params: { surface: Exclude<ReaderSurface, 'all'>; regionId?: string; search?: string }
 ): Promise<ReaderCatalogItem[]> => {
-  const search = new URLSearchParams();
-  search.set('surface', params.surface);
-  if (params.regionId) search.set('regionId', params.regionId);
-  if (params.search) search.set('search', params.search);
+  const query = buildReaderQueryString(params);
   const payload = await readerFetchJson<{ items: ReaderCatalogItem[] }>(
-    resolveApiUrl(`/reader/catalog/items?${search.toString()}`, backendBaseUrl),
+    resolveApiUrl(`/reader/catalog/items?${query}`, backendBaseUrl),
     undefined,
     { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
   );
@@ -173,16 +185,35 @@ export const getReaderLibrary = async (
   backendBaseUrl: string,
   params: { surface?: ReaderSurface; regionId?: string; search?: string }
 ): Promise<ReaderLibrary> => {
-  const search = new URLSearchParams();
-  if (params.surface) search.set('surface', params.surface);
-  if (params.regionId) search.set('regionId', params.regionId);
-  if (params.search) search.set('search', params.search);
+  const query = buildReaderQueryString(params);
   const payload = await readerFetchJson<{ library: ReaderLibrary }>(
-    resolveApiUrl(`/reader/library?${search.toString()}`, backendBaseUrl),
+    resolveApiUrl(`/reader/library?${query}`, backendBaseUrl),
     undefined,
     { timeoutMs: READER_LIBRARY_BOOTSTRAP_TIMEOUT_MS }
   );
   return payload.library;
+};
+
+export const getReaderDashboard = async (
+  backendBaseUrl: string,
+  params: { surface?: ReaderSurface; regionId?: string; search?: string }
+): Promise<ReaderDashboardPayload> => {
+  const query = buildReaderQueryString(params);
+  const dashboardUrl = resolveApiUrl(`/reader/dashboard${query ? `?${query}` : ''}`, backendBaseUrl);
+  try {
+    const payload = await readerFetchJson<unknown>(dashboardUrl, undefined, { timeoutMs: READER_LIBRARY_BOOTSTRAP_TIMEOUT_MS });
+    const normalized = normalizeReaderDashboardPayload(payload);
+    if (!normalized) {
+      throw new Error('Reader dashboard payload was invalid.');
+    }
+    return normalized;
+  } catch (error) {
+    if (!isDashboardUnavailableError(error)) {
+      throw error;
+    }
+    const library = await getReaderLibrary(backendBaseUrl, params);
+    return buildReaderDashboardPayloadFromLibrary(library);
+  }
 };
 
 export const createReaderUpload = async (
@@ -344,6 +375,42 @@ export const saveReaderSession = async (
     }
   );
   return data.session;
+};
+
+export const resolveReaderQueuePrimeMode = (mode: 'novel' | 'comic'): 'book_paragraph' | 'comic_panel' =>
+  mode === 'comic' ? 'comic_panel' : 'book_paragraph';
+
+export const primeReaderQueue = async (
+  backendBaseUrl: string,
+  payload: {
+    sessionId: string;
+    mode: 'book_paragraph' | 'comic_panel';
+    lookaheadUnits: number;
+    fromActiveIndex: number;
+  }
+): Promise<ReaderSession | null> => {
+  const sessionId = String(payload.sessionId || '').trim();
+  if (!sessionId) return null;
+  const requestBody = {
+    mode: payload.mode,
+    lookaheadUnits: Math.max(0, Math.trunc(Number(payload.lookaheadUnits || 0))),
+    fromActiveIndex: Math.max(0, Math.trunc(Number(payload.fromActiveIndex || 0))),
+  };
+  try {
+    const data = await readerFetchJson<{ session: ReaderSession }>(
+      resolveApiUrl(`/reader/sessions/${encodeURIComponent(sessionId)}/queue/prime`, backendBaseUrl),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      },
+      { timeoutMs: READER_BOOTSTRAP_TIMEOUT_MS }
+    );
+    return data.session;
+  } catch (error) {
+    if (isDashboardUnavailableError(error)) return null;
+    throw error;
+  }
 };
 
 export const exportReaderSessionAudio = async (backendBaseUrl: string, sessionId: string): Promise<Blob> => {

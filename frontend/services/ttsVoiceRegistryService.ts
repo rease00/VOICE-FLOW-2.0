@@ -1,19 +1,19 @@
-import { KOKORO_VOICES, VOICES } from '../constants';
+import { DUNO_VOICES, VOICES } from '../constants';
 import { GenerationSettings, VoiceOption } from '../types';
 import { fetchTtsEngineVoices } from '../src/shared/api/gatewayClient';
 
 export type RuntimeVoiceCatalogMap = Record<GenerationSettings['engine'], VoiceOption[]>;
 
 const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
-  GEM: [],
-  NEURAL2: [],
-  KOKORO: [],
+  PRIME: [],
+  VECTOR: [],
+  DUNO: [],
 };
 
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
-  GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  KOKORO: [
+  PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  DUNO: [
     'af_heart',
     'af_bella',
     'af_nova',
@@ -33,8 +33,8 @@ const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]
   ],
 };
 
-const KOKORO_VOICE_INDEX = new Map(
-  KOKORO_VOICES.map((voice) => [String(voice.id || '').trim().toLowerCase(), voice] as const)
+const DUNO_VOICE_INDEX = new Map(
+  DUNO_VOICES.map((voice) => [String(voice.id || '').trim().toLowerCase(), voice] as const)
 );
 
 const inferCountryFromAccent = (accent?: string): string => {
@@ -100,7 +100,7 @@ const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption)
       : explicitTier === 'pro'
         ? 'pro'
         : (allowlist.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro');
-  const out: VoiceOption = {
+  return {
     ...voice,
     country: voice.country || inferCountryFromAccent(voice.accent),
     ageGroup: voice.ageGroup || 'Unknown',
@@ -108,14 +108,13 @@ const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption)
     accessTier,
     isPlanRestricted: typeof voice.isPlanRestricted === 'boolean' ? voice.isPlanRestricted : accessTier === 'pro',
   };
-  return out;
 };
 
 export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => {
-  if (engine === 'GEM' || engine === 'NEURAL2') {
+  if (engine === 'PRIME' || engine === 'VECTOR') {
     return VOICES.map((voice) => asEngineVoice(engine, voice));
   }
-  return KOKORO_VOICES.map((voice) => asEngineVoice('KOKORO', voice));
+  return DUNO_VOICES.map((voice) => asEngineVoice('DUNO', voice));
 };
 
 const toVoiceOption = (
@@ -124,25 +123,27 @@ const toVoiceOption = (
   index: number
 ): VoiceOption => {
   const id = String(raw.voice_id || raw.id || raw.voiceId || raw.voice || `voice_${index}`).trim();
-  const kokoroCanonical = engine === 'KOKORO' ? KOKORO_VOICE_INDEX.get(id.toLowerCase()) : undefined;
+  const dunoCanonical = engine === 'DUNO' ? DUNO_VOICE_INDEX.get(id.toLowerCase()) : undefined;
   const name = String(
-    kokoroCanonical?.name
+    dunoCanonical?.name
+    || raw.displayName
+    || raw.display_name
     || raw.mapped_name
     || raw.name
     || raw.voice
     || raw.label
     || id
   ).trim();
-  const accent = String(kokoroCanonical?.accent || raw.accent || raw.language || 'Unknown').trim();
-  const gender = kokoroCanonical?.gender || normalizeGender(raw.gender);
-  const ageGroup = String(kokoroCanonical?.ageGroup || normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age)).trim() || 'Unknown';
+  const accent = String(dunoCanonical?.accent || raw.accent || raw.language || 'Unknown').trim();
+  const gender = dunoCanonical?.gender || normalizeGender(raw.gender);
+  const ageGroup = String(dunoCanonical?.ageGroup || normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age)).trim() || 'Unknown';
   const country = String(
-    kokoroCanonical?.country
+    dunoCanonical?.country
     || raw.country
     || raw.country_code
     || inferCountryFromAccent(accent)
   ).trim() || 'Unknown';
-  const geminiVoiceName = String(kokoroCanonical?.geminiVoiceName || raw.voice || raw.voice_id || raw.id || id).trim();
+  const geminiVoiceName = String(dunoCanonical?.geminiVoiceName || raw.voice || raw.voice_id || raw.id || id).trim();
   const explicitTier = String(raw.access_tier || raw.accessTier || '').trim().toLowerCase();
   const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
   const accessTier: 'free' | 'pro' =
@@ -197,21 +198,24 @@ export const fetchRuntimeVoiceRegistry = async (
 ): Promise<RuntimeVoiceCatalogMap> => {
   const entries: RuntimeVoiceCatalogMap = {
     ...EMPTY_CATALOG,
-    GEM: [],
-    NEURAL2: [],
   };
 
   try {
-    entries.GEM = await fetchEngineRuntimeVoices('GEM', '');
+    entries.PRIME = await fetchEngineRuntimeVoices('PRIME', '');
   } catch {
-    entries.GEM = getStaticVoiceFallback('GEM');
+    entries.PRIME = getStaticVoiceFallback('PRIME');
   }
-  entries.NEURAL2 = entries.GEM.map((voice) => ({ ...voice, engine: 'NEURAL2' }));
 
   try {
-    entries.KOKORO = await fetchEngineRuntimeVoices('KOKORO', '');
+    entries.VECTOR = await fetchEngineRuntimeVoices('VECTOR', '');
   } catch {
-    entries.KOKORO = [];
+    entries.VECTOR = entries.PRIME.map((voice) => ({ ...voice, engine: 'VECTOR' }));
+  }
+
+  try {
+    entries.DUNO = await fetchEngineRuntimeVoices('DUNO', '');
+  } catch {
+    entries.DUNO = getStaticVoiceFallback('DUNO');
   }
 
   return entries;

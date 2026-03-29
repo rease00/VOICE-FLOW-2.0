@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import type { GenerationSettings } from '../../../types';
 import {
   normalizeAssistantProviderControlsEnabled,
@@ -16,7 +16,7 @@ const baseSettings = (): GenerationSettings => ({
   speed: 1,
   pitch: 'Medium',
   language: 'Auto',
-  engine: 'GEM',
+  engine: 'PRIME',
   helperProvider: 'GEMINI',
   geminiApiKey: '',
   perplexityApiKey: '',
@@ -118,12 +118,12 @@ describe('assistant dispatch plan', () => {
     expect(plan.useRuntimeGemini).toBe(true);
   });
 
-  it('uses runtime-safe Gemini text candidates led by Gemini 3.1 Flash Lite', () => {
+  it('uses runtime-safe Gemini text candidates led by Gemini 2.5 Flash Lite', () => {
     expect(resolveTextModelCandidates()).toEqual([
-      'gemini-3.1-flash-lite-preview',
-      'gemini-2.5-flash',
-      'gemini-3-flash',
       'gemini-2.5-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-3-flash',
       'gemma-3-27b',
       'gemma-3-12b',
       'gemma-3-4b',
@@ -131,10 +131,11 @@ describe('assistant dispatch plan', () => {
       'gemma-3-1b',
     ]);
     expect(STUDIO_CAST_TEXT_MODELS).toEqual([
-      'gemini-3.1-flash-lite-preview',
       'gemini-2.5-flash',
-      'gemini-3-flash',
+      'gemini-2.5-pro',
       'gemini-2.5-flash-lite',
+      'gemini-3-flash',
     ]);
   });
 });
+

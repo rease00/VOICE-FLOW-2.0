@@ -69,7 +69,7 @@ const QUALITY_CHUNK_PROFILES: Record<
   PrimaryTtsEngine,
   { hi: ChunkingProfile; default: ChunkingProfile }
 > = {
-  KOKORO: {
+  DUNO: {
     hi: {
       hardCharCap: 200,
       targetCharCap: 150,
@@ -87,7 +87,7 @@ const QUALITY_CHUNK_PROFILES: Record<
       joinCrossfadeMs: 12,
     },
   },
-  GEM: {
+  VECTOR: {
     hi: {
       hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
       targetCharCap: GEMINI_POLICY_TARGET_CHUNK_CHARS,
@@ -105,7 +105,7 @@ const QUALITY_CHUNK_PROFILES: Record<
       joinCrossfadeMs: 8,
     },
   },
-  NEURAL2: {
+  PRIME: {
     hi: {
       hardCharCap: GEMINI_POLICY_CHUNK_CHARS,
       targetCharCap: GEMINI_POLICY_TARGET_CHUNK_CHARS,
@@ -189,12 +189,12 @@ export const preflightWordLimit = (text: string, maxWords = MAX_WORDS_PER_REQUES
 
 export const isPrimaryTtsEngine = (value: string): value is PrimaryTtsEngine => {
   const normalized = String(value || '').trim().toUpperCase();
-  return normalized === 'GEM' || normalized === 'NEURAL2' || normalized === 'KOKORO';
+  return normalized === 'PRIME' || normalized === 'VECTOR' || normalized === 'DUNO';
 };
 
 export const getChunkProfile = (engine: PrimaryTtsEngine, language?: string): ChunkingProfile => {
   const lang = toLanguage(language);
-  const base = QUALITY_CHUNK_PROFILES[engine] || QUALITY_CHUNK_PROFILES.GEM;
+  const base = QUALITY_CHUNK_PROFILES[engine] || QUALITY_CHUNK_PROFILES.PRIME;
   return lang === 'hi' ? base.hi : base.default;
 };
 
@@ -726,7 +726,7 @@ export const resolveLiveChunkRequest = (
   engine: PrimaryTtsEngine,
   language?: string,
 ): LiveChunkRequestProfile => {
-  if (engine === 'GEM' || engine === 'NEURAL2') {
+  if (engine === 'PRIME' || engine === 'VECTOR' || engine === 'DUNO') {
     return {
       liveChunkChars: GEMINI_LIVE_POLICY_CHUNK_CHARS,
       liveChunkWords: GEMINI_LIVE_POLICY_CHUNK_WORDS,
@@ -775,3 +775,4 @@ export const resolveLiveChunkRequest = (
     liveChunkStageWords: [liveChunkWords],
   };
 };
+

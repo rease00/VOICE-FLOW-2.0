@@ -54,9 +54,9 @@ export const VOICES: VoiceOption[] = [
 ];
 
 // ============================================================================
-// KOKORO VOICES - Aligned with the backend gateway voice catalog
+// DUNO VOICES - Aligned with the backend gateway voice catalog
 // ============================================================================
-export const KOKORO_VOICES: VoiceOption[] = [
+export const DUNO_VOICES: VoiceOption[] = [
   { id: 'af_heart', name: 'Lyra US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_heart', country: 'United States', ageGroup: 'Adult' },
   { id: 'af_bella', name: 'Kaia US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_bella', country: 'United States', ageGroup: 'Adult' },
   { id: 'af_nova', name: 'Mira US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_nova', country: 'United States', ageGroup: 'Adult' },
@@ -93,8 +93,8 @@ export const OPENAI_VOICES: VoiceOption[] = [
 // Base voices for the F5 model
 // ============================================================================
 export const F5_VOICES: VoiceOption[] = [
-  { id: 'f5_basic_m', name: 'F5 Male (Base)', gender: 'Male', accent: 'Neutral', geminiVoiceName: 'f5_male' },
-  { id: 'f5_basic_f', name: 'F5 Female (Base)', gender: 'Female', accent: 'Neutral', geminiVoiceName: 'f5_female' },
+  { id: 'f5_base_m', name: 'F5 Male (Base)', gender: 'Male', accent: 'Neutral', geminiVoiceName: 'f5_male' },
+  { id: 'f5_base_f', name: 'F5 Female (Base)', gender: 'Female', accent: 'Neutral', geminiVoiceName: 'f5_female' },
 ];
 
 
@@ -112,94 +112,93 @@ export const LANGUAGES: LanguageOption[] = [
   { code: 'en-IN', name: 'English (India)', nativeName: 'English (India)', rtl: false },
   
   // Indian Languages
-  { code: 'hi', name: 'Hindi', nativeName: 'हिन्दी', rtl: false },
+  { code: 'hi', name: 'Hindi', nativeName: '??????', rtl: false },
   { code: 'hi-latn', name: 'Hinglish', nativeName: 'Hinglish', rtl: false },
-  { code: 'bn', name: 'Bengali', nativeName: 'বাংলা', rtl: false },
-  { code: 'te', name: 'Telugu', nativeName: 'తెలుగు', rtl: false },
-  { code: 'mr', name: 'Marathi', nativeName: 'मराठी', rtl: false },
-  { code: 'ta', name: 'Tamil', nativeName: 'தமிழ்', rtl: false },
-  { code: 'ur', name: 'Urdu', nativeName: 'اردو', rtl: true },
-  { code: 'gu', name: 'Gujarati', nativeName: 'ગુજરાતી', rtl: false },
-  { code: 'kn', name: 'Kannada', nativeName: 'ಕನ್ನಡ', rtl: false },
-  { code: 'ml', name: 'Malayalam', nativeName: 'മലയാളം', rtl: false },
-  { code: 'pa', name: 'Punjabi', nativeName: 'ਪੰਜਾਬੀ', rtl: false },
-  { code: 'or', name: 'Odia', nativeName: 'ଓଡ଼ିଆ', rtl: false },
+  { code: 'bn', name: 'Bengali', nativeName: '?????', rtl: false },
+  { code: 'te', name: 'Telugu', nativeName: '??????', rtl: false },
+  { code: 'mr', name: 'Marathi', nativeName: '?????', rtl: false },
+  { code: 'ta', name: 'Tamil', nativeName: '?????', rtl: false },
+  { code: 'ur', name: 'Urdu', nativeName: '????', rtl: true },
+  { code: 'gu', name: 'Gujarati', nativeName: '???????', rtl: false },
+  { code: 'kn', name: 'Kannada', nativeName: '?????', rtl: false },
+  { code: 'ml', name: 'Malayalam', nativeName: '??????', rtl: false },
+  { code: 'pa', name: 'Punjabi', nativeName: '??????', rtl: false },
+  { code: 'or', name: 'Odia', nativeName: '?????', rtl: false },
   
   // European Languages
-  { code: 'es', name: 'Spanish', nativeName: 'Español', rtl: false },
-  { code: 'fr', name: 'French', nativeName: 'Français', rtl: false },
+  { code: 'es', name: 'Spanish', nativeName: 'Espa?ol', rtl: false },
+  { code: 'fr', name: 'French', nativeName: 'Fran?ais', rtl: false },
   { code: 'de', name: 'German', nativeName: 'Deutsch', rtl: false },
   { code: 'it', name: 'Italian', nativeName: 'Italiano', rtl: false },
-  { code: 'pt', name: 'Portuguese', nativeName: 'Português', rtl: false },
-  { code: 'pt-BR', name: 'Portuguese (Brazil)', nativeName: 'Português (Brasil)', rtl: false },
-  { code: 'ru', name: 'Russian', nativeName: 'Русский', rtl: false },
+  { code: 'pt', name: 'Portuguese', nativeName: 'Portugu?s', rtl: false },
+  { code: 'pt-BR', name: 'Portuguese (Brazil)', nativeName: 'Portugu?s (Brasil)', rtl: false },
+  { code: 'ru', name: 'Russian', nativeName: '???????', rtl: false },
   { code: 'nl', name: 'Dutch', nativeName: 'Nederlands', rtl: false },
   { code: 'pl', name: 'Polish', nativeName: 'Polski', rtl: false },
   { code: 'sv', name: 'Swedish', nativeName: 'Svenska', rtl: false },
   { code: 'da', name: 'Danish', nativeName: 'Dansk', rtl: false },
   { code: 'fi', name: 'Finnish', nativeName: 'Suomi', rtl: false },
   { code: 'no', name: 'Norwegian', nativeName: 'Norsk', rtl: false },
-  { code: 'uk', name: 'Ukrainian', nativeName: 'Українська', rtl: false },
-  { code: 'el', name: 'Greek', nativeName: 'Ελληνικά', rtl: false },
-  { code: 'cs', name: 'Czech', nativeName: 'Čeština', rtl: false },
-  { code: 'ro', name: 'Romanian', nativeName: 'Română', rtl: false },
+  { code: 'uk', name: 'Ukrainian', nativeName: '??????????', rtl: false },
+  { code: 'el', name: 'Greek', nativeName: '????????', rtl: false },
+  { code: 'cs', name: 'Czech', nativeName: '?e?tina', rtl: false },
+  { code: 'ro', name: 'Romanian', nativeName: 'Rom?n?', rtl: false },
   { code: 'hu', name: 'Hungarian', nativeName: 'Magyar', rtl: false },
-  { code: 'bg', name: 'Bulgarian', nativeName: 'Български', rtl: false },
+  { code: 'bg', name: 'Bulgarian', nativeName: '?????????', rtl: false },
   { code: 'hr', name: 'Croatian', nativeName: 'Hrvatski', rtl: false },
-  { code: 'sk', name: 'Slovak', nativeName: 'Slovenčina', rtl: false },
-  { code: 'sl', name: 'Slovenian', nativeName: 'Slovenščina', rtl: false },
-  { code: 'lt', name: 'Lithuanian', nativeName: 'Lietuvių', rtl: false },
-  { code: 'lv', name: 'Latvian', nativeName: 'Latviešu', rtl: false },
+  { code: 'sk', name: 'Slovak', nativeName: 'Sloven?ina', rtl: false },
+  { code: 'sl', name: 'Slovenian', nativeName: 'Sloven??ina', rtl: false },
+  { code: 'lt', name: 'Lithuanian', nativeName: 'Lietuvi?', rtl: false },
+  { code: 'lv', name: 'Latvian', nativeName: 'Latvie?u', rtl: false },
   { code: 'et', name: 'Estonian', nativeName: 'Eesti', rtl: false },
-  { code: 'is', name: 'Icelandic', nativeName: 'Íslenska', rtl: false },
+  { code: 'is', name: 'Icelandic', nativeName: '?slenska', rtl: false },
   { code: 'ga', name: 'Irish', nativeName: 'Gaeilge', rtl: false },
   { code: 'cy', name: 'Welsh', nativeName: 'Cymraeg', rtl: false },
   { code: 'sq', name: 'Albanian', nativeName: 'Shqip', rtl: false },
-  { code: 'mk', name: 'Macedonian', nativeName: 'Македонски', rtl: false },
-  { code: 'sr', name: 'Serbian', nativeName: 'Српски', rtl: false },
+  { code: 'mk', name: 'Macedonian', nativeName: '??????????', rtl: false },
+  { code: 'sr', name: 'Serbian', nativeName: '??????', rtl: false },
   { code: 'bs', name: 'Bosnian', nativeName: 'Bosanski', rtl: false },
   
   // Asian Languages
-  { code: 'zh', name: 'Chinese (Simplified)', nativeName: '简体中文', rtl: false },
-  { code: 'zh-TW', name: 'Chinese (Traditional)', nativeName: '繁體中文', rtl: false },
-  { code: 'ja', name: 'Japanese', nativeName: '日本語', rtl: false },
-  { code: 'ko', name: 'Korean', nativeName: '한국어', rtl: false },
-  { code: 'th', name: 'Thai', nativeName: 'ไทย', rtl: false },
-  { code: 'vi', name: 'Vietnamese', nativeName: 'Tiếng Việt', rtl: false },
+  { code: 'zh', name: 'Chinese (Simplified)', nativeName: '????', rtl: false },
+  { code: 'zh-TW', name: 'Chinese (Traditional)', nativeName: '????', rtl: false },
+  { code: 'ja', name: 'Japanese', nativeName: '???', rtl: false },
+  { code: 'ko', name: 'Korean', nativeName: '???', rtl: false },
+  { code: 'th', name: 'Thai', nativeName: '???', rtl: false },
+  { code: 'vi', name: 'Vietnamese', nativeName: 'Ti?ng Vi?t', rtl: false },
   { code: 'id', name: 'Indonesian', nativeName: 'Bahasa Indonesia', rtl: false },
   { code: 'ms', name: 'Malay', nativeName: 'Bahasa Melayu', rtl: false },
   { code: 'fil', name: 'Filipino', nativeName: 'Filipino', rtl: false },
-  { code: 'lo', name: 'Lao', nativeName: 'ລາວ', rtl: false },
-  { code: 'my', name: 'Burmese', nativeName: 'မြန်မာ', rtl: false },
-  { code: 'km', name: 'Khmer', nativeName: 'ខ្មែរ', rtl: false },
-  { code: 'ne', name: 'Nepali', nativeName: 'नेपाली', rtl: false },
-  { code: 'si', name: 'Sinhala', nativeName: 'සිංහල', rtl: false },
+  { code: 'lo', name: 'Lao', nativeName: '???', rtl: false },
+  { code: 'my', name: 'Burmese', nativeName: '??????', rtl: false },
+  { code: 'km', name: 'Khmer', nativeName: '?????', rtl: false },
+  { code: 'ne', name: 'Nepali', nativeName: '??????', rtl: false },
+  { code: 'si', name: 'Sinhala', nativeName: '?????', rtl: false },
   
   // Middle Eastern & African Languages
-  { code: 'ar', name: 'Arabic', nativeName: 'العربية', rtl: true },
-  { code: 'he', name: 'Hebrew', nativeName: 'עברית', rtl: true },
-  { code: 'fa', name: 'Persian', nativeName: 'فارسی', rtl: true },
-  { code: 'tr', name: 'Turkish', nativeName: 'Türkçe', rtl: false },
+  { code: 'ar', name: 'Arabic', nativeName: '???????', rtl: true },
+  { code: 'he', name: 'Hebrew', nativeName: '?????', rtl: true },
+  { code: 'fa', name: 'Persian', nativeName: '?????', rtl: true },
+  { code: 'tr', name: 'Turkish', nativeName: 'T?rk?e', rtl: false },
   { code: 'sw', name: 'Swahili', nativeName: 'Kiswahili', rtl: false },
-  { code: 'am', name: 'Amharic', nativeName: 'አማርኛ', rtl: false },
+  { code: 'am', name: 'Amharic', nativeName: '????', rtl: false },
   { code: 'ha', name: 'Hausa', nativeName: 'Hausa', rtl: false },
-  { code: 'yo', name: 'Yoruba', nativeName: 'Yorùbá', rtl: false },
+  { code: 'yo', name: 'Yoruba', nativeName: 'Yor?b?', rtl: false },
   { code: 'ig', name: 'Igbo', nativeName: 'Igbo', rtl: false },
   { code: 'zu', name: 'Zulu', nativeName: 'isiZulu', rtl: false },
   { code: 'xh', name: 'Xhosa', nativeName: 'isiXhosa', rtl: false },
   { code: 'af', name: 'Afrikaans', nativeName: 'Afrikaans', rtl: false },
   
   // Other Languages
-  { code: 'az', name: 'Azerbaijani', nativeName: 'Azərbaycan', rtl: false },
-  { code: 'kk', name: 'Kazakh', nativeName: 'Қазақ', rtl: false },
-  { code: 'uz', name: 'Uzbek', nativeName: 'Oʻzbek', rtl: false },
-  { code: 'ka', name: 'Georgian', nativeName: 'ქართული', rtl: false },
-  { code: 'hy', name: 'Armenian', nativeName: 'Հայերեն', rtl: false },
-  { code: 'mn', name: 'Mongolian', nativeName: 'Монгол', rtl: false },
-  { code: 'ps', name: 'Pashto', nativeName: 'پښتو', rtl: true }
+  { code: 'az', name: 'Azerbaijani', nativeName: 'Az?rbaycan', rtl: false },
+  { code: 'kk', name: 'Kazakh', nativeName: '?????', rtl: false },
+  { code: 'uz', name: 'Uzbek', nativeName: 'O?zbek', rtl: false },
+  { code: 'ka', name: 'Georgian', nativeName: '???????', rtl: false },
+  { code: 'hy', name: 'Armenian', nativeName: '???????', rtl: false },
+  { code: 'mn', name: 'Mongolian', nativeName: '??????', rtl: false },
+  { code: 'ps', name: 'Pashto', nativeName: '????', rtl: true }
 ];
 
-// ============================================================================
 // EMOTIONS - Canonical Runtime-Compatible Tag Set
 // ============================================================================
 
@@ -318,7 +317,7 @@ export const INITIAL_STATS: UserStats = {
   wallet: createEmptyWalletStats(),
   limits: {
     maxCharsPerGeneration: 8000,
-    allowedEngines: ['KOKORO', 'NEURAL2'],
+    allowedEngines: ['DUNO', 'VECTOR', 'PRIME'],
   },
   features: {
     earlyAccess: false,

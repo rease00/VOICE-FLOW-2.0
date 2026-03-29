@@ -253,6 +253,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
           onChange={(event) => handleRawChange(event.target.value)}
           onBlur={handleRawBlur}
           disabled={disabled}
+          aria-label="Studio script editor (raw mode)"
           placeholder={placeholder}
           className={`vf-studio-raw-editor custom-scrollbar flex-1 resize-none border-0 bg-transparent px-5 py-4 text-base outline-none ${
             hasDevanagari ? 'vf-devanagari' : ''
@@ -275,7 +276,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                   setDragIndex(null);
                 }}
                 onClick={() => setActiveBlockId(block.id)}
-                className={`vf-script-block rounded-2xl border p-3 transition-all ${
+                className={`vf-script-block rounded-2xl border p-3 transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
                   activeBlockId === block.id ? 'vf-script-block--active' : ''
                 }`}
               >

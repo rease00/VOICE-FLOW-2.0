@@ -9,7 +9,18 @@ const workspaceRoot = path.resolve(root, '..');
 const readJson = (relativePath) => {
   const filePath = path.resolve(root, relativePath);
   const raw = fs.readFileSync(filePath, 'utf8');
-  return JSON.parse(raw);
+  return JSON.parse(raw.replace(/^\uFEFF/, ''));
+};
+
+const readJsonOptional = (relativePath) => {
+  try {
+    return readJson(relativePath);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
 };
 
 const existsFile = (relativePathFromWorkspace) => {
@@ -32,13 +43,13 @@ const ts = now.toISOString().replace(/[:.]/g, '-');
 
 const voiceMap = readJson('./config/voice_id_map.v1.json');
 const profileBank = readJson('./config/voice_profile_bank.v1.json');
-const llvcRegistry = readJson('./config/voice_transfer_model_registry.json');
+const llvcRegistry = readJsonOptional('./config/voice_transfer_model_registry.json');
 
-const runtimeVoices = Array.isArray(voiceMap?.engines?.GEM?.runtimeVoices)
-  ? voiceMap.engines.GEM.runtimeVoices
+const runtimeVoices = Array.isArray(voiceMap?.engines?.PRIME?.runtimeVoices)
+  ? voiceMap.engines.PRIME.runtimeVoices
   : [];
-const voiceToProfile = (voiceMap?.engines?.GEM?.voiceToProfile && typeof voiceMap.engines.GEM.voiceToProfile === 'object')
-  ? voiceMap.engines.GEM.voiceToProfile
+const voiceToProfile = (voiceMap?.engines?.PRIME?.voiceToProfile && typeof voiceMap.engines.PRIME.voiceToProfile === 'object')
+  ? voiceMap.engines.PRIME.voiceToProfile
   : {};
 const profiles = Array.isArray(profileBank?.profiles) ? profileBank.profiles : [];
 const profileById = new Map(profiles.map((p) => [String(p?.profileId || ''), p]));
@@ -142,9 +153,9 @@ for (const row of runtimeVoices) {
 }
 
 const freeAllowlist = {
-  GEM: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  NEURAL2: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  KOKORO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
+  PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
+  DUNO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
 };
 
 for (const [engine, ids] of Object.entries(freeAllowlist)) {

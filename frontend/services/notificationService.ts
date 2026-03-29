@@ -26,6 +26,7 @@ export interface NotificationWireItem {
   resolvedBy?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  expiresAt?: string | null;
   readAt?: string | null;
   dismissedAt?: string | null;
   sticky?: boolean;

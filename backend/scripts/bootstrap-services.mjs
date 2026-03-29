@@ -9,7 +9,12 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
-const ENV_FILES = [path.join(ROOT, ".env"), path.join(ROOT, "..", ".env")];
+const ENV_FILES = [
+  path.join(ROOT, ".env.local"),
+  path.join(ROOT, "..", ".env.local"),
+  path.join(ROOT, ".env"),
+  path.join(ROOT, "..", ".env"),
+];
 
 function parseEnvValue(rawValue) {
   const trimmed = rawValue.trim();
@@ -54,8 +59,8 @@ function loadDotEnv(filePath) {
   }
 }
 
-// Ensure local service launches pick up secrets and runtime config from backend/.env,
-// then root/.env as fallback for compatibility.
+// Ensure local service launches pick up secrets and runtime config from
+// backend/.env.local and root/.env.local first, then .env fallbacks.
 for (const envPath of ENV_FILES) {
   loadDotEnv(envPath);
 }
@@ -83,11 +88,9 @@ const RUNTIME_CONCURRENCY_ENV = AUTO_TUNE_WORKERS
       VF_HOST_RESERVED_CPUS: String(HOST_RESERVED_CPUS),
       VF_TTS_QUEUE_WORKER_COUNT: String(AUTO_TUNED_CONCURRENCY.queueWorkers),
       VF_TTS_ENGINE_CONCURRENCY_GEM: String(AUTO_TUNED_CONCURRENCY.gemConcurrency),
-      VF_TTS_ENGINE_CONCURRENCY_KOKORO: String(AUTO_TUNED_CONCURRENCY.kokoroConcurrency),
+      VF_TTS_ENGINE_CONCURRENCY_DUNO: String(AUTO_TUNED_CONCURRENCY.dunoConcurrency),
       GEMINI_BATCH_DEFAULT_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel),
       GEMINI_BATCH_MAX_PARALLEL: String(AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel),
-      KOKORO_BATCH_DEFAULT_PARALLEL: String(AUTO_TUNED_CONCURRENCY.kokoroBatchDefaultParallel),
-      KOKORO_BATCH_MAX_PARALLEL: String(AUTO_TUNED_CONCURRENCY.kokoroBatchMaxParallel),
     }
   : {};
 
@@ -95,9 +98,6 @@ const RETRY_INTERVAL_MS = Number(process.env.VF_BOOTSTRAP_RETRY_INTERVAL_MS || 4
 const REQUEST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_REQUEST_TIMEOUT_MS || 15000);
 const DEFAULT_CHECK_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_CHECK_TIMEOUT_MS || 60000);
 const FAST_TIMEOUT_MS = Number(process.env.VF_BOOTSTRAP_TIMEOUT_FAST_MS || DEFAULT_CHECK_TIMEOUT_MS);
-const KOKORO_TIMEOUT_MS = Number(
-  process.env.VF_BOOTSTRAP_TIMEOUT_KOKORO_MS || Math.max(DEFAULT_CHECK_TIMEOUT_MS, 90000)
-);
 const STARTUP_HEALTH_RETRY_INTERVAL_MS = clampInt(
   toIntEnv(process.env.VF_STARTUP_HEALTH_RETRY_INTERVAL_MS, 1000),
   250,
@@ -162,57 +162,45 @@ function computeConcurrencyPlan(profile, usableCpu) {
   if (profile === "max") {
     const queueWorkers = clampInt(safeUsableCpu + 1, 4, 12);
     const gemConcurrency = clampInt(queueWorkers + 6, 6, 24);
-    const kokoroConcurrency = clampInt(Math.round(queueWorkers * 1.0), 3, 12);
+    const dunoConcurrency = clampInt(Math.round(queueWorkers * 1.0), 3, 12);
     const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 2, 8);
     const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 3, gemBatchDefaultParallel, 12);
-    const kokoroBatchDefaultParallel = clampInt(Math.round(kokoroConcurrency / 2), 1, 6);
-    const kokoroBatchMaxParallel = clampInt(kokoroBatchDefaultParallel + 2, kokoroBatchDefaultParallel, 8);
     return {
       queueWorkers,
       gemConcurrency,
-      kokoroConcurrency,
+      dunoConcurrency,
       gemBatchDefaultParallel,
       gemBatchMaxParallel,
-      kokoroBatchDefaultParallel,
-      kokoroBatchMaxParallel,
     };
   }
 
   if (profile === "cool") {
     const queueWorkers = clampInt(Math.floor((safeUsableCpu + 1) / 2), 1, 4);
     const gemConcurrency = clampInt(queueWorkers + 2, 3, 8);
-    const kokoroConcurrency = clampInt(Math.round(queueWorkers * 0.75), 1, 4);
+    const dunoConcurrency = clampInt(Math.round(queueWorkers * 0.75), 1, 4);
     const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 1, 3);
     const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 1, gemBatchDefaultParallel, 4);
-    const kokoroBatchDefaultParallel = clampInt(Math.round(kokoroConcurrency / 2), 1, 2);
-    const kokoroBatchMaxParallel = clampInt(kokoroBatchDefaultParallel + 1, kokoroBatchDefaultParallel, 3);
     return {
       queueWorkers,
       gemConcurrency,
-      kokoroConcurrency,
+      dunoConcurrency,
       gemBatchDefaultParallel,
       gemBatchMaxParallel,
-      kokoroBatchDefaultParallel,
-      kokoroBatchMaxParallel,
     };
   }
 
   // balanced profile
   const queueWorkers = clampInt(safeUsableCpu, 2, 8);
   const gemConcurrency = clampInt(queueWorkers + 4, 4, 16);
-  const kokoroConcurrency = clampInt(Math.round(queueWorkers * 0.85), 2, 8);
+  const dunoConcurrency = clampInt(Math.round(queueWorkers * 0.85), 2, 8);
   const gemBatchDefaultParallel = clampInt(Math.round(gemConcurrency / 3), 2, 6);
   const gemBatchMaxParallel = clampInt(gemBatchDefaultParallel + 2, gemBatchDefaultParallel, 8);
-  const kokoroBatchDefaultParallel = clampInt(Math.round(kokoroConcurrency / 2), 1, 4);
-  const kokoroBatchMaxParallel = clampInt(kokoroBatchDefaultParallel + 1, kokoroBatchDefaultParallel, 6);
   return {
     queueWorkers,
     gemConcurrency,
-    kokoroConcurrency,
+    dunoConcurrency,
     gemBatchDefaultParallel,
     gemBatchMaxParallel,
-    kokoroBatchDefaultParallel,
-    kokoroBatchMaxParallel,
   };
 }
 
@@ -300,51 +288,17 @@ const BASE_SERVICES = [
       ...RUNTIME_CONCURRENCY_ENV,
     }),
   },
-  {
-    id: "kokoro-runtime",
-    name: "Kokoro Runtime",
-    port: 7820,
-    venv: "kokoro-runtime",
-    pythonEnvVar: "VF_PYTHON_BIN_KOKORO_RUNTIME",
-    requirements: ["engines/kokoro-runtime/requirements.txt"],
-    sourceFiles: [
-      "engines/kokoro-runtime/app.py",
-      "engines/kokoro-runtime/segmentation.py",
-      "scripts/bootstrap-services.mjs",
-    ],
-    command: (pythonBin) => [
-      pythonBin,
-      "-m",
-      "uvicorn",
-      "app:app",
-      "--app-dir",
-      "engines/kokoro-runtime",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "7820",
-    ],
-    env: () => ({
-      KOKORO_DEVICE: "cpu",
-      CUDA_VISIBLE_DEVICES: "",
-      VF_KOKORO_RUNTIME_HOST: "127.0.0.1",
-      VF_KOKORO_RUNTIME_PORT: "7820",
-      KOKORO_IDLE_UNLOAD_MS: "120000",
-      ...RUNTIME_CONCURRENCY_ENV,
-    }),
-  },
 ];
 
 const SERVICES = BASE_SERVICES;
 
 const ENGINE_TO_SERVICE_ID = {
-  GEM: "gemini-runtime",
+  PRIME: "gemini-runtime",
   GEMINI: "gemini-runtime",
-  NEURAL2: "gemini-runtime",
+  VECTOR: "gemini-runtime",
   NEURAL_2: "gemini-runtime",
   NURAL2: "gemini-runtime",
   NURAL_2: "gemini-runtime",
-  KOKORO: "kokoro-runtime",
 };
 
 const BASE_CHECKS = [
@@ -360,13 +314,6 @@ const BASE_CHECKS = [
     name: "Gemini Runtime",
     url: "http://127.0.0.1:7810/health",
     timeoutMs: FAST_TIMEOUT_MS,
-    validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
-  },
-  {
-    serviceId: "kokoro-runtime",
-    name: "Kokoro Runtime",
-    url: "http://127.0.0.1:7820/health",
-    timeoutMs: KOKORO_TIMEOUT_MS,
     validate: (payload) => typeof payload === "object" && payload !== null && payload.ok === true,
   },
 ];
@@ -483,60 +430,7 @@ function resolveEffectiveGpuMode(service, requestedGpuMode) {
   return false;
 }
 
-function ensureKokoroTorchRuntimeDlls() {
-  if (process.platform !== "win32") return;
-
-  const scriptsDir = path.join(VENV_DIR, "kokoro-runtime", "Scripts");
-  const torchLibDir = path.join(VENV_DIR, "kokoro-runtime", "Lib", "site-packages", "torch", "lib");
-  if (!fs.existsSync(scriptsDir) || !fs.existsSync(torchLibDir)) return;
-
-  const dllNames = [
-    "concrt140.dll",
-    "msvcp140.dll",
-    "msvcp140_1.dll",
-    "msvcp140_2.dll",
-    "msvcp140_atomic_wait.dll",
-    "msvcp140_codecvt_ids.dll",
-    "vcamp140.dll",
-    "vcomp140.dll",
-    "vcruntime140.dll",
-    "vcruntime140_1.dll",
-    "vcruntime140_threads.dll",
-  ];
-
-  let copied = 0;
-  let skippedLocked = 0;
-  for (const dllName of dllNames) {
-    const source = path.join(scriptsDir, dllName);
-    if (!fs.existsSync(source)) continue;
-    const target = path.join(torchLibDir, dllName);
-    if (fs.existsSync(target)) continue;
-
-    try {
-      fs.copyFileSync(source, target);
-      copied += 1;
-    } catch (error) {
-      if (error && ["EBUSY", "EPERM", "EACCES"].includes(error.code) && fs.existsSync(target)) {
-        skippedLocked += 1;
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  if (copied > 0) {
-    console.log(`Synced ${copied} MSVC runtime DLL(s) into Kokoro torch lib.`);
-  }
-  if (skippedLocked > 0) {
-    console.log(`Skipped ${skippedLocked} locked MSVC DLL(s); existing files were kept.`);
-  }
-}
-
-function runServiceFixups(service) {
-  if (service.id === "kokoro-runtime") {
-    ensureKokoroTorchRuntimeDlls();
-  }
-}
+function runServiceFixups(_service) {}
 
 function runCommand(cmd, args, options = {}) {
   const printable = [cmd, ...args].join(" ");
@@ -592,11 +486,6 @@ function ensureVenv(service, servicePythonBin, desiredHash) {
   const reqHash = desiredHash || installSha(service, servicePythonBin);
   const statePath = serviceInstallStatePath(service.id);
   const currentHash = fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "";
-  if (!currentHash && fs.existsSync(pyPath) && fs.existsSync(serviceStatePath(service.id))) {
-    fs.writeFileSync(statePath, `${reqHash}\n`, "utf8");
-    runServiceFixups(service);
-    return pyPath;
-  }
   if (currentHash === reqHash) {
     runServiceFixups(service);
     return pyPath;
@@ -879,9 +768,6 @@ function stopService(service) {
 function startService(service, gpuMode, options = {}) {
   const printLogTail = options.printLogTail !== false;
   const effectiveGpuMode = resolveEffectiveGpuMode(service, gpuMode);
-  if (gpuMode && !effectiveGpuMode && service.id === "kokoro-runtime") {
-    console.log(`${service.name} enforces CPU mode and ignores --gpu.`);
-  }
   const servicePythonBin = service.runtime === "node" ? null : resolveServicePythonBin(service);
   if (service.runtime !== "node") {
     ensureServicePythonVersion(service, servicePythonBin);
@@ -1003,7 +889,7 @@ function resolveSwitchTarget(rawEngine) {
   const serviceId = ENGINE_TO_SERVICE_ID[normalized];
   if (!serviceId) {
     throw new Error(
-      `Invalid engine "${rawEngine}". Expected one of: GEM, NEURAL2, KOKORO.`
+      `Invalid engine "${rawEngine}". Expected one of: PRIME, VECTOR. DUNO is Modal-hosted and is not started by the local bootstrap helper.`
     );
   }
   const service = SERVICES.find((item) => item.id === serviceId);
@@ -1306,14 +1192,14 @@ async function main() {
       `Concurrency autotune enabled: profile=${CONCURRENCY_PROFILE} logicalCpu=${LOGICAL_CPU_COUNT} reserved=${HOST_RESERVED_CPUS} usable=${USABLE_CPU_COUNT}`
     );
     console.log(
-      `Autotune result: queueWorkers=${AUTO_TUNED_CONCURRENCY.queueWorkers} gemConcurrency=${AUTO_TUNED_CONCURRENCY.gemConcurrency} kokoroConcurrency=${AUTO_TUNED_CONCURRENCY.kokoroConcurrency} gemBatch=${AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel} kokoroBatch=${AUTO_TUNED_CONCURRENCY.kokoroBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.kokoroBatchMaxParallel}`
+      `Autotune result: queueWorkers=${AUTO_TUNED_CONCURRENCY.queueWorkers} gemConcurrency=${AUTO_TUNED_CONCURRENCY.gemConcurrency} dunoConcurrency=${AUTO_TUNED_CONCURRENCY.dunoConcurrency} gemBatch=${AUTO_TUNED_CONCURRENCY.gemBatchDefaultParallel}/${AUTO_TUNED_CONCURRENCY.gemBatchMaxParallel}`
     );
   } else {
     console.log("Concurrency autotune disabled (VF_AUTO_TUNE_WORKERS=0).");
   }
 
   if (GPU_MODE) {
-    console.log("GPU mode enabled for eligible local runtimes. Kokoro remains CPU-only.");
+    console.log("GPU mode enabled for eligible local runtimes. Duno is backend-only and uses the Modal endpoint.");
   }
 
   if (COMMAND === "down") {
@@ -1345,7 +1231,7 @@ async function main() {
     if (COMMAND_ARG) {
       const target = resolveServiceTarget(COMMAND_ARG);
       if (!target) {
-        throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (GEM/NEURAL2/KOKORO).`);
+        throw new Error(`Unknown restart target "${COMMAND_ARG}". Use a service id or engine (PRIME/VECTOR).`);
       }
       stopService(target);
       startService(target, GPU_MODE, { printLogTail: false });

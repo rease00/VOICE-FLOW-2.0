@@ -9,18 +9,50 @@ const toBaseUrl = (input?: string): string => {
 };
 
 export const ADMIN_READ_TIMEOUT_MS = 12000;
+const ADMIN_UNLOCK_STORAGE_KEY = 'vf_admin_unlock_token';
 
 let adminUnlockTokenMemory = '';
 
+const readPersistedAdminUnlockToken = (): string => {
+  if (typeof window === 'undefined') return '';
+  try {
+    return String(window.sessionStorage?.getItem(ADMIN_UNLOCK_STORAGE_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const persistAdminUnlockToken = (token: string): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    if (token) {
+      window.sessionStorage?.setItem(ADMIN_UNLOCK_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage?.removeItem(ADMIN_UNLOCK_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage write failures in constrained environments.
+  }
+};
+
 export const setAdminUnlockToken = (token: string): void => {
   adminUnlockTokenMemory = String(token || '').trim();
+  persistAdminUnlockToken(adminUnlockTokenMemory);
 };
 
 export const clearAdminUnlockToken = (): void => {
   adminUnlockTokenMemory = '';
+  persistAdminUnlockToken('');
 };
 
-export const getAdminUnlockToken = (): string => adminUnlockTokenMemory;
+export const getAdminUnlockToken = (): string => {
+  if (adminUnlockTokenMemory) return adminUnlockTokenMemory;
+  const persisted = readPersistedAdminUnlockToken();
+  if (persisted) {
+    adminUnlockTokenMemory = persisted;
+  }
+  return adminUnlockTokenMemory;
+};
 
 const adminAuthFetch: typeof authFetch = (url, init, options) => {
   const method = String(init?.method || 'GET').toUpperCase();
@@ -106,6 +138,7 @@ export interface AdminCoupon {
 
 export interface AdminSessionUnlockStatus {
   recordId?: string;
+  unlockRequired?: boolean;
   hasIssuedKey?: boolean;
   isLocked?: boolean;
   lockedUntil?: string;
@@ -665,6 +698,45 @@ export interface SupportAiPolicy {
   updatedBy?: string;
 }
 
+export interface AdminNotice {
+  id: string;
+  title: string;
+  message: string;
+  details?: string | null;
+  severity?: 'success' | 'info' | 'warning' | 'error' | 'critical' | string;
+  audience?: 'all' | 'admin' | 'user' | string;
+  channel?: 'toast' | 'inbox' | 'silent' | string;
+  status?: 'active' | 'deleted' | string;
+  expiresAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  createdBy?: string;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  isActive?: boolean;
+  isExpired?: boolean;
+  [key: string]: unknown;
+}
+
+export type VoiceCloneProviderKey = 'cloud_run' | 'modal';
+
+export interface VoiceCloneProviderRuntimeStatus {
+  configured?: boolean;
+  ready?: boolean;
+  detail?: string;
+  device?: string;
+}
+
+export interface VoiceCloneProviderStatusPayload {
+  ok: boolean;
+  activeProvider: VoiceCloneProviderKey | string;
+  defaultProvider?: VoiceCloneProviderKey | string;
+  revision?: number;
+  updatedAt?: string;
+  updatedBy?: string;
+  providers?: Record<string, VoiceCloneProviderRuntimeStatus | undefined>;
+}
+
 export const fetchAdminUsers = async (
   baseUrl?: string,
   options?: { q?: string; limit?: number }
@@ -679,6 +751,27 @@ export const fetchAdminUsers = async (
   ));
   return Array.isArray(payload?.users) ? (payload.users as AdminUserSummary[]) : [];
 };
+
+export const fetchAdminVoiceCloneProvider = async (
+  baseUrl?: string
+): Promise<VoiceCloneProviderStatusPayload> => readJsonOrThrow<VoiceCloneProviderStatusPayload>(await adminAuthFetch(
+  `${toBaseUrl(baseUrl)}/admin/voice-clone/provider`,
+  undefined,
+  { requireAuth: true }
+));
+
+export const patchAdminVoiceCloneProvider = async (
+  input: { activeProvider: VoiceCloneProviderKey | string },
+  baseUrl?: string
+): Promise<VoiceCloneProviderStatusPayload> => readJsonOrThrow<VoiceCloneProviderStatusPayload>(await adminAuthFetch(
+  `${toBaseUrl(baseUrl)}/admin/voice-clone/provider`,
+  {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  },
+  { requireAuth: true }
+));
 
 export const patchAdminUser = async (
   uid: string,
@@ -938,7 +1031,15 @@ export const verifyAdminSessionUnlock = async (
 export const fetchAdminSessionUnlockStatus = async (baseUrl?: string): Promise<AdminSessionUnlockStatusPayload> => (
   readJsonOrThrow<AdminSessionUnlockStatusPayload>(await adminAuthFetch(
     `${toBaseUrl(baseUrl)}/admin/session-unlock/status`,
-    undefined,
+    (() => {
+      const token = getAdminUnlockToken();
+      if (!token) return undefined;
+      return {
+        headers: {
+          'X-Admin-Unlock': `Bearer ${token}`,
+        },
+      };
+    })(),
     { requireAuth: true }
   ))
 );
@@ -1761,6 +1862,60 @@ export const patchAdminSupportAiPolicy = async (
   ));
   return payload.policy;
 };
+
+export const fetchAdminBroadcastNotices = async (
+  baseUrl?: string,
+  options?: { status?: 'active' | 'deleted' | 'all'; limit?: number }
+): Promise<AdminNotice[]> => {
+  const query = new URLSearchParams();
+  if (options?.status) query.set('status', String(options.status));
+  if (Number.isFinite(options?.limit)) query.set('limit', String(options?.limit));
+  const payload = await readJsonOrThrow<{ items?: AdminNotice[]; notices?: AdminNotice[] }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/notices${query.toString() ? `?${query.toString()}` : ''}`,
+    undefined,
+    { requireAuth: true }
+  ));
+  return Array.isArray(payload?.items) ? payload.items : Array.isArray(payload?.notices) ? payload.notices : [];
+};
+
+export const createAdminBroadcastNotice = async (
+  input: {
+    title?: string;
+    message: string;
+    details?: string;
+    expiresAt: string;
+    severity?: 'success' | 'info' | 'warning' | 'error' | 'critical' | string;
+    audience?: 'all' | 'admin' | 'user' | string;
+    channel?: 'toast' | 'inbox' | 'silent' | string;
+  },
+  baseUrl?: string
+): Promise<AdminNotice> => {
+  const payload = await readJsonOrThrow<{ notice?: AdminNotice; item?: AdminNotice }>(await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/notices`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { requireAuth: true }
+  ));
+  return payload?.notice || payload?.item || ({} as AdminNotice);
+};
+
+export const deleteAdminBroadcastNotice = async (noticeId: string, baseUrl?: string): Promise<void> => {
+  const response = await adminAuthFetch(
+    `${toBaseUrl(baseUrl)}/admin/notices/${encodeURIComponent(String(noticeId || '').trim())}`,
+    { method: 'DELETE' },
+    { requireAuth: true }
+  );
+  if (!response.ok) {
+    throw await parseResponseError(response);
+  }
+};
+
+export const fetchAdminNotices = fetchAdminBroadcastNotices;
+export const createAdminNotice = createAdminBroadcastNotice;
+export const deleteAdminNotice = deleteAdminBroadcastNotice;
 
 export interface AdminReaderCatalogItem extends ReaderCatalogItem {
   publishState?: 'published' | 'draft' | string;

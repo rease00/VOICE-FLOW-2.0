@@ -1,0 +1,103 @@
+name: Frontend Quality Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-quality:
+    name: Typecheck, Lint, Test, Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Typecheck
+        run: npm --prefix frontend run typecheck
+
+      - name: Lint
+        run: npm --prefix frontend run lint
+
+      - name: Unit tests
+        run: npm --prefix frontend run test:ci
+
+      - name: Build (isolated dist dir)
+        env:
+          NEXT_DIST_DIR: .next-ci
+        run: npm --prefix frontend run build
+
+      - name: Start standalone server
+        env:
+          NEXT_DIST_DIR: .next-ci
+          PORT: "3000"
+          HOSTNAME: "127.0.0.1"
+        run: |
+          npm --prefix frontend run start > "$RUNNER_TEMP/frontend-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/frontend-server.pid"
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000 >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/frontend-server.log"
+          exit 1
+
+      - name: Verify security headers
+        env:
+          NEXT_DIST_DIR: .next-ci
+        run: npm --prefix frontend run headers:verify -- http://127.0.0.1:3000
+
+      - name: Bundle budget
+        run: npm --prefix frontend run bundle:budget
+
+      - name: Stop standalone server
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/frontend-server.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/frontend-server.pid")" || true
+          fi
+
+  frontend-smoke:
+    name: Playwright Smoke
+    needs: frontend-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install Playwright browsers
+        run: npx --prefix frontend playwright install --with-deps chromium
+
+      - name: Smoke E2E
+        env:
+          CI: "true"
+          NEXT_DIST_DIR: .next-playwright
+        run: npm --prefix frontend run e2e:smoke

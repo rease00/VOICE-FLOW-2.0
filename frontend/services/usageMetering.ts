@@ -2,22 +2,19 @@ import { GenerationSettings, UserStats, UserWalletStats, VfEngineUsage, VfUsageS
 
 export const VF_UNIT = 'VF' as const;
 export const VF_ENGINE_RATES: Record<GenerationSettings['engine'], number> = {
-  KOKORO: 0.7,
-  NEURAL2: 1.2,
-  GEM: 1.5,
+  DUNO: 0.5,
+  VECTOR: 1.2,
+  PRIME: 1.5,
 };
 
-const sanitizeEngineRate = (value: unknown, fallback: number): number => {
-  return Number.isFinite(value) ? Math.max(0, Number(value)) : fallback;
-};
+const sanitizeEngineRate = (value: unknown, fallback: number): number => (
+  Number.isFinite(value) ? Math.max(0, Number(value)) : fallback
+);
 
 const sanitizeRateMap = (value: any): Record<GenerationSettings['engine'], number> => ({
-  KOKORO: sanitizeEngineRate(value?.KOKORO, VF_ENGINE_RATES.KOKORO),
-  NEURAL2: sanitizeEngineRate(value?.NEURAL2, VF_ENGINE_RATES.NEURAL2),
-  GEM: sanitizeEngineRate(
-    value?.GEM ?? value?.GOOD,
-    VF_ENGINE_RATES.GEM
-  ),
+  DUNO: sanitizeEngineRate(value?.DUNO, VF_ENGINE_RATES.DUNO),
+  VECTOR: sanitizeEngineRate(value?.VECTOR, VF_ENGINE_RATES.VECTOR),
+  PRIME: sanitizeEngineRate(value?.PRIME, VF_ENGINE_RATES.PRIME),
 });
 
 const createEngineUsage = (): VfEngineUsage => ({ chars: 0, vf: 0 });
@@ -27,9 +24,9 @@ const createWindow = (key: string): VfUsageWindow => ({
   totalChars: 0,
   totalVf: 0,
   byEngine: {
-    KOKORO: createEngineUsage(),
-    NEURAL2: createEngineUsage(),
-    GEM: createEngineUsage(),
+    DUNO: createEngineUsage(),
+    VECTOR: createEngineUsage(),
+    PRIME: createEngineUsage(),
   },
 });
 
@@ -61,9 +58,9 @@ export const createEmptyWalletStats = (): UserWalletStats => ({
   vffBalance: 0,
   paidVfBalance: 0,
   spendableNowByEngine: {
-    KOKORO: 0,
-    NEURAL2: 0,
-    GEM: 0,
+    DUNO: 0,
+    VECTOR: 0,
+    PRIME: 0,
   },
   vffMonthKey: undefined,
 });
@@ -83,12 +80,9 @@ const sanitizeWindow = (value: any, key: string): VfUsageWindow => ({
   totalChars: Number.isFinite(value?.totalChars) ? Math.max(0, Math.floor(value.totalChars)) : 0,
   totalVf: Number.isFinite(value?.totalVf) ? Math.max(0, Number(value.totalVf)) : 0,
   byEngine: {
-    KOKORO: sanitizeEngineUsage(value?.byEngine?.KOKORO),
-    NEURAL2: sanitizeEngineUsage(value?.byEngine?.NEURAL2),
-    GEM: addEngineUsage(
-      sanitizeEngineUsage(value?.byEngine?.GEM),
-      sanitizeEngineUsage(value?.byEngine?.GOOD),
-    ),
+    DUNO: sanitizeEngineUsage(value?.byEngine?.DUNO),
+    VECTOR: sanitizeEngineUsage(value?.byEngine?.VECTOR),
+    PRIME: sanitizeEngineUsage(value?.byEngine?.PRIME),
   },
 });
 

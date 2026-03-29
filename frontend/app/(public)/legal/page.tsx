@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import { LegalCenter } from '../../../src/landing/legal/LegalCenter';
 
 export const metadata: Metadata = {
-  title: 'VoiceFlow Legal Center',
-  description: 'VoiceFlow policy center for terms, privacy, cookies, billing, and acceptable-use documents.',
+  title: 'V FLOW AI Legal Center',
+  description: 'V FLOW AI policy center for terms, privacy, cookies, billing, and acceptable-use documents.',
   alternates: {
     canonical: '/legal',
   },

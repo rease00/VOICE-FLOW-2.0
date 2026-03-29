@@ -6,8 +6,7 @@ resources:
   - redis-secret.example.yaml
   - runtime-admin-secret.example.yaml
   - backend-configmap.yaml
+  - runtime-gemini.yaml
+  - worker-deployment.yaml
   - api-deployment.yaml
   - api-hpa.yaml
-  - worker-deployment.yaml
-  - runtime-gemini.yaml
-  - runtime-kokoro.yaml

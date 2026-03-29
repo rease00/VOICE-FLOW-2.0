@@ -1,5 +1,6 @@
 import { authFetch } from './authHttpClient';
-import { readJsonOrThrow } from '../src/shared/api/httpClient';
+import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
+import { requestJson } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { HistoryItem } from '../types';
 
@@ -7,10 +8,38 @@ const toBaseUrl = (input?: string): string => {
   return resolveApiBaseUrl(input);
 };
 
+const BILLING_IDEMPOTENCY_WINDOW_MS = 60_000;
+
+const normalizeBillingIdempotencyToken = (value: string): string =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: string): string => {
+  const minuteBucket = Math.floor(Date.now() / BILLING_IDEMPOTENCY_WINDOW_MS);
+  const fallback = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+  const parts = [
+    'vf',
+    normalizeBillingIdempotencyToken(operation) || 'billing',
+    normalizeBillingIdempotencyToken(subject) || normalizeBillingIdempotencyToken(fallback),
+  ];
+  const extraToken = normalizeBillingIdempotencyToken(extra || '');
+  if (extraToken) {
+    parts.push(extraToken);
+  }
+  parts.push(String(minuteBucket));
+  return parts.join(':');
+};
+
 export type BillingPlanName = 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
 export type BillingPlanKey = 'launcher' | 'starter' | 'creator' | 'pro' | 'scale';
 export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
-export type TtsEngineKey = 'KOKORO' | 'NEURAL2' | 'GEM';
+export type TtsEngineKey = 'DUNO' | 'VECTOR' | 'PRIME';
 
 export interface AccountEntitlements {
   uid: string;
@@ -19,6 +48,7 @@ export interface AccountEntitlements {
   monthly: {
     vfLimit: number;
     vfUsed: number;
+    vcUsed?: number;
     monthlyFreeVfUsed?: number;
     vfRemaining: number;
     generationCount: number;
@@ -30,6 +60,7 @@ export interface AccountEntitlements {
   daily: {
     generationUsed: number;
     vfUsed: number;
+    vcUsed?: number;
     periodKey: string;
     windowStartUtc: string;
     windowEndUtc: string;
@@ -46,6 +77,7 @@ export interface AccountEntitlements {
     monthlyPlanCaps: Record<string, number>;
     maxCharsPerGeneration: number;
     allowedEngines: TtsEngineKey[];
+    tokenPackDiscountPercent?: number;
   };
   features: {
     earlyAccess: boolean;
@@ -55,7 +87,11 @@ export interface AccountEntitlements {
     monthlyFreeLimit: number;
     vffBalance: number;
     paidVfBalance: number;
-    spendableNowByEngine: Record<'KOKORO' | 'NEURAL2' | 'GEM', number>;
+    vcFreeBalance?: number;
+    vcPaidBalance?: number;
+    vcSpendableBalance?: number;
+    vcMonthKey?: string;
+    spendableNowByEngine: Record<TtsEngineKey, number>;
     vffMonthKey?: string;
   };
 }
@@ -74,6 +110,8 @@ export interface AccountBillingPlanSummary {
     recurringInr: number;
     discountPercent: number;
   };
+  tokenPackDiscountPercent?: number;
+  launcherOfferConsumed?: boolean;
 }
 
 export interface AccountInvoiceSummary {
@@ -108,9 +146,14 @@ export interface AccountBillingSummary {
   };
   plan: AccountBillingPlanSummary;
   billing: {
-    stripeReady: boolean;
-    hasPortalAccess: boolean;
+    provider?: string | null;
+    hasBillingManagement?: boolean;
+    stripeReady?: boolean;
+    hasPortalAccess?: boolean;
+    paymentGateway?: string | null;
     stripeCustomerId?: string | null;
+    subscriptionId?: string | null;
+    customerId?: string | null;
     billingCountry?: string | null;
     currencyMode?: string | null;
   };
@@ -135,9 +178,54 @@ export interface AccountBillingSummary {
     expMonth?: number | null;
     expYear?: number | null;
   } | null;
+    tokenPack?: {
+      discountPercent?: number;
+    } | null;
   invoices: AccountInvoiceSummary[];
   warnings: string[];
 }
+
+export interface RazorpayCheckoutOptions {
+  key?: string;
+  order_id?: string;
+  subscription_id?: string;
+  amount?: number;
+  currency?: string;
+  name?: string;
+  description?: string;
+  image?: string;
+  prefill?: Record<string, string>;
+  notes?: Record<string, string>;
+  theme?: { color?: string };
+  modal?: Record<string, unknown>;
+  retry?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  readonly [key: string]: any;
+}
+
+export interface BillingCheckoutLaunch {
+  provider: string;
+  kind: 'checkout' | 'subscription' | 'redirect';
+  redirectUrl?: string;
+  checkoutOptions?: RazorpayCheckoutOptions | null;
+  subscriptionOptions?: RazorpayCheckoutOptions | null;
+  sessionId?: string;
+  packKey?: TokenPackKey;
+  packVf?: number;
+  standardAmountInr?: number;
+  finalAmountInr?: number;
+  discountPercent?: number;
+}
+
+export interface BillingSubscriptionActionResult {
+  ok?: boolean;
+  provider?: string;
+  summary?: AccountBillingSummary | null;
+  subscription?: AccountBillingSummary['subscription'] | null;
+  message?: string | null;
+}
+
+export const ACCOUNT_DELETE_CONFIRM_PHRASE = 'DELETE_MY_ACCOUNT';
 
 export interface AccountUserProfile {
   uid: string;
@@ -185,10 +273,15 @@ export const fetchAccountEntitlements = async (baseUrl?: string): Promise<Accoun
 };
 
 export const fetchAccountProfile = async (
-  baseUrl?: string
+  baseUrl?: string,
+  options?: { signal?: AbortSignal }
 ): Promise<{ profile: AccountUserProfile; requiredUserId: boolean; suggestedUserId?: string }> => {
   const payload = await readJsonOrThrow<{ profile: AccountUserProfile; requiredUserId?: boolean; suggestedUserId?: string }>(
-    await authFetch(`${toBaseUrl(baseUrl)}/account/profile`, undefined, { requireAuth: true })
+    await authFetch(
+      `${toBaseUrl(baseUrl)}/account/profile`,
+      options?.signal ? { signal: options.signal } : undefined,
+      { requireAuth: true, ...(options?.signal ? { signal: options.signal } : {}) }
+    )
   );
   return {
     profile: payload.profile,
@@ -226,16 +319,38 @@ export const upsertAccountProfile = async (
   return payload.profile;
 };
 
+export const deleteAccount = async (
+  baseUrl?: string,
+  confirmPhrase: string = ACCOUNT_DELETE_CONFIRM_PHRASE
+): Promise<void> => {
+  const response = await authFetch(
+    `${toBaseUrl(baseUrl)}/account/delete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmPhrase: String(confirmPhrase || '').trim() }),
+    },
+    { requireAuth: true }
+  );
+  if (!response.ok) {
+    throw await parseResponseError(response);
+  }
+};
+
 export const createCheckoutSession = async (
   plan: BillingPlanKey | 'plus' | 'launch',
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string; couponCode?: string }
-): Promise<{ url: string; sessionId?: string }> => {
-  const payload = await readJsonOrThrow<{ url?: string; sessionId?: string }>(await authFetch(
+): Promise<BillingCheckoutLaunch> => {
+  const idempotencyKey = makeBillingIdempotencyKey('checkout', `plan:${plan}`, options?.couponCode || '');
+  const payload = await requestJson<Record<string, any>>(
     `${toBaseUrl(baseUrl)}/billing/checkout-session`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
       body: JSON.stringify({
         plan,
         successUrl: options?.successUrl,
@@ -244,25 +359,30 @@ export const createCheckoutSession = async (
       }),
     },
     { requireAuth: true }
-  ));
-  const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
-  return {
-    url: String(payload?.url || ''),
-    ...(sessionId ? { sessionId } : {}),
-  };
+  );
+  return normalizeBillingCheckoutLaunch(payload, 'checkout');
 };
 
-export const createPortalSession = async (baseUrl?: string, returnUrl?: string): Promise<{ url: string }> => {
-  const payload = await readJsonOrThrow<{ url?: string }>(await authFetch(
-    `${toBaseUrl(baseUrl)}/billing/portal-session`,
+export const cancelBillingSubscription = async (baseUrl?: string): Promise<BillingSubscriptionActionResult> => {
+  const payload = await readJsonOrThrow<Record<string, any>>(await authFetch(
+    `${toBaseUrl(baseUrl)}/billing/subscription/cancel`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ returnUrl }),
     },
     { requireAuth: true }
   ));
-  return { url: String(payload?.url || '') };
+  return normalizeSubscriptionActionResult(payload);
+};
+
+export const resumeBillingSubscription = async (baseUrl?: string): Promise<BillingSubscriptionActionResult> => {
+  const payload = await readJsonOrThrow<Record<string, any>>(await authFetch(
+    `${toBaseUrl(baseUrl)}/billing/subscription/resume`,
+    {
+      method: 'POST',
+    },
+    { requireAuth: true }
+  ));
+  return normalizeSubscriptionActionResult(payload);
 };
 
 export const fetchAccountBillingSummary = async (baseUrl?: string): Promise<AccountBillingSummary> => {
@@ -276,20 +396,16 @@ export const createTokenPackCheckoutSession = async (
   pack: TokenPackKey,
   baseUrl?: string,
   options?: { successUrl?: string; cancelUrl?: string }
-): Promise<{ url: string; sessionId?: string; packKey?: TokenPackKey; packVf?: number; standardAmountInr?: number; finalAmountInr?: number; discountPercent?: number }> => {
-  const payload = await readJsonOrThrow<{
-    url?: string;
-    sessionId?: string;
-    packKey?: TokenPackKey;
-    packVf?: number;
-    standardAmountInr?: number;
-    finalAmountInr?: number;
-    discountPercent?: number;
-  }>(await authFetch(
+): Promise<BillingCheckoutLaunch> => {
+  const idempotencyKey = makeBillingIdempotencyKey('checkout', `token-pack:${pack}`);
+  const payload = await requestJson<Record<string, any>>(
     `${toBaseUrl(baseUrl)}/billing/token-pack/checkout-session`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
       body: JSON.stringify({
         pack,
         successUrl: options?.successUrl,
@@ -297,22 +413,61 @@ export const createTokenPackCheckoutSession = async (
       }),
     },
     { requireAuth: true }
+  );
+  return normalizeBillingCheckoutLaunch(
+    {
+      ...payload,
+      pack,
+    },
+    'checkout'
+  );
+};
+
+export const startVcTokenPackCheckout = async (
+  pack: string,
+  baseUrl?: string,
+  options?: { successUrl?: string; cancelUrl?: string }
+): Promise<BillingCheckoutLaunch> => {
+  const idempotencyKey = makeBillingIdempotencyKey('checkout', `vc-token-pack:${pack}`);
+  const payload = await requestJson<Record<string, any>>(
+    `${toBaseUrl(baseUrl)}/billing/vc-token-pack/checkout-session`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({
+        pack,
+        successUrl: options?.successUrl,
+        cancelUrl: options?.cancelUrl,
+      }),
+    },
+    { requireAuth: true }
+  );
+  return normalizeBillingCheckoutLaunch(
+    {
+      ...payload,
+      pack,
+    },
+    'checkout'
+  );
+};
+
+export const convertVfToVc = async (
+  vfAmount: number,
+  baseUrl?: string
+): Promise<AccountEntitlements> => {
+  const payload = await readJsonOrThrow<{ entitlements: AccountEntitlements }>(await authFetch(
+    `${toBaseUrl(baseUrl)}/wallet/vc/convert`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vfAmount }),
+    },
+    { requireAuth: true }
   ));
-  const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
-  const packKey = payload?.packKey ? String(payload.packKey) as TokenPackKey : undefined;
-  const packVf = Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined;
-  const standardAmountInr = Number.isFinite(payload?.standardAmountInr) ? Number(payload.standardAmountInr) : undefined;
-  const finalAmountInr = Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined;
-  const discountPercent = Number.isFinite(payload?.discountPercent) ? Number(payload.discountPercent) : undefined;
-  return {
-    url: String(payload?.url || ''),
-    ...(sessionId ? { sessionId } : {}),
-    ...(packKey ? { packKey } : {}),
-    ...(packVf !== undefined ? { packVf } : {}),
-    ...(standardAmountInr !== undefined ? { standardAmountInr } : {}),
-    ...(finalAmountInr !== undefined ? { finalAmountInr } : {}),
-    ...(discountPercent !== undefined ? { discountPercent } : {}),
-  };
+  return payload?.entitlements as AccountEntitlements;
 };
 
 export const redeemCoupon = async (code: string, baseUrl?: string): Promise<{ creditedVf: number; entitlements: AccountEntitlements }> => {
@@ -396,4 +551,76 @@ export const markSupportConversationUnresolved = async (
     )
   );
   return payload.conversation;
+};
+
+const normalizeBillingCheckoutLaunch = (
+  payload: Record<string, any>,
+  fallbackKind: BillingCheckoutLaunch['kind']
+): BillingCheckoutLaunch => {
+  const provider = String(payload?.provider || payload?.gateway || payload?.paymentProvider || 'razorpay').trim() || 'razorpay';
+  const redirectUrl = String(payload?.redirectUrl || payload?.url || payload?.checkoutUrl || '').trim();
+  const rawCheckoutOptions =
+    payload?.checkoutOptions ||
+    payload?.razorpayCheckoutOptions ||
+    payload?.razorpayOptions ||
+    payload?.subscriptionOptions ||
+    payload?.options ||
+    null;
+  const checkoutOptions = rawCheckoutOptions && typeof rawCheckoutOptions === 'object' ? (rawCheckoutOptions as RazorpayCheckoutOptions) : null;
+  const rawSubscriptionOptions =
+    payload?.subscriptionOptions ||
+    payload?.razorpaySubscriptionOptions ||
+    payload?.subscription ||
+    null;
+  const subscriptionOptions = rawSubscriptionOptions && typeof rawSubscriptionOptions === 'object'
+    ? (rawSubscriptionOptions as RazorpayCheckoutOptions)
+    : null;
+  const sessionId = payload?.sessionId ? String(payload.sessionId) : undefined;
+  const packKey = payload?.packKey
+    ? (String(payload.packKey) as TokenPackKey)
+    : payload?.pack
+      ? (String(payload.pack) as TokenPackKey)
+      : undefined;
+  const packVf = Number.isFinite(payload?.packVf) ? Number(payload.packVf) : undefined;
+  const standardAmountInr = Number.isFinite(payload?.standardAmountInr) ? Number(payload.standardAmountInr) : undefined;
+  const finalAmountInr = Number.isFinite(payload?.finalAmountInr) ? Number(payload.finalAmountInr) : undefined;
+  const discountPercent = Number.isFinite(payload?.discountPercent) ? Number(payload.discountPercent) : undefined;
+
+  return {
+    provider,
+    kind: checkoutOptions ? fallbackKind : subscriptionOptions ? 'subscription' : 'redirect',
+    ...(redirectUrl ? { redirectUrl } : {}),
+    ...(checkoutOptions ? { checkoutOptions } : {}),
+    ...(subscriptionOptions ? { subscriptionOptions } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(packKey ? { packKey } : {}),
+    ...(packVf !== undefined ? { packVf } : {}),
+    ...(standardAmountInr !== undefined ? { standardAmountInr } : {}),
+    ...(finalAmountInr !== undefined ? { finalAmountInr } : {}),
+    ...(discountPercent !== undefined ? { discountPercent } : {}),
+  };
+};
+
+const normalizeSubscriptionActionResult = (payload: Record<string, any>): BillingSubscriptionActionResult => {
+  const summary = payload?.summary && typeof payload.summary === 'object' ? payload.summary as AccountBillingSummary : null;
+  const subscription = payload?.subscription && typeof payload.subscription === 'object'
+    ? payload.subscription as AccountBillingSummary['subscription']
+    : null;
+  const result: BillingSubscriptionActionResult = {};
+  if (typeof payload?.ok === 'boolean') {
+    result.ok = payload.ok;
+  }
+  if (typeof payload?.provider === 'string') {
+    result.provider = payload.provider;
+  }
+  if (summary) {
+    result.summary = summary;
+  }
+  if (subscription) {
+    result.subscription = subscription;
+  }
+  if (payload?.message) {
+    result.message = String(payload.message);
+  }
+  return result;
 };

@@ -8,7 +8,7 @@ export interface PublicSurfaceResolution {
 }
 
 const LANDING_HOSTS = new Set(['v-flow-ai.com', 'www.v-flow-ai.com']);
-const LANDING_ONLY_PATHS = new Set(['/']);
+const LANDING_ONLY_PATHS = new Set(['/', '/landing']);
 const BILLING_PATHS = new Set(['/billing']);
 
 const normalizeHost = (hostname: string): string =>
