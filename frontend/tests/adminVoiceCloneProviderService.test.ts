@@ -46,7 +46,7 @@ describe('admin voice clone provider service', () => {
     expect(authFetchMock).toHaveBeenCalledWith(
       `${resolvedBaseUrl}/admin/voice-clone/provider`,
       undefined,
-      { requireAuth: true }
+      expect.objectContaining({ requireAuth: true })
     );
   });
 

@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 from pathlib import Path
 import sys
 
 from fastapi.testclient import TestClient
 
 RUNTIME_ROOT = Path(__file__).resolve().parent
-BACKEND_ROOT = RUNTIME_ROOT.parents[1]
-WORKSPACE_ROOT = BACKEND_ROOT.parent
-for candidate in (str(RUNTIME_ROOT), str(BACKEND_ROOT), str(WORKSPACE_ROOT)):
-    if candidate not in sys.path:
-        sys.path.insert(0, candidate)
-
-import app as runtime_app
+APP_PATH = RUNTIME_ROOT / "app.py"
+_SPEC = importlib.util.spec_from_file_location("seed_vc_runtime_app", APP_PATH)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError(f"Unable to load Seed VC runtime module from {APP_PATH}.")
+runtime_app = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = runtime_app
+_SPEC.loader.exec_module(runtime_app)
+runtime_app.OpenVoiceRequest.model_rebuild()
 
 
 def _client(monkeypatch, token: str = "test-token") -> TestClient:
