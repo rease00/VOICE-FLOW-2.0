@@ -1,12 +1,6 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight, ChevronUp, Pause, Play, Settings2, Upload } from 'lucide-react';
 
-type ReaderDockOption = {
-  value: string;
-  label: string;
-  disabled?: boolean;
-};
-
 interface ReaderStickyDockProps {
   title: string;
   unitLabel: string;
@@ -25,23 +19,12 @@ interface ReaderStickyDockProps {
   onExport?: () => void;
   onClose?: () => void;
   onToggleMiniMode: () => void;
-  onDockImport?: () => void;
-  onDockAmbience?: () => void;
-  onDockSpeaker?: () => void;
+  onDockImport?: () => boolean | void;
   onDockSettings?: () => void;
   importAccept?: string;
+  importDialogSignal?: number;
   onImportFiles?: (files: File[]) => void;
   onOpenSettings?: () => void;
-  ambienceOptions?: ReaderDockOption[];
-  ambiencePreset?: string;
-  ambienceValue?: string;
-  onAmbiencePresetChange?: (value: string) => void;
-  onAmbienceChange?: (value: string) => void;
-  speakerOptions?: ReaderDockOption[];
-  stylePreset?: string;
-  speakerValue?: string;
-  onStylePresetChange?: (value: string) => void;
-  onSpeakerChange?: (value: string) => void;
 }
 
 export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
@@ -63,25 +46,15 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
   onClose,
   onToggleMiniMode,
   onDockImport,
-  onDockAmbience,
-  onDockSpeaker,
   onDockSettings,
   importAccept = '',
+  importDialogSignal = 0,
   onImportFiles,
   onOpenSettings,
-  ambienceOptions,
-  ambiencePreset,
-  ambienceValue,
-  onAmbiencePresetChange,
-  onAmbienceChange,
-  speakerOptions,
-  stylePreset,
-  speakerValue,
-  onStylePresetChange,
-  onSpeakerChange,
 }) => {
   const importInputRef = React.useRef<HTMLInputElement>(null);
   const importInputId = React.useId();
+  const lastImportDialogSignalRef = React.useRef(importDialogSignal);
 
   const safeReadyChunks = Math.max(0, Math.floor(Number(readyChunkCount || 0)));
   const safePendingChunks = Math.max(0, Math.floor(Number(pendingChunkCount || 0)));
@@ -89,48 +62,19 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
   const resolvedTransportDisabled = Boolean(transportDisabled);
 
   const queueStatusText = `${safeReadyChunks} ready chunks, ${safePendingChunks} pending, queue ${safeQueuePct}%`;
-  const resolvedAmbienceOptions: ReaderDockOption[] =
-    ambienceOptions && ambienceOptions.length > 0
-      ? ambienceOptions
-      : [
-          { value: 'calm', label: 'Calm' },
-          { value: 'focus', label: 'Focus' },
-          { value: 'night', label: 'Night' },
-        ];
-  const resolvedSpeakerOptions: ReaderDockOption[] =
-    speakerOptions && speakerOptions.length > 0
-      ? speakerOptions
-      : [
-          { value: 'narrator', label: 'Narrator' },
-          { value: 'warm', label: 'Warm voice' },
-          { value: 'clear', label: 'Clear voice' },
-        ];
-
-  const handleAmbiencePresetChange = onAmbienceChange ?? onAmbiencePresetChange;
-  const handleStylePresetChange = onSpeakerChange ?? onStylePresetChange;
-  const safeAmbienceValue = ambienceValue ?? ambiencePreset ?? resolvedAmbienceOptions[0]?.value ?? '';
-  const safeSpeakerValue = speakerValue ?? stylePreset ?? resolvedSpeakerOptions[0]?.value ?? '';
-  const ambienceSelectProps = handleAmbiencePresetChange
-    ? {
-        value: safeAmbienceValue,
-        onChange: (event: React.ChangeEvent<HTMLSelectElement>) => handleAmbiencePresetChange(event.target.value),
-      }
-    : {
-        defaultValue: safeAmbienceValue,
-      };
-  const speakerSelectProps = handleStylePresetChange
-    ? {
-        value: safeSpeakerValue,
-        onChange: (event: React.ChangeEvent<HTMLSelectElement>) => handleStylePresetChange(event.target.value),
-      }
-    : {
-        defaultValue: safeSpeakerValue,
-      };
 
   const handleImportClick = () => {
-    onDockImport?.();
+    const handledByParent = onDockImport?.();
+    if (handledByParent) return;
     importInputRef.current?.click();
   };
+
+  React.useEffect(() => {
+    if (importDialogSignal > lastImportDialogSignalRef.current) {
+      importInputRef.current?.click();
+    }
+    lastImportDialogSignalRef.current = importDialogSignal;
+  }, [importDialogSignal]);
 
   const handleImportChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.currentTarget.files;
@@ -138,14 +82,6 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
       onImportFiles(Array.from(files));
     }
     event.currentTarget.value = '';
-  };
-  const handleAmbienceChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    onDockAmbience?.();
-    handleAmbiencePresetChange?.(event.target.value);
-  };
-  const handleSpeakerChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    onDockSpeaker?.();
-    handleStylePresetChange?.(event.target.value);
   };
 
   if (miniMode) {
@@ -237,39 +173,10 @@ export const ReaderStickyDock: React.FC<ReaderStickyDockProps> = ({
             accept={importAccept || undefined}
             onChange={handleImportChange}
             className="vf-reader-v2-dock__import-input"
+            hidden
             aria-hidden="true"
             tabIndex={-1}
           />
-
-          <label className="vf-reader-v2-dock__field">
-            <span className="vf-reader-v2-dock__status-sr">Ambience preset</span>
-            <select
-              aria-label="Ambience preset"
-              {...ambienceSelectProps}
-              onChange={handleAmbienceChange}
-            >
-              {resolvedAmbienceOptions.map((option) => (
-                <option key={option.value} value={option.value} disabled={option.disabled}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="vf-reader-v2-dock__field">
-            <span className="vf-reader-v2-dock__status-sr">Narrator voice</span>
-            <select
-              aria-label="Narrator voice"
-              {...speakerSelectProps}
-              onChange={handleSpeakerChange}
-            >
-              {resolvedSpeakerOptions.map((option) => (
-                <option key={option.value} value={option.value} disabled={option.disabled}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
 
           <button
             type="button"

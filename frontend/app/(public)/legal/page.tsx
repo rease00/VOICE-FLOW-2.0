@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { LegalCenter } from '../../../src/landing/legal/LegalCenter';
+import { LegalCenter } from '../../../src/features/legal/LegalCenter';
 
 export const metadata: Metadata = {
   title: 'V FLOW AI Legal Center',

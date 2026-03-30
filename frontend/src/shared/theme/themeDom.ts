@@ -2,6 +2,7 @@ import { DEFAULT_UI_BRAND_THEME, resolveUiBrandThemeId, type UiBrandThemeId } fr
 
 export type UiThemeMode = 'light' | 'dark' | 'system';
 export type ResolvedUiThemeMode = 'light' | 'dark';
+export type UiMotionLevel = 'off' | 'balanced' | 'rich';
 
 const setDatasetValue = (element: HTMLElement, key: string, value: string | null): void => {
   if (value) {
@@ -27,6 +28,29 @@ const snapshotThemeState = (body: HTMLElement, root: HTMLElement) => ({
   rootVfResolvedTheme: root.dataset.vfResolvedTheme || null,
   rootVfBrandTheme: root.dataset.vfBrandTheme || null,
 });
+
+const snapshotMotionState = (body: HTMLElement) => ({
+  bodyMotion: body.dataset.motion || null,
+  bodyVfMotionOff: body.classList.contains('vf-motion-off'),
+  bodyVfMotionBalanced: body.classList.contains('vf-motion-balanced'),
+  bodyVfMotionRich: body.classList.contains('vf-motion-rich'),
+});
+
+const resolveUiThemeMode = (value: string | null | undefined): UiThemeMode => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'light' || token === 'dark' || token === 'system') {
+    return token;
+  }
+  return 'dark';
+};
+
+const resolveUiMotionLevel = (value: string | null | undefined): UiMotionLevel => {
+  const token = String(value || '').trim().toLowerCase();
+  if (token === 'off' || token === 'balanced' || token === 'rich') {
+    return token;
+  }
+  return 'off';
+};
 
 export const applyThemeModeToDocument = (
   doc: Pick<Document, 'body' | 'documentElement'>,
@@ -89,5 +113,29 @@ export const applyBrandThemeToDocument = (
     if (!previous.rootVfThemeLight) root.classList.remove('vf-theme-light');
   };
 };
+
+export const applyMotionLevelToDocument = (
+  doc: Pick<Document, 'body'>,
+  motionLevel: UiMotionLevel,
+): (() => void) => {
+  const body = doc.body;
+  const previous = snapshotMotionState(body);
+
+  setDatasetValue(body, 'motion', motionLevel);
+  body.classList.toggle('vf-motion-off', motionLevel === 'off');
+  body.classList.toggle('vf-motion-balanced', motionLevel === 'balanced');
+  body.classList.toggle('vf-motion-rich', motionLevel === 'rich');
+
+  return () => {
+    setDatasetValue(body, 'motion', previous.bodyMotion);
+    body.classList.toggle('vf-motion-off', previous.bodyVfMotionOff);
+    body.classList.toggle('vf-motion-balanced', previous.bodyVfMotionBalanced);
+    body.classList.toggle('vf-motion-rich', previous.bodyVfMotionRich);
+  };
+};
+
+export const readUiThemeModeFromStorage = (value: string | null | undefined): UiThemeMode => resolveUiThemeMode(value);
+
+export const readUiMotionLevelFromStorage = (value: string | null | undefined): UiMotionLevel => resolveUiMotionLevel(value);
 
 export const readUiBrandThemeFromStorage = (value: string | null | undefined): UiBrandThemeId => resolveUiBrandThemeId(value || DEFAULT_UI_BRAND_THEME);

@@ -1,30 +1,30 @@
 import { GenerationSettings } from '../types';
 
 export const ENGINE_DISPLAY_NAMES: Record<GenerationSettings['engine'], string> = {
-  DUNO: 'DUNO',
-  VECTOR: 'VECTOR',
-  PRIME: 'PRIME',
+  DUNO: 'Duno',
+  VECTOR: 'Vector',
+  PRIME: 'Prime',
 };
 
 export const ENGINE_COMPACT_LABELS: Record<GenerationSettings['engine'], string> = {
-  DUNO: 'DUNO',
-  VECTOR: 'VECTOR',
-  PRIME: 'PRIME',
+  DUNO: 'Duno',
+  VECTOR: 'Vector',
+  PRIME: 'Prime',
 };
 
 export const ENGINE_RUNTIME_SUBLABELS: Record<GenerationSettings['engine'], string> = {
-  DUNO: 'DUNO voice engine',
-  VECTOR: 'VECTOR voice engine',
-  PRIME: 'PRIME voice engine',
+  DUNO: 'Duno voice engine',
+  VECTOR: 'Vector voice engine',
+  PRIME: 'Prime voice engine',
 };
 
 const TTS_ENGINE_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
-  [/\bvector runtime\b/gi, 'VECTOR Runtime'],
-  [/\bprime runtime\b/gi, 'PRIME Runtime'],
-  [/\bduno runtime\b/gi, 'DUNO Runtime'],
-  [/\bvector\b/gi, 'VECTOR'],
-  [/\bprime\b/gi, 'PRIME'],
-  [/\bduno\b/gi, 'DUNO'],
+  [/\bvector runtime\b/gi, 'Vector Runtime'],
+  [/\bprime runtime\b/gi, 'Prime Runtime'],
+  [/\bduno runtime\b/gi, 'Duno Runtime'],
+  [/\bvector\b/gi, 'Vector'],
+  [/\bprime\b/gi, 'Prime'],
+  [/\bduno\b/gi, 'Duno'],
 ];
 
 export const getEngineDisplayName = (engine: GenerationSettings['engine']): string => ENGINE_DISPLAY_NAMES[engine] || engine;

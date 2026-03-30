@@ -45,7 +45,7 @@ import { MorphingGenerateButton } from '../components/studio/MorphingGenerateBut
 import { DirectorPreview } from '../components/studio/DirectorPreview';
 import { normalizeDirectorPreviewComparisonText } from '../components/studio/directorPreviewDiff';
 import { TelemetrySparkline } from '../components/ui/TelemetrySparkline';
-import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
+import { buildWorkspaceTabs, resolveWorkspaceNextPreloadTab, WORKSPACE_NAV_SECTION_LABELS, WorkspaceTab as Tab } from '../src/features/workspace/model/tabs';
 import { useBillingActions } from '../src/features/billing/hooks/useBillingActions';
 import { cancelTtsJob, createTtsJob, fetchTtsEngineLatency, fetchTtsEnginesStatus, getTtsJob } from '../src/shared/api/gatewayClient';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
@@ -88,9 +88,9 @@ import {
   appendRollingSample,
   createDubbingClip,
   formatInr,
+  formatMobileAvailableCreditsPercent,
   getStaticVoiceFallback,
   injectDirectorTagsPreservingFormat,
-  normalizeAllowedEngines,
   normalizeEngineToken,
   normalizeEmotionTag,
   normalizeSpeakerHeaderScript,
@@ -104,9 +104,11 @@ import {
   resolveTokenPackDiscountPercent,
   resolveMediaBackendUrl,
   normalizePlanToken,
+  PRIME_ACCESS_LOCK_MESSAGE,
   resolveSpeakerMappedVoiceId,
   resolveStudioMusicGain,
   resolveStudioSpeechGain,
+  resolvePrimeAllowedEngines,
   runDubbingEditorTool,
   shouldRefreshSelectedEngineTelemetry,
 } from './mainAppHelpers';
@@ -565,6 +567,8 @@ type UiTheme = 'light' | 'dark' | 'system';
 type UiDensity = 'comfortable' | 'compact';
 type UiMotionLevel = 'off' | 'balanced' | 'rich';
 type EngineRuntimeState = EngineRuntimeUiState;
+
+const UI_FONT_SCALE_DEFAULT = 1;
 
 const STUDIO_OBJECT_URL_REGISTRY_MAX = 64;
 const STUDIO_SINGLE_RUN_CHAR_CAP = 8000;
@@ -1258,7 +1262,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     isCenterOpen,
     setCenterOpen,
   } = useNotifications();
-  const { mode: viewportMode, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
+  const { mode: viewportMode, width: viewportWidth, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
+  const isLargeDesktop = viewportWidth >= 1600;
+  const isUltraWideDesktop = viewportWidth >= 2048;
+  const isNarrowDesktop = isDesktop && viewportWidth < 1152;
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const hasAdminConsoleAccess = useMemo(() => canUseAdminConsole(user), [user]);
 
@@ -1442,10 +1449,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const saved = readStorageString(STORAGE_KEYS.uiDensity);
     return saved === 'comfortable' ? 'comfortable' : 'compact';
   });
-  const [uiFontScale, setUiFontScale] = useState<number>(() => {
-    const saved = parseFloat(readStorageString(STORAGE_KEYS.uiFontScale) || '1');
-    return Number.isFinite(saved) ? Math.min(1.15, Math.max(0.9, saved)) : 1;
-  });
+  const uiFontScale = UI_FONT_SCALE_DEFAULT;
 
   const setGeneratedAudioUrlManaged = useCallback((nextUrl: string | null) => {
     setGeneratedAudioUrl((previousUrl) => {
@@ -1842,23 +1846,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const normalizedPlanToken = normalizePlanToken(stats.planName);
   const isPaidBillingPlan = normalizedPlanToken !== 'free';
   const isFreeTierUser = !hasUnlimitedAccess && !isPaidBillingPlan;
-  const entitlementAllowedEngines = useMemo(
-    () => normalizeAllowedEngines(stats.limits?.allowedEngines),
-    [stats.limits?.allowedEngines]
+  const walletPaidVfBalance = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
+  const primeAllowedEngines: GenerationSettings['engine'][] = useMemo(
+    () => resolvePrimeAllowedEngines({
+      hasUnlimitedAccess,
+      isPaidBillingPlan,
+      paidVfBalance: walletPaidVfBalance,
+    }),
+    [hasUnlimitedAccess, isPaidBillingPlan, walletPaidVfBalance]
   );
-  const planAllowedEngines: GenerationSettings['engine'][] = useMemo(
-    () => (
-      hasUnlimitedAccess
-        ? [...ENGINE_ORDER]
-        : entitlementAllowedEngines.length > 0
-          ? entitlementAllowedEngines
-          : normalizedPlanToken === 'launcher'
-            ? ['DUNO', 'VECTOR']
-            : isPaidBillingPlan
-            ? [...ENGINE_ORDER]
-            : ['DUNO', 'VECTOR']
-    ),
-    [entitlementAllowedEngines, hasUnlimitedAccess, isPaidBillingPlan, normalizedPlanToken]
+  const isPrimeEngineAllowed = useCallback(
+    (engine: GenerationSettings['engine']) => primeAllowedEngines.includes(engine),
+    [primeAllowedEngines]
   );
   const maxCharsPerGeneration = STUDIO_SINGLE_RUN_CHAR_CAP;
   const studioQueueSourceHash = useMemo(() => hashStudioQueueSource(text), [text]);
@@ -1887,10 +1886,17 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const canRunDunoWithoutWallet = settings.engine === 'DUNO';
   const isWalletBlocked = currentEngineSpendable <= 0 && !hasUnlimitedAccess;
   const walletMonthlyFree = Math.max(0, Number(stats.wallet?.monthlyFreeRemaining || 0));
-  const walletPaid = Math.max(0, Number(stats.wallet?.paidVfBalance || 0));
+  const walletMonthlyFreeLimit = Math.max(0, Number(stats.wallet?.monthlyFreeLimit || 0));
+  const walletPaid = walletPaidVfBalance;
+  const availableCreditsPercentLabel = formatMobileAvailableCreditsPercent({
+    hasUnlimitedAccess,
+    monthlyFreeRemaining: walletMonthlyFree,
+    monthlyFreeLimit: walletMonthlyFreeLimit,
+    paidVfBalance: walletPaid,
+  });
   const activePlanLabel = hasUnlimitedAccess ? 'Unlimited' : (isPaidBillingPlan ? String(stats.planName || 'Paid') : 'Free');
   const balanceRemainingLabel = hasUnlimitedAccess ? 'Unlimited' : walletMonthlyFree.toLocaleString();
-  const allowedEngineSummary = planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ');
+  const allowedEngineSummary = primeAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ');
   const toUserFriendlySystemMessage = useCallback((raw: unknown, fallback: string): string => {
     return formatFrontendError(raw, {
       fallback,
@@ -2297,10 +2303,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       }
       return normalizeRuntimeUrl(getDefaultRuntimeUrlForEngine(engine));
   };
-  const isEnginePlanAllowed = useCallback(
-      (engine: GenerationSettings['engine']) => hasUnlimitedAccess || planAllowedEngines.includes(engine),
-      [hasUnlimitedAccess, planAllowedEngines]
-  );
   const resolveVoiceAccessTier = useCallback(
       (engine: GenerationSettings['engine'], voice: VoiceOption): 'free' | 'pro' => {
           const explicit = String(voice.accessTier || '').trim().toLowerCase();
@@ -2623,14 +2625,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   );
 
   useEffect(() => {
-      if (isEnginePlanAllowed(settings.engine)) return;
-      const fallbackEngine = planAllowedEngines[0] || 'DUNO';
+      if (isPrimeEngineAllowed(settings.engine)) return;
+      const fallbackEngine = primeAllowedEngines[0] || 'DUNO';
       const fallbackVoiceId = getValidVoiceIdForEngine(fallbackEngine, settings.voiceId);
       setSettings((prev) => ({ ...prev, engine: fallbackEngine, voiceId: fallbackVoiceId }));
   }, [
       getValidVoiceIdForEngine,
-      isEnginePlanAllowed,
-      planAllowedEngines,
+      isPrimeEngineAllowed,
+      primeAllowedEngines,
       settings.engine,
       settings.voiceId,
   ]);
@@ -3335,7 +3337,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
         const bestEngine = pickLowestLatencyRuntimeEngine(
           candidateLatencies,
-          planAllowedEngines
+          primeAllowedEngines
         );
         if (!bestEngine) return;
 
@@ -3372,7 +3374,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     isGenerating,
     managedActiveEngine,
     mediaBackendUrl,
-    planAllowedEngines,
+    primeAllowedEngines,
     probeRuntimeStatus,
     selectVoiceIdFromCatalog,
     setManagedActiveEngine,
@@ -3417,7 +3419,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   ): Promise<{ runtimeUrl: string; catalog: VoiceOption[]; syncedVoiceId?: string }> => {
       throwIfSignalAborted(options?.signal);
       const engineLabel = getEngineDisplayName(engine);
-      if (!isEnginePlanAllowed(engine)) {
+      if (!isPrimeEngineAllowed(engine)) {
           throw new Error(`${engineLabel} is not enabled for your current plan.`);
       }
       let runtimeUrl = getRuntimeUrlForEngine(engine);
@@ -7839,12 +7841,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const activateTtsEngine = async (engine: GenerationSettings['engine']) => {
       const targetEngine = resolveEngineToken(engine) as GenerationSettings['engine'];
       if (engineSwitchInProgress) return;
-      if (!isEnginePlanAllowed(targetEngine)) {
-          if (!hasUnlimitedAccess && !isPaidBillingPlan) {
+      if (!isPrimeEngineAllowed(targetEngine)) {
+          if (!hasUnlimitedAccess && !isPaidBillingPlan && walletPaidVfBalance <= 0) {
               setShowSubscriptionModal(true);
-              showToast(`${getEngineDisplayName(targetEngine)} is available on paid plans. Upgrade to continue.`, 'info');
+              showToast(`${getEngineDisplayName(targetEngine)} is available on paid subscriptions or with paid token balance. Upgrade to continue.`, 'info');
           } else {
-              showToast(`${getEngineLabel(targetEngine)} is not enabled for this plan.`, 'info');
+              showToast(`${getEngineLabel(targetEngine)} is not enabled for this account.`, 'info');
           }
           return;
       }
@@ -8219,6 +8221,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const Sidebar = () => {
     const isDesktopCompact = isDesktop && sidebarMode === 'compact';
     const primaryWorkspaceTabs = workspaceTabs.filter((item) => item.id !== Tab.ADMIN);
+    const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create');
+    const libraryWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'library');
     const adminWorkspaceTab = workspaceTabs.find((item) => item.id === Tab.ADMIN);
     const getSidebarButtonClassName = (isActive: boolean) => `flex w-full items-center rounded-xl text-sm font-semibold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
       isDesktopCompact ? 'flex-col justify-center gap-0.5 px-1.5 py-2' : 'gap-3 px-3.5 py-2.5'
@@ -8239,6 +8243,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       setIsMobileMenuOpen(false);
       openBuyCenter();
     };
+    const sectionHeaderClassName = `px-3 pb-1 text-[10px] font-black uppercase tracking-[0.16em] ${
+      isDarkUi ? 'text-slate-500' : 'text-gray-400'
+    }`;
 
     return (
     <aside
@@ -8259,60 +8266,105 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       </div>
 
       <nav className={`vf-sidebar-nav space-y-1 border-b ${isDesktopCompact ? 'px-2 py-3' : 'px-3 py-3'} ${isDarkUi ? 'border-slate-800' : 'border-gray-100'}`}>
-        {primaryWorkspaceTabs.map(item => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
-            aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
-            aria-label={item.label}
-            title={item.label}
-            className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
-          >
-            <span className="shrink-0">{item.icon}</span>
-            {!isDesktopCompact && <span className="truncate">{item.label}</span>}
-            {isDesktopCompact && (
-              <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-                {item.label}
-              </span>
+        <div className={isDesktopCompact ? 'space-y-2' : 'space-y-3'}>
+          {createWorkspaceTabs.length > 0 ? (
+            <div className="space-y-1">
+              {!isDesktopCompact && (
+                <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.create}</p>
+              )}
+              {createWorkspaceTabs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
+                  aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
+                >
+                  <span className="shrink-0">{item.icon}</span>
+                  {!isDesktopCompact && <span className="truncate">{item.label}</span>}
+                  {isDesktopCompact && (
+                    <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                      {item.label}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {libraryWorkspaceTabs.length > 0 ? (
+            <div className="space-y-1">
+              {!isDesktopCompact && (
+                <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.library}</p>
+              )}
+              {libraryWorkspaceTabs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
+                  aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
+                >
+                  <span className="shrink-0">{item.icon}</span>
+                  {!isDesktopCompact && <span className="truncate">{item.label}</span>}
+                  {isDesktopCompact && (
+                    <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                      {item.label}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="space-y-1">
+            {!isDesktopCompact && (
+              <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.account}</p>
             )}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={handleBuyClick}
-          aria-current={isCreditsSurfaceOpen ? 'page' : undefined}
-          aria-label="Buy"
-          title="Buy"
-          className={getSidebarButtonClassName(isCreditsSurfaceOpen)}
-        >
-          <span className="shrink-0"><Coins size={18} /></span>
-          {!isDesktopCompact && <span className="truncate">Buy</span>}
-          {isDesktopCompact && (
-            <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-              Buy
-            </span>
-          )}
-        </button>
-        {adminWorkspaceTab ? (
-          <button
-            key={adminWorkspaceTab.id}
-            type="button"
-            onClick={() => { setActiveTab(adminWorkspaceTab.id); setIsMobileMenuOpen(false); }}
-            aria-current={!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id ? 'page' : undefined}
-            aria-label={adminWorkspaceTab.label}
-            title={adminWorkspaceTab.label}
-            className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id)}
-          >
-            <span className="shrink-0">{adminWorkspaceTab.icon}</span>
-            {!isDesktopCompact && <span className="truncate">{adminWorkspaceTab.label}</span>}
-            {isDesktopCompact && (
-              <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-                {adminWorkspaceTab.label}
-              </span>
-            )}
-          </button>
-        ) : null}
+            <button
+              type="button"
+              onClick={handleBuyClick}
+              aria-current={isCreditsSurfaceOpen ? 'page' : undefined}
+              aria-label="Buy"
+              title="Buy"
+              className={getSidebarButtonClassName(isCreditsSurfaceOpen)}
+            >
+              <span className="shrink-0"><Coins size={18} /></span>
+              {!isDesktopCompact && <span className="truncate">Buy</span>}
+              {isDesktopCompact && (
+                <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                  Buy
+                </span>
+              )}
+            </button>
+          </div>
+          {adminWorkspaceTab ? (
+            <div className="space-y-1">
+              {!isDesktopCompact && (
+                <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.admin}</p>
+              )}
+              <button
+                key={adminWorkspaceTab.id}
+                type="button"
+                onClick={() => { setActiveTab(adminWorkspaceTab.id); setIsMobileMenuOpen(false); }}
+                aria-current={!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id ? 'page' : undefined}
+                aria-label={adminWorkspaceTab.label}
+                title={adminWorkspaceTab.label}
+                className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id)}
+              >
+                <span className="shrink-0">{adminWorkspaceTab.icon}</span>
+                {!isDesktopCompact && <span className="truncate">{adminWorkspaceTab.label}</span>}
+                {isDesktopCompact && (
+                  <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                    {adminWorkspaceTab.label}
+                  </span>
+                )}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </nav>
 
       <div className="vf-sidebar-scroll custom-scrollbar flex-1 min-h-0 overflow-y-auto overscroll-contain">
@@ -8377,7 +8429,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               <div className="mt-1 flex items-center justify-between gap-2">
                 <span>Allowed engines</span>
                 <strong className={`max-w-[9rem] truncate text-right ${isDarkUi ? 'text-slate-100' : 'text-slate-900'}`}>
-                  {planAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
+                  {primeAllowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')}
                 </strong>
               </div>
               <div className="mt-1 flex items-center justify-between gap-2">
@@ -8773,17 +8825,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           <div>
                               <div className={`flex justify-between text-[11px] mb-1 font-semibold ${isDarkUi ? 'text-slate-200' : 'text-gray-700'}`}>
                                   <span className="flex items-center gap-1"><Type size={11}/> UI Scale</span>
-                                  <span>{uiFontScale.toFixed(2)}x</span>
+                                  <span>{Math.round(uiFontScale * 100)}%</span>
                               </div>
-                              <input
-                                  type="range"
-                                  min="0.9"
-                                  max="1.15"
-                                  step="0.05"
-                                  value={uiFontScale}
-                                  onChange={(e) => setUiFontScale(parseFloat(e.target.value))}
-                                  className={`w-full accent-indigo-600 h-1.5 rounded-lg appearance-none ${isDarkUi ? 'bg-slate-700' : 'bg-gray-200'}`}
-                              />
+                              <div className={`rounded-md border px-2 py-1 text-[10px] font-medium ${isDarkUi ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>
+                                  Locked at 100%
+                              </div>
                           </div>
                       </div>
                   </section>
@@ -8798,7 +8844,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               const status = ttsRuntimeStatus[engine];
                               const pending = engineSwitchInProgress === engine;
                               const switchLocked = Boolean(engineSwitchInProgress) && !pending;
-                              const planLockedEngine = !isEnginePlanAllowed(engine);
+                              const planLockedEngine = !isPrimeEngineAllowed(engine);
                               const showAccessBlockedNote = status.state === 'online' && ttsAccessState.blocked;
                               const accessBlockedDetail = sanitizeUiText(
                                 ttsAccessState.detail || 'Sign in again to enable AI/TTS requests.'
@@ -8812,7 +8858,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       if (switchLocked || pending) return;
                                       if (planLockedEngine) {
                                           setShowSubscriptionModal(true);
-                                          showToast(`${getEngineDisplayName(engine)} is available on paid plans. Upgrade to continue.`, 'info');
+                                          showToast(PRIME_ACCESS_LOCK_MESSAGE, 'info');
                                           return;
                                       }
                                       void activateTtsEngine(engine);
@@ -8870,7 +8916,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           )}
                                           {planLockedEngine && (
                                               <div className={`mt-1 text-[10px] font-medium ${isDarkUi ? 'text-amber-300' : 'text-amber-700'}`}>
-                                                  Upgrade required for this engine.
+                                                  {PRIME_ACCESS_LOCK_MESSAGE}
                                               </div>
                                           )}
                                       </div>
@@ -8897,24 +8943,47 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const usesPhoneStudioDock = isStudioWorkspaceTab && isPhone;
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
   const shouldHideAssistantForReader = activeTab === Tab.READER;
-  const studioMainSpacingClass = isPhone ? 'space-y-3' : 'space-y-4';
+  const useDesktopPinnedMixRail = isDesktop && !isPhone;
+  const studioMainSpacingClass = isPhone
+    ? 'space-y-2'
+    : isNarrowDesktop
+      ? 'space-y-2.5'
+      : 'space-y-4';
   const studioEditorHeightClass = isPhone
-    ? 'min-h-[20.5rem] h-[min(34.5rem,calc(100dvh-13rem))]'
+    ? 'min-h-[17.5rem] h-[min(28.5rem,calc(100dvh-11.6rem))]'
     : isTablet
       ? 'min-h-[22rem] h-[min(39.5rem,calc(100dvh-11.5rem))]'
-      : 'min-h-[23rem] h-[min(42rem,calc(100dvh-11rem))]';
+      : isLargeDesktop
+        ? 'min-h-[24rem] h-[min(36rem,calc(100dvh-9.75rem))]'
+        : isNarrowDesktop
+          ? 'min-h-[18.5rem] h-[min(30rem,calc(100dvh-15.5rem))]'
+          : 'min-h-[23rem] h-[min(42rem,calc(100dvh-11rem))]';
   const studioScrollPaddingClass =
     isStudioWorkspaceTab
       ? isPhone
-        ? 'pb-[calc(env(safe-area-inset-bottom)+11rem)]'
+        ? 'pb-[calc(env(safe-area-inset-bottom)+9.25rem)]'
         : isTablet
           ? 'pb-[calc(env(safe-area-inset-bottom)+8rem)]'
-          : 'pb-52'
+          : isNarrowDesktop
+            ? 'pb-56'
+            : isLargeDesktop
+              ? 'pb-44'
+              : 'pb-52'
       : 'pb-36';
+  const workspaceHorizontalPaddingClass = isPhone ? 'px-2.5 sm:px-4 md:px-8' : 'px-4 md:px-8';
   const workspaceScrollFrameClass =
-    `vf-main-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 md:px-8 ${studioScrollPaddingClass}`;
+    `vf-main-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain ${workspaceHorizontalPaddingClass} ${studioScrollPaddingClass}`;
+  const topbarShellSizeClass = isPhone ? 'mx-1.5 mt-1.5 h-12 rounded-xl' : 'mx-2 mt-2 h-14 rounded-2xl';
+  const topbarInnerClass = isPhone
+    ? 'relative flex h-full w-full items-center gap-1.5 px-1.5'
+    : 'relative flex h-full w-full items-center gap-2 px-2 xl:px-3';
+  const workspaceContentStackClass = isPhone ? 'space-y-4' : 'space-y-6';
   const studioFloatingDockWidthClass = isDesktop
-    ? 'w-[clamp(17rem,28vw,20.25rem)] max-w-[calc(100vw-2rem)]'
+    ? (isLargeDesktop
+      ? 'w-[clamp(16.25rem,25vw,18.5rem)] max-w-[calc(100vw-2rem)]'
+      : isNarrowDesktop
+        ? 'w-[clamp(15.5rem,27vw,17.25rem)] max-w-[calc(100vw-2rem)]'
+        : 'w-[clamp(16rem,26vw,19rem)] max-w-[calc(100vw-2rem)]')
     : 'w-[clamp(15.5rem,31vw,18.25rem)] max-w-[calc(100vw-2rem)]';
   const studioFloatingDockVariantClass = isDesktop
     ? 'vf-studio-generate-anchor--desktop'
@@ -8923,8 +8992,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     ? 'right-3 items-end'
     : 'right-4 xl:right-6 items-end';
   const showTopbarAssistantButton = isPhone && !shouldHideAssistantForReader && !isStudioWorkspaceTab;
-  const showFloatingAssistantFab = !isPhone;
-  const assistantFabSizeClass = isPhone ? 'w-14 h-14' : 'w-16 h-16';
   const assistantPanelSizeClass = isPhone
     ? 'w-[min(23rem,calc(100vw-0.75rem))] h-[min(30rem,calc(100vh-10.5rem))]'
     : 'w-[min(23rem,calc(100vw-1.5rem))] h-[min(30rem,calc(100vh-8rem))]';
@@ -8936,7 +9003,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'bottom-[calc(env(safe-area-inset-bottom)+7.1rem)] xl:bottom-32'
           : 'bottom-[calc(env(safe-area-inset-bottom)+6.25rem)]'
       : 'bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] xl:bottom-6';
-  const shouldRenderFloatingAssistant = !shouldHideAssistantForReader && (showFloatingAssistantFab || isChatOpen);
+  const shouldRenderFloatingAssistant = !shouldHideAssistantForReader && isChatOpen;
 
   return (
     <div className={`relative h-[100dvh] min-h-screen overflow-hidden vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
@@ -8959,23 +9026,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
         <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden transition-[background-color,border-color,color,box-shadow,transform,opacity,filter]">
         
         {/* Floating Top Bar */}
-        <header className={`vf-topbar vf-topbar-shell relative z-[25] mx-2 mt-2 h-14 shrink-0 rounded-2xl border backdrop-blur-xl transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] duration-300 hover:-translate-y-0.5 ${
+        <header className={`vf-topbar vf-topbar-shell relative z-[25] shrink-0 border backdrop-blur-xl transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] duration-300 hover:-translate-y-0.5 ${topbarShellSizeClass} ${
           resolvedTheme === 'dark'
             ? 'border-slate-700/80 bg-slate-950/82 shadow-[0_18px_38px_rgba(2,6,23,0.72)]'
             : 'border-white/70 bg-white/85 shadow-[0_18px_38px_rgba(15,23,42,0.14)]'
         }`}>
-             <div className={`vf-topbar-glow pointer-events-none absolute inset-0 rounded-2xl ${
+             <div className={`vf-topbar-glow pointer-events-none absolute inset-0 ${isPhone ? 'rounded-xl' : 'rounded-2xl'} ${
                resolvedTheme === 'dark'
                  ? 'bg-gradient-to-r from-cyan-500/10 via-indigo-500/8 to-fuchsia-500/10'
                  : 'bg-gradient-to-r from-cyan-100/70 via-indigo-100/70 to-fuchsia-100/70'
              }`} />
-             <div className="relative flex h-full w-full items-center gap-2 px-2 xl:px-3">
+             <div className={topbarInnerClass}>
                  <button
-                    className={`xl:hidden p-2 -ml-1 shrink-0 ${resolvedTheme === 'dark' ? 'text-slate-300' : 'text-gray-600'}`}
+                    className={`xl:hidden ${isPhone ? 'p-1.5' : 'p-2'} -ml-1 shrink-0 ${resolvedTheme === 'dark' ? 'text-slate-300' : 'text-gray-600'}`}
                     onClick={() => setIsMobileMenuOpen(true)}
                     aria-label="Open navigation menu"
                  >
-                    <Menu />
+                    <Menu size={isPhone ? 18 : 20} />
                  </button>
                  <button
                     type="button"
@@ -9013,14 +9080,16 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </div>
                  </div>
 
-                 <div className="vf-topbar-runtime-wrap min-w-0 flex-1 overflow-hidden">
+                 <div className={`vf-topbar-runtime-wrap min-w-0 flex-1 ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity overflow-x-auto overflow-y-hidden px-0.5' : 'overflow-hidden'}`}>
                      <EngineRuntimeStrip
                        engineOrder={ENGINE_ORDER}
                        statuses={ttsRuntimeStatus}
                        accessState={ttsAccessState}
+                       allowedEngines={primeAllowedEngines}
                        activeEngine={settings.engine}
                        switchingEngine={engineSwitchInProgress}
                        compact={!isDesktop}
+                       dense={isPhone}
                        resolvedTheme={resolvedTheme}
                        onActivate={activateTtsEngine}
                      />
@@ -9032,7 +9101,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         ref={creditsSurfaceTriggerRef}
                         onClick={openBuyCenter}
                         aria-label="Open buy center"
-                        className={`inline-flex items-center gap-1.5 sm:gap-2 rounded-full border px-2 py-1 sm:px-2.5 text-[10px] font-bold ${
+                        className={`inline-flex items-center rounded-full border font-bold ${isPhone ? 'gap-1 px-1.5 py-0.5 text-[9px]' : 'gap-1.5 sm:gap-2 px-2 py-1 sm:px-2.5 text-[10px]'} ${
                           resolvedTheme === 'dark'
                             ? 'border-slate-700 bg-slate-900/85 text-slate-200 hover:bg-slate-800'
                             : 'border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -9040,8 +9109,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                       >
                         <Box size={13} className="hidden sm:inline" />
                         <Coins size={12} className="sm:hidden" />
-                        <span className="sm:hidden">{hasUnlimitedAccess ? 'Credits' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
-                        <span className="hidden sm:inline">{hasUnlimitedAccess ? 'Unlimited' : `${currentEngineSpendable.toLocaleString()} VF`}</span>
+                        <span className="sm:hidden">{`Credits ${availableCreditsPercentLabel}`}</span>
+                        <span className="hidden sm:inline">
+                          {hasUnlimitedAccess
+                            ? `Unlimited (${availableCreditsPercentLabel})`
+                            : `${currentEngineSpendable.toLocaleString()} VF (${availableCreditsPercentLabel})`}
+                        </span>
                         <span className={`hidden sm:inline rounded-full px-2 py-0.5 text-[9px] ${
                           isPaidBillingPlan
                             ? (resolvedTheme === 'dark' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-cyan-50 text-cyan-700')
@@ -9056,13 +9129,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           type="button"
                           onClick={() => setIsChatOpen((open) => !open)}
                           aria-label={isChatOpen ? 'Close assistant' : 'Open assistant'}
-                          className={`relative p-2 rounded-full transition-colors ${
+                          className={`relative ${isPhone ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
                           resolvedTheme === 'dark'
                            ? 'hover:bg-slate-800 text-slate-300'
                            : 'hover:bg-gray-100 text-gray-500'
                        }`}
                         >
-                            <Sparkles size={18} />
+                            <Sparkles size={isPhone ? 16 : 18} />
                             {isChatOpen && <span className="absolute inset-0 rounded-full ring-1 ring-indigo-400/70" />}
                        </button>
                      ) : null}
@@ -9070,13 +9143,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                      <button
                         onClick={() => setCenterOpen((open) => !open)}
                         aria-label="Open notifications"
-                        className={`relative p-2 rounded-full transition-colors ${
+                        className={`relative ${isPhone ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
                         resolvedTheme === 'dark'
                          ? 'hover:bg-slate-800 text-slate-300'
                          : 'hover:bg-gray-100 text-gray-500'
                      }`}
                       >
-                          <Bell size={20} />
+                          <Bell size={isPhone ? 18 : 20} />
                           {unreadCount > 0 && (
                             <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-rose-500 px-1 py-0.5 text-center text-[9px] font-extrabold leading-none text-white">
                               {unreadCount > 99 ? '99+' : unreadCount}
@@ -9089,12 +9162,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         ref={settingsTriggerRef}
                         onClick={() => setShowSettings(true)}
                         aria-label="Open configuration"
-                        className={`p-2 rounded-full transition-colors ${
+                        className={`${isPhone ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
                         resolvedTheme === 'dark'
                          ? 'hover:bg-slate-800 text-slate-300'
                          : 'hover:bg-gray-100 text-gray-500'
                      }`}>
-                          <Settings size={20} />
+                          <Settings size={isPhone ? 18 : 20} />
                      </button>
                  </div>
              </div>
@@ -9123,11 +9196,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ref={contentScrollRef}
           className={`studio-scrollbar relative ${workspaceScrollFrameClass}`}
         >
-            <div className={`mx-auto w-full space-y-6 ${contentMaxWidthClass}`}>
+            <div className={`mx-auto w-full ${workspaceContentStackClass} ${contentMaxWidthClass}`}>
                 
                 {isStudioWorkspaceTab && (
                     <div className="vf-studio-focus-wrap xl:min-h-[calc(100vh-12rem)] flex items-start justify-center">
-                    <div className="vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] gap-4 xl:gap-5 animate-in fade-in duration-300">
+                    <div className={`vf-studio-grid w-full grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] ${isPhone ? 'gap-3' : 'gap-4 xl:gap-5'} animate-in fade-in duration-300`}>
                         {/* Editor Section */}
                         <div ref={studioMainRef} className={`vf-studio-main min-w-0 ${studioMainSpacingClass}`}>
                             {/* Reduced Height Editor */}
@@ -9143,8 +9216,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                 isStudioEditorFullscreen ? 'vf-editor-shell--fullscreen z-[58]' : 'group transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] hover:shadow-md'
                             }`}>
                                 {/* Toolbar */}
-                                <div className={`vf-studio-toolbar border-b ${isPhone ? 'flex flex-col items-stretch gap-1.5 px-2.5 py-2' : 'flex items-center justify-between gap-2.5 px-3 py-2.5'}`}>
-                                    <div className={`${isPhone ? 'vf-toolbar-primary vf-toolbar-primary--phone flex min-w-0 items-center gap-1.5 overflow-x-auto pb-0.5 pr-0.5' : 'vf-toolbar-primary flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2'}`}>
+                                <div className={`vf-studio-toolbar border-b ${isPhone ? 'flex flex-col items-stretch gap-1 px-2 py-1.5' : 'flex items-center justify-between gap-2.5 px-3 py-2.5'}`}>
+                                    <div className={`${isPhone ? 'vf-toolbar-primary vf-toolbar-primary--phone flex min-w-0 items-center gap-1 overflow-x-auto pr-0' : 'vf-toolbar-primary flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2'}`}>
                                         <button onClick={() => setText(t => t + ' [pause] ')} className="vf-toolbar-action text-xs font-bold transition-colors" title="Insert Pause"><Clock size={14}/> <span className="hidden sm:inline">Pause</span></button>
                                         <button onClick={() => setText(t => t + ' (Whisper): ')} className="vf-toolbar-action text-xs font-bold transition-colors" title="Whisper"><Volume2 size={14}/> <span className="hidden sm:inline">Whisper</span></button>
 
@@ -9168,7 +9241,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </button>
                                     </div>
 
-                                    <div className={`vf-toolbar-secondary ${isPhone ? 'w-full justify-start flex-wrap' : 'ml-2 shrink-0'}`}>
+                                    <div className={`vf-toolbar-secondary ${isPhone ? 'w-full justify-start flex-nowrap overflow-x-auto pb-0.5' : 'ml-2 shrink-0'}`}>
                                          {!isPhone && detectedLang && <span className="vf-toolbar-tag text-[10px] font-bold border px-2 py-1 rounded-md uppercase">{detectedLang}</span>}
                                          <button
                                             type="button"
@@ -9189,22 +9262,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Sparkles size={13}/>
                                             <span>{isPhone ? 'Assist' : 'Assistant'}</span>
                                          </button>
-                                         {STUDIO_DIRECTOR_OPTION_ITEMS.map((item) => {
-                                            const isActive = studioDirectorModeState[item.key];
-                                            return (
-                                              <button
-                                                key={item.key}
-                                                type="button"
-                                                aria-pressed={isActive}
-                                                onClick={() => toggleStudioDirectorOption(item.key)}
-                                                disabled={isAiWriting}
-                                                title={item.title}
-                                                className={`${isActive ? 'vf-toolbar-ai' : 'vf-toolbar-action'} text-xs font-bold disabled:opacity-50 transition-colors`}
-                                              >
-                                                <span>{isPhone ? item.compactLabel : item.label}</span>
-                                              </button>
-                                            );
-                                         })}
                                          <button
                                             type="button"
                                             onClick={() => handleDirectorAI(text)}
@@ -9272,7 +9329,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     onTranslate={() => { void handleTranslate(); }}
                                 />
 
-                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-3 py-2 gap-2' : 'px-4 sm:px-6 py-3 gap-3'}`}>
+                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-2.5 py-1.5 gap-1.5' : 'px-4 sm:px-6 py-3 gap-3'}`}>
                                     <div className="flex flex-wrap items-center gap-2">
                                         <span className="vf-editor-count">{`${text.length.toLocaleString()} / ${maxCharsPerGeneration.toLocaleString()} chars`}</span>
                                         {studioDirectorPreview && (
@@ -9290,12 +9347,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             </span>
                                         )}
                                     </div>
-                                    <div className="flex flex-wrap items-center gap-2">
+                                    <div className={`flex items-center ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity flex-nowrap gap-1.5 overflow-x-auto pb-0.5' : 'flex-wrap gap-2'}`}>
                                         <button
                                             type="button"
                                             onClick={() => setStudioQueueModeEnabled(!isStudioQueueModeEnabled)}
                                             disabled={isGenerating || studioQueueState?.items.some((item) => item.status === 'running' || item.status === 'cooldown')}
-                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                                            className={`inline-flex items-center gap-1 rounded-xl border font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-60 ${isPhone ? 'shrink-0 snap-start px-2 py-1 text-[9px]' : 'px-3 py-1.5 text-[10px]'} ${
                                                 isStudioQueueModeEnabled
                                                     ? isDarkUi
                                                         ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
@@ -9316,7 +9373,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 }
                                                 toggleStudioMultiSpeaker();
                                             }}
-                                            className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                            className={`inline-flex items-center gap-1 rounded-xl border font-bold uppercase tracking-wide transition ${isPhone ? 'shrink-0 snap-start px-2 py-1 text-[9px]' : 'px-3 py-1.5 text-[10px]'} ${
                                                 isStudioMultiSpeakerEnabled
                                                     ? isDarkUi
                                                         ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200'
@@ -9329,7 +9386,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Users size={12} />
                                             Multi-Speaker {isStudioMultiSpeakerEnabled ? 'On' : 'Off'}
                                         </button>
-                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex items-center gap-1"><Save size={12}/> Save Draft</button>
+                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex shrink-0 snap-start items-center gap-1"><Save size={12}/> Save Draft</button>
                                     </div>
                                 </div>
                             </SectionCard>
@@ -9374,8 +9431,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
 	                        {/* Controls Sidebar */}
 		                        <div className={`vf-studio-rail h-fit xl:sticky xl:top-24 xl:self-start ${isPhone ? 'space-y-4' : 'space-y-5'}`}>
+                              {!useDesktopPinnedMixRail && (
                               <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-3 rounded-3xl'}>
-                                <div className="flex flex-wrap gap-2" {...studioRailTabs.listProps}>
+                                <div className={isPhone ? 'vf-scrollbar-invisible flex snap-x snap-proximity flex-nowrap gap-1.5 overflow-x-auto pb-0.5' : 'flex flex-wrap gap-2'} {...studioRailTabs.listProps}>
                                   {studioRailTabItems.map((tabItem) => {
                                     const isActive = studioRailTab === tabItem.id;
                                     const isDisabled = Boolean(tabItem.disabled);
@@ -9385,7 +9443,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         type="button"
                                         {...studioRailTabs.getTabProps(tabItem.id, isDisabled)}
                                         title={isDisabled ? 'Voice controls are disabled while Multi-Speaker mode is on. Use Cast.' : undefined}
-                                        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide transition ${
+                                        className={`inline-flex items-center gap-1.5 rounded-full border font-bold uppercase tracking-wide transition ${isPhone ? 'shrink-0 snap-start px-2 py-1 text-[9px]' : 'px-3 py-1.5 text-[10px]'} ${
                                           isActive
                                             ? (isDarkUi ? 'border-cyan-500/45 bg-cyan-500/14 text-cyan-100' : 'border-cyan-300 bg-cyan-50 text-cyan-700')
                                             : isDisabled
@@ -9408,7 +9466,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   })}
                                 </div>
                               </SectionCard>
-		                            {studioRailTab === 'voice' && (
+                              )}
+		                            {studioRailTab === 'voice' && !useDesktopPinnedMixRail && (
 	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <div className="flex w-full items-start justify-between gap-2">
@@ -9592,7 +9651,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                   )}
 
 	                            {/* Studio Audio Mix */}
-                                  {studioRailTab === 'mix' && (
+                                  {(studioRailTab === 'mix' || useDesktopPinnedMixRail) && (
 		                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
@@ -9692,7 +9751,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 			                            </SectionCard>
                                   )}
 
-                                    {studioRailTab === 'cast' && (
+                                    {studioRailTab === 'cast' && !useDesktopPinnedMixRail && (
                                       isStudioMultiSpeakerEnabled ? (
 		                            <>
 		                            {/* Cast & Crew */}
@@ -9983,7 +10042,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       )
                                     )}
 
-                                    {studioRailTab === 'queue' && shouldShowStudioQueuePanel && (
+                                    {studioRailTab === 'queue' && !useDesktopPinnedMixRail && shouldShowStudioQueuePanel && (
                                         <Suspense fallback={<SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}><div className={`text-sm ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading queue...</div></SectionCard>}>
                                           <LazyStudioQueuePanel
                                               queueState={studioQueueState}
@@ -10006,7 +10065,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                           />
                                         </Suspense>
                                     )}
-                                    {studioRailTab === 'queue' && !shouldShowStudioQueuePanel && (
+                                    {studioRailTab === 'queue' && !useDesktopPinnedMixRail && !shouldShowStudioQueuePanel && (
                                       <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
                                         <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
                                           <Clock size={13} /> Queue
@@ -10490,6 +10549,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         settings={settings}
                         mediaBackendUrl={mediaBackendUrl}
                         resolvedTheme={resolvedTheme}
+                        denseTabs={isPhone}
                         onToast={showToast}
                         syncLocation={isStandaloneReaderRoute && activeTab === Tab.READER}
                         isActive={activeTab === Tab.READER}
@@ -10505,7 +10565,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     className={activeTab === Tab.VOICE_CLONING ? '' : 'hidden'}
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading voice cloning workspace...</SectionCard>}>
-                      <VoiceCloningTabContent backendBaseUrl={mediaBackendUrl} />
+                      <VoiceCloningTabContent backendBaseUrl={mediaBackendUrl} selectedEngine={settings.engine} denseTabs={isPhone} />
                     </Suspense>
                   </div>
                 )}
@@ -10527,14 +10587,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   </div>
                 )}
                 
-                {usesPhoneStudioDock && (
+                {usesPhoneStudioDock && !isChatOpen && (
                     <div
                         className="fixed inset-x-0 bottom-0 z-[47] px-2 pointer-events-none"
                         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.55rem)' }}
                     >
                         <div className="mx-auto w-full max-w-[1140px]">
                             <div className="mx-auto w-full max-w-xl pointer-events-auto">
-                                <div className="vf-studio-generate-dock rounded-2xl border border-indigo-400/35 p-2 backdrop-blur-lg">
+                                <div className="vf-studio-generate-dock rounded-xl border border-indigo-400/35 p-1.5 backdrop-blur-lg">
                                     <MorphingGenerateButton
                                       onClick={handleGenerate}
                                       onCancel={handleCancelGeneration}
@@ -10542,6 +10602,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       isGenerating={isGenerating}
                                       progress={progress}
                                       stage=""
+                                      size="compact"
                                     />
                                 </div>
                             </div>
@@ -10551,7 +10612,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
             </div>
         </div>
 
-        {usesCompactFloatingStudioDock && (
+        {usesCompactFloatingStudioDock && !isChatOpen && (
             <div className={`vf-studio-generate-anchor ${studioFloatingDockVariantClass} fixed z-[47] ${studioFloatingDockWidthClass}`}>
                 <div className={`vf-studio-generate-dock rounded-2xl border border-indigo-400/35 backdrop-blur-lg ${isDesktop ? 'p-2' : 'p-1.5'}`}>
                     <MorphingGenerateButton
@@ -10572,7 +10633,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       {!shouldHideAssistantForReader && isChatOpen && (
         <button
           type="button"
-          className="fixed inset-0 z-40 bg-transparent"
+          className="fixed inset-0 z-[49] bg-transparent"
           aria-label="Close assistant by clicking outside"
           onClick={() => setIsChatOpen(false)}
         />
@@ -10738,17 +10799,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               </div>
           )}
           
-          {showFloatingAssistantFab ? (
-            <button
-              onClick={() => setIsChatOpen(!isChatOpen)}
-              className={`group relative ${assistantFabSizeClass} rounded-full flex items-center justify-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] hover:scale-105 active:scale-95 shadow-2xl shadow-indigo-400/50`}
-              aria-label={isChatOpen ? 'Close assistant' : 'Open assistant'}
-            >
-                <span className="absolute inset-0 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 opacity-15"></span>
-                <span className="absolute inset-0 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 ring-4 ring-white/30"></span>
-                <div className="relative z-10 text-white transform transition-transform group-hover:rotate-12">{isChatOpen ? <X size={isPhone ? 24 : 28} strokeWidth={3}/> : <Sparkles size={isPhone ? 24 : 28} fill="currentColor" />}</div>
-            </button>
-          ) : null}
       </div>
       ) : null}
 

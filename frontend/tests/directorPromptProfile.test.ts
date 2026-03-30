@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { resolveDirectorPromptProfile } from '../services/geminiService';
 
 describe('resolveDirectorPromptProfile', () => {
-  it('falls back to the default conservative director pass', () => {
+  it('falls back to the base AI Director pass', () => {
     const profile = resolveDirectorPromptProfile();
 
     expect(profile.modeId).toBe('default');
-    expect(profile.modeLabel).toBe('Default');
+    expect(profile.modeLabel).toBe('AI Director');
     expect(profile.requestedTone).toBe('neutral');
     expect(profile.temperature).toBe(0.2);
     expect(profile.extraInstructions.join(' ')).toContain('DEFAULT MODE');

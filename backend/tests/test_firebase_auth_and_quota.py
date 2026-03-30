@@ -238,15 +238,15 @@ def test_verify_firebase_id_token_checks_revocation(monkeypatch) -> None:
 
     class _FirebaseAuth:
         @staticmethod
-        def verify_id_token(id_token, check_revoked=False):
-            calls.append((str(id_token), bool(check_revoked)))
+        def verify_id_token(id_token, check_revoked=False, clock_skew_seconds=0):
+            calls.append((str(id_token), bool(check_revoked), int(clock_skew_seconds)))
             return {"uid": "revocation_user"}
 
     monkeypatch.setattr(backend_app, "firebase_auth", _FirebaseAuth())
 
     claims = backend_app._verify_firebase_id_token("token_123")
     assert claims["uid"] == "revocation_user"
-    assert calls == [("token_123", True)]
+    assert calls == [("token_123", True, 60)]
 
 
 def test_runtime_status_endpoint_requires_auth_when_enforced(monkeypatch) -> None:
@@ -360,6 +360,73 @@ def test_tts_v2_job_create_blocks_gem_for_free_plan(monkeypatch) -> None:
     assert set(detail.get("allowedEngines") or []) == {"DUNO", "VECTOR"}
 
 
+def test_prime_is_allowed_for_paid_wallet_balance(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_UPSTREAM_PROVIDER", "runtime")
+    monkeypatch.setattr(backend_app, "VF_TTS_TEXTTOSPEECH_ONLY", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+
+    uid = "paid_wallet_prime_user"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Free",
+        "paidVfBalance": 125,
+    }
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+
+    entitlements_response = client.get("/account/entitlements", headers=headers)
+    assert entitlements_response.status_code == 200
+    entitlements_payload = entitlements_response.json()["entitlements"]
+    assert "PRIME" in list((entitlements_payload.get("limits") or {}).get("allowedEngines") or [])
+
+    summary_response = client.get("/billing/account-summary", headers=headers)
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()["summary"]
+    assert "PRIME" in list((summary_payload.get("plan") or {}).get("allowedEngines") or [])
+
+    response_code, _ = _submit_tts_and_wait_status(
+        client,
+        payload={"engine": "PRIME", "text": "paid balance unlocks prime"},
+        headers=headers,
+    )
+    assert response_code == 200
+
+
+def test_prime_is_allowed_for_paid_plan_with_zero_balance(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    monkeypatch.setattr(backend_app, "VF_TTS_UPSTREAM_PROVIDER", "runtime")
+    monkeypatch.setattr(backend_app, "VF_TTS_TEXTTOSPEECH_ONLY", False)
+    monkeypatch.setattr(backend_app.requests, "post", lambda *args, **kwargs: _DummyRuntimeResponse())
+
+    uid = "paid_plan_zero_balance_user"
+    backend_app._INMEMORY_ENTITLEMENTS[uid] = {
+        **backend_app._default_entitlement(uid),
+        "plan": "Pro",
+        "paidVfBalance": 0,
+    }
+
+    client = TestClient(backend_app.app)
+    headers = {"x-dev-uid": uid}
+
+    entitlements_response = client.get("/account/entitlements", headers=headers)
+    assert entitlements_response.status_code == 200
+    entitlements_payload = entitlements_response.json()["entitlements"]
+    assert "PRIME" in list((entitlements_payload.get("limits") or {}).get("allowedEngines") or [])
+
+    response_code, _ = _submit_tts_and_wait_status(
+        client,
+        payload={"engine": "PRIME", "text": "paid plan unlocks prime"},
+        headers=headers,
+    )
+    assert response_code == 200
+
+
 def test_default_entitlement_uses_free_wallet_policy() -> None:
     _reset_inmemory_state()
     entitlement = backend_app._default_entitlement("free_wallet_defaults")
@@ -468,6 +535,62 @@ def test_entitlements_include_engine_char_caps_and_early_access(monkeypatch) -> 
     assert bool((free_ent.get("features") or {}).get("earlyAccess")) is False
     assert int((free_ent.get("limits") or {}).get("maxCharsPerGeneration") or 0) == 8000
     assert "PRIME" not in list((free_ent.get("limits") or {}).get("allowedEngines") or [])
+
+
+def test_admin_reconcile_allowed_engines_dry_run_and_apply(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "VF_USER_ID_REQUIRED", False)
+    monkeypatch.setattr(backend_app, "_require_permission", lambda _request, _permission: ("admin_user", {"role": "super_admin"}))
+    monkeypatch.setattr(backend_app, "_require_admin_mutation_unlock", lambda _request, expected_uid=None: expected_uid or "admin_user")
+
+    free_uid = "reconcile_free_user"
+    paid_wallet_uid = "reconcile_paid_wallet_user"
+    paid_plan_uid = "reconcile_paid_plan_user"
+    backend_app._INMEMORY_ENTITLEMENTS[free_uid] = {
+        **backend_app._default_entitlement(free_uid),
+        "plan": "Free",
+        "paidVfBalance": 0,
+        "allowedEngines": ["DUNO", "VECTOR", "PRIME"],
+    }
+    backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid] = {
+        **backend_app._default_entitlement(paid_wallet_uid),
+        "plan": "Free",
+        "paidVfBalance": 50,
+        "allowedEngines": ["DUNO", "VECTOR"],
+    }
+    backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid] = {
+        **backend_app._default_entitlement(paid_plan_uid),
+        "plan": "Pro",
+        "paidVfBalance": 0,
+        "allowedEngines": ["DUNO", "VECTOR"],
+    }
+
+    client = TestClient(backend_app.app)
+
+    dry_run = client.post("/admin/entitlements/reconcile-allowed-engines", json={"dryRun": True})
+    assert dry_run.status_code == 200
+    dry_run_payload = dry_run.json()
+    assert dry_run_payload["scanned"] >= 3
+    assert dry_run_payload["changed"] == 3
+    assert dry_run_payload["unchanged"] == 0
+    assert dry_run_payload["failures"] == 0
+    assert set(dry_run_payload["sampleUserIds"]) == {free_uid, paid_wallet_uid, paid_plan_uid}
+    assert backend_app._INMEMORY_ENTITLEMENTS[free_uid]["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["DUNO", "VECTOR"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["DUNO", "VECTOR"]
+
+    apply_run = client.post("/admin/entitlements/reconcile-allowed-engines", json={"dryRun": False})
+    assert apply_run.status_code == 200
+    apply_payload = apply_run.json()
+    assert apply_payload["scanned"] >= 3
+    assert apply_payload["changed"] == 3
+    assert apply_payload["unchanged"] == 0
+    assert apply_payload["failures"] == 0
+    assert set(apply_payload["sampleUserIds"]) == {free_uid, paid_wallet_uid, paid_plan_uid}
+    assert backend_app._INMEMORY_ENTITLEMENTS[free_uid]["allowedEngines"] == ["DUNO", "VECTOR"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_wallet_uid]["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
+    assert backend_app._INMEMORY_ENTITLEMENTS[paid_plan_uid]["allowedEngines"] == ["DUNO", "VECTOR", "PRIME"]
 
 
 def test_admin_tts_synthesize_bypasses_daily_and_balance_limits(monkeypatch) -> None:

@@ -2,8 +2,6 @@ import { sanitizeTtsEngineText } from '../../../services/engineDisplay';
 
 export const ASSISTANT_PROVIDER_UI_LABELS = {
   GEMINI: 'Primary AI',
-  PERPLEXITY: 'Perplexity',
-  LOCAL: 'Local',
 } as const;
 
 const UI_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [

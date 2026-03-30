@@ -2,13 +2,11 @@
 
 This folder contains Cloud Run production deployment assets for the split topology:
 
-- `voiceflow-seed-vc-runtime` (internal ingress, L4 GPU)
 - `voiceflow-api` (public ingress)
 - `voiceflow-worker` (internal ingress)
 - `voiceflow-gemini-runtime` (internal ingress)
-- Duno runtime is provided by Modal and configured via `VF_DUNO_RUNTIME_URL` on the backend.
-- Seed VC/OpenVoice defaults to Cloud Run and is configured via `VF_OPENVOICE_PROVIDER_DEFAULT=cloud_run` plus `VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL` on the backend.
-- Modal remains available as a fallback provider through `VF_OPENVOICE_MODAL_RUNTIME_URL`.
+- DUNO runtime is provided by DeepInfra and configured via `VF_DUNO_RUNTIME_URL=https://api.deepinfra.com/v1`, `VF_DUNO_RUNTIME_MODEL=ResembleAI/chatterbox-turbo`, plus `VF_DUNO_RUNTIME_TOKEN` on the backend.
+- OpenVoice voice cloning is Modal-only in production and is configured via `VF_OPENVOICE_PROVIDER_DEFAULT=modal` plus `VF_OPENVOICE_MODAL_RUNTIME_URL` on the backend.
 
 The API and worker use the same backend image with role-based startup:
 
@@ -35,7 +33,7 @@ The API and worker use the same backend image with role-based startup:
    - `stripe-webhook-secret`
    - `vf-admin-unlock-signing-secret`
    - `gemini-runtime-admin-token`
-   - `duno-runtime-token` (optional if Duno Modal endpoint is private)
+   - `duno-runtime-token` (DeepInfra API token for the configured DUNO model, default `ResembleAI/chatterbox-turbo`)
    - `openvoice-runtime-token`
    - `openvoice-artifact-secret`
 4. Optional but recommended:
@@ -49,10 +47,11 @@ cd infra/cloudrun
 .\deploy.ps1 -ProjectId "<gcp-project-id>" -Region "us-central1" -VpcConnector "<connector-name>" -RedisUrl "redis://10.0.0.3:6379/0"
 ```
 
-If you use hosted Modal runtimes, also set:
+For DeepInfra DUNO plus Modal VC, also set:
 
 ```powershell
-$env:VF_DUNO_RUNTIME_URL="https://your-duno-modal-endpoint"
+$env:VF_DUNO_RUNTIME_URL="https://api.deepinfra.com/v1"
+$env:VF_DUNO_RUNTIME_MODEL="ResembleAI/chatterbox-turbo"
 $env:VF_OPENVOICE_RUNTIME_URL="https://your-openvoice-modal-endpoint"
 ```
 
@@ -73,7 +72,6 @@ Deploy without rebuilding images:
 `services.default.json` is preconfigured for growth-oriented defaults:
 
 - Default profile: `cloudrun-2vcpu`
-- Seed VC runtime: `min=0`, `max=20`, concurrency `2`, `gpu=1 x nvidia-l4`
 - API: `min=1`, `max=20`, concurrency `16`
 - Worker: `min=1`, `max=12`, concurrency `1`, CPU always allocated
 - Gemini runtime: `min=1`, `max=10`, concurrency `2`
@@ -117,7 +115,7 @@ cd infra/cloudrun
   -ProbeUrl "https://voiceflow-api-xxxx.a.run.app/health" `
   -RuntimeHealthUrls @(
     "https://voiceflow-gemini-runtime-xxxx.a.run.app/health",
-    "https://modal-duno-runtime.example/health"
+    "https://api.deepinfra.com/v1/voices"
   ) `
   -QueueMetricsUrl "https://voiceflow-api-xxxx.a.run.app/admin/tts/queue/metrics" `
   -MaxQueueDepth 200 `

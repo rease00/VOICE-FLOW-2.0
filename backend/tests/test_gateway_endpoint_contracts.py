@@ -434,9 +434,9 @@ def test_duno_runtime_voice_catalog_forwards_modal_token(monkeypatch) -> None:
             return {
                 "voices": [
                     {
-                        "voice_id": "af_heart",
-                        "voice": "af_heart",
-                        "name": "Lyra US",
+                        "voice_id": "di_voice_123",
+                        "voice": "di_voice_123",
+                        "name": "Narrator Clone",
                         "language": "en",
                         "gender": "female",
                     }
@@ -449,20 +449,26 @@ def test_duno_runtime_voice_catalog_forwards_modal_token(monkeypatch) -> None:
         captured["headers"] = kwargs.get("headers")
         return _FakeResponse()
 
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://duno-modal.example")
+    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://api.deepinfra.com/v1/inference/ResembleAI/chatterbox-turbo")
     monkeypatch.setattr(backend_app, "DUNO_RUNTIME_TOKEN", "voice-token")
     monkeypatch.setattr(backend_app, "_runtime_http_request", _fake_runtime_request)
 
     voices = backend_app._duno_runtime_voice_catalog()
 
     assert voices
+    by_id = {str(item.get("voice_id") or ""): item for item in voices}
     assert captured["method"] == "GET"
-    assert captured["url"] == "https://duno-modal.example/v1/voices"
+    assert captured["url"] == "https://api.deepinfra.com/v1/voices"
     assert captured["headers"] == {
         "Accept": "application/json",
         "ngrok-skip-browser-warning": "true",
         "Authorization": "Bearer voice-token",
     }
+    assert by_id["deepinfra_default"]["access_tier"] == "free"
+    assert by_id["deepinfra_default"]["is_plan_restricted"] is False
+    assert by_id["di_voice_123"]["access_tier"] == "pro"
+    assert by_id["di_voice_123"]["is_plan_restricted"] is True
+    assert by_id["di_voice_123"]["name"] == "Narrator Clone"
 
 
 def test_duno_modal_client_synthesize_forwards_modal_token(monkeypatch) -> None:
@@ -482,26 +488,25 @@ def test_duno_modal_client_synthesize_forwards_modal_token(monkeypatch) -> None:
         captured["authorization"] = client._session.headers.get("authorization")
         return _FakeResponse()
 
-    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://duno-modal.example")
+    monkeypatch.setattr(backend_app, "DUNO_RUNTIME_URL", "https://api.deepinfra.com/v1/inference/ResembleAI/chatterbox-turbo")
     monkeypatch.setattr(backend_app, "DUNO_RUNTIME_TOKEN", "synth-token")
     client = backend_app.DunoModalClient(timeout_sec=12.0)
     monkeypatch.setattr(client._session, "request", _fake_request)
 
     audio_bytes, meta = client.synthesize(
         text="Hello modal world.",
-        voice_id="af_heart",
+        voice_id="di_voice_123",
         language="en",
         trace_id="trace-123",
     )
 
     assert audio_bytes == b"RIFF"
-    assert meta["provider"] == "duno-modal"
+    assert meta["provider"] == "deepinfra"
     assert captured["method"] == "POST"
-    assert captured["url"] == "https://duno-modal.example/synthesize"
+    assert captured["url"] == "https://api.deepinfra.com/v1/inference/ResembleAI/chatterbox-turbo"
     assert captured["authorization"] == "Bearer synth-token"
     assert captured["timeout"] == 12.0
-    assert captured["json"]["voiceId"] == "af_heart"
-    assert captured["json"]["trace_id"] == "trace-123"
+    assert captured["json"]["voice_id"] == "di_voice_123"
 
 
 def test_tts_engines_voices_contract_gem_fallback() -> None:
@@ -532,8 +537,8 @@ def test_tts_engines_voices_contract_duno_access_tiers(monkeypatch) -> None:
         def json(self):
             return {
                 "voices": [
-                    {"voice_id": "af_heart", "name": "Free Voice", "language": "en", "gender": "female"},
-                    {"voice_id": "hf_beta", "name": "Hindi Voice", "language": "hi", "gender": "female"},
+                    {"voice_id": "di_voice_free", "name": "Free Clone", "language": "en", "gender": "female"},
+                    {"voice_id": "di_voice_paid", "name": "Paid Clone", "language": "hi", "gender": "female"},
                 ]
             }
 
@@ -546,10 +551,12 @@ def test_tts_engines_voices_contract_duno_access_tiers(monkeypatch) -> None:
     assert isinstance(payload["voices"], list)
     assert payload["voices"]
     by_id = {str(item.get("voice_id") or ""): item for item in payload["voices"]}
-    assert by_id["af_heart"]["access_tier"] == "free"
-    assert by_id["af_heart"]["is_plan_restricted"] is False
-    assert by_id["hf_beta"]["access_tier"] == "free"
-    assert by_id["hf_beta"]["is_plan_restricted"] is False
+    assert by_id["deepinfra_default"]["access_tier"] == "free"
+    assert by_id["deepinfra_default"]["is_plan_restricted"] is False
+    assert by_id["di_voice_free"]["access_tier"] == "pro"
+    assert by_id["di_voice_free"]["is_plan_restricted"] is True
+    assert by_id["di_voice_paid"]["access_tier"] == "pro"
+    assert by_id["di_voice_paid"]["is_plan_restricted"] is True
 
 
 def test_tts_engines_voices_contract_duno_preserves_runtime_identity(monkeypatch) -> None:
@@ -561,9 +568,9 @@ def test_tts_engines_voices_contract_duno_preserves_runtime_identity(monkeypatch
             return {
                 "voices": [
                     {
-                        "voice_id": "af_heart",
-                        "voice": "af_heart",
-                        "name": "Lyra US",
+                        "voice_id": "di_voice_789",
+                        "voice": "di_voice_789",
+                        "name": "Narrator Clone",
                         "language": "en",
                         "accent": "American English",
                         "gender": "female",
@@ -576,12 +583,14 @@ def test_tts_engines_voices_contract_duno_preserves_runtime_identity(monkeypatch
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    voice = payload["voices"][0]
-    assert voice["voice_id"] == "af_heart"
-    assert voice["name"] == "Lyra US"
-    assert voice["displayName"] == "Lyra US"
-    assert voice["voice"] == "af_heart"
+    by_id = {str(item.get("voice_id") or ""): item for item in payload["voices"]}
+    voice = by_id["di_voice_789"]
+    assert voice["voice_id"] == "di_voice_789"
+    assert voice["name"] == "Narrator Clone"
+    assert voice["displayName"] == "Narrator Clone"
+    assert voice["voice"] == "di_voice_789"
     assert voice["accent"] == "American English"
+    assert voice["access_tier"] == "pro"
     assert "mapped_name" not in voice
     assert "country" not in voice
     assert "age_group" not in voice

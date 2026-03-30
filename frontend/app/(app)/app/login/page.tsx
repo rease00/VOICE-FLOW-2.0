@@ -1,41 +1,29 @@
-'use client';
+import { LoginRouteClient } from './LoginRouteClient';
+import { resolveSafeInternalNextPath, type AuthRouteMode } from '../../../../src/app/navigation';
 
-import { useCallback } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { AppScreen } from '../../../../types';
-import { Login } from '../../../../views/Login';
-import {
-  resolveAppPath,
-  resolveLoginPath,
-  resolveSafeInternalNextPath,
-  type AuthRouteMode,
-} from '../../../../src/app/navigation';
+type LoginSearchParams = Record<string, string | string[] | undefined>;
 
-export default function AppLoginPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const requestedMode = searchParams.get('mode');
-  const requestedNext = resolveSafeInternalNextPath(searchParams.get('next'), null);
+interface AppLoginPageProps {
+  searchParams?: LoginSearchParams;
+}
+
+const readFirstSearchParam = (value: string | string[] | undefined): string | null => {
+  if (Array.isArray(value)) {
+    return String(value[0] || '').trim() || null;
+  }
+  return String(value || '').trim() || null;
+};
+
+export const dynamic = 'force-dynamic';
+
+export default function AppLoginPage({ searchParams }: AppLoginPageProps) {
+  const requestedMode = readFirstSearchParam(searchParams?.mode);
+  const requestedNext = resolveSafeInternalNextPath(readFirstSearchParam(searchParams?.next), null);
   const initialMode: AuthRouteMode | undefined =
     requestedMode === 'signup' || requestedMode === 'login' ? requestedMode : undefined;
 
-  const setScreen = useCallback((screen: AppScreen) => {
-    router.replace(resolveAppPath(screen));
-  }, [router]);
-
-  const syncModeToRoute = useCallback((mode: AuthRouteMode) => {
-    router.replace(resolveLoginPath(mode, requestedNext));
-  }, [requestedNext, router]);
-
-  const navigateToPath = useCallback((path: string) => {
-    router.replace(path);
-  }, [router]);
-
   return (
-    <Login
-      setScreen={setScreen}
-      syncModeToRoute={syncModeToRoute}
-      navigateToPath={navigateToPath}
+    <LoginRouteClient
       {...(requestedNext ? { nextPath: requestedNext } : {})}
       {...(initialMode ? { initialMode } : {})}
     />

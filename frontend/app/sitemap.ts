@@ -1,5 +1,5 @@
 import type { MetadataRoute } from 'next';
-import { getLegalDocuments } from '../src/landing/legal/legalContent';
+import { getLegalDocuments } from '../src/features/legal/legalContent';
 
 const BASE_URL = 'https://v-flow-ai.com';
 
@@ -16,14 +16,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     {
       url: `${BASE_URL}/`,
       lastModified,
-      changeFrequency: 'daily',
-      priority: 1,
-    },
-    {
-      url: `${BASE_URL}/landing`,
-      lastModified,
       changeFrequency: 'weekly',
-      priority: 0.9,
+      priority: 1,
     },
     {
       url: `${BASE_URL}/billing`,

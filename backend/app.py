@@ -29,6 +29,7 @@ import wave
 from collections import defaultdict, deque
 from io import BytesIO, StringIO
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Optional, Dict, List, Callable
 from urllib import error as urllib_error
 from urllib.parse import quote, unquote, urljoin, urlparse
@@ -37,7 +38,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
@@ -51,6 +52,7 @@ firebase_admin = None  # type: ignore
 firebase_auth = None  # type: ignore
 firebase_credentials = None  # type: ignore
 firebase_firestore = None  # type: ignore
+google_api_core_exceptions = None  # type: ignore
 _FIREBASE_SDK_IMPORT_ERROR: Optional[str] = None
 stripe = None  # type: ignore
 _STRIPE_IMPORT_ATTEMPTED = False
@@ -152,6 +154,7 @@ from services.queue.redis_queue import TtsJobQueue, normalize_lane
 from services.tts_v2_engine import (
     AuthorizationError as TtsV2AuthorizationError,
     JobNotFoundError as TtsV2JobNotFoundError,
+    LANE_VERTEX_SLOT_BY_ID as TTS_V2_LANE_VERTEX_SLOT_BY_ID,
     PayloadTooLargeError as TtsV2PayloadTooLargeError,
     RequestConflictError as TtsV2RequestConflictError,
     RuntimeSynthesisError as TtsV2RuntimeSynthesisError,
@@ -159,6 +162,7 @@ from services.tts_v2_engine import (
     TtsV2Engine,
     V2ValidationError,
 )
+from services import razorpay_billing as razorpay_sdk
 
 load_backend_env_files(Path(__file__).resolve())
 ARTIFACTS_DIR = APP_ROOT / "artifacts"
@@ -566,8 +570,20 @@ VF_REQUIRE_EMAIL_VERIFIED = (
 VF_ENV = str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower()
 VF_IS_PRODUCTION = VF_ENV in {"prod", "production"}
 VF_IS_LOCAL_DEV = VF_ENV in {"local", "dev", "development"}
+VF_ADMIN_UNLOCK_ALLOW_DEV_BYPASS = (
+    (os.getenv("VF_ADMIN_UNLOCK_ALLOW_DEV_BYPASS") or ("1" if (VF_IS_LOCAL_DEV or "pytest" in sys.modules) else "0")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 VF_DOCS_ENABLE = (
     (os.getenv("VF_DOCS_ENABLE") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_DEV_UID_HEADER_ENABLED = (
+    (os.getenv("VF_DEV_UID_HEADER_ENABLED") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+VF_ENABLE_DEV_ADMIN_LOGIN = (
+    (os.getenv("VF_ENABLE_DEV_ADMIN_LOGIN") or ("0" if VF_IS_PRODUCTION else "1")).strip().lower()
     in {"1", "true", "yes", "on"}
 )
 VF_DEV_BYPASS_UID = (os.getenv("VF_DEV_BYPASS_UID") or "dev_local_user").strip() or "dev_local_user"
@@ -665,6 +681,10 @@ VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR = max(
     0.01,
     float((os.getenv("VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR") or "0.28").strip() or "0.28"),
 )
+VF_BILLING_USAGE_RECONCILIATION_STALE_MINUTES = max(
+    5,
+    int((os.getenv("VF_BILLING_USAGE_RECONCILIATION_STALE_MINUTES") or "30").strip() or "30"),
+)
 VF_ACCOUNTING_MONITOR_ENABLED = (
     (os.getenv("VF_ACCOUNTING_MONITOR_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -760,7 +780,7 @@ VECTOR_RUNTIME_ENGINE_KEYS = frozenset({"VECTOR", "PRIME"})
 FREE_TIER_ALLOWED_VOICE_IDS: dict[str, tuple[str, ...]] = {
     "VECTOR": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
     "PRIME": ("v2", "v4", "v6", "v8", "v10", "v1", "v3", "v5", "v7", "v9"),
-    "DUNO": ("af_heart", "hf_beta"),
+    "DUNO": ("deepinfra_default",),
 }
 PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {"plan": "Free", "monthlyVfLimit": 1000},
@@ -1371,6 +1391,10 @@ VF_NOTIFICATIONS_JOB_EMAIL_MIN_DURATION_MS = max(
     0,
     int((os.getenv("VF_NOTIFICATIONS_JOB_EMAIL_MIN_DURATION_MS") or "90000").strip() or "90000"),
 )
+VF_NOTIFICATIONS_SYNC_ON_READ = (
+    (os.getenv("VF_NOTIFICATIONS_SYNC_ON_READ") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 VF_SUPPORT_AI_AUTOREPLY_ENABLED = (
     (os.getenv("VF_SUPPORT_AI_AUTOREPLY_ENABLED") or "1").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -1385,7 +1409,7 @@ VF_SCHEDULER_LOCK_TTL_SECONDS = max(
 )
 VF_SCHEDULER_TICK_SECONDS = max(
     3,
-    int((os.getenv("VF_SCHEDULER_TICK_SECONDS") or "10").strip() or "10"),
+    int((os.getenv("VF_SCHEDULER_TICK_SECONDS") or "60").strip() or "60"),
 )
 VF_ALERT_EVAL_INTERVAL_SECONDS = max(
     20,
@@ -1530,6 +1554,7 @@ SCHEDULER_TASK_TYPES = {
     "coupon_abuse_scan",
     "audio_generation_audit_retention_cleanup",
     "accounting_monitor_daily",
+    "billing_usage_webhook_reconciliation",
 }
 SCHEDULER_CONCURRENCY_POLICIES = {"forbid", "replace", "allow"}
 TEAM_MEMBER_ROLES = {"owner", "admin", "member", "viewer"}
@@ -2010,6 +2035,8 @@ def _sanitize_tts_voice_selection_for_plan(
     raw_voice_id = str(voice_id or "").strip()
     raw_voice_name = str(voice_name or "").strip()
     requested_token = raw_voice_name or raw_voice_id
+    if normalized_engine == "DUNO":
+        requested_token = _canonicalize_duno_voice_token(raw_voice_id or raw_voice_name)
     allow_tokens, fallback_token = _plan_allowed_voice_tokens(normalized_engine, plan_key)
     gated = False
 
@@ -2027,14 +2054,40 @@ def _sanitize_tts_voice_selection_for_plan(
         return resolved, resolved, gated
 
     if normalized_engine == "DUNO":
-        resolved = requested_token or fallback_token or "hf_alpha"
-        return resolved, raw_voice_name or resolved, gated
+        resolved = _canonicalize_duno_voice_token(
+            requested_token or fallback_token or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
+        ) or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
+        return resolved, raw_voice_name or _duno_public_voice_label(resolved), gated
 
     resolved = requested_token or raw_voice_id or raw_voice_name
     return resolved, raw_voice_name or resolved, gated
 
 
-DUNO_DEFAULT_MODEL = "ResembleAI/chatterbox-turbo"
+DUNO_DEFAULT_MODEL = str(os.getenv("VF_DUNO_RUNTIME_MODEL") or "ResembleAI/chatterbox-turbo").strip() or "ResembleAI/chatterbox-turbo"
+_DUNO_DEEPINFRA_DEFAULT_VOICE_ID = "deepinfra_default"
+_DUNO_LEGACY_PRESET_VOICE_IDS = frozenset(
+    {
+        "af_heart",
+        "af_bella",
+        "af_nova",
+        "af_sarah",
+        "am_fenrir",
+        "am_michael",
+        "am_onyx",
+        "am_echo",
+        "bf_emma",
+        "bf_isabella",
+        "bm_george",
+        "bm_fable",
+        "hf_alpha",
+        "hf_beta",
+        "hm_omega",
+        "hm_psi",
+        _DUNO_DEEPINFRA_DEFAULT_VOICE_ID,
+        "default",
+        "duno_default",
+    }
+)
 _DUNO_EMOTION_TAG_MAP: dict[str, str] = {
     "happy": "laugh",
     "playful": "chuckle",
@@ -2046,6 +2099,245 @@ _DUNO_EMOTION_TAG_MAP: dict[str, str] = {
     "furious": "clearthroat",
 }
 _DUNO_SUPPORTED_TAGS = frozenset({"laugh", "chuckle", "sigh", "cough", "gasp", "clearthroat"})
+_DUNO_MULTILINGUAL_EMOTION_CUE_MAP: dict[str, tuple[str, ...]] = {
+    "neutral": ("tone:neutral", "pace:steady"),
+    "calm": ("tone:calm", "pace:steady", "energy:low"),
+    "relaxed": ("tone:relaxed", "pace:easy", "energy:low"),
+    "happy": ("tone:happy", "energy:bright", "delivery:smiling"),
+    "joyful": ("tone:joyful", "energy:bright", "delivery:uplifted"),
+    "cheerful": ("tone:cheerful", "energy:light", "delivery:smiling"),
+    "excited": ("tone:excited", "energy:high", "pace:brisk"),
+    "energetic": ("tone:energetic", "energy:high", "pace:brisk"),
+    "optimistic": ("tone:optimistic", "delivery:encouraging", "energy:bright"),
+    "hopeful": ("tone:hopeful", "delivery:uplifting", "energy:light"),
+    "grateful": ("tone:grateful", "delivery:warm", "energy:gentle"),
+    "confident": ("tone:confident", "delivery:assured", "pace:steady"),
+    "determined": ("tone:determined", "delivery:firm", "pace:steady"),
+    "heroic": ("tone:heroic", "delivery:grand", "energy:elevated"),
+    "proud": ("tone:proud", "delivery:assured", "energy:elevated"),
+    "serious": ("tone:serious", "delivery:focused", "pace:steady"),
+    "authoritative": ("tone:authoritative", "delivery:commanding", "pace:steady"),
+    "formal": ("tone:formal", "delivery:polished", "pace:measured"),
+    "persuasive": ("tone:persuasive", "delivery:convincing", "energy:steady"),
+    "motivational": ("tone:motivational", "delivery:uplifting", "energy:high"),
+    "warm storytelling": ("tone:warm", "delivery:narrative", "texture:intimate"),
+    "cinematic narration": ("tone:cinematic", "delivery:narrative", "texture:dramatic"),
+    "dark storytelling": ("tone:dark", "delivery:narrative", "texture:brooding"),
+    "mystical": ("tone:mystical", "delivery:airy", "texture:ethereal"),
+    "devotional": ("tone:devotional", "delivery:reverent", "pace:measured"),
+    "spiritual": ("tone:spiritual", "delivery:reverent", "texture:airy"),
+    "romantic": ("tone:romantic", "delivery:tender", "texture:soft"),
+    "loving": ("tone:loving", "delivery:tender", "texture:warm"),
+    "affectionate": ("tone:affectionate", "delivery:warm", "texture:soft"),
+    "empathetic": ("tone:empathetic", "delivery:caring", "pace:steady"),
+    "compassionate": ("tone:compassionate", "delivery:caring", "texture:gentle"),
+    "reflective": ("tone:reflective", "delivery:thoughtful", "pace:measured"),
+    "nostalgic": ("tone:nostalgic", "delivery:soft", "texture:wistful"),
+    "melancholic": ("tone:melancholic", "delivery:soft", "texture:wistful"),
+    "sad": ("tone:sad", "delivery:soft", "energy:low"),
+    "tearful": ("tone:sad", "delivery:fragile", "texture:tearful"),
+    "crying": ("tone:sad", "delivery:broken", "event:crying"),
+    "anxious": ("tone:anxious", "pace:uneven", "texture:tense"),
+    "fearful": ("tone:fearful", "delivery:hushed", "texture:tense"),
+    "tense": ("tone:tense", "pace:tight", "texture:strained"),
+    "suspenseful": ("tone:suspenseful", "delivery:hushed", "texture:tense"),
+    "surprised": ("tone:surprised", "energy:lifted", "event:startled"),
+    "shocked": ("tone:shocked", "delivery:stunned", "event:startled"),
+    "disgusted": ("tone:disgusted", "delivery:sharp", "texture:grimacing"),
+    "angry": ("tone:angry", "delivery:sharp", "energy:high"),
+    "furious": ("tone:furious", "delivery:forceful", "energy:intense"),
+    "frustrated": ("tone:frustrated", "delivery:clipped", "texture:strained"),
+    "sarcastic": ("tone:sarcastic", "delivery:dry", "texture:wry"),
+    "taunting": ("tone:taunting", "delivery:provocative", "texture:wry"),
+    "mocking": ("tone:mocking", "delivery:derisive", "texture:wry"),
+    "playful": ("tone:playful", "delivery:light", "energy:bright"),
+    "childlike": ("tone:childlike", "delivery:light", "energy:curious"),
+    "elderly gentle": ("tone:gentle", "delivery:aged", "pace:measured"),
+    "whispering": ("tone:hushed", "delivery:whispered", "energy:low"),
+    "soft spoken": ("tone:soft", "delivery:gentle", "energy:low"),
+    "breathless": ("tone:urgent", "delivery:breathy", "pace:uneven"),
+    "panting": ("tone:urgent", "delivery:breathy", "event:panting"),
+    "laughing": ("tone:playful", "delivery:smiling", "event:laughing"),
+    "sighing": ("tone:weary", "delivery:soft", "event:sighing"),
+    "gasping": ("tone:startled", "delivery:breathy", "event:gasping"),
+    "shouting": ("tone:forceful", "delivery:projected", "energy:high"),
+    "screaming": ("tone:intense", "delivery:projected", "energy:max"),
+    "coughing": ("tone:strained", "delivery:rough", "event:coughing"),
+    "yawning": ("tone:drowsy", "pace:slow", "event:yawning"),
+    "throat clearing": ("tone:reset", "delivery:rough", "event:throat_clearing"),
+    "sneezing": ("tone:startled", "delivery:sharp", "event:sneezing"),
+    "moaning": ("tone:pained", "delivery:drawn", "texture:strained"),
+}
+
+
+def _default_duno_runtime_voice_entry() -> dict[str, Any]:
+    return {
+        "voice_id": _DUNO_DEEPINFRA_DEFAULT_VOICE_ID,
+        "voice": _DUNO_DEEPINFRA_DEFAULT_VOICE_ID,
+        "name": "Default DUNO",
+        "displayName": "Default DUNO",
+        "language": "en",
+        "gender": "unknown",
+        "accent": "DeepInfra default",
+        "source": "deepinfra_default",
+        "accessTier": "free",
+        "isPlanRestricted": False,
+    }
+
+
+def _canonicalize_duno_voice_token(value: object) -> str:
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    lowered = token.lower()
+    if lowered in _DUNO_LEGACY_PRESET_VOICE_IDS:
+        return _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
+    if lowered in {"default duno", "default chatterbox", "chatterbox default"}:
+        return _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
+    return token
+
+
+def _duno_public_voice_label(value: object) -> str:
+    token = _canonicalize_duno_voice_token(value)
+    if not token or token.lower() == _DUNO_DEEPINFRA_DEFAULT_VOICE_ID:
+        return "Default DUNO"
+    return token
+
+
+def _is_duno_deepinfra_runtime(value: str | None = None) -> bool:
+    safe_value = str(value or DUNO_RUNTIME_URL or "").strip()
+    if not safe_value:
+        return False
+    parsed = urlparse(safe_value)
+    host = str(parsed.netloc or "").strip().lower()
+    path = str(parsed.path or "").strip().lower()
+    return "deepinfra.com" in host or path.startswith("/v1/inference/")
+
+
+def _is_duno_runtime_auth_rejection(detail: object) -> bool:
+    message = str(detail or "").strip().lower()
+    if not message:
+        return False
+    return any(
+        token in message
+        for token in (
+            "unauthorized",
+            "not authorized",
+            "invalid api key",
+            "invalid token",
+            "forbidden",
+            "permission denied",
+            "http 401",
+            "http 403",
+            "status code 401",
+            "status code 403",
+        )
+    )
+
+
+def _duno_runtime_origin(base_url: str | None = None) -> str:
+    safe_base = str(base_url or DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    if not safe_base:
+        return ""
+    if not _is_duno_deepinfra_runtime(safe_base):
+        return safe_base
+    parsed = urlparse(safe_base)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return safe_base
+
+
+def _duno_inference_url(base_url: str | None = None, *, model: str | None = None) -> str:
+    safe_base = str(base_url or DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    if not safe_base:
+        return ""
+    if not _is_duno_deepinfra_runtime(safe_base):
+        return safe_base
+    safe_model = quote(str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL, safe="/")
+    if "/v1/inference/" in safe_base.lower():
+        return f"{_duno_runtime_origin(safe_base)}/v1/inference/{safe_model}"
+    if safe_base.lower().endswith("/v1"):
+        return f"{safe_base}/inference/{safe_model}"
+    return f"{_duno_runtime_origin(safe_base)}/v1/inference/{safe_model}"
+
+
+def _duno_voice_api_url(path: str, *, base_url: str | None = None) -> str:
+    safe_base = str(base_url or DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    if not safe_base:
+        return ""
+    prefix = _duno_runtime_origin(safe_base) if _is_duno_deepinfra_runtime(safe_base) else safe_base
+    safe_path = f"/{str(path or '').lstrip('/')}"
+    return f"{prefix}{safe_path}"
+
+
+def _duno_runtime_auth_url_prefixes() -> tuple[str, ...]:
+    prefixes: list[str] = []
+    for candidate in (
+        str(DUNO_RUNTIME_URL or "").strip().rstrip("/"),
+        _duno_runtime_origin(),
+        _duno_inference_url(),
+    ):
+        safe_candidate = str(candidate or "").strip().rstrip("/")
+        if safe_candidate and safe_candidate not in prefixes:
+            prefixes.append(safe_candidate)
+    return tuple(prefixes)
+
+
+def _decode_duno_audio_base64(value: object) -> bytes:
+    token = str(value or "").strip()
+    if not token:
+        return b""
+    if token.startswith("data:") and "," in token:
+        token = token.split(",", 1)[1]
+    return decode_openvoice_audio_base64(token)
+
+
+def _decode_duno_reference_audio_bytes(*, reference_audio_base64: str = "", reference_audio_url: str = "") -> bytes:
+    safe_base64 = str(reference_audio_base64 or "").strip()
+    if safe_base64:
+        return _decode_duno_audio_base64(safe_base64)
+    safe_url = str(reference_audio_url or "").strip()
+    if safe_url.startswith("data:") and "," in safe_url:
+        return _decode_duno_audio_base64(safe_url.split(",", 1)[1])
+    if safe_url and safe_url.lower().startswith(("http://", "https://")):
+        response = _runtime_http_request(
+            "GET",
+            safe_url,
+            timeout=max(8, int(VF_TTS_RUNTIME_TIMEOUT_SEC)),
+        )
+        if bool(getattr(response, "ok", False)):
+            return bytes(response.content or b"")
+    return b""
+
+
+def _duno_reference_audio_mime_type(*, reference_audio_name: str = "", reference_audio_url: str = "") -> str:
+    safe_url = str(reference_audio_url or "").strip()
+    if safe_url.startswith("data:"):
+        media_type = safe_url.split(";", 1)[0].removeprefix("data:").strip()
+        if media_type:
+            return media_type
+    guessed_type = mimetypes.guess_type(str(reference_audio_name or "").strip())[0]
+    return str(guessed_type or "audio/wav").strip() or "audio/wav"
+
+
+def _duno_audio_format_media_type(fmt: str) -> str:
+    normalized = str(fmt or "wav").strip().lower() or "wav"
+    return {
+        "wav": "audio/wav",
+        "mp3": "audio/mpeg",
+        "opus": "audio/opus",
+        "flac": "audio/flac",
+        "pcm": "audio/L16",
+    }.get(normalized, "audio/wav")
+
+
+def _normalize_duno_runtime_voice_id(value: object) -> str:
+    token = _canonicalize_duno_voice_token(value)
+    if not token:
+        return ""
+    if _is_duno_deepinfra_runtime() and token.lower() == _DUNO_DEEPINFRA_DEFAULT_VOICE_ID:
+        return ""
+    return token
 
 
 def _duno_clone_cache_key(uid: str, speaker: str, reference_hash: str, model: str) -> str:
@@ -2146,6 +2438,54 @@ def _duno_create_voice_via_runtime(
     runtime_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
     if not runtime_base:
         return ""
+    if _is_duno_deepinfra_runtime(runtime_base):
+        upload_url = _duno_voice_api_url("/v1/voices/add", base_url=runtime_base)
+        if not upload_url:
+            return ""
+        try:
+            reference_audio_bytes = _decode_duno_reference_audio_bytes(
+                reference_audio_base64=reference_audio_base64,
+                reference_audio_url=reference_audio_url,
+            )
+        except ValueError:
+            reference_audio_bytes = b""
+        if not reference_audio_bytes:
+            return ""
+        speaker_label = str(speaker or source_voice_name or source_voice_id or "VoiceFlow DUNO Clone").strip() or "VoiceFlow DUNO Clone"
+        source_label = str(source_voice_name or source_voice_id or speaker_label).strip() or speaker_label
+        audio_name = str(reference_audio_name or "reference.wav").strip() or "reference.wav"
+        audio_mime_type = _duno_reference_audio_mime_type(
+            reference_audio_name=audio_name,
+            reference_audio_url=reference_audio_url,
+        )
+        description = f"Native DUNO clone of {source_label}"
+        try:
+            response = _runtime_http_request(
+                "POST",
+                upload_url,
+                timeout=max(8, int(VF_TTS_RUNTIME_TIMEOUT_SEC)),
+                data={
+                    "name": speaker_label[:120],
+                    "description": description[:240],
+                },
+                files={
+                    "audio": (
+                        audio_name,
+                        reference_audio_bytes,
+                        audio_mime_type,
+                    ),
+                },
+                headers={
+                    "ngrok-skip-browser-warning": "true",
+                    **_runtime_auth_headers_for_url(upload_url, include_accept=True),
+                },
+            )
+            if not bool(getattr(response, "ok", False)):
+                return ""
+            parsed_payload = response.json() if hasattr(response, "json") else {}
+            return _extract_voice_id_from_payload(parsed_payload)
+        except Exception:
+            return ""
     request_payload = {
         "model": str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
         "speaker": str(speaker or "").strip(),
@@ -2194,6 +2534,41 @@ def _duno_create_voice_via_runtime(
     return ""
 
 
+def _duno_clone_preview_url(
+    *,
+    voice_id: str,
+    source_label: str,
+    model: str,
+    trace_id: str,
+) -> str:
+    safe_voice_id = str(voice_id or "").strip()
+    if not safe_voice_id:
+        return ""
+    preview_text = f"Hello, this is a preview of {str(source_label or 'your cloned voice').strip() or 'your cloned voice'}."
+    try:
+        audio_bytes, meta = DUNO_MODAL_CLIENT.synthesize(
+            text=preview_text,
+            voice_id=safe_voice_id,
+            language="en",
+            model=str(model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL,
+            trace_id=str(trace_id or "").strip(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            "[voice-clone.duno] preview synthesis unavailable "
+            f"voice_id={safe_voice_id} detail={str(exc).strip()}"
+        )
+        return ""
+
+    if not audio_bytes:
+        return ""
+    content_type = str(meta.get("contentType") or "audio/wav").strip() or "audio/wav"
+    audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
+    if not audio_base64:
+        return ""
+    return f"data:{content_type};base64,{audio_base64}"
+
+
 def _resolve_duno_expressive_tag(*, emotion: str, cue: str) -> str:
     safe_emotion = str(_canonical_emotion_label(emotion) or "Neutral").strip().lower()
     safe_cue = str(cue or "").strip().lower()
@@ -2201,6 +2576,45 @@ def _resolve_duno_expressive_tag(*, emotion: str, cue: str) -> str:
         if tag in safe_cue:
             return tag
     return str(_DUNO_EMOTION_TAG_MAP.get(safe_emotion) or "").strip()
+
+
+def _duno_model_supports_native_paralinguistic_tags(*, model: object, language: object = "") -> bool:
+    token = str(model or "").strip().lower()
+    language_token = str(language or "").strip().lower()
+    if not token or "turbo" not in token:
+        return False
+    return language_token in {"", "en", "en-us", "english", "auto"}
+
+
+def _normalize_duno_multilingual_cue_token(value: str) -> str:
+    safe = re.sub(r"[^a-z0-9 _:-]+", " ", str(value or "").strip().lower())
+    safe = re.sub(r"\s+", " ", safe).strip()
+    return safe.replace(" ", "_")
+
+
+def _build_duno_text_emotion_cue(*, emotion: str, cue: str) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    canonical_emotion = str(_canonical_emotion_label(emotion) or "").strip()
+    canonical_key = canonical_emotion.lower()
+    if canonical_key:
+        for token in _DUNO_MULTILINGUAL_EMOTION_CUE_MAP.get(canonical_key, ()):
+            safe_token = _normalize_duno_multilingual_cue_token(token)
+            if safe_token and safe_token not in seen:
+                parts.append(f"[{safe_token}]")
+                seen.add(safe_token)
+    if not parts and canonical_key and canonical_key != "neutral":
+        fallback_tone = _normalize_duno_multilingual_cue_token(f"tone:{canonical_key}")
+        if fallback_tone:
+            parts.append(f"[{fallback_tone}]")
+            seen.add(fallback_tone)
+    safe_cue = str(cue or "").strip()
+    lowered_cue = safe_cue.lower()
+    if safe_cue and lowered_cue not in {"default", canonical_key if canonical_key else "", "neutral"}:
+        style_token = _normalize_duno_multilingual_cue_token(f"style:{safe_cue}")
+        if style_token and style_token not in seen:
+            parts.append(f"[{style_token}]")
+    return " ".join(parts).strip()
 
 
 def _prepare_duno_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2212,11 +2626,24 @@ def _prepare_duno_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
     text = str(safe_payload.get("text") or "").strip()
     emotion = str(safe_payload.get("emotion") or "").strip()
     cue = str(safe_payload.get("cue") or safe_payload.get("style") or "").strip()
+    language = str(
+        safe_payload.get("language_id")
+        or safe_payload.get("languageId")
+        or safe_payload.get("language")
+        or ""
+    ).strip()
     expressive_tag = _resolve_duno_expressive_tag(emotion=emotion, cue=cue)
-    if expressive_tag and expressive_tag in _DUNO_SUPPORTED_TAGS and text:
-        tag_token = f"[{expressive_tag}]"
-        if tag_token.lower() not in text.lower():
-            safe_payload["text"] = f"{tag_token} {text}".strip()
+    model = str(safe_payload.get("model") or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
+    if text:
+        if _duno_model_supports_native_paralinguistic_tags(model=model, language=language):
+            if expressive_tag and expressive_tag in _DUNO_SUPPORTED_TAGS:
+                tag_token = f"[{expressive_tag}]"
+                if tag_token.lower() not in text.lower():
+                    safe_payload["text"] = f"{tag_token} {text}".strip()
+        else:
+            cue_prefix = _build_duno_text_emotion_cue(emotion=emotion, cue=cue)
+            if cue_prefix and not text.lower().startswith(cue_prefix.lower()):
+                safe_payload["text"] = f"{cue_prefix} {text}".strip()
     if not emotion:
         safe_payload["emotion"] = "Neutral"
     else:
@@ -2224,7 +2651,6 @@ def _prepare_duno_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     uid = str(safe_payload.get("uid") or "").strip()
     speaker = str(safe_payload.get("speaker_name") or safe_payload.get("speaker") or "").strip()
-    model = str(safe_payload.get("model") or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
     safe_payload["model"] = model
 
     reference_audio_url = str(safe_payload.get("referenceAudioUrl") or safe_payload.get("reference_audio_url") or "").strip()
@@ -2241,7 +2667,9 @@ def _prepare_duno_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not reference_hash:
         return safe_payload
 
-    resolved_voice_id = str(safe_payload.get("voice_id") or safe_payload.get("voiceId") or "").strip()
+    resolved_voice_id = _normalize_duno_runtime_voice_id(
+        safe_payload.get("voice_id") or safe_payload.get("voiceId") or ""
+    )
     if not resolved_voice_id:
         resolved_voice_id = _duno_lookup_cached_voice_id(
             uid=uid,
@@ -2432,20 +2860,27 @@ def _resolve_history_voice_fields(
     if _is_gem_runtime_engine(safe_engine):
         canonical_voice_id = _resolve_gem_runtime_voice_name(raw_voice_id or raw_voice_name, fallback="Fenrir")
     elif safe_engine == "DUNO":
-        canonical_voice_id = raw_voice_id or raw_voice_name or "hf_alpha"
+        canonical_voice_id = _canonicalize_duno_voice_token(
+            raw_voice_id or raw_voice_name or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
+        ) or _DUNO_DEEPINFRA_DEFAULT_VOICE_ID
     else:
         canonical_voice_id = raw_voice_id or raw_voice_name
 
-    profile = _resolve_mapped_profile(
-        safe_engine,
-        canonical_voice_id,
-        voice_name=raw_voice_name or canonical_voice_id,
-    )
+    profile = None
+    if not (safe_engine == "DUNO" and str(raw_voice_id or "").strip().lower() in _DUNO_LEGACY_PRESET_VOICE_IDS):
+        profile = _resolve_mapped_profile(
+            safe_engine,
+            canonical_voice_id,
+            voice_name=raw_voice_name or canonical_voice_id,
+        )
     display_voice_name = str((profile or {}).get("displayName") or "").strip()
     if not display_voice_name and raw_voice_name and raw_voice_name.lower() != "ai voice":
         display_voice_name = raw_voice_name
     if not display_voice_name:
-        display_voice_name = str(canonical_voice_id or raw_voice_name or "Unknown voice").strip() or "Unknown voice"
+        if safe_engine == "DUNO":
+            display_voice_name = _duno_public_voice_label(canonical_voice_id)
+        else:
+            display_voice_name = str(canonical_voice_id or raw_voice_name or "Unknown voice").strip() or "Unknown voice"
 
     return str(canonical_voice_id or "").strip(), display_voice_name
 
@@ -3329,6 +3764,10 @@ class DunoModalClient:
             )
             self._session.headers.update({"authorization": auth_header})
 
+    @property
+    def is_deepinfra(self) -> bool:
+        return _is_duno_deepinfra_runtime(self.base_url)
+
     def _request_json(
         self,
         method: str,
@@ -3359,10 +3798,62 @@ class DunoModalClient:
         return payload if isinstance(payload, dict) else {"value": payload}
 
     def health(self) -> dict[str, Any]:
-        return self._request_json("GET", "/health")
+        if not self.base_url:
+            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
+        if not self.is_deepinfra:
+            return self._request_json("GET", "/health")
+        list_url = _duno_voice_api_url("/v1/voices", base_url=self.base_url)
+        try:
+            response = self._session.request(
+                "GET",
+                list_url,
+                timeout=min(12.0, float(self.timeout_sec)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
+        if not response.ok:
+            detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
+            raise RuntimeError(f"DUNO DeepInfra voices endpoint failed: {detail}")
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        voice_rows = payload.get("voices") if isinstance(payload, dict) else []
+        voice_count = len(voice_rows) if isinstance(voice_rows, list) else 0
+        return {
+            "ok": True,
+            "state": "online",
+            "detail": "DeepInfra DUNO runtime ready.",
+            "warm": True,
+            "engine": "DUNO",
+            "provider": "deepinfra",
+            "model": DUNO_DEFAULT_MODEL,
+            "voiceCount": voice_count,
+            "inferenceUrl": _duno_inference_url(self.base_url),
+        }
 
     def capabilities(self) -> dict[str, Any]:
-        return self._request_json("GET", "/v1/capabilities")
+        if not self.base_url:
+            raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
+        if not self.is_deepinfra:
+            return self._request_json("GET", "/v1/capabilities")
+        health_payload = self.health()
+        payload = _capability_fallback("DUNO", health_payload=health_payload)
+        payload["engine"] = "DUNO"
+        payload["runtime"] = "deepinfra"
+        payload["ready"] = True
+        payload["model"] = DUNO_DEFAULT_MODEL
+        payload["supportsEmotion"] = True
+        payload["metadata"] = {
+            **(payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}),
+            "source": "deepinfra",
+            "provider": "deepinfra",
+            "modelEndpoint": _duno_inference_url(self.base_url),
+            "voiceManagementEndpoint": _duno_voice_api_url("/v1/voices", base_url=self.base_url),
+            "apiKeyConfigured": bool(self.token),
+            "supportsNativeCloning": True,
+        }
+        return payload
 
     def synthesize(
         self,
@@ -3376,19 +3867,70 @@ class DunoModalClient:
     ) -> tuple[bytes, dict[str, Any]]:
         if not self.base_url:
             raise RuntimeError("DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL.")
+        request_model = str(kwargs.get("model") or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
+        request_language = str(kwargs.get("language_id") or kwargs.get("languageId") or language or "").strip()
+        request_cue = str(kwargs.get("cue") or kwargs.get("style") or "").strip()
+        request_emotion = str(kwargs.get("emotion") or "").strip()
+        rendered_text = text
+        if request_emotion or request_cue:
+            rendered_text = _prepare_duno_runtime_payload(
+                {
+                    "engine": "DUNO",
+                    "text": text,
+                    "emotion": request_emotion,
+                    "cue": request_cue,
+                    "style": request_cue,
+                    "language": request_language,
+                    "model": request_model,
+                }
+            ).get("text") or text
+        if not self.is_deepinfra:
+            payload: dict[str, Any] = {
+                "text": str(rendered_text or ""),
+                "voiceId": str(voice_id or ""),
+                "voice_id": str(voice_id or ""),
+                "speed": float(speed or 1.0),
+                "language": str(language or "en"),
+                "trace_id": str(trace_id or ""),
+            }
+            payload.update({key: value for key, value in kwargs.items() if value is not None})
+            try:
+                response = self._session.request(
+                    "POST",
+                    f"{self.base_url}/synthesize",
+                    json=payload,
+                    timeout=float(self.timeout_sec),
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
+            if not response.ok:
+                detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
+                raise RuntimeError(f"DUNO runtime /synthesize failed: {detail}")
+            audio_bytes = bytes(response.content or b"")
+            meta = {
+                "contentType": str(response.headers.get("content-type") or "audio/wav"),
+                "headers": {str(key): str(value) for key, value in dict(response.headers or {}).items()},
+                "traceId": str(response.headers.get("x-voiceflow-trace-id") or trace_id or ""),
+                "provider": "duno-modal",
+            }
+            return audio_bytes, meta
+
         payload: dict[str, Any] = {
-            "text": str(text or ""),
-            "voiceId": str(voice_id or ""),
-            "voice_id": str(voice_id or ""),
-            "speed": float(speed or 1.0),
-            "language": str(language or "en"),
-            "trace_id": str(trace_id or ""),
+            "text": str(rendered_text or ""),
+            "response_format": "wav",
         }
-        payload.update({key: value for key, value in kwargs.items() if value is not None})
+        safe_voice_id = _normalize_duno_runtime_voice_id(
+            voice_id or kwargs.get("voiceId") or kwargs.get("voice_id") or ""
+        )
+        if safe_voice_id:
+            payload["voice_id"] = safe_voice_id
+        safe_language_id = str(kwargs.get("language_id") or kwargs.get("languageId") or language or "").strip()
+        if safe_language_id and safe_language_id.lower() not in {"en", "en-us", "english"}:
+            payload["language_id"] = safe_language_id.lower()
         try:
             response = self._session.request(
                 "POST",
-                f"{self.base_url}/synthesize",
+                _duno_inference_url(self.base_url, model=request_model),
                 json=payload,
                 timeout=float(self.timeout_sec),
             )
@@ -3396,13 +3938,43 @@ class DunoModalClient:
             raise RuntimeError(f"DUNO runtime unreachable: {exc}") from exc
         if not response.ok:
             detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
-            raise RuntimeError(f"DUNO runtime /synthesize failed: {detail}")
+            raise RuntimeError(f"DUNO DeepInfra inference failed: {detail}")
+
+        response_headers = {str(key): str(value) for key, value in dict(response.headers or {}).items()}
+        content_type = str(response.headers.get("content-type") or "").strip().lower()
         audio_bytes = bytes(response.content or b"")
+        trace_token = str(response.headers.get("x-request-id") or trace_id or "").strip()
+        output_format = "wav"
+        inference_meta: dict[str, Any] = {}
+        words_payload: list[dict[str, Any]] = []
+        if "json" in content_type:
+            try:
+                parsed_payload = response.json()
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"DUNO DeepInfra inference returned invalid JSON: {exc}") from exc
+            audio_payload = parsed_payload.get("audio") if isinstance(parsed_payload, dict) else ""
+            if not audio_payload:
+                raise RuntimeError("DUNO DeepInfra inference did not return audio.")
+            try:
+                audio_bytes = _decode_duno_audio_base64(audio_payload)
+            except ValueError as exc:
+                raise RuntimeError(f"DUNO DeepInfra inference returned invalid audio: {exc}") from exc
+            output_format = str(parsed_payload.get("output_format") or "wav").strip().lower() or "wav"
+            trace_token = str(parsed_payload.get("request_id") or trace_token).strip()
+            inference_status = parsed_payload.get("inference_status")
+            if isinstance(inference_status, dict):
+                inference_meta = inference_status
+            words_payload = parsed_payload.get("words") if isinstance(parsed_payload.get("words"), list) else []
+            content_type = _duno_audio_format_media_type(output_format)
         meta = {
-            "contentType": str(response.headers.get("content-type") or "audio/wav"),
-            "headers": {str(key): str(value) for key, value in dict(response.headers or {}).items()},
-            "traceId": str(response.headers.get("x-voiceflow-trace-id") or trace_id or ""),
-            "provider": "duno-modal",
+            "contentType": content_type or "audio/wav",
+            "headers": response_headers,
+            "traceId": trace_token,
+            "provider": "deepinfra",
+            "outputFormat": output_format,
+            "inferenceStatus": inference_meta,
+            "words": words_payload,
+            "model": request_model,
         }
         return audio_bytes, meta
 
@@ -3580,7 +4152,23 @@ class SourceSeparationRuntime:
             if cached is not None:
                 return cached
             from demucs.pretrained import get_model  # type: ignore
-            model = get_model(name=normalized, repo=None)
+            fallback_model_name = ""
+            if normalized.lower().endswith("_q"):
+                fallback_model_name = normalized[:-2].strip()
+            try:
+                model = get_model(name=normalized, repo=None)
+            except SystemExit as exc:
+                if not fallback_model_name:
+                    raise RuntimeError(
+                        f"Demucs model '{normalized}' could not be loaded."
+                    ) from exc
+                print(
+                    "[source-separation] "
+                    f"requested_model={normalized} fallback_model={fallback_model_name} "
+                    "reason=quantized_model_requires_optional_dependency"
+                )
+                model = get_model(name=fallback_model_name, repo=None)
+                self._models[fallback_model_name] = model
             model.cpu()
             model.eval()
             self._models[normalized] = model
@@ -3588,15 +4176,17 @@ class SourceSeparationRuntime:
 
 
 def _log_duno_runtime_bootstrap_status() -> None:
-    runtime_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
+    runtime_base = str(_duno_inference_url() or DUNO_RUNTIME_URL or "").strip().rstrip("/")
     if not runtime_base:
         print("[runtime.duno] configured=False detail=Set VF_DUNO_RUNTIME_URL to enable DUNO runtime.")
         return
-    health_url = f"{runtime_base}/health"
-    healthy, detail = _probe_runtime_health(
-        health_url,
-        timeout_sec=_runtime_health_probe_timeout_sec(health_url),
-    )
+    try:
+        health_payload = DUNO_MODAL_CLIENT.health()
+        healthy = bool(health_payload.get("ok"))
+        detail = str(health_payload.get("detail") or "").strip() or "Runtime status checked."
+    except Exception as exc:
+        healthy = False
+        detail = str(exc or "Runtime status checked.").strip() or "Runtime status checked."
     print(
         "[runtime.duno] "
         f"configured=True "
@@ -3908,6 +4498,7 @@ _TTS_V2_ENGINE = TtsV2Engine(
     ),
     output_root=TTS_LIVE_ARTIFACTS_DIR / "v2",
     redis_url=VF_REDIS_URL,
+    queue_key_prefix=VF_TTS_QUEUE_KEY_PREFIX,
     idempotency_ttl_sec=VF_TTS_SUCCESS_IDEMPOTENCY_TTL_SECONDS,
     on_terminal=_tts_v2_terminal_usage_finalize,
 )
@@ -3964,40 +4555,39 @@ _REQUESTS_DELETE_BASE = requests.delete
 _RUNTIME_HTTP_CLIENT = RuntimeHttpClient(pool_connections=64, pool_maxsize=64)
 DUNO_MODAL_CLIENT = DunoModalClient()
 OPENVOICE_PROVIDER_MODAL = "modal"
-OPENVOICE_PROVIDER_CLOUD_RUN = "cloud_run"
-OPENVOICE_PROVIDER_VALUES = frozenset({OPENVOICE_PROVIDER_MODAL, OPENVOICE_PROVIDER_CLOUD_RUN})
-OPENVOICE_PROVIDER_DEFAULT = str(os.getenv("VF_OPENVOICE_PROVIDER_DEFAULT") or OPENVOICE_PROVIDER_CLOUD_RUN).strip().lower() or OPENVOICE_PROVIDER_CLOUD_RUN
+OPENVOICE_PROVIDER_VALUES = frozenset({OPENVOICE_PROVIDER_MODAL})
+OPENVOICE_PROVIDER_DEFAULT = OPENVOICE_PROVIDER_MODAL
+OPENVOICE_EXPECTED_GPU_CONCURRENCY = max(
+    1,
+    int((os.getenv("VF_OPENVOICE_MODAL_EXPECTED_GPU_CONCURRENCY") or "2").strip() or "2"),
+)
 
 
-def _normalize_openvoice_provider(value: object, *, fallback: str = OPENVOICE_PROVIDER_CLOUD_RUN) -> str:
+def _normalize_openvoice_provider(value: object, *, fallback: str = OPENVOICE_PROVIDER_MODAL) -> str:
     token = str(value or "").strip().lower().replace("-", "_")
-    if token in {"cloud_run", "cloudrun", "run", "seed_vc_cloud_run", "seedvc_cloud_run"}:
-        return OPENVOICE_PROVIDER_CLOUD_RUN
-    if token in {"modal", "seed_vc_modal", "seedvc_modal"}:
+    if token in {
+        "",
+        "modal",
+        "cloud_run",
+        "cloudrun",
+        "run",
+        "seed_vc_cloud_run",
+        "seedvc_cloud_run",
+        "seed_vc_modal",
+        "seedvc_modal",
+    }:
         return OPENVOICE_PROVIDER_MODAL
-    safe_fallback = str(fallback or "").strip().lower()
+    safe_fallback = str(fallback or OPENVOICE_PROVIDER_MODAL).strip().lower()
     if safe_fallback in OPENVOICE_PROVIDER_VALUES:
         return safe_fallback
-    raise ValueError("activeProvider must be one of: cloud_run, modal.")
+    return OPENVOICE_PROVIDER_MODAL
 
 
 def _openvoice_provider_default() -> str:
-    try:
-        return _normalize_openvoice_provider(
-            str(os.getenv("VF_OPENVOICE_PROVIDER_DEFAULT") or OPENVOICE_PROVIDER_DEFAULT).strip(),
-            fallback=OPENVOICE_PROVIDER_CLOUD_RUN,
-        )
-    except ValueError:
-        return OPENVOICE_PROVIDER_CLOUD_RUN
+    return OPENVOICE_PROVIDER_MODAL
 
 
 def _openvoice_provider_env_url(provider: str) -> str:
-    safe_provider = _normalize_openvoice_provider(provider)
-    if safe_provider == OPENVOICE_PROVIDER_CLOUD_RUN:
-        return (
-            str(os.getenv("VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL") or "").strip().rstrip("/")
-            or str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
-        )
     return (
         str(os.getenv("VF_OPENVOICE_MODAL_RUNTIME_URL") or "").strip().rstrip("/")
         or str(os.getenv("VF_OPENVOICE_RUNTIME_URL") or "").strip().rstrip("/")
@@ -4005,12 +4595,6 @@ def _openvoice_provider_env_url(provider: str) -> str:
 
 
 def _openvoice_provider_env_token(provider: str) -> str:
-    safe_provider = _normalize_openvoice_provider(provider)
-    if safe_provider == OPENVOICE_PROVIDER_CLOUD_RUN:
-        return (
-            str(os.getenv("VF_OPENVOICE_CLOUD_RUN_RUNTIME_TOKEN") or "").strip()
-            or str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
-        )
     return (
         str(os.getenv("VF_OPENVOICE_MODAL_RUNTIME_TOKEN") or "").strip()
         or str(os.getenv("VF_OPENVOICE_RUNTIME_TOKEN") or "").strip()
@@ -4018,15 +4602,13 @@ def _openvoice_provider_env_token(provider: str) -> str:
 
 
 def _openvoice_client_for_provider(provider: str) -> OpenVoiceModalClient:
-    safe_provider = _normalize_openvoice_provider(provider)
     return OpenVoiceModalClient(
-        base_url=_openvoice_provider_env_url(safe_provider),
-        token=_openvoice_provider_env_token(safe_provider),
+        base_url=_openvoice_provider_env_url(OPENVOICE_PROVIDER_MODAL),
+        token=_openvoice_provider_env_token(OPENVOICE_PROVIDER_MODAL),
     )
 
 
 OPENVOICE_MODAL_CLIENT = _openvoice_client_for_provider(OPENVOICE_PROVIDER_MODAL)
-OPENVOICE_CLOUD_RUN_CLIENT = _openvoice_client_for_provider(OPENVOICE_PROVIDER_CLOUD_RUN)
 _OPENVOICE_ARTIFACT_SIGNATURE_LOCK = threading.Lock()
 _OPENVOICE_USED_ARTIFACT_SIGNATURES: dict[str, int] = {}
 _VOICE_CLONE_STRESS_LOCK = threading.Lock()
@@ -4051,8 +4633,8 @@ VOICE_CLONE_STRESS_DEFAULT_PROMPT = (
 
 
 def _openvoice_provider_vc_label(provider: str) -> str:
-    safe_provider = _normalize_openvoice_provider(provider)
-    return "openvoice-cloud-run" if safe_provider == OPENVOICE_PROVIDER_CLOUD_RUN else "openvoice-modal"
+    _ = provider
+    return "openvoice-modal"
 
 
 def _openvoice_runtime_config_default_payload() -> dict[str, Any]:
@@ -4119,43 +4701,25 @@ def _openvoice_runtime_config_patch(*, active_provider: str, updated_by: str) ->
 
 
 def _openvoice_provider_client_instance(provider: str) -> Any:
-    safe_provider = _normalize_openvoice_provider(provider)
-    desired_url = _openvoice_provider_env_url(safe_provider)
-    desired_token = _openvoice_provider_env_token(safe_provider)
-    if safe_provider == OPENVOICE_PROVIDER_MODAL:
-        global OPENVOICE_MODAL_CLIENT
-        candidate = OPENVOICE_MODAL_CLIENT
-        if isinstance(candidate, OpenVoiceModalClient):
-            if str(candidate.base_url or "").strip().rstrip("/") != str(desired_url or "").strip().rstrip("/") or str(candidate.token or "").strip() != str(desired_token or "").strip():
-                candidate = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
-                OPENVOICE_MODAL_CLIENT = candidate
-            return candidate
-        if candidate is not None:
-            return candidate
-        OPENVOICE_MODAL_CLIENT = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
-        return OPENVOICE_MODAL_CLIENT
-
-    global OPENVOICE_CLOUD_RUN_CLIENT
-    candidate = OPENVOICE_CLOUD_RUN_CLIENT
+    _ = provider
+    desired_url = _openvoice_provider_env_url(OPENVOICE_PROVIDER_MODAL)
+    desired_token = _openvoice_provider_env_token(OPENVOICE_PROVIDER_MODAL)
+    global OPENVOICE_MODAL_CLIENT
+    candidate = OPENVOICE_MODAL_CLIENT
     if isinstance(candidate, OpenVoiceModalClient):
         if str(candidate.base_url or "").strip().rstrip("/") != str(desired_url or "").strip().rstrip("/") or str(candidate.token or "").strip() != str(desired_token or "").strip():
             candidate = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
-            OPENVOICE_CLOUD_RUN_CLIENT = candidate
+            OPENVOICE_MODAL_CLIENT = candidate
         return candidate
     if candidate is not None:
         return candidate
-    OPENVOICE_CLOUD_RUN_CLIENT = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
-    return OPENVOICE_CLOUD_RUN_CLIENT
+    OPENVOICE_MODAL_CLIENT = OpenVoiceModalClient(base_url=desired_url, token=desired_token)
+    return OPENVOICE_MODAL_CLIENT
 
 
 def _resolve_openvoice_provider(provider_override: Optional[str] = None) -> str:
-    if provider_override is not None and str(provider_override).strip():
-        return _normalize_openvoice_provider(provider_override, fallback=_openvoice_provider_default())
-    config = _openvoice_runtime_config_get()
-    return _normalize_openvoice_provider(
-        config.get("activeProvider"),
-        fallback=_openvoice_provider_default(),
-    )
+    _ = provider_override
+    return OPENVOICE_PROVIDER_MODAL
 
 
 def _resolve_openvoice_client(provider_override: Optional[str] = None) -> tuple[str, Any]:
@@ -4164,8 +4728,8 @@ def _resolve_openvoice_client(provider_override: Optional[str] = None) -> tuple[
 
 
 def _openvoice_provider_runtime_probe(provider: str) -> dict[str, Any]:
-    safe_provider = _normalize_openvoice_provider(provider)
-    runtime_url = _openvoice_provider_env_url(safe_provider)
+    _ = provider
+    runtime_url = _openvoice_provider_env_url(OPENVOICE_PROVIDER_MODAL)
     configured = bool(str(runtime_url or "").strip())
     if not configured:
         return {
@@ -4173,16 +4737,22 @@ def _openvoice_provider_runtime_probe(provider: str) -> dict[str, Any]:
             "ready": False,
             "detail": "Runtime URL is not configured.",
             "device": "",
+            "expectedGpuConcurrency": OPENVOICE_EXPECTED_GPU_CONCURRENCY,
+            "runtimeGpuConcurrency": 0,
+            "concurrencyVerified": False,
         }
-    client = _openvoice_provider_client_instance(safe_provider)
+    client = _openvoice_provider_client_instance(OPENVOICE_PROVIDER_MODAL)
     try:
         health = client.health()
     except Exception as exc:  # noqa: BLE001
         return {
             "configured": True,
             "ready": False,
-            "detail": str(exc),
+            "detail": _sanitize_openvoice_runtime_error_detail(exc, fallback="OpenVoice runtime is offline."),
             "device": "",
+            "expectedGpuConcurrency": OPENVOICE_EXPECTED_GPU_CONCURRENCY,
+            "runtimeGpuConcurrency": 0,
+            "concurrencyVerified": False,
         }
     try:
         capabilities = client.capabilities()
@@ -4190,30 +4760,49 @@ def _openvoice_provider_runtime_probe(provider: str) -> dict[str, Any]:
         capabilities = {}
     supports_vc = bool(capabilities.get("supportsVC", capabilities.get("ok", False)))
     ready = bool(health.get("ok", True)) and supports_vc
+    runtime_gpu_concurrency = max(
+        0,
+        int(
+            health.get("gpuConcurrency")
+            or health.get("concurrency")
+            or capabilities.get("gpuConcurrency")
+            or capabilities.get("concurrency")
+            or 0
+        ),
+    )
     return {
         "configured": True,
         "ready": bool(ready),
         "detail": str(health.get("detail") or capabilities.get("detail") or ""),
         "device": str(health.get("device") or capabilities.get("device") or "").strip(),
+        "expectedGpuConcurrency": OPENVOICE_EXPECTED_GPU_CONCURRENCY,
+        "runtimeGpuConcurrency": runtime_gpu_concurrency,
+        "concurrencyVerified": runtime_gpu_concurrency == OPENVOICE_EXPECTED_GPU_CONCURRENCY if runtime_gpu_concurrency else False,
     }
 
 
 def _openvoice_provider_status_payload() -> dict[str, Any]:
     config = _openvoice_runtime_config_get()
-    active_provider = _normalize_openvoice_provider(
-        config.get("activeProvider"),
-        fallback=_openvoice_provider_default(),
-    )
+    provider_status = _openvoice_provider_runtime_probe(OPENVOICE_PROVIDER_MODAL)
     return {
         "ok": True,
-        "activeProvider": active_provider,
-        "defaultProvider": _openvoice_provider_default(),
+        "provider": OPENVOICE_PROVIDER_MODAL,
+        "providerLabel": "Modal",
+        "activeProvider": OPENVOICE_PROVIDER_MODAL,
+        "defaultProvider": OPENVOICE_PROVIDER_MODAL,
         "revision": max(0, int(config.get("revision") or 0)),
         "updatedAt": str(config.get("updatedAt") or "").strip(),
         "updatedBy": str(config.get("updatedBy") or "").strip(),
-        "providers": {
-            OPENVOICE_PROVIDER_CLOUD_RUN: _openvoice_provider_runtime_probe(OPENVOICE_PROVIDER_CLOUD_RUN),
-            OPENVOICE_PROVIDER_MODAL: _openvoice_provider_runtime_probe(OPENVOICE_PROVIDER_MODAL),
+        "configured": bool(provider_status.get("configured")),
+        "ready": bool(provider_status.get("ready")),
+        "detail": str(provider_status.get("detail") or ""),
+        "device": str(provider_status.get("device") or ""),
+        "expectedGpuConcurrency": int(provider_status.get("expectedGpuConcurrency") or OPENVOICE_EXPECTED_GPU_CONCURRENCY),
+        "runtimeGpuConcurrency": int(provider_status.get("runtimeGpuConcurrency") or 0),
+        "concurrencyVerified": bool(provider_status.get("concurrencyVerified")),
+        "providerStatus": {
+            "key": OPENVOICE_PROVIDER_MODAL,
+            **provider_status,
         },
     }
 
@@ -4232,6 +4821,16 @@ class _UnifiedTtsService:
 _UNIFIED_TTS_SERVICE = _UnifiedTtsService()
 
 OPENVOICE_CPU_RATE_PER_SEC_USD = 0.00003
+
+
+def _sanitize_openvoice_runtime_error_detail(exc: Exception, *, fallback: str) -> str:
+    safe_fallback = str(fallback or "OpenVoice runtime is unavailable.").strip() or "OpenVoice runtime is unavailable."
+    raw = str(exc or "").strip()
+    if not raw:
+        return safe_fallback
+    if VF_IS_PRODUCTION:
+        return safe_fallback
+    return _truncate_text(raw, 260)
 
 
 def _openvoice_artifact_payload(artifact: Any) -> dict[str, Any]:
@@ -4400,7 +4999,13 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
             notes.append("source_audio_synthesized_with_duno")
         except Exception as exc:  # noqa: BLE001
             if mode in {"vc", "tts_then_vc"}:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                raise HTTPException(
+                    status_code=503,
+                    detail=_sanitize_openvoice_runtime_error_detail(
+                        exc,
+                        fallback="Source audio synthesis failed. Please retry.",
+                    ),
+                ) from exc
             raise
 
     if extract_source_vocals and source_audio_bytes:
@@ -4471,7 +5076,13 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=_sanitize_openvoice_runtime_error_detail(
+                    exc,
+                    fallback="Source separation failed. Please retry with a shorter or cleaner clip.",
+                ),
+            ) from exc
         finally:
             _cleanup_paths(temp_dir)
 
@@ -4516,7 +5127,13 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
                 timeout_sec=openvoice_client.timeout_sec if hasattr(openvoice_client, "timeout_sec") else None,
             )
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=502,
+                detail=_sanitize_openvoice_runtime_error_detail(
+                    exc,
+                    fallback="Voice conversion runtime failed. Please retry.",
+                ),
+            ) from exc
         vc_elapsed_ms = max(1, int((time.perf_counter() - vc_start) * 1000))
         final_audio_base64 = str(runtime_payload.get("audioBase64") or "").strip()
         if not final_audio_base64:
@@ -4658,26 +5275,29 @@ def _openvoice_benchmark_payload(payload: OpenVoiceBenchmarkRequest, *, request:
         "sourceVoiceId": source_voice_id,
         "sourceVoiceName": source_voice_name,
         "sourceVoiceEngine": source_voice_engine,
+        "referenceArtifactId": reference_artifact.artifact_id if reference_artifact else "",
         "referenceAudioUrl": reference_artifact and build_openvoice_artifact_url(reference_artifact.artifact_id) or reference_audio_url,
         "referenceAudioName": reference_audio_name,
         "sourceAudioName": source_audio_name,
+        "consumedVcUnits": int(((runtime_payload.get("vcBilling") if isinstance(runtime_payload.get("vcBilling"), dict) else {}) or {}).get("consumedUnits") or 0),
     }
 
 
 @app.get("/voice-clone/openvoice/status")
 async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
+    _require_request_uid(request)
     active_provider, client = _resolve_openvoice_client()
+    base_payload = _openvoice_provider_status_payload()
     try:
         health = client.health()
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
             content={
+                **base_payload,
                 "ok": False,
                 "state": "offline",
-                "activeProvider": active_provider,
-                "defaultProvider": _openvoice_provider_default(),
-                "detail": str(exc),
+                "detail": _sanitize_openvoice_runtime_error_detail(exc, fallback="OpenVoice runtime is offline."),
                 "device": "",
                 "warm": False,
                 "engine": "SEED_VC",
@@ -4685,6 +5305,10 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
                 "ready": False,
                 "health": "",
                 "capabilities": {},
+                "runtime": {
+                    "device": "",
+                    "vcProvider": _openvoice_provider_vc_label(active_provider),
+                },
             },
         )
     try:
@@ -4693,20 +5317,34 @@ async def voice_clone_openvoice_status(request: Request) -> JSONResponse:
         capabilities = {}
     supports_vc = bool(capabilities.get("supportsVC", capabilities.get("ok", False)))
     ready = bool(health.get("ok", True)) and supports_vc
+    runtime_detail = _sanitize_openvoice_runtime_error_detail(
+        RuntimeError(str(health.get("detail") or capabilities.get("detail") or "")),
+        fallback="OpenVoice runtime ready.",
+    )
+    runtime_device = ""
+    if not VF_IS_PRODUCTION:
+        runtime_device = str(health.get("device") or capabilities.get("device") or "")
     return JSONResponse(
         content={
+            **base_payload,
             "ok": True,
             "state": str(health.get("state") or ("online" if ready else "offline")),
-            "activeProvider": active_provider,
-            "defaultProvider": _openvoice_provider_default(),
-            "detail": str(health.get("detail") or capabilities.get("detail") or "OpenVoice runtime ready."),
-            "device": str(health.get("device") or capabilities.get("device") or ""),
+            "detail": runtime_detail,
+            "device": runtime_device,
             "warm": bool(health.get("warm", True)),
             "engine": str(health.get("engine") or capabilities.get("engine") or "SEED_VC"),
             "supportsVC": supports_vc,
             "ready": ready,
-            "health": json.dumps(health),
-            "capabilities": capabilities,
+            "health": "" if VF_IS_PRODUCTION else json.dumps(health),
+            "capabilities": (
+                {"supportsVC": supports_vc, "engine": str(health.get("engine") or capabilities.get("engine") or "SEED_VC")}
+                if VF_IS_PRODUCTION
+                else capabilities
+            ),
+            "runtime": {
+                "device": runtime_device,
+                "vcProvider": _openvoice_provider_vc_label(active_provider),
+            },
         }
     )
 
@@ -4717,6 +5355,119 @@ def voice_clone_openvoice(payload: OpenVoiceBenchmarkRequest, request: Request) 
     payload_data.update({"mode": "vc", "runKind": "warm"})
     forced_payload = OpenVoiceBenchmarkRequest(**payload_data)
     return JSONResponse(content=_openvoice_benchmark_payload(forced_payload, request=request))
+
+
+class DunoVoiceCloneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    referenceAudioBase64: str = Field(default="", max_length=20_000_000)
+    referenceAudioName: str = Field(default="reference.wav", max_length=256)
+    referenceAudioUrl: str = Field(default="", max_length=20_000_000)
+    sourceVoiceId: str = Field(default="", max_length=256)
+    sourceVoiceName: str = Field(default="", max_length=256)
+    sourceVoiceEngine: str = Field(default="DUNO", max_length=32)
+    speaker: str = Field(default="", max_length=256)
+    model: str = Field(default=DUNO_DEFAULT_MODEL, max_length=256)
+    requestId: str = Field(default="", max_length=128)
+    traceId: str = Field(default="", max_length=128)
+
+
+@app.post("/voice-clone/duno")
+@app.post("/voice-clone/duno/native")
+def voice_clone_duno(request: Request, payload: DunoVoiceCloneRequest = Body(...)) -> JSONResponse:
+    uid = _require_request_uid(request)
+    safe_payload = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    source_voice_engine = str(safe_payload.get("sourceVoiceEngine") or payload.sourceVoiceEngine or "DUNO").strip().upper() or "DUNO"
+    if source_voice_engine != "DUNO":
+        raise HTTPException(status_code=400, detail="DUNO native cloning only supports DUNO voices.")
+
+    reference_audio_base64 = str(safe_payload.get("referenceAudioBase64") or payload.referenceAudioBase64 or "").strip()
+    reference_audio_name = str(safe_payload.get("referenceAudioName") or payload.referenceAudioName or "reference.wav").strip() or "reference.wav"
+    reference_audio_url = str(safe_payload.get("referenceAudioUrl") or payload.referenceAudioUrl or "").strip()
+    if not reference_audio_base64 and not reference_audio_url:
+        raise HTTPException(status_code=400, detail="Reference audio is required.")
+
+    source_voice_id = str(safe_payload.get("sourceVoiceId") or payload.sourceVoiceId or "").strip()
+    source_voice_name = str(safe_payload.get("sourceVoiceName") or payload.sourceVoiceName or "").strip()
+    speaker = str(safe_payload.get("speaker") or payload.speaker or source_voice_name or source_voice_id or "speaker").strip()
+    model = str(safe_payload.get("model") or payload.model or DUNO_DEFAULT_MODEL).strip() or DUNO_DEFAULT_MODEL
+
+    reference_hash = _duno_reference_hash(
+        reference_audio_url=reference_audio_url,
+        reference_audio_name=reference_audio_name,
+        reference_audio_base64=reference_audio_base64,
+    )
+    cached_voice_id = _duno_lookup_cached_voice_id(
+        uid=uid,
+        speaker=speaker,
+        reference_hash=reference_hash,
+        model=model,
+    ) if reference_hash else ""
+
+    voice_id = cached_voice_id or _duno_create_voice_via_runtime(
+        model=model,
+        speaker=speaker,
+        reference_audio_url=reference_audio_url,
+        reference_audio_name=reference_audio_name,
+        reference_audio_base64=reference_audio_base64,
+        source_voice_id=source_voice_id,
+        source_voice_name=source_voice_name,
+    )
+    if not voice_id:
+        raise HTTPException(status_code=502, detail="DUNO voice cloning runtime did not return a cloned voice id.")
+
+    if reference_hash:
+        _duno_store_cached_voice_id(
+            uid=uid,
+            speaker=speaker,
+            reference_hash=reference_hash,
+            model=model,
+            voice_id=voice_id,
+        )
+
+    source_label = source_voice_name or source_voice_id or "DUNO speaker"
+    preview_url = _duno_clone_preview_url(
+        voice_id=voice_id,
+        source_label=source_label,
+        model=model,
+        trace_id=str(safe_payload.get("traceId") or payload.traceId or "").strip() or str(safe_payload.get("requestId") or payload.requestId or "").strip(),
+    )
+    cloned_voice = {
+        "id": voice_id,
+        "name": f"{source_label} Clone",
+        "gender": "Unknown",
+        "accent": "Neutral",
+        "geminiVoiceName": voice_id,
+        "engine": "DUNO",
+        "source": "duno_native",
+        "isDownloaded": True,
+        "isCloned": True,
+        "previewUrl": preview_url,
+        "accessTier": "free",
+        "isPlanRestricted": False,
+        "dateCreated": int(time.time() * 1000),
+        "description": f"Native DUNO clone of {source_label}",
+        "originalSampleUrl": reference_audio_url,
+        "referenceAudioUrl": reference_audio_url,
+        "referenceAudioName": reference_audio_name,
+        "sourceVoiceId": source_voice_id,
+        "sourceVoiceName": source_label,
+        "sourceVoiceEngine": "DUNO",
+    }
+    return JSONResponse(
+        content={
+            "ok": True,
+            "engine": "DUNO",
+            "voiceId": voice_id,
+            "model": model,
+            "cached": bool(cached_voice_id),
+            "referenceHash": reference_hash,
+            "sourceVoiceId": source_voice_id,
+            "sourceVoiceName": source_label,
+            "sourceVoiceEngine": "DUNO",
+            "referenceAudioName": reference_audio_name,
+            "clonedVoice": cloned_voice,
+        }
+    )
 
 
 class OpenVoiceStemSeparationRequest(BaseModel):
@@ -4735,7 +5486,7 @@ class VoiceCloneStressConfig(BaseModel):
     stepRpm: int = Field(default=10, ge=1, le=500)
     maxRpm: int = Field(default=120, ge=1, le=4_000)
     stepDurationSec: int = Field(default=30, ge=5, le=300)
-    concurrency: int = Field(default=4, ge=1, le=64)
+    concurrency: int = Field(default=2, ge=1, le=64)
     maxFailureRate: float = Field(default=0.05, ge=0.0, le=1.0)
     maxP95Ms: int = Field(default=20_000, ge=500, le=180_000)
     warmupRequests: int = Field(default=2, ge=0, le=50)
@@ -4783,7 +5534,13 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
     except ValueError as exc:
         if "maximum allowed size" in str(exc).lower():
             raise HTTPException(status_code=413, detail="Source audio payload exceeds the maximum allowed size.") from exc
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=_sanitize_openvoice_runtime_error_detail(
+                exc,
+                fallback="Invalid source audio payload.",
+            ),
+        ) from exc
     if not source_audio_bytes:
         raise HTTPException(status_code=400, detail="Source audio is required.")
 
@@ -4803,7 +5560,13 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
     try:
         build_openvoice_artifact_url(preflight_artifact_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail=_sanitize_openvoice_runtime_error_detail(
+                exc,
+                fallback="Artifact delivery is temporarily unavailable.",
+            ),
+        ) from exc
 
     temp_dir = tempfile.mkdtemp(prefix="vf_openvoice_sep_")
     separation_elapsed_ms = 0
@@ -4838,11 +5601,23 @@ def voice_clone_openvoice_separate(payload: OpenVoiceStemSeparationRequest, requ
             vocals_artifact_payload = _openvoice_artifact_payload(vocals_artifact)
             background_artifact_payload = _openvoice_artifact_payload(background_artifact)
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=_sanitize_openvoice_runtime_error_detail(
+                    exc,
+                    fallback="Artifact delivery is temporarily unavailable.",
+                ),
+            ) from exc
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail=_sanitize_openvoice_runtime_error_detail(
+                exc,
+                fallback="Voice/background separation failed. Please retry.",
+            ),
+        ) from exc
     finally:
         _cleanup_paths(temp_dir)
 
@@ -5441,6 +6216,7 @@ def _launch_voice_clone_stress_job(job_id: str) -> None:
 @app.post("/admin/voice-clone/stress/start")
 def admin_voice_clone_stress_start(payload: VoiceCloneStressStartRequest, request: Request) -> JSONResponse:
     actor_uid, _actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     target = _voice_clone_stress_normalize_target(payload.benchmarkTarget)
     config = payload.config.model_dump(exclude_none=True) if hasattr(payload.config, "model_dump") else payload.config.dict(exclude_none=True)
     start_rpm = int(config.get("startRpm") or 1)
@@ -5547,7 +6323,8 @@ def admin_voice_clone_stress_status(job_id: str, request: Request) -> JSONRespon
 @app.post("/v1/admin/voice-clone/stress/{job_id}/cancel")
 @app.post("/admin/voice-clone/stress/{job_id}/cancel")
 def admin_voice_clone_stress_cancel(job_id: str, request: Request) -> JSONResponse:
-    _require_permission(request, PERM_OPS_MUTATE)
+    actor_uid, _actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
     safe_job_id = str(job_id or "").strip()
     now_ms = int(time.time() * 1000)
     now_iso = _voice_clone_stress_now_iso()
@@ -5589,21 +6366,17 @@ def admin_voice_clone_provider(request: Request) -> JSONResponse:
 @app.patch("/v1/admin/voice-clone/provider")
 @app.patch("/admin/voice-clone/provider")
 def admin_patch_voice_clone_provider(payload: VoiceCloneProviderPatchRequest, request: Request) -> JSONResponse:
-    actor_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _ = payload
+    actor_uid, _actor = _require_permission(request, PERM_OPS_MUTATE)
     _require_admin_mutation_unlock(request, expected_uid=actor_uid)
-    before = _openvoice_runtime_config_get()
-    after = _openvoice_runtime_config_patch(active_provider=payload.activeProvider, updated_by=actor_uid)
-    _audit_append_event(
-        action="admin_voice_clone_provider_patch",
-        resource_type="voice_clone_provider_config",
-        resource_id="current",
-        before=before,
-        after=after,
-        request=request,
-        actor_uid=actor_uid,
-        actor_role=str(actor.get("role") or ""),
+    return JSONResponse(
+        status_code=410,
+        content={
+            **_openvoice_provider_status_payload(),
+            "ok": False,
+            "detail": "Voice clone provider switching is no longer supported. Modal is the only supported VC runtime.",
+        },
     )
-    return JSONResponse(_openvoice_provider_status_payload())
 
 
 @app.get("/voice-lab/openvoice/artifacts/{artifact_id}")
@@ -5691,7 +6464,7 @@ _SCHEDULER_STOP_EVENT = threading.Event()
 
 
 def _ensure_firebase_sdk_imported() -> bool:
-    global firebase_admin, firebase_auth, firebase_credentials, firebase_firestore, _FIREBASE_SDK_IMPORT_ERROR
+    global firebase_admin, firebase_auth, firebase_credentials, firebase_firestore, google_api_core_exceptions, _FIREBASE_SDK_IMPORT_ERROR
     if firebase_admin is not None and firebase_auth is not None:
         return True
     try:
@@ -5699,17 +6472,23 @@ def _ensure_firebase_sdk_imported() -> bool:
         from firebase_admin import auth as firebase_auth_runtime  # type: ignore
         from firebase_admin import credentials as firebase_credentials_runtime  # type: ignore
         from firebase_admin import firestore as firebase_firestore_runtime  # type: ignore
+        try:
+            from google.api_core import exceptions as google_api_core_exceptions_runtime  # type: ignore
+        except Exception:
+            google_api_core_exceptions_runtime = None  # type: ignore
     except Exception as exc:
         _FIREBASE_SDK_IMPORT_ERROR = str(exc)
         firebase_admin = None  # type: ignore
         firebase_auth = None  # type: ignore
         firebase_credentials = None  # type: ignore
         firebase_firestore = None  # type: ignore
+        google_api_core_exceptions = None  # type: ignore
         return False
     firebase_admin = firebase_admin_runtime  # type: ignore
     firebase_auth = firebase_auth_runtime  # type: ignore
     firebase_credentials = firebase_credentials_runtime  # type: ignore
     firebase_firestore = firebase_firestore_runtime  # type: ignore
+    google_api_core_exceptions = google_api_core_exceptions_runtime  # type: ignore
     _FIREBASE_SDK_IMPORT_ERROR = None
     return True
 
@@ -5779,31 +6558,152 @@ def _stripe_available() -> bool:
     return bool(STRIPE_SECRET_KEY) and _ensure_stripe_sdk_imported()
 
 
-class _RazorpayBillingCompat:
-    def create_customer(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"customer_id": "", "id": ""}
+class _RazorpayBillingAdapter:
+    def _base_url(self) -> Optional[str]:
+        base_url = str(
+            os.getenv("VF_RAZORPAY_API_ROOT")
+            or os.getenv("RAZORPAY_API_ROOT")
+            or ""
+        ).strip()
+        return base_url or None
 
-    def create_subscription(self, *args: Any, **_kwargs: Any) -> dict[str, Any]:
+    def _auth(self) -> Any:
+        auth = razorpay_sdk.read_razorpay_auth(
+            key_id=_razorpay_key_id(),
+            key_secret=_razorpay_key_secret(),
+        )
+        if not getattr(auth, "enabled", False):
+            raise RuntimeError("Razorpay credentials are not configured.")
+        return auth
+
+    def create_customer(self, **kwargs: Any) -> dict[str, Any]:
+        notes: dict[str, Any] = {}
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            notes.update(metadata)
+        note_payload = kwargs.get("notes")
+        if isinstance(note_payload, dict):
+            notes.update(note_payload)
+        safe_uid = str(kwargs.get("uid") or notes.get("uid") or "").strip()
+        if safe_uid and "uid" not in notes:
+            notes["uid"] = safe_uid
+        display_name = str(kwargs.get("name") or safe_uid or "VoiceFlow User").strip() or "VoiceFlow User"
+        return razorpay_sdk.create_customer(
+            name=display_name,
+            email=str(kwargs.get("email") or "").strip(),
+            contact=str(kwargs.get("contact") or "").strip(),
+            notes=notes,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
+
+    def create_subscription(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         _ = args
-        return {"subscription_id": "", "id": ""}
+        customer_id = str(kwargs.get("customer_id") or kwargs.get("customer") or "").strip()
+        plan_id = str(kwargs.get("plan_id") or kwargs.get("plan") or "").strip()
+        notes_payload = kwargs.get("notes")
+        notes = dict(notes_payload) if isinstance(notes_payload, dict) else {}
+        offer_id_raw = kwargs.get("offer_id")
+        offer_id = str(offer_id_raw).strip() if offer_id_raw is not None else ""
+        start_at_raw = kwargs.get("start_at")
+        total_count_raw = kwargs.get("total_count")
+        if not customer_id:
+            raise RuntimeError("Razorpay customer_id is required.")
+        if not plan_id:
+            raise RuntimeError("Razorpay plan_id is required.")
+        return razorpay_sdk.create_subscription(
+            plan={"id": plan_id},
+            customer={"id": customer_id},
+            notes=notes,
+            start_at=int(start_at_raw) if str(start_at_raw or "").strip() else None,
+            total_count=int(total_count_raw) if str(total_count_raw or "").strip() else None,
+            offer_id=offer_id or None,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
 
-    def create_one_time_order(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"order_id": "", "id": ""}
+    def create_one_time_order(self, **kwargs: Any) -> dict[str, Any]:
+        notes_payload = kwargs.get("notes")
+        notes = dict(notes_payload) if isinstance(notes_payload, dict) else {}
+        return razorpay_sdk.create_one_time_order(
+            amount_minor=max(1, int(kwargs.get("amount_minor") or 0)),
+            currency=str(kwargs.get("currency") or "INR").strip() or "INR",
+            receipt=str(kwargs.get("receipt") or f"vf_{uuid.uuid4().hex[:8]}").strip() or f"vf_{uuid.uuid4().hex[:8]}",
+            notes=notes,
+            payment_capture=bool(kwargs.get("payment_capture", True)),
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
 
-    def fetch_customer(self, **_kwargs: Any) -> dict[str, Any]:
-        return {}
+    def fetch_customer(self, **kwargs: Any) -> dict[str, Any]:
+        customer_id = str(kwargs.get("customer_id") or kwargs.get("id") or "").strip()
+        if not customer_id:
+            return {}
+        return razorpay_sdk.fetch_customer(
+            customer_id=customer_id,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
 
-    def fetch_subscription(self, **_kwargs: Any) -> dict[str, Any]:
-        return {}
+    def fetch_subscription(self, **kwargs: Any) -> dict[str, Any]:
+        subscription_id = str(kwargs.get("subscription_id") or kwargs.get("id") or "").strip()
+        if not subscription_id:
+            return {}
+        return razorpay_sdk.fetch_subscription(
+            subscription_id=subscription_id,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
 
-    def list_customer_payments(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"items": []}
+    def cancel_subscription(self, **kwargs: Any) -> dict[str, Any]:
+        subscription_id = str(kwargs.get("subscription_id") or kwargs.get("id") or "").strip()
+        if not subscription_id:
+            raise RuntimeError("Razorpay subscription_id is required.")
+        at_cycle_end_raw = kwargs.get("at_cycle_end")
+        at_cycle_end = True if at_cycle_end_raw is None else bool(at_cycle_end_raw)
+        return razorpay_sdk.cancel_subscription(
+            subscription_id=subscription_id,
+            at_cycle_end=at_cycle_end,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
 
-    def list_customer_subscriptions(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"items": []}
+    def resume_subscription(self, **kwargs: Any) -> dict[str, Any]:
+        subscription_id = str(kwargs.get("subscription_id") or kwargs.get("id") or "").strip()
+        if not subscription_id:
+            raise RuntimeError("Razorpay subscription_id is required.")
+        return razorpay_sdk.resume_subscription(
+            subscription_id=subscription_id,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
+
+    def list_customer_payments(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        customer_id = str(kwargs.get("customer_id") or kwargs.get("customerId") or (args[0] if args else "")).strip()
+        if not customer_id:
+            return {"items": []}
+        limit = max(1, int(kwargs.get("limit") or kwargs.get("count") or 10))
+        return razorpay_sdk.list_customer_payments(
+            customer_id=customer_id,
+            count=limit,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
+
+    def list_customer_subscriptions(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        customer_id = str(kwargs.get("customer_id") or kwargs.get("customerId") or (args[0] if args else "")).strip()
+        if not customer_id:
+            return {"items": []}
+        limit = max(1, int(kwargs.get("limit") or kwargs.get("count") or 10))
+        return razorpay_sdk.list_customer_subscriptions(
+            customer_id=customer_id,
+            count=limit,
+            base_url=self._base_url(),
+            auth=self._auth(),
+        )
 
 
-razorpay_billing = _RazorpayBillingCompat()
+razorpay_billing = _RazorpayBillingAdapter()
 
 
 def _razorpay_available() -> bool:
@@ -5817,17 +6717,28 @@ def _razorpay_available() -> bool:
 def _razorpay_key_id() -> str:
     return str(
         os.getenv("VF_RAZORPAY_KEY_ID")
-        or os.getenv("STRIPE_PUBLISHABLE_KEY")
+        or os.getenv("RAZORPAY_KEY_ID")
         or ""
     ).strip()
 
 
 def _razorpay_key_secret() -> str:
-    return str(os.getenv("VF_RAZORPAY_KEY_SECRET") or STRIPE_SECRET_KEY or "").strip()
+    return str(os.getenv("VF_RAZORPAY_KEY_SECRET") or os.getenv("RAZORPAY_KEY_SECRET") or "").strip()
 
 
 def _razorpay_webhook_secret() -> str:
-    return str(os.getenv("VF_RAZORPAY_WEBHOOK_SECRET") or STRIPE_WEBHOOK_SECRET or "").strip()
+    return str(os.getenv("VF_RAZORPAY_WEBHOOK_SECRET") or os.getenv("RAZORPAY_WEBHOOK_SECRET") or "").strip()
+
+
+def _assert_production_bootstrap_secrets() -> None:
+    if not VF_IS_PRODUCTION:
+        return
+    if VF_DEV_UID_HEADER_ENABLED:
+        raise RuntimeError("Production boot guard: VF_DEV_UID_HEADER_ENABLED must be disabled.")
+    if VF_ENABLE_DEV_ADMIN_LOGIN:
+        raise RuntimeError("Production boot guard: VF_ENABLE_DEV_ADMIN_LOGIN must be disabled.")
+    if not str(_razorpay_webhook_secret() or "").strip():
+        raise RuntimeError("Production boot guard: Razorpay webhook secret is required.")
 
 
 def _razorpay_plan_id_for_plan(plan: str, phase: str = "recurring") -> str:
@@ -6002,6 +6913,7 @@ def _history_sanitize_item(item: dict[str, Any]) -> dict[str, Any]:
         "requestId": str(safe.get("requestId") or safe.get("request_id") or "").strip()[:120],
         "traceId": str(safe.get("traceId") or safe.get("trace_id") or "").strip()[:120],
     }
+    payload["displayName"] = payload["voiceName"]
     payload["text"] = payload["textPreview"]
     return payload
 
@@ -6173,6 +7085,7 @@ def _default_entitlement(uid: str) -> dict[str, Any]:
         "vcMonthKey": month_key,
         "vcGrantMonthKey": month_key,
         "launcherOfferConsumed": False,
+        "allowedEngines": list(_plan_allowed_engines("free")),
         "dunoVoiceCloneMap": {},
         "updatedAt": _safe_now_iso(),
     }
@@ -6233,6 +7146,33 @@ def _plan_allowed_engines(plan_key: str) -> tuple[str, ...]:
         if out:
             return out
     return tuple(TTS_ENGINE_KEYS)
+
+
+def _entitlement_allows_prime(entitlement: dict[str, Any]) -> bool:
+    normalized_plan = _plan_key_from_name(str((entitlement or {}).get("plan") or "Free"))
+    if normalized_plan in set(PAID_PLAN_KEYS):
+        return True
+    return _as_positive_number((entitlement or {}).get("paidVfBalance")) > VF_EPSILON
+
+
+def _allowed_engines_for_entitlement(entitlement: dict[str, Any]) -> tuple[str, ...]:
+    allowed_keys = {"DUNO", "VECTOR"}
+    if _entitlement_allows_prime(entitlement):
+        allowed_keys.add("PRIME")
+    return tuple(engine for engine in TTS_ENGINE_KEYS if engine in allowed_keys)
+
+
+def _normalize_allowed_engines_list(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        token = _resolve_internal_engine_token(str(item or ""))
+        if token in TTS_ENGINE_KEYS and token not in seen:
+            seen.add(token)
+            out.append(token)
+    return tuple(out)
 
 
 def _plan_has_early_access(plan_key: str) -> bool:
@@ -6416,7 +7356,8 @@ def _enforce_tts_plan_guardrails(
     if bypass:
         return plan_name, plan_key, guardrails
     safe_engine = _resolve_internal_engine_token(engine) or _normalize_engine_name(engine)
-    if safe_engine not in set(_plan_allowed_engines(plan_key)):
+    allowed_engines = _allowed_engines_for_entitlement(entitlement)
+    if safe_engine not in set(allowed_engines):
         raise HTTPException(
             status_code=403,
             detail={
@@ -6424,7 +7365,7 @@ def _enforce_tts_plan_guardrails(
                 "reason": "plan_engine_forbidden",
                 "plan": plan_name,
                 "engine": safe_engine,
-                "allowedEngines": list(_plan_allowed_engines(plan_key)),
+                "allowedEngines": list(allowed_engines),
                 "trace_id": trace_id,
             },
         )
@@ -6533,7 +7474,11 @@ def _verify_firebase_id_token(id_token: str) -> dict[str, Any]:
     if not _firebase_ready():
         raise RuntimeError(_FIREBASE_INIT_ERROR or "Firebase is not configured.")
     assert firebase_auth is not None
-    claims = firebase_auth.verify_id_token(id_token, check_revoked=True)  # type: ignore[no-any-return]
+    claims = firebase_auth.verify_id_token(
+        id_token,
+        check_revoked=True,
+        clock_skew_seconds=60,
+    )  # type: ignore[no-any-return]
     if not isinstance(claims, dict):
         raise RuntimeError("Invalid auth claims.")
     return claims
@@ -6753,7 +7698,7 @@ def _require_request_uid(request: Request) -> str:
     if uid:
         return uid
     if not VF_AUTH_ENFORCE:
-        header_uid = str(request.headers.get("x-dev-uid") or "").strip()
+        header_uid = str(request.headers.get("x-dev-uid") or "").strip() if VF_DEV_UID_HEADER_ENABLED else ""
         return header_uid or VF_DEV_BYPASS_UID
     raise HTTPException(status_code=401, detail="Authentication required.")
 
@@ -7415,6 +8360,114 @@ def _tts_v2_session_record_key(session_key: str) -> str:
     return f"vf:tts:v2:session:key:{str(session_key or '').strip()}"
 
 
+_TTS_V2_SLOT_BY_LANE_ID: dict[str, str] = {
+    str(lane_id).strip().upper(): str(slot_id).strip().lower()
+    for lane_id, slot_id in dict(TTS_V2_LANE_VERTEX_SLOT_BY_ID or {}).items()
+}
+_TTS_V2_LANE_BY_SLOT_ID: dict[str, str] = {
+    slot_id: lane_id
+    for lane_id, slot_id in _TTS_V2_SLOT_BY_LANE_ID.items()
+}
+
+
+def _tts_v2_lane_id_for_slot(slot_id: str) -> str:
+    return str(_TTS_V2_LANE_BY_SLOT_ID.get(str(slot_id or "").strip().lower()) or "").strip().upper()
+
+
+def _tts_v2_slot_id_for_lane(lane_id: str) -> str:
+    return str(_TTS_V2_SLOT_BY_LANE_ID.get(str(lane_id or "").strip().upper()) or "").strip().lower()
+
+
+def _tts_v2_session_probe_slot_pins(*, enabled: bool) -> dict[str, Any]:
+    if not bool(enabled):
+        return {}
+    try:
+        pools_config, _meta = _load_gemini_api_pools()
+    except Exception:
+        return {}
+    source_policy = pools_config.get("sourcePolicy") if isinstance(pools_config.get("sourcePolicy"), dict) else {}
+    accounts = _vertex_accounts_from_source({"sourcePolicy": source_policy})
+    if not accounts:
+        return {}
+    fallback_region = str(source_policy.get("vertexLocation") or "us-central1").strip() or "us-central1"
+    probe_rows: list[dict[str, Any]] = []
+    seen_slots: set[str] = set()
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        slot_id = str(account.get("memberId") or "").strip().lower()
+        if not slot_id or slot_id in seen_slots:
+            continue
+        lane_id = _tts_v2_lane_id_for_slot(slot_id)
+        if not lane_id:
+            continue
+        seen_slots.add(slot_id)
+        region = str(account.get("vertexLocation") or fallback_region).strip() or fallback_region
+        probe_url = f"https://{region}-texttospeech.googleapis.com/v1/voices"
+        started = time.perf_counter()
+        try:
+            _runtime_http_request(
+                "GET",
+                probe_url,
+                timeout=2.0,
+                headers={
+                    "x-vf-slot-id": slot_id,
+                    "x-vf-lane-id": lane_id,
+                    "ngrok-skip-browser-warning": "true",
+                },
+                retry_attempts=1,
+                retry_backoff_ms=0,
+            )
+        except Exception:
+            continue
+        latency_ms = max(0, int((time.perf_counter() - started) * 1000.0))
+        probe_rows.append(
+            {
+                "selectedRegion": region,
+                "pinnedVertexSlotId": slot_id,
+                "pinnedLaneId": lane_id,
+                "latencyMs": latency_ms,
+            }
+        )
+    if not probe_rows:
+        return {}
+    probe_rows.sort(
+        key=lambda row: (
+            max(0, int(row.get("latencyMs") or 0)),
+            str(row.get("pinnedVertexSlotId") or ""),
+        )
+    )
+    best = dict(probe_rows[0])
+    best["pinSource"] = "session-probe-rtt"
+    return best
+
+
+def _tts_v2_session_pin_payload_for_engine(
+    session_row: Optional[dict[str, Any]],
+    *,
+    engine: str,
+) -> dict[str, str]:
+    safe_engine = str(engine or "").strip().upper()
+    if safe_engine not in {"PRIME", "VECTOR"}:
+        return {}
+    row = dict(session_row or {})
+    pinned_slot = str(row.get("pinnedVertexSlotId") or "").strip().lower()
+    pinned_lane = str(row.get("pinnedLaneId") or "").strip().upper()
+    if pinned_slot and not pinned_lane:
+        pinned_lane = _tts_v2_lane_id_for_slot(pinned_slot)
+    if pinned_lane and not pinned_slot:
+        pinned_slot = _tts_v2_slot_id_for_lane(pinned_lane)
+    expected_slot = _tts_v2_slot_id_for_lane(pinned_lane)
+    if not pinned_lane or not pinned_slot or not expected_slot:
+        return {}
+    if pinned_slot != expected_slot:
+        return {}
+    return {
+        "_sessionPinnedLaneId": pinned_lane,
+        "_sessionPinnedVertexSlotId": pinned_slot,
+    }
+
+
 def _tts_v2_prune_local_sessions_locked(now_ms: Optional[int] = None) -> None:
     now = int(now_ms or int(time.time() * 1000))
     expired: list[str] = []
@@ -7429,7 +8482,7 @@ def _tts_v2_prune_local_sessions_locked(now_ms: Optional[int] = None) -> None:
             _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.pop(safe_uid, None)
 
 
-def _issue_tts_v2_session(uid: str) -> dict[str, Any]:
+def _issue_tts_v2_session(uid: str, *, probe_all_slot_regions: bool = False) -> dict[str, Any]:
     safe_uid = str(uid or "").strip()
     if not safe_uid:
         raise HTTPException(status_code=401, detail="Authentication required.")
@@ -7447,6 +8500,17 @@ def _issue_tts_v2_session(uid: str) -> dict[str, Any]:
         "expiresAtMs": expires_at_ms,
         "ttlSeconds": ttl_seconds,
     }
+    probe_metadata = _tts_v2_session_probe_slot_pins(enabled=bool(probe_all_slot_regions))
+    if probe_metadata:
+        payload.update(
+            {
+                "selectedRegion": str(probe_metadata.get("selectedRegion") or "").strip(),
+                "pinnedVertexSlotId": str(probe_metadata.get("pinnedVertexSlotId") or "").strip().lower(),
+                "pinnedLaneId": str(probe_metadata.get("pinnedLaneId") or "").strip().upper(),
+                "latencyMs": max(0, int(probe_metadata.get("latencyMs") or 0)),
+                "pinSource": str(probe_metadata.get("pinSource") or "").strip(),
+            }
+        )
     redis_client = _tts_v2_session_redis_client()
     if redis_client is not None:
         try:
@@ -7813,7 +8877,9 @@ def _admin_unlock_verify_for_request(
 def _require_admin_mutation_unlock(request: Request, *, expected_uid: Optional[str] = None) -> str:
     safe_uid = str(expected_uid or "").strip() or _require_request_uid(request)
     if not VF_AUTH_ENFORCE and not VF_IS_PRODUCTION:
-        return safe_uid
+        if VF_ADMIN_UNLOCK_ALLOW_DEV_BYPASS:
+            return safe_uid
+        raise HTTPException(status_code=403, detail="Admin unlock bypass is disabled for this environment.")
     token = _admin_unlock_extract_bearer(request)
     payload = _admin_unlock_parse_token(token)
     token_uid = str(payload.get("uid") or "").strip()
@@ -8917,6 +9983,13 @@ def _notification_emit_admin_broadcast(
     return rows
 
 
+def _notification_sync_admin_notices(uid: str) -> int:
+    _ = uid
+    # Admin notices subsystem is optional in this fork. Keep a no-op sync hook so
+    # GET /account/notifications can remain read-only unless explicitly enabled.
+    return 0
+
+
 def _notification_sync_account_usage(uid: str, entitlements: dict[str, Any]) -> None:
     safe_uid = str(uid or "").strip()
     if not safe_uid or not isinstance(entitlements, dict):
@@ -9392,6 +10465,7 @@ def _normalize_entitlement_wallet(entitlement: dict[str, Any], now: Optional[dat
     normalized["vffBalance"] = _as_positive_number(current_vff)
     normalized["vffMonthKey"] = saved_month or month_key
     normalized["vffGrantMonthKey"] = grant_month or month_key
+    normalized["allowedEngines"] = list(_allowed_engines_for_entitlement(normalized))
 
     vc_paid_balance = _as_positive_number(normalized.get("vcPaidBalance"))
     normalized["vcPaidBalance"] = vc_paid_balance
@@ -9506,8 +10580,10 @@ def _load_entitlement(uid: str, *, create_missing: bool = True) -> dict[str, Any
     doc = collection.document(uid).get()
     if not doc.exists:
         if create_missing:
-            collection.document(uid).set(defaults)
-        return {**defaults}
+            current = _normalize_entitlement_wallet({**defaults})
+            collection.document(uid).set(current)
+            return {**current}
+        return {**_normalize_entitlement_wallet({**defaults})}
     payload = doc.to_dict() or {}
     merged = {**defaults, **payload}
     plan_cfg = _plan_config(_normalize_plan_name(str(merged.get("plan") or "Free")))
@@ -9543,11 +10619,13 @@ def _write_entitlement(uid: str, payload: dict[str, Any]) -> None:
     collection = _firestore_collection("entitlements")
     if collection is None:
         with _INMEMORY_LOCK:
-            current = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
+            current = dict(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
             current.update(patch)
             _INMEMORY_ENTITLEMENTS[uid] = _normalize_entitlement_wallet(current)
         return
-    collection.document(uid).set(patch, merge=True)
+    current = _load_entitlement(uid)
+    current.update(patch)
+    collection.document(uid).set(_normalize_entitlement_wallet(current), merge=False)
 
 
 def _link_customer_uid(customer_id: str, uid: str) -> None:
@@ -9638,6 +10716,50 @@ def _load_usage_windows(
     monthly = monthly_doc.to_dict() if monthly_doc.exists else default_monthly
     daily = daily_doc.to_dict() if daily_doc.exists else default_daily
     return {**default_monthly, **(monthly or {})}, {**default_daily, **(daily or {})}
+
+
+USAGE_RESERVATION_CONTENTION_MAX_ATTEMPTS = 3
+USAGE_RESERVATION_CONTENTION_RETRY_AFTER_SECONDS = 1
+
+
+class _UsageReservationInsufficientBalanceError(RuntimeError):
+    pass
+
+
+def _usage_reservation_backoff_seconds(attempt_number: int) -> float:
+    safe_attempt = max(1, int(attempt_number))
+    return min(0.45, 0.05 * (2 ** (safe_attempt - 1)))
+
+
+def _is_firestore_contention_error(exc: BaseException) -> bool:
+    api_core_exceptions = google_api_core_exceptions
+    aborted_cls = getattr(api_core_exceptions, "Aborted", None) if api_core_exceptions is not None else None
+    if aborted_cls is not None and isinstance(exc, aborted_cls):
+        return True
+    detail = str(exc or "").strip().lower()
+    if not detail:
+        return False
+    return (
+        "too much contention" in detail
+        or "transaction aborted" in detail
+        or ("aborted" in detail and "transaction" in detail)
+    )
+
+
+def _usage_reservation_contention_http_exception() -> HTTPException:
+    retry_after_seconds = max(1, int(USAGE_RESERVATION_CONTENTION_RETRY_AFTER_SECONDS))
+    detail = {
+        "errorCode": "VF_USAGE_RESERVATION_CONTENTION",
+        "reason": "usage_reservation_contention",
+        "summary": "Usage reservation is temporarily busy. Retry this request shortly.",
+        "retryable": True,
+        "retryAfterMs": retry_after_seconds * 1000,
+    }
+    return HTTPException(
+        status_code=503,
+        detail=detail,
+        headers={"Retry-After": str(retry_after_seconds)},
+    )
 
 
 def _reserve_usage(
@@ -9755,7 +10877,20 @@ def _reserve_usage(
     daily_ref = _FIRESTORE_DB.collection("usage_daily").document(daily_doc_id)
     event_ref = _FIRESTORE_DB.collection("usage_events").document(event_doc_id)
 
-    transaction = _FIRESTORE_DB.transaction()
+    existing_event_doc = event_ref.get()
+    if existing_event_doc.exists:
+        existing_event = existing_event_doc.to_dict() or {}
+        if str(existing_event.get("status")) in {"reserved", "committed"}:
+            entitlement_snapshot = _load_entitlement(uid, create_missing=False)
+            monthly_snapshot, daily_snapshot = _load_usage_windows(uid, now, create_missing=False)
+            return {
+                "ok": True,
+                "alreadyReserved": True,
+                "event": existing_event,
+                "monthly": monthly_snapshot,
+                "daily": daily_snapshot,
+                "entitlement": entitlement_snapshot,
+            }
 
     @firebase_firestore.transactional
     def _apply(transaction_obj: Any) -> dict[str, Any]:
@@ -9785,7 +10920,7 @@ def _reserve_usage(
             + _as_positive_number(charge_breakdown.get("paidVf"))
         )
         if not bypass_limits and covered + VF_EPSILON < vf_cost:
-            raise RuntimeError("Insufficient VF balance for this generation.")
+            raise _UsageReservationInsufficientBalanceError("Insufficient VF balance for this generation.")
 
         entitlement["vffBalance"] = _as_positive_number(
             _as_positive_number(entitlement.get("vffBalance")) - _as_positive_number(charge_breakdown.get("vff"))
@@ -9799,7 +10934,7 @@ def _reserve_usage(
                 now,
             )
             if paid_vf_spent + VF_EPSILON < paid_vf_charge:
-                raise RuntimeError("Insufficient VF balance for this generation.")
+                raise _UsageReservationInsufficientBalanceError("Insufficient VF balance for this generation.")
             entitlement["paidVfLots"] = next_paid_lots
             entitlement["paidVfBalance"] = next_paid_total
         entitlement["updatedAt"] = now.isoformat()
@@ -9853,150 +10988,328 @@ def _reserve_usage(
         transaction_obj.set(event_ref, event_payload, merge=True)
         return {"ok": True, "alreadyReserved": False, "event": event_payload, "monthly": monthly, "daily": daily, "entitlement": entitlement}
 
-    try:
-        return _apply(transaction)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    for attempt in range(1, USAGE_RESERVATION_CONTENTION_MAX_ATTEMPTS + 1):
+        transaction = _FIRESTORE_DB.transaction()
+        try:
+            return _apply(transaction)
+        except _UsageReservationInsufficientBalanceError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if not _is_firestore_contention_error(exc):
+                raise
+            if attempt >= USAGE_RESERVATION_CONTENTION_MAX_ATTEMPTS:
+                raise _usage_reservation_contention_http_exception() from exc
+            time.sleep(_usage_reservation_backoff_seconds(attempt))
+    raise _usage_reservation_contention_http_exception()
 
 
-def _finalize_usage(uid: str, request_id: str, success: bool, error_detail: str = "") -> None:
+def _usage_scaled_paid_vf_lot_debits(raw_debits: Any, *, scale: float) -> list[dict[str, Any]]:
+    if not isinstance(raw_debits, list):
+        return []
+    safe_scale = min(1.0, max(0.0, float(scale or 0.0)))
+    if safe_scale <= 0:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw_debits:
+        if not isinstance(item, dict):
+            continue
+        base_amount = _as_positive_number(item.get("amount"))
+        if base_amount <= 0:
+            continue
+        next_amount = _as_positive_number(base_amount * safe_scale)
+        if next_amount <= 0:
+            continue
+        out.append({**item, "amount": next_amount})
+    return out
+
+
+def _usage_settlement_payload(
+    event: dict[str, Any],
+    *,
+    success: bool,
+    processed_chars: Optional[int],
+    terminal_reason: str,
+    error_detail: str,
+) -> dict[str, Any]:
+    reserved_chars = _as_positive_int(event.get("reservedChars") or event.get("chars"))
+    reserved_vf_cost = _as_positive_number(event.get("reservedVfCost") if event.get("reservedVfCost") is not None else event.get("vfCost"))
+    charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
+    reserved_vff = _as_positive_number(charge_breakdown.get("vff"))
+    reserved_monthly_vf = _as_positive_number(charge_breakdown.get("monthlyVf"))
+    reserved_paid_vf = _as_positive_number(charge_breakdown.get("paidVf"))
+    reserved_paid_vf_lots = charge_breakdown.get("paidVfLots") if isinstance(charge_breakdown.get("paidVfLots"), list) else []
+
+    if success:
+        billed_chars = reserved_chars
+    else:
+        safe_processed = _as_positive_int(processed_chars if processed_chars is not None else 0)
+        billed_chars = min(reserved_chars, safe_processed)
+    refunded_chars = max(0, reserved_chars - billed_chars)
+    billed_ratio = (float(billed_chars) / float(reserved_chars)) if reserved_chars > 0 else (1.0 if success else 0.0)
+    billed_vf_cost = _as_positive_number(reserved_vf_cost * billed_ratio)
+    refunded_vf_cost = _as_positive_number(max(0.0, reserved_vf_cost - billed_vf_cost))
+    billed_vff = _as_positive_number(reserved_vff * billed_ratio)
+    refunded_vff = _as_positive_number(max(0.0, reserved_vff - billed_vff))
+    billed_monthly_vf = _as_positive_number(reserved_monthly_vf * billed_ratio)
+    refunded_monthly_vf = _as_positive_number(max(0.0, reserved_monthly_vf - billed_monthly_vf))
+    billed_paid_vf = _as_positive_number(reserved_paid_vf * billed_ratio)
+    refunded_paid_vf = _as_positive_number(max(0.0, reserved_paid_vf - billed_paid_vf))
+    refund_ratio = 1.0 - billed_ratio
+    refunded_paid_vf_lots = _usage_scaled_paid_vf_lot_debits(reserved_paid_vf_lots, scale=refund_ratio)
+
+    if billed_chars <= 0:
+        settlement_kind = "none"
+        next_status = "reverted"
+    elif billed_chars >= reserved_chars:
+        settlement_kind = "full"
+        next_status = "committed"
+    else:
+        settlement_kind = "partial"
+        next_status = "committed"
+    if success:
+        settlement_kind = "full"
+        next_status = "committed"
+
+    reason = str(terminal_reason or "").strip()
+    if not reason:
+        reason = str(error_detail or event.get("terminalReason") or "").strip()
+    if not reason:
+        reason = "completed" if success else str(event.get("statusReason") or "failed").strip() or "failed"
+
+    return {
+        "status": next_status,
+        "settlementKind": settlement_kind,
+        "reservedChars": reserved_chars,
+        "processedChars": billed_chars,
+        "billedChars": billed_chars,
+        "refundedChars": refunded_chars,
+        "reservedVfCost": reserved_vf_cost,
+        "billedVfCost": billed_vf_cost,
+        "refundedVfCost": refunded_vf_cost,
+        "billedVff": billed_vff,
+        "refundedVff": refunded_vff,
+        "billedMonthlyVf": billed_monthly_vf,
+        "refundedMonthlyVf": refunded_monthly_vf,
+        "billedPaidVf": billed_paid_vf,
+        "refundedPaidVf": refunded_paid_vf,
+        "refundedPaidVfLots": refunded_paid_vf_lots,
+        "terminalReason": reason,
+    }
+
+
+def _finalize_usage(
+    uid: str,
+    request_id: str,
+    success: bool,
+    error_detail: str = "",
+    *,
+    processed_chars: Optional[int] = None,
+    terminal_reason: str = "",
+) -> dict[str, Any]:
     event_doc_id = f"{uid}_{request_id}"
     now_dt = _utc_now()
     now = now_dt.isoformat()
+    empty_result: dict[str, Any] = {}
 
     if _prefer_inmemory_entitlement_store() or _firestore_collection("usage_events") is None:
         with _INMEMORY_LOCK:
-            event = _INMEMORY_USAGE_EVENTS.get(event_doc_id)
+            event = dict(_INMEMORY_USAGE_EVENTS.get(event_doc_id) or {})
             if not event:
-                return
-            status = str(event.get("status") or "")
-            if status == "committed":
-                return
-            if success:
-                event["status"] = "committed"
-                event["updatedAt"] = now
-                _INMEMORY_USAGE_EVENTS[event_doc_id] = event
-                return
-            if status == "reserved":
+                return empty_result
+            current_status = str(event.get("status") or "").strip().lower()
+            if current_status == "committed" and event.get("settlementKind"):
+                return {
+                    "settlementKind": str(event.get("settlementKind") or ""),
+                    "reservedChars": _as_positive_int(event.get("reservedChars") or event.get("chars")),
+                    "processedChars": _as_positive_int(event.get("processedChars")),
+                    "billedChars": _as_positive_int(event.get("billedChars")),
+                    "refundedChars": _as_positive_int(event.get("refundedChars")),
+                    "reservedVfCost": _as_positive_number(event.get("reservedVfCost") if event.get("reservedVfCost") is not None else event.get("vfCost")),
+                    "billedVfCost": _as_positive_number(event.get("billedVfCost")),
+                    "refundedVfCost": _as_positive_number(event.get("refundedVfCost")),
+                    "terminalReason": str(event.get("terminalReason") or ""),
+                    "status": "committed",
+                }
+
+            settlement = _usage_settlement_payload(
+                event,
+                success=success,
+                processed_chars=processed_chars,
+                terminal_reason=terminal_reason,
+                error_detail=error_detail,
+            )
+            if current_status == "reserved":
                 monthly = _INMEMORY_USAGE_MONTHLY.get(str(event.get("monthDocId") or ""))
                 daily = _INMEMORY_USAGE_DAILY.get(str(event.get("dayDocId") or ""))
                 entitlement = _normalize_entitlement_wallet(_INMEMORY_ENTITLEMENTS.get(uid) or _default_entitlement(uid))
                 engine = str(event.get("engine") or "PRIME").upper()
-                vf_cost = _as_positive_number(event.get("vfCost"))
-                chars = _as_positive_int(event.get("chars"))
-                charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
-                refund_vff = _as_positive_number(charge_breakdown.get("vff"))
-                refund_paid = _as_positive_number(charge_breakdown.get("paidVf"))
-                paid_vf_lot_debits = charge_breakdown.get("paidVfLots") if isinstance(charge_breakdown.get("paidVfLots"), list) else []
-                refund_monthly = _as_positive_number(charge_breakdown.get("monthlyVf"))
+                refunded_vf = _as_positive_number(settlement.get("refundedVfCost"))
+                refunded_chars = _as_positive_int(settlement.get("refundedChars"))
+                refunded_monthly = _as_positive_number(settlement.get("refundedMonthlyVf"))
                 if monthly is not None:
-                    monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - vf_cost)
+                    monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - refunded_vf)
                     monthly["monthlyFreeVfUsed"] = _as_positive_number(
-                        _as_positive_number(monthly.get("monthlyFreeVfUsed")) - refund_monthly
+                        _as_positive_number(monthly.get("monthlyFreeVfUsed")) - refunded_monthly
                     )
-                    monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
+                    if str(settlement.get("status") or "") == "reverted":
+                        monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
                     monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
-                    monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) - vf_cost)
-                    monthly_engine["chars"] = max(0, _as_positive_int(monthly_engine.get("chars")) - chars)
+                    monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) - refunded_vf)
+                    monthly_engine["chars"] = max(0, _as_positive_int(monthly_engine.get("chars")) - refunded_chars)
                     monthly.setdefault("byEngine", {})[engine] = monthly_engine
                     monthly["updatedAt"] = now
                 if daily is not None:
-                    daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) - vf_cost)
-                    daily["generationCount"] = max(0, _as_positive_int(daily.get("generationCount")) - 1)
+                    daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) - refunded_vf)
+                    if str(settlement.get("status") or "") == "reverted":
+                        daily["generationCount"] = max(0, _as_positive_int(daily.get("generationCount")) - 1)
                     daily_engine = dict((daily.get("byEngine") or {}).get(engine) or {})
-                    daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) - vf_cost)
-                    daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - chars)
+                    daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) - refunded_vf)
+                    daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - refunded_chars)
                     daily.setdefault("byEngine", {})[engine] = daily_engine
                     daily["updatedAt"] = now
-                if refund_vff > 0 or refund_paid > 0:
-                    entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refund_vff)
+                refunded_vff = _as_positive_number(settlement.get("refundedVff"))
+                refunded_paid_vf = _as_positive_number(settlement.get("refundedPaidVf"))
+                if refunded_vff > 0 or refunded_paid_vf > 0:
+                    entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refunded_vff)
                     entitlement = _restore_paid_vf_lots(
                         entitlement,
-                        paid_vf_lot_debits,
-                        fallback_amount=refund_paid,
+                        settlement.get("refundedPaidVfLots"),
+                        fallback_amount=refunded_paid_vf,
                         now=now_dt,
                     )
                     entitlement["updatedAt"] = now
                     _INMEMORY_ENTITLEMENTS[uid] = entitlement
-            event["status"] = "reverted"
-            event["updatedAt"] = now
-            event["error"] = str(error_detail or "")
+
+            event.update(
+                {
+                    "status": str(settlement.get("status") or current_status or "reserved"),
+                    "updatedAt": now,
+                    "error": str(error_detail or ""),
+                    "reservedChars": _as_positive_int(settlement.get("reservedChars")),
+                    "processedChars": _as_positive_int(settlement.get("processedChars")),
+                    "billedChars": _as_positive_int(settlement.get("billedChars")),
+                    "refundedChars": _as_positive_int(settlement.get("refundedChars")),
+                    "reservedVfCost": _as_positive_number(settlement.get("reservedVfCost")),
+                    "billedVfCost": _as_positive_number(settlement.get("billedVfCost")),
+                    "refundedVfCost": _as_positive_number(settlement.get("refundedVfCost")),
+                    "settlementKind": str(settlement.get("settlementKind") or "pending"),
+                    "terminalReason": str(settlement.get("terminalReason") or ""),
+                }
+            )
             _INMEMORY_USAGE_EVENTS[event_doc_id] = event
-        return
+            return settlement
 
     assert _FIRESTORE_DB is not None
     assert firebase_firestore is not None
     event_ref = _FIRESTORE_DB.collection("usage_events").document(event_doc_id)
     transaction = _FIRESTORE_DB.transaction()
+    settlement_result: dict[str, Any] = {}
 
     @firebase_firestore.transactional
     def _apply(transaction_obj: Any) -> None:
+        nonlocal settlement_result
         event_doc = event_ref.get(transaction=transaction_obj)
         if not event_doc.exists:
+            settlement_result = {}
             return
         event = event_doc.to_dict() or {}
-        status = str(event.get("status") or "")
-        if status == "committed":
+        current_status = str(event.get("status") or "").strip().lower()
+        if current_status == "committed" and event.get("settlementKind"):
+            settlement_result = {
+                "settlementKind": str(event.get("settlementKind") or ""),
+                "reservedChars": _as_positive_int(event.get("reservedChars") or event.get("chars")),
+                "processedChars": _as_positive_int(event.get("processedChars")),
+                "billedChars": _as_positive_int(event.get("billedChars")),
+                "refundedChars": _as_positive_int(event.get("refundedChars")),
+                "reservedVfCost": _as_positive_number(event.get("reservedVfCost") if event.get("reservedVfCost") is not None else event.get("vfCost")),
+                "billedVfCost": _as_positive_number(event.get("billedVfCost")),
+                "refundedVfCost": _as_positive_number(event.get("refundedVfCost")),
+                "terminalReason": str(event.get("terminalReason") or ""),
+                "status": "committed",
+            }
             return
-        if success:
-            transaction_obj.set(event_ref, {"status": "committed", "updatedAt": now}, merge=True)
-            return
-        if status != "reserved":
-            transaction_obj.set(event_ref, {"status": "reverted", "updatedAt": now, "error": str(error_detail)}, merge=True)
-            return
-        entitlements_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
-        monthly_ref = _FIRESTORE_DB.collection("usage_monthly").document(str(event.get("monthDocId") or ""))
-        daily_ref = _FIRESTORE_DB.collection("usage_daily").document(str(event.get("dayDocId") or ""))
-        entitlement_doc = entitlements_ref.get(transaction=transaction_obj)
-        monthly_doc = monthly_ref.get(transaction=transaction_obj)
-        daily_doc = daily_ref.get(transaction=transaction_obj)
-        entitlement = _normalize_entitlement_wallet(
-            entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
+        settlement = _usage_settlement_payload(
+            event,
+            success=success,
+            processed_chars=processed_chars,
+            terminal_reason=terminal_reason,
+            error_detail=error_detail,
         )
-        engine = str(event.get("engine") or "PRIME").upper()
-        vf_cost = _as_positive_number(event.get("vfCost"))
-        chars = _as_positive_int(event.get("chars"))
-        charge_breakdown = event.get("chargeBreakdown") if isinstance(event.get("chargeBreakdown"), dict) else {}
-        refund_vff = _as_positive_number(charge_breakdown.get("vff"))
-        refund_paid = _as_positive_number(charge_breakdown.get("paidVf"))
-        paid_vf_lot_debits = charge_breakdown.get("paidVfLots") if isinstance(charge_breakdown.get("paidVfLots"), list) else []
-        refund_monthly = _as_positive_number(charge_breakdown.get("monthlyVf"))
-        if monthly_doc.exists:
-            monthly = monthly_doc.to_dict() or {}
-            monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - vf_cost)
-            monthly["monthlyFreeVfUsed"] = _as_positive_number(
-                _as_positive_number(monthly.get("monthlyFreeVfUsed")) - refund_monthly
+        settlement_result = settlement
+        if current_status == "reserved":
+            entitlements_ref = _FIRESTORE_DB.collection("entitlements").document(uid)
+            monthly_ref = _FIRESTORE_DB.collection("usage_monthly").document(str(event.get("monthDocId") or ""))
+            daily_ref = _FIRESTORE_DB.collection("usage_daily").document(str(event.get("dayDocId") or ""))
+            entitlement_doc = entitlements_ref.get(transaction=transaction_obj)
+            monthly_doc = monthly_ref.get(transaction=transaction_obj)
+            daily_doc = daily_ref.get(transaction=transaction_obj)
+            entitlement = _normalize_entitlement_wallet(
+                entitlement_doc.to_dict() if entitlement_doc.exists else _default_entitlement(uid)
             )
-            monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
-            monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
-            monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) - vf_cost)
-            monthly_engine["chars"] = max(0, _as_positive_int(monthly_engine.get("chars")) - chars)
-            monthly.setdefault("byEngine", {})[engine] = monthly_engine
-            monthly["updatedAt"] = now
-            transaction_obj.set(monthly_ref, monthly, merge=True)
-        if daily_doc.exists:
-            daily = daily_doc.to_dict() or {}
-            daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) - vf_cost)
-            daily["generationCount"] = max(0, _as_positive_int(daily.get("generationCount")) - 1)
-            daily_engine = dict((daily.get("byEngine") or {}).get(engine) or {})
-            daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) - vf_cost)
-            daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - chars)
-            daily.setdefault("byEngine", {})[engine] = daily_engine
-            daily["updatedAt"] = now
-            transaction_obj.set(daily_ref, daily, merge=True)
-        if refund_vff > 0 or refund_paid > 0:
-            entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refund_vff)
-            entitlement = _restore_paid_vf_lots(
-                entitlement,
-                paid_vf_lot_debits,
-                fallback_amount=refund_paid,
-                now=now_dt,
-            )
-            entitlement["updatedAt"] = now
-            transaction_obj.set(entitlements_ref, entitlement, merge=True)
-        transaction_obj.set(event_ref, {"status": "reverted", "updatedAt": now, "error": str(error_detail)}, merge=True)
+            engine = str(event.get("engine") or "PRIME").upper()
+            refunded_vf = _as_positive_number(settlement.get("refundedVfCost"))
+            refunded_chars = _as_positive_int(settlement.get("refundedChars"))
+            refunded_monthly = _as_positive_number(settlement.get("refundedMonthlyVf"))
+            if monthly_doc.exists:
+                monthly = monthly_doc.to_dict() or {}
+                monthly["vfUsed"] = _as_positive_number(_as_positive_number(monthly.get("vfUsed")) - refunded_vf)
+                monthly["monthlyFreeVfUsed"] = _as_positive_number(
+                    _as_positive_number(monthly.get("monthlyFreeVfUsed")) - refunded_monthly
+                )
+                if str(settlement.get("status") or "") == "reverted":
+                    monthly["generationCount"] = max(0, _as_positive_int(monthly.get("generationCount")) - 1)
+                monthly_engine = dict((monthly.get("byEngine") or {}).get(engine) or {})
+                monthly_engine["vf"] = _as_positive_number(_as_positive_number(monthly_engine.get("vf")) - refunded_vf)
+                monthly_engine["chars"] = max(0, _as_positive_int(monthly_engine.get("chars")) - refunded_chars)
+                monthly.setdefault("byEngine", {})[engine] = monthly_engine
+                monthly["updatedAt"] = now
+                transaction_obj.set(monthly_ref, monthly, merge=True)
+            if daily_doc.exists:
+                daily = daily_doc.to_dict() or {}
+                daily["vfUsed"] = _as_positive_number(_as_positive_number(daily.get("vfUsed")) - refunded_vf)
+                if str(settlement.get("status") or "") == "reverted":
+                    daily["generationCount"] = max(0, _as_positive_int(daily.get("generationCount")) - 1)
+                daily_engine = dict((daily.get("byEngine") or {}).get(engine) or {})
+                daily_engine["vf"] = _as_positive_number(_as_positive_number(daily_engine.get("vf")) - refunded_vf)
+                daily_engine["chars"] = max(0, _as_positive_int(daily_engine.get("chars")) - refunded_chars)
+                daily.setdefault("byEngine", {})[engine] = daily_engine
+                daily["updatedAt"] = now
+                transaction_obj.set(daily_ref, daily, merge=True)
+            refunded_vff = _as_positive_number(settlement.get("refundedVff"))
+            refunded_paid_vf = _as_positive_number(settlement.get("refundedPaidVf"))
+            if refunded_vff > 0 or refunded_paid_vf > 0:
+                entitlement["vffBalance"] = _as_positive_number(_as_positive_number(entitlement.get("vffBalance")) + refunded_vff)
+                entitlement = _restore_paid_vf_lots(
+                    entitlement,
+                    settlement.get("refundedPaidVfLots"),
+                    fallback_amount=refunded_paid_vf,
+                    now=now_dt,
+                )
+                entitlement["updatedAt"] = now
+                transaction_obj.set(entitlements_ref, entitlement, merge=True)
+        transaction_obj.set(
+            event_ref,
+            {
+                "status": str(settlement.get("status") or current_status or "reserved"),
+                "updatedAt": now,
+                "error": str(error_detail or ""),
+                "reservedChars": _as_positive_int(settlement.get("reservedChars")),
+                "processedChars": _as_positive_int(settlement.get("processedChars")),
+                "billedChars": _as_positive_int(settlement.get("billedChars")),
+                "refundedChars": _as_positive_int(settlement.get("refundedChars")),
+                "reservedVfCost": _as_positive_number(settlement.get("reservedVfCost")),
+                "billedVfCost": _as_positive_number(settlement.get("billedVfCost")),
+                "refundedVfCost": _as_positive_number(settlement.get("refundedVfCost")),
+                "settlementKind": str(settlement.get("settlementKind") or "pending"),
+                "terminalReason": str(settlement.get("terminalReason") or ""),
+            },
+            merge=True,
+        )
 
     _apply(transaction)
+    return settlement_result
 
 
 def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
@@ -10018,7 +11331,7 @@ def _entitlement_usage_payload(uid: str) -> dict[str, Any]:
     day_start, day_end = _day_window_bounds()
     plan_key = _plan_key_from_name(plan_name)
     guardrails = TTS_PLAN_GUARDRAILS.get(plan_key) or TTS_PLAN_GUARDRAILS["free"]
-    allowed_engines = list(_plan_allowed_engines(plan_key))
+    allowed_engines = list(_allowed_engines_for_entitlement(entitlement))
     return {
         "uid": uid,
         "plan": plan_name,
@@ -10156,6 +11469,10 @@ class SwitchTtsEngineRequest(BaseModel):
     gpu: bool = False
 
 
+class ActivateTtsEngineRequest(BaseModel):
+    engine: str
+
+
 class PrepareDubbingServicesRequest(BaseModel):
     gpu: bool = False
 
@@ -10261,6 +11578,10 @@ class AdminForceUserIdChangeRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class AccountDeleteRequest(BaseModel):
+    confirmPhrase: str
+
+
 class TeamCreateRequest(BaseModel):
     name: str
     slug: str
@@ -10320,6 +11641,10 @@ class AdminSessionUnlockVerifyRequest(BaseModel):
 
 class EngineCanonicalizationMigrationRequest(BaseModel):
     mode: str = "dry_run"
+
+
+class EntitlementAllowedEnginesReconcileRequest(BaseModel):
+    dryRun: bool = True
 
 
 class AlertPolicyCreateRequest(BaseModel):
@@ -10390,6 +11715,11 @@ class ScheduledTaskRunRequest(BaseModel):
 
 class AccountingMonitorRunRequest(BaseModel):
     dryRun: bool = False
+
+
+class BillingUsageEventsSettlementMigrationRequest(BaseModel):
+    dryRun: bool = True
+    limit: int = 500
 
 
 class TtsSynthesizeRequest(BaseModel):
@@ -10465,6 +11795,11 @@ class TtsV2CreateJobRequest(BaseModel):
     sourceVoiceName: Optional[str] = None
     sourceVoiceEngine: Optional[str] = None
     post_tts_disable: Optional[bool] = None
+
+
+class TtsV2SessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    probeAllSlotRegions: Optional[bool] = False
 
 
 class TtsEngineStatusItem(BaseModel):
@@ -11721,13 +13056,10 @@ def _ai_ops_runtime_snapshot() -> dict[str, Any]:
     engines: dict[str, Any] = {}
     offline: list[str] = []
     for engine, health_url in TTS_ENGINE_HEALTH_URLS.items():
-        healthy, detail = _probe_runtime_health(
-            health_url,
-            timeout_sec=_runtime_health_probe_timeout_sec(health_url),
-        )
+        healthy, detail, resolved_health_url = _probe_engine_runtime_health(engine)
         item = {
             "engine": engine,
-            "healthUrl": health_url,
+            "healthUrl": resolved_health_url or health_url,
             "healthy": bool(healthy),
             "detail": str(detail or "unknown"),
         }
@@ -11958,12 +13290,12 @@ def _ai_ops_execute_action(
         if normalized_action == "restart_runtime":
             engine = _normalize_engine_name(str(safe_payload.get("engine") or ""))
             effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
-            command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-            health_url = TTS_ENGINE_HEALTH_URLS[engine]
-            healthy, detail = _probe_runtime_health(
-                health_url,
-                timeout_sec=_runtime_health_probe_timeout_sec(health_url),
+            command_output = (
+                ""
+                if engine == "DUNO" and _is_duno_deepinfra_runtime()
+                else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
             )
+            healthy, detail, health_url = _probe_engine_runtime_health(engine)
             execution.update(
                 {
                     "ok": bool(healthy),
@@ -12010,12 +13342,12 @@ def _ai_ops_execute_action(
             for engine in ["PRIME", "VECTOR", "DUNO"]:
                 try:
                     effective_gpu_mode = _effective_tts_gpu_mode(engine, gpu)
-                    command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-                    probe_url = str(TTS_ENGINE_HEALTH_URLS[engine] or "").strip()
-                    healthy, detail = _probe_runtime_health(
-                        probe_url,
-                        timeout_sec=_runtime_health_probe_timeout_sec(probe_url),
+                    command_output = (
+                        ""
+                        if engine == "DUNO" and _is_duno_deepinfra_runtime()
+                        else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
                     )
+                    healthy, detail, probe_url = _probe_engine_runtime_health(engine)
                     item_ok = bool(healthy)
                     overall_ok = overall_ok and item_ok
                     items.append(
@@ -12949,6 +14281,8 @@ def _scheduler_execute_task(task: dict[str, Any], *, requested_by: str, dry_run:
             requested_by=requested_by,
             source="scheduler",
         )
+    if task_type == "billing_usage_webhook_reconciliation":
+        return _billing_usage_webhook_reconciliation(dry_run=bool(dry_run))
     raise RuntimeError("Unsupported task type.")
 
 
@@ -14615,7 +15949,7 @@ def _accounting_monitor_run_list(limit: int = 80) -> list[dict[str, Any]]:
     return rows[:safe_limit]
 
 
-def _parse_runtime_usage_header(raw_header: Any) -> dict[str, int]:
+def _parse_runtime_usage_header(raw_header: Any) -> dict[str, Any]:
     raw_value = str(raw_header or "").strip()
     if not raw_value:
         return {}
@@ -14649,7 +15983,17 @@ def _parse_runtime_usage_header(raw_header: Any) -> dict[str, int]:
         or payload.get("total_token_count"),
         prompt_tokens + output_tokens,
     )
+    provider_reported = _as_bool(payload.get("providerReported"))
+    if "providerReported" not in payload:
+        provider_reported = bool(total_tokens > 0 or prompt_tokens > 0 or output_tokens > 0)
     if total_tokens <= 0 and prompt_tokens <= 0 and output_tokens <= 0:
+        if "providerReported" in payload:
+            return {
+                "promptTokens": 0,
+                "outputTokens": 0,
+                "totalTokens": 0,
+                "providerReported": bool(provider_reported),
+            }
         return {}
     if total_tokens <= 0:
         total_tokens = max(0, prompt_tokens + output_tokens)
@@ -14659,13 +16003,14 @@ def _parse_runtime_usage_header(raw_header: Any) -> dict[str, int]:
         "promptTokens": max(0, prompt_tokens),
         "outputTokens": max(0, output_tokens),
         "totalTokens": max(0, total_tokens),
+        "providerReported": bool(provider_reported),
     }
 
 
 def _usage_event_attach_runtime_usage(
     uid: str,
     request_id: str,
-    usage_payload: dict[str, int],
+    usage_payload: dict[str, Any],
     *,
     mode: str = "",
     trace_id: str = "",
@@ -14680,12 +16025,16 @@ def _usage_event_attach_runtime_usage(
         and _safe_int(usage_payload.get("totalTokens"), 0) <= 0
     ):
         return
+    provider_reported = _as_bool(usage_payload.get("providerReported"))
+    if "providerReported" not in usage_payload:
+        provider_reported = bool(_safe_int(usage_payload.get("totalTokens"), 0) > 0)
     event_doc_id = f"{safe_uid}_{safe_request_id}"
     patch = {
         "runtimeUsage": {
             "promptTokens": max(0, _safe_int(usage_payload.get("promptTokens"), 0)),
             "outputTokens": max(0, _safe_int(usage_payload.get("outputTokens"), 0)),
             "totalTokens": max(0, _safe_int(usage_payload.get("totalTokens"), 0)),
+            "providerReported": bool(provider_reported),
         },
         "runtimeUsageUpdatedAt": _safe_now_iso(),
     }
@@ -14838,13 +16187,27 @@ def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[di
         prompt_tokens = max(0, _safe_int(runtime_usage.get("promptTokens"), 0))
         output_tokens = max(0, _safe_int(runtime_usage.get("outputTokens"), 0))
         total_tokens = max(0, _safe_int(runtime_usage.get("totalTokens"), prompt_tokens + output_tokens))
+        provider_reported = (
+            _as_bool(runtime_usage.get("providerReported"))
+            if "providerReported" in runtime_usage
+            else bool(total_tokens > 0 or prompt_tokens > 0 or output_tokens > 0)
+        )
         chars = max(0, _safe_int(row.get("chars"), 0))
+        estimated_tokens = 0
         fallback_estimated = False
-        if total_tokens <= 0:
-            total_tokens = max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR)))
-            prompt_tokens = total_tokens
+        if provider_reported:
+            if total_tokens <= 0:
+                estimated_tokens = max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR)))
+                prompt_tokens = estimated_tokens
+                output_tokens = 0
+                total_tokens = estimated_tokens
+                fallback_estimated = estimated_tokens > 0
+        else:
+            estimated_tokens = max(1, int(math.ceil(chars * VF_ACCOUNTING_GEMINI_FALLBACK_TOKENS_PER_CHAR))) if chars > 0 else 0
+            prompt_tokens = 0
             output_tokens = 0
-            fallback_estimated = True
+            total_tokens = 0
+            fallback_estimated = False
         result.append(
             {
                 "id": str(row.get("id") or row.get("requestId") or "").strip() or uuid.uuid4().hex,
@@ -14855,12 +16218,95 @@ def _accounting_list_usage_events(from_dt: datetime, to_dt: datetime) -> list[di
                 "promptTokens": prompt_tokens,
                 "outputTokens": output_tokens,
                 "totalTokens": total_tokens,
+                "estimatedTokens": estimated_tokens,
                 "fallbackEstimated": fallback_estimated,
+                "providerReported": bool(provider_reported),
                 "updatedAt": updated_at.isoformat(),
                 "day": _accounting_day_token(updated_at),
             }
         )
     return result
+
+
+def _billing_usage_webhook_reconciliation(*, dry_run: bool = False) -> dict[str, Any]:
+    now = _utc_now()
+    stale_cutoff = now - timedelta(minutes=max(5, int(VF_BILLING_USAGE_RECONCILIATION_STALE_MINUTES)))
+    usage_collection = _firestore_collection("usage_events")
+    if usage_collection is None:
+        with _INMEMORY_LOCK:
+            usage_rows = [dict(item) for item in _INMEMORY_USAGE_EVENTS.values()]
+    else:
+        try:
+            usage_rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in usage_collection.stream()]
+        except Exception:
+            usage_rows = []
+
+    usage_scanned = 0
+    usage_reverted = 0
+    usage_candidates = 0
+    errors: list[str] = []
+    for row in usage_rows:
+        if str(row.get("status") or "").strip().lower() != "reserved":
+            continue
+        uid = str(row.get("uid") or "").strip()
+        request_id = str(row.get("requestId") or "").strip()
+        if not uid or not request_id:
+            continue
+        usage_scanned += 1
+        updated_at = _parse_optional_datetime(str(row.get("updatedAt") or row.get("createdAt") or ""))
+        if updated_at is None or updated_at > stale_cutoff:
+            continue
+        usage_candidates += 1
+        if dry_run:
+            usage_reverted += 1
+            continue
+        try:
+            _finalize_usage(uid, request_id, False, "reconciler_stale_reserved")
+            usage_reverted += 1
+        except Exception as exc:
+            errors.append(f"{uid}:{request_id}:{exc}")
+
+    webhook_failed = 0
+    webhook_marked_failed = 0
+    webhook_collection = _firestore_collection(STRIPE_WEBHOOK_EVENTS_COLLECTION)
+    if webhook_collection is None:
+        with _INMEMORY_LOCK:
+            webhook_rows = [dict(item) for item in _INMEMORY_STRIPE_WEBHOOK_EVENTS.values()]
+    else:
+        try:
+            webhook_rows = [{**(doc.to_dict() or {}), "id": str(doc.id or "")} for doc in webhook_collection.stream()]
+        except Exception:
+            webhook_rows = []
+    for row in webhook_rows:
+        state = str(row.get("state") or "").strip().lower()
+        if state == "failed":
+            webhook_failed += 1
+            continue
+        if state != "processing":
+            continue
+        updated_at = _parse_optional_datetime(str(row.get("updatedAt") or row.get("receivedAt") or ""))
+        if updated_at is not None and updated_at <= stale_cutoff:
+            webhook_failed += 1
+            event_id = str(row.get("eventId") or row.get("id") or "").strip()
+            if dry_run or not event_id:
+                continue
+            try:
+                _stripe_webhook_event_complete(event_id, status="failed", error_detail="reconciler_stale_processing")
+                webhook_marked_failed += 1
+            except Exception as exc:
+                errors.append(f"webhook:{event_id}:{exc}")
+
+    return {
+        "ok": len(errors) == 0,
+        "dryRun": bool(dry_run),
+        "staleCutoff": stale_cutoff.isoformat(),
+        "usageScanned": usage_scanned,
+        "usageCandidates": usage_candidates,
+        "usageReverted": usage_reverted,
+        "webhookFailed": webhook_failed,
+        "webhookMarkedFailed": webhook_marked_failed,
+        "errors": errors[:20],
+    }
 
 
 def _accounting_list_stripe_invoices(from_dt: datetime, to_dt: datetime) -> tuple[list[dict[str, Any]], str, list[str]]:
@@ -16075,8 +17521,8 @@ def _runtime_auth_headers_for_url(url: str, *, include_accept: bool = False) -> 
     if include_accept:
         headers["Accept"] = "application/json"
     safe_url = str(url or "").strip()
-    duno_base = str(DUNO_RUNTIME_URL or "").strip().rstrip("/")
-    if duno_base and safe_url.lower().startswith(duno_base.lower()):
+    duno_prefixes = _duno_runtime_auth_url_prefixes()
+    if duno_prefixes and any(safe_url.lower().startswith(prefix.lower()) for prefix in duno_prefixes):
         auth_value = _duno_runtime_auth_header_value()
         if auth_value:
             headers["Authorization"] = auth_value
@@ -16084,11 +17530,14 @@ def _runtime_auth_headers_for_url(url: str, *, include_accept: bool = False) -> 
 
 
 def _probe_runtime_health(url: str, timeout_sec: float | None = None) -> tuple[bool, str]:
-    request_timeout = float(timeout_sec) if timeout_sec is not None else float(_runtime_health_probe_timeout_sec(url))
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return False, "Runtime health URL is not configured."
+    request_timeout = float(timeout_sec) if timeout_sec is not None else float(_runtime_health_probe_timeout_sec(safe_url))
     req = urllib_request.Request(
-        url,
+        safe_url,
         method="GET",
-        headers=_runtime_auth_headers_for_url(url, include_accept=True),
+        headers=_runtime_auth_headers_for_url(safe_url, include_accept=True),
     )
     try:
         with urllib_request.urlopen(req, timeout=request_timeout) as response:
@@ -16116,6 +17565,30 @@ def _probe_runtime_health(url: str, timeout_sec: float | None = None) -> tuple[b
         return False, str(reason or exc)
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def _probe_engine_runtime_health(engine: str, *, timeout_sec: float | None = None) -> tuple[bool, str, str]:
+    normalized_engine = _normalize_engine_name(engine)
+    if normalized_engine == "DUNO" and _is_duno_deepinfra_runtime():
+        probe_url = _duno_voice_api_url("/v1/voices")
+        try:
+            payload = DUNO_MODAL_CLIENT.health()
+            healthy = bool(payload.get("ok", False))
+            detail = str(
+                payload.get("detail")
+                or ("DeepInfra DUNO runtime ready." if healthy else "DeepInfra DUNO runtime unavailable.")
+            ).strip()
+            return healthy, detail, probe_url
+        except Exception as exc:
+            return False, str(exc or "DUNO runtime unavailable.").strip() or "DUNO runtime unavailable.", probe_url
+    probe_url = str(TTS_ENGINE_HEALTH_URLS.get(normalized_engine) or "").strip()
+    return (
+        *_probe_runtime_health(
+            probe_url,
+            timeout_sec=timeout_sec if timeout_sec is not None else _runtime_health_probe_timeout_sec(probe_url),
+        ),
+        probe_url,
+    )
 
 
 def _runtime_not_configured_detail(engine: str, capability_payload: Any) -> Optional[str]:
@@ -16209,7 +17682,7 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
         "engine": safe_engine,
         "runtime": runtime,
         "ready": ready,
-        "languages": ["en", "hi"] if safe_engine == "DUNO" else ["multilingual"],
+        "languages": ["multilingual"] if safe_engine == "DUNO" else ["multilingual"],
         "speed": {"min": 0.7, "max": 1.35, "default": 1.0},
         "supportsEmotion": safe_engine == "DUNO",
         "supportsStyle": False,
@@ -16227,6 +17700,20 @@ def _capability_fallback(engine: str, health_payload: Optional[dict[str, Any]] =
 
 
 def _probe_runtime_capabilities(engine: str, timeout_sec: float = 3.0) -> dict[str, Any]:
+    if engine == "DUNO":
+        try:
+            payload = DUNO_MODAL_CLIENT.capabilities()
+            if isinstance(payload, dict):
+                return payload
+        except Exception as exc:
+            fallback = _capability_fallback(engine, health_payload=None)
+            fallback["ready"] = False
+            fallback_metadata = fallback.get("metadata", {})
+            if isinstance(fallback_metadata, dict):
+                fallback_metadata["capabilityProbeError"] = str(exc)
+                fallback_metadata["provider"] = "deepinfra" if _is_duno_deepinfra_runtime() else "runtime"
+                fallback["metadata"] = fallback_metadata
+            return fallback
     capabilities_url = TTS_ENGINE_CAPABILITIES_URLS[engine]
     health_url = TTS_ENGINE_HEALTH_URLS[engine]
     capabilities_query_url = f"{capabilities_url}?engine={engine}"
@@ -17777,12 +19264,16 @@ def _reader_build_restore_state(
     payload = dict(raw_value or {}) if isinstance(raw_value, dict) else {}
     unit_id = str(payload.get("activeUnitId") or active_unit_id or "").strip()
     anchor = str(payload.get("viewportAnchor") or viewport_anchor or "").strip()
+    active_reader_tab = str(payload.get("activeReaderTab") or "text").strip().lower() or "text"
+    if active_reader_tab not in {"text", "cast", "settings"}:
+        active_reader_tab = "text"
     updated_at = str(payload.get("updatedAt") or "").strip() or _safe_now_iso()
     next_active_item_index = max(0, int(payload.get("activeItemIndex") or active_item_index or 0))
     out = {
         "activeItemIndex": next_active_item_index,
         "activeUnitId": unit_id,
         "viewportAnchor": anchor,
+        "activeReaderTab": active_reader_tab,
         "updatedAt": updated_at,
     }
     return out
@@ -19067,7 +20558,16 @@ def _reader_fallback_cover_url(*, content_kind: str = "book", surface: str = "")
     if safe_kind == "comic":
         return "/reader/assets/fallback-covers/comic.svg"
     if safe_surface == "uploads":
-        return "/reader/assets/fallback-covers/upload-book.svg"
+        return (
+            "data:image/svg+xml;utf8,"
+            "<svg xmlns='http://www.w3.org/2000/svg' width='640' height='360' viewBox='0 0 640 360'>"
+            "<rect width='640' height='360' rx='24' fill='%23111b2e'/>"
+            "<rect x='44' y='44' width='552' height='272' rx='18' fill='%231a2945'/>"
+            "<text x='320' y='184' fill='%23d7e3ff' font-size='34' text-anchor='middle' font-family='Arial,sans-serif'>"
+            "Reader Upload"
+            "</text>"
+            "</svg>"
+        )
     return "/reader/assets/fallback-covers/book.svg"
 
 
@@ -24518,8 +26018,11 @@ def ops_guardian_frontend_errors(payload: FrontendErrorReportRequest, request: R
 
 
 def _require_stripe_ready() -> None:
-    if not _stripe_available():
-        raise HTTPException(status_code=503, detail="Stripe is not configured.")
+    if _stripe_available():
+        return
+    if (VF_IS_LOCAL_DEV or "pytest" in sys.modules) and stripe is not None and not isinstance(stripe, ModuleType):
+        return
+    raise HTTPException(status_code=503, detail="Stripe is not configured.")
 
 
 def _ensure_subscription_schedule_for_loyalty(
@@ -24959,6 +26462,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
         warnings.append("Billing is active, but no Stripe customer is linked to this account yet.")
 
     billing_country = str(entitlement.get("billingCountry") or "").strip().upper() or None
+    allowed_engines = list(_allowed_engines_for_entitlement(entitlement))
     return {
         "generatedAt": _safe_now_iso(),
         "profile": {
@@ -24977,7 +26481,7 @@ def _build_billing_account_summary(uid: str) -> dict[str, Any]:
             "monthlyVfLimit": _as_positive_int(entitlement.get("monthlyVfLimit")),
             "ttsSuccessRpm": max(1, int(tts_success_rpm)),
             "maxCharsPerGeneration": max(1, int(guardrails.get("maxChars") or 8000)),
-            "allowedEngines": list(feature_flags.get("allowedEngines") or ()),
+            "allowedEngines": allowed_engines,
             "earlyAccess": bool(feature_flags.get("earlyAccess")),
             "pricing": pricing,
             "tokenPackDiscountPercent": _token_pack_discount_percent_for_plan(plan_name),
@@ -26027,6 +27531,8 @@ def account_generation_history_clear(request: Request) -> JSONResponse:
 @app.get("/account/notifications")
 def account_notifications(request: Request, limit: int = 100) -> JSONResponse:
     uid = _require_request_uid(request)
+    if VF_NOTIFICATIONS_SYNC_ON_READ:
+        _notification_sync_admin_notices(uid)
     actor = _resolve_actor(uid, request)
     items = _notification_list_items(uid, limit=limit, actor=actor)
     return JSONResponse({"ok": True, "items": items, "count": len(items)})
@@ -26813,6 +28319,98 @@ def _engine_canonicalization_migration(*, mode: str, requested_by: str) -> dict[
     return summary
 
 
+def _reconcile_entitlement_allowed_engines(*, dry_run: bool, requested_by: str) -> dict[str, Any]:
+    now_iso = _safe_now_iso()
+    collection = _firestore_collection("entitlements")
+    summary: dict[str, Any] = {
+        "ok": True,
+        "dryRun": bool(dry_run),
+        "applied": not bool(dry_run),
+        "requestedBy": str(requested_by or "").strip(),
+        "ranAt": now_iso,
+        "scanned": 0,
+        "changed": 0,
+        "unchanged": 0,
+        "failures": 0,
+        "sampleUserIds": [],
+    }
+    sample_user_ids: list[str] = []
+
+    def remember_uid(uid: str) -> None:
+        safe_uid = str(uid or "").strip()
+        if not safe_uid or safe_uid in sample_user_ids or len(sample_user_ids) >= 10:
+            return
+        sample_user_ids.append(safe_uid)
+
+    if collection is None:
+        with _INMEMORY_LOCK:
+            rows = list(_INMEMORY_ENTITLEMENTS.items())
+        summary["scanned"] = len(rows)
+        for uid, row in rows:
+            safe_uid = str(uid or "").strip()
+            if not safe_uid or not isinstance(row, dict):
+                summary["failures"] += 1
+                remember_uid(safe_uid)
+                continue
+            try:
+                expected_allowed = list(_allowed_engines_for_entitlement(row))
+                current_allowed = list(_normalize_allowed_engines_list(row.get("allowedEngines")))
+                if current_allowed == expected_allowed:
+                    summary["unchanged"] += 1
+                    continue
+                summary["changed"] += 1
+                remember_uid(safe_uid)
+                if not dry_run:
+                    patched = dict(row)
+                    patched["uid"] = safe_uid
+                    patched["allowedEngines"] = expected_allowed
+                    patched["updatedAt"] = now_iso
+                    with _INMEMORY_LOCK:
+                        _INMEMORY_ENTITLEMENTS[safe_uid] = _normalize_entitlement_wallet(patched)
+            except Exception:
+                summary["failures"] += 1
+                remember_uid(safe_uid)
+        summary["sampleUserIds"] = sample_user_ids
+        return summary
+
+    try:
+        docs = list(collection.stream())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to stream entitlements for allowed-engines migration: {exc}") from exc
+
+    summary["scanned"] = len(docs)
+    for doc in docs:
+        safe_uid = str(doc.id or "").strip()
+        row = doc.to_dict() or {}
+        if not safe_uid or not isinstance(row, dict):
+            summary["failures"] += 1
+            remember_uid(safe_uid)
+            continue
+        row["uid"] = safe_uid
+        try:
+            expected_allowed = list(_allowed_engines_for_entitlement(row))
+            current_allowed = list(_normalize_allowed_engines_list(row.get("allowedEngines")))
+            if current_allowed == expected_allowed:
+                summary["unchanged"] += 1
+                continue
+            summary["changed"] += 1
+            remember_uid(safe_uid)
+            if not dry_run:
+                doc.reference.set(
+                    {
+                        "allowedEngines": expected_allowed,
+                        "updatedAt": now_iso,
+                    },
+                    merge=True,
+                )
+        except Exception:
+            summary["failures"] += 1
+            remember_uid(safe_uid)
+
+    summary["sampleUserIds"] = sample_user_ids
+    return summary
+
+
 @app.post("/admin/session-unlock/issue")
 def admin_session_unlock_issue(request: Request) -> JSONResponse:
     uid = _require_admin_unlock_uid(request)
@@ -26930,6 +28528,27 @@ def admin_cleanup_entitlements_daily_generation_limit(request: Request, dryRun: 
         resource_id="all",
         after=summary if isinstance(summary, dict) else {},
         meta={"dryRun": bool(dryRun)},
+        request=request,
+        actor_uid=admin_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(summary)
+
+
+@app.post("/admin/entitlements/reconcile-allowed-engines")
+def admin_reconcile_entitlement_allowed_engines(
+    payload: EntitlementAllowedEnginesReconcileRequest,
+    request: Request,
+) -> JSONResponse:
+    admin_uid, actor = _require_permission(request, PERM_OPS_MUTATE)
+    _require_admin_mutation_unlock(request, expected_uid=admin_uid)
+    summary = _reconcile_entitlement_allowed_engines(dry_run=bool(payload.dryRun), requested_by=admin_uid)
+    _audit_append_event(
+        action="entitlements_reconcile_allowed_engines",
+        resource_type="entitlements",
+        resource_id="all",
+        after=summary if isinstance(summary, dict) else {},
+        meta={"dryRun": bool(payload.dryRun)},
         request=request,
         actor_uid=admin_uid,
         actor_role=str(actor.get("role") or ""),
@@ -27158,6 +28777,261 @@ def admin_force_change_user_id(
     return JSONResponse({"ok": True, "profile": row})
 
 
+def _delete_user_account_cleanup(uid: str, *, delete_auth_user: bool = True) -> dict[str, Any]:
+    safe_uid = str(uid or "").strip()
+    if not safe_uid:
+        raise HTTPException(status_code=400, detail="Missing user uid.")
+    profile_before = _user_profile_read(safe_uid) or {}
+    user_id_before = str(profile_before.get("userId") or "").strip().lower()
+
+    collection_keys = [
+        "entitlements",
+        "users",
+        "user_profiles",
+        "generation_history",
+        "usage_monthly",
+        "usage_daily",
+        "usage_events",
+        "notification_inbox",
+        "notification_preferences",
+        "notification_email_outbox",
+        "support_conversations",
+        "support_messages",
+        "reader_legal_ack",
+        "reader_preferences",
+        "reader_uploads",
+        "reader_progress",
+        "reader_cast_memory",
+        "reader_translation_cache",
+        "reader_sessions",
+        "wallet_daily",
+        "wallet_transactions",
+        "coupon_redemptions",
+        "tts_v2_sessions",
+        "user_id_index",
+    ]
+    summary_collections: dict[str, dict[str, int]] = {
+        key: {"deletedCount": 0, "failedCount": 0}
+        for key in collection_keys
+    }
+
+    def _record_deleted(key: str, count: int = 1) -> None:
+        bucket = summary_collections.setdefault(key, {"deletedCount": 0, "failedCount": 0})
+        bucket["deletedCount"] = int(bucket.get("deletedCount") or 0) + max(0, int(count))
+
+    def _record_failed(key: str, count: int = 1) -> None:
+        bucket = summary_collections.setdefault(key, {"deletedCount": 0, "failedCount": 0})
+        bucket["failedCount"] = int(bucket.get("failedCount") or 0) + max(0, int(count))
+
+    if delete_auth_user and _firebase_ready() and firebase_auth is not None:
+        try:
+            firebase_auth.delete_user(safe_uid)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    if _FIRESTORE_DB is not None:
+        firestore_plan: list[tuple[str, str, str]] = [
+            ("entitlements", "entitlements", "doc"),
+            ("users", "users", "doc"),
+            ("user_profiles", USER_PROFILES_COLLECTION, "doc"),
+            ("generation_history", "generation_history", "doc"),
+            ("usage_monthly", "usage_monthly", "query"),
+            ("usage_daily", "usage_daily", "query"),
+            ("usage_events", "usage_events", "query"),
+            ("wallet_daily", "wallet_daily", "query"),
+            ("wallet_transactions", "wallet_transactions", "query"),
+            ("coupon_redemptions", "coupon_redemptions", "query"),
+            ("notification_preferences", "notification_preferences", "doc"),
+            ("notification_inbox", "notification_inbox", "query"),
+            ("notification_email_outbox", "notification_email_outbox", "query"),
+            ("support_conversations", "support_conversations", "query"),
+            ("support_messages", "support_messages", "query"),
+            ("reader_legal_ack", READER_LEGAL_ACK_COLLECTION, "doc"),
+            ("reader_preferences", READER_PREFERENCES_COLLECTION, "doc"),
+            ("reader_uploads", READER_UPLOADS_COLLECTION, "query"),
+            ("reader_progress", READER_PROGRESS_COLLECTION, "query"),
+            ("reader_cast_memory", READER_CAST_MEMORY_COLLECTION, "query"),
+            ("reader_translation_cache", READER_TRANSLATION_COLLECTION, "query"),
+            ("reader_sessions", READER_SESSIONS_COLLECTION, "query"),
+            ("tts_v2_sessions", TTS_V2_SESSION_COLLECTION, "query"),
+        ]
+        for summary_key, collection_name, mode in firestore_plan:
+            try:
+                coll = _FIRESTORE_DB.collection(collection_name)
+                if mode == "doc":
+                    coll.document(safe_uid).delete()
+                    _record_deleted(summary_key, 1)
+                    continue
+                deleted_count = 0
+                for doc in coll.where("uid", "==", safe_uid).stream():
+                    doc.reference.delete()
+                    deleted_count += 1
+                if deleted_count:
+                    _record_deleted(summary_key, deleted_count)
+            except Exception:
+                _record_failed(summary_key, 1)
+        if user_id_before:
+            try:
+                _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(user_id_before).delete()
+                _record_deleted("user_id_index", 1)
+            except Exception:
+                _record_failed("user_id_index", 1)
+
+    with _INMEMORY_LOCK:
+        if safe_uid in _INMEMORY_ENTITLEMENTS:
+            _INMEMORY_ENTITLEMENTS.pop(safe_uid, None)
+            _record_deleted("entitlements", 1)
+        if safe_uid in _INMEMORY_USER_PROFILES:
+            _INMEMORY_USER_PROFILES.pop(safe_uid, None)
+            _record_deleted("user_profiles", 1)
+        if safe_uid in _INMEMORY_GENERATION_HISTORY:
+            _INMEMORY_GENERATION_HISTORY.pop(safe_uid, None)
+            _record_deleted("generation_history", 1)
+        if safe_uid in _INMEMORY_NOTIFICATION_INBOX:
+            _INMEMORY_NOTIFICATION_INBOX.pop(safe_uid, None)
+            _record_deleted("notification_inbox", 1)
+        if safe_uid in _INMEMORY_NOTIFICATION_PREFERENCES:
+            _INMEMORY_NOTIFICATION_PREFERENCES.pop(safe_uid, None)
+            _record_deleted("notification_preferences", 1)
+        if safe_uid in _INMEMORY_READER_LEGAL_ACK:
+            _INMEMORY_READER_LEGAL_ACK.pop(safe_uid, None)
+            _record_deleted("reader_legal_ack", 1)
+        if safe_uid in _INMEMORY_READER_PREFERENCES:
+            _INMEMORY_READER_PREFERENCES.pop(safe_uid, None)
+            _record_deleted("reader_preferences", 1)
+
+        if user_id_before and user_id_before in _INMEMORY_USER_ID_INDEX:
+            _INMEMORY_USER_ID_INDEX.pop(user_id_before, None)
+            _record_deleted("user_id_index", 1)
+        elif not user_id_before:
+            removed_index = 0
+            for key, row in list(_INMEMORY_USER_ID_INDEX.items()):
+                if str((row or {}).get("uid") or "").strip() != safe_uid:
+                    continue
+                _INMEMORY_USER_ID_INDEX.pop(key, None)
+                removed_index += 1
+            if removed_index:
+                _record_deleted("user_id_index", removed_index)
+
+        for key in [k for k in _INMEMORY_USAGE_MONTHLY.keys() if str(k).startswith(f"{safe_uid}_")]:
+            _INMEMORY_USAGE_MONTHLY.pop(key, None)
+            _record_deleted("usage_monthly", 1)
+        for key in [k for k in _INMEMORY_USAGE_DAILY.keys() if str(k).startswith(f"{safe_uid}_")]:
+            _INMEMORY_USAGE_DAILY.pop(key, None)
+            _record_deleted("usage_daily", 1)
+        for key in [k for k in _INMEMORY_USAGE_EVENTS.keys() if str(k).startswith(f"{safe_uid}_")]:
+            _INMEMORY_USAGE_EVENTS.pop(key, None)
+            _record_deleted("usage_events", 1)
+        for key in [k for k in _INMEMORY_WALLET_DAILY.keys() if str(k).startswith(f"{safe_uid}_")]:
+            _INMEMORY_WALLET_DAILY.pop(key, None)
+            _record_deleted("wallet_daily", 1)
+
+        for key, row in list(_INMEMORY_WALLET_TRANSACTIONS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_WALLET_TRANSACTIONS.pop(key, None)
+            _record_deleted("wallet_transactions", 1)
+        for key, row in list(_INMEMORY_COUPON_REDEMPTIONS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
+            _record_deleted("coupon_redemptions", 1)
+        for key, row in list(_INMEMORY_NOTIFICATION_EMAIL_OUTBOX.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_NOTIFICATION_EMAIL_OUTBOX.pop(key, None)
+            _record_deleted("notification_email_outbox", 1)
+        for key, row in list(_INMEMORY_SUPPORT_CONVERSATIONS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_SUPPORT_CONVERSATIONS.pop(key, None)
+            _record_deleted("support_conversations", 1)
+        for key, row in list(_INMEMORY_SUPPORT_MESSAGES.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_SUPPORT_MESSAGES.pop(key, None)
+            _record_deleted("support_messages", 1)
+        for key, row in list(_INMEMORY_READER_UPLOADS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_READER_UPLOADS.pop(key, None)
+            _record_deleted("reader_uploads", 1)
+        for key, row in list(_INMEMORY_READER_PROGRESS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid and not str(key).startswith(f"{safe_uid}_"):
+                continue
+            _INMEMORY_READER_PROGRESS.pop(key, None)
+            _record_deleted("reader_progress", 1)
+        for key, row in list(_INMEMORY_READER_CAST_MEMORY.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid and not str(key).startswith(f"{safe_uid}_"):
+                continue
+            _INMEMORY_READER_CAST_MEMORY.pop(key, None)
+            _record_deleted("reader_cast_memory", 1)
+        for key, row in list(_INMEMORY_READER_TRANSLATIONS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid and not str(key).startswith(f"{safe_uid}_"):
+                continue
+            _INMEMORY_READER_TRANSLATIONS.pop(key, None)
+            _record_deleted("reader_translation_cache", 1)
+        for key, row in list(_INMEMORY_READER_SESSIONS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_READER_SESSIONS.pop(key, None)
+            _record_deleted("reader_sessions", 1)
+        for key, row in list(_INMEMORY_TTS_V2_SESSIONS.items()):
+            if str((row or {}).get("uid") or "").strip() != safe_uid:
+                continue
+            _INMEMORY_TTS_V2_SESSIONS.pop(key, None)
+            _record_deleted("tts_v2_sessions", 1)
+        if safe_uid in _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID:
+            _INMEMORY_TTS_V2_ACTIVE_SESSION_BY_UID.pop(safe_uid, None)
+            _record_deleted("tts_v2_sessions", 1)
+
+        _persist_inmemory_user_profile_store_locked()
+
+    _TTS_SUCCESS_LIMITER.clear_uid(safe_uid)
+    deleted_total = sum(int((bucket or {}).get("deletedCount") or 0) for bucket in summary_collections.values())
+    failed_total = sum(int((bucket or {}).get("failedCount") or 0) for bucket in summary_collections.values())
+    return {
+        "uid": safe_uid,
+        "profileBefore": profile_before,
+        "userIdBefore": user_id_before,
+        "deletionSummary": {
+            "deletedCount": int(deleted_total),
+            "failedCount": int(failed_total),
+            "collections": summary_collections,
+        },
+    }
+
+
+@app.post("/account/delete")
+def account_delete(payload: AccountDeleteRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    if str(payload.confirmPhrase or "") != "DELETE_MY_ACCOUNT":
+        raise HTTPException(status_code=400, detail="confirmPhrase must be DELETE_MY_ACCOUNT.")
+    deletion = _delete_user_account_cleanup(uid, delete_auth_user=True)
+    _audit_append_event(
+        action="account_delete_self",
+        resource_type="user",
+        resource_id=uid,
+        before={"profile": deletion.get("profileBefore") or {}},
+        after={
+            "deleted": True,
+            "summary": deletion.get("deletionSummary") or {},
+        },
+        request=request,
+        actor_uid=uid,
+        actor_role="user",
+        subject_uid=uid,
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "uid": uid,
+            "deleted": True,
+            "deletionSummary": deletion.get("deletionSummary") or {},
+        }
+    )
+
+
 @app.delete("/admin/users/{target_uid}")
 def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
     actor_uid, actor = _require_permission(request, PERM_USERS_WRITE)
@@ -27165,67 +29039,17 @@ def admin_delete_user(target_uid: str, request: Request) -> JSONResponse:
     uid = str(target_uid or "").strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Missing user uid.")
-    profile_before = _user_profile_read(uid) or {}
-    user_id_before = str(profile_before.get("userId") or "").strip().lower()
-
-    if _firebase_ready() and firebase_auth is not None:
-        try:
-            firebase_auth.delete_user(uid)  # type: ignore[attr-defined]
-        except Exception:
-            # Best effort; Firestore cleanup still runs.
-            pass
-
-    collection_names = [
-        "entitlements",
-        "users",
-        USER_PROFILES_COLLECTION,
-        "generation_history",
-        "usage_monthly",
-        "usage_daily",
-        "usage_events",
-        "coupon_redemptions",
-    ]
-    if _FIRESTORE_DB is not None:
-        for name in collection_names:
-            try:
-                coll = _FIRESTORE_DB.collection(name)
-                if name in {"entitlements", "users", USER_PROFILES_COLLECTION, "generation_history"}:
-                    coll.document(uid).delete()
-                    continue
-                docs = coll.where("uid", "==", uid).stream()
-                for doc in docs:
-                    doc.reference.delete()
-            except Exception:
-                continue
-        if user_id_before:
-            try:
-                _FIRESTORE_DB.collection(USER_ID_INDEX_COLLECTION).document(user_id_before).delete()
-            except Exception:
-                pass
-    with _INMEMORY_LOCK:
-        _INMEMORY_ENTITLEMENTS.pop(uid, None)
-        _INMEMORY_USER_PROFILES.pop(uid, None)
-        if user_id_before:
-            _INMEMORY_USER_ID_INDEX.pop(user_id_before, None)
-        for key in [k for k in _INMEMORY_USAGE_MONTHLY.keys() if k.startswith(f"{uid}_")]:
-            _INMEMORY_USAGE_MONTHLY.pop(key, None)
-        for key in [k for k in _INMEMORY_USAGE_DAILY.keys() if k.startswith(f"{uid}_")]:
-            _INMEMORY_USAGE_DAILY.pop(key, None)
-        for key in [k for k in _INMEMORY_USAGE_EVENTS.keys() if k.startswith(f"{uid}_")]:
-            _INMEMORY_USAGE_EVENTS.pop(key, None)
-        for key in [k for k in _INMEMORY_WALLET_DAILY.keys() if k.startswith(f"{uid}_")]:
-            _INMEMORY_WALLET_DAILY.pop(key, None)
-        for key in [k for k, row in _INMEMORY_COUPON_REDEMPTIONS.items() if str(row.get("uid") or "") == uid]:
-            _INMEMORY_COUPON_REDEMPTIONS.pop(key, None)
-        _INMEMORY_GENERATION_HISTORY.pop(uid, None)
-        _persist_inmemory_user_profile_store_locked()
-    _TTS_SUCCESS_LIMITER.clear_uid(uid)
+    deletion = _delete_user_account_cleanup(uid, delete_auth_user=True)
     _audit_append_event(
         action="admin_user_delete",
         resource_type="user",
         resource_id=uid,
-        before={"profile": profile_before},
-        after={"deleted": True, "profileRemoved": bool(profile_before)},
+        before={"profile": deletion.get("profileBefore") or {}},
+        after={
+            "deleted": True,
+            "profileRemoved": bool(deletion.get("profileBefore") or {}),
+            "deletionSummary": deletion.get("deletionSummary") or {},
+        },
         request=request,
         actor_uid=actor_uid,
         actor_role=str(actor.get("role") or ""),
@@ -29373,6 +31197,151 @@ def admin_accounting_monitor_run(
     return JSONResponse({"ok": True, **result})
 
 
+def _usage_event_settlement_backfill_patch(event: dict[str, Any]) -> dict[str, Any]:
+    safe_event = dict(event or {})
+    reserved_chars = _as_positive_int(safe_event.get("reservedChars") if safe_event.get("reservedChars") is not None else safe_event.get("chars"))
+    reserved_vf_cost = _as_positive_number(safe_event.get("reservedVfCost") if safe_event.get("reservedVfCost") is not None else safe_event.get("vfCost"))
+    status = str(safe_event.get("status") or "").strip().lower()
+    billed_chars = _as_positive_int(safe_event.get("billedChars") if safe_event.get("billedChars") is not None else safe_event.get("processedChars"))
+    if status == "committed" and billed_chars <= 0 and reserved_chars > 0:
+        billed_chars = reserved_chars
+    billed_chars = min(reserved_chars, billed_chars)
+    processed_chars = _as_positive_int(safe_event.get("processedChars"))
+    if processed_chars <= 0:
+        processed_chars = billed_chars
+    processed_chars = min(reserved_chars, processed_chars)
+    refunded_chars = max(0, reserved_chars - billed_chars)
+
+    if status == "reserved":
+        settlement_kind = str(safe_event.get("settlementKind") or "pending").strip() or "pending"
+    elif billed_chars <= 0:
+        settlement_kind = "none"
+    elif billed_chars >= reserved_chars:
+        settlement_kind = "full"
+    else:
+        settlement_kind = "partial"
+
+    billed_vf_cost = _as_positive_number(safe_event.get("billedVfCost"))
+    if billed_vf_cost <= 0 and reserved_chars > 0:
+        billed_vf_cost = _as_positive_number(reserved_vf_cost * (float(billed_chars) / float(reserved_chars)))
+    refunded_vf_cost = _as_positive_number(safe_event.get("refundedVfCost"))
+    if refunded_vf_cost <= 0:
+        refunded_vf_cost = _as_positive_number(max(0.0, reserved_vf_cost - billed_vf_cost))
+    terminal_reason = str(safe_event.get("terminalReason") or "").strip()
+    if not terminal_reason:
+        terminal_reason = status or "unknown"
+
+    return {
+        "reservedChars": reserved_chars,
+        "processedChars": processed_chars,
+        "billedChars": billed_chars,
+        "refundedChars": refunded_chars,
+        "reservedVfCost": reserved_vf_cost,
+        "billedVfCost": billed_vf_cost,
+        "refundedVfCost": refunded_vf_cost,
+        "settlementKind": settlement_kind,
+        "terminalReason": terminal_reason,
+    }
+
+
+def _usage_event_patch_needed(event: dict[str, Any], patch: dict[str, Any]) -> bool:
+    for key, value in dict(patch or {}).items():
+        existing = event.get(key)
+        if isinstance(value, float):
+            if abs(float(existing or 0.0) - float(value)) > 1e-9:
+                return True
+            continue
+        if existing != value:
+            return True
+    return False
+
+
+@app.post("/admin/billing/usage-events/settlement-migration")
+def admin_usage_events_settlement_migration(
+    payload: BillingUsageEventsSettlementMigrationRequest,
+    request: Request,
+) -> JSONResponse:
+    actor_uid, actor = _require_permission(request, PERM_BILLING_WRITE)
+    _require_admin_mutation_unlock(request, expected_uid=actor_uid)
+    dry_run = bool(payload.dryRun)
+    limit = max(1, min(5000, int(payload.limit or 500)))
+
+    scanned = 0
+    backfilled = 0
+    unchanged = 0
+    sample_ids: list[str] = []
+
+    usage_events_collection = _firestore_collection("usage_events")
+    if usage_events_collection is None:
+        with _INMEMORY_LOCK:
+            keys = list(_INMEMORY_USAGE_EVENTS.keys())[:limit]
+            for key in keys:
+                scanned += 1
+                current = _INMEMORY_USAGE_EVENTS.get(key)
+                if not isinstance(current, dict):
+                    unchanged += 1
+                    continue
+                patch = _usage_event_settlement_backfill_patch(current)
+                if not _usage_event_patch_needed(current, patch):
+                    unchanged += 1
+                    continue
+                backfilled += 1
+                if len(sample_ids) < 10:
+                    sample_ids.append(str(key))
+                if not dry_run:
+                    _INMEMORY_USAGE_EVENTS[key] = {
+                        **current,
+                        **patch,
+                        "updatedAt": _safe_now_iso(),
+                    }
+    else:
+        try:
+            docs = list(usage_events_collection.limit(limit).stream())
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to scan usage events: {exc}") from exc
+        for doc in docs:
+            scanned += 1
+            row = doc.to_dict() or {}
+            patch = _usage_event_settlement_backfill_patch(row)
+            if not _usage_event_patch_needed(row, patch):
+                unchanged += 1
+                continue
+            backfilled += 1
+            if len(sample_ids) < 10:
+                sample_ids.append(str(doc.id or ""))
+            if not dry_run:
+                try:
+                    doc.reference.set(
+                        {
+                            **patch,
+                            "updatedAt": _safe_now_iso(),
+                        },
+                        merge=True,
+                    )
+                except Exception:
+                    pass
+
+    summary = {
+        "ok": True,
+        "dryRun": dry_run,
+        "limit": limit,
+        "eventsScanned": scanned,
+        "eventsBackfilled": backfilled,
+        "eventsUnchanged": unchanged,
+        "sampleIds": sample_ids,
+    }
+    _audit_append_event(
+        action="admin_usage_events_settlement_migration",
+        resource_type="billing",
+        resource_id="usage_events_settlement",
+        after=summary,
+        request=request,
+        actor_uid=actor_uid,
+        actor_role=str(actor.get("role") or ""),
+    )
+    return JSONResponse(summary)
+
+
 @app.post("/admin/billing/token-pack-expiry/recalculate")
 def admin_recalculate_token_pack_expiry(
     request: Request,
@@ -29957,6 +31926,43 @@ def billing_account_summary(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "summary": _build_billing_account_summary(uid)})
 
 
+def _read_request_idempotency_key(request: Request) -> str:
+    return str(request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key") or "").strip()
+
+
+def _resolve_billing_management_provider(entitlement: dict[str, Any]) -> str:
+    stripe_customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+    razorpay_customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    if stripe_customer_id and _stripe_available():
+        return BILLING_PROVIDER_STRIPE
+    if (razorpay_customer_id or subscription_id) and _razorpay_available():
+        return "razorpay"
+    if stripe_customer_id and not _stripe_available():
+        raise HTTPException(status_code=503, detail="Stripe is not configured.")
+    if (razorpay_customer_id or subscription_id) and not _razorpay_available():
+        raise HTTPException(status_code=503, detail="Razorpay is not configured.")
+    if _stripe_available():
+        return BILLING_PROVIDER_STRIPE
+    if _razorpay_available():
+        return "razorpay"
+    raise HTTPException(status_code=503, detail="Billing provider is not configured.")
+
+
+def _scoped_checkout_idempotency_key(*, uid: str, subject: str, raw_key: str = "") -> str:
+    safe_uid = str(uid or "").strip() or "anonymous"
+    uid_hash = hashlib.sha256(safe_uid.encode("utf-8")).hexdigest()[:12]
+    safe_subject = re.sub(r"[^a-z0-9:_-]+", "-", str(subject or "").strip().lower()).strip("-") or "checkout"
+    seed = str(raw_key or "").strip()
+    if seed:
+        normalized_seed = re.sub(r"[^a-zA-Z0-9:_-]+", "-", seed).strip("-")
+    else:
+        normalized_seed = f"{safe_subject}:{int(time.time() // 60)}"
+    normalized_seed = normalized_seed[:120] or f"{safe_subject}:{int(time.time() // 60)}"
+    digest = hashlib.sha256(f"{safe_uid}:{safe_subject}:{normalized_seed}".encode("utf-8")).hexdigest()[:18]
+    return f"vf:{uid_hash}:{safe_subject}:{normalized_seed}:{digest}"[:255]
+
+
 @app.post("/billing/checkout-session")
 def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Request) -> JSONResponse:
     uid = _require_request_uid(request)
@@ -30056,7 +32062,11 @@ def billing_checkout_session(payload: BillingCheckoutSessionRequest, request: Re
 
     success_url = _resolve_checkout_url_override(payload.successUrl, STRIPE_CHECKOUT_SUCCESS_URL)
     cancel_url = _resolve_checkout_url_override(payload.cancelUrl, STRIPE_CHECKOUT_CANCEL_URL)
-    stripe_idempotency_key = str(request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key") or "").strip()
+    stripe_idempotency_key = _scoped_checkout_idempotency_key(
+        uid=uid,
+        subject=f"subscription:{plan_token}",
+        raw_key=_read_request_idempotency_key(request),
+    )
     session_metadata: dict[str, Any] = {"uid": uid, "plan": plan_token}
     subscription_metadata: dict[str, Any] = {"uid": uid, "plan": plan_token}
     discounts_payload: list[dict[str, Any]] = []
@@ -30152,7 +32162,11 @@ def billing_token_pack_checkout_session(payload: BillingTokenPackCheckoutSession
 
     success_url = _resolve_checkout_url_override(payload.successUrl, STRIPE_CHECKOUT_SUCCESS_URL)
     cancel_url = _resolve_checkout_url_override(payload.cancelUrl, STRIPE_CHECKOUT_CANCEL_URL)
-    stripe_idempotency_key = str(request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key") or "").strip()
+    stripe_idempotency_key = _scoped_checkout_idempotency_key(
+        uid=uid,
+        subject=f"token-pack:{pack_key}",
+        raw_key=_read_request_idempotency_key(request),
+    )
     try:
         session_payload: dict[str, Any] = {
             "mode": "payment",
@@ -30294,28 +32308,87 @@ def wallet_vc_convert(payload: WalletVcConvertRequest, request: Request) -> JSON
 
 @app.post("/billing/portal-session")
 def billing_portal_session(payload: BillingPortalSessionRequest, request: Request) -> JSONResponse:
-    _require_stripe_ready()
     uid = _require_request_uid(request)
     entitlement = _load_entitlement(uid)
-    customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
-    if not customer_id:
-        raise HTTPException(status_code=400, detail="No Stripe customer is linked to this user.")
-    return_url = _resolve_checkout_url_override(payload.returnUrl, STRIPE_PORTAL_RETURN_URL)
+    provider = _resolve_billing_management_provider(entitlement)
+    if provider == BILLING_PROVIDER_STRIPE:
+        _require_stripe_ready()
+        customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
+        if not customer_id:
+            raise HTTPException(status_code=400, detail="No Stripe customer is linked to this user.")
+        return_url = _resolve_checkout_url_override(payload.returnUrl, STRIPE_PORTAL_RETURN_URL)
+        try:
+            session = stripe.billing_portal.Session.create(  # type: ignore[attr-defined]
+                customer=customer_id,
+                return_url=return_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Failed to create portal session: {exc}") from exc
+        return JSONResponse({"ok": True, "provider": BILLING_PROVIDER_STRIPE, "url": session.get("url")})
+
+    if not _razorpay_available():
+        raise HTTPException(status_code=503, detail="Razorpay is not configured.")
+    subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+    customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+    if not subscription_id:
+        raise HTTPException(status_code=400, detail="No active Razorpay subscription is linked to this user.")
     try:
-        session = stripe.billing_portal.Session.create(  # type: ignore[attr-defined]
-            customer=customer_id,
-            return_url=return_url,
+        subscription_obj = razorpay_billing.fetch_subscription(
+            subscription_id=subscription_id,
+            customer_id=customer_id,
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to create portal session: {exc}") from exc
-    return JSONResponse({"ok": True, "url": session.get("url")})
+        raise HTTPException(status_code=502, detail=f"Failed to fetch Razorpay subscription: {exc}") from exc
+    portal_url = str(subscription_obj.get("short_url") or "").strip()
+    if not portal_url:
+        raise HTTPException(status_code=409, detail="Razorpay manage URL is unavailable for this subscription.")
+    return JSONResponse({"ok": True, "provider": "razorpay", "url": portal_url})
 
 
 @app.post("/billing/subscription/cancel")
 def billing_subscription_cancel(request: Request) -> JSONResponse:
-    _require_stripe_ready()
     uid = _require_request_uid(request)
     entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    provider = _resolve_billing_management_provider(entitlement)
+    if provider != BILLING_PROVIDER_STRIPE:
+        if not _razorpay_available():
+            raise HTTPException(status_code=503, detail="Razorpay is not configured.")
+        subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+        customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+        if not subscription_id:
+            raise HTTPException(status_code=400, detail="No active Razorpay subscription is linked to this user.")
+        try:
+            subscription_obj = razorpay_billing.cancel_subscription(
+                subscription_id=subscription_id,
+                customer_id=customer_id,
+                at_cycle_end=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            lowered = str(exc or "").strip().lower()
+            if "invalid" in lowered or "no such" in lowered or "already" in lowered or "status" in lowered:
+                raise HTTPException(status_code=409, detail=f"Failed to cancel subscription: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"Failed to cancel subscription: {exc}") from exc
+        next_subscription_id = str(subscription_obj.get("subscription_id") or subscription_obj.get("id") or subscription_id).strip()
+        resolved_customer_id = str(subscription_obj.get("customer_id") or customer_id).strip()
+        _write_entitlement(
+            uid,
+            {
+                "subscriptionId": next_subscription_id or None,
+                "status": _billing_status_from_subscription(str(subscription_obj.get("status") or "cancelled")),
+                "razorpayCustomerId": resolved_customer_id or None,
+            },
+        )
+        summary = _build_billing_account_summary(uid)
+        return JSONResponse(
+            {
+                "ok": True,
+                "provider": "razorpay",
+                "message": "Subscription cancel request applied.",
+                "subscription": dict(summary.get("subscription") or {"id": next_subscription_id or subscription_id}),
+            }
+        )
+
+    _require_stripe_ready()
     customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
     subscription_id = str(entitlement.get("subscriptionId") or "").strip()
     if not subscription_id:
@@ -30360,9 +32433,47 @@ def billing_subscription_cancel(request: Request) -> JSONResponse:
 
 @app.post("/billing/subscription/resume")
 def billing_subscription_resume(request: Request) -> JSONResponse:
-    _require_stripe_ready()
     uid = _require_request_uid(request)
     entitlement = _normalize_entitlement_wallet(_load_entitlement(uid))
+    provider = _resolve_billing_management_provider(entitlement)
+    if provider != BILLING_PROVIDER_STRIPE:
+        if not _razorpay_available():
+            raise HTTPException(status_code=503, detail="Razorpay is not configured.")
+        subscription_id = str(entitlement.get("subscriptionId") or "").strip()
+        customer_id = str(entitlement.get("razorpayCustomerId") or "").strip()
+        if not subscription_id:
+            raise HTTPException(status_code=400, detail="No active Razorpay subscription is linked to this user.")
+        try:
+            subscription_obj = razorpay_billing.resume_subscription(
+                subscription_id=subscription_id,
+                customer_id=customer_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            lowered = str(exc or "").strip().lower()
+            if "invalid" in lowered or "no such" in lowered or "already" in lowered or "status" in lowered:
+                raise HTTPException(status_code=409, detail=f"Failed to resume subscription: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"Failed to resume subscription: {exc}") from exc
+        next_subscription_id = str(subscription_obj.get("subscription_id") or subscription_obj.get("id") or subscription_id).strip()
+        resolved_customer_id = str(subscription_obj.get("customer_id") or customer_id).strip()
+        _write_entitlement(
+            uid,
+            {
+                "subscriptionId": next_subscription_id or None,
+                "status": _billing_status_from_subscription(str(subscription_obj.get("status") or "active")),
+                "razorpayCustomerId": resolved_customer_id or None,
+            },
+        )
+        summary = _build_billing_account_summary(uid)
+        return JSONResponse(
+            {
+                "ok": True,
+                "provider": "razorpay",
+                "message": "Subscription resume request applied.",
+                "subscription": dict(summary.get("subscription") or {"id": next_subscription_id or subscription_id}),
+            }
+        )
+
+    _require_stripe_ready()
     customer_id = str(entitlement.get("stripeCustomerId") or "").strip()
     subscription_id = str(entitlement.get("subscriptionId") or "").strip()
     if not subscription_id:
@@ -31848,6 +33959,112 @@ def _mark_job_failed_and_revert_usage(
         _notification_emit_tts_job_terminal(failed_job, status="failed", detail=str(reason or "failed"))
 
 
+def _tts_job_processed_chars_hint(job: dict[str, Any]) -> int:
+    safe_job = dict(job or {})
+    for source in (
+        safe_job,
+        safe_job.get("billing") if isinstance(safe_job.get("billing"), dict) else {},
+    ):
+        if not isinstance(source, dict):
+            continue
+        billed = _as_positive_int(source.get("billedChars"))
+        if billed > 0:
+            return billed
+        processed = _as_positive_int(source.get("processedChars"))
+        if processed > 0:
+            return processed
+    live_state = safe_job.get("liveState") if isinstance(safe_job.get("liveState"), dict) else {}
+    chunks = list((live_state or {}).get("chunks") or [])
+    estimated = 0
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        estimated += _as_positive_int(chunk.get("textChars"))
+    return max(0, int(estimated))
+
+
+def _mark_job_cancelled_abandoned(
+    *,
+    job_id: str,
+    uid: str,
+    request_id: str,
+    engine: str,
+    trace_id: str,
+    processed_chars: int = 0,
+) -> None:
+    current_job = _TTS_JOB_QUEUE.get(job_id) or {}
+    _release_tts_success_quota_reservation(_extract_tts_success_quota_reservation_payload(current_job))
+    hinted_chars = _tts_job_processed_chars_hint(current_job)
+    safe_processed_chars = max(0, int(processed_chars or 0))
+    if safe_processed_chars <= 0:
+        safe_processed_chars = hinted_chars
+    settlement = _finalize_usage(
+        uid,
+        request_id,
+        success=False,
+        error_detail="cancelled_abandoned",
+        processed_chars=safe_processed_chars,
+        terminal_reason="cancelled_abandoned",
+    )
+    billing_patch = {
+        "processedChars": _as_positive_int(settlement.get("processedChars")),
+        "billedChars": _as_positive_int(settlement.get("billedChars")),
+        "reservedChars": _as_positive_int(settlement.get("reservedChars")),
+        "billedVfCost": _as_positive_number(settlement.get("billedVfCost")),
+        "reservedVfCost": _as_positive_number(settlement.get("reservedVfCost")),
+        "refundedVfCost": _as_positive_number(settlement.get("refundedVfCost")),
+        "settlementKind": str(settlement.get("settlementKind") or "pending"),
+        "terminalReason": str(settlement.get("terminalReason") or "cancelled_abandoned"),
+    }
+    cancelled_job = _TTS_JOB_QUEUE.update(
+        job_id,
+        {
+            "status": "cancelled",
+            "statusReason": "cancelled_abandoned",
+            "finishedAtMs": int(time.time() * 1000),
+            "statusCode": 409,
+            "error": {
+                "detail": "TTS job was abandoned after client lease expiration.",
+                "reason": "cancelled_abandoned",
+                "trace_id": str(trace_id or request_id or job_id),
+                "jobId": job_id,
+            },
+            "terminalReason": "cancelled_abandoned",
+            "processedChars": billing_patch["processedChars"],
+            "billedChars": billing_patch["billedChars"],
+            "reservedChars": billing_patch["reservedChars"],
+            "billedVfCost": billing_patch["billedVfCost"],
+            "reservedVfCost": billing_patch["reservedVfCost"],
+            "refundedVfCost": billing_patch["refundedVfCost"],
+            "settlementKind": billing_patch["settlementKind"],
+            "billing": billing_patch,
+        },
+    ) or {}
+    _record_tts_terminal_event(
+        job_id=job_id,
+        engine=_safe_tts_engine_name(engine),
+        status="cancelled",
+        reason="cancelled_abandoned",
+        status_code=409,
+    )
+    for audit_id in _audio_generation_audit_ids_from_job(cancelled_job or current_job):
+        _audio_generation_audit_mark_terminal(
+            audit_id,
+            status="cancelled",
+            failure_code="cancelled_abandoned",
+            failure_detail="TTS job lease expired and was cancelled.",
+            job_id=job_id,
+            request_id=request_id,
+            trace_id=trace_id or request_id,
+        )
+    if isinstance(cancelled_job, dict) and cancelled_job:
+        _notification_emit_tts_job_terminal(
+            cancelled_job,
+            status="cancelled",
+            detail="TTS job lease expired before completion.",
+        )
+
+
 def _tts_job_status_payload(
     job: dict[str, Any],
     *,
@@ -31863,12 +34080,24 @@ def _tts_job_status_payload(
     queue_age_ms = max(0, now_ms - created_at_ms) if created_at_ms > 0 else 0
     queue_depth_snapshot = _TTS_JOB_QUEUE.depth_snapshot()
     safe_engine = _safe_tts_engine_name(str(job.get("engine") or "PRIME"))
+    billing_source = job.get("billing") if isinstance(job.get("billing"), dict) else {}
+    billing_payload = {
+        "reservedChars": _as_positive_int((billing_source or {}).get("reservedChars") or job.get("reservedChars")),
+        "processedChars": _as_positive_int((billing_source or {}).get("processedChars") or job.get("processedChars")),
+        "billedChars": _as_positive_int((billing_source or {}).get("billedChars") or job.get("billedChars")),
+        "reservedVfCost": _as_positive_number((billing_source or {}).get("reservedVfCost") if (billing_source or {}).get("reservedVfCost") is not None else job.get("reservedVfCost")),
+        "billedVfCost": _as_positive_number((billing_source or {}).get("billedVfCost") or job.get("billedVfCost")),
+        "refundedVfCost": _as_positive_number((billing_source or {}).get("refundedVfCost") or job.get("refundedVfCost")),
+        "settlementKind": str((billing_source or {}).get("settlementKind") or job.get("settlementKind") or ""),
+        "terminalReason": str((billing_source or {}).get("terminalReason") or job.get("terminalReason") or ""),
+    }
     payload: dict[str, Any] = {
         "ok": True,
         "jobId": str(job.get("jobId") or ""),
         "requestId": str(job.get("requestId") or ""),
         "traceId": str(job.get("traceId") or ""),
         "status": status,
+        "statusReason": str(job.get("statusReason") or ""),
         "engine": str(job.get("engine") or ""),
         "lane": str(job.get("lane") or ""),
         "attempts": int(job.get("attempts") or 0),
@@ -31878,9 +34107,21 @@ def _tts_job_status_payload(
         "startedAtMs": int(job.get("startedAtMs") or 0),
         "finishedAtMs": int(job.get("finishedAtMs") or 0),
         "deadlineAtMs": int(job.get("deadlineAtMs") or 0),
+        "leaseExpiresAtMs": int(job.get("leaseExpiresAtMs") or 0),
+        "disconnectGraceMs": int(job.get("disconnectGraceMs") or 0),
+        "lastClientSeenAtMs": int(job.get("lastClientSeenAtMs") or 0),
         "queueAgeMs": int(queue_age_ms),
         "queueDepthAtRead": int(queue_depth_snapshot.get("total") or 0),
         "engineConcurrencyAtRead": int(_TTS_ENGINE_CONCURRENCY_LIMITS.get(safe_engine) or 1),
+        "reservedChars": int(billing_payload["reservedChars"]),
+        "processedChars": int(billing_payload["processedChars"]),
+        "billedChars": int(billing_payload["billedChars"]),
+        "reservedVfCost": float(billing_payload["reservedVfCost"]),
+        "billedVfCost": float(billing_payload["billedVfCost"]),
+        "refundedVfCost": float(billing_payload["refundedVfCost"]),
+        "settlementKind": str(billing_payload["settlementKind"]),
+        "terminalReason": str(billing_payload["terminalReason"]),
+        "billing": billing_payload,
     }
     if status == "failed":
         payload["statusCode"] = int(job.get("statusCode") or 500)
@@ -32918,6 +35159,17 @@ def _process_tts_job(job: dict[str, Any], worker_id: str) -> None:
         or queued_payload.get("request_id")
         or request_id
     ).strip() or request_id
+    lease_expires_at_ms = int(current.get("leaseExpiresAtMs") or 0)
+    if lease_expires_at_ms > 0 and int(time.time() * 1000) >= lease_expires_at_ms:
+        _mark_job_cancelled_abandoned(
+            job_id=job_id,
+            uid=uid,
+            request_id=request_id,
+            engine=_resolve_internal_engine_token(str(current.get("engine") or "PRIME")) or "PRIME",
+            trace_id=trace_id,
+            processed_chars=_tts_job_processed_chars_hint(current),
+        )
+        return
     audio_audit_ids = _audio_generation_audit_ids_from_job(current)
     status = str(current.get("status") or "").strip().lower()
     if status in {"completed", "failed", "cancelled"}:
@@ -33965,9 +36217,19 @@ def _create_tts_v2_job_response(
 ) -> JSONResponse:
     uid = _require_request_uid(request)
     is_admin = _request_is_admin(request, uid)
+    session_row: dict[str, Any] = {}
     if require_session:
-        _require_tts_v2_session(request, uid)
+        session_row = _require_tts_v2_session(request, uid)
     raw_payload = _sanitize_tts_v2_create_payload(payload)
+    session_pin_payload = _tts_v2_session_pin_payload_for_engine(
+        session_row,
+        engine=str(raw_payload.get("engine") or "PRIME"),
+    )
+    if session_pin_payload:
+        raw_payload.update(session_pin_payload)
+    else:
+        raw_payload.pop("_sessionPinnedLaneId", None)
+        raw_payload.pop("_sessionPinnedVertexSlotId", None)
     raw_payload["uid"] = str(uid or "").strip()
     trace_id = str(raw_payload.get("trace_id") or raw_payload.get("request_id") or "").strip()
     plan_name, plan_key, _ = _enforce_tts_plan_guardrails(
@@ -34052,9 +36314,15 @@ def tts_v2_job_create(payload: TtsV2CreateJobRequest, request: Request) -> JSONR
 
 
 @app.post("/tts/v2/sessions")
-def tts_v2_session_create(request: Request) -> JSONResponse:
+def tts_v2_session_create(
+    request: Request,
+    payload: Optional[TtsV2SessionCreateRequest] = None,
+) -> JSONResponse:
     uid = _require_request_uid(request)
-    session_payload = _issue_tts_v2_session(uid)
+    session_payload = _issue_tts_v2_session(
+        uid,
+        probe_all_slot_regions=bool(getattr(payload, "probeAllSlotRegions", False)) if payload is not None else False,
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -34062,6 +36330,11 @@ def tts_v2_session_create(request: Request) -> JSONResponse:
             "ttlSeconds": int(session_payload.get("ttlSeconds") or VF_TTS_V2_SESSION_TTL_SECONDS),
             "createdAtMs": int(session_payload.get("createdAtMs") or 0),
             "expiresAtMs": int(session_payload.get("expiresAtMs") or 0),
+            "selectedRegion": str(session_payload.get("selectedRegion") or ""),
+            "pinnedVertexSlotId": str(session_payload.get("pinnedVertexSlotId") or ""),
+            "pinnedLaneId": str(session_payload.get("pinnedLaneId") or ""),
+            "latencyMs": max(0, int(session_payload.get("latencyMs") or 0)),
+            "pinSource": str(session_payload.get("pinSource") or ""),
         },
         status_code=201,
         headers={"x-vf-tts-v2": "1"},
@@ -34080,6 +36353,7 @@ def tts_v2_job_status(
 ) -> JSONResponse:
     uid = _require_request_uid(request)
     is_admin = _request_is_admin(request, uid)
+    include_chunk_audio = bool(includeChunkAudio) if is_admin else False
     try:
         job = _TTS_V2_ENGINE.get_job(
             uid=uid,
@@ -34091,7 +36365,7 @@ def tts_v2_job_status(
             include_chunks=bool(includeChunks),
             chunk_cursor=max(0, int(chunkCursor or 0)),
             chunk_limit=int(chunkLimit),
-            include_chunk_audio=bool(includeChunkAudio),
+            include_chunk_audio=include_chunk_audio,
             include_result=bool(includeResult),
         )
     except TtsV2JobNotFoundError:
@@ -34332,6 +36606,10 @@ def _engine_status_entry_uncached(engine: str) -> dict[str, Any]:
     runtime_url = health_url.rsplit("/health", 1)[0] if "/health" in health_url else _runtime_url_for_engine(normalized_engine)
     runtime_url = str(runtime_url or "").strip().rstrip("/")
     capabilities_url = str(TTS_ENGINE_CAPABILITIES_URLS.get(normalized_engine) or _runtime_endpoint(runtime_url, "/v1/capabilities"))
+    if normalized_engine == "DUNO":
+        runtime_url = str(_duno_inference_url() or runtime_url).strip().rstrip("/")
+        health_url = str(_duno_voice_api_url("/v1/voices") or health_url).strip()
+        capabilities_url = runtime_url
     if not health_url:
         detail = (
             "DUNO runtime is not configured. Set VF_DUNO_RUNTIME_URL."
@@ -34347,6 +36625,50 @@ def _engine_status_entry_uncached(engine: str) -> dict[str, Any]:
             "state": "not_configured",
             "detail": detail,
             "capabilities": _capability_fallback(normalized_engine),
+        }
+    if normalized_engine == "DUNO":
+        capabilities = _probe_runtime_capabilities(normalized_engine, timeout_sec=3.0)
+        metadata = dict(capabilities.get("metadata") or {}) if isinstance(capabilities.get("metadata"), dict) else {}
+        ready = bool(capabilities.get("ready", False))
+        try:
+            health_payload = DUNO_MODAL_CLIENT.health()
+            healthy = bool(health_payload.get("ok", False))
+            detail = str(
+                health_payload.get("detail")
+                or ("DeepInfra DUNO runtime ready." if healthy else "DeepInfra DUNO runtime is unavailable.")
+            ).strip()
+        except Exception as exc:
+            healthy = False
+            detail = str(exc or "DUNO runtime unavailable.").strip() or "DUNO runtime unavailable."
+        state = "online" if healthy else "offline"
+        if healthy and not ready:
+            state = "warming"
+        auth_rejected = _is_duno_runtime_auth_rejection(detail)
+        if not bool(DUNO_RUNTIME_TOKEN):
+            state = "not_configured"
+            ready = False
+            detail = "DUNO runtime is missing VF_DUNO_RUNTIME_TOKEN for DeepInfra."
+        elif auth_rejected:
+            state = "not_configured"
+            ready = False
+            detail = "DUNO runtime token was rejected by DeepInfra. Verify VF_DUNO_RUNTIME_TOKEN."
+        return {
+            "engine": normalized_engine,
+            "runtimeUrl": runtime_url,
+            "healthUrl": health_url,
+            "capabilitiesUrl": capabilities_url,
+            "ready": ready,
+            "state": state,
+            "detail": detail,
+            "capabilities": {
+                **capabilities,
+                "metadata": {
+                    **metadata,
+                    "provider": "deepinfra" if _is_duno_deepinfra_runtime() else str(metadata.get("provider") or "runtime"),
+                    "apiKeyConfigured": bool(DUNO_RUNTIME_TOKEN),
+                    "authRejected": auth_rejected,
+                },
+            },
         }
     healthy, health_detail = _probe_runtime_health(
         health_url,
@@ -34469,7 +36791,7 @@ def _gem_runtime_voice_catalog() -> list[dict[str, Any]]:
 
 def _duno_runtime_voice_catalog() -> list[dict[str, Any]]:
     runtime_voices: list[dict[str, Any]] = []
-    url = f"{DUNO_RUNTIME_URL}/v1/voices"
+    url = _duno_voice_api_url("/v1/voices")
     request_headers = {
         "Accept": "application/json",
         "ngrok-skip-browser-warning": "true",
@@ -34498,13 +36820,21 @@ def _duno_runtime_voice_catalog() -> list[dict[str, Any]]:
         duno_payload = engines.get("DUNO") if isinstance(engines.get("DUNO"), dict) else {}
         fallback_voices = duno_payload.get("runtimeVoices") if isinstance(duno_payload.get("runtimeVoices"), list) else []
         runtime_voices = [item for item in fallback_voices if isinstance(item, dict)]
+    if not runtime_voices:
+        runtime_voices = [_default_duno_runtime_voice_entry()]
 
     normalized: list[dict[str, Any]] = []
+    normalized.append(_annotate_voice_access_fields("DUNO", _default_duno_runtime_voice_entry()))
+    seen_voice_ids = {_DUNO_DEEPINFRA_DEFAULT_VOICE_ID.lower()}
     for item in runtime_voices:
         row = _normalize_runtime_voice_entry(item)
         if not row:
             continue
+        voice_id = str(row.get("voice_id") or "").strip().lower()
+        if not voice_id or voice_id in seen_voice_ids:
+            continue
         normalized.append(_annotate_voice_access_fields("DUNO", row))
+        seen_voice_ids.add(voice_id)
     return normalized
 
 
@@ -34581,12 +36911,7 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
         engine = _normalize_engine_name(payload.engine)
         effective_gpu_mode = _effective_tts_gpu_mode(engine, payload.gpu)
         _invalidate_tts_status_cache()
-        health_url = TTS_ENGINE_HEALTH_URLS[engine]
-        probe_timeout_sec = _runtime_health_probe_timeout_sec(health_url)
-        already_online, online_detail = _probe_runtime_health(
-            health_url,
-            timeout_sec=probe_timeout_sec,
-        )
+        already_online, online_detail, health_url = _probe_engine_runtime_health(engine)
         if already_online:
             return JSONResponse(
                 {
@@ -34601,11 +36926,12 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
                 }
             )
 
-        command_output = _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
-        is_online, detail = _probe_runtime_health(
-            health_url,
-            timeout_sec=probe_timeout_sec,
+        command_output = (
+            ""
+            if engine == "DUNO" and _is_duno_deepinfra_runtime()
+            else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
         )
+        is_online, detail, health_url = _probe_engine_runtime_health(engine)
         _invalidate_tts_status_cache()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -34635,6 +36961,82 @@ def switch_tts_engine(payload: SwitchTtsEngineRequest, request: Request) -> JSON
         actor_role=str(actor.get("role") or ""),
     )
     return JSONResponse(response_payload)
+
+
+@app.post("/tts/engines/activate", response_model=TtsEngineSwitchResponse)
+def activate_tts_engine(payload: ActivateTtsEngineRequest, request: Request) -> JSONResponse:
+    uid = _require_request_uid(request)
+    is_admin_actor = _request_is_admin(request, uid)
+    actor_role = "user"
+    try:
+        actor_role = str(_resolve_actor(uid, request).get("role") or "user")
+    except Exception:
+        actor_role = "user"
+    try:
+        engine = _normalize_engine_name(payload.engine)
+        if not is_admin_actor:
+            _enforce_tts_plan_guardrails(
+                uid,
+                0,
+                trace_id=f"runtime_activate_{uuid.uuid4().hex[:12]}",
+                engine=engine,
+                bypass=False,
+            )
+        effective_gpu_mode = _effective_tts_gpu_mode(engine, False)
+        _invalidate_tts_status_cache()
+        already_online, online_detail, health_url = _probe_engine_runtime_health(engine)
+        if already_online:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "engine": engine,
+                    "state": "online",
+                    "detail": "Runtime already online",
+                    "healthUrl": health_url,
+                    "gpuMode": effective_gpu_mode,
+                    "commandOutput": "",
+                    "probeDetail": online_detail,
+                }
+            )
+        command_output = (
+            ""
+            if engine == "DUNO" and _is_duno_deepinfra_runtime()
+            else _run_tts_switch_with_retry(engine, effective_gpu_mode, retries=2, keep_others=True)
+        )
+        is_online, detail, health_url = _probe_engine_runtime_health(engine)
+        _invalidate_tts_status_cache()
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS engine activation failed: {exc}") from exc
+
+    response_payload = {
+        "ok": True,
+        "engine": engine,
+        "state": "online" if is_online else "starting",
+        "detail": detail if is_online else "Runtime starting in background",
+        "healthUrl": health_url,
+        "gpuMode": effective_gpu_mode,
+        "commandOutput": command_output[-500:],
+    }
+    _audit_append_event(
+        action="tts_engine_activate",
+        resource_type="runtime",
+        resource_id=engine,
+        after={
+            "state": response_payload["state"],
+            "gpuMode": bool(effective_gpu_mode),
+            "requestedGpuMode": False,
+            "activationMode": "admin" if is_admin_actor else "plan_gated_user",
+        },
+        request=request,
+        actor_uid=uid,
+        actor_role=actor_role,
+    )
+    return JSONResponse(response_payload)
+
 
 def _phase2_startup() -> None:
     _reader_session_load_from_disk()

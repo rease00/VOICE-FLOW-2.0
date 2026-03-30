@@ -1,0 +1,130 @@
+[
+  {
+    "device": "iphone-se",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\tmp_dir\\playwright\\layout-visibility-check-public-studio\\iphone-se-studio.png",
+    "location": "http://localhost:3000/app/studio",
+    "scrollWidth": 320,
+    "clientWidth": 320,
+    "styles": {
+      ".vf-toolbar-action": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "14px",
+        "color": "rgb(186, 201, 226)"
+      },
+      ".vf-translate-run": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "color(srgb 0.612392 0.650039 0.963765)"
+      },
+      ".vf-block-editor__control-cluster .vf-block-editor__mode-btn": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "rgb(203, 213, 225)"
+      },
+      ".vf-editor-link": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "rgb(186, 201, 226)"
+      },
+      ".vf-runtime-strip > span": null,
+      ".vf-studio-raw-editor": {
+        "minHeight": "288px",
+        "height": "288px",
+        "fontSize": "16px",
+        "color": "rgb(231, 236, 248)"
+      }
+    },
+    "hasGenerate": true
+  },
+  {
+    "device": "pixel-5",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\tmp_dir\\playwright\\layout-visibility-check-public-studio\\pixel-5-studio.png",
+    "location": "http://localhost:3000/app/studio",
+    "scrollWidth": 393,
+    "clientWidth": 393,
+    "styles": {
+      ".vf-toolbar-action": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "14px",
+        "color": "rgb(186, 201, 226)"
+      },
+      ".vf-translate-run": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "color(srgb 0.612392 0.650039 0.963765)"
+      },
+      ".vf-block-editor__control-cluster .vf-block-editor__mode-btn": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "rgb(203, 213, 225)"
+      },
+      ".vf-editor-link": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "rgb(186, 201, 226)"
+      },
+      ".vf-runtime-strip > span": null,
+      ".vf-studio-raw-editor": {
+        "minHeight": "288px",
+        "height": "330.922px",
+        "fontSize": "16px",
+        "color": "rgb(231, 236, 248)"
+      }
+    },
+    "hasGenerate": true
+  },
+  {
+    "device": "ipad-air",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\tmp_dir\\playwright\\layout-visibility-check-public-studio\\ipad-air-studio.png",
+    "location": "http://localhost:3000/app/studio",
+    "scrollWidth": 1280,
+    "clientWidth": 1280,
+    "styles": {
+      ".vf-toolbar-action": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "14px",
+        "color": "rgb(186, 201, 226)"
+      },
+      ".vf-translate-run": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "color(srgb 0.612392 0.650039 0.963765)"
+      },
+      ".vf-block-editor__control-cluster .vf-block-editor__mode-btn": {
+        "minHeight": "40px",
+        "height": "40px",
+        "fontSize": "12px",
+        "color": "rgb(203, 213, 225)"
+      },
+      ".vf-editor-link": {
+        "minHeight": "44px",
+        "height": "44px",
+        "fontSize": "14px",
+        "color": "rgb(186, 201, 226)"
+      },
+      ".vf-runtime-strip > span": {
+        "minHeight": "auto",
+        "height": "26.5px",
+        "fontSize": "11px",
+        "color": "lab(91.7203 -0.505269 49.9084)"
+      },
+      ".vf-studio-raw-editor": {
+        "minHeight": "0px",
+        "height": "370.719px",
+        "fontSize": "16px",
+        "color": "rgb(231, 236, 248)"
+      }
+    },
+    "hasGenerate": true
+  }
+]

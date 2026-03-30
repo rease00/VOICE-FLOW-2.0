@@ -1,0 +1,50 @@
+[
+  {
+    "device": "iphone-se",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\tmp_dir\\playwright\\layout-visibility-check\\iphone-se.png",
+    "navError": null,
+    "title": "V FLOW AI Studio | V FLOW AI",
+    "location": "http://localhost:3000/app/onboarding",
+    "bodyPreview": "V FLOW AI\nAI STUDIO\n\nSTUDIO ONBOARDING\n\nOpen Studio in three simple steps.\n\nChoose an account path, finish setup only if prompted, and land in Studio ready to import a script or try the demo.\n\n1\n\nCreate your account or sign in\n\nWe keep the path short and only ask for what is needed.\n\n2\n\nComplete user ID setup if prompted\n\nThis step only appears when your account needs it.\n\n3\n\nEnter Studio and start a script\n\nImport a file or try the demo scene to see the workflow right away.\n\nCreate Account\nSign In\n\nQUICK PATH\n\nWhat happens next\n1\n\nCreate your account or sign in\n\nWe keep the path short and only ask for what is needed.\n\n2\n\nComplete user ID setup if prompted\n\nThis step only appears when your a",
+    "metrics": {
+      ".vf-toolbar-action": null,
+      ".vf-toolbar-tag": null,
+      ".vf-proofread-action": null,
+      ".vf-translate-run": null,
+      ".vf-block-editor__control-cluster .vf-block-editor__mode-btn": null,
+      ".vf-block-editor__control-cluster .vf-toolbar-ai": null
+    }
+  },
+  {
+    "device": "pixel-5",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\tmp_dir\\playwright\\layout-visibility-check\\pixel-5.png",
+    "navError": null,
+    "title": "V FLOW AI Studio | V FLOW AI",
+    "location": "http://localhost:3000/app/onboarding",
+    "bodyPreview": "V FLOW AI\nAI STUDIO\n\nSTUDIO ONBOARDING\n\nOpen Studio in three simple steps.\n\nChoose an account path, finish setup only if prompted, and land in Studio ready to import a script or try the demo.\n\n1\n\nCreate your account or sign in\n\nWe keep the path short and only ask for what is needed.\n\n2\n\nComplete user ID setup if prompted\n\nThis step only appears when your account needs it.\n\n3\n\nEnter Studio and start a script\n\nImport a file or try the demo scene to see the workflow right away.\n\nCreate Account\nSign In\n\nQUICK PATH\n\nWhat happens next\n1\n\nCreate your account or sign in\n\nWe keep the path short and only ask for what is needed.\n\n2\n\nComplete user ID setup if prompted\n\nThis step only appears when your a",
+    "metrics": {
+      ".vf-toolbar-action": null,
+      ".vf-toolbar-tag": null,
+      ".vf-proofread-action": null,
+      ".vf-translate-run": null,
+      ".vf-block-editor__control-cluster .vf-block-editor__mode-btn": null,
+      ".vf-block-editor__control-cluster .vf-toolbar-ai": null
+    }
+  },
+  {
+    "device": "ipad-air",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\tmp_dir\\playwright\\layout-visibility-check\\ipad-air.png",
+    "navError": null,
+    "title": "V FLOW AI Studio | V FLOW AI",
+    "location": "http://localhost:3000/app/onboarding",
+    "bodyPreview": "V FLOW AI\nAI STUDIO\n\nSTUDIO ONBOARDING\n\nOpen Studio in three simple steps.\n\nChoose an account path, finish setup only if prompted, and land in Studio ready to import a script or try the demo.\n\n1\n\nCreate your account or sign in\n\nWe keep the path short and only ask for what is needed.\n\n2\n\nComplete user ID setup if prompted\n\nThis step only appears when your account needs it.\n\n3\n\nEnter Studio and start a script\n\nImport a file or try the demo scene to see the workflow right away.\n\nCreate Account\nSign In\n\nQUICK PATH\n\nWhat happens next\n1\n\nCreate your account or sign in\n\nWe keep the path short and only ask for what is needed.\n\n2\n\nComplete user ID setup if prompted\n\nThis step only appears when your a",
+    "metrics": {
+      ".vf-toolbar-action": null,
+      ".vf-toolbar-tag": null,
+      ".vf-proofread-action": null,
+      ".vf-translate-run": null,
+      ".vf-block-editor__control-cluster .vf-block-editor__mode-btn": null,
+      ".vf-block-editor__control-cluster .vf-toolbar-ai": null
+    }
+  }
+]

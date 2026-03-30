@@ -1,5 +1,6 @@
-import { DUNO_VOICES, VOICES } from '../constants';
+import { DUNO_DEFAULT_VOICE_ID, DUNO_VOICES, VOICES } from '../constants';
 import { GenerationSettings, VoiceOption } from '../types';
+import { getEngineDisplayName } from './engineDisplay';
 import { fetchTtsEngineVoices } from '../src/shared/api/gatewayClient';
 
 export type RuntimeVoiceCatalogMap = Record<GenerationSettings['engine'], VoiceOption[]>;
@@ -13,29 +14,8 @@ const EMPTY_CATALOG: RuntimeVoiceCatalogMap = {
 const FREE_TIER_ALLOWED_VOICE_IDS: Record<GenerationSettings['engine'], string[]> = {
   PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  DUNO: [
-    'af_heart',
-    'af_bella',
-    'af_nova',
-    'af_sarah',
-    'am_fenrir',
-    'am_michael',
-    'am_onyx',
-    'am_echo',
-    'bf_emma',
-    'bf_isabella',
-    'bm_george',
-    'bm_fable',
-    'hf_alpha',
-    'hf_beta',
-    'hm_omega',
-    'hm_psi',
-  ],
+  DUNO: [DUNO_DEFAULT_VOICE_ID],
 };
-
-const DUNO_VOICE_INDEX = new Map(
-  DUNO_VOICES.map((voice) => [String(voice.id || '').trim().toLowerCase(), voice] as const)
-);
 
 const inferCountryFromAccent = (accent?: string): string => {
   const value = String(accent || '').toLowerCase();
@@ -99,7 +79,11 @@ const asEngineVoice = (engine: GenerationSettings['engine'], voice: VoiceOption)
       ? 'free'
       : explicitTier === 'pro'
         ? 'pro'
-        : (allowlist.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro');
+        : (
+          engine === 'DUNO'
+            ? 'free'
+            : (allowlist.has(String(voice.id || '').trim().toLowerCase()) ? 'free' : 'pro')
+        );
   return {
     ...voice,
     country: voice.country || inferCountryFromAccent(voice.accent),
@@ -123,27 +107,25 @@ const toVoiceOption = (
   index: number
 ): VoiceOption => {
   const id = String(raw.voice_id || raw.id || raw.voiceId || raw.voice || `voice_${index}`).trim();
-  const dunoCanonical = engine === 'DUNO' ? DUNO_VOICE_INDEX.get(id.toLowerCase()) : undefined;
   const name = String(
-    dunoCanonical?.name
-    || raw.displayName
+    raw.displayName
     || raw.display_name
     || raw.mapped_name
     || raw.name
     || raw.voice
     || raw.label
+    || (engine === 'DUNO' && id === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName(engine)}` : '')
     || id
   ).trim();
-  const accent = String(dunoCanonical?.accent || raw.accent || raw.language || 'Unknown').trim();
-  const gender = dunoCanonical?.gender || normalizeGender(raw.gender);
-  const ageGroup = String(dunoCanonical?.ageGroup || normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age)).trim() || 'Unknown';
+  const accent = String(raw.accent || raw.language || (engine === 'DUNO' && id === DUNO_DEFAULT_VOICE_ID ? 'DeepInfra default' : 'Unknown')).trim();
+  const gender = normalizeGender(raw.gender);
+  const ageGroup = String(normalizeAgeGroup(raw.age_group || raw.ageGroup || raw.age)).trim() || 'Unknown';
   const country = String(
-    dunoCanonical?.country
-    || raw.country
+    raw.country
     || raw.country_code
     || inferCountryFromAccent(accent)
   ).trim() || 'Unknown';
-  const geminiVoiceName = String(dunoCanonical?.geminiVoiceName || raw.voice || raw.voice_id || raw.id || id).trim();
+  const geminiVoiceName = String(raw.voice || raw.voice_id || raw.id || id).trim();
   const explicitTier = String(raw.access_tier || raw.accessTier || '').trim().toLowerCase();
   const allowlist = new Set((FREE_TIER_ALLOWED_VOICE_IDS[engine] || []).map((token) => String(token || '').trim().toLowerCase()));
   const accessTier: 'free' | 'pro' =
@@ -151,7 +133,11 @@ const toVoiceOption = (
       ? 'free'
       : explicitTier === 'pro'
         ? 'pro'
-        : (allowlist.has(id.toLowerCase()) ? 'free' : 'pro');
+        : (
+          engine === 'DUNO'
+            ? 'free'
+            : (allowlist.has(id.toLowerCase()) ? 'free' : 'pro')
+        );
 
   const output: VoiceOption = {
     id,

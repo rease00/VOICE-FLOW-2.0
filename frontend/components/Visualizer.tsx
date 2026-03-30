@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getAudioContext } from '../services/geminiService';
 
 interface VisualizerProps {
@@ -58,6 +58,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
   const connectedElementRef = useRef<HTMLAudioElement | null>(null);
   const paletteRef = useRef<VisualizerPalette>(DEFAULT_PALETTE);
   const dprRef = useRef<number>(1);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -81,6 +82,15 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
       attributeFilter: ['class', 'style', 'data-theme', 'data-vf-brand-theme', 'data-vf-theme-mode', 'data-vf-resolved-theme'],
     });
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setPrefersReducedMotion(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener?.('change', update);
+    return () => mediaQuery.removeEventListener?.('change', update);
   }, []);
 
   useEffect(() => {
@@ -260,7 +270,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
 
       context2d.shadowBlur = 0;
 
-      if (isPlaying) {
+      if (isPlaying && !prefersReducedMotion) {
         animationFrameRef.current = requestAnimationFrame(render);
       }
     };
@@ -286,7 +296,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
         animationFrameRef.current = null;
       }
     };
-  }, [audioElement, isPlaying]);
+  }, [audioElement, isPlaying, prefersReducedMotion]);
 
   useEffect(() => {
     const resizeCanvas = () => {
@@ -318,5 +328,16 @@ export const Visualizer: React.FC<VisualizerProps> = ({ audioElement, isPlaying,
     return () => window.removeEventListener('resize', resizeCanvas);
   }, [height]);
 
-  return <canvas ref={canvasRef} height={height} className="vf-live-player__viz-canvas w-full rounded-xl" style={{ height: `${height}px` }} />;
+  return (
+    <canvas
+      ref={canvasRef}
+      height={height}
+      className="vf-live-player__viz-canvas w-full rounded-xl"
+      style={{ height: `${height}px` }}
+      aria-hidden="true"
+      role="presentation"
+      tabIndex={-1}
+      data-reduced-motion={prefersReducedMotion ? 'true' : 'false'}
+    />
+  );
 };

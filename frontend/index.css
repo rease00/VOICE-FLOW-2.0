@@ -184,14 +184,15 @@
   body,
   #root {
     width: 100%;
-    height: 100%;
+    min-height: 100%;
     margin: 0;
-    overflow: hidden;
+    overflow-x: hidden;
   }
 
   body {
-    overflow: hidden;
-    overscroll-behavior: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
     background: var(--vf-bg);
     color: var(--vf-text);
     font-family: var(--font-sans);
@@ -379,38 +380,20 @@
   }
 
   .custom-scrollbar {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(148, 163, 184, 0.42) transparent;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+    scrollbar-color: transparent transparent;
+    -webkit-overflow-scrolling: touch;
   }
 
   .custom-scrollbar::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 0;
+    height: 0;
+    display: none;
   }
 
   .custom-scrollbar::-webkit-scrollbar-track {
     background: transparent;
-  }
-
-  .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(148, 163, 184, 0.38);
-    border-radius: 999px;
-  }
-
-  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 116, 139, 0.55);
-  }
-
-  .vf-theme-dark .custom-scrollbar {
-    scrollbar-color: rgba(100, 116, 139, 0.62) transparent;
-  }
-
-  .vf-theme-dark .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(71, 85, 105, 0.72);
-  }
-
-  .vf-theme-dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 116, 139, 0.82);
   }
 
   .no-scrollbar {
@@ -420,6 +403,36 @@
 
   .no-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+
+  .vf-scrollbar-invisible {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+    scrollbar-color: transparent transparent;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .vf-scrollbar-invisible::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .studio-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+    scrollbar-color: transparent transparent;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .studio-scrollbar::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .studio-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
 
@@ -787,703 +800,198 @@
   bottom: 7%;
 }
 
-@keyframes vf-landing-fade-up {
-  0% {
-    opacity: 0;
-    transform: translate3d(0, 14px, 0);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
+.vf-billing-shell {
+  color-scheme: dark;
 }
 
-@keyframes vf-landing-orb-float {
+.vf-billing-shell .vf-billing-legal-link {
+  color: color-mix(in srgb, #cbd5e1 88%, white 12%) !important;
+}
+
+.vf-billing-shell .vf-billing-legal-link:hover {
+  color: white !important;
+}
+
+@keyframes vf-marketing-drift {
   0%,
   100% {
     transform: translate3d(0, 0, 0) scale(1);
   }
 
   50% {
-    transform: translate3d(0, -20px, 0) scale(1.05);
+    transform: translate3d(1.5%, -2.5%, 0) scale(1.04);
   }
 }
 
-@keyframes vf-landing-wave {
+@keyframes vf-marketing-scan {
+  0% {
+    transform: translate3d(-24%, 0, 0);
+    opacity: 0;
+  }
+
+  15% {
+    opacity: 0.9;
+  }
+
+  100% {
+    transform: translate3d(120%, 0, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes vf-marketing-wave {
   0%,
   100% {
-    height: 16%;
-    opacity: 0.55;
+    opacity: 0.45;
+    transform: scaleY(0.4);
   }
 
-  45% {
-    height: 100%;
+  50% {
     opacity: 1;
+    transform: scaleY(1);
   }
 }
 
-@keyframes vf-landing-marquee {
-  0% {
+@keyframes vf-marketing-marquee {
+  from {
     transform: translate3d(0, 0, 0);
   }
 
-  100% {
+  to {
     transform: translate3d(-50%, 0, 0);
   }
 }
 
-.vf-landing-reveal {
-  opacity: 0;
-  animation: vf-landing-fade-up 520ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+.vf-marketing-shell {
+  background:
+    radial-gradient(circle at 18% 18%, rgba(34, 211, 238, 0.12), transparent 28%),
+    radial-gradient(circle at 82% 20%, rgba(139, 92, 246, 0.16), transparent 24%),
+    linear-gradient(180deg, #040814 0%, #07101d 42%, #04070f 100%);
+  color-scheme: dark;
 }
 
-.vf-landing-delay-1 {
-  animation-delay: 100ms;
+.vf-marketing-backdrop,
+.vf-marketing-grid,
+.vf-marketing-spotlight {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
 }
 
-.vf-landing-delay-2 {
-  animation-delay: 190ms;
+.vf-marketing-backdrop {
+  background:
+    radial-gradient(circle at 50% 14%, rgba(255, 255, 255, 0.04), transparent 26%),
+    linear-gradient(180deg, rgba(4, 8, 20, 0.14) 0%, rgba(4, 8, 20, 0.02) 100%);
 }
 
-.vf-landing-delay-3 {
-  animation-delay: 280ms;
+.vf-marketing-grid {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-position: center;
+  background-size: 120px 120px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.58), transparent 80%);
 }
 
-.vf-landing-orb {
-  animation: vf-landing-orb-float 11s ease-in-out infinite;
+.vf-marketing-spotlight {
+  border-radius: 999px;
+  filter: blur(36px);
+  opacity: 0.72;
 }
 
-.vf-landing-wave-bar {
-  height: 16%;
-  min-height: 8px;
-  animation: vf-landing-wave 1900ms ease-in-out infinite;
-  transform-origin: bottom;
+.vf-marketing-spotlight-a {
+  background: radial-gradient(circle, rgba(34, 211, 238, 0.22) 0%, transparent 65%);
+  height: 26rem;
+  left: -6rem;
+  top: 8rem;
+  width: 26rem;
+  animation: vf-marketing-drift 16s ease-in-out infinite;
 }
 
-.vf-landing-marquee-track {
-  animation: vf-landing-marquee 34s linear infinite;
+.vf-marketing-spotlight-b {
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.22) 0%, transparent 65%);
+  height: 30rem;
+  right: -7rem;
+  top: 10rem;
+  width: 30rem;
+  animation: vf-marketing-drift 18s ease-in-out infinite reverse;
+}
+
+.vf-marketing-stage {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at 18% 18%, rgba(34, 211, 238, 0.14), transparent 22%),
+    radial-gradient(circle at 82% 16%, rgba(168, 85, 247, 0.18), transparent 22%),
+    linear-gradient(145deg, rgba(7, 13, 28, 0.92) 0%, rgba(12, 20, 38, 0.92) 52%, rgba(11, 18, 32, 0.98) 100%);
+  box-shadow:
+    0 32px 80px rgba(2, 6, 23, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(34, 211, 238, 0.08);
+}
+
+.vf-marketing-stage::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 45%);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.vf-marketing-stage::after {
+  animation: vf-marketing-scan 9.5s linear infinite;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  content: "";
+  height: 1px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 38%;
+}
+
+.vf-marketing-wave-bar {
+  animation: vf-marketing-wave 2.8s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+.vf-marketing-marquee {
+  animation: vf-marketing-marquee 24s linear infinite;
   will-change: transform;
 }
 
-.vf-landing-card {
-  transition:
-    transform 220ms ease,
-    box-shadow 220ms ease,
-    border-color 220ms ease;
+.vf-marketing-legal-link {
+  color: rgba(226, 232, 240, 0.72) !important;
 }
 
-.vf-landing-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(103, 232, 249, 0.4);
-  box-shadow: 0 24px 50px rgba(2, 12, 27, 0.62);
+.vf-marketing-legal-link:hover {
+  color: white !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .vf-landing-reveal,
-  .vf-landing-orb,
-  .vf-landing-wave-bar,
-  .vf-landing-marquee-track,
-  .vf-landing-card {
-    animation: none !important;
-    transition: none !important;
-    opacity: 1 !important;
-    transform: none !important;
+@media (max-width: 768px) {
+  .vf-marketing-grid {
+    background-size: 88px 88px;
   }
-}
 
-@keyframes vf-premium-gradient-pan {
-  0% {
-    transform: translate3d(-2%, -2%, 0) scale(1.04);
+  .vf-marketing-spotlight-a {
+    height: 18rem;
+    width: 18rem;
   }
-  100% {
-    transform: translate3d(2%, 2%, 0) scale(1.08);
-  }
-}
-
-@keyframes vf-premium-glow-drift {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0);
-    opacity: 0.42;
-  }
-  50% {
-    transform: translate3d(1.8%, -2.4%, 0);
-    opacity: 0.8;
-  }
-}
-
-@keyframes vf-premium-wave-bounce {
-  0%,
-  100% {
-    transform: scaleY(0.2);
-    opacity: 0.48;
-  }
-  50% {
-    transform: scaleY(1);
-    opacity: 1;
-  }
-}
-
-@keyframes vf-premium-card-float {
-  0%,
-  100% {
-    transform: translateY(0px);
-  }
-  50% {
-    transform: translateY(-5px);
-  }
-}
-
-.vf-premium-landing-backdrop {
-  position: fixed;
-  inset: -10%;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 15% 10%, rgba(34, 211, 238, 0.17), transparent 34%),
-    radial-gradient(circle at 88% 8%, rgba(59, 130, 246, 0.22), transparent 36%),
-    radial-gradient(circle at 55% 92%, rgba(14, 165, 233, 0.14), transparent 40%),
-    linear-gradient(180deg, #050912 0%, #070b14 44%, #050912 100%);
-  animation: vf-premium-gradient-pan 16s ease-in-out infinite alternate;
-}
-
-.vf-premium-landing-glow {
-  position: fixed;
-  pointer-events: none;
-  filter: blur(54px);
-  mix-blend-mode: screen;
-  animation: vf-premium-glow-drift 12s ease-in-out infinite;
-}
-
-.vf-premium-landing-glow-a {
-  width: 420px;
-  height: 420px;
-  top: 14%;
-  left: -110px;
-  background: rgba(14, 165, 233, 0.2);
-}
-
-.vf-premium-landing-glow-b {
-  width: 450px;
-  height: 450px;
-  right: -130px;
-  top: 52%;
-  background: rgba(56, 189, 248, 0.16);
-  animation-delay: 1.2s;
-}
-
-.vf-premium-reveal {
-  opacity: 0;
-  transform: translate3d(0, 16px, 0);
-  transition: opacity 560ms ease, transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.vf-premium-reveal.is-visible {
-  opacity: 1;
-  transform: translate3d(0, 0, 0);
-}
-
-.vf-premium-reveal-delay {
-  transition-delay: 120ms;
-}
-
-.vf-premium-panel,
-.vf-premium-card {
-  transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
-}
-
-.vf-premium-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(34, 211, 238, 0.48);
-  box-shadow: 0 18px 44px rgba(2, 6, 23, 0.44);
-}
-
-.vf-premium-wave-bar {
-  transform-origin: bottom;
-  animation: vf-premium-wave-bounce 1.8s ease-in-out infinite;
-}
-
-.vf-premium-floating-card {
-  animation: vf-premium-card-float 4.6s ease-in-out infinite;
-}
-
-.vf-premium-floating-card-delay {
-  animation-delay: 1.1s;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .vf-premium-landing-backdrop,
-  .vf-premium-landing-glow,
-  .vf-premium-wave-bar,
-  .vf-premium-floating-card,
-  .vf-premium-reveal {
-    animation: none !important;
-    transition: none !important;
-    transform: none !important;
-    opacity: 1 !important;
-  }
-}
-
-@keyframes vf-landing-bg-drift {
-  0% {
-    transform: translate3d(-2%, -1%, 0) scale(1.02);
-  }
-
-  100% {
-    transform: translate3d(2%, 1.5%, 0) scale(1.08);
-  }
-}
-
-@keyframes vf-landing-orb-float {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
-  50% {
-    transform: translate3d(0, -18px, 0) scale(1.08);
-  }
-}
-
-@keyframes vf-landing-wave-rise {
-  0%,
-  100% {
-    transform: scaleY(0.22);
-    opacity: 0.5;
-  }
-
-  50% {
-    transform: scaleY(1);
-    opacity: 1;
-  }
-}
-
-@keyframes vf-landing-card-lift {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-
-  50% {
-    transform: translateY(-4px);
-  }
-}
-
-@layer base {
-  .vf-landing-shell {
-    --vf-landing-bg: #050816;
-    --vf-landing-surface: rgba(11, 17, 32, 0.86);
-    --vf-landing-surface-strong: rgba(8, 14, 27, 0.94);
-    --vf-landing-text: #f8fbff;
-    --vf-landing-muted: #a9b9d3;
-    --vf-landing-border: rgba(148, 163, 184, 0.2);
-    --vf-landing-accent: #22d3ee;
-    --vf-landing-accent-2: #8b5cf6;
-    --vf-landing-accent-3: #ec4899;
-    --vf-landing-glow: rgba(34, 211, 238, 0.22);
-    --vf-landing-glow-2: rgba(139, 92, 246, 0.16);
-    background: var(--vf-landing-bg);
-    color: var(--vf-landing-text);
-    transition: background-color 360ms ease, color 360ms ease;
-    isolation: isolate;
-  }
-
-  .vf-landing-shell[data-landing-theme='neon'] {
-    --vf-landing-bg: #050816;
-    --vf-landing-surface: rgba(11, 17, 32, 0.86);
-    --vf-landing-surface-strong: rgba(8, 14, 27, 0.94);
-    --vf-landing-text: #f8fbff;
-    --vf-landing-muted: #a9b9d3;
-    --vf-landing-border: rgba(148, 163, 184, 0.22);
-    --vf-landing-accent: #22d3ee;
-    --vf-landing-accent-2: #8b5cf6;
-    --vf-landing-accent-3: #ec4899;
-    --vf-landing-glow: rgba(34, 211, 238, 0.24);
-    --vf-landing-glow-2: rgba(139, 92, 246, 0.18);
-  }
-
-  .vf-landing-shell[data-landing-theme='aurora'] {
-    --vf-landing-bg: #04111a;
-    --vf-landing-surface: rgba(7, 22, 28, 0.86);
-    --vf-landing-surface-strong: rgba(5, 17, 22, 0.94);
-    --vf-landing-text: #f6fffb;
-    --vf-landing-muted: #a7d4c7;
-    --vf-landing-border: rgba(110, 231, 183, 0.2);
-    --vf-landing-accent: #34d399;
-    --vf-landing-accent-2: #22d3ee;
-    --vf-landing-accent-3: #818cf8;
-    --vf-landing-glow: rgba(52, 211, 153, 0.22);
-    --vf-landing-glow-2: rgba(34, 211, 238, 0.16);
-  }
-
-  .vf-landing-shell[data-landing-theme='sunset'] {
-    --vf-landing-bg: #120814;
-    --vf-landing-surface: rgba(28, 12, 26, 0.86);
-    --vf-landing-surface-strong: rgba(21, 8, 18, 0.94);
-    --vf-landing-text: #fff8fb;
-    --vf-landing-muted: #dfbdd2;
-    --vf-landing-border: rgba(244, 114, 182, 0.18);
-    --vf-landing-accent: #fb923c;
-    --vf-landing-accent-2: #f472b6;
-    --vf-landing-accent-3: #a78bfa;
-    --vf-landing-glow: rgba(251, 146, 60, 0.2);
-    --vf-landing-glow-2: rgba(244, 114, 182, 0.16);
-  }
-
-  .vf-landing-shell[data-landing-theme='emerald'] {
-    --vf-landing-bg: #03110d;
-    --vf-landing-surface: rgba(7, 23, 17, 0.86);
-    --vf-landing-surface-strong: rgba(4, 17, 13, 0.94);
-    --vf-landing-text: #f4fff9;
-    --vf-landing-muted: #bfd8cf;
-    --vf-landing-border: rgba(52, 211, 153, 0.18);
-    --vf-landing-accent: #22c55e;
-    --vf-landing-accent-2: #10b981;
-    --vf-landing-accent-3: #14b8a6;
-    --vf-landing-glow: rgba(34, 197, 94, 0.22);
-    --vf-landing-glow-2: rgba(20, 184, 166, 0.16);
-  }
-
-  .vf-landing-shell .vf-landing-header {
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--vf-landing-surface-strong) 92%, transparent) 0%, color-mix(in srgb, var(--vf-landing-surface) 92%, transparent) 100%);
-    border-color: color-mix(in srgb, var(--vf-landing-border) 82%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-nav {
-    background: color-mix(in srgb, var(--vf-landing-surface) 82%, transparent);
-    border-color: color-mix(in srgb, var(--vf-landing-border) 90%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-nav-link {
-    padding: 0.7rem 0.95rem;
-    border-radius: 999px;
-    color: color-mix(in srgb, var(--vf-landing-muted) 90%, white 10%);
-    transition: color 180ms ease, background-color 180ms ease, transform 180ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-nav-link:hover {
-    color: #fff;
-    background: color-mix(in srgb, var(--vf-landing-accent) 14%, transparent);
-    transform: translateY(-1px);
-  }
-
-  .vf-landing-shell .vf-landing-primary-cta {
-    background: linear-gradient(135deg, var(--vf-landing-accent) 0%, var(--vf-landing-accent-2) 50%, var(--vf-landing-accent-3) 100%);
-    box-shadow:
-      0 18px 40px color-mix(in srgb, var(--vf-landing-accent) 28%, transparent),
-      0 0 0 1px color-mix(in srgb, var(--vf-landing-accent) 20%, transparent);
-    transition: transform 180ms ease, filter 180ms ease, box-shadow 180ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-primary-cta:hover {
-    transform: translateY(-1px);
-    filter: brightness(1.04) saturate(1.08);
-  }
-
-  .vf-landing-shell .vf-landing-secondary-cta,
-  .vf-landing-shell .vf-landing-proof-chip,
-  .vf-landing-shell .vf-landing-count-pill,
-  .vf-landing-shell .vf-landing-live-pill,
-  .vf-landing-shell .vf-landing-kicker,
-  .vf-landing-shell .vf-landing-theme-button,
-  .vf-landing-shell .vf-landing-mini-card,
-  .vf-landing-shell .vf-landing-stat,
-  .vf-landing-shell .vf-landing-demo-card,
-  .vf-landing-shell .vf-landing-theme-switcher,
-  .vf-landing-shell .vf-landing-use-case,
-  .vf-landing-shell .vf-landing-theme-button,
-  .vf-landing-shell .vf-landing-theme-switcher,
-  .vf-landing-shell .vf-landing-mini-card,
-  .vf-landing-shell .vf-landing-stat,
-  .vf-landing-shell .vf-landing-demo-card,
-  .vf-landing-shell .vf-landing-use-case,
-  .vf-landing-shell .vf-landing-header,
-  .vf-landing-shell .vf-landing-nav {
-    backdrop-filter: blur(24px);
-  }
-
-  .vf-landing-shell .vf-landing-secondary-cta {
-    background: color-mix(in srgb, var(--vf-landing-surface) 80%, transparent);
-    border: 1px solid color-mix(in srgb, var(--vf-landing-border) 85%, transparent);
-    transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-secondary-cta:hover {
-    transform: translateY(-1px);
-    background: color-mix(in srgb, var(--vf-landing-accent) 10%, var(--vf-landing-surface) 90%);
-    border-color: color-mix(in srgb, var(--vf-landing-accent) 28%, var(--vf-landing-border) 72%);
-  }
-
-  .vf-landing-shell .vf-landing-kicker,
-  .vf-landing-shell .vf-landing-proof-chip,
-  .vf-landing-shell .vf-landing-live-pill,
-  .vf-landing-shell .vf-landing-count-pill {
-    border-color: color-mix(in srgb, var(--vf-landing-border) 85%, transparent);
-    background: color-mix(in srgb, var(--vf-landing-surface) 74%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-live-pill {
-    color: color-mix(in srgb, var(--vf-landing-accent) 90%, white 10%);
-  }
-
-  .vf-landing-shell .vf-landing-live-dot {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: 999px;
-    background: var(--vf-landing-accent);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--vf-landing-accent) 40%, transparent);
-    animation: vf-live-dot-ping 1.7s ease-in-out infinite;
-  }
-
-  .vf-landing-shell .vf-landing-backdrop {
-    position: fixed;
-    inset: -10%;
-    pointer-events: none;
-    background:
-      radial-gradient(circle at 16% 14%, color-mix(in srgb, var(--vf-landing-glow) 85%, transparent) 0%, transparent 28%),
-      radial-gradient(circle at 84% 8%, color-mix(in srgb, var(--vf-landing-glow-2) 85%, transparent) 0%, transparent 26%),
-      radial-gradient(circle at 58% 88%, color-mix(in srgb, var(--vf-landing-accent) 12%, transparent) 0%, transparent 34%),
-      linear-gradient(180deg, color-mix(in srgb, var(--vf-landing-bg) 88%, #000 12%) 0%, var(--vf-landing-bg) 52%, color-mix(in srgb, var(--vf-landing-bg) 92%, #000 8%) 100%);
-    animation: vf-landing-bg-drift 18s ease-in-out infinite alternate;
-  }
-
-  .vf-landing-shell .vf-landing-orb {
-    position: fixed;
-    pointer-events: none;
-    filter: blur(62px);
-    mix-blend-mode: screen;
-    animation: vf-landing-orb-float 10s ease-in-out infinite;
-  }
-
-  .vf-landing-shell .vf-landing-orb-a {
-    top: 14%;
-    left: -120px;
-    width: 360px;
-    height: 360px;
-    background: color-mix(in srgb, var(--vf-landing-accent) 18%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-orb-b {
-    top: 56%;
-    right: -140px;
-    width: 460px;
-    height: 460px;
-    background: color-mix(in srgb, var(--vf-landing-accent-2) 16%, transparent);
-    animation-delay: 1.2s;
-  }
-
-  .vf-landing-shell .vf-landing-grid {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.18;
-    background-image:
-      linear-gradient(color-mix(in srgb, var(--vf-landing-border) 60%, transparent) 1px, transparent 1px),
-      linear-gradient(90deg, color-mix(in srgb, var(--vf-landing-border) 60%, transparent) 1px, transparent 1px);
-    background-size: 84px 84px;
-    mask-image: radial-gradient(circle at center, black 0%, black 52%, transparent 100%);
-  }
-
-  .vf-landing-shell .vf-landing-reveal {
-    opacity: 0;
-    transform: translate3d(0, 16px, 0);
-    transition: opacity 560ms ease, transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-
-  .vf-landing-shell .vf-landing-reveal.is-visible {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-
-  .vf-landing-shell .vf-landing-reveal-delay {
-    transition-delay: 120ms;
-  }
-
-  .vf-landing-shell .vf-landing-stat,
-  .vf-landing-shell .vf-landing-mini-card,
-  .vf-landing-shell .vf-landing-demo-card,
-  .vf-landing-shell .vf-landing-use-case,
-  .vf-landing-shell .vf-landing-theme-switcher,
-  .vf-landing-shell .vf-landing-theme-button,
-  .vf-landing-shell .vf-landing-theme-swatch,
-  .vf-landing-shell .vf-landing-theme-button,
-  .vf-landing-shell .vf-landing-theme-switcher,
-  .vf-landing-shell .vf-landing-theme-button,
-  .vf-landing-shell .vf-landing-theme-switcher {
-    transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease, background-color 220ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-stat,
-  .vf-landing-shell .vf-landing-mini-card,
-  .vf-landing-shell .vf-landing-demo-card,
-  .vf-landing-shell .vf-landing-use-case {
-    background: color-mix(in srgb, var(--vf-landing-surface) 84%, transparent);
-    border-color: color-mix(in srgb, var(--vf-landing-border) 90%, transparent);
-    box-shadow:
-      0 18px 44px rgba(2, 8, 23, 0.35),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  }
-
-  .vf-landing-shell .vf-landing-demo-card:hover,
-  .vf-landing-shell .vf-landing-use-case:hover,
-  .vf-landing-shell .vf-landing-theme-button:hover,
-  .vf-landing-shell .vf-landing-theme-switcher:hover,
-  .vf-landing-shell .vf-landing-stat:hover,
-  .vf-landing-shell .vf-landing-mini-card:hover {
-    transform: translateY(-2px);
-    border-color: color-mix(in srgb, var(--vf-landing-accent) 30%, var(--vf-landing-border) 70%);
-  }
-
-  .vf-landing-shell .vf-landing-demo-card[data-demo-active='true'] {
-    border-color: color-mix(in srgb, var(--vf-landing-accent) 42%, var(--vf-landing-border) 58%);
-    box-shadow:
-      0 22px 56px rgba(2, 8, 23, 0.44),
-      0 0 0 1px color-mix(in srgb, var(--vf-landing-accent) 18%, transparent),
-      0 0 32px color-mix(in srgb, var(--vf-landing-accent) 14%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-demo-card[data-demo-active='true'] .vf-landing-wave-bar {
-    animation-duration: 1.2s;
-  }
-
-  .vf-landing-shell .vf-landing-wave-bar {
-    transform-origin: bottom;
-    animation: vf-landing-wave-rise 1.8s ease-in-out infinite;
-    min-height: 0.5rem;
-    background: linear-gradient(180deg, var(--vf-landing-accent) 0%, var(--vf-landing-accent-2) 55%, var(--vf-landing-accent-3) 100%);
-  }
-
-  .vf-landing-shell .vf-landing-theme-button[data-active='true'] {
-    border-color: color-mix(in srgb, var(--vf-landing-accent) 36%, var(--vf-landing-border) 64%);
-    background: color-mix(in srgb, var(--vf-landing-accent) 10%, var(--vf-landing-surface) 90%);
-    box-shadow:
-      0 12px 30px rgba(2, 8, 23, 0.34),
-      0 0 0 1px color-mix(in srgb, var(--vf-landing-accent) 18%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-theme-button:not([data-active='true']) {
-    background: color-mix(in srgb, var(--vf-landing-surface) 84%, transparent);
-    border-color: color-mix(in srgb, var(--vf-landing-border) 88%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-theme-switcher {
-    background: color-mix(in srgb, var(--vf-landing-surface) 74%, transparent);
-    border-color: color-mix(in srgb, var(--vf-landing-border) 90%, transparent);
-  }
-
-  .vf-landing-shell .vf-landing-theme-swatch {
-    box-shadow:
-      inset 0 0 0 1px rgba(255, 255, 255, 0.14),
-      0 8px 18px rgba(2, 8, 23, 0.25);
-    animation: vf-landing-card-lift 4.8s ease-in-out infinite;
-  }
-
-  .vf-landing-shell .vf-landing-theme-switcher:hover .vf-landing-theme-swatch {
-    animation-duration: 3.4s;
-  }
-
-  .vf-landing-shell .vf-landing-theme-switcher {
-    box-shadow: 0 16px 34px rgba(2, 8, 23, 0.24);
-  }
-
-  .vf-landing-shell .vf-landing-theme-switcher {
-    gap: 0.6rem;
-  }
-
-  .vf-landing-shell .vf-landing-theme-switcher,
-  .vf-landing-shell .vf-landing-theme-button,
-  .vf-landing-shell .vf-landing-nav,
-  .vf-landing-shell .vf-landing-header,
-  .vf-landing-shell .vf-landing-kicker,
-  .vf-landing-shell .vf-landing-stat,
-  .vf-landing-shell .vf-landing-mini-card,
-  .vf-landing-shell .vf-landing-demo-card,
-  .vf-landing-shell .vf-landing-use-case {
-    backdrop-filter: blur(24px);
-  }
-
-  .vf-landing-shell .vf-landing-theme-button {
-    color: color-mix(in srgb, var(--vf-landing-muted) 92%, white 8%);
-  }
-
-  .vf-landing-shell .vf-landing-theme-button:hover {
-    color: #fff;
-  }
-
-  .vf-landing-shell .vf-landing-theme-button .vf-landing-theme-swatch {
-    flex-shrink: 0;
-  }
-
-  .vf-landing-shell .vf-landing-theme-button .text-slate-300 {
-    color: color-mix(in srgb, var(--vf-landing-muted) 96%, white 4%) !important;
-  }
-
-  .vf-landing-shell .vf-landing-theme-button .text-white {
-    color: var(--vf-landing-text) !important;
-  }
-
-  .vf-landing-shell .vf-landing-nav-link {
-    padding: 0.7rem 0.95rem;
-    border-radius: 999px;
-    color: color-mix(in srgb, var(--vf-landing-muted) 90%, white 10%);
-    transition: color 180ms ease, background-color 180ms ease, transform 180ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-nav-link:hover {
-    color: #fff;
-    background: color-mix(in srgb, var(--vf-landing-accent) 14%, transparent);
-    transform: translateY(-1px);
-  }
-
-  .vf-landing-shell .vf-landing-primary-cta {
-    background: linear-gradient(135deg, var(--vf-landing-accent) 0%, var(--vf-landing-accent-2) 50%, var(--vf-landing-accent-3) 100%);
-    box-shadow:
-      0 18px 40px color-mix(in srgb, var(--vf-landing-accent) 28%, transparent),
-      0 0 0 1px color-mix(in srgb, var(--vf-landing-accent) 20%, transparent);
-    transition: transform 180ms ease, filter 180ms ease, box-shadow 180ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-primary-cta:hover {
-    transform: translateY(-1px);
-    filter: brightness(1.04) saturate(1.08);
-  }
-
-  .vf-landing-shell .vf-landing-secondary-cta {
-    background: color-mix(in srgb, var(--vf-landing-surface) 80%, transparent);
-    border: 1px solid color-mix(in srgb, var(--vf-landing-border) 85%, transparent);
-    transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
-  }
-
-  .vf-landing-shell .vf-landing-secondary-cta:hover {
-    transform: translateY(-1px);
-    background: color-mix(in srgb, var(--vf-landing-accent) 10%, var(--vf-landing-surface) 90%);
-    border-color: color-mix(in srgb, var(--vf-landing-accent) 28%, var(--vf-landing-border) 72%);
-  }
 
-  .vf-landing-shell .vf-landing-proof-chip,
-  .vf-landing-shell .vf-landing-count-pill,
-  .vf-landing-shell .vf-landing-live-pill,
-  .vf-landing-shell .vf-landing-kicker {
-    border-color: color-mix(in srgb, var(--vf-landing-border) 85%, transparent);
-    background: color-mix(in srgb, var(--vf-landing-surface) 74%, transparent);
+  .vf-marketing-spotlight-b {
+    height: 22rem;
+    width: 22rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vf-landing-shell .vf-landing-backdrop,
-  .vf-landing-shell .vf-landing-orb,
-  .vf-landing-shell .vf-landing-grid,
-  .vf-landing-shell .vf-landing-wave-bar,
-  .vf-landing-shell .vf-landing-theme-swatch,
-  .vf-landing-shell .vf-landing-reveal,
-  .vf-landing-shell .vf-landing-stat,
-  .vf-landing-shell .vf-landing-mini-card,
-  .vf-landing-shell .vf-landing-demo-card,
-  .vf-landing-shell .vf-landing-use-case {
+  .vf-marketing-shell .animate-fade-in-up,
+  .vf-marketing-spotlight-a,
+  .vf-marketing-spotlight-b,
+  .vf-marketing-stage::after,
+  .vf-marketing-wave-bar,
+  .vf-marketing-marquee {
     animation: none !important;
-    transition: none !important;
-    transform: none !important;
-    opacity: 1 !important;
   }
 }

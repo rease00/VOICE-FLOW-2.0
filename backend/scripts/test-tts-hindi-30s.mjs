@@ -107,8 +107,8 @@ const ENGINE_CONFIGS = [
           synthPath: '/synthesize',
           buildPayload: ({ text, emotion }) => ({
             text,
-            voiceId: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'hf_alpha',
-            voice_id: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'hf_alpha',
+            voiceId: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'deepinfra_default',
+            voice_id: process.env.VF_TTS_AUDIT_DUNO_VOICE || 'deepinfra_default',
             language: 'hi',
             emotion,
             speed: 1.0,

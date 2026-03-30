@@ -1,4 +1,4 @@
-import { F5_VOICES, DUNO_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
+import { F5_VOICES, DUNO_VOICES, LEGACY_DUNO_VOICE_LABELS, OPENAI_VOICES, VOICES } from '../../../constants';
 
 const UNKNOWN_VOICE_LABEL = 'Unknown voice';
 const LEGACY_HISTORY_VOICE_LABELS = new Set(['ai voice']);
@@ -21,6 +21,11 @@ const HISTORY_VOICE_LABELS = (() => {
     const runtimeToken = normalizeVoiceToken(voice.geminiVoiceName);
     if (idToken && !out.has(idToken)) out.set(idToken, label);
     if (runtimeToken && !out.has(runtimeToken)) out.set(runtimeToken, label);
+  }
+  for (const [token, label] of Object.entries(LEGACY_DUNO_VOICE_LABELS)) {
+    const normalized = normalizeVoiceToken(token);
+    if (!normalized || out.has(normalized)) continue;
+    out.set(normalized, label);
   }
   return out;
 })();

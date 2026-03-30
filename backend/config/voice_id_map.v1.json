@@ -278,6 +278,19 @@
       }
     },
     "DUNO": {
+      "runtimeVoices": [
+        {
+          "voice_id": "deepinfra_default",
+          "voice": "deepinfra_default",
+          "name": "Default DUNO",
+          "language": "en",
+          "gender": "unknown",
+          "accent": "DeepInfra default",
+          "access_tier": "free",
+          "is_plan_restricted": false,
+          "source": "deepinfra_default"
+        }
+      ],
       "voiceToProfile": {
         "af_heart": "p02_india_f_adult",
         "af_bella": "p04_us_f_adult",

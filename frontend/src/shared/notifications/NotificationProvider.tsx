@@ -1,9 +1,11 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { STORAGE_KEYS } from '../storage/keys';
 import { readStorageJson, removeStorageKey, writeStorageJson } from '../storage/localStore';
 import { resolveApiBaseUrl } from '../api/config';
 import { hasAdminConsoleAccess } from '../auth/adminAccess';
+import { shouldBootstrapAccountDataForPath } from '../../app/navigation';
 import { sanitizeUiText } from '../ui/terminology';
 import { getNotificationCatalogEntry } from './catalog';
 import { applyNotificationActionTarget } from './deepLink';
@@ -280,8 +282,13 @@ interface NotificationsContextValue {
 const NotificationsContext = createContext<NotificationsContextValue | undefined>(undefined);
 
 export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const pathname = usePathname();
   const { user } = useUser();
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
+  const shouldSyncRemoteNotifications = useMemo(
+    () => shouldBootstrapAccountDataForPath(pathname),
+    [pathname]
+  );
   const canSeeAdminNotifications = hasAdminConsoleAccess(user);
   const initialPrefs = useMemo(
     () => coerceNotificationPrefs({ ...DEFAULT_NOTIFICATION_PREFS, ...(readStorageJson(STORAGE_KEYS.notificationPrefs) || {}) }),
@@ -332,7 +339,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
   }, []);
 
   const schedulePersistedNotificationSync = useCallback((delayMs?: number) => {
-    if (!hasSessionIdentity || typeof window === 'undefined') return;
+    if (!hasSessionIdentity || !shouldSyncRemoteNotifications || typeof window === 'undefined') return;
     clearPersistedSyncTimer();
     const nextDelay = Math.max(
       0,
@@ -346,7 +353,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
     persistedSyncTimerRef.current = window.setTimeout(() => {
       void syncPersistedNotifications({ force: true, source: 'timer' });
     }, nextDelay);
-  }, [clearPersistedSyncTimer, hasSessionIdentity]);
+  }, [clearPersistedSyncTimer, hasSessionIdentity, shouldSyncRemoteNotifications]);
 
   const syncPersistedNotifications = useCallback(async (options?: { force?: boolean; source?: string }): Promise<boolean> => {
     if (!hasSessionIdentity) {
@@ -355,6 +362,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       lastPersistedSyncAtRef.current = Date.now();
       return true;
     }
+    if (!shouldSyncRemoteNotifications) return true;
     const nowMs = Date.now();
     const shouldSkipForFreshSync = options?.force !== true
       && nowMs - lastPersistedSyncAtRef.current < NOTIFICATION_SYNC_MIN_GAP_MS;
@@ -384,15 +392,15 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       }
       schedulePersistedNotificationSync();
     }
-  }, [hasSessionIdentity, schedulePersistedNotificationSync]);
+  }, [hasSessionIdentity, schedulePersistedNotificationSync, shouldSyncRemoteNotifications]);
 
   const syncPreferences = useCallback(async () => {
-    if (!hasSessionIdentity) return;
+    if (!hasSessionIdentity || !shouldSyncRemoteNotifications) return;
     try {
       const remote = await fetchNotificationPreferences(readSettingsBackendUrl());
       setPrefsState((prev) => coerceNotificationPrefs({ ...prev, ...remote }));
     } catch {}
-  }, [hasSessionIdentity]);
+  }, [hasSessionIdentity, shouldSyncRemoteNotifications]);
 
   useEffect(() => {
     if (!hasSessionIdentity) {
@@ -402,17 +410,21 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       persistedSyncErrorCountRef.current = 0;
       return;
     }
+    if (!shouldSyncRemoteNotifications) {
+      clearPersistedSyncTimer();
+      return;
+    }
     void syncPersistedNotifications({ force: true, source: 'identity' });
     void syncPreferences();
-  }, [clearPersistedSyncTimer, hasSessionIdentity, syncPersistedNotifications, syncPreferences, user.uid]);
+  }, [clearPersistedSyncTimer, hasSessionIdentity, shouldSyncRemoteNotifications, syncPersistedNotifications, syncPreferences, user.uid]);
 
   useEffect(() => {
-    if (!hasSessionIdentity || !isCenterOpen) return;
+    if (!hasSessionIdentity || !shouldSyncRemoteNotifications || !isCenterOpen) return;
     void syncPersistedNotifications({ source: 'center-open' });
-  }, [hasSessionIdentity, isCenterOpen, syncPersistedNotifications]);
+  }, [hasSessionIdentity, isCenterOpen, shouldSyncRemoteNotifications, syncPersistedNotifications]);
 
   useEffect(() => {
-    if (!hasSessionIdentity || typeof window === 'undefined') return undefined;
+    if (!hasSessionIdentity || !shouldSyncRemoteNotifications || typeof window === 'undefined') return undefined;
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         schedulePersistedNotificationSync(NOTIFICATION_POLL_HIDDEN_MS);
@@ -426,7 +438,7 @@ export const NotificationProvider: React.FC<React.PropsWithChildren> = ({ childr
       document.removeEventListener('visibilitychange', onVisibilityChange);
       clearPersistedSyncTimer();
     };
-  }, [clearPersistedSyncTimer, hasSessionIdentity, schedulePersistedNotificationSync, syncPersistedNotifications]);
+  }, [clearPersistedSyncTimer, hasSessionIdentity, schedulePersistedNotificationSync, shouldSyncRemoteNotifications, syncPersistedNotifications]);
 
   const commitToastNotifications = useCallback((next: AppNotification[]) => {
     const normalized = limitNotifications(pruneExpiredNotifications(next), NOTIFICATION_MAX_ITEMS);

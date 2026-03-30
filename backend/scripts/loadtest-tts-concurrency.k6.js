@@ -77,7 +77,7 @@ const makePayload = (engine, requestId) => {
     return {
       engine: 'DUNO',
       text: 'k6 queue hardening load payload for Duno path.',
-      voice_id: 'hf_alpha',
+      voice_id: 'deepinfra_default',
       request_id: requestId,
     };
   }

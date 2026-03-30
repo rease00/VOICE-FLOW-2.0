@@ -336,7 +336,7 @@ export const ReaderUtilityTray: React.FC<ReaderUtilityTrayProps> = ({
         </div>
         <p>Keep narration state, review edits, and switch translations without leaving the player.</p>
       </header>
-      <div className="vf-reader-v2-tray__tabs" {...managedTabs.listProps}>
+      <div className="vf-reader-v2-tray__tabs vf-scrollbar-invisible" {...managedTabs.listProps}>
         {tabs.map((tab) => {
           const badge = tabBadges[tab as keyof ReaderTabBadgeMap];
           return (

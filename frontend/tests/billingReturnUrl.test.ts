@@ -8,7 +8,7 @@ describe('buildBillingReturnUrl', () => {
     pathname: '/workspace',
   };
 
-  it('builds success return URL for public billing landing', () => {
+  it('builds success return URL for the public billing page', () => {
     const url = new URL(buildBillingReturnUrl('success', location));
     expect(url.origin).toBe('https://app.voiceflow.example');
     expect(url.pathname).toBe('/billing');
@@ -16,14 +16,14 @@ describe('buildBillingReturnUrl', () => {
     expect(url.searchParams.get('billing')).toBe('success');
   });
 
-  it('builds cancel return URL for public billing landing', () => {
+  it('builds cancel return URL for the public billing page', () => {
     const url = new URL(buildBillingReturnUrl('cancel', location));
     expect(url.pathname).toBe('/billing');
     expect(url.searchParams.get('tab')).toBe('subscription');
     expect(url.searchParams.get('billing')).toBe('cancel');
   });
 
-  it('builds portal return URL without transient billing state on public billing landing', () => {
+  it('builds portal return URL without transient billing state on the public billing page', () => {
     const url = new URL(buildBillingReturnUrl('none', location));
     expect(url.pathname).toBe('/billing');
     expect(url.searchParams.get('tab')).toBe('subscription');

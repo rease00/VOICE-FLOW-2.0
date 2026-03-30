@@ -146,7 +146,7 @@ export const AccountSummaryStrip: React.FC<{ isDarkUi: boolean; items: Array<{ i
 );
 
 export const ThemeButton: React.FC<{ active: boolean; isDarkUi: boolean; icon: React.ReactNode; title: string; onClick: () => void }> = ({ active, isDarkUi, icon, title, onClick }) => (
-  <button type="button" onClick={onClick} className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[12px] font-semibold transition sm:gap-2 sm:px-4 sm:py-2.5 sm:text-[13px] ${active ? (isDarkUi ? 'border-cyan-300/45 bg-cyan-400/15 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900') : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}`}>{icon}{title}</button>
+  <button type="button" onClick={onClick} className={`flex min-h-11 w-full min-w-0 items-center justify-center gap-1.5 rounded-xl border px-3 text-[12px] font-semibold transition sm:gap-2 sm:px-4 sm:text-[13px] ${active ? (isDarkUi ? 'border-cyan-300/45 bg-cyan-400/15 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900') : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`}`}>{icon}{title}</button>
 );
 
 export const PreferenceToggle: React.FC<{ isDarkUi: boolean; title: string; detail: string; checked: boolean; onToggle: () => void }> = ({ isDarkUi, title, detail, checked, onToggle }) => (

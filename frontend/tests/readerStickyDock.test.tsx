@@ -23,18 +23,6 @@ describe('reader sticky dock', () => {
         importAccept=".txt,.pdf"
         onImportFiles={vi.fn()}
         onOpenSettings={vi.fn()}
-        ambienceOptions={[
-          { value: 'm_none', label: 'None' },
-          { value: 'm_lofi', label: 'Lo-Fi' },
-        ]}
-        ambienceValue="m_none"
-        onAmbienceChange={vi.fn()}
-        speakerOptions={[
-          { value: 'v1', label: 'Narrator' },
-          { value: 'v2', label: 'Guest' },
-        ]}
-        speakerValue="v1"
-        onSpeakerChange={vi.fn()}
       />
     );
     expect(html).toContain('Reader');
@@ -47,11 +35,8 @@ describe('reader sticky dock', () => {
     expect(html).toContain('Next chunk');
     expect(html).toContain('disabled=""');
     expect(html).toContain('aria-label="Import content"');
-    expect(html).toContain('aria-label="Ambience preset"');
-    expect(html).toContain('aria-label="Narrator voice"');
+    expect(html).toContain('hidden=""');
     expect(html).toContain('aria-label="Open settings"');
-    expect(html).toContain('None');
-    expect(html).toContain('Guest');
     expect(html).toContain('accept=".txt,.pdf"');
     expect(html).toContain('Collapse dock to compact circle');
   });

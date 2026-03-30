@@ -7,8 +7,8 @@ import {
 } from '../src/features/admin/model/tabs';
 
 describe('admin main tabs model', () => {
-  it('keeps the admin tab order and default contract with messages inserted', () => {
-    expect(ADMIN_MAIN_TAB_ORDER).toEqual(['unlock', 'users', 'messages', 'pools', 'ops']);
+  it('keeps the admin tab order and default contract with reader library and messages', () => {
+    expect(ADMIN_MAIN_TAB_ORDER).toEqual(['unlock', 'users', 'messages', 'readerLibrary', 'pools', 'ops']);
     expect(DEFAULT_ADMIN_MAIN_TAB).toBe('users');
     expect(resolveAdminMainTab(undefined)).toBe('users');
     expect(resolveAdminMainTab('support')).toBe('messages');

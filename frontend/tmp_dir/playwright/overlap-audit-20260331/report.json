@@ -1,0 +1,41 @@
+[
+  {
+    "scenario": "desktop-1920x1080",
+    "viewport": {
+      "width": 1920,
+      "height": 1080
+    },
+    "url": "",
+    "title": "",
+    "screenshot": "",
+    "collisions": [],
+    "rects": {},
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3000/app/studio\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  },
+  {
+    "scenario": "ipad-768x1024",
+    "viewport": {
+      "width": 768,
+      "height": 1024
+    },
+    "url": "",
+    "title": "",
+    "screenshot": "",
+    "collisions": [],
+    "rects": {},
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3000/app/studio\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  },
+  {
+    "scenario": "iphone12-390x844",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "url": "",
+    "title": "",
+    "screenshot": "",
+    "collisions": [],
+    "rects": {},
+    "error": "page.goto: Timeout 60000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3000/app/studio\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  }
+]

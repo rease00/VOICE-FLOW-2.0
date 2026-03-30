@@ -565,6 +565,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
   return (
     <div className={`vf-live-player w-full rounded-3xl p-6 shadow-xl border border-gray-100 animate-in ${isLiveMode ? 'vf-live-player--streaming' : ''}`}>
+      <div className="vf-live-player__header">
+        <div className="vf-live-player__header-copy">
+          <span className="vf-live-player__eyebrow">{isLiveMode ? 'Studio monitor' : 'Control room'}</span>
+          <h3 className="vf-live-player__title">{isLiveMode ? 'Live Mix Preview' : 'Final Mix Preview'}</h3>
+        </div>
+        <span className="vf-live-player__header-chip">
+          {isLiveMode ? 'Stream output' : 'Render output'}
+        </span>
+      </div>
+
       <audio
         ref={audioRef}
         src={activeSourceUrl || undefined}
@@ -625,8 +635,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             </span>
          )}
          {hasPlayableAudio && !isPlaying && currentTime === 0 && !isGenerating && activeSourceType === 'final' && (
-             <div className="vf-live-player__viz-copy absolute text-sm font-semibold flex items-center gap-2 z-10">
-                 Press Play to Listen
+             <div className="vf-live-player__viz-copy absolute z-10">
+                 <span className="vf-live-player__viz-title">Preview ready</span>
+                 <span className="vf-live-player__viz-subtitle">Press play to audition the latest render.</span>
              </div>
          )}
          {showLiveVisualizer ? (
@@ -648,8 +659,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         <span className="vf-live-player__status-metric">{queueLabel}</span>
       </div>
 
-      <div className="flex flex-col gap-4">
-         <div className="flex items-center gap-3 text-xs font-mono text-gray-500">
+      <div className="vf-live-player__transport">
+         <div className="vf-live-player__timeline flex items-center gap-3 text-xs font-mono text-gray-500">
             <span>{formatTime(hasPlayableAudio ? currentTime : 0)}</span>
             <div className="vf-live-player__seek-wrap relative flex-1">
               <span className="vf-live-player__seek-fill absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full" style={{ width: `${seekProgressPct}%` }} />
@@ -660,6 +671,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                   value={hasPlayableAudio ? currentTime : 0}
                   onChange={handleSeek}
                   disabled={!seekEnabled}
+                  aria-label="Playback position"
+                  aria-valuetext={`${formatTime(hasPlayableAudio ? currentTime : 0)} of ${formatTime(duration > 0 ? duration : 0)}`}
                   className={`vf-live-player__seek relative z-10 w-full appearance-none ${seekEnabled ? 'cursor-pointer' : 'cursor-not-allowed'}`}
               />
             </div>
@@ -671,20 +684,23 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             )}
          </div>
 
-         <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+         <div className="vf-live-player__control-row">
+            <div className="vf-live-player__transport-controls">
                 <button
+                    type="button"
                     onClick={() => {
                       if (!audioRef.current || !seekEnabled) return;
                       audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 5);
                     }}
                     disabled={!seekEnabled}
+                    aria-label="Skip back 5 seconds"
                     className="vf-live-player__step p-2 text-gray-400 hover:text-indigo-600 transition-colors disabled:opacity-40"
                 >
                     <SkipBack size={20} />
                 </button>
 
                 <button
+                    type="button"
                     onClick={togglePlay}
                     disabled={!hasPlayableAudio}
                     className={`vf-live-player__play w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] transform active:scale-95 ${
@@ -702,21 +718,31 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 </button>
 
                 <button
+                    type="button"
                     onClick={() => {
                       if (!audioRef.current || !seekEnabled) return;
                       audioRef.current.currentTime = Math.min(duration || audioRef.current.currentTime + 5, audioRef.current.currentTime + 5);
                     }}
                     disabled={!seekEnabled}
+                    aria-label="Skip forward 5 seconds"
                     className="vf-live-player__step p-2 text-gray-400 hover:text-indigo-600 transition-colors disabled:opacity-40"
                 >
                     <SkipForward size={20} />
                 </button>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="vf-live-player__transport-actions">
                 <a
-                    href={audioUrl || '#'}
+                    href={audioUrl || undefined}
                     download={`v_flow_ai_${Date.now()}.wav`}
+                    onClick={(event) => {
+                      if (!audioUrl) {
+                        event.preventDefault();
+                      }
+                    }}
+                    tabIndex={audioUrl ? 0 : -1}
+                    aria-disabled={!audioUrl}
+                    aria-label={audioUrl ? 'Download audio' : 'Download unavailable until audio is generated'}
                     className={`vf-live-player__save px-4 py-2 rounded-xl bg-gray-50 text-gray-700 font-bold text-xs transition-colors flex items-center gap-2 ${
                       audioUrl ? 'hover:bg-gray-100' : 'pointer-events-none opacity-40'
                     }`}
@@ -724,6 +750,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                     <Download size={14} /> Save
                 </a>
                 <button
+                    type="button"
                     onClick={onReset}
                     className="vf-live-player__reset p-2.5 rounded-xl text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
                     title="Reset / New Generation"

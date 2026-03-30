@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import struct
 import sys
 import re
 import threading
@@ -1197,11 +1198,15 @@ def _wav_bytes_to_pcm16(wav_bytes: bytes) -> tuple[bytes, int]:
     if sample_width != 2:
         raise RuntimeError("Expected 16-bit PCM WAV from Cloud Text-to-Speech.")
     if channels == 2:
-        try:
-            import audioop
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError("audioop is unavailable for WAV downmix.") from exc
-        frames = audioop.tomono(frames, 2, 0.5, 0.5)
+        if len(frames) % 4 != 0:
+            raise RuntimeError("Expected interleaved PCM16 stereo WAV frames.")
+        mono_frames = bytearray(len(frames) // 2)
+        write_offset = 0
+        for left, right in struct.iter_unpack("<hh", frames):
+            mixed = int((int(left) + int(right)) / 2)
+            mono_frames[write_offset:write_offset + 2] = int(mixed).to_bytes(2, byteorder="little", signed=True)
+            write_offset += 2
+        frames = bytes(mono_frames)
         channels = 1
     if channels != 1:
         raise RuntimeError(f"Unsupported Cloud TTS channel count: {channels}")
@@ -4387,6 +4392,71 @@ def _normalize_error_payload(raw_error: str) -> Dict[str, Any] | None:
     return None
 
 
+def _infer_unstructured_tts_error_code(raw_error: str) -> str:
+    if _is_timeout_error(raw_error):
+        return ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT
+    if _is_rate_limit_error(raw_error):
+        return ERROR_CODE_ALL_SLOTS_RATE_LIMITED
+    return ERROR_CODE_UPSTREAM_MODEL_FAILED
+
+
+def _raise_translated_tts_http_exception(
+    *,
+    exc: Exception,
+    trace_id: str,
+    requested_speech_mode: str,
+    speaker_hint: str,
+    safe_engine: str,
+) -> None:
+    raw_error = str(exc).strip()
+    parsed_error = _normalize_error_payload(raw_error)
+    if parsed_error is not None:
+        error_payload = {
+            "error": "Gemini TTS synthesis failed.",
+            "speechModeRequested": requested_speech_mode,
+            "speakerHint": speaker_hint or None,
+            "engine": safe_engine,
+            **parsed_error,
+        }
+    else:
+        inferred_error_code = _infer_unstructured_tts_error_code(raw_error)
+        error_payload = {
+            "error": _default_public_tts_error_message(inferred_error_code),
+            "errorCode": inferred_error_code,
+            "summary": raw_error[:220] if raw_error else _default_public_tts_error_message(inferred_error_code),
+            "speechModeRequested": requested_speech_mode,
+            "speakerHint": speaker_hint or None,
+            "engine": safe_engine,
+        }
+    if not str(error_payload.get("errorCode") or "").strip():
+        error_payload["errorCode"] = _infer_unstructured_tts_error_code(
+            str(error_payload.get("summary") or raw_error)
+        )
+    if not str(error_payload.get("summary") or "").strip():
+        error_payload["summary"] = str(error_payload.get("error") or "Gemini TTS synthesis failed.")[:220]
+    if not str(error_payload.get("classification") or "").strip():
+        error_payload["classification"] = _classification_for_error_code(str(error_payload.get("errorCode") or ""))
+    error_payload["trace_id"] = trace_id
+    if "retryAfterMs" not in error_payload:
+        key_states = error_payload.get("keyStates") if isinstance(error_payload.get("keyStates"), list) else []
+        error_payload["retryAfterMs"] = _retry_after_from_key_states(key_states)
+    public_error_payload = _sanitize_public_tts_error_payload(error_payload)
+    _emit_stage_event(trace_id, "failed", "error", public_error_payload)
+    error_code = str(error_payload.get("errorCode") or "").strip().upper()
+    _record_error_classification(error_code)
+    status_code = 502
+    if error_code in {
+        ERROR_CODE_SLOT_SET_OVERLOADED,
+        ERROR_CODE_SLOT_SET_TIMEOUT,
+        ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT,
+        ERROR_CODE_ALL_SLOTS_RATE_LIMITED,
+    }:
+        status_code = 503
+    elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
+        status_code = 504
+    raise HTTPException(status_code=status_code, detail=public_error_payload) from exc
+
+
 def _synthesize_windows_with_cloud_tts(
     *,
     source_policy: dict[str, Any],
@@ -4879,39 +4949,61 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
                     "usageMetadata": dict(usage_metadata or {}) if isinstance(usage_metadata, dict) else {},
                 }
 
-        return _execute_scheduled_window_plan(
-            trace_id=trace_id,
-            safe_engine=safe_engine,
-            requested_speech_mode=requested_speech_mode,
-            speech_mode_used=scheduled_speech_mode_used or requested_speech_mode,
-            provider_label=provider_label,
-            windows=windows,
-            single_speaker_segmentation=single_speaker_segmentation,
-            strategy_tokens=scheduled_strategy_tokens,
-            started_at_ms=started_at_ms,
-            key_pool_size=0 if cloud_tts_enabled else len(effective_key_pool),
-            include_line_chunks=return_line_chunks_requested,
-            synthesize_window_fn=_synthesize_scheduled_window,
-        )
+        try:
+            return _execute_scheduled_window_plan(
+                trace_id=trace_id,
+                safe_engine=safe_engine,
+                requested_speech_mode=requested_speech_mode,
+                speech_mode_used=scheduled_speech_mode_used or requested_speech_mode,
+                provider_label=provider_label,
+                windows=windows,
+                single_speaker_segmentation=single_speaker_segmentation,
+                strategy_tokens=scheduled_strategy_tokens,
+                started_at_ms=started_at_ms,
+                key_pool_size=0 if cloud_tts_enabled else len(effective_key_pool),
+                include_line_chunks=return_line_chunks_requested,
+                synthesize_window_fn=_synthesize_scheduled_window,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _raise_translated_tts_http_exception(
+                exc=exc,
+                trace_id=trace_id,
+                requested_speech_mode=requested_speech_mode,
+                speaker_hint=speaker_hint,
+                safe_engine=safe_engine,
+            )
 
     if cloud_tts_enabled:
-        return _synthesize_windows_with_cloud_tts(
-            source_policy=source_policy,
-            safe_engine=safe_engine,
-            trace_id=trace_id,
-            text=text,
-            target_voice=target_voice,
-            language_code=language_code,
-            speaker_hint=speaker_hint,
-            requested_speech_mode=requested_speech_mode,
-            windows=windows,
-            single_speaker_segmentation=single_speaker_segmentation,
-            pair_group_fallback_used=pair_group_fallback_used,
-            pair_group_fallback_detail=pair_group_fallback_detail,
-            use_windowed_multi=use_windowed_multi,
-            speed=float(payload.speed or 1.0),
-            started_at_ms=started_at_ms,
-        )
+        try:
+            return _synthesize_windows_with_cloud_tts(
+                source_policy=source_policy,
+                safe_engine=safe_engine,
+                trace_id=trace_id,
+                text=text,
+                target_voice=target_voice,
+                language_code=language_code,
+                speaker_hint=speaker_hint,
+                requested_speech_mode=requested_speech_mode,
+                windows=windows,
+                single_speaker_segmentation=single_speaker_segmentation,
+                pair_group_fallback_used=pair_group_fallback_used,
+                pair_group_fallback_detail=pair_group_fallback_detail,
+                use_windowed_multi=use_windowed_multi,
+                speed=float(payload.speed or 1.0),
+                started_at_ms=started_at_ms,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _raise_translated_tts_http_exception(
+                exc=exc,
+                trace_id=trace_id,
+                requested_speech_mode=requested_speech_mode,
+                speaker_hint=speaker_hint,
+                safe_engine=safe_engine,
+            )
 
     try:
         pcm_fragments: list[bytes] = []
@@ -5101,50 +5193,13 @@ def _synthesize_text_to_wav(payload: SynthesizeRequest) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        raw_error = str(exc).strip()
-        parsed_error = _normalize_error_payload(raw_error)
-        if parsed_error is not None:
-            error_payload = {
-                "error": "Gemini TTS synthesis failed.",
-                "speechModeRequested": requested_speech_mode,
-                "speakerHint": speaker_hint or None,
-                "engine": safe_engine,
-                **parsed_error,
-            }
-        else:
-            error_payload = {
-                "error": f"Gemini TTS synthesis failed: {raw_error}",
-                "errorCode": ERROR_CODE_UPSTREAM_MODEL_FAILED,
-                "summary": raw_error[:220] if raw_error else "Gemini TTS synthesis failed.",
-                "speechModeRequested": requested_speech_mode,
-                "speakerHint": speaker_hint or None,
-                "engine": safe_engine,
-            }
-        if not str(error_payload.get("errorCode") or "").strip():
-            error_payload["errorCode"] = ERROR_CODE_UPSTREAM_MODEL_FAILED
-        if not str(error_payload.get("summary") or "").strip():
-            error_payload["summary"] = str(error_payload.get("error") or "Gemini TTS synthesis failed.")[:220]
-        if not str(error_payload.get("classification") or "").strip():
-            error_payload["classification"] = _classification_for_error_code(str(error_payload.get("errorCode") or ""))
-        error_payload["trace_id"] = trace_id
-        if "retryAfterMs" not in error_payload:
-            key_states = error_payload.get("keyStates") if isinstance(error_payload.get("keyStates"), list) else []
-            error_payload["retryAfterMs"] = _retry_after_from_key_states(key_states)
-        public_error_payload = _sanitize_public_tts_error_payload(error_payload)
-        _emit_stage_event(trace_id, "failed", "error", public_error_payload)
-        error_code = str(error_payload.get("errorCode") or "").strip().upper()
-        _record_error_classification(error_code)
-        status_code = 502
-        if error_code in {
-            ERROR_CODE_SLOT_SET_OVERLOADED,
-            ERROR_CODE_SLOT_SET_TIMEOUT,
-            ERROR_CODE_ALLOCATOR_ACQUIRE_TIMEOUT,
-            ERROR_CODE_ALL_SLOTS_RATE_LIMITED,
-        }:
-            status_code = 503
-        elif error_code == ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT:
-            status_code = 504
-        raise HTTPException(status_code=status_code, detail=public_error_payload) from exc
+        _raise_translated_tts_http_exception(
+            exc=exc,
+            trace_id=trace_id,
+            requested_speech_mode=requested_speech_mode,
+            speaker_hint=speaker_hint,
+            safe_engine=safe_engine,
+        )
 
 
 app = FastAPI(title=APP_NAME)

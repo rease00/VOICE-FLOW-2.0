@@ -9,26 +9,26 @@ import {
 
 describe('engineDisplay', () => {
   it('maps all public engine names to canonical labels', () => {
-    expect(getEngineDisplayName('DUNO')).toBe('DUNO');
-    expect(getEngineDisplayName('VECTOR')).toBe('VECTOR');
-    expect(getEngineDisplayName('PRIME')).toBe('PRIME');
+    expect(getEngineDisplayName('DUNO')).toBe('Duno');
+    expect(getEngineDisplayName('VECTOR')).toBe('Vector');
+    expect(getEngineDisplayName('PRIME')).toBe('Prime');
   });
 
   it('uses canonical labels in compact and runtime helpers', () => {
-    expect(getEngineCompactLabel('DUNO')).toBe('DUNO');
-    expect(getEngineCompactLabel('VECTOR')).toBe('VECTOR');
-    expect(getEngineCompactLabel('PRIME')).toBe('PRIME');
-    expect(getEngineRuntimeLabel('DUNO')).toBe('DUNO Runtime');
-    expect(getEngineRuntimeLabel('VECTOR')).toBe('VECTOR Runtime');
-    expect(getEngineRuntimeLabel('PRIME')).toBe('PRIME Runtime');
-    expect(getEngineRuntimeSubLabel('DUNO')).toBe('DUNO voice engine');
-    expect(getEngineRuntimeSubLabel('PRIME')).toBe('PRIME voice engine');
+    expect(getEngineCompactLabel('DUNO')).toBe('Duno');
+    expect(getEngineCompactLabel('VECTOR')).toBe('Vector');
+    expect(getEngineCompactLabel('PRIME')).toBe('Prime');
+    expect(getEngineRuntimeLabel('DUNO')).toBe('Duno Runtime');
+    expect(getEngineRuntimeLabel('VECTOR')).toBe('Vector Runtime');
+    expect(getEngineRuntimeLabel('PRIME')).toBe('Prime Runtime');
+    expect(getEngineRuntimeSubLabel('DUNO')).toBe('Duno voice engine');
+    expect(getEngineRuntimeSubLabel('PRIME')).toBe('Prime voice engine');
   });
 
   it('sanitizes engine text into canonical labels', () => {
-    expect(sanitizeTtsEngineText('DUNO runtime offline')).toBe('DUNO Runtime offline');
-    expect(sanitizeTtsEngineText('VECTOR recovered')).toBe('VECTOR recovered');
-    expect(sanitizeTtsEngineText('PRIME ready')).toBe('PRIME ready');
+    expect(sanitizeTtsEngineText('DUNO runtime offline')).toBe('Duno Runtime offline');
+    expect(sanitizeTtsEngineText('VECTOR recovered')).toBe('Vector recovered');
+    expect(sanitizeTtsEngineText('PRIME ready')).toBe('Prime ready');
     expect(sanitizeTtsEngineText('Gemini TTS queued')).toBe('Gemini TTS queued');
   });
 });

@@ -21,13 +21,10 @@ export const normalizePreferUserGeminiKey = (value: unknown, fallback: boolean =
 export const resolveAssistantProviderRouting = (
   settings: Pick<GenerationSettings, 'assistantProviderControlsEnabled' | 'helperProvider' | 'preferUserGeminiKey'>
 ): AssistantProviderRouting => {
-  const controlsEnabled = settings.assistantProviderControlsEnabled !== false;
-  const requestedProvider = settings.helperProvider;
-  const provider: AssistantProvider =
-    controlsEnabled && (requestedProvider === 'PERPLEXITY' || requestedProvider === 'LOCAL' || requestedProvider === 'GEMINI')
-      ? requestedProvider
-      : 'GEMINI';
-  const preferUserGeminiKey = controlsEnabled && provider === 'GEMINI' && settings.preferUserGeminiKey === true;
+  void settings;
+  const controlsEnabled = false;
+  const provider: AssistantProvider = 'GEMINI';
+  const preferUserGeminiKey = false;
 
   return {
     controlsEnabled,

@@ -22,9 +22,8 @@ describe('Voice cloning stress control visibility', () => {
     });
 
     const html = renderToStaticMarkup(<VoiceCloningTabContent />);
-    expect(html).toContain('Provider');
-    expect(html).toContain('Readiness');
-    expect(html).not.toContain('Stress Test (L4 + Gemini Flash)');
+    expect(html).toContain('Runtime diagnostics');
+    expect(html).not.toContain('Stress Test (Modal VC)');
   });
 
   it('shows stress controls for admin users', () => {
@@ -33,8 +32,26 @@ describe('Voice cloning stress control visibility', () => {
     });
 
     const html = renderToStaticMarkup(<VoiceCloningTabContent />);
-    expect(html).toContain('Provider');
-    expect(html).toContain('Readiness');
-    expect(html).toContain('Stress Test (L4 + Gemini Flash)');
+    expect(html).toContain('Runtime diagnostics');
+    expect(html).toContain('Stress Test (Modal VC)');
+  });
+
+  it('emits workspace layout marker when requested', () => {
+    useUserMock.mockReturnValue({
+      user: { isAdmin: false, adminActor: null },
+    });
+
+    const html = renderToStaticMarkup(<VoiceCloningTabContent layout="workspace" />);
+    expect(html).toContain('data-voice-clone-layout=\"workspace\"');
+  });
+
+  it('can hide the workspace rail when the parent workspace does not need a third panel', () => {
+    useUserMock.mockReturnValue({
+      user: { isAdmin: false, adminActor: null },
+    });
+
+    const html = renderToStaticMarkup(<VoiceCloningTabContent layout="workspace" showRail={false} />);
+    expect(html).toContain('data-voice-clone-layout=\"workspace\"');
+    expect(html).not.toContain('Session status');
   });
 });

@@ -1,8 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = Number(process.env.PLAYWRIGHT_PORT || 42173);
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${PORT}`;
-const REUSE_EXISTING_SERVER = process.env.CI !== 'true' && process.env.PLAYWRIGHT_REUSE_SERVER === '1';
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`;
+const REUSE_EXISTING_SERVER = process.env.CI !== 'true' && process.env.PLAYWRIGHT_REUSE_SERVER !== '0';
 const PLAYWRIGHT_OUTPUT_ROOT = '../tmp_dir/playwright/frontend-smoke';
 
 export default defineConfig({
@@ -10,8 +10,11 @@ export default defineConfig({
   testDir: './tests/smoke',
   testMatch: [
     /app\.smoke\.spec\.ts$/,
+    /app\.backdrop\.spec\.ts$/,
+    /prime\.access\.spec\.tsx?$/,
     /reader\.admin\.catalog\.spec\.ts$/,
     /reader\.tabs\.spec\.ts$/,
+    /voices\.duno\.spec\.ts$/,
   ],
   outputDir: `${PLAYWRIGHT_OUTPUT_ROOT}/test-results`,
   timeout: 30_000,
@@ -50,7 +53,8 @@ export default defineConfig({
     },
     port: PORT,
     timeout: 600_000,
-    // Opt-in reuse only. Defaulting to a fresh server avoids validating stale local builds.
+    // Reuse local smoke servers by default so the scripted smoke gate stays green after
+    // an earlier manual/direct Playwright run. Set PLAYWRIGHT_REUSE_SERVER=0 to force a fresh start.
     reuseExistingServer: REUSE_EXISTING_SERVER,
   },
 });

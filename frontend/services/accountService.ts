@@ -2,6 +2,7 @@ import { authFetch } from './authHttpClient';
 import { parseResponseError, readJsonOrThrow } from '../src/shared/api/httpClient';
 import { requestJson } from '../src/shared/api/httpClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
+import { firebaseAuth } from './firebaseClient';
 import { HistoryItem } from '../types';
 
 const toBaseUrl = (input?: string): string => {
@@ -18,6 +19,12 @@ const normalizeBillingIdempotencyToken = (value: string): string =>
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+const resolveBillingIdempotencyActor = (): string => {
+  const uid = String(firebaseAuth.currentUser?.uid || '').trim();
+  if (uid) return `uid:${uid}`;
+  return 'uid:anonymous';
+};
+
 const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: string): string => {
   const minuteBucket = Math.floor(Date.now() / BILLING_IDEMPOTENCY_WINDOW_MS);
   const fallback = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -26,6 +33,7 @@ const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: s
   const parts = [
     'vf',
     normalizeBillingIdempotencyToken(operation) || 'billing',
+    normalizeBillingIdempotencyToken(resolveBillingIdempotencyActor()) || 'uid:anonymous',
     normalizeBillingIdempotencyToken(subject) || normalizeBillingIdempotencyToken(fallback),
   ];
   const extraToken = normalizeBillingIdempotencyToken(extra || '');

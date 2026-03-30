@@ -1,6 +1,7 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { GenerationSettings, RemoteSpeaker, ClonedVoice, CharacterProfile, VoiceOption, VoiceSampleAnalysis } from "../types";
-import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, DUNO_VOICES } from "../constants";
+import { VOICES, LANGUAGES, SFX_LIBRARY, OPENAI_VOICES, F5_VOICES, DUNO_DEFAULT_VOICE_ID, DUNO_LEGACY_PRESET_IDS, DUNO_VOICES } from "../constants";
+import { getEngineDisplayName } from "./engineDisplay";
 import { getSharedAudioContext } from "../src/shared/audio/audioContext";
 import { createSynthesisTraceId, normalizeSynthesisRequest } from "./synthesisContractService";
 import { extractEmotionAndCrewTags, normalizeEmotionTag } from "./emotionTagRules";
@@ -54,6 +55,24 @@ export {
   normalizeSpeakerMapKey,
   parseScriptToSegments,
   resolveSpeakerMappedVoiceId,
+};
+
+const DUNO_LEGACY_PRESET_ID_SET = new Set(DUNO_LEGACY_PRESET_IDS.map((voiceId) => String(voiceId || '').trim().toLowerCase()));
+
+const normalizeDunoVoiceIdForRuntime = (value: unknown): string => {
+  const token = String(value || '').trim();
+  if (!token) return DUNO_DEFAULT_VOICE_ID;
+  const lowered = token.toLowerCase();
+  if (
+    DUNO_LEGACY_PRESET_ID_SET.has(lowered)
+    || lowered === 'default duno'
+    || lowered === 'duno default'
+    || lowered === 'default chatterbox'
+    || lowered === 'chatterbox default'
+  ) {
+    return DUNO_DEFAULT_VOICE_ID;
+  }
+  return token;
 };
 
 interface RuntimeDiagnosticsPayload {
@@ -304,6 +323,19 @@ export const TEXT_MODELS_FALLBACK = [
   "gemma-3-1b",
 ];
 
+export const RUNTIME_TEXT_MODELS_FALLBACK = [
+  "gemini-3-flash-preview",
+  "gemini-3-pro-preview",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemma-3-27b",
+  "gemma-3-12b",
+  "gemma-3-4b",
+  "gemma-3-2b",
+  "gemma-3-1b",
+];
+
 export const STUDIO_CAST_TEXT_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-pro",
@@ -383,6 +415,39 @@ const mergeGeminiModelCandidates = (preferred: string[], discovered: string[], f
   preferred.forEach((model) => pushModel(model));
   discovered.forEach((model) => pushModel(model));
   return out;
+};
+
+const GEMINI_TEXT_MODEL_ALLOWLIST = new Set<string>(
+  RUNTIME_TEXT_MODELS_FALLBACK
+    .map((model) => normalizeGeminiModelName(model).toLowerCase())
+    .filter((model) => Boolean(model))
+);
+
+const sanitizeGeminiRuntimeTextModelCandidates = (candidates: string[]): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = normalizeGeminiModelName(candidate);
+    if (!normalized) continue;
+    const lower = normalized.toLowerCase();
+    if (!GEMINI_TEXT_MODEL_ALLOWLIST.has(lower)) continue;
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(normalized);
+  }
+  return out;
+};
+
+export const resolveRuntimeTextModelCandidates = (
+  preferredModels?: string[],
+  forcedModel?: string
+): string[] | undefined => {
+  const preferred = Array.isArray(preferredModels) && preferredModels.length > 0
+    ? preferredModels
+    : RUNTIME_TEXT_MODELS_FALLBACK;
+  const merged = mergeGeminiModelCandidates(preferred, [], forcedModel);
+  const sanitized = sanitizeGeminiRuntimeTextModelCandidates(merged);
+  return sanitized.length > 0 ? sanitized : undefined;
 };
 
 const discoverGeminiModels = async (
@@ -636,6 +701,7 @@ async function callGeminiWithFallback(
 interface RuntimeTextOptions {
   jsonMode?: boolean;
   preferredModels?: string[];
+  model?: string;
   temperature?: number;
 }
 
@@ -656,19 +722,22 @@ async function callGeminiRuntimeText(
   options: RuntimeTextOptions = {}
 ): Promise<string> {
   const baseUrl = resolveMediaBackendBaseUrl(settings);
-  const modelCandidates = resolveTextModelCandidates(options.preferredModels);
+  const modelCandidates = resolveRuntimeTextModelCandidates(options.preferredModels, options.model);
+  const body: Record<string, unknown> = {
+    systemPrompt,
+    userPrompt,
+    jsonMode: Boolean(options.jsonMode),
+    temperature: Number.isFinite(Number(options.temperature))
+      ? Number(options.temperature)
+      : 0.7,
+  };
+  if (modelCandidates && modelCandidates.length > 0) {
+    body.modelCandidates = modelCandidates;
+  }
   const response = await authFetch(`${baseUrl}/ai/generate-text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemPrompt,
-      userPrompt,
-      jsonMode: Boolean(options.jsonMode),
-      temperature: Number.isFinite(Number(options.temperature))
-        ? Number(options.temperature)
-        : 0.7,
-      modelCandidates,
-    }),
+    body: JSON.stringify(body),
   }, { requireAuth: true });
 
   const payload = await response.json().catch(() => null);
@@ -684,54 +753,6 @@ async function callGeminiRuntimeText(
   return text;
 }
 
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-// --- PERPLEXITY SERVICE ---
-const PERPLEXITY_REQUEST_TIMEOUT_MS = 65000;
-
-async function callPerplexityChat(messages: ChatMessage[], apiKey: string): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), PERPLEXITY_REQUEST_TIMEOUT_MS);
-  const options = {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: "sonar-pro",
-      messages: messages,
-      temperature: 0.7
-    }),
-    signal: controller.signal,
-  };
-
-  try {
-    const response = await fetch('https://api.perplexity.ai/chat/completions', options);
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Perplexity API Error: ${response.status} - ${err}`);
-    }
-
-    const data = await response.json();
-    const content = String(data?.choices?.[0]?.message?.content || '').trim();
-    if (!content) {
-      throw new Error('Perplexity returned an empty response.');
-    }
-    return content;
-  } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`Perplexity request timed out after ${Math.round(PERPLEXITY_REQUEST_TIMEOUT_MS / 1000)}s.`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 // --- UNIFIED GENERATION DISPATCHER ---
 export interface AssistantTextDispatchPlan {
   controlsEnabled: boolean;
@@ -743,24 +764,14 @@ export interface AssistantTextDispatchPlan {
 
 export const resolveAssistantTextDispatchPlan = (settings: GenerationSettings): AssistantTextDispatchPlan => {
   const routing = resolveAssistantProviderRouting(settings);
-  const provider = routing.provider;
-
-  if (provider === 'PERPLEXITY') {
-    return {
-      controlsEnabled: routing.controlsEnabled,
-      provider,
-      usePerplexity: true,
-      useRuntimeGemini: false,
-      useUserGeminiKey: false,
-    };
-  }
-
+  const provider: GenerationSettings['helperProvider'] = 'GEMINI';
+  const useUserGeminiKey = false;
   return {
     controlsEnabled: routing.controlsEnabled,
     provider,
     usePerplexity: false,
     useRuntimeGemini: true,
-    useUserGeminiKey: false,
+    useUserGeminiKey,
   };
 };
 
@@ -778,19 +789,7 @@ export const generateText = async (
   );
   
   try {
-    if (dispatchPlan.usePerplexity) {
-      const perplexityKey = String(settings.perplexityApiKey || '').trim();
-      if (!perplexityKey) {
-        throw new Error("Perplexity provider selected but API key is missing.");
-      }
-      const messages: ChatMessage[] = [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ];
-      return await callPerplexityChat(messages, perplexityKey);
-    }
-    
-    // Gemini path: backend-held slot set by default, with optional personal key override.
+    // Gemini runtime path only: backend-held slot set (Vertex-backed).
     const forceUserKey = dispatchPlan.useUserGeminiKey;
     const geminiKey = resolveGeminiApiKey(settings);
     if (forceUserKey) {
@@ -807,6 +806,7 @@ export const generateText = async (
     const runtimeOptions: RuntimeTextOptions = {
       jsonMode,
       preferredModels,
+      ...(String(options.model || '').trim() ? { model: String(options.model || '').trim() } : {}),
     };
     if (typeof options.temperature === 'number') runtimeOptions.temperature = options.temperature;
     return await callGeminiRuntimeText(systemPrompt, userPrompt, settings, runtimeOptions);
@@ -1667,7 +1667,7 @@ export const proofreadScript = async (
   text: string, 
   settings: GenerationSettings,
   mode: 'grammar' | 'flow' | 'creative' | 'novel' = 'flow',
-  options?: { languageCode?: string }
+  options?: { languageCode?: string; model?: string }
 ): Promise<string> => {
   let systemPrompt = `You are an Expert Audio Script Editor and Proofreader.
 Your goal is to prepare text for Ultra-Realistic Text-to-Speech synthesis.
@@ -1695,7 +1695,7 @@ Output ONLY the corrected text. Do not add "Here is the corrected version".`;
   if (mode === 'novel') {
       systemPrompt = `You are a World-Class Audio Drama Director and Novelist.
       
-      GOAL: Transform the input text into an immersive "Audio Novel" script.
+      GOAL: Transform the input text into an immersive "AI Audio Novel" script.
       
       INSTRUCTIONS:
       1. **Unified Advanced Flow**: Merge creative writing with natural speech rhythm.
@@ -1723,7 +1723,9 @@ Output ONLY the corrected text. Do not add "Here is the corrected version".`;
 
   try {
     const isHeavyMode = mode === 'creative' || mode === 'novel';
+    const forcedModel = String(options?.model || '').trim() || (mode === 'novel' ? 'gemini-2.5-pro' : '');
     const result = await generateText(systemPrompt, userPrompt, settings, false, {
+      ...(forcedModel ? { model: forcedModel } : {}),
       preferredModels: isHeavyMode ? DIRECTOR_HEAVY_MODELS : DIRECTOR_LIGHT_MODELS,
       temperature: isHeavyMode ? 0.35 : 0.2,
     });
@@ -1805,7 +1807,7 @@ export const resolveDirectorPromptProfile = (
 
   return {
     modeId: 'default',
-    modeLabel: 'Default',
+    modeLabel: 'AI Director',
     requestedStyle,
     requestedTone,
     extraInstructions: [
@@ -2157,15 +2159,21 @@ export const detectLanguage = async (text: string, _settings: GenerationSettings
   return 'en';
 };
 
+export const PROJECT_SCOPED_TEXT_SYSTEM_PROMPT = [
+  'You are a project-scoped creative writing assistant for this app.',
+  'Help only with the current project, script, scene, narration, dialogue, translation, editing, direction, or brainstorming.',
+  'If the request is unrelated to the project, politely decline and redirect the user back to project-related work.',
+  'Output only the requested text with no additional commentary.',
+].join(' ');
+
 export const generateTextContent = async (
   prompt: string,
   currentText: string | undefined,
   settings: GenerationSettings,
   options: Pick<GenerationOptions, 'model' | 'preferredModels' | 'temperature'> = {}
 ): Promise<string> => {
-  const systemPrompt = "You are a creative writing assistant. Output ONLY the requested text with NO additional commentary.";
-  const userPrompt = currentText ? `Original Text: "${currentText}"\n\nTask: ${prompt}` : `Task: ${prompt}`;
-  return await generateText(systemPrompt, userPrompt, settings, false, options);
+  const userPrompt = currentText ? `Project Text: "${currentText}"\n\nTask: ${prompt}` : `Task: ${prompt}`;
+  return await generateText(PROJECT_SCOPED_TEXT_SYSTEM_PROMPT, userPrompt, settings, false, options);
 };
 
 export const translateText = async (text: string, targetLanguage: string, settings: GenerationSettings): Promise<string> => {
@@ -2381,7 +2389,7 @@ export const generateSpeech = async (
   const allowPersonalGeminiBypass = false;
   const rawEngine = String(runtimeSettings.engine || 'PRIME').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   if (rawEngine !== 'DUNO' && rawEngine !== 'VECTOR' && rawEngine !== 'PRIME') {
-    throw new Error(`Unsupported TTS engine "${String(runtimeSettings.engine || '').trim()}". Use DUNO, VECTOR, or PRIME.`);
+    throw new Error(`Unsupported TTS engine "${String(runtimeSettings.engine || '').trim()}". Use ${getEngineDisplayName('DUNO')}, ${getEngineDisplayName('VECTOR')}, or ${getEngineDisplayName('PRIME')}.`);
   }
   const activeEngine: GenerationSettings['engine'] = rawEngine;
   const runtimeProvider = String(runtimeSettings.runtimeProvider || '').trim().toUpperCase();
@@ -3033,9 +3041,19 @@ export const generateSpeech = async (
     });
   };
   const activeSessionClone = resolveSessionClonedVoice(settings.voiceId, voiceName);
+  const isDunoNativeSessionClone = Boolean(
+    activeSessionClone &&
+    (
+      String(activeSessionClone.engine || activeSessionClone.sourceVoiceEngine || '').trim().toUpperCase() === 'DUNO' ||
+      String(activeSessionClone.source || '').trim().toLowerCase() === 'duno_native'
+    )
+  );
   const resolvedVoiceInput = String(
-    activeSessionClone?.sourceVoiceId ||
-    activeSessionClone?.sourceVoiceName ||
+    (
+      isDunoNativeSessionClone
+        ? activeSessionClone?.id || activeSessionClone?.geminiVoiceName || activeSessionClone?.name
+        : activeSessionClone?.sourceVoiceId || activeSessionClone?.sourceVoiceName
+    ) ||
     voiceName ||
     settings.voiceId ||
     ''
@@ -3548,7 +3566,16 @@ export const generateSpeech = async (
 
   // --- DUNO RUNTIME ENDPOINT ---
   if (usesModalRuntime) {
-    const targetVoiceId = String(resolvedVoiceInput || settings.voiceId || voiceName || 'af_heart').trim() || 'af_heart';
+    const targetVoiceId = normalizeDunoVoiceIdForRuntime(
+      settings.voiceId || resolvedVoiceInput || voiceName || DUNO_DEFAULT_VOICE_ID
+    );
+    const targetVoiceLabel = String(
+      availableClones.find((voice) => voice.id === targetVoiceId)?.name
+      || runtimeVoiceCatalog.find((voice) => voice.id === targetVoiceId)?.name
+      || DUNO_VOICES.find((voice) => voice.id === targetVoiceId)?.name
+      || voiceName
+      || (targetVoiceId === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName('DUNO')}` : targetVoiceId)
+    ).trim() || (targetVoiceId === DUNO_DEFAULT_VOICE_ID ? `Default ${getEngineDisplayName('DUNO')}` : targetVoiceId);
     const modalEngine: 'DUNO' = 'DUNO';
     const normalizedRequest = normalizeSynthesisRequest({
       engine: modalEngine,
@@ -3569,8 +3596,9 @@ export const generateSpeech = async (
         '/synthesize',
         {
           text: normalizedRequest.text,
-          voiceName: targetVoiceId,
+          voiceName: targetVoiceLabel,
           voice_id: normalizedRequest.voice_id,
+          model: String(settings.voiceModel || '').trim() || undefined,
           language: normalizedRequest.language,
           speed: normalizedRequest.speed,
           emotion: normalizedRequest.emotion,

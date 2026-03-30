@@ -55,27 +55,23 @@ const isLocalBrowserOrigin = (): boolean => {
   return isLocalHostname(hostname);
 };
 
-const resolveBrowserOriginBaseUrl = (): string => {
-  if (typeof window === 'undefined' || !window.location) return '';
+const isHostedBrowserRuntime = (): boolean => {
+  if (typeof window === 'undefined' || !window.location) return false;
   const protocol = String(window.location.protocol || '').toLowerCase();
   const hostname = String(window.location.hostname || '').trim().toLowerCase();
-  const origin = String(window.location.origin || '').trim();
-  if (!origin) return '';
-  if (protocol !== 'http:' && protocol !== 'https:') return '';
-  if (isLocalHostname(hostname)) return '';
-  return trimTrailingSlashes(origin);
+  if (protocol !== 'http:' && protocol !== 'https:') return false;
+  return !isLocalHostname(hostname);
 };
 
 const resolveHostedReplacementBaseUrl = (fallbackValue?: string): string => {
   const normalizedFallback = trimTrailingSlashes(String(fallbackValue || '').trim()) || FALLBACK_MEDIA_BACKEND_URL;
+  if (isHostedBrowserRuntime() && isAbsoluteHttpUrl(normalizedFallback)) {
+    return FALLBACK_MEDIA_BACKEND_URL;
+  }
   if (normalizedFallback && !isLocalHttpUrl(normalizedFallback)) {
     return normalizedFallback;
   }
-
-  const browserOrigin = resolveBrowserOriginBaseUrl();
-  if (browserOrigin) return browserOrigin;
-
-  return normalizedFallback;
+  return FALLBACK_MEDIA_BACKEND_URL;
 };
 
 const normalizeConfiguredApiBaseUrl = (input: string | undefined, fallbackValue: string): SanitizedApiBaseUrlResult => {
@@ -103,12 +99,18 @@ const normalizeConfiguredApiBaseUrl = (input: string | undefined, fallbackValue:
     const normalized = isRelativeApiBaseUrl(typoHealed)
       ? normalizeRelativeApiBaseUrl(typoHealed)
       : toNormalizedHttpUrl(typoHealed);
+    const shouldForceHostedProxy = (
+      isHostedBrowserRuntime()
+      && isAbsoluteHttpUrl(normalized)
+    );
     const shouldHealLocalToFallback = (
       isLocalHttpUrl(normalized)
       && !isLocalHttpUrl(fallback)
       && !isLocalBrowserOrigin()
     );
-    const healed = shouldHealLocalToFallback ? fallback : normalized;
+    const healed = shouldForceHostedProxy
+      ? fallback
+      : (shouldHealLocalToFallback ? fallback : normalized);
     return {
       input: raw,
       value: healed,

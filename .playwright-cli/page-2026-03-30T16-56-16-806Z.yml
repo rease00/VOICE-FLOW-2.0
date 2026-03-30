@@ -1,0 +1,490 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - generic [ref=e7]:
+            - img [ref=e11]
+            - img [ref=e15]
+            - img [ref=e19]
+          - generic [ref=e21]:
+            - generic [ref=e22]: V FLOW AI
+            - generic [ref=e23]: AI Studio
+        - link "Open Studio" [ref=e24] [cursor=pointer]:
+          - /url: /app
+          - text: Open Studio
+          - img [ref=e25]
+      - navigation "Landing sections" [ref=e27]:
+        - link "Demos" [ref=e28] [cursor=pointer]:
+          - /url: "#demos"
+        - link "AI Director" [ref=e29] [cursor=pointer]:
+          - /url: "#ai-directors"
+        - link "Languages" [ref=e30] [cursor=pointer]:
+          - /url: "#languages"
+        - link "Pricing" [ref=e31] [cursor=pointer]:
+          - /url: "#trust-pricing"
+        - link "FAQ" [ref=e32] [cursor=pointer]:
+          - /url: "#seo-content"
+      - link "Create Your First Scene" [ref=e33] [cursor=pointer]:
+        - /url: /app
+        - text: Create Your First Scene
+        - img [ref=e34]
+  - main [ref=e36]:
+    - generic [ref=e37]:
+      - generic [ref=e38]:
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - img [ref=e41]
+            - text: Direction-first voice studio
+          - generic [ref=e44]:
+            - img [ref=e45]
+            - text: Consent-first cloning
+        - generic [ref=e48]:
+          - heading "Create voice scenes that feel directed, not generated." [level=1] [ref=e49]
+          - paragraph [ref=e50]: Shape emotion, pacing, cast handoffs, multilingual delivery, and approval-safe cloning from one focused studio that stays calm on mobile and desktop.
+        - generic [ref=e51]:
+          - link "Create Your First Scene" [ref=e52] [cursor=pointer]:
+            - /url: /app
+            - text: Create Your First Scene
+            - img [ref=e53]
+          - link "Listen to Live Demos" [ref=e55] [cursor=pointer]:
+            - /url: "#demos"
+            - text: Listen to Live Demos
+            - img [ref=e56]
+        - generic [ref=e59]:
+          - article [ref=e60]:
+            - paragraph [ref=e61]: AI Director Control
+            - paragraph [ref=e62]: Direct performance before render
+            - paragraph [ref=e63]: Shape emotion, pacing, and scene intent before generation starts.
+          - article [ref=e64]:
+            - paragraph [ref=e65]: Single + Cast Scenes
+            - paragraph [ref=e66]: Narration and dialogue in one flow
+            - paragraph [ref=e67]: Move from one-voice narration to multi-speaker scenes without changing workflow.
+          - article [ref=e68]:
+            - paragraph [ref=e69]: Consent-First Cloning
+            - paragraph [ref=e70]: Safeguards stay visible
+            - paragraph [ref=e71]: Permission attestation and abuse escalation are built into cloning workflows.
+          - article [ref=e72]:
+            - paragraph [ref=e73]: Transparent Pricing
+            - paragraph [ref=e74]: See plans before checkout
+            - paragraph [ref=e75]: Pricing, credit packs, and checkout terms stay visible before payment authorization.
+        - generic [ref=e76]:
+          - generic [ref=e77]:
+            - img [ref=e78]
+            - text: AI Director control
+          - generic [ref=e80]:
+            - img [ref=e81]
+            - text: Multi-speaker scenes
+          - generic [ref=e83]:
+            - img [ref=e84]
+            - text: 83 languages
+          - generic [ref=e86]:
+            - img [ref=e87]
+            - text: Transparent pricing
+      - complementary [ref=e89]:
+        - generic [ref=e90]:
+          - generic [ref=e91]:
+            - generic [ref=e92]:
+              - paragraph [ref=e93]: Studio snapshot
+              - heading "Prompt, preview, publish." [level=2] [ref=e94]
+            - generic [ref=e95]: Live workflow
+          - list [ref=e96]:
+            - listitem [ref=e97]:
+              - paragraph [ref=e98]: "01"
+              - paragraph [ref=e99]: Write the scene and set the emotional arc.
+            - listitem [ref=e100]:
+              - paragraph [ref=e101]: "02"
+              - paragraph [ref=e102]: Review the directed pass before generation.
+            - listitem [ref=e103]:
+              - paragraph [ref=e104]: "03"
+              - paragraph [ref=e105]: Render the approved version and ship it.
+          - generic [ref=e107]:
+            - generic [ref=e108]: Waveform preview
+            - generic [ref=e109]: Compact direction mode
+          - generic [ref=e123]:
+            - generic [ref=e124]:
+              - paragraph [ref=e125]: Languages
+              - paragraph [ref=e126]: 83+
+            - generic [ref=e127]:
+              - paragraph [ref=e128]: Plans
+              - paragraph [ref=e129]: "3"
+            - generic [ref=e130]:
+              - paragraph [ref=e131]: Safety
+              - paragraph [ref=e132]: Consent-first
+    - generic [ref=e133]:
+      - generic [ref=e134]:
+        - paragraph [ref=e135]:
+          - img [ref=e136]
+          - text: Capabilities
+        - heading "A complete studio, not a single-purpose widget." [level=2] [ref=e139]
+        - paragraph [ref=e140]: Use one consistent surface for direction, narration, cast scenes, multilingual releases, and pricing clarity before commit.
+      - generic [ref=e141]:
+        - article [ref=e142]:
+          - paragraph [ref=e143]:
+            - img [ref=e144]
+            - text: Studio-grade voice quality
+          - paragraph [ref=e148]: Generate polished voice tracks that hold up in ads, explainers, long-form episodes, and launch assets.
+          - paragraph [ref=e149]: Grounded in bundled demo assets and the app generation pipeline.
+        - article [ref=e150]:
+          - paragraph [ref=e151]:
+            - img [ref=e152]
+            - text: Expressive emotional direction
+          - paragraph [ref=e156]: Shape tone, pacing, intensity, and delivery style for cinematic, persuasive, intimate, or urgent moments.
+          - paragraph [ref=e157]: Emotion and style attributes are present in single-speaker demo manifests and runtime controls.
+        - article [ref=e158]:
+          - paragraph [ref=e159]:
+            - img [ref=e160]
+            - text: Single-speaker generation
+          - paragraph [ref=e164]: Create one-voice narrations quickly for creators, support teams, training, and short-form content.
+          - paragraph [ref=e165]: Curated narration demos with playable audio sources and direction cues.
+        - article [ref=e166]:
+          - paragraph [ref=e167]:
+            - img [ref=e168]
+            - text: Multi-speaker orchestration
+          - paragraph [ref=e172]: Map cast roles, preserve handoffs, and keep conversations easy to follow in multi-voice productions.
+          - paragraph [ref=e173]: Cast-scene demos include summaries, role handoffs, and playable audio.
+    - generic [ref=e175]:
+      - generic [ref=e176]:
+        - paragraph [ref=e177]:
+          - img [ref=e178]
+          - text: Demo showcase
+        - heading "Hear the studio in context." [level=2] [ref=e181]
+        - paragraph [ref=e182]: Browse 10 curated demo scenes, from single-speaker narration to cast-led multi-speaker cuts, with native browser playback so nothing gets in the way of scrolling.
+      - generic "Demo categories" [ref=e183]:
+        - generic [ref=e184]: Narration
+        - generic [ref=e185]: Cast scenes
+        - generic [ref=e186]: Workflow
+        - generic [ref=e187]: Pricing
+      - generic [ref=e188]:
+        - article [ref=e189]:
+          - paragraph [ref=e190]: Studio proof
+          - heading "Studio-grade voice quality" [level=3] [ref=e191]
+          - paragraph [ref=e192]: Generate polished voice tracks that hold up in ads, explainers, long-form episodes, and launch assets.
+          - paragraph [ref=e193]: Grounded in bundled demo assets and the app generation pipeline.
+        - article [ref=e194]:
+          - paragraph [ref=e195]: Studio proof
+          - heading "Expressive emotional direction" [level=3] [ref=e196]
+          - paragraph [ref=e197]: Shape tone, pacing, intensity, and delivery style for cinematic, persuasive, intimate, or urgent moments.
+          - paragraph [ref=e198]: Emotion and style attributes are present in single-speaker demo manifests and runtime controls.
+      - generic [ref=e199]:
+        - article [ref=e200]:
+          - generic [ref=e201]:
+            - generic [ref=e202]:
+              - img [ref=e203]
+              - text: Narration
+            - generic [ref=e206]: English (US) (en-US)
+          - heading "English (US) - Funding win" [level=3] [ref=e207]
+          - paragraph [ref=e208]: Funding win
+          - paragraph [ref=e209]: I can't believe we actually got the funding! This is amazing news!
+          - generic [ref=e210]:
+            - generic [ref=e211]:
+              - paragraph [ref=e212]: Speaker direction
+              - paragraph [ref=e213]: Deliver with upbeat, energetic, clear phrasing and hold the emotional turn on the final phrase of the scenario.
+            - generic "Preview audio for English (US) - Funding win" [ref=e214]: Your browser does not support the audio element.
+        - article [ref=e215]:
+          - generic [ref=e216]:
+            - generic [ref=e217]:
+              - img [ref=e218]
+              - text: Narration
+            - generic [ref=e221]: Hindi (hi-IN)
+          - heading "Hindi - Comforting a friend" [level=3] [ref=e222]
+          - paragraph [ref=e223]: Comforting a friend
+          - paragraph [ref=e224]: Don't worry, everything will be alright. I'm here for you.
+          - generic [ref=e225]:
+            - generic [ref=e226]:
+              - paragraph [ref=e227]: Speaker direction
+              - paragraph [ref=e228]: Deliver with gentle, empathetic, soothing phrasing and hold the emotional turn on the final phrase of the scenario.
+            - generic "Preview audio for Hindi - Comforting a friend" [ref=e229]: Your browser does not support the audio element.
+        - article [ref=e230]:
+          - generic [ref=e231]:
+            - generic [ref=e232]:
+              - img [ref=e233]
+              - text: Cast scene
+            - generic [ref=e236]: English (US) (en-US)
+          - heading "English (US) - Creator roundtable" [level=3] [ref=e237]
+          - paragraph [ref=e238]: Podcast
+          - paragraph [ref=e239]: "Welcome back to Creator Signal. Tonight we are opening with the question that matters most: what makes a multilingual show feel premium from the very..."
+          - generic [ref=e240]:
+            - generic [ref=e241]:
+              - paragraph [ref=e242]: Speaker direction
+              - paragraph [ref=e243]: Three distinct speakers with quick handoffs, bright pacing, and a confident close. Lead with Host, keep the middle exchange crisp, and close with the final voice landing cleanly.
+            - generic "Preview audio for English (US) - Creator roundtable" [ref=e244]: Your browser does not support the audio element.
+        - article [ref=e245]:
+          - generic [ref=e246]:
+            - generic [ref=e247]:
+              - img [ref=e248]
+              - text: Cast scene
+            - generic [ref=e251]: Chinese (Simplified) (zh-CN)
+          - heading "Chinese (Simplified) - Daily creator briefing" [level=3] [ref=e252]
+          - paragraph [ref=e253]: Briefing
+          - paragraph [ref=e254]: 大家好，欢迎来到今日简报。今天我们先从音频创作里最值得关注的变化说起。
+          - generic [ref=e255]:
+            - generic [ref=e256]:
+              - paragraph [ref=e257]: Speaker direction
+              - paragraph [ref=e258]: Measured presenter lead with clean reporter handoffs and a calm analytic finish. Lead with Anchor, keep the middle exchange crisp, and close with the final voice landing cleanly.
+            - generic "Preview audio for Chinese (Simplified) - Daily creator briefing" [ref=e259]: Your browser does not support the audio element.
+    - generic [ref=e261]:
+      - generic [ref=e262]:
+        - paragraph [ref=e263]:
+          - img [ref=e264]
+          - text: AI Director
+        - heading "The direction layer is the product." [level=2] [ref=e267]
+        - paragraph [ref=e268]: Draft the scene, review the directed pass, and render only when the shape, timing, and speaker handoffs feel right.
+      - generic [ref=e269]:
+        - generic [ref=e270]:
+          - article [ref=e271]:
+            - paragraph [ref=e272]: Step 01
+            - paragraph [ref=e273]: Prompt with intent and emotional targets.
+          - article [ref=e274]:
+            - paragraph [ref=e275]: Step 02
+            - paragraph [ref=e276]: Review script changes before generation starts.
+          - article [ref=e277]:
+            - paragraph [ref=e278]: Step 03
+            - paragraph [ref=e279]: Apply the approved pass and render the scene.
+        - generic [ref=e280]:
+          - paragraph [ref=e281]: What it protects
+          - generic [ref=e282]:
+            - article [ref=e283]:
+              - paragraph [ref=e284]:
+                - img [ref=e285]
+                - text: Consent-First Voice Rights
+              - paragraph [ref=e288]: Voice cloning requires ownership or explicit permission attestation before processing begins.
+            - article [ref=e289]:
+              - paragraph [ref=e290]:
+                - img [ref=e291]
+                - text: Abuse Response Path
+              - paragraph [ref=e294]: Impersonation concerns can be escalated through moderation and account-level controls.
+            - article [ref=e295]:
+              - paragraph [ref=e296]:
+                - img [ref=e297]
+                - text: Visible Billing Terms
+              - paragraph [ref=e300]: Pricing, renewal behavior, and checkout terms are shown before payment authorization.
+    - generic [ref=e302]:
+      - generic [ref=e303]:
+        - paragraph [ref=e304]:
+          - img [ref=e305]
+          - text: Global reach
+        - heading "83 language options, one consistent studio." [level=2] [ref=e308]
+        - paragraph [ref=e309]: Browse the catalog, stay in the same interface, and keep the delivery rules visible while switching markets.
+      - generic "Language chips" [ref=e310]:
+        - generic [ref=e311]:
+          - img [ref=e312]
+          - text: English
+        - generic [ref=e317]:
+          - img [ref=e318]
+          - text: English (US)
+        - generic [ref=e323]:
+          - img [ref=e324]
+          - text: Hindi
+        - generic [ref=e329]:
+          - img [ref=e330]
+          - text: Spanish
+        - generic [ref=e335]:
+          - img [ref=e336]
+          - text: French
+        - generic [ref=e341]:
+          - img [ref=e342]
+          - text: German
+        - generic [ref=e347]:
+          - img [ref=e348]
+          - text: Italian
+        - generic [ref=e353]:
+          - img [ref=e354]
+          - text: Portuguese (Brazil)
+        - generic [ref=e359]:
+          - img [ref=e360]
+          - text: Russian
+        - generic [ref=e365]:
+          - img [ref=e366]
+          - text: Chinese (Simplified)
+        - generic [ref=e371]:
+          - img [ref=e372]
+          - text: Japanese
+        - generic [ref=e377]:
+          - img [ref=e378]
+          - text: Korean
+        - generic [ref=e383]:
+          - img [ref=e384]
+          - text: Arabic
+        - generic [ref=e389]:
+          - img [ref=e390]
+          - text: Turkish
+      - generic [ref=e395]:
+        - generic [ref=e396]: Keep scripts visible while localizing.
+        - generic [ref=e397]: Preview right-to-left and left-to-right languages.
+        - generic [ref=e398]: Move between markets without leaving the studio.
+    - generic [ref=e400]:
+      - generic [ref=e401]:
+        - paragraph [ref=e402]:
+          - img [ref=e403]
+          - text: Use cases
+        - heading "Built for creators, studios, and production teams." [level=2] [ref=e406]
+        - paragraph [ref=e407]: Use the same studio surface for narrations, podcasts, ads, localization, training, and enterprise media workflows.
+      - generic [ref=e408]:
+        - article [ref=e409]:
+          - heading "Creators and channels" [level=3] [ref=e410]
+          - paragraph [ref=e411]: Ship consistent narration for YouTube, shorts, and serialized content with reusable voice direction.
+        - article [ref=e412]:
+          - heading "Podcasts and roundtables" [level=3] [ref=e413]
+          - paragraph [ref=e414]: Run cast-aware conversations with role separation that stays clear in every edit pass.
+        - article [ref=e415]:
+          - heading "Storytelling and audiobooks" [level=3] [ref=e416]
+          - paragraph [ref=e417]: Blend cinematic narration and dialogue-driven scenes with tighter control over pacing and tone.
+        - article [ref=e418]:
+          - heading "Dubbing and localization" [level=3] [ref=e419]
+          - paragraph [ref=e420]: Adapt core scripts for global releases with multilingual generation and faster market variants.
+        - article [ref=e421]:
+          - heading "Games and character scenes" [level=3] [ref=e422]
+          - paragraph [ref=e423]: Prototype character voices and scene handoffs quickly without rebuilding the whole pipeline.
+        - article [ref=e424]:
+          - heading "Ads and brand campaigns" [level=3] [ref=e425]
+          - paragraph [ref=e426]: Launch persuasive voiceovers for product spots, promos, and premium campaign narratives.
+        - article [ref=e427]:
+          - heading "Education and training" [level=3] [ref=e428]
+          - paragraph [ref=e429]: Produce structured instructional narration, scenario walkthroughs, and internal learning modules.
+        - article [ref=e430]:
+          - heading "Support and enterprise media" [level=3] [ref=e431]
+          - paragraph [ref=e432]: Standardize high-volume voice output for support scripts, operations updates, and media workflows.
+    - generic [ref=e434]:
+      - generic [ref=e435]:
+        - paragraph [ref=e436]:
+          - img [ref=e437]
+          - text: Trust before trial
+        - heading "Pricing, consent, and account safety stay visible." [level=2] [ref=e440]
+        - paragraph [ref=e441]: Make the buying decision with enough clarity to feel comfortable before checkout.
+      - generic [ref=e442]:
+        - generic [ref=e443]:
+          - article [ref=e444]:
+            - paragraph [ref=e445]:
+              - img [ref=e446]
+              - text: Consent-First Voice Rights
+            - paragraph [ref=e449]: Voice cloning requires ownership or explicit permission attestation before processing begins.
+          - article [ref=e450]:
+            - paragraph [ref=e451]:
+              - img [ref=e452]
+              - text: Abuse Response Path
+            - paragraph [ref=e455]: Impersonation concerns can be escalated through moderation and account-level controls.
+          - article [ref=e456]:
+            - paragraph [ref=e457]:
+              - img [ref=e458]
+              - text: Visible Billing Terms
+            - paragraph [ref=e461]: Pricing, renewal behavior, and checkout terms are shown before payment authorization.
+          - article [ref=e462]:
+            - paragraph [ref=e463]:
+              - img [ref=e464]
+              - text: Workspace Visibility
+            - paragraph [ref=e467]: Generated outputs stay visible in runs and history so teams can review and clean up intentionally.
+        - generic [ref=e468]:
+          - generic [ref=e469]:
+            - generic [ref=e470]:
+              - paragraph [ref=e471]: Plan preview
+              - heading "Transparent pricing before checkout." [level=3] [ref=e472]
+            - link "View pricing" [ref=e473] [cursor=pointer]:
+              - /url: /billing
+              - text: View pricing
+              - img [ref=e474]
+          - generic [ref=e476]:
+            - article [ref=e477]:
+              - generic [ref=e478]:
+                - generic [ref=e479]:
+                  - paragraph [ref=e480]: Launcher
+                  - paragraph [ref=e481]: 30,000 VF credits
+                - paragraph [ref=e482]: ₹129
+              - paragraph [ref=e483]: Monthly studio plan with clear credit allocation and visible checkout terms.
+            - article [ref=e484]:
+              - generic [ref=e485]:
+                - generic [ref=e486]:
+                  - paragraph [ref=e487]: Starter
+                  - paragraph [ref=e488]: 65,000 VF credits
+                - paragraph [ref=e489]: ₹450
+              - paragraph [ref=e490]: Monthly studio plan with clear credit allocation and visible checkout terms.
+            - article [ref=e491]:
+              - generic [ref=e492]:
+                - generic [ref=e493]:
+                  - paragraph [ref=e494]: Creator
+                  - paragraph [ref=e495]: 2,25,000 VF credits
+                - paragraph [ref=e496]: ₹1,499
+              - paragraph [ref=e497]: Monthly studio plan with clear credit allocation and visible checkout terms.
+          - paragraph [ref=e498]: "Credit packs: Micro: 50,000 VF for ₹550 | Standard: 1,50,000 VF for ₹1,450"
+    - generic [ref=e500]:
+      - generic [ref=e501]:
+        - paragraph [ref=e502]:
+          - img [ref=e503]
+          - text: FAQ
+        - heading "The essentials, answered up front." [level=2] [ref=e506]
+        - paragraph [ref=e507]: If a question matters before checkout or before a team adopts the studio, it belongs here.
+      - generic [ref=e508]:
+        - article [ref=e509]:
+          - heading "Product FAQ" [level=3] [ref=e510]
+          - generic [ref=e511]:
+            - group [ref=e512]:
+              - generic "What is V FLOW AI used for?" [ref=e513] [cursor=pointer]
+            - group [ref=e514]:
+              - generic "Does it support multilingual voice generation?" [ref=e515] [cursor=pointer]
+            - group [ref=e516]:
+              - generic "Can I generate both single-speaker and multi-speaker outputs?" [ref=e517] [cursor=pointer]
+            - group [ref=e518]:
+              - generic "Where can I find pricing and checkout details?" [ref=e519] [cursor=pointer]
+            - group [ref=e520]:
+              - generic "How is voice-cloning safety handled?" [ref=e521] [cursor=pointer]
+        - article [ref=e522]:
+          - heading "Why buyers stay" [level=3] [ref=e523]
+          - generic [ref=e524]:
+            - generic [ref=e525]: Clear plan tiers, visible credit packs, and no hidden checkout surprise.
+            - generic [ref=e526]: Direction and approval loops make it easier to review before you render.
+            - generic [ref=e527]: Native browser playback keeps demo previews lightweight and reliable.
+    - generic [ref=e530]:
+      - generic [ref=e531]:
+        - paragraph [ref=e532]:
+          - img [ref=e533]
+          - text: Studio access
+        - heading "Build your next voice release in a studio that feels calm, clear, and fast." [level=2] [ref=e536]
+        - paragraph [ref=e537]: Start with a scene, review the direction layer, and ship polished voice work without losing visibility into pricing or consent.
+      - generic [ref=e538]:
+        - link "Create Your First Scene" [ref=e539] [cursor=pointer]:
+          - /url: /app
+          - text: Create Your First Scene
+          - img [ref=e540]
+        - link "Listen to Live Demos" [ref=e542] [cursor=pointer]:
+          - /url: "#demos"
+          - text: Listen to Live Demos
+          - img [ref=e543]
+  - contentinfo [ref=e544]:
+    - generic [ref=e545]:
+      - generic [ref=e546]:
+        - generic [ref=e547]:
+          - generic [ref=e548]:
+            - img [ref=e552]
+            - img [ref=e556]
+            - img [ref=e560]
+          - generic [ref=e562]:
+            - generic [ref=e563]: V FLOW AI
+            - generic [ref=e564]: AI Studio
+        - paragraph [ref=e565]: Direction-first AI voice studio for narration, cast-led scenes, multilingual production, and consent-first cloning.
+        - paragraph [ref=e566]: (c) 2026 V FLOW AI
+      - generic [ref=e567]:
+        - link "Product Studio" [ref=e568] [cursor=pointer]:
+          - /url: /app
+          - img [ref=e569]
+          - text: Product Studio
+        - link "Voice Demos" [ref=e573] [cursor=pointer]:
+          - /url: "#demos"
+          - img [ref=e574]
+          - text: Voice Demos
+        - link "Language Coverage" [ref=e575] [cursor=pointer]:
+          - /url: "#languages"
+          - img [ref=e576]
+          - text: Language Coverage
+        - navigation "Legal links" [ref=e581]:
+          - link "Terms" [ref=e582] [cursor=pointer]:
+            - /url: /legal/terms
+          - link "Privacy" [ref=e583] [cursor=pointer]:
+            - /url: /legal/privacy
+          - link "Acceptable Use" [ref=e584] [cursor=pointer]:
+            - /url: /legal/acceptable-use
+          - link "Cookies" [ref=e585] [cursor=pointer]:
+            - /url: /legal/cookies
+          - link "Billing & Refunds" [ref=e586] [cursor=pointer]:
+            - /url: /legal/billing-refunds
+          - link "Copyright" [ref=e587] [cursor=pointer]:
+            - /url: /legal/copyright

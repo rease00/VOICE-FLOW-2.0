@@ -1,0 +1,193 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e5]:
+    - complementary [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]:
+          - img [ref=e13]
+          - img [ref=e18]
+          - img [ref=e22]
+        - generic [ref=e24]:
+          - generic [ref=e25]: V FLOW AI
+          - generic [ref=e26]: AI Studio
+      - navigation [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: Create
+          - button "Studio" [ref=e30]:
+            - img [ref=e32]
+            - generic [ref=e35]: Studio
+          - button "Voices" [ref=e36]:
+            - img [ref=e38]
+            - generic [ref=e41]: Voices
+          - button "Writing" [ref=e42]:
+            - img [ref=e44]
+            - generic [ref=e46]: Writing
+        - generic [ref=e47]:
+          - generic [ref=e48]: Library
+          - button "Reader" [ref=e49]:
+            - img [ref=e51]
+            - generic [ref=e53]: Reader
+          - button "History" [ref=e54]:
+            - img [ref=e56]
+            - generic [ref=e60]: History
+        - generic [ref=e61]:
+          - generic [ref=e62]: Account
+          - button "Plans & Billing" [ref=e63]:
+            - img [ref=e65]
+            - generic [ref=e70]: Plans & Billing
+      - generic [ref=e73]:
+        - generic [ref=e74]:
+          - button "Login" [ref=e75]:
+            - img [ref=e76]
+            - text: Login
+          - button "Sign Up" [ref=e79]:
+            - img [ref=e80]
+            - text: Sign Up
+        - button "Open profile" [ref=e83]:
+          - img [ref=e85]
+    - main [ref=e88]:
+      - generic [ref=e90]:
+        - button "Compact sidebar" [ref=e91]:
+          - img [ref=e92]
+        - generic [ref=e97]:
+          - generic [ref=e100]:
+            - img [ref=e104]
+            - img [ref=e109]
+            - img [ref=e113]
+          - generic [ref=e115]:
+            - generic [ref=e116]: Workspace
+            - generic [ref=e117]: Reader
+          - generic [ref=e118]: Listen, import titles, and continue in progress sessions
+        - generic [ref=e119]:
+          - button "Open plans and billing" [ref=e120]:
+            - img [ref=e121]
+            - generic [ref=e124]: 0 VF
+            - generic [ref=e125]: Upgrade
+          - button "Open notifications" [ref=e126]:
+            - img [ref=e127]
+          - button "Open configuration" [ref=e130]:
+            - img [ref=e131]
+      - generic [ref=e138]:
+        - generic [ref=e139]:
+          - region "Reader status panels" [ref=e140]:
+            - article [ref=e141]:
+              - strong [ref=e142]: Sign in required
+              - paragraph [ref=e143]: Sign in to restore Reader shelves, sessions, and your dashboard state.
+          - generic [ref=e144]:
+            - generic [ref=e145]:
+              - img [ref=e146]
+              - searchbox "Search reader catalog" [ref=e149]
+            - group "Reader home filters" [ref=e150]:
+              - button "Novels 0" [pressed] [ref=e151] [cursor=pointer]:
+                - generic [ref=e152]: Novels
+                - generic [ref=e153]: "0"
+              - button "Library 0" [ref=e154] [cursor=pointer]:
+                - generic [ref=e155]: Library
+                - generic [ref=e156]: "0"
+              - button "Imported 0" [ref=e157] [cursor=pointer]:
+                - generic [ref=e158]: Imported
+                - generic [ref=e159]: "0"
+            - generic [ref=e160]:
+              - generic [ref=e161]:
+                - text: Showing
+                - strong [ref=e162]: "0"
+                - text: titles
+              - generic [ref=e163]:
+                - text: Shelf total
+                - strong [ref=e164]: "0"
+              - generic [ref=e165]:
+                - text: Filtered
+                - strong [ref=e166]: "0"
+          - region "Reader shelves" [ref=e167]:
+            - article [ref=e168]:
+              - generic [ref=e169]:
+                - generic [ref=e170]:
+                  - generic [ref=e171]: Continue Reading
+                  - heading "Resume without losing your place" [level=3] [ref=e172]
+                  - paragraph [ref=e173]: Recent sessions and titles with progress stay pinned here first.
+                - generic [ref=e174]: "0"
+              - generic [ref=e175]: No resumable titles match this filter yet.
+            - article [ref=e176]:
+              - generic [ref=e177]:
+                - generic [ref=e178]:
+                  - generic [ref=e179]: Trending
+                  - heading "Popular picks from your Reader library" [level=3] [ref=e180]
+                  - paragraph [ref=e181]: Cover-led browsing for the titles most ready to launch next.
+                - generic [ref=e182]: "0"
+              - generic [ref=e183]: No trending titles match this filter yet.
+            - article [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e186]:
+                  - generic [ref=e187]: New Arrivals
+                  - heading "Fresh additions" [level=3] [ref=e188]
+                  - paragraph [ref=e189]: Recently added novels and imports.
+                - generic [ref=e190]: "0"
+              - generic [ref=e191]: No new arrivals match this filter yet.
+            - article [ref=e192]:
+              - generic [ref=e193]:
+                - generic [ref=e194]:
+                  - generic [ref=e195]: Recently Imported
+                  - heading "Your latest imports" [level=3] [ref=e196]
+                  - paragraph [ref=e197]: Jump straight back into the files you brought into Reader.
+                - generic [ref=e198]: "0"
+              - generic [ref=e199]: No imported titles match this filter yet.
+        - region "Reader sign-in gate" [ref=e200]:
+          - generic [ref=e201]:
+            - strong [ref=e202]: Sign in to use Reader
+            - paragraph [ref=e203]: Restore shelves, continue saved sessions, accept import rights, and bring in new titles after secure sign-in.
+          - generic [ref=e204]:
+            - link "Sign in" [ref=e205] [cursor=pointer]:
+              - /url: /app/login?mode=login&next=%2Fapp%2Freader
+            - link "Create account" [ref=e206] [cursor=pointer]:
+              - /url: /app/login?mode=signup&next=%2Fapp%2Freader
+        - generic [ref=e207]:
+          - generic [ref=e208]:
+            - button "Previous chunk" [disabled] [ref=e209] [cursor=pointer]:
+              - img [ref=e210]
+            - button "Play playback" [disabled] [ref=e212] [cursor=pointer]:
+              - img [ref=e213]
+            - button "Next chunk" [disabled] [ref=e215] [cursor=pointer]:
+              - img [ref=e216]
+          - generic [ref=e218]:
+            - generic [ref=e219]: Sticky Player
+            - strong [ref=e220]: Reader
+            - generic [ref=e221]: Read - Idle
+            - generic [ref=e222]:
+              - generic [ref=e223]:
+                - generic [ref=e224]: 0 ready chunks
+                - emphasis [ref=e225]: 0 pending
+              - progressbar [ref=e226]
+            - status [ref=e227]: "Reader status: Idle. 0 ready chunks, 0 pending, queue 0%"
+          - generic [ref=e228]:
+            - group "Reader quick tools" [ref=e229]:
+              - button "Import content" [ref=e230] [cursor=pointer]:
+                - img [ref=e231]
+                - generic [ref=e234]: Import
+              - generic [ref=e235]:
+                - generic [ref=e236]: Ambience preset
+                - combobox "Ambience preset" [ref=e237]:
+                  - option "Calm" [selected]
+                  - option "Focus"
+                  - option "Night"
+              - generic [ref=e238]:
+                - generic [ref=e239]: Narrator voice
+                - combobox "Narrator voice" [ref=e240]:
+                  - option "Narrator" [selected]
+                  - option "Warm voice"
+                  - option "Clear voice"
+              - button "Open settings" [disabled] [ref=e241] [cursor=pointer]:
+                - img [ref=e242]
+                - generic [ref=e245]: Settings
+            - button "Collapse dock to compact circle" [ref=e247] [cursor=pointer]:
+              - img [ref=e248]
+    - generic:
+      - generic "Browser CPU signal (long tasks, event-loop lag, and heap trend)":
+        - img
+        - generic: CPU 2%
+        - img "Browser CPU pressure trend"
+      - generic "JS heap usage":
+        - img
+        - generic: RAM 24M
+        - img "RAM trend"
+  - button "Open Next.js Dev Tools" [ref=e255] [cursor=pointer]:
+    - img [ref=e256]
+  - alert [ref=e259]

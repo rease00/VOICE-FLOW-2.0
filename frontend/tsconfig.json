@@ -51,7 +51,9 @@
     ".next-playwright/types/**/*.ts",
     ".next-playwright/dev/types/**/*.ts",
     ".next-buildcheck/types/**/*.ts",
-    ".next-buildcheck/dev/types/**/*.ts"
+    ".next-buildcheck/dev/types/**/*.ts",
+    ".next-wheel-audit/types/**/*.ts",
+    ".next-wheel-audit/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

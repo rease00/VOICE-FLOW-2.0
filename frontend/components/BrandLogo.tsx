@@ -29,7 +29,7 @@ const SIZE_MAP: Record<
     mic: 11,
     badge: 7,
     title: 'text-base',
-    subtitle: 'text-[8px] tracking-[0.2em]',
+    subtitle: 'text-[11px] tracking-[0.18em]',
     gap: 'gap-2',
   },
   md: {
@@ -38,7 +38,7 @@ const SIZE_MAP: Record<
     mic: 12,
     badge: 8,
     title: 'text-xl',
-    subtitle: 'text-[10px] tracking-[0.22em]',
+    subtitle: 'text-[12px] tracking-[0.2em]',
     gap: 'gap-3',
   },
   lg: {
@@ -47,7 +47,7 @@ const SIZE_MAP: Record<
     mic: 18,
     badge: 10,
     title: 'text-3xl',
-    subtitle: 'text-[11px] tracking-[0.24em]',
+    subtitle: 'text-[12px] tracking-[0.22em]',
     gap: 'gap-3.5',
   },
   hero: {
@@ -56,7 +56,7 @@ const SIZE_MAP: Record<
     mic: 64,
     badge: 24,
     title: 'text-3xl',
-    subtitle: 'text-[11px] tracking-[0.24em]',
+    subtitle: 'text-[12px] tracking-[0.22em]',
     gap: 'gap-4',
   },
 };

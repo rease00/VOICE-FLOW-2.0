@@ -19,18 +19,69 @@ describe('authFetch', () => {
     vi.stubGlobal('fetch', vi.fn());
   });
 
-  it('surfaces token timing failures before sending a protected request without auth', async () => {
+  it('retries Firebase token timing failures before sending a protected request', async () => {
+    vi.useFakeTimers();
+    const getIdToken = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Token used too early, check that your computer\'s clock is set correctly.'))
+      .mockRejectedValueOnce(new Error('Token used too early, check that your computer\'s clock is set correctly.'))
+      .mockResolvedValueOnce('firebase-token');
+
     mockFirebaseAuth.currentUser = {
       uid: 'firebase_user_1',
-      getIdToken: vi.fn(async () => {
-        throw new Error('Token used too early, check that your computer\'s clock is set correctly.');
-      }),
+      getIdToken,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    );
+
+    const request = authFetch('/account/profile', undefined, { requireAuth: true });
+
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await expect(request).resolves.toMatchObject({ ok: true, status: 200 });
+    expect(getIdToken).toHaveBeenCalledTimes(3);
+    expect(getIdToken.mock.calls.map((call) => call[0])).toEqual([false, true, true]);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries backend token timing responses before succeeding', async () => {
+    vi.useFakeTimers();
+    mockFirebaseAuth.currentUser = {
+      uid: 'firebase_user_1',
+      getIdToken: vi.fn(async () => 'firebase-token'),
     };
 
-    await expect(authFetch('https://example.com/account/profile', undefined, { requireAuth: true })).rejects.toThrow(
-      'System clock is out of sync. Sync your device clock and sign in again.'
+    const timingResponse = () => new Response(
+      JSON.stringify({ detail: 'Invalid auth token: token is not yet valid.' }),
+      {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }
     );
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    const okResponse = () => new Response(
+      JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(timingResponse())
+      .mockResolvedValueOnce(timingResponse())
+      .mockResolvedValueOnce(okResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = authFetch('/account/profile', undefined, { requireAuth: true });
+
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await expect(request).resolves.toMatchObject({ ok: true, status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('fails with a readable timeout when the backend does not respond', async () => {
@@ -47,9 +98,9 @@ describe('authFetch', () => {
       })
     )));
 
-    const request = authFetch('https://example.com/reader/library', undefined, { timeoutMs: 1200 });
+    const request = authFetch('/reader/library', undefined, { timeoutMs: 1200 });
     const expectation = expect(request).rejects.toThrow(
-      'Request to https://example.com/reader/library timed out after 1s. Verify backend availability and retry.'
+      'Request to /reader/library timed out after 1s. Verify backend availability and retry.'
     );
 
     await vi.advanceTimersByTimeAsync(1200);
@@ -73,7 +124,7 @@ describe('authFetch', () => {
 
     const controller = new AbortController();
     const request = authFetch(
-      'https://example.com/account/profile',
+      '/account/profile',
       undefined,
       { signal: controller.signal }
     );
@@ -103,9 +154,23 @@ describe('authFetch', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const controller = new AbortController();
-    const request = authFetch('https://example.com/account/profile/no-timeout-check', undefined, { signal: controller.signal });
+    const request = authFetch('/account/profile/no-timeout-check', undefined, { signal: controller.signal });
 
     await expect(request).resolves.toMatchObject({ ok: true, status: 200 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks Firebase auth forwarding to untrusted backend origins', async () => {
+    mockFirebaseAuth.currentUser = {
+      uid: 'firebase_user_1',
+      getIdToken: vi.fn(async () => 'firebase-token'),
+    };
+
+    await expect(
+      authFetch('https://evil.example/account/profile', undefined, { requireAuth: true })
+    ).rejects.toThrow(
+      'Authentication headers are blocked for untrusted backend origins. Use the default backend proxy or a localhost backend.'
+    );
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });

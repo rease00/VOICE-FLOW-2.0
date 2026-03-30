@@ -24,6 +24,7 @@ import {
 } from '../src/shared/api/gatewayClient';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { requestBlob, requestJson, requestPublicJson } from '../src/shared/api/httpClient';
+import { getAdminUnlockToken } from './adminService';
 
 export interface MediaBackendHealth {
   ok: boolean;
@@ -245,9 +246,11 @@ export const switchTtsEngineRuntime = async (
   engine: GenerationSettings['engine'],
   options?: { gpu?: boolean }
 ): Promise<TtsEngineSwitchResult> => {
+  const unlockToken = getAdminUnlockToken();
   return switchTtsEngine(engine, {
     baseUrl: toBaseUrl(baseUrl),
     gpu: Boolean(options?.gpu),
+    ...(unlockToken ? { adminUnlockToken: unlockToken } : {}),
   });
 };
 

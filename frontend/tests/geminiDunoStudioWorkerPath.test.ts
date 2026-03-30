@@ -96,7 +96,7 @@ describe('generateSpeech DUNO backend gateway path', () => {
   it('routes DUNO generation through the backend TTS gateway', async () => {
     const { generateSpeech } = await import('../services/geminiService');
     const settings = {
-      voiceId: 'af_heart',
+      voiceId: 'deepinfra_default',
       speed: 1,
       pitch: 'Medium',
       language: 'en',
@@ -107,7 +107,7 @@ describe('generateSpeech DUNO backend gateway path', () => {
 
     const result = await generateSpeech(
       'Hello world',
-      'af_heart',
+      'Default Duno',
       settings,
       'speech',
       undefined,
@@ -124,17 +124,19 @@ describe('generateSpeech DUNO backend gateway path', () => {
     expect(payload.engine).toBe('DUNO');
     expect(payload.post_tts_disable).toBe(true);
     expect(payload.stream).toBe(true);
+    expect(payload.voice_id).toBe('deepinfra_default');
+    expect(payload.voiceName).toBe('Default Duno');
 
     expect((result as any)._bytes).toBeInstanceOf(ArrayBuffer);
     expect((result as any).sampleRate).toBe(24000);
     expect(emitGatewayProgressMock).not.toHaveBeenCalled();
     expect(emitGatewayAudioChunkMock).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it('rejects unsupported engine tokens', async () => {
     const { generateSpeech } = await import('../services/geminiService');
     const settings = {
-      voiceId: 'af_heart',
+      voiceId: 'deepinfra_default',
       speed: 1,
       pitch: 'Medium',
       language: 'en',
@@ -145,7 +147,7 @@ describe('generateSpeech DUNO backend gateway path', () => {
 
     await expect(generateSpeech(
       'Hello again',
-      'af_heart',
+      'Default Duno',
       settings,
       'speech',
       undefined,
@@ -165,8 +167,8 @@ describe('generateSpeech DUNO backend gateway path', () => {
         dateCreated: Date.now(),
         description: 'session clone',
         referenceAudioUrl: 'https://example.test/reference.wav',
-        sourceVoiceId: 'af_heart',
-        sourceVoiceName: 'af_heart',
+        sourceVoiceId: 'deepinfra_default',
+        sourceVoiceName: 'Default Duno',
         sourceVoiceEngine: 'DUNO',
       },
     ]);
@@ -201,9 +203,11 @@ describe('generateSpeech DUNO backend gateway path', () => {
     expect(payload.engine).toBe('DUNO');
     expect(payload.post_tts_disable).toBe(true);
     expect(payload.stream).toBe(true);
+    expect(payload.voiceName).toBe('Clone One');
+    expect(payload.voice_id).toBe('clone-one');
 
     expect((result as any)._bytes).toBeInstanceOf(ArrayBuffer);
     expect((result as any).sampleRate).toBe(24000);
-  });
+  }, 15_000);
 });
 

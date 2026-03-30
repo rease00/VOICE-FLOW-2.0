@@ -36,6 +36,16 @@ const ttsV2SessionCacheKey = (baseUrl?: string): string => {
   return resolveApiBaseUrl(baseUrl) || 'default';
 };
 
+export const clearTtsV2SessionKeyCache = (baseUrl?: string): void => {
+  const cacheKey = ttsV2SessionCacheKey(baseUrl);
+  TTS_V2_SESSION_CACHE.delete(cacheKey);
+  for (const requestKey of Array.from(TTS_V2_SESSION_IN_FLIGHT.keys())) {
+    if (requestKey === cacheKey || requestKey.startsWith(`${cacheKey}:`)) {
+      TTS_V2_SESSION_IN_FLIGHT.delete(requestKey);
+    }
+  }
+};
+
 interface TtsV2SessionIssueResponse {
   ok?: boolean;
   sessionKey?: string;
@@ -348,13 +358,18 @@ export const fetchTtsVoiceMappingCatalog = async (
 
 export const switchTtsEngine = async (
   engine: GenerationSettings['engine'],
-  options?: { gpu?: boolean; baseUrl?: string }
+  options?: { gpu?: boolean; baseUrl?: string; adminUnlockToken?: string }
 ): Promise<TtsEngineSwitchResponse> => {
+  const unlockToken = String(options?.adminUnlockToken || '').trim();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (unlockToken) {
+    headers['X-Admin-Unlock'] = `Bearer ${unlockToken}`;
+  }
   return requestJson<TtsEngineSwitchResponse>(
     '/tts/engines/switch',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ engine, gpu: Boolean(options?.gpu) }),
     },
     withBaseUrl(options?.baseUrl)
@@ -517,30 +532,54 @@ export const createTtsJob = async (
   payload: Record<string, unknown>,
   options?: { baseUrl?: string }
 ): Promise<TtsJobStatusResponse> => {
-  const sessionKey = await issueTtsV2SessionKey(
-    options?.baseUrl ? { baseUrl: options.baseUrl } : undefined
-  );
   const requestId = String(
     (payload as Record<string, unknown>).request_id ||
     (payload as Record<string, unknown>).requestId ||
     ''
   ).trim();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    [TTS_V2_SESSION_HEADER]: sessionKey,
+  const buildHeaders = (sessionKey: string): Record<string, string> => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      [TTS_V2_SESSION_HEADER]: sessionKey,
+    };
+    if (requestId) {
+      headers[IDEMPOTENCY_HEADER] = requestId;
+    }
+    return headers;
   };
-  if (requestId) {
-    headers[IDEMPOTENCY_HEADER] = requestId;
+  const runCreate = async (forceSession: boolean): Promise<TtsJobStatusResponse> => {
+    const sessionKey = await issueTtsV2SessionKey({
+      ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      ...(forceSession ? { force: true } : {}),
+    });
+    return requestJson<TtsJobStatusResponse>(
+      '/tts/v2/jobs',
+      {
+        method: 'POST',
+        headers: buildHeaders(sessionKey),
+        body: JSON.stringify(payload),
+      },
+      { ...withBaseUrl(options?.baseUrl), requireAuth: true }
+    );
+  };
+  try {
+    return await runCreate(false);
+  } catch (error: unknown) {
+    const detail = String((error as { message?: string; detail?: string })?.detail || (error as { message?: string })?.message || '').trim().toLowerCase();
+    const status = Number((error as { status?: number })?.status || 0);
+    const looksLikeExpiredSession =
+      (status === 401 || status === 403)
+      && (
+        detail.includes('invalid or expired tts session key')
+        || detail.includes('tts session key')
+        || detail.includes('session key')
+      );
+    if (!looksLikeExpiredSession) {
+      throw error;
+    }
+    clearTtsV2SessionKeyCache(options?.baseUrl);
+    return runCreate(true);
   }
-  return requestJson<TtsJobStatusResponse>(
-    '/tts/v2/jobs',
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    },
-    { ...withBaseUrl(options?.baseUrl), requireAuth: true }
-  );
 };
 
 export const getTtsJob = async (

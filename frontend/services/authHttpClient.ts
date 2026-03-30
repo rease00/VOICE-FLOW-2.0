@@ -34,7 +34,7 @@ const TOKEN_TIMING_HINTS = [
   'token is not yet valid',
   "check that your computer's clock is set correctly",
 ];
-const TOKEN_TIMING_RETRY_DELAYS_MS = [1200, 2000];
+const TOKEN_TIMING_RETRY_DELAYS_MS = [1500, 3000, 6000, 12000];
 
 const isLikelyNetworkFetchFailure = (error: unknown): boolean => {
   const message = String((error as { message?: string })?.message || error || '').trim().toLowerCase();
@@ -68,6 +68,45 @@ const resolveRequestTarget = (input: RequestInfo | URL): string => {
   }
 };
 
+const isLocalRequestHostname = (hostname: string): boolean => {
+  const safeHostname = String(hostname || '').trim().toLowerCase();
+  return safeHostname === 'localhost' || safeHostname === '127.0.0.1' || safeHostname === '::1';
+};
+
+const isTrustedAuthTarget = (input: RequestInfo | URL): boolean => {
+  let raw = '';
+  if (typeof input === 'string') {
+    raw = input;
+  } else if (input instanceof URL) {
+    raw = input.toString();
+  } else if (typeof Request !== 'undefined' && input instanceof Request) {
+    raw = String(input.url || '');
+  } else {
+    raw = String((input as { url?: string })?.url || '');
+  }
+
+  const safeRaw = raw.trim();
+  if (!safeRaw) return true;
+  if (safeRaw.startsWith('/') && !safeRaw.startsWith('//')) return true;
+
+  try {
+    const browserOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : undefined;
+    const parsed = new URL(safeRaw, browserOrigin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (!browserOrigin) {
+      return isLocalRequestHostname(parsed.hostname);
+    }
+    if (parsed.origin === browserOrigin) {
+      return true;
+    }
+    const browserHostname = String(window.location.hostname || '').trim().toLowerCase();
+    const localBrowser = isLocalRequestHostname(browserHostname);
+    return localBrowser && isLocalRequestHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
+
 const formatRequestTimeoutMessage = (input: RequestInfo | URL, timeoutMs: number): string => {
   const target = resolveRequestTarget(input);
   const timeoutSeconds = Math.max(1, Math.round(timeoutMs / 1000));
@@ -90,24 +129,41 @@ const mapTokenReadFailure = (error: Error): string => {
   return 'Authentication session could not be refreshed. Sign in again.';
 };
 
-const getCurrentIdTokenWithRefresh = async (forceRefresh: boolean): Promise<TokenResolution> => {
+const getCurrentIdTokenWithRefresh = async (
+  forceRefresh: boolean,
+  signal?: AbortSignal
+): Promise<TokenResolution> => {
   const user = firebaseAuth.currentUser;
   if (!user) {
     return { token: '', hadCurrentUser: false, error: null };
   }
-  try {
-    return {
-      token: await user.getIdToken(forceRefresh),
-      hadCurrentUser: true,
-      error: null,
-    };
-  } catch (error: unknown) {
-    return {
-      token: '',
-      hadCurrentUser: true,
-      error: error instanceof Error ? error : new Error(String(error || 'Authentication token refresh failed.')),
-    };
+  let shouldForceRefresh = forceRefresh;
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= TOKEN_TIMING_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return {
+        token: await user.getIdToken(shouldForceRefresh || attempt > 0),
+        hadCurrentUser: true,
+        error: null,
+      };
+    } catch (error: unknown) {
+      lastError = error instanceof Error ? error : new Error(String(error || 'Authentication token refresh failed.'));
+      if (!isTokenTimingAuthDetail(lastError.message) || attempt >= TOKEN_TIMING_RETRY_DELAYS_MS.length) {
+        break;
+      }
+      const retryDelayMs = TOKEN_TIMING_RETRY_DELAYS_MS[attempt];
+      if (typeof retryDelayMs !== 'number') {
+        break;
+      }
+      await sleep(retryDelayMs, signal);
+      shouldForceRefresh = true;
+    }
   }
+  return {
+    token: '',
+    hadCurrentUser: true,
+    error: lastError || new Error('Authentication token refresh failed.'),
+  };
 };
 
 const createAbortError = (): Error => {
@@ -166,10 +222,21 @@ export const authFetch = async (
   init: RequestInit = {},
   options: AuthFetchOptions = {}
 ): Promise<Response> => {
+  const trustedAuthTarget = isTrustedAuthTarget(input);
   const resolveRequestHeaders = async (forceTokenRefresh: boolean) => {
+    if (!trustedAuthTarget) {
+      if (options.requireAuth) {
+        throw new Error('Authentication headers are blocked for untrusted backend origins. Use the default backend proxy or a localhost backend.');
+      }
+      return {
+        headers: new Headers(init.headers || {}),
+        hasFirebaseToken: false,
+      };
+    }
     const currentUser = firebaseAuth.currentUser;
     const firebaseUid = String(currentUser?.uid || '').trim();
-    const tokenResult = await getCurrentIdTokenWithRefresh(forceTokenRefresh);
+    const requestSignal = options.signal ?? (init.signal === null ? undefined : init.signal);
+    const tokenResult = await getCurrentIdTokenWithRefresh(forceTokenRefresh, requestSignal);
     const token = tokenResult.token;
     const { headers, hasAuth } = resolveAuthHeaders(init.headers, {
       idToken: token,

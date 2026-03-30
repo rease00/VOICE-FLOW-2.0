@@ -6,23 +6,23 @@ describe('workspace tabs reader contract', () => {
     const tabs = buildWorkspaceTabs(false);
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
-      WorkspaceTab.READER,
       WorkspaceTab.VOICE_CLONING,
       WorkspaceTab.NOVEL,
-      WorkspaceTab.CHARACTERS,
+      WorkspaceTab.READER,
       WorkspaceTab.HISTORY,
     ]);
     expect(tabs.some((item) => item.id === WorkspaceTab.READER && item.label === 'Reader')).toBe(true);
-    expect(tabs.some((item) => item.id === WorkspaceTab.VOICE_CLONING && item.label === 'Voice Cloning')).toBe(true);
+    expect(tabs.some((item) => item.id === WorkspaceTab.VOICE_CLONING && item.label === 'Voices')).toBe(true);
   });
 
-  it('keeps Reader immediately after Studio and excludes Admin from main navigation', () => {
+  it('keeps Reader after the core create tabs and excludes Admin from main navigation', () => {
     const tabs = buildWorkspaceTabs(false);
-    const studioIndex = tabs.findIndex((item) => item.id === WorkspaceTab.STUDIO);
+    const novelIndex = tabs.findIndex((item) => item.id === WorkspaceTab.NOVEL);
     const readerIndex = tabs.findIndex((item) => item.id === WorkspaceTab.READER);
 
     expect(readerIndex).toBeGreaterThanOrEqual(0);
-    expect(readerIndex).toBe(studioIndex + 1);
+    expect(novelIndex).toBeGreaterThanOrEqual(0);
+    expect(readerIndex).toBe(novelIndex + 1);
     expect(tabs[readerIndex]?.label).toBe('Reader');
     expect(tabs.some((item) => item.id === WorkspaceTab.ADMIN)).toBe(false);
   });
@@ -41,13 +41,12 @@ describe('workspace tabs reader contract', () => {
     expect(preloadTarget).toBeNull();
   });
 
-  it('preloads Reader from Studio only when explicitly enabled', () => {
+  it('preloads the next create tab from Studio only when explicitly enabled', () => {
     const tabs = buildWorkspaceTabs(false);
     const preloadTarget = resolveWorkspaceNextPreloadTab(tabs, WorkspaceTab.STUDIO, {
-      allowReaderPreload: true,
       allowNextPreloadFromStudio: true,
     });
 
-    expect(preloadTarget).toBe(WorkspaceTab.READER);
+    expect(preloadTarget).toBe(WorkspaceTab.VOICE_CLONING);
   });
 });

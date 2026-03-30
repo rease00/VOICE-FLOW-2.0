@@ -6,14 +6,13 @@ describe('workspace tab contract reader v2', () => {
     const tabs = buildWorkspaceTabs(false);
     expect(tabs.map((item) => item.id)).toEqual([
       WorkspaceTab.STUDIO,
-      WorkspaceTab.READER,
       WorkspaceTab.VOICE_CLONING,
       WorkspaceTab.NOVEL,
-      WorkspaceTab.CHARACTERS,
+      WorkspaceTab.READER,
       WorkspaceTab.HISTORY,
     ]);
     expect(tabs.some((item) => item.id === WorkspaceTab.READER && item.label === 'Reader')).toBe(true);
-    expect(tabs.some((item) => item.id === WorkspaceTab.VOICE_CLONING && item.label === 'Voice Cloning')).toBe(true);
+    expect(tabs.some((item) => item.id === WorkspaceTab.VOICE_CLONING && item.label === 'Voices')).toBe(true);
   });
 
   it('appends admin only for admin users', () => {

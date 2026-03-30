@@ -21,7 +21,7 @@ describe('billing catalog parity', () => {
   it('routes both wrappers through shared BillingSurface and keeps catalog ownership centralized', () => {
     const billingSurfaceSource = readText('../src/features/billing/surface/BillingSurface.tsx');
     const buyCenterSource = readText('../views/BuyCenter.tsx');
-    const billingLandingSource = readText('../src/landing/BillingLanding.tsx');
+    const publicBillingPageSource = readText('../src/features/billing/PublicBillingPage.tsx');
 
     expect(billingSurfaceSource).toContain("from '../catalog'");
     expect(billingSurfaceSource).toContain('BILLING_PLAN_ROWS');
@@ -31,14 +31,15 @@ describe('billing catalog parity', () => {
     expect(buyCenterSource).toContain('mode="app"');
     expect(buyCenterSource).toContain('walletSummary={walletSummary}');
 
-    expect(billingLandingSource).toContain("from '../features/billing/surface/BillingSurface'");
-    expect(billingLandingSource).toContain('mode="public"');
+    expect(publicBillingPageSource).toContain("from './surface/BillingSurface'");
+    expect(publicBillingPageSource).toContain('mode="public"');
+    expect(publicBillingPageSource).toContain('homeUrl="/app"');
 
     expect(buyCenterSource).not.toContain('const PLAN_ROWS');
-    expect(billingLandingSource).not.toContain('const PLAN_ROWS');
+    expect(publicBillingPageSource).not.toContain('const PLAN_ROWS');
     expect(billingSurfaceSource).not.toContain('const PLAN_ROWS');
     expect(buyCenterSource).not.toContain('const TOKEN_PACK_ROWS');
-    expect(billingLandingSource).not.toContain('const TOKEN_PACK_ROWS');
+    expect(publicBillingPageSource).not.toContain('const TOKEN_PACK_ROWS');
     expect(billingSurfaceSource).not.toContain('const TOKEN_PACK_ROWS');
   });
 });

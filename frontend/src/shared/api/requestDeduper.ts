@@ -249,11 +249,12 @@ export const fetchWithRequestDedup = async (
   const sharedArgs = buildSharedFetchArgs(input, init);
   const pending = fetchImpl(sharedArgs.input, sharedArgs.init);
   inFlightRequests.set(key, pending);
-  void pending.finally(() => {
+  const clearPendingRequest = () => {
     if (inFlightRequests.get(key) === pending) {
       inFlightRequests.delete(key);
     }
-  });
+  };
+  pending.then(clearPendingRequest, clearPendingRequest);
 
   return await awaitResponseWithSignal(pending, callerSignal);
 };

@@ -1,15 +1,15 @@
 import type { Metadata } from 'next';
-import { BillingLanding } from '../../../src/landing/BillingLanding';
+import { PublicBillingPage } from '../../../src/features/billing/PublicBillingPage';
 
 export const metadata: Metadata = {
-  title: 'V FLOW AI Billing',
+  title: 'V FLOW AI Plans & Billing | Premium Studio Pricing',
   description:
-    'Unified V FLOW AI Buy Center for plans and token packs. Sign in or sign up to continue, then launch secure checkout.',
+    'Review V FLOW AI studio plans, credit packs, and billing terms with transparent pricing before you continue into secure checkout.',
   alternates: {
     canonical: '/billing',
   },
 };
 
 export default function BillingPage() {
-  return <BillingLanding />;
+  return <PublicBillingPage />;
 }

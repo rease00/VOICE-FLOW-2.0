@@ -1,5 +1,6 @@
 import { DUNO_VOICES, VOICES, EMOTIONS } from '../constants';
 import type { DubbingClip, GenerationSettings, VoiceOption } from '../types';
+import { getEngineDisplayName } from '../services/engineDisplay';
 import { getDefaultApiBaseUrl, sanitizeConfiguredApiBaseUrl } from '../src/shared/api/config';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageString } from '../src/shared/storage/localStore';
@@ -241,10 +242,108 @@ export const parseMultiSpeakerScript = (text: string): { isMultiSpeaker: boolean
   };
 };
 
-export const injectDirectorTagsPreservingFormat = (sourceText: string, directedText: string): { text: string; patchedLineCount: number } => ({
-  text: String(directedText || sourceText || ''),
-  patchedLineCount: 0,
-});
+interface DirectorHeaderTokens {
+  speaker: string;
+  primaryEmotion: string;
+  cueTags: string[];
+}
+
+const parseDirectorTagTokens = (rawTagBlock: string): { primaryEmotion: string; cueTags: string[] } => {
+  const tokens = String(rawTagBlock || '')
+    .split(',')
+    .map((token) => String(token || '').trim())
+    .filter((token) => token.length > 0);
+  if (tokens.length <= 0) {
+    return { primaryEmotion: '', cueTags: [] };
+  }
+  const normalizedPrimaryEmotion = normalizeEmotionTag(tokens[0] || '') || tokens[0] || '';
+  const seenCueTagKeys = new Set<string>();
+  const cueTags: string[] = [];
+  for (const token of tokens.slice(1)) {
+    const normalizedToken = String(token || '').trim();
+    if (!normalizedToken) continue;
+    const cueKey = normalizedToken.toLowerCase();
+    if (cueKey === normalizedPrimaryEmotion.toLowerCase()) continue;
+    if (seenCueTagKeys.has(cueKey)) continue;
+    seenCueTagKeys.add(cueKey);
+    cueTags.push(normalizedToken);
+  }
+  return {
+    primaryEmotion: normalizedPrimaryEmotion,
+    cueTags,
+  };
+};
+
+const parseDirectorHeaderTokensFromLine = (line: string): DirectorHeaderTokens | null => {
+  const match = String(line || '').trim().match(MAINAPP_SPEAKER_LINE_REGEX);
+  if (!match) return null;
+  const speaker = normalizeSpeakerName(match[1] || match[2] || match[3] || '');
+  if (!speaker) return null;
+  const { primaryEmotion, cueTags } = parseDirectorTagTokens(String(match[4] || ''));
+  return {
+    speaker,
+    primaryEmotion,
+    cueTags,
+  };
+};
+
+const composeHeaderTagBlock = (primaryEmotion: string, cueTags: readonly string[]): string => {
+  const normalizedPrimaryEmotion = normalizeEmotionTag(primaryEmotion) || String(primaryEmotion || '').trim() || 'Neutral';
+  const cleanedCueTags = cueTags
+    .map((token) => String(token || '').trim())
+    .filter((token) => token.length > 0 && token.toLowerCase() !== normalizedPrimaryEmotion.toLowerCase());
+  const tags = [normalizedPrimaryEmotion, ...cleanedCueTags];
+  return ` (${tags.join(', ')})`;
+};
+
+export const injectDirectorTagsPreservingFormat = (sourceText: string, directedText: string): { text: string; patchedLineCount: number } => {
+  const sourceLines = String(sourceText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const directedHeaders = String(directedText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => parseDirectorHeaderTokensFromLine(line))
+    .filter((header): header is DirectorHeaderTokens => Boolean(header));
+
+  if (sourceLines.length <= 0) {
+    return { text: '', patchedLineCount: 0 };
+  }
+
+  const lastDirectedHeader = directedHeaders.length > 0 ? directedHeaders[directedHeaders.length - 1] : null;
+  let headerCursor = 0;
+  let patchedLineCount = 0;
+
+  const mergedLines = sourceLines.map((rawLine) => {
+    const sourceLine = String(rawLine || '');
+    const trimmedSourceLine = sourceLine.trim();
+    if (!trimmedSourceLine) return sourceLine;
+    if (MAINAPP_SFX_REGEX.test(trimmedSourceLine)) return sourceLine;
+
+    const sourceMatch = trimmedSourceLine.match(MAINAPP_SPEAKER_LINE_REGEX);
+    const sourceSpeaker = sourceMatch ? normalizeSpeakerName(sourceMatch[1] || sourceMatch[2] || sourceMatch[3] || '') : '';
+    const sourceDialogue = sourceMatch ? String(sourceMatch[5] || '').trim() : trimmedSourceLine;
+    const sourceTagTokens = sourceMatch ? parseDirectorTagTokens(String(sourceMatch[4] || '')) : { primaryEmotion: '', cueTags: [] };
+
+    const directedHeader = directedHeaders[headerCursor] || lastDirectedHeader;
+    if (headerCursor < directedHeaders.length) headerCursor += 1;
+
+    const nextSpeaker = sourceSpeaker || directedHeader?.speaker || 'Narrator';
+    const nextPrimaryEmotion = directedHeader?.primaryEmotion || sourceTagTokens.primaryEmotion || 'Neutral';
+    const nextCueTags = directedHeader?.cueTags?.length ? directedHeader.cueTags : sourceTagTokens.cueTags;
+    const nextTagBlock = composeHeaderTagBlock(nextPrimaryEmotion, nextCueTags);
+    const nextLine = sourceDialogue ? `${nextSpeaker}${nextTagBlock}: ${sourceDialogue}` : `${nextSpeaker}${nextTagBlock}:`;
+
+    if (nextLine !== sourceLine) {
+      patchedLineCount += 1;
+    }
+    return nextLine;
+  });
+
+  return {
+    text: mergedLines.join('\n'),
+    patchedLineCount,
+  };
+};
 
 export const getStaticVoiceFallback = (engine: GenerationSettings['engine']): VoiceOption[] => (
   engine === 'DUNO' ? DUNO_VOICES : VOICES
@@ -278,13 +377,13 @@ export const TOKEN_PACK_MATRIX: Record<TokenPackKey, { label: string; vf: number
 };
 
 export const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
-  [Tab.STUDIO]: 'Script, cast, and render audio',
-  [Tab.READER]: 'Narration workspace for novels and comics',
-  [Tab.VOICE_CLONING]: 'Upload reference and target audio for VC',
-  [Tab.CHARACTERS]: 'Voice roster and cast management',
-  [Tab.NOVEL]: 'Long-form drafting and chapter flow',
-  [Tab.HISTORY]: 'Recent generations and exports',
-  [Tab.ADMIN]: 'Operational controls and audits',
+  [Tab.STUDIO]: 'Write, direct, and preview your next scene',
+  [Tab.READER]: 'Listen, import titles, and continue in progress sessions',
+  [Tab.VOICE_CLONING]: 'Manage voices, cloning, and cast-ready voice assets',
+  [Tab.CHARACTERS]: 'Legacy: Cast management moved into Voices',
+  [Tab.NOVEL]: 'Draft longer-form scripts and story work',
+  [Tab.HISTORY]: 'Rendered previews, exports, and session history',
+  [Tab.ADMIN]: 'Staff controls, moderation, and audits',
 };
 
 export const formatInr = (amount: number): string =>
@@ -296,13 +395,94 @@ export const formatInr = (amount: number): string =>
 
 export type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'scheduler' | 'audit' | 'analytics' | 'accounting';
 
+const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
+  { prefix: '/app/studio', tab: Tab.STUDIO },
+  { prefix: '/app/reader', tab: Tab.READER },
+  { prefix: '/reader', tab: Tab.READER },
+  { prefix: '/app/voices', tab: Tab.VOICE_CLONING },
+  { prefix: '/app/voice-cloning', tab: Tab.VOICE_CLONING },
+  { prefix: '/app/character', tab: Tab.VOICE_CLONING },
+  { prefix: '/app/characters', tab: Tab.VOICE_CLONING },
+  { prefix: '/app/writing', tab: Tab.NOVEL },
+  { prefix: '/app/novel', tab: Tab.NOVEL },
+  { prefix: '/app/runs', tab: Tab.HISTORY },
+  { prefix: '/app/history', tab: Tab.HISTORY },
+  { prefix: '/app/admin', tab: Tab.ADMIN },
+];
+
+export const resolveWorkspaceTabFromPathname = (pathnameInput: string | null | undefined): Tab | null => {
+  const pathname = String(pathnameInput || '').trim().toLowerCase();
+  if (!pathname) return null;
+  for (const entry of WORKSPACE_PATH_TO_TAB) {
+    if (pathname === entry.prefix || pathname.startsWith(`${entry.prefix}/`)) {
+      return entry.tab;
+    }
+  }
+  if (pathname === '/app') return Tab.STUDIO;
+  return null;
+};
+
+export const resolveWorkspaceRoutePath = (tab: Tab): string => {
+  switch (tab) {
+    case Tab.READER:
+      return '/app/reader';
+    case Tab.VOICE_CLONING:
+    case Tab.CHARACTERS:
+      return '/app/voices';
+    case Tab.NOVEL:
+      return '/app/writing';
+    case Tab.HISTORY:
+      return '/app/runs';
+    case Tab.ADMIN:
+      return '/app/admin';
+    case Tab.STUDIO:
+    default:
+      return '/app/studio';
+  }
+};
+
+export const normalizeWorkspaceTabCandidate = (candidate: Tab | null | undefined): Tab => (
+  candidate === Tab.CHARACTERS
+    ? Tab.VOICE_CLONING
+    : (candidate || Tab.STUDIO)
+);
+
+export const buildWorkspaceTabNavigationHref = (
+  currentHref: string,
+  candidate: Tab | null | undefined
+): { tab: Tab; href: string; changed: boolean } => {
+  const nextTab = normalizeWorkspaceTabCandidate(candidate);
+  const fallbackOrigin = 'https://voiceflow.local';
+  const currentUrl = new URL(String(currentHref || fallbackOrigin), fallbackOrigin);
+  const desiredPath = resolveWorkspaceRoutePath(nextTab);
+  const desiredPathToken = desiredPath.toLowerCase();
+  const currentPathToken = String(currentUrl.pathname || '').trim().toLowerCase();
+  let changed = false;
+
+  if (currentPathToken !== desiredPathToken) {
+    currentUrl.pathname = desiredPath;
+    changed = true;
+  }
+  if (currentUrl.searchParams.has('vf-tab')) {
+    currentUrl.searchParams.delete('vf-tab');
+    changed = true;
+  }
+
+  return {
+    tab: nextTab,
+    href: `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
+    changed,
+  };
+};
+
 export const resolveWorkspaceTabFromUrl = (): Tab | null => {
   if (typeof window === 'undefined') return null;
   const url = new URL(window.location.href);
+  const byPath = resolveWorkspaceTabFromPathname(url.pathname);
+  if (byPath) return byPath;
   const token = String(url.searchParams.get('vf-tab') || '').trim().toUpperCase();
+  if (token === Tab.CHARACTERS) return Tab.VOICE_CLONING;
   if (Object.values(Tab).includes(token as Tab)) return token as Tab;
-  const pathname = String(url.pathname || '').trim().toLowerCase();
-  if (pathname === '/reader' || pathname.startsWith('/reader/')) return Tab.READER;
   return null;
 };
 
@@ -357,6 +537,23 @@ export const resolveTokenPackDiscountPercent = (
 export const applyTokenPackDiscount = (baseAmountInr: number, discountPercent: number): number =>
   Math.max(1, Math.round(Math.max(0, Number(baseAmountInr || 0)) * (1 - (Math.max(0, Number(discountPercent || 0)) / 100))));
 
+export const formatMobileAvailableCreditsPercent = (input: {
+  hasUnlimitedAccess: boolean;
+  monthlyFreeRemaining: number;
+  monthlyFreeLimit: number;
+  paidVfBalance?: number;
+}): string => {
+  if (input.hasUnlimitedAccess) return '100%';
+  const freeRemaining = Math.max(0, Number(input.monthlyFreeRemaining || 0));
+  const freeLimit = Math.max(0, Number(input.monthlyFreeLimit || 0));
+  const paidBalance = Math.max(0, Number(input.paidVfBalance || 0));
+  const available = Math.max(0, freeRemaining + paidBalance);
+  const totalCapacity = Math.max(available, freeLimit + paidBalance);
+  if (totalCapacity <= 0) return '0%';
+  const percent = Math.max(0, Math.min(100, Math.round((available / totalCapacity) * 100)));
+  return `${percent}%`;
+};
+
 const CANONICAL_ENGINE_TOKENS = new Set<GenerationSettings['engine']>(['DUNO', 'VECTOR', 'PRIME']);
 
 const normalizeEngineTokenKey = (value: unknown): string => (
@@ -396,6 +593,43 @@ export const normalizeAllowedEngines = (value: unknown): GenerationSettings['eng
   });
   return Array.from(out);
 };
+
+export const PRIME_ACCESS_LOCK_MESSAGE = 'Prime is available on paid subscriptions or with paid token balance.';
+
+export const isPrimeAccessUnlocked = (input: {
+  hasUnlimitedAccess?: boolean;
+  isPaidBillingPlan?: boolean;
+  paidVfBalance?: number;
+}): boolean => (
+  Boolean(input.hasUnlimitedAccess) ||
+  Boolean(input.isPaidBillingPlan) ||
+  Math.max(0, Number(input.paidVfBalance || 0)) > 0
+);
+
+export const resolvePrimeAllowedEngines = (input: {
+  hasUnlimitedAccess?: boolean;
+  isPaidBillingPlan?: boolean;
+  paidVfBalance?: number;
+}): GenerationSettings['engine'][] => (
+  isPrimeAccessUnlocked(input) ? ['DUNO', 'VECTOR', 'PRIME'] : ['DUNO', 'VECTOR']
+);
+
+export interface EngineSelectorCopy {
+  title: string;
+  description: string;
+}
+
+export const getEngineSelectorCopy = (engine: GenerationSettings['engine']): EngineSelectorCopy =>
+  ({
+    title: getEngineDisplayName(engine),
+    description: engine === 'DUNO'
+      ? 'Expressive voice with built-in cloning.'
+      : engine === 'VECTOR'
+        ? 'Balanced quality with reliable performance.'
+        : engine === 'PRIME'
+          ? 'Premium synthesis for natural, polished output.'
+          : 'Voice engine',
+  } as EngineSelectorCopy);
 
 const cleanDubbingLine = (line: string): string => (
   String(line || '')

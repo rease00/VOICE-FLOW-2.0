@@ -54,26 +54,61 @@ export const VOICES: VoiceOption[] = [
 ];
 
 // ============================================================================
-// DUNO VOICES - Aligned with the backend gateway voice catalog
+// DUNO VOICES - DeepInfra default plus runtime/native clones
 // ============================================================================
+export const DUNO_DEFAULT_VOICE_ID = 'deepinfra_default';
+export const DUNO_LEGACY_PRESET_IDS = [
+  'af_heart',
+  'af_bella',
+  'af_nova',
+  'af_sarah',
+  'am_fenrir',
+  'am_michael',
+  'am_onyx',
+  'am_echo',
+  'bf_emma',
+  'bf_isabella',
+  'bm_george',
+  'bm_fable',
+  'hf_alpha',
+  'hf_beta',
+  'hm_omega',
+  'hm_psi',
+] as const;
+
 export const DUNO_VOICES: VoiceOption[] = [
-  { id: 'af_heart', name: 'Lyra US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_heart', country: 'United States', ageGroup: 'Adult' },
-  { id: 'af_bella', name: 'Kaia US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_bella', country: 'United States', ageGroup: 'Adult' },
-  { id: 'af_nova', name: 'Mira US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_nova', country: 'United States', ageGroup: 'Adult' },
-  { id: 'af_sarah', name: 'Zoya US', gender: 'Female', accent: 'American English', geminiVoiceName: 'af_sarah', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_fenrir', name: 'Rian US', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_fenrir', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_michael', name: 'Lucan US', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_michael', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_onyx', name: 'Soren US', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_onyx', country: 'United States', ageGroup: 'Adult' },
-  { id: 'am_echo', name: 'Darian US', gender: 'Male', accent: 'American English', geminiVoiceName: 'am_echo', country: 'United States', ageGroup: 'Adult' },
-  { id: 'bf_emma', name: 'Elara UK', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_emma', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bf_isabella', name: 'Cora UK', gender: 'Female', accent: 'British English', geminiVoiceName: 'bf_isabella', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bm_george', name: 'Alden UK', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_george', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'bm_fable', name: 'Osric UK', gender: 'Male', accent: 'British English', geminiVoiceName: 'bm_fable', country: 'United Kingdom', ageGroup: 'Adult' },
-  { id: 'hf_alpha', name: 'Kavya IN', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_alpha', country: 'India', ageGroup: 'Adult' },
-  { id: 'hf_beta', name: 'Isha IN', gender: 'Female', accent: 'Hindi', geminiVoiceName: 'hf_beta', country: 'India', ageGroup: 'Adult' },
-  { id: 'hm_omega', name: 'Aarav IN', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_omega', country: 'India', ageGroup: 'Adult' },
-  { id: 'hm_psi', name: 'Veer IN', gender: 'Male', accent: 'Hindi', geminiVoiceName: 'hm_psi', country: 'India', ageGroup: 'Adult' },
+  {
+    id: DUNO_DEFAULT_VOICE_ID,
+    name: 'Default Duno',
+    gender: 'Unknown',
+    accent: 'DeepInfra default',
+    geminiVoiceName: DUNO_DEFAULT_VOICE_ID,
+    country: 'Global',
+    ageGroup: 'Adult',
+    source: 'deepinfra_default',
+    accessTier: 'free',
+    isPlanRestricted: false,
+  },
 ];
+
+export const LEGACY_DUNO_VOICE_LABELS: Record<string, string> = {
+  af_heart: 'Lyra US',
+  af_bella: 'Kaia US',
+  af_nova: 'Mira US',
+  af_sarah: 'Zoya US',
+  am_fenrir: 'Rian US',
+  am_michael: 'Lucan US',
+  am_onyx: 'Soren US',
+  am_echo: 'Darian US',
+  bf_emma: 'Elara UK',
+  bf_isabella: 'Cora UK',
+  bm_george: 'Alden UK',
+  bm_fable: 'Osric UK',
+  hf_alpha: 'Kavya IN',
+  hf_beta: 'Isha IN',
+  hm_omega: 'Aarav IN',
+  hm_psi: 'Veer IN',
+};
 
 // ============================================================================
 // OPENAI COMPATIBLE VOICES
@@ -317,7 +352,7 @@ export const INITIAL_STATS: UserStats = {
   wallet: createEmptyWalletStats(),
   limits: {
     maxCharsPerGeneration: 8000,
-    allowedEngines: ['DUNO', 'VECTOR', 'PRIME'],
+    allowedEngines: ['DUNO', 'VECTOR'],
   },
   features: {
     earlyAccess: false,

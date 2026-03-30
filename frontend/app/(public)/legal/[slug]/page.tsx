@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { LegalCenter } from '../../../../src/landing/legal/LegalCenter';
-import { getLegalDocuments, resolveLegalDocument } from '../../../../src/landing/legal/legalContent';
+import { LegalCenter } from '../../../../src/features/legal/LegalCenter';
+import { getLegalDocuments, resolveLegalDocument } from '../../../../src/features/legal/legalContent';
 
 interface LegalDocPageProps {
   params: Promise<{ slug: string }>;

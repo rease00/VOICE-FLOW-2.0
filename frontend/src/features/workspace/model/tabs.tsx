@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, BookText, History, Mic, ShieldCheck, UserRound } from 'lucide-react';
+import { BookOpen, BookText, Coins, History, Mic, ShieldCheck } from 'lucide-react';
 
 export enum WorkspaceTab {
   STUDIO = 'STUDIO',
@@ -11,11 +11,41 @@ export enum WorkspaceTab {
   ADMIN = 'ADMIN',
 }
 
+export type WorkspaceNavSection = 'create' | 'library' | 'account' | 'admin';
+
+export const WORKSPACE_NAV_SECTION_LABELS: Record<WorkspaceNavSection, string> = {
+  create: 'Create',
+  library: 'Library',
+  account: 'Account',
+  admin: 'Admin',
+};
+
 export interface WorkspaceTabItem {
   id: WorkspaceTab;
   icon: React.ReactNode;
   label: string;
+  displayLabel: string;
+  section: WorkspaceNavSection;
+  route: string;
 }
+
+export interface WorkspaceNavActionItem {
+  id: 'BUY';
+  icon: React.ReactNode;
+  label: string;
+  displayLabel: string;
+  section: Extract<WorkspaceNavSection, 'account'>;
+  route: string;
+}
+
+export const WORKSPACE_BILLING_NAV_ITEM: WorkspaceNavActionItem = {
+  id: 'BUY',
+  icon: <Coins size={18} />,
+  label: 'Plans & Billing',
+  displayLabel: 'Plans & Billing',
+  section: 'account',
+  route: '/app/buy',
+};
 
 export interface WorkspacePreloadTargetOptions {
   allowReaderPreload?: boolean;
@@ -24,15 +54,56 @@ export interface WorkspacePreloadTargetOptions {
 
 export const buildWorkspaceTabs = (isAdmin: boolean): WorkspaceTabItem[] => {
   const tabs: WorkspaceTabItem[] = [
-    { id: WorkspaceTab.STUDIO, icon: <Mic size={18} />, label: 'Studio' },
-    { id: WorkspaceTab.READER, icon: <BookText size={18} />, label: 'Reader' },
-    { id: WorkspaceTab.VOICE_CLONING, icon: <Mic size={18} />, label: 'Voice Cloning' },
-    { id: WorkspaceTab.NOVEL, icon: <BookOpen size={18} />, label: 'Novel' },
-    { id: WorkspaceTab.CHARACTERS, icon: <UserRound size={18} />, label: 'Character' },
-    { id: WorkspaceTab.HISTORY, icon: <History size={18} />, label: 'History' },
+    {
+      id: WorkspaceTab.STUDIO,
+      icon: <Mic size={18} />,
+      label: 'Studio',
+      displayLabel: 'Studio',
+      section: 'create',
+      route: '/app/studio',
+    },
+    {
+      id: WorkspaceTab.VOICE_CLONING,
+      icon: <Mic size={18} />,
+      label: 'Voices',
+      displayLabel: 'Voices',
+      section: 'create',
+      route: '/app/voices',
+    },
+    {
+      id: WorkspaceTab.NOVEL,
+      icon: <BookOpen size={18} />,
+      label: 'Writing',
+      displayLabel: 'Writing',
+      section: 'create',
+      route: '/app/writing',
+    },
+    {
+      id: WorkspaceTab.READER,
+      icon: <BookText size={18} />,
+      label: 'Reader',
+      displayLabel: 'Reader',
+      section: 'library',
+      route: '/app/reader',
+    },
+    {
+      id: WorkspaceTab.HISTORY,
+      icon: <History size={18} />,
+      label: 'History',
+      displayLabel: 'History',
+      section: 'library',
+      route: '/app/runs',
+    },
   ];
   if (isAdmin) {
-    tabs.push({ id: WorkspaceTab.ADMIN, icon: <ShieldCheck size={18} />, label: 'Admin' });
+    tabs.push({
+      id: WorkspaceTab.ADMIN,
+      icon: <ShieldCheck size={18} />,
+      label: 'Admin',
+      displayLabel: 'Admin',
+      section: 'admin',
+      route: '/app/admin',
+    });
   }
   return tabs;
 };

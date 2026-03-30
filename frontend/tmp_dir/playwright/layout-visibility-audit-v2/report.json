@@ -1,0 +1,38 @@
+[
+  {
+    "device": "mobile-390",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\frontend\\tmp_dir\\playwright\\layout-visibility-audit-v2\\mobile-390.png",
+    "metrics": {
+      "tinyTextCount": 0,
+      "tinyText": [],
+      "smallTargetCount": 0,
+      "smallTargets": [],
+      "bodyWidth": 390,
+      "hasHorizontalOverflow": false
+    }
+  },
+  {
+    "device": "tablet-820",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\frontend\\tmp_dir\\playwright\\layout-visibility-audit-v2\\tablet-820.png",
+    "metrics": {
+      "tinyTextCount": 0,
+      "tinyText": [],
+      "smallTargetCount": 0,
+      "smallTargets": [],
+      "bodyWidth": 820,
+      "hasHorizontalOverflow": false
+    }
+  },
+  {
+    "device": "desktop-1440",
+    "screenshot": "C:\\Users\\1wasi\\OneDrive\\Desktop\\voice-Flow\\frontend\\tmp_dir\\playwright\\layout-visibility-audit-v2\\desktop-1440.png",
+    "metrics": {
+      "tinyTextCount": 0,
+      "tinyText": [],
+      "smallTargetCount": 0,
+      "smallTargets": [],
+      "bodyWidth": 1440,
+      "hasHorizontalOverflow": false
+    }
+  }
+]

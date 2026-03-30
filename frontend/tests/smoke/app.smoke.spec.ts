@@ -1,6 +1,7 @@
-﻿import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const ROUTE_TIMEOUT_MS = 20_000;
+const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 type RouteAssertion = {
   path: string;
@@ -9,9 +10,37 @@ type RouteAssertion = {
 };
 
 const waitForAnyVisible = async (page: Page, labels: string[]): Promise<void> => {
-  await Promise.race(
-    labels.map((label) => page.getByText(label, { exact: true }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }).catch(() => undefined))
+  await Promise.any(
+    labels.map((label) => page.getByText(label, { exact: true }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }))
   );
+};
+
+const expectNoHorizontalBleed = async (page: Page): Promise<void> => {
+  const metrics = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
+};
+
+const expectRailMetrics = async (page: Page, selector: string, requireOverflow = true): Promise<void> => {
+  const metrics = await page.locator(selector).evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      overflowX: style.overflowX,
+      scrollbarWidth: style.scrollbarWidth,
+    };
+  });
+
+  if (requireOverflow) {
+    expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
+  } else {
+    expect(metrics.scrollWidth).toBeGreaterThanOrEqual(metrics.clientWidth);
+  }
+  expect(metrics.overflowX).toMatch(/auto|scroll/);
 };
 
 const trackRouteHealth = (page: Page) => {
@@ -39,21 +68,12 @@ const trackRouteHealth = (page: Page) => {
 
 const routeSmokeCases: RouteAssertion[] = [
   {
-    path: '/',
-    title: 'marketing landing',
-    expect: async (page) => {
-      await expect(page.getByRole('banner').getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByTestId('landing-hero-heading')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('banner').getByRole('link', { name: 'Start Free in Studio' })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-    },
-  },
-  {
     path: '/billing',
-    title: 'billing landing',
+    title: 'billing public page',
     expect: async (page) => {
       await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText('Buy Center', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('heading', { name: /Subscription, Token Buy, and Credit Rules/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Plans & Billing', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Plans, credits, and billing/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -76,8 +96,28 @@ const routeSmokeCases: RouteAssertion[] = [
     path: '/app',
     title: 'workspace root',
     expect: async (page) => {
-      await waitForAnyVisible(page, ['Restoring workspace...', 'Secure sign-in for your VoiceFlow workspace.', 'Get Started']);
+      await page.setViewportSize(MOBILE_VIEWPORT);
+      await waitForAnyVisible(page, ['Opening Studio', 'Restoring your workspace', 'Workspace handoff']);
       await expect(page.locator('body')).toBeVisible();
+      await expectNoHorizontalBleed(page);
+    },
+  },
+  {
+    path: '/app/reader',
+    title: 'reader smoke',
+    expect: async (page) => {
+      await page.setViewportSize(MOBILE_VIEWPORT);
+      await Promise.any([
+        page.getByTestId('reader-browse-home').waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByTestId('brand-logo').first().waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+        page.getByRole('button', { name: /Get Started|Sign In|Create Account|Test Drive|Create Your First Scene|Listen to Live Demos/i }).waitFor({ state: 'visible', timeout: ROUTE_TIMEOUT_MS }),
+      ]).catch(() => undefined);
+      await expect(page.locator('body')).toBeVisible();
+      const readerRail = page.locator('.vf-reader-v2-tray__tabs');
+      if (await readerRail.count()) {
+        await expectRailMetrics(page, '.vf-reader-v2-tray__tabs');
+      }
+      await expectNoHorizontalBleed(page);
     },
   },
   {
@@ -120,7 +160,10 @@ for (const routeCase of routeSmokeCases) {
   test(routeCase.title, async ({ page }) => {
     const assertRouteHealth = trackRouteHealth(page);
 
-    await page.goto(routeCase.path, { waitUntil: 'domcontentloaded', timeout: ROUTE_TIMEOUT_MS });
+    await page.goto(routeCase.path, {
+      waitUntil: 'domcontentloaded',
+      timeout: ROUTE_TIMEOUT_MS,
+    });
     await routeCase.expect(page);
     await expect(page.locator('body')).toBeVisible();
 

@@ -187,9 +187,16 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
     return { applied: false, reason: 'selection_failed' };
   }
 
-  const regionSelection = deriveGeminiRegionSelectionFromLocation(selected.region || '', 'login_auto_nearest');
-  setGeminiRegionSelection(regionSelection);
   const selectedRegion = String(selected.region || '').trim();
+  const canPersistNearestRegionHint = Boolean(selectedRegion) && reachable.length > 1;
+  const regionSelection = canPersistNearestRegionHint
+    ? deriveGeminiRegionSelectionFromLocation(selectedRegion, 'login_auto_nearest')
+    : { regionHint: '', regionSource: '' };
+  if (canPersistNearestRegionHint) {
+    setGeminiRegionSelection(regionSelection);
+  } else {
+    clearGeminiRegionSelection();
+  }
   const regionHint = String(regionSelection.regionHint || '').trim();
   const regionSource = String(regionSelection.regionSource || '').trim();
   const routingDetail: Record<string, string> = {};
@@ -259,15 +266,17 @@ export const bootstrapLoginSeasonPinning = async (options?: { signal?: AbortSign
   const routingResult = await applyNearestBackendRoutingOnLogin(
     options?.signal ? { signal: options.signal } : undefined
   );
-  const regionSelection = resolveGeminiRegionSelection();
   const baseUrl = String(routingResult.baseUrl || readCurrentBackendUrl()).trim();
+  const persistedRegionSelection = resolveGeminiRegionSelection();
+  const regionHint = String(routingResult.regionHint || persistedRegionSelection.regionHint || '').trim();
+  const regionSource = String(routingResult.regionSource || persistedRegionSelection.regionSource || '').trim();
 
   try {
     const sessionKey = await issueTtsV2SessionKey({
       baseUrl,
       force: true,
-      regionHint: regionSelection.regionHint,
-      regionSource: regionSelection.regionSource,
+      ...(regionHint ? { regionHint } : {}),
+      ...(regionSource ? { regionSource } : {}),
       probeAllSlotRegions: true,
       ...(options?.signal ? { signal: options.signal } : {}),
     });

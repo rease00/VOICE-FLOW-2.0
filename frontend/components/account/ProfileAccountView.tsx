@@ -25,6 +25,7 @@ import { useManagedTabs } from '../../src/shared/ui/tabs';
 import { sanitizeUiText } from '../../src/shared/ui/terminology';
 import { resolveHistoryVoiceLabel } from '../../src/shared/voices/historyVoiceLabel';
 import { getEngineDisplayName } from '../../services/engineDisplay';
+import { resolvePrimeAllowedEngines } from '../../views/mainAppHelpers';
 import {
   ACCOUNT_DELETE_CONFIRM_PHRASE,
   fetchAccountEntitlements,
@@ -822,14 +823,13 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const userEmail = accountProfile?.email || user.email || 'Email unavailable';
   const accountStatus = humanizeToken(accountProfile?.status || summary.profile.status || '', 'Active');
   const recurringBenefit = Math.max(0, Number(summary.plan.pricing.discountPercent || 0));
-  const statsAllowedEngines = stats.limits?.allowedEngines;
   const allowedEngines = useMemo(
-    () => (summary.plan.allowedEngines.length > 0
-      ? summary.plan.allowedEngines
-      : Array.isArray(statsAllowedEngines)
-        ? statsAllowedEngines
-        : []),
-    [statsAllowedEngines, summary.plan.allowedEngines]
+    () => resolvePrimeAllowedEngines({
+      hasUnlimitedAccess,
+      isPaidBillingPlan: isPaidPlan,
+      paidVfBalance: Number(stats.wallet?.paidVfBalance || 0),
+    }),
+    [hasUnlimitedAccess, isPaidPlan, stats.wallet?.paidVfBalance]
   );
   const allowedEngineSummary = allowedEngines.length > 0
     ? allowedEngines.map((engine) => getEngineDisplayName(engine)).join(', ')
@@ -964,7 +964,11 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
       {...accountSectionTabs.listProps}
       className={`shrink-0 rounded-[1rem] border p-1 ${surfaceClass(isDarkUi)}`}
     >
-      <div className="flex snap-x snap-mandatory gap-1.5 overflow-x-auto sm:grid sm:grid-cols-3 sm:gap-2 xl:grid-cols-5 sm:overflow-visible">
+      <div className="mb-2 flex items-center justify-between gap-2 sm:hidden">
+        <div className={labelClass(isDarkUi)}>Sections</div>
+        <div className={`text-[11px] ${mutedClass(isDarkUi)}`}>Tap a section to switch views.</div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid sm:grid-cols-3 sm:gap-2 xl:grid-cols-5 sm:overflow-visible">
         {navItems.map((item) => {
           const isActive = item.key === activeTab;
           return (
@@ -972,7 +976,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
               key={item.key}
               type="button"
               {...accountSectionTabs.getTabProps(item.key)}
-              className={`inline-flex min-w-[9.5rem] snap-start items-center justify-center gap-1 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:min-w-0 sm:w-full sm:gap-1.5 sm:px-2.5 sm:py-1.5 sm:text-[13px] ${
+              className={`inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-2 text-[12px] font-semibold transition sm:min-w-0 sm:w-full sm:gap-1.5 sm:px-2.5 sm:py-1.5 sm:text-[13px] ${
                 isActive
                   ? (isDarkUi ? 'border-cyan-300/40 bg-cyan-400/14 text-white' : 'border-cyan-300 bg-cyan-50 text-cyan-900')
                   : `${cardInsetClass(isDarkUi)} ${mutedClass(isDarkUi)}`
@@ -1030,7 +1034,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
               }}
               placeholder={ACCOUNT_DELETE_CONFIRM_PHRASE}
               aria-describedby="delete-confirm-help"
-              className={`mt-1.5 h-10 min-w-0 w-full rounded-full border px-4 text-[13px] font-semibold uppercase tracking-[0.12em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 sm:text-sm ${
+              className={`mt-1.5 h-11 min-w-0 w-full rounded-full border px-4 text-[13px] font-semibold uppercase tracking-[0.12em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 sm:text-sm ${
                 isDarkUi
                   ? 'border-rose-300/20 bg-slate-950/45 text-rose-50 placeholder:text-rose-200/40 focus-visible:ring-offset-slate-950/80'
                   : 'border-rose-200 bg-white text-rose-900 placeholder:text-rose-400 focus-visible:ring-offset-white'
@@ -1072,7 +1076,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
               }
             }}
             disabled={isDeletingAccount || deleteConfirmPhrase.trim().toUpperCase() !== ACCOUNT_DELETE_CONFIRM_PHRASE}
-            className={`inline-flex h-10 items-center justify-center rounded-full px-4 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm ${
+            className={`inline-flex h-11 items-center justify-center rounded-full px-4 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm ${
               isDarkUi
                 ? 'border border-rose-300/25 bg-rose-400/12 text-rose-50 hover:bg-rose-400/18'
                 : 'border border-rose-200 bg-rose-600 text-white hover:bg-rose-700'
@@ -1099,7 +1103,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             window.location.href = '/app/buy';
           }
         }}
-        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
+        className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
           isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
         }`}
       >
@@ -1110,7 +1114,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
           <button
             type="button"
             onClick={() => setShowSubscriptionModal(true)}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
               isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
             }`}
           >
@@ -1122,7 +1126,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             type="button"
             onClick={() => setIsCancelDialogOpen(true)}
             disabled={subscriptionAction !== null}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
               isDarkUi ? 'border-rose-300/20 bg-rose-400/10 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
             }`}
           >
@@ -1135,7 +1139,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             type="button"
             onClick={() => void handleRecurringAction('resume')}
             disabled={subscriptionAction !== null}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:px-4 sm:py-2 sm:text-sm ${
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
               isDarkUi ? 'border-emerald-300/20 bg-emerald-400/10 text-emerald-50 hover:bg-emerald-400/18' : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
             }`}
           >
@@ -1319,8 +1323,8 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   );
 
   const renderPreferencesSection = () => (
-    <div className="grid gap-3 sm:gap-4 xl:grid-cols-[0.78fr_1.22fr]">
-      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+    <div className="grid gap-3 overflow-x-hidden sm:gap-4 xl:grid-cols-[0.78fr_1.22fr]">
+      <div className={`min-w-0 overflow-x-hidden rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Theme</div>
         <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Appearance mode</div>
         <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>Choose how the account center should render in light and dark environments.</div>
@@ -1342,7 +1346,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   key={themeId}
                   type="button"
                   onClick={() => setBrandThemeChoice(themeId)}
-                  className={`vf-brand-chip flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-[12px] font-semibold transition ${
+                  className={`vf-brand-chip flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-[12px] font-semibold transition ${
                     active
                       ? isDarkUi
                         ? 'text-white'
@@ -1371,7 +1375,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         </div>
       </div>
 
-      <div className={`rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
+      <div className={`min-w-0 overflow-x-hidden rounded-[1.2rem] border p-3 sm:p-4 ${cardInsetClass(isDarkUi)}`}>
         <div className={labelClass(isDarkUi)}>Notifications</div>
         <div className={`mt-1.5 text-[15px] font-semibold sm:mt-2 sm:text-lg ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>Inbox and email preferences</div>
         <div className={`mt-1 text-[13px] leading-5 sm:text-sm ${subduedClass(isDarkUi)}`}>Critical warnings remain enabled. These toggles control helpful prompts and email delivery.</div>
@@ -1419,7 +1423,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             type="button"
             onClick={() => void handleSendSupport()}
             disabled={isSendingSupport || supportText.trim().length === 0}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm ${
+            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${
               isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
             }`}
           >
@@ -1450,7 +1454,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             <button
               type="button"
               onClick={() => void loadSupportData(true, { force: true })}
-              className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 sm:px-4 sm:py-2 sm:text-sm ${
+              className={`mt-3 inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 ${
                 isDarkUi ? 'border-cyan-300/25 bg-cyan-400/12 text-cyan-50 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
               }`}
             >
@@ -1620,7 +1624,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   setScreenSearchState('main');
                   setScreen(AppScreen.MAIN);
                 }}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
+                className={`inline-flex min-h-11 items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
                   isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white/80 text-slate-800 hover:bg-white'
                 }`}
               >
@@ -1633,7 +1637,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                   type="button"
                   onClick={() => void handleRefresh()}
                   disabled={isRefreshing}
-                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition disabled:opacity-60 sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
+                  className={`inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition disabled:opacity-60 sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
                     isDarkUi ? 'border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08]' : 'border-slate-200 bg-white/80 text-slate-800 hover:bg-white'
                   }`}
                 >
@@ -1652,7 +1656,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                     setScreenSearchState('login');
                     setScreen(AppScreen.LOGIN);
                   }}
-                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
+                  className={`inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] font-semibold transition sm:w-auto sm:gap-2 sm:px-3 sm:py-2 sm:text-[13px] ${
                     isDarkUi ? 'border-rose-300/25 bg-rose-400/12 text-rose-50 hover:bg-rose-400/18' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
                   }`}
                 >
@@ -1664,12 +1668,17 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
 
             <div className="grid gap-2.5 sm:gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-start">
               <div className="flex items-center lg:min-h-[56px]">
-                <h1 className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${cardInsetClass(isDarkUi)}`}>
+                <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${cardInsetClass(isDarkUi)}`}>
                   <BrandLogo size="sm" tone={isDarkUi ? 'light' : 'dark'} />
-                  <span className={`text-[11px] font-black uppercase tracking-[0.18em] sm:text-[12px] sm:tracking-[0.22em] ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
-                    Account Center
-                  </span>
-                </h1>
+                  <div className="flex min-w-0 flex-col">
+                    <span className={`text-[10px] font-black uppercase tracking-[0.18em] sm:text-[11px] sm:tracking-[0.22em] ${isDarkUi ? 'text-cyan-100' : 'text-cyan-900'}`}>
+                      V FLOW AI
+                    </span>
+                    <h1 className={`text-[11px] font-semibold leading-tight sm:text-[12px] ${isDarkUi ? 'text-white' : 'text-slate-950'}`}>
+                      Account Center
+                    </h1>
+                  </div>
+                </div>
               </div>
 
               <div className={`flex min-w-0 items-center gap-2 rounded-[1rem] border px-2.5 py-2 sm:px-3 sm:py-2.5 lg:justify-self-end ${cardInsetClass(isDarkUi)}`}>

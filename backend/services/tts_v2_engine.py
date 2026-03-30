@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-import audioop
 import base64
 import math
 import os
@@ -23,6 +22,12 @@ try:
 except Exception:  # pragma: no cover
     redis = None  # type: ignore
 
+from services.audio_compat import lin2lin as pcm_lin2lin
+from services.audio_compat import mul as pcm_mul
+from services.audio_compat import ratecv as pcm_ratecv
+from services.audio_compat import rms as pcm_rms
+from services.audio_compat import tomono as pcm_tomono
+from services.audio_compat import tostereo as pcm_tostereo
 from services.queue.redis_queue import TtsJobQueue
 from shared.tts_chunk_scheduler import (
     DEFAULT_LANE_IDS,
@@ -447,26 +452,26 @@ def _normalize_wav_for_stitch(
 
     target_channels, target_width, target_rate = target_params or (channels, width, rate)
     if width != target_width:
-        frames = audioop.lin2lin(frames, width, target_width)
+        frames = pcm_lin2lin(frames, width, target_width)
         width = target_width
     if channels != target_channels:
         if channels == 1 and target_channels == 2:
-            frames = audioop.tostereo(frames, width, 1.0, 1.0)
+            frames = pcm_tostereo(frames, width, 1.0, 1.0)
         elif channels == 2 and target_channels == 1:
-            frames = audioop.tomono(frames, width, 0.5, 0.5)
+            frames = pcm_tomono(frames, width, 0.5, 0.5)
         else:
             raise RuntimeSynthesisError("Chunk WAV channels mismatch; strict stitch refused.", status_code=500)
         channels = target_channels
     if rate != target_rate:
-        frames, _ = audioop.ratecv(frames, width, channels, rate, target_rate, None)
+        frames, _ = pcm_ratecv(frames, width, channels, rate, target_rate, None)
         rate = target_rate
 
-    rms = int(audioop.rms(frames, width) if frames else 0)
+    rms = int(pcm_rms(frames, width) if frames else 0)
     if target_rms and rms > 0:
         gain = float(target_rms) / float(rms)
         gain = max(0.5, min(2.0, gain))
-        frames = audioop.mul(frames, width, gain)
-        rms = int(audioop.rms(frames, width) if frames else 0)
+        frames = pcm_mul(frames, width, gain)
+        rms = int(pcm_rms(frames, width) if frames else 0)
 
     out = BytesIO()
     with wave.open(out, "wb") as wav_out:

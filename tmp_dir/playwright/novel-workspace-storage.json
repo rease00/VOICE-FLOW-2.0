@@ -1,0 +1,20 @@
+{
+    "cookies":  [
+
+                ],
+    "origins":  [
+                    {
+                        "origin":  "http://localhost:3000",
+                        "localStorage":  [
+                                             {
+                                                 "name":  "vf_novel_workspace_v3",
+                                                 "value":  "{\"version\":4,\"projects\":[{\"id\":\"project_1\",\"name\":\"war\",\"rootFolderId\":\"local\",\"createdTime\":\"2026-03-31T00:00:00.000Z\",\"modifiedTime\":\"2026-03-31T00:00:00.000Z\"}],\"chaptersByProjectId\":{\"project_1\":[{\"id\":\"chapter_1\",\"projectId\":\"project_1\",\"title\":\"cp1\",\"name\":\"Chapter 001 - cp1\",\"index\":1,\"text\":\"Source chapter sample.\",\"adaptedText\":\"\",\"adaptationStatus\":\"idle\",\"adaptationError\":\"\",\"createdTime\":\"2026-03-31T00:00:00.000Z\",\"modifiedTime\":\"2026-03-31T00:00:00.000Z\"}]},\"selectedProjectId\":\"project_1\",\"selectedChapterId\":\"chapter_1\",\"memoryLedgerByProjectId\":{\"project_1\":{\"characters\":[],\"places\":[],\"chapterSummaries\":[]}},\"adaptationStateByProjectId\":{\"project_1\":[]},\"chapterSummariesByProjectId\":{\"project_1\":[]},\"chapterVersionsByProjectId\":{\"project_1\":{}}}"
+                                             },
+                                             {
+                                                 "name":  "vf_novel_workspace_meta",
+                                                 "value":  "{\"persistedAt\":\"2026-03-31T00:56:42.4678079+05:30\",\"selectedProjectId\":\"project_1\",\"selectedChapterId\":\"chapter_1\"}"
+                                             }
+                                         ]
+                    }
+                ]
+}

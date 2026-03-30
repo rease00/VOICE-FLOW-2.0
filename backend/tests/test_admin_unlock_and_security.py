@@ -217,3 +217,90 @@ def test_tts_engine_status_paths_require_auth(monkeypatch) -> None:
 
 def test_video_asset_manifest_loader_removed() -> None:
     assert not hasattr(backend_app, "_load_video_pipeline_asset_sources")
+
+
+def test_tts_engine_switch_requires_unlock_and_allows_ops_mutate_actor(monkeypatch) -> None:
+    _reset_unlock_state()
+    backend_app._INMEMORY_ADMIN_ROLES.clear()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "_verify_firebase_id_token", _fake_admin_claims)
+    monkeypatch.setattr(backend_app, "_audit_append_event", lambda **kwargs: None)
+
+    uid = "ops_switch_admin"
+    backend_app._rbac_write_assignment(
+        uid,
+        {
+            "role": backend_app.RBAC_ROLE_SUPER_ADMIN,
+            "allowOverrides": [],
+            "denyOverrides": [],
+            "status": "active",
+            "updatedBy": "seed",
+        },
+    )
+    backend_app._rbac_invalidate_cache(uid)
+
+    probe_results = [
+        (False, "Runtime offline", "http://runtime.test/health"),
+        (True, "Runtime online", "http://runtime.test/health"),
+    ]
+
+    def _probe(_engine: str):
+        if probe_results:
+            return probe_results.pop(0)
+        return (True, "Runtime online", "http://runtime.test/health")
+
+    monkeypatch.setattr(backend_app, "_probe_engine_runtime_health", _probe)
+    monkeypatch.setattr(
+        backend_app,
+        "_run_tts_switch_with_retry",
+        lambda engine, gpu, retries=2, keep_others=True: f"switched:{engine}:{gpu}:{retries}:{keep_others}",
+    )
+
+    client = TestClient(backend_app.app)
+    headers = _auth_headers(uid, 1710000400)
+
+    issued = client.post("/admin/session-unlock/issue", headers=headers)
+    assert issued.status_code == 200
+    unlock_key = str((issued.json() or {}).get("unlockKey") or "").strip()
+    assert unlock_key
+
+    verified = client.post(
+        "/admin/session-unlock/verify",
+        headers=headers,
+        json={"unlockKey": unlock_key},
+    )
+    assert verified.status_code == 200
+    unlock_token = str((verified.json() or {}).get("unlockToken") or "").strip()
+    assert unlock_token
+
+    allowed = client.post(
+        "/tts/engines/switch",
+        headers={**headers, "X-Admin-Unlock": f"Bearer {unlock_token}"},
+        json={"engine": "PRIME", "gpu": False},
+    )
+    assert allowed.status_code == 200
+    allowed_payload = allowed.json() or {}
+    assert bool(allowed_payload.get("ok")) is True
+    assert str(allowed_payload.get("engine") or "") == "PRIME"
+
+    missing_unlock = client.post(
+        "/tts/engines/switch",
+        headers=headers,
+        json={"engine": "PRIME", "gpu": False},
+    )
+    assert missing_unlock.status_code == 403
+    assert "admin-unlock" in str((missing_unlock.json() or {}).get("detail") or "").lower()
+
+    now_ms = backend_app._admin_unlock_now_ms()
+    monkeypatch.setattr(
+        backend_app,
+        "_admin_unlock_now_ms",
+        lambda: now_ms + (backend_app.VF_ADMIN_UNLOCK_TTL_SECONDS * 1000) + 1,
+    )
+    expired_unlock = client.post(
+        "/tts/engines/switch",
+        headers={**headers, "X-Admin-Unlock": f"Bearer {unlock_token}"},
+        json={"engine": "PRIME", "gpu": False},
+    )
+    assert expired_unlock.status_code == 403
+    assert "expired" in str((expired_unlock.json() or {}).get("detail") or "").lower()

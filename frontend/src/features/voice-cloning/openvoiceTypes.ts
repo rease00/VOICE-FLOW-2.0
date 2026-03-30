@@ -128,12 +128,23 @@ export interface OpenVoiceBenchmarkStatusResponse {
     device?: string;
     vcProvider?: string;
   };
+  provider?: string;
+  providerLabel?: string;
+  configured?: boolean;
+  expectedGpuConcurrency?: number;
+  runtimeGpuConcurrency?: number;
+  concurrencyVerified?: boolean;
   activeProvider?: string;
   defaultProvider?: string;
   revision?: number | string;
   updatedAt?: string;
   updatedBy?: string;
-  provider?: OpenVoiceRuntimeProviderStatus;
+  providerStatus?: OpenVoiceProviderRuntimeStatus & {
+    key?: string;
+    expectedGpuConcurrency?: number;
+    runtimeGpuConcurrency?: number;
+    concurrencyVerified?: boolean;
+  };
 }
 
 export interface OpenVoiceProviderRuntimeStatus {
@@ -141,6 +152,8 @@ export interface OpenVoiceProviderRuntimeStatus {
   ready?: boolean;
   detail?: string;
   device?: string;
+  activeProvider?: string;
+  defaultProvider?: string;
 }
 
 export interface OpenVoiceRuntimeProviderStatus {
@@ -235,7 +248,6 @@ export interface VoiceCloneStressStatusResponse {
 const prettyProviderLabel = (value: string): string => {
   const token = String(value || '').trim();
   if (!token) return 'Unknown';
-  if (token === 'cloud_run') return 'Cloud Run';
   if (token === 'modal') return 'Modal';
   return token.replaceAll('_', ' ');
 };
@@ -248,40 +260,59 @@ export const getOpenVoiceProviderDisplayStatus = (
   readyLabel: string;
   detail: string;
   device: string;
+  expectedGpuConcurrency: number;
+  runtimeGpuConcurrency: number;
+  concurrencyVerified: boolean;
 } => {
-  const providerPayload = status?.provider && typeof status.provider === 'object' ? status.provider : null;
+  const providerPayload = status?.providerStatus && typeof status.providerStatus === 'object' ? status.providerStatus : null;
   const activeProvider = String(
-    providerPayload?.activeProvider ||
+    providerPayload?.key ||
+      status?.provider ||
+      status?.providerLabel ||
       status?.activeProvider ||
       status?.runtime?.vcProvider ||
       ''
   ).trim();
-  const providers = providerPayload?.providers || {};
-  const activeProviderInfo = (
-    activeProvider && typeof providers === 'object'
-      ? providers[activeProvider]
-      : null
-  ) || null;
   const ready = Boolean(
-    activeProviderInfo?.ready ??
+    providerPayload?.ready ??
       status?.ready ??
       status?.supportsVC ??
       false
   );
   const detail = String(
-    activeProviderInfo?.detail ||
-      providerPayload?.updatedBy ||
+    providerPayload?.detail ||
       status?.detail ||
       status?.state ||
       (ready ? 'Ready' : 'Not ready') ||
       ''
   ).trim();
   const device = String(
-    activeProviderInfo?.device ||
+    providerPayload?.device ||
       status?.runtime?.device ||
       status?.device ||
       ''
   ).trim();
+  const expectedGpuConcurrency = Math.max(
+    0,
+    Number(
+      providerPayload?.expectedGpuConcurrency ??
+      status?.expectedGpuConcurrency ??
+      0
+    ) || 0
+  );
+  const runtimeGpuConcurrency = Math.max(
+    0,
+    Number(
+      providerPayload?.runtimeGpuConcurrency ??
+      status?.runtimeGpuConcurrency ??
+      0
+    ) || 0
+  );
+  const concurrencyVerified = Boolean(
+    providerPayload?.concurrencyVerified ??
+    status?.concurrencyVerified ??
+    false
+  );
 
   return {
     activeProvider: activeProvider || 'unknown',
@@ -289,5 +320,8 @@ export const getOpenVoiceProviderDisplayStatus = (
     readyLabel: ready ? 'Ready' : 'Not ready',
     detail: detail || 'No runtime details available.',
     device: device || 'Not available',
+    expectedGpuConcurrency,
+    runtimeGpuConcurrency,
+    concurrencyVerified,
   };
 };

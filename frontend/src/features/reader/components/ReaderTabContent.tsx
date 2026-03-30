@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { APP_ROUTE_PATHS, resolveLoginPath } from '../../../app/navigation';
+import { useUser } from '../../auth/context/UserContext';
 import type {
   GenerationSettings,
   ReaderCatalogItem,
@@ -13,7 +15,6 @@ import { parseMultiSpeakerScript } from '../../../../services/geminiService';
 import { readStorageJson, writeStorageJson } from '../../../shared/storage/localStore';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { resolveApiUrl } from '../../../shared/api/config';
-import { useWorkspaceViewport } from '../../../shared/ui/useWorkspaceViewport';
 import {
   acceptReaderLegalAck,
   checkReaderCommercialUse,
@@ -65,6 +66,7 @@ interface ReaderTabContentProps {
   mediaBackendUrl: string;
   settings?: GenerationSettings;
   resolvedTheme: ReaderResolvedTheme;
+  denseTabs?: boolean;
   onToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   syncLocation?: boolean;
   isActive?: boolean;
@@ -72,6 +74,27 @@ interface ReaderTabContentProps {
 
 const READER_RESTORE_VERSION = 1;
 const READER_PREFERENCES_VERSION = 1;
+// Collapse the reader dock sooner on tablet widths so it stops covering shelves.
+const RESPONSIVE_DOCK_MINI_MODE_QUERY = '(max-width: 900px)';
+
+const subscribeToReaderDockViewport = (onStoreChange: () => void): (() => void) => {
+  if (typeof window === 'undefined') return () => undefined;
+
+  const mediaQuery = window.matchMedia(RESPONSIVE_DOCK_MINI_MODE_QUERY);
+  const handleChange = () => onStoreChange();
+
+  if (typeof mediaQuery.addEventListener === 'function') {
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }
+
+  mediaQuery.addListener(handleChange);
+  return () => mediaQuery.removeListener(handleChange);
+};
+
+const getReaderDockViewportMiniMode = (): boolean => (
+  typeof window !== 'undefined' && window.matchMedia(RESPONSIVE_DOCK_MINI_MODE_QUERY).matches
+);
 
 interface ReaderRestoreEnvelope {
   version: number;
@@ -192,13 +215,16 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   mediaBackendUrl,
   settings,
   resolvedTheme,
+  denseTabs = false,
   onToast,
 }) => {
+  const { authReady, isAuthenticated } = useUser();
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRegistryRef = useRef<string[]>([]);
   const hasHandledDeepLinkRef = useRef(false);
   const hasUserChangedHomeTabRef = useRef(false);
+  const lastAutoOpenedSessionIdRef = useRef('');
   const readerPreferencesCacheRef = useRef<ReaderPreferencesPayload>(readReaderPreferencesStore());
   const lastPersistedReaderTabRef = useRef<{ sessionKey: string; tab: ReaderTab } | null>(null);
   const initialDeepLinkRef = useRef(
@@ -206,8 +232,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       ? null
       : parseReaderDeepLink(window.location.pathname, window.location.search)
   );
-  const { isPhone, isTablet } = useWorkspaceViewport();
-
   const [library, setLibrary] = useState<ReaderLibrary | null>(null);
   const [libraryError, setLibraryError] = useState<unknown>(null);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
@@ -243,11 +267,15 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadTitle, setUploadTitle] = useState('');
+  const [showImportFlow, setShowImportFlow] = useState(false);
+  const [showImportTermsModal, setShowImportTermsModal] = useState(false);
+  const [isAcceptingImportTerms, setIsAcceptingImportTerms] = useState(false);
+  const [dockImportDialogSignal, setDockImportDialogSignal] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreparingAudio, setIsPreparingAudio] = useState(false);
   const [audioProgressPct, setAudioProgressPct] = useState(0);
   const [statusLabel, setStatusLabel] = useState('Idle');
-  const [miniMode, setMiniMode] = useState(() => isPhone || isTablet);
+  const [miniModeOverride, setMiniModeOverride] = useState<boolean | null>(null);
   const [lastJobId, setLastJobId] = useState('');
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
   const sessionMutationRef = useRef<Record<'open' | 'progress' | 'savepoint' | 'settings' | 'queue-prime' | 'bootstrap', number>>({
@@ -276,6 +304,14 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     () => resolveReaderHomeViewModel(readerDashboard || buildReaderDashboardPayloadFromLibrary(EMPTY_READER_LIBRARY), homeTab, searchTerm),
     [homeTab, readerDashboard, searchTerm]
   );
+  const readerAuthError = useMemo(() => {
+    const error = new Error('Sign in to restore Reader shelves, sessions, and your dashboard state.') as Error & { status?: number };
+    error.status = 401;
+    return error;
+  }, []);
+  const hasReaderAuthSession = authReady && isAuthenticated;
+  const readerLoginUrl = useMemo(() => resolveLoginPath('login', APP_ROUTE_PATHS.reader), []);
+  const readerSignupUrl = useMemo(() => resolveLoginPath('signup', APP_ROUTE_PATHS.reader), []);
 
   const activeText = useMemo(
     () => getActiveUnitText(session, mode, activeUnitIndex),
@@ -287,6 +323,25 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   );
   const playbackUnits = useMemo(() => getReaderPlayableUnits(session), [session]);
   const activeUnit = playbackUnits[activeUnitIndex] || null;
+  const isCompactDockViewport = useSyncExternalStore(
+    subscribeToReaderDockViewport,
+    getReaderDockViewportMiniMode,
+    () => false
+  );
+  const miniMode = miniModeOverride ?? isCompactDockViewport;
+
+  useEffect(() => {
+    const activeSessionId = String(session?.id || '');
+    if (!activeSessionId) {
+      lastAutoOpenedSessionIdRef.current = '';
+      setMiniModeOverride(true);
+      return;
+    }
+    if (lastAutoOpenedSessionIdRef.current !== activeSessionId) {
+      setMiniModeOverride(false);
+      lastAutoOpenedSessionIdRef.current = activeSessionId;
+    }
+  }, [session?.id]);
 
   const detectedSpeakers = useMemo(() => {
     const fromCast = Object.keys(castDraft || {})
@@ -326,12 +381,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   useEffect(() => {
     setStatusLabel(isPreparingAudio ? 'Generating Audio' : resolveReaderStatusLabel(session));
   }, [isPreparingAudio, session]);
-
-  useEffect(() => {
-    if (isPhone || isTablet) {
-      setMiniMode(true);
-    }
-  }, [isPhone, isTablet]);
 
   useEffect(() => {
     const audioNode = audioRef.current;
@@ -403,6 +452,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     };
     readerPreferencesCacheRef.current = nextPreferences;
     writeReaderPreferencesStore(nextPreferences);
+    if (!hasReaderAuthSession) return;
     void updateReaderPreferences(mediaBackendUrl, { homeTab: nextHomeTab })
       .then((updatedPreferences) => {
         const mergedPreferences = {
@@ -414,9 +464,28 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
         writeReaderPreferencesStore(mergedPreferences);
       })
       .catch(() => undefined);
-  }, [mediaBackendUrl]);
+  }, [hasReaderAuthSession, mediaBackendUrl]);
 
   const loadLibrary = useCallback(async () => {
+    if (!authReady) {
+      setIsLoadingLibrary(false);
+      return;
+    }
+    if (!isAuthenticated) {
+      setIsLoadingLibrary(false);
+      setShowImportFlow(false);
+      setShowImportTermsModal(false);
+      setDashboard(null);
+      setLibrary(null);
+      setLegalAck(null);
+      setLibraryError(readerAuthError);
+      setSelectedItemId('');
+      setPreviewItemId('');
+      setPreviewItemSnapshot(null);
+      setCommercialCheck(null);
+      setIsCheckingCommercial(false);
+      return;
+    }
     setIsLoadingLibrary(true);
     try {
       const searchQuery = searchTerm.trim();
@@ -466,11 +535,12 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     } finally {
       setIsLoadingLibrary(false);
     }
-  }, [mediaBackendUrl, onToast]);
+  }, [authReady, isAuthenticated, mediaBackendUrl, onToast, readerAuthError, searchTerm]);
 
   useEffect(() => {
+    if (!authReady) return;
     void loadLibrary();
-  }, [loadLibrary]);
+  }, [authReady, loadLibrary]);
 
   const getSessionUpdatedAtMs = useCallback((value: ReaderSession | null | undefined): number => (
     Math.max(0, Number((value as { updatedAtMs?: number } | null | undefined)?.updatedAtMs || 0))
@@ -731,7 +801,6 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       })
       .catch(() => undefined);
     // Sync progress only when position changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeUnit?.id, activeUnitIndex, commitSessionResponse, issueSessionMutationToken, mediaBackendUrl, mode, session?.id, session?.windows]);
 
   const resolveAudioUrlForUnit = useCallback(async (): Promise<string> => {
@@ -929,6 +998,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     setActiveTab('read');
     setIsPlaying(false);
     setAudioProgressPct(0);
+    setShowImportFlow(false);
+    setShowImportTermsModal(false);
     lastPersistedReaderTabRef.current = null;
     const url = new URL(window.location.href);
     url.pathname = '/reader';
@@ -991,21 +1062,22 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (cached) runCommercialCheckForItem(cached);
   }, [library?.items, mediaBackendUrl, onToast, runCommercialCheckForItem]);
 
-  const handleImportUpload = useCallback(async () => {
-    if (uploadFiles.length === 0) {
+  const handleImportUpload = useCallback(async (nextFiles = uploadFiles, nextTitle = uploadTitle) => {
+    if (nextFiles.length === 0) {
       onToast('Select files to import first.', 'info');
       return;
     }
     if (!legalAck?.accepted) {
-      onToast('Accept reader rights once before importing.', 'info');
+      setShowImportTermsModal(true);
+      onToast('Accept import terms to continue.', 'info');
       return;
     }
     setIsUploading(true);
     try {
-      const contentType = detectImportTypeFromFiles(uploadFiles);
+      const contentType = detectImportTypeFromFiles(nextFiles);
       const upload = await createReaderUpload(mediaBackendUrl, {
-        files: uploadFiles,
-        title: uploadTitle || uploadFiles[0]?.name || 'Imported title',
+        files: nextFiles,
+        title: nextTitle || nextFiles[0]?.name || 'Imported title',
         contentType,
         regionId: library?.regionId || 'english',
       });
@@ -1026,6 +1098,43 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       setIsUploading(false);
     }
   }, [handleRequestOpenItem, legalAck?.accepted, library?.regionId, loadLibrary, mediaBackendUrl, onToast, openReaderItem, persistHomeTab, uploadFiles, uploadTitle]);
+
+  const handleAcceptReaderRights = useCallback(() => {
+    void acceptReaderLegalAck(mediaBackendUrl)
+      .then((ack) => {
+        setLegalAck(ack);
+        setShowImportFlow(false);
+        onToast('Reader import rights accepted.', 'success');
+      })
+      .catch((error) => onToast(String((error as Error)?.message || 'Could not save reader rights acknowledgement.'), 'error'));
+  }, [mediaBackendUrl, onToast]);
+
+  const handleAcceptImportTerms = useCallback(() => {
+    if (isAcceptingImportTerms) return;
+    setIsAcceptingImportTerms(true);
+    void acceptReaderLegalAck(mediaBackendUrl)
+      .then((ack) => {
+        setLegalAck(ack);
+        setShowImportFlow(false);
+        setShowImportTermsModal(false);
+        onToast('Reader import rights accepted.', 'success');
+        setDockImportDialogSignal((current) => current + 1);
+      })
+      .catch((error) => onToast(String((error as Error)?.message || 'Could not save reader rights acknowledgement.'), 'error'))
+      .finally(() => setIsAcceptingImportTerms(false));
+  }, [isAcceptingImportTerms, mediaBackendUrl, onToast]);
+
+  const handleDockImport = useCallback((): boolean => {
+    if (!hasReaderAuthSession) {
+      onToast('Sign in to import files.', 'info');
+      return true;
+    }
+    if (!legalAck?.accepted) {
+      setShowImportTermsModal(true);
+      return true;
+    }
+    return false;
+  }, [hasReaderAuthSession, legalAck?.accepted, onToast]);
 
   const handleConfirmPreviewRead = useCallback(() => {
     if (!previewItem) return;
@@ -1075,54 +1184,26 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   }, [activeText, sourceLanguage, targetLanguage]);
 
   const billingDisplay = useMemo(() => resolveReaderBillingDisplay(session), [session]);
+  const handleToggleMiniMode = useCallback(() => {
+    setMiniModeOverride((current) => (current === null ? !isCompactDockViewport : !current));
+  }, [isCompactDockViewport]);
+  const dockActionProps = session
+    ? {
+        onRefresh: () => void handleRefresh(),
+        onExport: () => void handleExport(),
+        onClose: handleClose,
+      }
+    : {};
 
   return (
     <div className={getReaderThemeClassName(resolvedTheme)}>
-      <div className="vf-reader-v2-shell">
-        {!legalAck?.accepted ? (
-          <section className="vf-reader-v2-notice">
-            <div>
-              <strong>Reader Rights Notice</strong>
-              <p>Accept once to import EPUB, TXT, PDF, images, ZIP, and CBZ sources.</p>
-            </div>
-            <button
-              type="button"
-              className="vf-reader-v2-primary"
-              onClick={() => {
-                void acceptReaderLegalAck(mediaBackendUrl)
-                  .then((ack) => {
-                    setLegalAck(ack);
-                    onToast('Reader rights accepted.', 'success');
-                  })
-                  .catch((error) => onToast(String((error as Error)?.message || 'Could not save reader rights acknowledgement.'), 'error'));
-              }}
-            >
-              Accept Once
-            </button>
-          </section>
-        ) : null}
-
+      <div
+        className="vf-reader-v2-shell"
+        data-reader-tab-density={denseTabs ? 'compact' : 'default'}
+        data-reader-dock-mode={miniMode ? 'mini' : 'full'}
+      >
         {!session ? (
           <>
-            <section className="vf-reader-v2-import">
-              <label>
-                <span>Quick Import</span>
-                <input
-                  type="file"
-                  multiple
-                  accept=".txt,.md,.docx,.pdf,.epub,.cbz,.zip,.png,.jpg,.jpeg,.webp"
-                  onChange={(event) => setUploadFiles(Array.from(event.target.files || []))}
-                />
-              </label>
-              <label>
-                <span>Title</span>
-                <input value={uploadTitle} onChange={(event) => setUploadTitle(event.target.value)} placeholder="Optional title" />
-              </label>
-              <button type="button" className="vf-reader-v2-primary" onClick={() => void handleImportUpload()} disabled={isUploading}>
-                {isUploading ? 'Importing...' : `Import${uploadFiles.length > 0 ? ` (${uploadFiles.length})` : ''}`}
-              </button>
-            </section>
-
             <ReaderBrowseHome
               viewModel={homeViewModel}
               homeTab={homeTab}
@@ -1131,14 +1212,29 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
               isLoading={isLoadingLibrary}
               bootstrapState={bootstrapState}
               legalAccepted={Boolean(legalAck?.accepted)}
+              showImportFlow={showImportFlow}
               libraryErrorMessage={String((libraryError as Error)?.message || libraryError || '')}
               onChangeHomeTab={persistHomeTab}
               onChangeSearchTerm={setSearchTerm}
               onSelectItem={setSelectedItemId}
               onOpenItem={handleRequestOpenItem}
+              onAcceptReaderRights={handleAcceptReaderRights}
               resolveImportedStatusBadge={resolveImportedStatusBadge}
               resolveMediaUrl={resolveMediaUrl}
             />
+
+            {!hasReaderAuthSession ? (
+              <section className="vf-reader-v2-auth-gate" aria-label="Reader sign-in gate">
+                <div>
+                  <strong>Sign in to use Reader</strong>
+                  <p>Restore shelves, continue saved sessions, accept import rights, and bring in new titles after secure sign-in.</p>
+                </div>
+                <div className="vf-reader-v2-auth-gate__actions">
+                  <a href={readerLoginUrl} className="vf-reader-v2-primary">Sign in</a>
+                  <a href={readerSignupUrl} className="vf-reader-v2-secondary">Create account</a>
+                </div>
+              </section>
+            ) : null}
           </>
         ) : (
           <>
@@ -1229,24 +1325,62 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
           />
         ) : null}
 
+        {showImportTermsModal ? (
+          <div className="vf-reader-v2-modal-backdrop">
+            <section className="vf-reader-v2-modal vf-reader-v2-modal--compact" role="dialog" aria-modal="true" aria-label="Reader import terms">
+              <div className="vf-reader-v2-modal__content">
+                <div className="vf-reader-v2-eyebrow">Reader Import</div>
+                <h3>Accept Terms To Continue</h3>
+                <p className="vf-reader-v2-modal__summary">
+                  Before your first import, confirm you have rights to use this content and that you accept Reader import terms.
+                </p>
+                <ul className="vf-reader-v2-modal__terms">
+                  <li>Only import content you own or have permission to transform.</li>
+                  <li>Do not upload restricted or illegal material.</li>
+                  <li>You are responsible for licensing and commercial-use compliance.</li>
+                </ul>
+                <div className="vf-reader-v2-modal__actions">
+                  <button
+                    type="button"
+                    className="vf-reader-v2-secondary"
+                    onClick={() => setShowImportTermsModal(false)}
+                    disabled={isAcceptingImportTerms}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="vf-reader-v2-primary"
+                    onClick={handleAcceptImportTerms}
+                    disabled={isAcceptingImportTerms}
+                  >
+                    {isAcceptingImportTerms ? 'Accepting...' : 'Accept & Continue'}
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
         <ReaderStickyDock
           title={String(session?.title || sessionItem?.title || 'Reader')}
           unitLabel={activeUnit?.title || (mode === 'novel' ? 'Read' : 'Panels')}
-          progressPct={overallProgress}
-          statusLabel={statusLabel}
-          isPlaying={isPlaying}
+          progressPct={session ? overallProgress : 0}
+          statusLabel={session ? statusLabel : 'Idle'}
+          isPlaying={session ? isPlaying : false}
           miniMode={miniMode}
-          ambiencePreset={ambiencePreset}
-          stylePreset={stylePreset}
+          transportDisabled={!session}
           onTogglePlay={() => void handleTogglePlay()}
           onPrev={() => handleSelectUnit(activeUnitIndex - 1)}
           onNext={() => handleSelectUnit(activeUnitIndex + 1)}
-          onRefresh={() => void handleRefresh()}
-          onExport={() => void handleExport()}
-          onClose={handleClose}
-          onToggleMiniMode={() => setMiniMode((current) => !current)}
-          onAmbiencePresetChange={setAmbiencePreset}
-          onStylePresetChange={setStylePreset}
+          {...dockActionProps}
+          onToggleMiniMode={handleToggleMiniMode}
+          onDockImport={handleDockImport}
+          importDialogSignal={dockImportDialogSignal}
+          onImportFiles={(files) => {
+            setUploadFiles(files);
+            void handleImportUpload(files);
+          }}
         />
         <audio ref={audioRef} preload="auto" />
       </div>

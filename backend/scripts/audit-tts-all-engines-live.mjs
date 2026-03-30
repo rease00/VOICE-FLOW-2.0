@@ -57,7 +57,7 @@ const { headers: AUTH_HEADERS, auth: AUTH } = buildAuditHeaders(
 const ENGINES = [
   {
     engine: 'DUNO',
-    voiceId: String(process.env.VF_TTS_AUDIT_DUNO_VOICE || 'af_heart').trim() || 'af_heart',
+    voiceId: String(process.env.VF_TTS_AUDIT_DUNO_VOICE || 'deepinfra_default').trim() || 'deepinfra_default',
     language: String(process.env.VF_TTS_AUDIT_DUNO_LANGUAGE || 'en').trim() || 'en',
   },
   {

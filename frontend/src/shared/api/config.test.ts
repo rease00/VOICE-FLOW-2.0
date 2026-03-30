@@ -38,7 +38,7 @@ describe('api config', () => {
     setWindowLocation('https://app.voiceflow.example');
 
     expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/backend');
-    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'http://127.0.0.1:7800').value).toBe('https://app.voiceflow.example');
+    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'http://127.0.0.1:7800').value).toBe('/api/backend');
   });
 
   it('keeps explicit local backend overrides during local development', () => {
@@ -55,18 +55,18 @@ describe('api config', () => {
     expect(getDefaultApiBaseUrl()).toBe('http://127.0.0.1:7800');
   });
 
-  it('preserves explicit remote backends', () => {
+  it('forces hosted browser sessions back onto the internal proxy for remote backends', () => {
     vi.stubEnv('VITE_API_BASE_URL', '');
     setWindowLocation('https://app.voiceflow.example');
 
-    expect(resolveApiBaseUrl('https://api.voiceflow.example')).toBe('https://api.voiceflow.example');
+    expect(resolveApiBaseUrl('https://api.voiceflow.example')).toBe('/api/backend');
   });
 
   it('heals stale localhost overrides to the configured remote backend when one is set', () => {
     vi.stubEnv('VITE_API_BASE_URL', 'https://api.voiceflow.example');
     setWindowLocation('https://voiceflow-demo.pages.dev');
 
-    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('https://api.voiceflow.example');
-    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'https://api.voiceflow.example').value).toBe('https://api.voiceflow.example');
+    expect(resolveApiBaseUrl('http://127.0.0.1:7800')).toBe('/api/backend');
+    expect(sanitizeConfiguredApiBaseUrl('localhost:7800', 'https://api.voiceflow.example').value).toBe('/api/backend');
   });
 });

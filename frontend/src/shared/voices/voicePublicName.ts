@@ -1,4 +1,4 @@
-import { F5_VOICES, DUNO_VOICES, OPENAI_VOICES, VOICES } from '../../../constants';
+import { F5_VOICES, DUNO_VOICES, LEGACY_DUNO_VOICE_LABELS, OPENAI_VOICES, VOICES } from '../../../constants';
 
 const normalizeVoiceToken = (value: unknown): string =>
   String(value || '').trim().toLowerCase();
@@ -15,6 +15,11 @@ const PUBLIC_VOICE_NAME_MAP = (() => {
       if (!normalized || out.has(normalized)) continue;
       out.set(normalized, label);
     }
+  }
+  for (const [token, label] of Object.entries(LEGACY_DUNO_VOICE_LABELS)) {
+    const normalized = normalizeVoiceToken(token);
+    if (!normalized || out.has(normalized)) continue;
+    out.set(normalized, label);
   }
   return out;
 })();

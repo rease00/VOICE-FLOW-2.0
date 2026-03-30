@@ -13,43 +13,28 @@ const ADMIN_UNLOCK_STORAGE_KEY = 'vf_admin_unlock_token';
 
 let adminUnlockTokenMemory = '';
 
-const readPersistedAdminUnlockToken = (): string => {
-  if (typeof window === 'undefined') return '';
-  try {
-    return String(window.sessionStorage?.getItem(ADMIN_UNLOCK_STORAGE_KEY) || '').trim();
-  } catch {
-    return '';
-  }
-};
-
-const persistAdminUnlockToken = (token: string): void => {
+const purgeLegacyAdminUnlockTokenStorage = (): void => {
   if (typeof window === 'undefined') return;
   try {
-    if (token) {
-      window.sessionStorage?.setItem(ADMIN_UNLOCK_STORAGE_KEY, token);
-    } else {
-      window.sessionStorage?.removeItem(ADMIN_UNLOCK_STORAGE_KEY);
-    }
+    window.sessionStorage?.removeItem(ADMIN_UNLOCK_STORAGE_KEY);
   } catch {
-    // Ignore storage write failures in constrained environments.
+    // Ignore storage failures in constrained environments.
   }
 };
 
 export const setAdminUnlockToken = (token: string): void => {
   adminUnlockTokenMemory = String(token || '').trim();
-  persistAdminUnlockToken(adminUnlockTokenMemory);
+  purgeLegacyAdminUnlockTokenStorage();
 };
 
 export const clearAdminUnlockToken = (): void => {
   adminUnlockTokenMemory = '';
-  persistAdminUnlockToken('');
+  purgeLegacyAdminUnlockTokenStorage();
 };
 
 export const getAdminUnlockToken = (): string => {
-  if (adminUnlockTokenMemory) return adminUnlockTokenMemory;
-  const persisted = readPersistedAdminUnlockToken();
-  if (persisted) {
-    adminUnlockTokenMemory = persisted;
+  if (!adminUnlockTokenMemory) {
+    purgeLegacyAdminUnlockTokenStorage();
   }
   return adminUnlockTokenMemory;
 };
@@ -718,7 +703,7 @@ export interface AdminNotice {
   [key: string]: unknown;
 }
 
-export type VoiceCloneProviderKey = 'cloud_run' | 'modal';
+export type VoiceCloneProviderKey = 'modal';
 
 export interface VoiceCloneProviderRuntimeStatus {
   configured?: boolean;
@@ -731,10 +716,24 @@ export interface VoiceCloneProviderStatusPayload {
   ok: boolean;
   activeProvider: VoiceCloneProviderKey | string;
   defaultProvider?: VoiceCloneProviderKey | string;
+  provider?: VoiceCloneProviderKey | string;
+  providerLabel?: string;
+  configured?: boolean;
+  ready?: boolean;
+  detail?: string;
+  device?: string;
+  expectedGpuConcurrency?: number;
+  runtimeGpuConcurrency?: number;
+  concurrencyVerified?: boolean;
   revision?: number;
   updatedAt?: string;
   updatedBy?: string;
-  providers?: Record<string, VoiceCloneProviderRuntimeStatus | undefined>;
+  providerStatus?: (VoiceCloneProviderRuntimeStatus & {
+    key?: VoiceCloneProviderKey | string;
+    expectedGpuConcurrency?: number;
+    runtimeGpuConcurrency?: number;
+    concurrencyVerified?: boolean;
+  }) | null;
 }
 
 export const fetchAdminUsers = async (

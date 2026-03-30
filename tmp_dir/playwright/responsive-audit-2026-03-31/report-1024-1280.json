@@ -1,0 +1,182 @@
+[
+  {
+    "route": "/app",
+    "width": 1024,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1024,
+      "innerHeight": 900,
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "scrollHeight": 948,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/reader",
+    "width": 1024,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1024,
+      "innerHeight": 900,
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "scrollHeight": 900,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/login",
+    "width": 1024,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1024,
+      "innerHeight": 900,
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "scrollHeight": 900,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/onboarding",
+    "width": 1024,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1024,
+      "innerHeight": 900,
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "scrollHeight": 948,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/profile",
+    "width": 1024,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1024,
+      "innerHeight": 900,
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "scrollHeight": 900,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/billing",
+    "width": 1024,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1024,
+      "innerHeight": 900,
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "scrollHeight": 916,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app",
+    "width": 1280,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1280,
+      "innerHeight": 900,
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "scrollHeight": 948,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/reader",
+    "width": 1280,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1280,
+      "innerHeight": 900,
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "scrollHeight": 948,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/login",
+    "width": 1280,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1280,
+      "innerHeight": 900,
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "scrollHeight": 900,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/onboarding",
+    "width": 1280,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1280,
+      "innerHeight": 900,
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "scrollHeight": 948,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/app/profile",
+    "width": 1280,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1280,
+      "innerHeight": 900,
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "scrollHeight": 900,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  },
+  {
+    "route": "/billing",
+    "width": 1280,
+    "height": 900,
+    "metrics": {
+      "innerWidth": 1280,
+      "innerHeight": 900,
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "scrollHeight": 916,
+      "clientHeight": 900,
+      "bodyOverflowX": "hidden",
+      "bodyOverflowY": "auto"
+    }
+  }
+]

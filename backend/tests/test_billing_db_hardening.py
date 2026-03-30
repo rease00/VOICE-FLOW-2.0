@@ -155,7 +155,9 @@ def test_stripe_checkout_session_honors_idempotency_key(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert len(captured_sessions) == 1
-    assert str(captured_sessions[0].get("idempotency_key") or "") == "checkout_user:starter:1"
+    checkout_key = str(captured_sessions[0].get("idempotency_key") or "")
+    assert checkout_key.startswith("vf:")
+    assert "checkout_user:starter:1" in checkout_key
 
 
 def test_token_pack_checkout_session_honors_idempotency_key(monkeypatch) -> None:
@@ -193,12 +195,212 @@ def test_token_pack_checkout_session_honors_idempotency_key(monkeypatch) -> None
 
     assert response.status_code == 200
     assert len(captured_sessions) == 1
-    assert str(captured_sessions[0].get("idempotency_key") or "") == "token_pack_user:standard:1"
+    token_key = str(captured_sessions[0].get("idempotency_key") or "")
+    assert token_key.startswith("vf:")
+    assert "token_pack_user:standard:1" in token_key
+
+
+def test_checkout_scopes_same_client_idempotency_key_per_user(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
+    monkeypatch.setattr(backend_app, "_stripe_price_id_for_plan", lambda _plan, phase="first": "price_test_1")
+    monkeypatch.setattr(backend_app, "_stripe_plan_prices_configured", lambda required_plan=None: True)
+    monkeypatch.setattr(backend_app, "_load_entitlement", lambda uid: backend_app._default_entitlement(uid))
+
+    captured_keys: list[str] = []
+
+    class _Stripe:
+        class Customer:
+            @staticmethod
+            def create(**kwargs):
+                _ = kwargs
+                return {"id": "cus_test_scoped"}
+
+        class checkout:
+            class Session:
+                @staticmethod
+                def create(**kwargs):
+                    captured_keys.append(str(kwargs.get("idempotency_key") or ""))
+                    return {"id": "cs_scoped", "url": "https://checkout.test/scoped"}
+
+    monkeypatch.setattr(backend_app, "stripe", _Stripe())
+    client = TestClient(backend_app.app)
+
+    first = client.post(
+        "/billing/checkout-session",
+        headers={"x-dev-uid": "scope_user_1", "Idempotency-Key": "same-client-key"},
+        json={"plan": "starter"},
+    )
+    second = client.post(
+        "/billing/checkout-session",
+        headers={"x-dev-uid": "scope_user_2", "Idempotency-Key": "same-client-key"},
+        json={"plan": "starter"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(captured_keys) == 2
+    assert captured_keys[0] != captured_keys[1]
+    assert all(key.startswith("vf:") for key in captured_keys)
+    assert all("same-client-key" in key for key in captured_keys)
+
+
+def test_checkout_scopes_same_client_idempotency_key_per_subject() -> None:
+    first = backend_app._scoped_checkout_idempotency_key(
+        uid="subject_user",
+        subject="subscription:starter",
+        raw_key="same-client-key",
+    )
+    second = backend_app._scoped_checkout_idempotency_key(
+        uid="subject_user",
+        subject="token-pack:standard",
+        raw_key="same-client-key",
+    )
+    assert first != second
+    assert first.startswith("vf:")
+    assert second.startswith("vf:")
+    assert "same-client-key" in first
+    assert "same-client-key" in second
+
+
+def test_billing_portal_session_returns_razorpay_short_url_when_stripe_unavailable(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda _uid: {
+            "plan": "Pro",
+            "status": "active",
+            "subscriptionId": "sub_rzp_123",
+            "razorpayCustomerId": "cust_rzp_123",
+        },
+    )
+    monkeypatch.setattr(
+        backend_app.razorpay_billing,
+        "fetch_subscription",
+        lambda **_kwargs: {"subscription_id": "sub_rzp_123", "short_url": "https://rzp.example/sub_rzp_123"},
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post("/billing/portal-session", headers={"x-dev-uid": "billing_user"}, json={})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("provider") == "razorpay"
+    assert payload.get("url") == "https://rzp.example/sub_rzp_123"
+
+
+def test_billing_subscription_cancel_supports_razorpay_when_stripe_unavailable(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda _uid: {
+            "plan": "Pro",
+            "status": "active",
+            "subscriptionId": "sub_rzp_cancel_123",
+            "razorpayCustomerId": "cust_rzp_cancel_123",
+        },
+    )
+    cancel_calls: list[dict[str, object]] = []
+
+    def _fake_cancel_subscription(**kwargs):
+        cancel_calls.append(dict(kwargs))
+        return {
+            "subscription_id": "sub_rzp_cancel_123",
+            "customer_id": "cust_rzp_cancel_123",
+            "status": "cancelled",
+        }
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "cancel_subscription", _fake_cancel_subscription)
+    monkeypatch.setattr(
+        backend_app,
+        "_build_billing_account_summary",
+        lambda _uid: {
+            "subscription": {"id": "sub_rzp_cancel_123", "status": "cancelled"},
+            "billing": {"stripeReady": False},
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post("/billing/subscription/cancel", headers={"x-dev-uid": "billing_user"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("provider") == "razorpay"
+    assert payload.get("subscription", {}).get("id") == "sub_rzp_cancel_123"
+    assert "cancel" in str(payload.get("message") or "").lower()
+    assert cancel_calls == [
+        {
+            "subscription_id": "sub_rzp_cancel_123",
+            "customer_id": "cust_rzp_cancel_123",
+            "at_cycle_end": True,
+        }
+    ]
+
+
+def test_billing_subscription_resume_supports_razorpay_when_stripe_unavailable(monkeypatch) -> None:
+    _reset_inmemory_state()
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: False)
+    monkeypatch.setattr(backend_app, "_razorpay_available", lambda: True)
+    monkeypatch.setattr(
+        backend_app,
+        "_load_entitlement",
+        lambda _uid: {
+            "plan": "Pro",
+            "status": "cancelled",
+            "subscriptionId": "sub_rzp_resume_123",
+            "razorpayCustomerId": "cust_rzp_resume_123",
+        },
+    )
+    resume_calls: list[dict[str, object]] = []
+
+    def _fake_resume_subscription(**kwargs):
+        resume_calls.append(dict(kwargs))
+        return {
+            "subscription_id": "sub_rzp_resume_123",
+            "customer_id": "cust_rzp_resume_123",
+            "status": "active",
+        }
+
+    monkeypatch.setattr(backend_app.razorpay_billing, "resume_subscription", _fake_resume_subscription)
+    monkeypatch.setattr(
+        backend_app,
+        "_build_billing_account_summary",
+        lambda _uid: {
+            "subscription": {"id": "sub_rzp_resume_123", "status": "active"},
+            "billing": {"stripeReady": False},
+        },
+    )
+
+    client = TestClient(backend_app.app)
+    response = client.post("/billing/subscription/resume", headers={"x-dev-uid": "billing_user"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("provider") == "razorpay"
+    assert payload.get("subscription", {}).get("id") == "sub_rzp_resume_123"
+    assert "resume" in str(payload.get("message") or "").lower()
+    assert resume_calls == [
+        {
+            "subscription_id": "sub_rzp_resume_123",
+            "customer_id": "cust_rzp_resume_123",
+        }
+    ]
 
 
 def test_billing_subscription_cancel_updates_stripe_and_syncs_entitlement(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: True)
     monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
     monkeypatch.setattr(
         backend_app,
@@ -268,6 +470,7 @@ def test_billing_subscription_cancel_updates_stripe_and_syncs_entitlement(monkey
 def test_billing_subscription_resume_updates_stripe_and_syncs_entitlement(monkeypatch) -> None:
     _reset_inmemory_state()
     monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", False)
+    monkeypatch.setattr(backend_app, "_stripe_available", lambda: True)
     monkeypatch.setattr(backend_app, "_require_stripe_ready", lambda: None)
     monkeypatch.setattr(
         backend_app,

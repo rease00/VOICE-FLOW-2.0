@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import { FileAudio, UploadCloud } from 'lucide-react';
 
 interface UploadDropzoneProps {
@@ -29,6 +29,8 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   onFilesSelected,
 }) => {
   const [isDragActive, setIsDragActive] = useState(false);
+  const inputId = useId();
+  const hintId = useId();
   const selectedFiles = useMemo(() => {
     if (Array.isArray(files)) return files.filter(Boolean);
     if (file) return [file];
@@ -75,13 +77,14 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         setIsDragActive(false);
         handleFiles(event.dataTransfer?.files || null);
       }}
-      className={`vf-upload-dropzone relative overflow-hidden rounded-xl border-2 border-dashed px-4 py-4 text-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
+      className={`vf-upload-dropzone relative overflow-hidden rounded-xl border-2 border-dashed px-4 py-4 text-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2 ${
         isDragActive
           ? 'vf-upload-dropzone--active border-indigo-400 bg-indigo-50/70'
           : 'border-gray-200 bg-gray-50'
       } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-gray-100/80'} ${className}`}
     >
       <input
+        id={inputId}
         type="file"
         accept={accept}
         multiple={multiple}
@@ -89,7 +92,10 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           handleFiles(event.currentTarget.files);
           event.currentTarget.value = '';
         }}
-        className="absolute inset-0 cursor-pointer opacity-0"
+        aria-label={label}
+        aria-describedby={hintId}
+        aria-disabled={disabled}
+        className="absolute inset-0 cursor-pointer opacity-0 focus:outline-none"
         disabled={disabled}
       />
 
@@ -116,7 +122,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             className={`mx-auto text-gray-400 transition-transform ${isDragActive ? 'animate-bounce text-indigo-500' : ''}`}
           />
           <p className="text-xs font-bold text-gray-600">{isDragActive ? dragLabel : label}</p>
-          <p className="text-[11px] text-gray-400">{hint}</p>
+          <p id={hintId} className="text-[11px] text-gray-400">{hint}</p>
         </div>
       )}
     </div>

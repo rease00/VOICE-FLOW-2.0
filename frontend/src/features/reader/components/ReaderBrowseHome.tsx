@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
+import React, { useState } from 'react';
+import { BookOpen, Download, Library, Search } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { ReaderCatalogItem } from '../../../../types';
 import { READER_HOME_TABS, getReaderHomeTabLabel, type ReaderHomeTab } from '../model/tabs';
 import type { ReaderBootstrapState } from '../model/bootstrap';
@@ -13,11 +14,13 @@ interface ReaderBrowseHomeProps {
   isLoading: boolean;
   bootstrapState: ReaderBootstrapState;
   legalAccepted: boolean;
+  showImportFlow?: boolean;
   libraryErrorMessage: string;
   onChangeHomeTab: (tab: ReaderHomeTab) => void;
   onChangeSearchTerm: (next: string) => void;
   onSelectItem: (itemId: string) => void;
   onOpenItem: (itemId: string) => void;
+  onAcceptReaderRights?: () => void;
   resolveImportedStatusBadge: (item: ReaderCatalogItem) => string;
   resolveMediaUrl: (url: string | undefined) => string;
 }
@@ -40,6 +43,11 @@ const getItemShelfLabel = (item: ReaderCatalogItem): string => {
 
 const getProgressPct = (item: ReaderCatalogItem): number => Math.max(0, Math.round(Number(item.resume?.progressPct || 0)));
 const formatProgressLabel = (progressPct: number): string => `${Math.max(0, Math.round(progressPct))}% complete`;
+const READER_HOME_TAB_ICONS: Record<ReaderHomeTab, LucideIcon> = {
+  novels: BookOpen,
+  library: Library,
+  imported: Download,
+};
 
 export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   viewModel,
@@ -49,30 +57,21 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   isLoading,
   bootstrapState,
   legalAccepted,
+  showImportFlow = false,
   libraryErrorMessage,
   onChangeHomeTab,
   onChangeSearchTerm,
   onSelectItem,
   onOpenItem,
+  onAcceptReaderRights,
   resolveImportedStatusBadge,
   resolveMediaUrl,
 }) => {
   const [brokenImages, setBrokenImages] = useState<Record<string, true>>({});
-  const spotlight = viewModel.spotlight;
-  const spotlightProgress = spotlight ? getProgressPct(spotlight) : 0;
   const activeCount = Number(viewModel.tabCounts[homeTab] || 0);
-  const homeStats = useMemo(() => ([
-    { label: 'Library', value: viewModel.highlights.library },
-    { label: 'Resumable', value: viewModel.highlights.resumable },
-    { label: 'Uploads', value: viewModel.highlights.uploads },
-    { label: 'Books', value: viewModel.highlights.books },
-  ].map((entry) => ({
-    ...entry,
-    value: Number(entry.value || 0),
-  }))), [viewModel.highlights.books, viewModel.highlights.library, viewModel.highlights.resumable, viewModel.highlights.uploads]);
 
   const stateMessages = [
-    !legalAccepted
+    (showImportFlow && !legalAccepted && bootstrapState !== 'needs_auth')
       ? {
           title: 'Reader rights pending',
           body: 'Accept the Reader rights prompt once to unlock imports and resume the home dashboard.',
@@ -99,90 +98,43 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
   ].filter(Boolean) as Array<{ title: string; body: string }>;
 
   const shelfSections = viewModel.sections;
-
-  return (
-    <section className="vf-reader-v2-home" data-testid="reader-home">
-      <header className="vf-reader-v2-home__hero">
-        <div className="vf-reader-v2-home__hero-copy">
-          <div className="vf-reader-v2-eyebrow">Reader Dashboard</div>
-          <h2>{viewModel.mission.title}</h2>
-          <p>{viewModel.mission.subtitle}</p>
-          <div className="vf-reader-v2-home__hero-actions">
+  const statePanel = stateMessages.length > 0 ? (
+    <section className="vf-reader-v2-home__states" aria-label="Reader status panels">
+      {stateMessages.map((message) => (
+        <article key={message.title} className="vf-reader-v2-home__state-card">
+          <strong>{message.title}</strong>
+          <p>{message.body}</p>
+          {message.title === 'Reader rights pending' ? (
             <button
               type="button"
               className="vf-reader-v2-primary"
-              onClick={() => {
-                if (spotlight) onOpenItem(spotlight.id);
-              }}
-              disabled={!spotlight}
+              onClick={() => onAcceptReaderRights?.()}
             >
-              {viewModel.mission.ctaText}
+              Accept Once
             </button>
-            <span className="vf-reader-v2-home__hero-status">{spotlight ? `${spotlight.title} - ${formatProgressLabel(spotlightProgress)}` : 'No continue reading item available'}</span>
-          </div>
-        </div>
+          ) : null}
+        </article>
+      ))}
+    </section>
+  ) : null;
 
-        <div className="vf-reader-v2-home__spotlight">
-          {spotlight ? (
-            <>
-              <button
-                type="button"
-                className="vf-reader-v2-home__spotlight-cover"
-                onClick={() => onOpenItem(spotlight.id)}
-                aria-label={`Open ${spotlight.title}`}
-              >
-                {brokenImages[spotlight.id] || !resolveMediaUrl(spotlight.coverUrl) ? (
-                  <div className="vf-reader-v2-home__spotlight-cover-fallback">
-                    <span>{getItemShelfLabel(spotlight)}</span>
-                    <strong>{spotlight.title}</strong>
-                  </div>
-                ) : (
-                  <img
-                    src={resolveMediaUrl(spotlight.coverUrl)}
-                    alt={spotlight.title}
-                    onError={() => setBrokenImages((current) => ({ ...current, [spotlight.id]: true }))}
-                  />
-                )}
-              </button>
-              <div className="vf-reader-v2-home__spotlight-body">
-                <div className="vf-reader-v2-home__spotlight-meta">
-                  <span>{getItemShelfLabel(spotlight)}</span>
-                  <span>{spotlight.collectionLabel || spotlight.provider}</span>
-                  <span>{getItemMeta(spotlight)}</span>
-                </div>
-                <h3>{spotlight.title}</h3>
-                <p>{spotlight.author}</p>
-                <div className="vf-reader-v2-home__progress" aria-label={`Continue reading progress ${spotlightProgress}%`}>
-                  <div className="vf-reader-v2-home__progress-track">
-                    <div className="vf-reader-v2-home__progress-fill" style={{ width: `${spotlightProgress}%` }} />
-                  </div>
-                  <div className="vf-reader-v2-home__progress-meta">
-                    <span>{formatProgressLabel(spotlightProgress)}</span>
-                    <span>{spotlight.readiness?.label || spotlight.prep?.state || 'Ready to open'}</span>
-                  </div>
-                </div>
-                <button type="button" className="vf-reader-v2-secondary" onClick={() => onOpenItem(spotlight.id)}>
-                  Open Continue Reading
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="vf-reader-v2-home__spotlight-empty">
-              <strong>No continue reading item yet</strong>
-              <p>Your next session will appear here once Reader has a resumable title.</p>
-            </div>
-          )}
-        </div>
-      </header>
+  return (
+    <section className="vf-reader-v2-home" data-testid="reader-home">
+      {statePanel}
 
       <section className="vf-reader-v2-home__controls">
         <label className="vf-reader-v2-home__search">
           <Search size={15} />
           <input
+            type="search"
             value={searchTerm}
             onChange={(event) => onChangeSearchTerm(event.target.value)}
             placeholder="Search title, author, or collection"
             aria-label="Search reader catalog"
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            enterKeyHint="search"
           />
         </label>
         <div className="vf-reader-v2-home__chips" role="group" aria-label="Reader home filters">
@@ -190,6 +142,7 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
             const count = Number(viewModel.tabCounts[tab] || 0);
             const label = getReaderHomeTabLabel(tab);
             const isActive = homeTab === tab;
+            const ChipIcon = READER_HOME_TAB_ICONS[tab];
             return (
               <button
                 key={tab}
@@ -198,7 +151,10 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
                 className={`vf-reader-v2-chip ${isActive ? 'vf-reader-v2-chip--active' : ''}`}
                 onClick={() => onChangeHomeTab(tab)}
               >
-                <span>{label}</span>
+                <span className="vf-reader-v2-chip__label">
+                  <ChipIcon size={14} className="vf-reader-v2-chip__icon" aria-hidden="true" />
+                  <span>{label}</span>
+                </span>
                 <span className="vf-reader-v2-chip__count">{count.toLocaleString()}</span>
               </button>
             );
@@ -214,14 +170,6 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
           <span>
             Filtered <strong>{activeCount.toLocaleString()}</strong>
           </span>
-        </div>
-        <div className="vf-reader-v2-home__metrics" aria-label="Reader shelf counts">
-          {homeStats.map((entry) => (
-            <div key={entry.label} className="vf-reader-v2-home__metric">
-              <span>{entry.label}</span>
-              <strong>{entry.value.toLocaleString()}</strong>
-            </div>
-          ))}
         </div>
       </section>
 
@@ -303,21 +251,6 @@ export const ReaderBrowseHome: React.FC<ReaderBrowseHomeProps> = ({
         ))}
       </section>
 
-      <section className="vf-reader-v2-home__states" aria-label="Reader status panels">
-        {stateMessages.length > 0 ? (
-          stateMessages.map((message) => (
-            <article key={message.title} className="vf-reader-v2-home__state-card">
-              <strong>{message.title}</strong>
-              <p>{message.body}</p>
-            </article>
-          ))
-        ) : (
-          <article className="vf-reader-v2-home__state-card">
-            <strong>Reader is ready</strong>
-            <p>Your dashboard and playback shell are both online.</p>
-          </article>
-        )}
-      </section>
     </section>
   );
 };

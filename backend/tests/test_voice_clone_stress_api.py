@@ -141,6 +141,35 @@ def test_voice_clone_stress_admin_routes_require_ops_mutate(monkeypatch: pytest.
     assert status_after_cancel.json()["status"] == "cancelled"
 
 
+def test_voice_clone_stress_start_and_cancel_enforce_admin_unlock(monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_role("voice_admin", backend_app.RBAC_ROLE_SUPER_ADMIN)
+    unlock_calls: list[str] = []
+
+    def _fake_unlock(request, *, expected_uid=None):  # noqa: ANN001
+        _ = request
+        unlock_calls.append(str(expected_uid or ""))
+        return str(expected_uid or "")
+
+    monkeypatch.setattr(backend_app, "_require_admin_mutation_unlock", _fake_unlock)
+    monkeypatch.setattr(backend_app, "_launch_voice_clone_stress_job", lambda job_id: None)
+
+    started = client.post(
+        "/admin/voice-clone/stress/start",
+        headers=_admin_headers("voice_admin"),
+        json=_stress_payload("OPENVOICE_L4_VC"),
+    )
+    assert started.status_code == 202
+    job_id = str((started.json() or {}).get("jobId") or "").strip()
+    assert job_id
+
+    cancelled = client.post(
+        f"/admin/voice-clone/stress/{job_id}/cancel",
+        headers=_admin_headers("voice_admin"),
+    )
+    assert cancelled.status_code == 200
+    assert unlock_calls == ["voice_admin", "voice_admin"]
+
+
 def test_voice_clone_stress_start_rejects_invalid_ramp_bounds() -> None:
     _seed_role("voice_admin", backend_app.RBAC_ROLE_SUPER_ADMIN)
 
@@ -175,6 +204,14 @@ def test_voice_clone_stress_v1_admin_route_aliases_work(monkeypatch: pytest.Monk
     cancelled = client.post(f"/v1/admin/voice-clone/stress/{job_id}/cancel", headers=_admin_headers("voice_admin"))
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_voice_clone_stress_defaults_use_two_way_concurrency() -> None:
+    config = backend_app.VoiceCloneStressConfig()
+    request = backend_app.VoiceCloneStressStartRequest()
+
+    assert config.concurrency == 2
+    assert request.config.concurrency == 2
 
 
 def test_voice_clone_stress_openvoice_ramp_stops_on_failure_and_stays_no_billing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,7 +329,7 @@ def test_voice_clone_stress_openvoice_ramp_stops_on_failure_and_stays_no_billing
     assert row["summary"]["totalSuccess"] == 1
     assert row["summary"]["totalFailure"] == 1
     assert row["runtimeDeviceSamples"] == ["cuda:L4"]
-    assert row["providerSnapshot"] == "cloud_run"
+    assert row["providerSnapshot"] == "modal"
     assert len(row["steps"]) == 2
     assert row["steps"][0]["pass"] is True
     assert row["steps"][1]["pass"] is False
@@ -398,7 +435,7 @@ def test_voice_clone_stress_cancel_transitions_to_cancelled_and_halts_dispatch(m
     assert row["summary"]["totalFailure"] == 0
     assert len(calls) == 1
     assert row["steps"][0]["pass"] is True
-    assert row["providerSnapshot"] == "cloud_run"
+    assert row["providerSnapshot"] == "modal"
 
 
 def test_voice_clone_stress_gemini_flash_pins_prime_and_reports_throughput(monkeypatch: pytest.MonkeyPatch) -> None:

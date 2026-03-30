@@ -155,17 +155,18 @@ for (const row of runtimeVoices) {
 const freeAllowlist = {
   PRIME: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
   VECTOR: ['v2', 'v4', 'v6', 'v8', 'v10', 'v1', 'v3', 'v5', 'v7', 'v9'],
-  DUNO: ['af_heart', 'af_bella', 'af_nova', 'af_sarah', 'am_fenrir', 'am_michael', 'am_onyx', 'am_echo', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_fable', 'hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
+  DUNO: ['deepinfra_default'],
 };
 
 for (const [engine, ids] of Object.entries(freeAllowlist)) {
-  if (ids.length < 10) {
+  const minimumVoices = engine === 'DUNO' ? 1 : 10;
+  if (ids.length < minimumVoices) {
     issues.push({
       severity: 'error',
       code: 'free_allowlist_size_invalid',
       engine,
       size: ids.length,
-      detail: 'Free tier allowlist must contain at least 10 speakers.',
+      detail: `Free tier allowlist must contain at least ${minimumVoices} speaker${minimumVoices === 1 ? '' : 's'}.`,
     });
   }
 }

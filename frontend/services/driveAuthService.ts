@@ -6,7 +6,6 @@ import {
   signInWithPopup,
 } from 'firebase/auth';
 import { firebaseAuth, googleProvider } from './firebaseClient';
-import { STORAGE_KEYS } from '../src/shared/storage/keys';
 
 export const GOOGLE_DRIVE_OAUTH_SCOPES = [
   'openid',
@@ -43,7 +42,17 @@ interface CachedDriveToken {
   expiresAtMs: number;
 }
 
-const DRIVE_TOKEN_CACHE_KEY = STORAGE_KEYS.driveGoogleTokenCache;
+const LEGACY_DRIVE_TOKEN_CACHE_KEY = 'vf_drive_google_token_cache';
+let driveTokenMemory: CachedDriveToken | null = null;
+
+const purgeLegacyDriveTokenStorage = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage?.removeItem(LEGACY_DRIVE_TOKEN_CACHE_KEY);
+  } catch {
+    // no-op
+  }
+};
 
 const parseAuthError = (error: any): Error => {
   const rawMessage = String(error?.message || '').toLowerCase();
@@ -75,27 +84,28 @@ const hasGoogleIdentity = (user: User | null): boolean => {
 };
 
 const readCachedToken = (expectedUid?: string): CachedDriveToken | null => {
-  try {
-    const raw = localStorage.getItem(DRIVE_TOKEN_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as CachedDriveToken | null;
-    if (!parsed || typeof parsed.token !== 'string' || typeof parsed.expiresAtMs !== 'number') return null;
-    if (typeof parsed.uid !== 'string') return null;
-    if (parsed.expiresAtMs <= Date.now()) return null;
-    const safeExpectedUid = String(expectedUid || '').trim();
-    if (safeExpectedUid && String(parsed.uid || '').trim() !== safeExpectedUid) return null;
-    return parsed;
-  } catch {
+  const token = driveTokenMemory;
+  if (!token) {
+    purgeLegacyDriveTokenStorage();
     return null;
   }
+  if (token.expiresAtMs <= Date.now()) {
+    driveTokenMemory = null;
+    purgeLegacyDriveTokenStorage();
+    return null;
+  }
+  const safeExpectedUid = String(expectedUid || '').trim();
+  if (safeExpectedUid && String(token.uid || '').trim() !== safeExpectedUid) {
+    driveTokenMemory = null;
+    purgeLegacyDriveTokenStorage();
+    return null;
+  }
+  return token;
 };
 
 export const clearDriveTokenCache = (): void => {
-  try {
-    localStorage.removeItem(DRIVE_TOKEN_CACHE_KEY);
-  } catch {
-    // no-op
-  }
+  driveTokenMemory = null;
+  purgeLegacyDriveTokenStorage();
 };
 
 const writeCachedToken = (token: string, uid: string): void => {
@@ -107,11 +117,8 @@ const writeCachedToken = (token: string, uid: string): void => {
     uid: safeUid,
     expiresAtMs: Date.now() + 55 * 60 * 1000,
   };
-  try {
-    localStorage.setItem(DRIVE_TOKEN_CACHE_KEY, JSON.stringify(payload));
-  } catch {
-    // no-op
-  }
+  driveTokenMemory = payload;
+  purgeLegacyDriveTokenStorage();
 };
 
 const extractAccessToken = (credential: OAuthCredential | null): string => {

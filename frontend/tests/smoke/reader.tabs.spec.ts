@@ -533,23 +533,31 @@ test('Reader mobile layout keeps primary controls within the viewport', async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await ensureStudioSmokeAuthenticated(page, credentials);
   await installReaderSmokeHarness(page, { legalAckAccepted: false });
-  const readerHome = page.getByTestId('reader-home');
   const expandDockButton = page.getByLabel('Expand reader dock');
   const collapseDockButton = page.getByLabel('Collapse dock to compact circle');
-  const importFilesButton = readerHome.getByRole('button', { name: /^Import Files$/i });
+  const importDockButton = page.getByRole('button', { name: /^Import content$/i });
+  const dockImportInput = page.locator('.vf-reader-v2-dock__import-input');
+  const importTermsDialog = page.getByRole('dialog', { name: /^Reader import terms$/i });
 
   await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
-  await expect(page.getByText('Reader Rights Notice')).toBeVisible();
-  await expect(importFilesButton).toBeVisible({ timeout: 30_000 });
-  await expect(importFilesButton).toBeDisabled();
+  await expect(page.getByText('Reader rights pending')).toHaveCount(0);
   await expect(expandDockButton).toBeVisible({ timeout: 30_000 });
+  await expect(collapseDockButton).toBeHidden({ timeout: 30_000 });
   await expandDockButton.click();
   await expect(collapseDockButton).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('Read - Idle', { exact: true })).toBeVisible();
+  await expect(importDockButton).toBeVisible({ timeout: 30_000 });
+  await expect(dockImportInput).toBeHidden({ timeout: 30_000 });
+  await importDockButton.click();
+  await expect(importTermsDialog).toBeVisible({ timeout: 30_000 });
+  const acceptTermsButton = importTermsDialog.getByRole('button', { name: /^Accept & Continue$/i });
+  await expect(acceptTermsButton).toBeVisible();
+  await acceptTermsButton.click();
+  await expect(importTermsDialog).toBeHidden({ timeout: 30_000 });
+  await expect(page.getByText('Reader rights pending')).toHaveCount(0);
 
   const viewportWidth = await page.evaluate(() => window.innerWidth);
   const targets = [
-    page.getByRole('button', { name: /^Accept Once$/i }),
     collapseDockButton,
   ];
   for (const target of targets) {

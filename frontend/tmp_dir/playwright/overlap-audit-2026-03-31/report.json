@@ -1,0 +1,17 @@
+[
+  {
+    "device": "desktop-1920x1080",
+    "ok": false,
+    "error": "page.goto: Timeout 180000ms exceeded.\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/app/studio\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  },
+  {
+    "device": "tablet-1024x1366",
+    "ok": false,
+    "error": "page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:3001/app/studio\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/app/studio\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  },
+  {
+    "device": "mobile-390x844",
+    "ok": false,
+    "error": "page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:3001/app/studio\nCall log:\n\u001b[2m  - navigating to \"http://localhost:3001/app/studio\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  }
+]

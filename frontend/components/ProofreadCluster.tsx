@@ -10,7 +10,7 @@ interface ProofreadClusterProps {
 export const ProofreadCluster: React.FC<ProofreadClusterProps> = ({
   isBusy,
   onProofread,
-  novelLabel = 'Novel',
+  novelLabel = 'AI Audio Novel',
 }) => {
   return (
     <div className="vf-proofread-cluster">
@@ -20,27 +20,25 @@ export const ProofreadCluster: React.FC<ProofreadClusterProps> = ({
         className="vf-proofread-action"
         title="Strict Grammar Check"
       >
-        <SpellCheck size={14} />
-        <span className="hidden md:inline">Grammar</span>
+        <SpellCheck size={12} />
+        <span>Grammar</span>
       </button>
-      <div className="vf-proofread-divider" />
       <button
         onClick={() => onProofread('flow')}
         disabled={isBusy}
         className="vf-proofread-action"
         title="Optimize Flow & Naturalness"
       >
-        <BookOpenCheck size={14} />
+        <BookOpenCheck size={12} />
         <span>Flow</span>
       </button>
-      <div className="vf-proofread-divider" />
       <button
         onClick={() => onProofread('novel')}
         disabled={isBusy}
         className="vf-proofread-action"
-        title="Enhance for Audio Novel"
+        title="Enhance for AI Audio Novel"
       >
-        <Book size={14} />
+        <Book size={12} />
         <span>{novelLabel}</span>
       </button>
     </div>

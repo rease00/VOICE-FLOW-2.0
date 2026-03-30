@@ -84,16 +84,14 @@ import {
   resolveAdminSupportConversation,
   fetchAdminSupportAiPolicy,
   createAdminBroadcastNotice,
-  deleteAdminBroadcastNotice,
-  fetchAdminVoiceCloneProvider,
-  patchAdminVoiceCloneProvider,
-  patchAdminSupportAiPolicy,
+    deleteAdminBroadcastNotice,
+    fetchAdminVoiceCloneProvider,
+    patchAdminSupportAiPolicy,
   type AdminNotice,
   type SupportConversation,
   type SupportMessage,
   type SupportAiPolicy,
-  type VoiceCloneProviderStatusPayload,
-  type VoiceCloneProviderKey,
+    type VoiceCloneProviderStatusPayload,
 } from '../services/adminService';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
 import { useManagedTabs } from '../src/shared/ui/tabs';
@@ -387,6 +385,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   initialOpsTab = 'usage',
 }) => {
   const { user } = useUser();
+  useEffect(() => {
+    if (!user?.uid) {
+      clearAdminUnlockToken();
+    }
+  }, [user?.uid]);
   const {
     sortedUsers,
     isLoadingUsers,
@@ -462,7 +465,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [opsGateway, setOpsGateway] = useState<Record<string, unknown> | null>(null);
   const [opsQueue, setOpsQueue] = useState<Record<string, unknown> | null>(null);
   const [voiceCloneProvider, setVoiceCloneProvider] = useState<VoiceCloneProviderStatusPayload | null>(null);
-  const [voiceCloneProviderDraft, setVoiceCloneProviderDraft] = useState<VoiceCloneProviderKey>('cloud_run');
   const [isLoadingOps, setIsLoadingOps] = useState(false);
 
   const [alertPolicies, setAlertPolicies] = useState<AlertPolicy[]>([]);
@@ -739,7 +741,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (queue.status === 'fulfilled') setOpsQueue(queue.value as Record<string, unknown>);
       if (provider.status === 'fulfilled') {
         setVoiceCloneProvider(provider.value);
-        setVoiceCloneProviderDraft((provider.value?.activeProvider as VoiceCloneProviderKey) || 'cloud_run');
       }
       const failures = [usage, guardian, approvals, gateway, queue, provider].filter(
         (result) => result.status === 'rejected'
@@ -1268,7 +1269,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleClearAdminUnlockToken = () => {
     clearAdminUnlockToken();
-    onToast('Local admin unlock token cleared.', 'info');
+    onToast('Admin unlock token cleared from this tab.', 'info');
   };
 
   useEffect(() => {
@@ -1376,27 +1377,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const canSupportAiReview = can('support.ai.review');
   const canSupportAiConfig = can('support.ai.config');
   const canUseAdminUnlock = canUsersWrite || canCouponsWrite || canBillingWrite || canRbacWrite || canOpsMutate || canGuardianMutate || canAlertsWrite || canSchedulerWrite || canSupportReply || canSupportAiConfig;
-  const voiceCloneProviderActive = String(voiceCloneProvider?.activeProvider || voiceCloneProviderDraft || 'cloud_run').trim() as VoiceCloneProviderKey;
-  const voiceCloneProviderDefault = String(voiceCloneProvider?.defaultProvider || 'cloud_run').trim() || 'cloud_run';
-  const voiceCloneProviderInfo = voiceCloneProvider?.providers?.[voiceCloneProviderActive] || null;
-  const voiceCloneProviderReady = Boolean(voiceCloneProviderInfo?.ready);
-
-  const handleSaveVoiceCloneProvider = async () => {
-    if (!canOpsMutate) {
-      onToast('Missing ops.mutate permission.', 'info');
-      return;
-    }
-    await withSaving('voice_clone_provider', async () => {
-      const next = await patchAdminVoiceCloneProvider(
-        { activeProvider: voiceCloneProviderDraft },
-        mediaBackendUrl
-      );
-      setVoiceCloneProvider(next);
-      setVoiceCloneProviderDraft((next?.activeProvider as VoiceCloneProviderKey) || voiceCloneProviderDraft);
-      await reloadOpsSafely();
-      onToast('Voice clone provider updated.', 'success');
-    }, 'Failed to update voice clone provider.');
-  };
+  const voiceCloneProviderActive = String(
+    voiceCloneProvider?.provider ||
+    voiceCloneProvider?.activeProvider ||
+    'modal'
+  ).trim() || 'modal';
+  const voiceCloneProviderDefault = String(voiceCloneProvider?.defaultProvider || 'modal').trim() || 'modal';
+  const voiceCloneProviderInfo = voiceCloneProvider?.providerStatus || null;
+  const voiceCloneProviderReady = Boolean(
+    voiceCloneProvider?.ready ??
+    voiceCloneProviderInfo?.ready
+  );
 
   const handleReplySupportConversation = async () => {
     const safeConversationId = String(selectedSupportConversationId || '').trim();
@@ -1928,7 +1919,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       <div
         {...adminMainTabs.listProps}
-        className="shrink-0 overflow-x-auto rounded-xl border border-gray-200 bg-white p-1"
+        className="vf-scrollbar-invisible shrink-0 overflow-x-auto rounded-xl border border-gray-200 bg-white p-1"
       >
         <div className="flex min-w-max gap-2">
           {([
@@ -1985,7 +1976,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
                 <div>Unlocked until: <strong>{formatDate(adminUnlockStatus?.unlockExpiresAt || '')}</strong></div>
                 <div>Locked until: <strong>{formatDate(adminUnlockStatus?.lockedUntil || '')}</strong></div>
-                <div>Local token: <strong>{adminUnlockTokenPresent ? 'present' : 'missing'}</strong></div>
+                <div>Tab token: <strong>{adminUnlockTokenPresent ? 'present' : 'missing'}</strong></div>
+                <div className="mt-1 text-[10px] text-gray-500">Token stays in memory only and clears on refresh.</div>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -3148,36 +3140,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <>
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="font-semibold text-gray-800">Voice clone provider</div>
+                    <div className="font-semibold text-gray-800">Voice cloning runtime</div>
                     <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${voiceCloneProviderReady ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                       {voiceCloneProviderReady ? 'Ready' : 'Not ready'}
                     </span>
                   </div>
-                  <div className="grid gap-2 md:grid-cols-4">
-                    <div>Active: <strong>{voiceCloneProviderActive}</strong></div>
+                  <div className="grid gap-2 md:grid-cols-5">
+                    <div>Provider: <strong>{voiceCloneProviderActive}</strong></div>
                     <div>Default: <strong>{voiceCloneProviderDefault}</strong></div>
-                    <div>Device: <strong>{String(voiceCloneProviderInfo?.device || 'n/a')}</strong></div>
-                    <div>Detail: <strong>{String(voiceCloneProviderInfo?.detail || 'n/a')}</strong></div>
+                    <div>Device: <strong>{String(voiceCloneProviderInfo?.device || voiceCloneProvider?.device || 'n/a')}</strong></div>
+                    <div>GPU concurrency: <strong>{String(voiceCloneProvider?.runtimeGpuConcurrency || 0) || '0'} / {String(voiceCloneProvider?.expectedGpuConcurrency || 2)}</strong></div>
+                    <div>Detail: <strong>{String(voiceCloneProviderInfo?.detail || voiceCloneProvider?.detail || 'n/a')}</strong></div>
                   </div>
-                  {canOpsMutate ? (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <select
-                        value={voiceCloneProviderDraft}
-                        onChange={(event) => setVoiceCloneProviderDraft(event.target.value as VoiceCloneProviderKey)}
-                        className="h-8 rounded border border-gray-200 bg-white px-2 text-xs"
-                      >
-                        <option value="cloud_run">cloud_run</option>
-                        <option value="modal">modal</option>
-                      </select>
-                      <button
-                        onClick={() => { void handleSaveVoiceCloneProvider(); }}
-                        disabled={isSaving === 'voice_clone_provider'}
-                        className="h-8 rounded border border-indigo-200 bg-indigo-50 px-2 text-xs font-semibold text-indigo-700 disabled:opacity-60"
-                      >
-                        {isSaving === 'voice_clone_provider' ? 'Saving...' : 'Switch'}
-                      </button>
-                    </div>
-                  ) : null}
+                  <div className="mt-3 text-xs text-gray-500">
+                    Modal is the only supported production VC runtime. Provider switching is disabled.
+                  </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <div className="rounded-xl border border-gray-100 bg-gray-50 p-3"><div className="text-gray-500">Requests</div><div className="text-lg font-bold text-gray-900">{asNumber((opsUsage?.windows as Record<string, Record<string, unknown>> | undefined)?.total?.requests).toLocaleString()}</div></div>

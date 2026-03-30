@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import base64
-import io
-import wave
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -35,10 +31,13 @@ def _provider_switch_isolation(monkeypatch: pytest.MonkeyPatch):
         backend_app,
         "_openvoice_provider_runtime_probe",
         lambda provider: {
-            "configured": provider == backend_app.OPENVOICE_PROVIDER_CLOUD_RUN,
-            "ready": provider == backend_app.OPENVOICE_PROVIDER_CLOUD_RUN,
-            "detail": f"{provider}-ready",
-            "device": "cuda:L4" if provider == backend_app.OPENVOICE_PROVIDER_CLOUD_RUN else "modal-device",
+            "configured": provider == backend_app.OPENVOICE_PROVIDER_MODAL,
+            "ready": provider == backend_app.OPENVOICE_PROVIDER_MODAL,
+            "detail": "Modal VC runtime ready",
+            "device": "nvidia-l4",
+            "expectedGpuConcurrency": 2,
+            "runtimeGpuConcurrency": 2,
+            "concurrencyVerified": True,
         },
     )
     yield
@@ -62,41 +61,7 @@ def _admin_headers(uid: str) -> dict[str, str]:
     return {"x-dev-uid": uid}
 
 
-def _wav_b64(duration_sec: float = 0.2, sample_rate: int = 24_000) -> str:
-    frames = max(1, int(duration_sec * sample_rate))
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(sample_rate)
-        handle.writeframes(b"\x00\x00" * frames)
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def _stress_payload() -> dict[str, object]:
-    return {
-        "benchmarkTarget": "OPENVOICE_L4_VC",
-        "config": {
-            "startRpm": 2,
-            "stepRpm": 2,
-            "maxRpm": 2,
-            "stepDurationSec": 5,
-            "concurrency": 1,
-            "maxFailureRate": 0.0,
-            "maxP95Ms": 20_000,
-            "warmupRequests": 0,
-            "requestTimeoutSec": 1.0,
-        },
-        "referenceAudioBase64": _wav_b64(),
-        "referenceAudioName": "reference.wav",
-        "sourceAudioBase64": _wav_b64(),
-        "sourceAudioName": "source.wav",
-        "text": "provider snapshot test",
-        "voiceName": "Fenrir",
-    }
-
-
-def test_provider_get_requires_ops_read_and_alias_returns_status(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_provider_get_requires_ops_read_and_returns_modal_only_status() -> None:
     _seed_role("billing_actor_user", backend_app.RBAC_ROLE_BILLING_OPS)
     _seed_role("ops_reader_user", backend_app.RBAC_ROLE_READ_ONLY_OPS)
 
@@ -108,17 +73,26 @@ def test_provider_get_requires_ops_read_and_alias_returns_status(monkeypatch: py
     assert allowed.status_code == 200
     payload = allowed.json()
     assert payload["ok"] is True
-    assert payload["activeProvider"] == backend_app.OPENVOICE_PROVIDER_CLOUD_RUN
-    assert payload["defaultProvider"] == backend_app.OPENVOICE_PROVIDER_CLOUD_RUN
+    assert payload["activeProvider"] == backend_app.OPENVOICE_PROVIDER_MODAL
+    assert payload["defaultProvider"] == backend_app.OPENVOICE_PROVIDER_MODAL
+    provider_status = payload.get("providerStatus") or {}
+    assert provider_status.get("key") == backend_app.OPENVOICE_PROVIDER_MODAL
+    assert provider_status.get("ready") is True
+    assert provider_status.get("device") == "nvidia-l4"
+    assert payload.get("expectedGpuConcurrency") == 2
+    assert payload.get("runtimeGpuConcurrency") == 2
+    assert payload.get("concurrencyVerified") is True
+    assert "providers" not in payload
     assert "token" not in str(payload).lower()
-    assert "url" not in str(payload["providers"]).lower()
+    assert "url" not in str(provider_status).lower()
 
 
-def test_provider_patch_requires_unlock_and_v1_alias_updates_active_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_provider_patch_requires_unlock_and_is_terminally_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_role("voice_admin", backend_app.RBAC_ROLE_SUPER_ADMIN)
     unlock_calls: list[str] = []
 
-    def _fake_unlock(request, *, expected_uid=None):
+    def _fake_unlock(request, *, expected_uid=None):  # noqa: ANN001
+        _ = request
         unlock_calls.append(str(expected_uid or ""))
         return str(expected_uid or "")
 
@@ -129,67 +103,19 @@ def test_provider_patch_requires_unlock_and_v1_alias_updates_active_provider(mon
         headers=_admin_headers("voice_admin"),
         json={"activeProvider": "modal"},
     )
-    assert first.status_code == 200
-    assert first.json()["revision"] == 1
-    assert unlock_calls == ["voice_admin"]
+    assert first.status_code == 410
+    first_payload = first.json()
+    assert first_payload["ok"] is False
+    assert "no longer supported" in str(first_payload.get("detail") or "").lower()
+    assert first_payload["activeProvider"] == backend_app.OPENVOICE_PROVIDER_MODAL
 
     second = client.patch(
         "/v1/admin/voice-clone/provider",
         headers=_admin_headers("voice_admin"),
         json={"activeProvider": "modal"},
     )
-    assert second.status_code == 200
-    payload = second.json()
-    assert payload["ok"] is True
-    assert payload["activeProvider"] == "modal"
-    assert payload["defaultProvider"] == backend_app.OPENVOICE_PROVIDER_CLOUD_RUN
-    assert payload["revision"] == 2
-    assert payload["updatedBy"] == "voice_admin"
+    assert second.status_code == 410
+    second_payload = second.json()
+    assert second_payload["ok"] is False
+    assert second_payload["activeProvider"] == backend_app.OPENVOICE_PROVIDER_MODAL
     assert unlock_calls == ["voice_admin", "voice_admin"]
-    assert backend_app._openvoice_runtime_config_get()["activeProvider"] == "modal"
-
-
-def test_provider_snapshot_is_locked_into_running_stress_job(monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_role("voice_admin", backend_app.RBAC_ROLE_SUPER_ADMIN)
-
-    fake_calls: list[str] = []
-
-    class FakeOpenVoiceClient:
-        def health(self) -> dict[str, object]:
-            return {"ok": True, "state": "online", "detail": "cloud run ready", "device": "cuda:L4", "warm": True}
-
-        def capabilities(self) -> dict[str, object]:
-            return {"ok": True, "supportsVC": True, "engine": "SEED_VC"}
-
-        def vc(self, payload, *, timeout_sec=None):  # noqa: ANN001
-            fake_calls.append(str(payload.get("requestId") or ""))
-            return {
-                "ok": True,
-                "status": "completed",
-                "timings": {"vcMs": 10, "gpuSeconds": 0.01},
-                "runtime": {"device": "cuda:L4", "vcProvider": "openvoice-cloud-run"},
-                "audioBase64": base64.b64encode(b"fake").decode("ascii"),
-            }
-
-    fake_client = FakeOpenVoiceClient()
-    monkeypatch.setattr(backend_app, "_resolve_openvoice_client", lambda provider=None: (provider or "cloud_run", fake_client))
-    monkeypatch.setattr(backend_app, "_openvoice_runtime_config_get", lambda: {"activeProvider": "modal"})
-    monkeypatch.setattr(backend_app, "_launch_voice_clone_stress_job", lambda job_id: None)
-
-    started = client.post(
-        "/admin/voice-clone/stress/start",
-        headers=_admin_headers("voice_admin"),
-        json=_stress_payload(),
-    )
-    assert started.status_code == 202
-    job_id = str(started.json()["jobId"])
-    assert backend_app._VOICE_CLONE_STRESS_JOBS[job_id]["providerSnapshot"] == "modal"
-
-    monkeypatch.setattr(backend_app, "_openvoice_runtime_config_get", lambda: {"activeProvider": "cloud_run"})
-    backend_app._run_voice_clone_stress_job(job_id)
-
-    row = backend_app._VOICE_CLONE_STRESS_JOBS[job_id]
-    assert row["providerSnapshot"] == "modal"
-    assert row["summary"]["stopReason"] == "max_rpm_reached"
-    assert row["runtimePreflight"]["provider"] == "modal"
-    assert fake_calls

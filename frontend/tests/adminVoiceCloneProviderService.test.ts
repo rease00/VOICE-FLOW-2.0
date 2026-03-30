@@ -30,8 +30,8 @@ describe('admin voice clone provider service', () => {
   it('reads the active provider from the admin endpoint', async () => {
     authFetchMock.mockResolvedValue(jsonResponse({
       ok: true,
-      activeProvider: 'cloud_run',
-      defaultProvider: 'cloud_run',
+      activeProvider: 'modal',
+      defaultProvider: 'modal',
       revision: 3,
     }));
 
@@ -39,8 +39,8 @@ describe('admin voice clone provider service', () => {
 
     expect(payload).toMatchObject({
       ok: true,
-      activeProvider: 'cloud_run',
-      defaultProvider: 'cloud_run',
+      activeProvider: 'modal',
+      defaultProvider: 'modal',
       revision: 3,
     });
     expect(authFetchMock).toHaveBeenCalledWith(
@@ -50,25 +50,20 @@ describe('admin voice clone provider service', () => {
     );
   });
 
-  it('patches the active provider with the expected payload shape', async () => {
+  it('keeps the legacy patch path but surfaces the backend unsupported response', async () => {
     authFetchMock.mockResolvedValue(jsonResponse({
-      ok: true,
+      ok: false,
       activeProvider: 'modal',
-      defaultProvider: 'cloud_run',
-      revision: 4,
-    }));
+      defaultProvider: 'modal',
+      detail: 'Voice clone provider switching is no longer supported. Modal is the only supported VC runtime.',
+    }, 410));
 
-    const payload = await patchAdminVoiceCloneProvider(
-      { activeProvider: 'modal' },
-      'http://127.0.0.1:7800'
-    );
-
-    expect(payload).toMatchObject({
-      ok: true,
-      activeProvider: 'modal',
-      defaultProvider: 'cloud_run',
-      revision: 4,
-    });
+    await expect(
+      patchAdminVoiceCloneProvider(
+        { activeProvider: 'modal' },
+        'http://127.0.0.1:7800'
+      )
+    ).rejects.toThrow(/no longer supported/i);
     expect(authFetchMock).toHaveBeenCalledWith(
       `${resolvedBaseUrl}/admin/voice-clone/provider`,
       expect.objectContaining({

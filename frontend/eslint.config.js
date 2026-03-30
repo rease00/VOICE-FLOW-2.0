@@ -6,6 +6,7 @@ export default [
   {
     ignores: [
       '.next/**',
+      '.next-*/**',
       '.next-buildcheck/**',
       '.next-ci/**',
       '.next-playwright/**',

@@ -75,7 +75,7 @@ const ToastItem: React.FC<{ item: AppNotification; isDarkUi: boolean }> = ({ ite
   return (
     <div
       data-testid="notification-toast"
-      className={`pointer-events-auto w-[min(22rem,92vw)] rounded-xl border px-3 py-3 shadow-lg backdrop-blur-sm ${severityTone(item.severity, isDarkUi)} animate-in slide-in-from-right duration-200`}
+      className={`pointer-events-auto w-full max-w-[22rem] rounded-xl border px-3 py-3 shadow-lg backdrop-blur-sm ${severityTone(item.severity, isDarkUi)} animate-in slide-in-from-right duration-200`}
       role="status"
       aria-live={item.severity === 'critical' || item.severity === 'error' ? 'assertive' : 'polite'}
     >
@@ -222,6 +222,7 @@ export const NotificationUI: React.FC = () => {
   const [isDarkUi, setIsDarkUi] = useState<boolean>(false);
   const [toastRightOffset, setToastRightOffset] = useState<string>('1rem');
   const [toastTopOffset, setToastTopOffset] = useState<string>('1rem');
+  const [isCompactViewport, setIsCompactViewport] = useState<boolean>(false);
   const [isClearAllConfirmOpen, setIsClearAllConfirmOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const {
@@ -236,6 +237,7 @@ export const NotificationUI: React.FC = () => {
   useEffect(() => {
     const syncUiState = () => {
       setIsDarkUi(readDarkTheme());
+      setIsCompactViewport(window.innerWidth < 768);
       setToastRightOffset(resolveToastRightOffset());
       setToastTopOffset(resolveToastTopOffset());
     };
@@ -335,10 +337,12 @@ export const NotificationUI: React.FC = () => {
     <>
       <div data-testid="notification-root" className="pointer-events-none fixed inset-0 z-[115]">
         <div
-          className="pointer-events-none fixed inset-x-2 flex max-h-[50vh] w-fit flex-col items-end gap-2 overflow-y-auto pr-1 md:inset-x-auto md:top-4"
+          className="pointer-events-none fixed inset-x-2 flex max-h-[50vh] w-[calc(100vw-1rem)] flex-col items-stretch gap-2 overflow-y-auto pr-1 md:inset-x-auto md:top-4 md:w-fit md:items-end"
           style={{
-            top: toastTopOffset,
-            right: toastRightOffset,
+            top: isCompactViewport ? 'auto' : toastTopOffset,
+            right: isCompactViewport ? '0.5rem' : toastRightOffset,
+            bottom: isCompactViewport ? 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' : undefined,
+            width: isCompactViewport ? 'calc(100vw - 1rem)' : undefined,
           }}
         >
           {toastItems.map((item) => (

@@ -13,6 +13,8 @@ import { sleepMs } from '../services/ttsLongTextService';
 import { TTS_GATEWAY_JOB_PROGRESS_EVENT } from '../services/ttsGatewayJobService';
 
 const toBuffer = (bytes: number[]): ArrayBuffer => new Uint8Array(bytes).buffer;
+const withStatus = (message: string, status: number): Error & { status: number } =>
+  Object.assign(new Error(message), { status });
 const mockedSleepMs = vi.mocked(sleepMs);
 const windowListeners = new Map<string, Set<(event: Event) => void>>();
 
@@ -140,7 +142,7 @@ describe('pollTtsGatewayJobForAudio', () => {
     expect(mockedSleepMs).not.toHaveBeenCalled();
   });
 
-  it('continues polling without escalating to inline chunk audio after a chunk fetch failure', async () => {
+  it('retries retryable chunk fetch failures without escalating to inline chunk mode', async () => {
     mockedSleepMs.mockClear();
     const getJob = vi
       .fn()
@@ -148,13 +150,6 @@ describe('pollTtsGatewayJobForAudio', () => {
         ok: true,
         jobId: 'job-2',
         status: 'queued',
-        chunks: [{ index: 0, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
-        chunkCursorNext: 1,
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        jobId: 'job-2',
-        status: 'running',
         chunks: [{ index: 0, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
         chunkCursorNext: 1,
       })
@@ -169,7 +164,9 @@ describe('pollTtsGatewayJobForAudio', () => {
       });
     const fetchChunkAudio = vi
       .fn()
-      .mockRejectedValueOnce(new Error('chunk unavailable'));
+      .mockRejectedValueOnce(withStatus('chunk warming', 409))
+      .mockRejectedValueOnce(withStatus('runtime warming', 503))
+      .mockResolvedValueOnce(toBuffer([1, 2, 3]));
     const fetchResult = vi.fn();
 
     const result = await pollTtsGatewayJobForAudio({
@@ -186,11 +183,66 @@ describe('pollTtsGatewayJobForAudio', () => {
     });
 
     expect(new Uint8Array(result.audioBytes)).toEqual(new Uint8Array([4, 5, 6]));
-    expect(fetchChunkAudio).toHaveBeenCalledTimes(1);
+    expect(fetchChunkAudio).toHaveBeenCalledTimes(3);
     expect(fetchResult).not.toHaveBeenCalled();
+    expect(getJob).toHaveBeenCalledTimes(2);
+    expect(getJob.mock.calls.every(([, options]) => options?.includeChunkAudio === false)).toBe(true);
+    const sleepCalls = mockedSleepMs.mock.calls.map(([delayMs]) => Number(delayMs));
+    expect(sleepCalls).toContain(220);
+    expect(sleepCalls).toContain(440);
+    expect(sleepCalls).toContain(2000);
+  });
+
+  it('does not globally disable chunk downloads after a non-retryable chunk fetch failure', async () => {
+    mockedSleepMs.mockClear();
+    const getJob = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        jobId: 'job-2b',
+        status: 'queued',
+        chunks: [{ index: 0, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
+        chunkCursorNext: 1,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        jobId: 'job-2b',
+        status: 'running',
+        chunks: [{ index: 1, contentType: 'audio/wav', durationMs: 120, textChars: 24 }],
+        chunkCursorNext: 2,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        jobId: 'job-2b',
+        status: 'completed',
+        result: {
+          audioBase64: Buffer.from([4, 5, 6]).toString('base64'),
+          headers: {},
+        },
+      });
+    const fetchChunkAudio = vi
+      .fn()
+      .mockRejectedValueOnce(withStatus('chunk bad request', 400))
+      .mockResolvedValueOnce(toBuffer([8, 9, 10]));
+
+    const result = await pollTtsGatewayJobForAudio({
+      jobId: 'job-2b',
+      runtimeLabel: 'Gemini runtime',
+      engine: 'PRIME',
+      timeoutMs: 5_000,
+      client: {
+        getJob,
+        fetchResult: vi.fn(),
+        fetchChunkAudio,
+        cancelJob: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    });
+
+    expect(new Uint8Array(result.audioBytes)).toEqual(new Uint8Array([4, 5, 6]));
+    expect(fetchChunkAudio).toHaveBeenCalledTimes(2);
+    expect(fetchChunkAudio.mock.calls.map((call) => call[1])).toEqual([0, 1]);
     expect(getJob).toHaveBeenCalledTimes(3);
     expect(getJob.mock.calls.every(([, options]) => options?.includeChunkAudio === false)).toBe(true);
-    expect(mockedSleepMs.mock.calls.map(([delayMs]) => delayMs)).toEqual([2000, 2000]);
   });
 
   it('keeps polling in hidden tabs on a slower cadence and still emits progress heartbeats', async () => {

@@ -83,6 +83,9 @@ const DEFAULT_TTS_GATEWAY_JOB_POLL_MAX_MS = 12000;
 const DEFAULT_TTS_GATEWAY_JOB_HIDDEN_POLL_MS = 5000;
 const DEFAULT_TTS_GATEWAY_JOB_TIMEOUT_MS = 180000;
 const TTS_GATEWAY_JOB_POLL_BACKOFF_FACTOR = 1.7;
+const TTS_GATEWAY_CHUNK_FETCH_MAX_ATTEMPTS = 3;
+const TTS_GATEWAY_CHUNK_FETCH_RETRY_BASE_MS = 220;
+const TTS_GATEWAY_CHUNK_FETCH_RETRY_MAX_MS = 1400;
 
 export const resolveTtsGatewayJobPollDelayMs = (input: {
   currentDelayMs?: number;
@@ -160,6 +163,47 @@ const toResponseHeadersRecord = (headers: Record<string, string> | undefined): R
   return record;
 };
 
+const resolveChunkFetchStatusCode = (error: unknown): number => {
+  const source = (error && typeof error === 'object') ? error as Record<string, unknown> : {};
+  const status = Number(source.status ?? (source.cause as Record<string, unknown> | undefined)?.status ?? 0);
+  return Number.isFinite(status) ? Math.floor(status) : 0;
+};
+
+const isRetryableChunkFetchStatus = (statusCode: number): boolean => {
+  if (statusCode === 404 || statusCode === 409) return true;
+  return statusCode >= 500 && statusCode <= 599;
+};
+
+const fetchChunkAudioWithRetry = async (input: {
+  jobId: string;
+  chunkIndex: number;
+  baseUrl?: string | undefined;
+  signal?: AbortSignal | undefined;
+  fetchChunkAudioClient: GatewayJobClient['fetchChunkAudio'];
+}): Promise<ArrayBuffer | null> => {
+  let attempt = 0;
+  while (attempt < TTS_GATEWAY_CHUNK_FETCH_MAX_ATTEMPTS) {
+    if (input.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    try {
+      return await input.fetchChunkAudioClient(input.jobId, input.chunkIndex, input.baseUrl);
+    } catch (error) {
+      attempt += 1;
+      const statusCode = resolveChunkFetchStatusCode(error);
+      if (!isRetryableChunkFetchStatus(statusCode) || attempt >= TTS_GATEWAY_CHUNK_FETCH_MAX_ATTEMPTS) {
+        return null;
+      }
+      const retryDelayMs = Math.min(
+        TTS_GATEWAY_CHUNK_FETCH_RETRY_MAX_MS,
+        Math.round(TTS_GATEWAY_CHUNK_FETCH_RETRY_BASE_MS * (2 ** (attempt - 1))),
+      );
+      await sleepMs(retryDelayMs);
+    }
+  }
+  return null;
+};
+
 export const extractGatewayJobId = (
   payload: unknown,
   headers?: Headers
@@ -210,7 +254,6 @@ export const pollTtsGatewayJobForAudio = async (
   let chunkCursor = 0;
   let chunkSupportEnabled = true;
   const chunkInlineAudioFallback = false;
-  let chunkDownloadEnabled = true;
   let pollDelayMs = resolveTtsGatewayJobPollDelayMs({ reset: true, baseDelayMs: pollMs, maxDelayMs: pollMaxMs });
   let lastStatus = '';
   const emittedChunkKeys = new Set<string>();
@@ -307,12 +350,16 @@ export const pollTtsGatewayJobForAudio = async (
           if (emittedChunkKeys.has(key)) continue;
 
           let audioBase64 = String(rawChunk.audioBase64 || '').trim();
-          if (!audioBase64 && chunkDownloadEnabled) {
-            try {
-              const chunkBytes = await fetchChunkAudioClient(jobId, safeIndex, baseUrl);
+          if (!audioBase64) {
+            const chunkBytes = await fetchChunkAudioWithRetry({
+              jobId,
+              chunkIndex: safeIndex,
+              ...(baseUrl ? { baseUrl } : {}),
+              signal,
+              fetchChunkAudioClient,
+            });
+            if (chunkBytes) {
               audioBase64 = await arrayBufferToBase64(chunkBytes);
-            } catch {
-              chunkDownloadEnabled = false;
             }
           }
           if (!audioBase64) continue;

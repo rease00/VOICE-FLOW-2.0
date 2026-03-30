@@ -2,6 +2,12 @@ import { AppScreen } from '../../types';
 
 export const APP_ROUTE_PATHS = {
   main: '/app',
+  studio: '/app/studio',
+  reader: '/app/reader',
+  writing: '/app/writing',
+  voices: '/app/voices',
+  runs: '/app/runs',
+  admin: '/app/admin',
   buy: '/app/buy',
   login: '/app/login',
   onboarding: '/app/onboarding',
@@ -14,6 +20,17 @@ export type AuthRouteMode = 'login' | 'signup';
 
 const INTERNAL_NEXT_ALLOWLIST = new Set<string>([
   APP_ROUTE_PATHS.main,
+  APP_ROUTE_PATHS.studio,
+  APP_ROUTE_PATHS.reader,
+  APP_ROUTE_PATHS.writing,
+  APP_ROUTE_PATHS.voices,
+  APP_ROUTE_PATHS.runs,
+  APP_ROUTE_PATHS.admin,
+  '/app/voice-cloning',
+  '/app/character',
+  '/app/characters',
+  '/app/novel',
+  '/app/history',
   APP_ROUTE_PATHS.buy,
   APP_ROUTE_PATHS.onboarding,
   APP_ROUTE_PATHS.profile,
@@ -83,10 +100,40 @@ export const resolveAppScreenFromPathname = (pathname: string): AppScreen | null
     case APP_ROUTE_PATHS.profile:
       return AppScreen.PROFILE;
     case APP_ROUTE_PATHS.buy:
+    case APP_ROUTE_PATHS.studio:
+    case APP_ROUTE_PATHS.reader:
+    case APP_ROUTE_PATHS.writing:
+    case APP_ROUTE_PATHS.voices:
+    case APP_ROUTE_PATHS.runs:
+    case APP_ROUTE_PATHS.admin:
+    case '/app/voice-cloning':
+    case '/app/character':
+    case '/app/characters':
+    case '/app/novel':
+    case '/app/history':
       return AppScreen.MAIN;
     case APP_ROUTE_PATHS.main:
       return AppScreen.MAIN;
     default:
       return null;
   }
+};
+
+export const shouldBootstrapAccountDataForPath = (pathname?: string | null): boolean => {
+  const safePath = String(pathname || '').trim().replace(/\/+$/, '') || '/';
+  if (!safePath || safePath === '/') return false;
+  if (safePath.startsWith('/legal')) return false;
+  if (
+    safePath === APP_ROUTE_PATHS.login
+    || safePath === APP_ROUTE_PATHS.onboarding
+    || safePath === APP_ROUTE_PATHS.userIdSetup
+  ) {
+    return false;
+  }
+  return (
+    safePath === APP_ROUTE_PATHS.profile
+    || safePath === APP_ROUTE_PATHS.buy
+    || safePath === '/billing'
+    || safePath.startsWith('/app')
+  );
 };

@@ -1,0 +1,332 @@
+[
+  {
+    "device": "iphone-375x812",
+    "viewport": {
+      "width": 375,
+      "height": 812
+    },
+    "studio": {
+      "url": "http://localhost:3000/app/studio",
+      "hasStudioControls": true,
+      "hasCastCrew": true,
+      "runtimeActivePill": null,
+      "runtimeLockPill": null,
+      "studioControlsTitle": {
+        "text": "Studio controls",
+        "width": 259.53,
+        "height": 16.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "studioControlToggle": {
+        "text": "Multi-Speaker On",
+        "width": 153.09,
+        "height": 30.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "manageUpgradePill": null,
+      "userEmail": null,
+      "tinyUnder10": [
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%RAM 23M",
+          "cls": "pointer-events-none fixed bottom-3 left-[calc(16rem+0.75rem)] z-40 hidden select-none xl:flex items-center gap-2 rounded-full border border-slate-300/70 bg-slate-950/82 px-2.5 py-1.5 text-[9px] font-mono text-slate-200 shadow-sm backdrop-blur-md"
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%",
+          "cls": "flex items-center gap-1.5"
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%",
+          "cls": ""
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": "h-2.5 w-px bg-slate-600"
+        },
+        {
+          "fontSize": "9px",
+          "text": "RAM 23M",
+          "cls": "flex items-center gap-1.5"
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        }
+      ]
+    },
+    "voiceCloning": {
+      "url": "http://localhost:3000/app/voices",
+      "safetyHeading": null,
+      "consentCheckboxLabel": null,
+      "helperSubLabel": null
+    }
+  },
+  {
+    "device": "tablet-820x1180",
+    "viewport": {
+      "width": 820,
+      "height": 1180
+    },
+    "studio": {
+      "url": "http://localhost:3000/app/studio",
+      "hasStudioControls": true,
+      "hasCastCrew": true,
+      "runtimeActivePill": {
+        "text": "Active",
+        "width": 61.05,
+        "height": 20.8,
+        "fontSize": "9.92px",
+        "lineHeight": "9.92px"
+      },
+      "runtimeLockPill": {
+        "text": "Locked: Runtime switching is read-only for this account (ops",
+        "width": 424.91,
+        "height": 26.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "studioControlsTitle": {
+        "text": "Studio controls",
+        "width": 259.53,
+        "height": 16.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "studioControlToggle": {
+        "text": "Multi-Speaker On",
+        "width": 153.09,
+        "height": 30.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "manageUpgradePill": {
+        "text": "Upgrade",
+        "width": 61.77,
+        "height": 20.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "userEmail": null,
+      "tinyUnder10": [
+        {
+          "fontSize": "9.92px",
+          "text": "Active",
+          "cls": "vf-runtime-chip__active-pill vf-runtime-chip__active-pill--compact"
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%RAM 23M",
+          "cls": "pointer-events-none fixed bottom-3 left-[calc(16rem+0.75rem)] z-40 hidden select-none xl:flex items-center gap-2 rounded-full border border-slate-300/70 bg-slate-950/82 px-2.5 py-1.5 text-[9px] font-mono text-slate-200 shadow-sm backdrop-blur-md"
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%",
+          "cls": "flex items-center gap-1.5"
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%",
+          "cls": ""
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": "h-2.5 w-px bg-slate-600"
+        },
+        {
+          "fontSize": "9px",
+          "text": "RAM 23M",
+          "cls": "flex items-center gap-1.5"
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        }
+      ]
+    },
+    "voiceCloning": {
+      "url": "http://localhost:3000/app/voices",
+      "safetyHeading": null,
+      "consentCheckboxLabel": null,
+      "helperSubLabel": null
+    }
+  },
+  {
+    "device": "desktop-1440x900",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "studio": {
+      "url": "http://localhost:3000/app/studio",
+      "hasStudioControls": true,
+      "hasCastCrew": true,
+      "runtimeActivePill": {
+        "text": "Active",
+        "width": 67,
+        "height": 20.8,
+        "fontSize": "10.56px",
+        "lineHeight": "10.56px"
+      },
+      "runtimeLockPill": {
+        "text": "Locked: Runtime switching is read-only for this account (ops",
+        "width": 424.91,
+        "height": 26.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "studioControlsTitle": {
+        "text": "Studio controls",
+        "width": 259.53,
+        "height": 16.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "studioControlToggle": {
+        "text": "Multi-Speaker On",
+        "width": 153.09,
+        "height": 44,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "manageUpgradePill": {
+        "text": "Upgrade",
+        "width": 61.77,
+        "height": 20.5,
+        "fontSize": "11px",
+        "lineHeight": "16.5px"
+      },
+      "userEmail": null,
+      "tinyUnder10": [
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%RAM 22M",
+          "cls": "pointer-events-none fixed bottom-3 left-[calc(16rem+0.75rem)] z-40 hidden select-none xl:flex items-center gap-2 rounded-full border border-slate-300/70 bg-slate-950/82 px-2.5 py-1.5 text-[9px] font-mono text-slate-200 shadow-sm backdrop-blur-md"
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%",
+          "cls": "flex items-center gap-1.5"
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "CPU 2%",
+          "cls": ""
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": "h-2.5 w-px bg-slate-600"
+        },
+        {
+          "fontSize": "9px",
+          "text": "RAM 22M",
+          "cls": "flex items-center gap-1.5"
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        },
+        {
+          "fontSize": "9px",
+          "text": "",
+          "cls": {}
+        }
+      ]
+    },
+    "voiceCloning": {
+      "url": "http://localhost:3000/app/voices",
+      "safetyHeading": null,
+      "consentCheckboxLabel": null,
+      "helperSubLabel": null
+    }
+  }
+]

@@ -12,7 +12,7 @@ import { resolveApiBaseUrl } from '../../../shared/api/config';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { readStorageJson } from '../../../shared/storage/localStore';
 import { useManagedTabs } from '../../../shared/ui/tabs';
-import { LegalLinks } from '../../../landing/LegalLinks';
+import { LegalLinks } from '../../legal/LegalLinks';
 import { resolveLoginPath, resolveSafeInternalNextPath } from '../../../app/navigation';
 import {
   consumeBillingCheckoutIntent,
@@ -90,10 +90,8 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   walletSummary = null,
   defaultTokenPackKey = 'standard',
 }) => {
-  const couponEnabled = mode === 'app';
-  const visibleTabs = couponEnabled
-    ? (['plans', 'token', 'coupon'] as const)
-    : (['plans', 'token'] as const);
+  const couponEnabled = true;
+  const visibleTabs = ['plans', 'token', 'coupon'] as const;
   const selectedTabItems = visibleTabs.map((id) => ({ id }));
 
   const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath });
@@ -104,11 +102,12 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   const [loadingKey, setLoadingKey] = useState('');
   const [error, setError] = useState('');
   const [banner, setBanner] = useState<BillingSurfaceBanner | null>(null);
-  const [hasFirebaseSession, setHasFirebaseSession] = useState<boolean>(() => Boolean(firebaseAuth.currentUser));
+  const [hasFirebaseSession, setHasFirebaseSession] = useState<boolean | null>(() => (firebaseAuth.currentUser ? true : null));
   const resumeAttemptedRef = useRef(false);
 
   const resolvedAuthMode = authMode || (mode === 'public' ? 'signup' : 'login');
-  const hasActiveAuthSession = Boolean(isAuthenticated ?? hasFirebaseSession);
+  const hasActiveAuthSession = Boolean(hasFirebaseSession || isAuthenticated);
+  const publicSignInUrl = resolveLoginPath('login', resolveSafeInternalNextPath(appBuyUrl, appBuyUrl));
 
   const selectedPackSummary = useMemo(
     () => BILLING_TOKEN_PACK_ROWS.find((item) => item.key === selectedPack) || BILLING_TOKEN_PACK_ROWS[1] || BILLING_TOKEN_PACK_ROWS[0] || FALLBACK_TOKEN_PACK,
@@ -172,7 +171,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         tone: 'success',
         message: refreshed
           ? 'Payment completed. Account balances refreshed.'
-          : 'Payment completed. Open app buy center to refresh your live account summary.',
+          : 'Payment completed. Open Plans & Billing to refresh your live account summary.',
       });
     };
 
@@ -183,12 +182,11 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   }, [couponEnabled, onRefreshEntitlements]);
 
   useEffect(() => {
-    if (isAuthenticated !== undefined) return undefined;
     const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
       setHasFirebaseSession(Boolean(user));
     });
     return () => unsubscribe();
-  }, [isAuthenticated]);
+  }, []);
 
   const resolveResumePath = useCallback((tab: BillingSurfaceTab): string => {
     if (typeof window === 'undefined') return `${returnPath}?resumeCheckout=1`;
@@ -205,6 +203,13 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     const safeNext = resolveSafeInternalNextPath(intent?.resumePath, resolveResumePath(activeTab));
     window.location.href = resolveLoginPath(resolvedAuthMode, safeNext);
   }, [activeTab, resolveResumePath, resolvedAuthMode]);
+
+  const redirectToAuthTab = useCallback((tab: BillingSurfaceTab, authTarget: 'login' | 'signup' = resolvedAuthMode): void => {
+    if (typeof window === 'undefined') return;
+    const resumePath = resolveResumePath(tab);
+    const safeNext = resolveSafeInternalNextPath(resumePath, resumePath);
+    window.location.href = resolveLoginPath(authTarget, safeNext);
+  }, [resolveResumePath, resolvedAuthMode]);
 
   const runPlanCheckout = useCallback(async (planKey: BillingPlanKey, rawCouponCode?: string): Promise<void> => {
     const couponCodeTrimmed = String(rawCouponCode || '').trim();
@@ -281,7 +286,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         });
         return;
       }
-      setError(checkoutError?.message || 'Could not start token-pack checkout.');
+      setError(checkoutError?.message || 'Could not start credit-pack checkout.');
     } finally {
       setLoadingKey('');
     }
@@ -303,7 +308,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     if (!intent) {
       setBanner({
         tone: 'info',
-        message: 'Sign in completed. Select a plan or token pack to continue checkout.',
+        message: 'Sign in completed. Select a plan or credit pack to continue checkout.',
       });
       return;
     }
@@ -332,6 +337,10 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   };
 
   const handleRedeemCoupon = async () => {
+    if (!hasActiveAuthSession) {
+      redirectToAuthTab('coupon');
+      return;
+    }
     const code = couponCode.trim().toUpperCase();
     if (!code) {
       setError('Enter coupon code first.');
@@ -358,27 +367,27 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   };
 
   const bannerToneClass = banner?.tone === 'success'
-    ? (mode === 'app' ? 'border-emerald-300/35 bg-emerald-500/12 text-emerald-100' : 'border-emerald-200 bg-emerald-50 text-emerald-800')
+    ? (mode === 'app' ? 'border-emerald-300/35 bg-emerald-500/12 text-emerald-100' : 'border-emerald-300/30 bg-emerald-500/12 text-emerald-100')
       : banner?.tone === 'warning'
-      ? (mode === 'app' ? 'border-amber-300/35 bg-amber-500/12 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800')
-      : (mode === 'app' ? 'border-cyan-300/35 bg-cyan-500/12 text-cyan-100' : 'border-sky-200 bg-sky-50 text-sky-800');
+      ? (mode === 'app' ? 'border-amber-300/35 bg-amber-500/12 text-amber-100' : 'border-amber-300/30 bg-amber-500/12 text-amber-100')
+      : (mode === 'app' ? 'border-cyan-300/35 bg-cyan-500/12 text-cyan-100' : 'border-cyan-300/30 bg-cyan-500/12 text-cyan-100');
   const authContinueLabel = resolvedAuthMode === 'signup' ? 'Sign up to continue' : 'Sign in to continue';
 
   return (
-    <div className={`min-h-screen overflow-x-hidden ${
+    <div className={`vf-billing-surface min-h-screen overflow-x-hidden ${
       mode === 'app'
         ? 'bg-[radial-gradient(82%_68%_at_12%_10%,rgba(14,165,233,0.16),transparent_62%),radial-gradient(76%_64%_at_92%_12%,rgba(6,182,212,0.12),transparent_62%),linear-gradient(160deg,#020617_0%,#0b1a3a_56%,#08142e_100%)] text-slate-100'
-        : 'bg-[#f2f6ff] text-slate-900'
+        : 'bg-[radial-gradient(84%_72%_at_8%_8%,rgba(34,211,238,0.18),transparent_60%),radial-gradient(74%_70%_at_92%_12%,rgba(139,92,246,0.16),transparent_62%),radial-gradient(82%_74%_at_52%_100%,rgba(16,185,129,0.10),transparent_72%),linear-gradient(165deg,#040813_0%,#081121_48%,#060b15_100%)] text-slate-100'
     }`}>
       {mode === 'public' ? (
-        <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(78%_72%_at_6%_8%,rgba(14,165,233,0.18),transparent_62%),radial-gradient(72%_68%_at_92%_10%,rgba(16,185,129,0.12),transparent_64%),radial-gradient(80%_72%_at_50%_95%,rgba(37,99,235,0.12),transparent_72%)]" />
+        <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(78%_72%_at_6%_8%,rgba(34,211,238,0.14),transparent_62%),radial-gradient(72%_68%_at_92%_10%,rgba(139,92,246,0.12),transparent_64%),radial-gradient(80%_72%_at_50%_95%,rgba(37,99,235,0.10),transparent_72%)]" />
       ) : null}
 
-      <div className={`relative z-10 mx-auto w-full ${mode === 'app' ? 'max-w-5xl px-4 pb-10 pt-5 sm:px-6 sm:pt-7' : 'max-w-6xl px-4 pb-10 pt-5 sm:px-6 sm:pt-8'}`}>
+      <div className={`relative z-10 mx-auto w-full ${mode === 'app' ? 'max-w-7xl px-4 pb-10 pt-5 sm:px-6 sm:pt-7' : 'max-w-6xl px-4 pb-10 pt-5 sm:px-6 sm:pt-8'}`}>
         <header className={`rounded-2xl border p-3 shadow-[0_18px_44px_rgba(2,6,23,0.45)] backdrop-blur ${
           mode === 'app'
             ? 'border-cyan-300/20 bg-slate-950/70'
-            : 'border-white/80 bg-white/85'
+            : 'border-white/10 bg-slate-950/72'
         }`}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -386,28 +395,28 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 <button
                   type="button"
                   onClick={onBackToWorkspace}
-                  className="inline-flex h-9 items-center gap-1 rounded-full border border-slate-700 bg-slate-900/80 px-3 text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-3.5 py-2.5 text-[13px] font-semibold text-slate-200 transition hover:bg-slate-800"
                 >
-                  <ArrowLeft size={14} />
+                  <ArrowLeft size={15} />
                   Workspace
                 </button>
               ) : null}
-              <BrandLogo size="sm" tone={mode === 'app' ? 'light' : 'dark'} />
+              <BrandLogo size="sm" tone="light" />
             </div>
 
             {mode === 'public' ? (
               <div className="flex items-center gap-2">
                 <a
                   href={homeUrl}
-                  className="rounded-full border border-sky-200 bg-white/85 px-4 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-50"
+                  className="inline-flex min-h-11 items-center rounded-full border border-white/14 bg-white/5 px-4 py-2.5 text-[13px] font-semibold text-slate-100 transition hover:bg-white/10"
                 >
                   Home
                 </a>
                 <a
                   href={appBuyUrl}
-                  className="rounded-full bg-gradient-to-r from-cyan-500 via-sky-500 to-blue-600 px-5 py-2 text-xs font-semibold text-white shadow-lg shadow-cyan-200 transition hover:translate-y-[-1px] hover:brightness-105"
+                  className="inline-flex min-h-11 items-center rounded-full bg-gradient-to-r from-cyan-400 via-sky-500 to-indigo-500 px-5 py-2.5 text-[13px] font-semibold text-slate-950 shadow-[0_16px_36px_rgba(34,211,238,0.22)] transition hover:translate-y-[-1px] hover:brightness-105"
                 >
-                  Open App Buy Center
+                  Open Plans & Billing
                 </a>
               </div>
             ) : null}
@@ -416,19 +425,19 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className={`text-[11px] font-black uppercase tracking-[0.18em] ${
-                mode === 'app' ? 'text-cyan-200/80' : 'text-sky-700'
-              }`}>Buy Center</p>
+                mode === 'app' ? 'text-cyan-200/80' : 'text-cyan-200/80'
+              }`}>Plans & Billing</p>
               <h1 className={`mt-1 text-xl font-semibold tracking-tight sm:text-2xl ${
-                mode === 'app' ? 'text-white' : 'text-slate-900'
+                mode === 'app' ? 'text-white' : 'text-white'
               }`}>
                 {mode === 'public'
-                  ? 'Subscription, Token Buy, and Credit Rules'
-                  : 'Plans, token packs, and wallet actions'}
+                  ? 'Plans, credits, and billing'
+                  : 'Manage plans, credits, and billing'}
               </h1>
               <p className={`mt-2 text-sm ${
-                mode === 'app' ? 'text-slate-300' : 'text-slate-600'
+                mode === 'app' ? 'text-slate-300' : 'text-slate-300'
               }`}>
-                Calculated using your current VF conversion rules: 1.5 VF = 1 Char / 15 Chars = 1 Sec
+                Choose the plan that fits your workflow, add credits when you need extra volume, and confirm pricing before checkout.
               </p>
             </div>
 
@@ -444,7 +453,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   <div className="mt-1 font-semibold text-slate-100">{formatNumber(walletSummary.monthlyFree)} VF</div>
                 </div>
                 <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-3 py-2">
-                  <div className="text-slate-400">Paid wallet</div>
+                  <div className="text-slate-400">Paid credits</div>
                   <div className="mt-1 font-semibold text-slate-100">{formatNumber(walletSummary.paidBalance)} VF</div>
                 </div>
               </div>
@@ -452,9 +461,9 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               <div className={`rounded-2xl border px-4 py-3 text-xs font-semibold ${
                 mode === 'app'
                   ? 'border-cyan-300/25 bg-cyan-500/10 text-cyan-100'
-                  : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
               }`}>
-                Direct token buys are valid for 3 months.
+                Billing terms, renewal details, and credit availability are confirmed before checkout is completed.
               </div>
             )}
           </div>
@@ -470,7 +479,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
             mode === 'app'
               ? 'border-rose-300/35 bg-rose-500/10 text-rose-100'
-              : 'border-rose-200 bg-rose-50 text-rose-700'
+              : 'border-rose-300/35 bg-rose-500/12 text-rose-100'
           }`}>
             {error}
           </div>
@@ -479,14 +488,14 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         <main className={`mt-4 rounded-2xl border p-3 shadow-[0_18px_44px_rgba(2,6,23,0.42)] backdrop-blur sm:p-4 ${
           mode === 'app'
             ? 'border-slate-700/70 bg-slate-950/70'
-            : 'border-white/80 bg-white/85'
+            : 'border-white/10 bg-slate-950/68'
         }`}>
-          <div className={`grid gap-2 rounded-xl border p-2 sm:inline-grid ${
+          <div className={`grid grid-cols-1 gap-2 rounded-xl border p-2 sm:inline-grid ${
             couponEnabled ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
           } ${
             mode === 'app'
               ? 'border-slate-700 bg-slate-900/60'
-              : 'border-sky-100 bg-sky-50/60'
+              : 'border-white/10 bg-white/[0.04]'
           }`} {...managedTabs.listProps}>
             {visibleTabs.map((tab) => {
               const Icon = tab === 'plans' ? CreditCard : tab === 'token' ? Coins : Ticket;
@@ -496,15 +505,15 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   key={tab}
                   type="button"
                   {...managedTabs.getTabProps(tab)}
-                  className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
-                    isActive
-                      ? (mode === 'app' ? 'bg-cyan-500/18 text-cyan-100' : 'bg-white text-sky-900 shadow-sm')
-                      : (mode === 'app' ? 'bg-slate-900/70 text-slate-200 hover:bg-slate-800' : 'text-slate-600')
+                    className={`inline-flex min-h-11 items-center justify-center rounded-lg px-3 py-2 text-[13px] font-semibold transition sm:text-xs ${
+                      isActive
+                        ? (mode === 'app' ? 'bg-cyan-500/18 text-cyan-100' : 'bg-white/10 text-white shadow-[0_10px_24px_rgba(2,6,23,0.28)]')
+                        : (mode === 'app' ? 'bg-slate-900/70 text-slate-200 hover:bg-slate-800' : 'text-slate-300 hover:bg-white/5 hover:text-white')
                   }`}
                 >
                   <span className="inline-flex items-center gap-1">
                     <Icon size={13} />
-                    {tab === 'plans' ? 'Subscription' : tab === 'token' ? 'Token Packs' : 'Wallet Coupon'}
+                    {tab === 'plans' ? 'Plans' : tab === 'token' ? 'Credit Packs' : 'Promo Code'}
                   </span>
                 </button>
               );
@@ -514,10 +523,10 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           {activeTab === 'plans' ? (
             <section className="mt-4">
               <div className={`mb-3 flex items-center gap-2 text-sm font-semibold ${
-                mode === 'app' ? 'text-slate-100' : 'text-slate-900'
+                mode === 'app' ? 'text-slate-100' : 'text-white'
               }`}>
                 <CreditCard size={15} />
-                Subscription Plans
+                Plans
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {BILLING_PLAN_ROWS.map((plan) => {
@@ -526,25 +535,25 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                     <article key={plan.key} className={`rounded-xl border p-3 ${
                       mode === 'app'
                         ? 'border-slate-700 bg-slate-900/60'
-                        : 'border-slate-200 bg-white/80'
+                        : 'border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.66),rgba(7,12,24,0.92))]'
                     }`}>
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className={`text-sm font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-slate-900'}`}>{plan.name}</div>
+                          <div className={`text-sm font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{plan.name}</div>
                           <div className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
                             mode === 'app'
                               ? 'border-cyan-400/35 bg-cyan-500/12 text-cyan-100'
-                              : 'border-sky-200 bg-sky-50 text-sky-700'
+                              : 'border-cyan-400/30 bg-cyan-500/10 text-cyan-100'
                           }`}>
                             {formatNumber(plan.vfCredits)} VF
                           </div>
                         </div>
-                        <div className={`text-sm font-bold ${mode === 'app' ? 'text-white' : 'text-slate-900'}`}>
+                        <div className={`text-sm font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>
                           {formatInr(plan.priceInr)}
                         </div>
                       </div>
 
-                      <div className={`mt-2 text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-500'}`}>
+                      <div className={`mt-2 text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
                         Effective: {formatInr(effectiveRate)} / 10k VF
                       </div>
 
@@ -552,10 +561,10 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                         type="button"
                         onClick={() => void handlePlanCheckout(plan.key)}
                         disabled={Boolean(loadingKey)}
-                        className={`mt-3 inline-flex w-full items-center justify-center gap-1 rounded-full px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                        className={`mt-3 inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                           mode === 'app'
                             ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
-                            : 'bg-slate-900 text-white hover:bg-black'
+                            : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
                         }`}
                       >
                         {loadingKey === `plan:${plan.key}` ? 'Starting...' : hasActiveAuthSession ? 'Checkout' : authContinueLabel}
@@ -569,16 +578,16 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 <input
                   value={couponCode}
                   onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
-                  placeholder="Optional coupon code"
-                  className={`h-9 w-full rounded-lg border px-3 text-xs sm:w-64 ${
+                  placeholder="Optional promo code"
+                  className={`min-h-11 w-full rounded-lg border px-4 text-[13px] sm:w-72 ${
                     mode === 'app'
                       ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500'
-                      : 'border-slate-200 bg-white text-slate-700'
+                      : 'border-white/10 bg-black/20 text-slate-100 placeholder:text-slate-500'
                   }`}
                 />
                 {mode === 'public' ? (
-                  <a href={appBuyUrl} className="text-xs font-semibold text-sky-700 hover:text-sky-900">
-                    Need sign-in help?
+                  <a href={publicSignInUrl} className="inline-flex min-h-11 items-center text-[13px] font-semibold text-cyan-200 transition hover:text-white">
+                    Already have an account? Sign in
                   </a>
                 ) : null}
               </div>
@@ -586,12 +595,16 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           ) : null}
 
           {activeTab === 'token' ? (
-            <section className="mt-4 rounded-xl border border-slate-700/60 bg-transparent p-3">
+            <section className={`mt-4 rounded-xl border p-3 ${
+              mode === 'app'
+                ? 'border-slate-700/60 bg-transparent'
+                : 'border-white/10 bg-white/[0.04]'
+            }`}>
               <div className={`flex items-center gap-2 text-sm font-semibold ${
-                mode === 'app' ? 'text-slate-100' : 'text-slate-900'
+                mode === 'app' ? 'text-slate-100' : 'text-white'
               }`}>
                 <Wallet size={15} />
-                Token Packs
+                Credit Packs
               </div>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 {BILLING_TOKEN_PACK_ROWS.map((pack) => {
@@ -602,25 +615,25 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                       key={pack.key}
                       type="button"
                       onClick={() => setSelectedPack(pack.key)}
-                      className={`rounded-xl border px-3 py-2.5 text-left transition ${
+                      className={`min-h-11 rounded-xl border px-4 py-3 text-left transition ${
                         isSelected
                           ? (mode === 'app'
                               ? 'border-cyan-300/65 bg-cyan-500/18 shadow-[0_8px_18px_rgba(6,182,212,0.16)]'
-                              : 'border-sky-300 bg-sky-50 shadow-[0_8px_18px_rgba(56,189,248,0.14)]')
+                              : 'border-cyan-300/55 bg-cyan-500/14 shadow-[0_10px_24px_rgba(34,211,238,0.16)]')
                           : (mode === 'app'
                               ? 'border-slate-700 bg-slate-950/70 hover:border-cyan-400/35 hover:bg-cyan-500/10'
-                              : 'border-slate-200 bg-slate-50/70 hover:border-sky-300 hover:bg-sky-50/70')
+                              : 'border-white/10 bg-black/20 hover:border-cyan-300/35 hover:bg-cyan-500/10')
                       }`}
                       aria-pressed={isSelected}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div>
-                          <div className={`text-sm font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-slate-900'}`}>{pack.label}</div>
-                          <div className={`text-xs ${mode === 'app' ? 'text-slate-400' : 'text-slate-600'}`}>{formatNumber(pack.vf)} VF</div>
+                          <div className={`text-sm font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{pack.label}</div>
+                          <div className={`text-xs ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>{formatNumber(pack.vf)} VF</div>
                         </div>
-                        <div className={`text-sm font-bold ${mode === 'app' ? 'text-white' : 'text-slate-900'}`}>{formatInr(pack.priceInr)}</div>
+                        <div className={`text-sm font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>{formatInr(pack.priceInr)}</div>
                       </div>
-                      <div className={`mt-2 text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-500'}`}>
+                      <div className={`mt-2 text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
                         Effective: {formatInr(effectiveRate)} / 10k VF
                       </div>
                     </button>
@@ -628,23 +641,23 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 })}
               </div>
               <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <p className={`text-xs ${mode === 'app' ? 'text-slate-300' : 'text-slate-600'}`}>
-                  Selected: <span className={`font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-slate-900'}`}>{selectedPackSummary.label}</span> - {formatNumber(selectedPackSummary.vf)} VF for {formatInr(selectedPackSummary.priceInr)}.
+                <p className={`text-xs ${mode === 'app' ? 'text-slate-300' : 'text-slate-300'}`}>
+                  Selected: <span className={`font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{selectedPackSummary.label}</span> - {formatNumber(selectedPackSummary.vf)} VF for {formatInr(selectedPackSummary.priceInr)}.
                 </p>
                 <button
                   type="button"
                   onClick={() => void handleTokenCheckout()}
                   disabled={Boolean(loadingKey)}
-                  className={`inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                     mode === 'app'
                       ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
-                      : 'bg-slate-900 text-white hover:bg-black'
+                      : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
                   }`}
                 >
                   {loadingKey === `token:${selectedPack}`
                     ? 'Starting checkout...'
                     : hasActiveAuthSession
-                      ? `Buy ${selectedPackSummary.label} Pack`
+                      ? `Checkout ${selectedPackSummary.label} credit pack`
                       : authContinueLabel}
                   <ArrowRight size={14} />
                 </button>
@@ -652,9 +665,9 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               <div className={`mt-4 rounded-xl border px-4 py-3 text-xs ${
                 mode === 'app'
                   ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
-                  : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
               }`}>
-                All direct token buys are valid for 3 months from purchase date.
+                Credit pack pricing, validity, and renewal terms are confirmed before checkout is completed.
               </div>
             </section>
           ) : null}
@@ -663,23 +676,23 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
             <section className="mt-4 rounded-xl border border-slate-700 bg-slate-900/60 p-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
                 <Sparkles size={15} />
-                Wallet coupon
+                Promo Code
               </div>
-              <p className="mt-2 text-xs text-slate-400">Redeem a coupon to add paid VF directly to your wallet.</p>
+              <p className="mt-2 text-xs text-slate-400">Redeem a promo code to add credits directly to your account.</p>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <input
                   value={couponCode}
                   onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
-                  placeholder="Enter coupon code"
-                  className="h-10 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 placeholder:text-slate-500"
+                  placeholder="Enter promo code"
+                  className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 text-[13px] text-slate-100 placeholder:text-slate-500"
                 />
                 <button
                   type="button"
                   onClick={() => void handleRedeemCoupon()}
                   disabled={loadingKey === 'coupon'}
-                  className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-4 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex min-h-11 items-center justify-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-4 py-2.5 text-[13px] font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {loadingKey === 'coupon' ? 'Redeeming...' : 'Redeem'}
+                  {loadingKey === 'coupon' ? 'Redeeming...' : hasActiveAuthSession ? 'Redeem' : authContinueLabel}
                 </button>
               </div>
             </section>
@@ -688,10 +701,10 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       </div>
 
       {mode === 'public' ? (
-        <footer className="relative z-10 border-t border-white/80 bg-white/75">
+        <footer className="relative z-10 border-t border-white/10 bg-slate-950/78">
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-4 py-6 sm:px-6 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-slate-600">Copyright {new Date().getFullYear()} V FLOW AI Billing.</p>
-            <LegalLinks />
+            <p className="text-xs text-slate-400">Copyright {new Date().getFullYear()} V FLOW AI Billing.</p>
+            <LegalLinks linkClassName="vf-billing-legal-link" />
           </div>
         </footer>
       ) : null}

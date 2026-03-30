@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import struct
 import sys
 from pathlib import Path
+import wave
 
 from fastapi.testclient import TestClient
 
@@ -160,3 +163,89 @@ def test_cloud_tts_client_cache_isolated_by_selected_slot(monkeypatch, tmp_path)
 
     assert client_a != client_b
     assert len(built_keys) == 2
+
+
+def test_wav_bytes_to_pcm16_preserves_mono_pcm16_samples() -> None:
+    runtime = _load_gemini_runtime_module()
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24_000)
+        writer.writeframes(struct.pack("<hh", 1, -1))
+
+    pcm_bytes, sample_rate = runtime._wav_bytes_to_pcm16(buffer.getvalue())
+
+    assert sample_rate == 24_000
+    assert pcm_bytes == struct.pack("<hh", 1, -1)
+
+
+def test_wav_bytes_to_pcm16_downmixes_stereo_to_pcm16_mono() -> None:
+    runtime = _load_gemini_runtime_module()
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(2)
+        writer.setsampwidth(2)
+        writer.setframerate(24_000)
+        writer.writeframes(struct.pack("<hhhh", 1000, -1000, 32767, -32768))
+
+    pcm_bytes, sample_rate = runtime._wav_bytes_to_pcm16(buffer.getvalue())
+
+    assert sample_rate == 24_000
+    assert pcm_bytes == struct.pack("<hh", 0, 0)
+
+
+def test_cloud_tts_quota_errors_map_to_503_on_synthesize(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    runtime.VF_TTS_UPSTREAM_PROVIDER = runtime.TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    runtime.VF_TTS_TEXTTOSPEECH_ONLY = True
+    monkeypatch.setattr(runtime, "_runtime_source_policy", lambda: {"provider": runtime.SOURCE_POLICY_PROVIDER_VERTEX})
+
+    def _raise_quota(**kwargs):
+        _ = kwargs
+        raise RuntimeError("429 ResourceExhausted: quota exceeded for cloud tts")
+
+    monkeypatch.setattr(runtime, "_synthesize_window_with_cloud_tts", _raise_quota)
+
+    client = TestClient(runtime.app)
+    response = client.post(
+        "/synthesize",
+        json={
+            "engine": "PRIME",
+            "text": "Cloud quota failure mapping test.",
+            "voiceName": "Fenrir",
+        },
+    )
+
+    assert response.status_code == 503
+    detail = response.json().get("detail") or {}
+    assert str(detail.get("errorCode") or "") == runtime.ERROR_CODE_ALL_SLOTS_RATE_LIMITED
+
+
+def test_cloud_tts_timeout_errors_map_to_504_on_synthesize_structured(monkeypatch) -> None:
+    runtime = _load_gemini_runtime_module()
+    runtime.VF_TTS_UPSTREAM_PROVIDER = runtime.TTS_UPSTREAM_PROVIDER_CLOUD_TTS
+    runtime.VF_TTS_TEXTTOSPEECH_ONLY = True
+    monkeypatch.setattr(runtime, "_runtime_source_policy", lambda: {"provider": runtime.SOURCE_POLICY_PROVIDER_VERTEX})
+
+    def _raise_timeout(**kwargs):
+        _ = kwargs
+        raise RuntimeError("Deadline exceeded while waiting for Cloud TTS upstream.")
+
+    monkeypatch.setattr(runtime, "_synthesize_window_with_cloud_tts", _raise_timeout)
+
+    client = TestClient(runtime.app)
+    response = client.post(
+        "/synthesize/structured",
+        json={
+            "engine": "PRIME",
+            "text": "Cloud timeout mapping test.",
+            "voiceName": "Fenrir",
+        },
+    )
+
+    assert response.status_code == 504
+    detail = response.json().get("detail") or {}
+    assert str(detail.get("errorCode") or "") == runtime.ERROR_CODE_UPSTREAM_REQUEST_TIMEOUT

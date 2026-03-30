@@ -15,12 +15,43 @@ import type {
   VoiceCloneStressSummary,
 } from './openvoiceTypes';
 
+const DEFAULT_VOICE_CLONE_PROXY_BASE_URL = '/api/backend';
+
 export type OpenVoiceCloneRequest = Omit<OpenVoiceBenchmarkRequest, 'mode' | 'runKind'> & {
   mode?: 'vc';
   runKind?: 'warm';
 };
 
 export interface OpenVoiceCloneResponse extends OpenVoiceBenchmarkResponse {
+  clonedVoice?: ClonedVoice;
+}
+
+export interface DunoNativeCloneRequest {
+  referenceAudioBase64: string;
+  referenceAudioName: string;
+  referenceAudioUrl?: string;
+  sourceVoiceId?: string;
+  sourceVoiceName?: string;
+  sourceVoiceEngine?: string;
+  speaker?: string;
+  model?: string;
+  requestId?: string;
+  traceId?: string;
+}
+
+export interface DunoNativeCloneResponse {
+  ok?: boolean;
+  status?: string;
+  provider?: string;
+  engine?: 'DUNO' | string;
+  voiceId?: string;
+  voiceName?: string;
+  model?: string;
+  cached?: boolean;
+  sourceVoiceId?: string;
+  sourceVoiceName?: string;
+  sourceVoiceEngine?: 'DUNO' | string;
+  referenceAudioName?: string;
   clonedVoice?: ClonedVoice;
 }
 
@@ -51,20 +82,16 @@ export interface OpenVoiceStemSeparationResponse {
 
 export const fetchOpenVoiceCloneStatus = async (
   options?: { baseUrl?: string; timeoutMs?: number }
-): Promise<OpenVoiceBenchmarkStatusResponse> => requestJson<OpenVoiceBenchmarkStatusResponse>(
+): Promise<OpenVoiceBenchmarkStatusResponse> => requestVoiceCloneJson<OpenVoiceBenchmarkStatusResponse>(
   '/voice-clone/openvoice/status',
   undefined,
-  {
-    requireAuth: true,
-    ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
-    ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
-  }
+  options
 );
 
 export const cloneVoiceWithOpenVoice = async (
   payload: OpenVoiceCloneRequest,
   options?: { baseUrl?: string; timeoutMs?: number }
-): Promise<OpenVoiceCloneResponse> => requestJson<OpenVoiceCloneResponse>(
+): Promise<OpenVoiceCloneResponse> => requestVoiceCloneJson<OpenVoiceCloneResponse>(
   '/voice-clone/openvoice',
   {
     method: 'POST',
@@ -82,10 +109,33 @@ export const cloneVoiceWithOpenVoice = async (
   }
 );
 
+export const cloneVoiceWithDunoNative = async (
+  payload: DunoNativeCloneRequest,
+  options?: { baseUrl?: string; timeoutMs?: number }
+): Promise<DunoNativeCloneResponse> => {
+  const { referenceAudioUrl: _referenceAudioUrl, ...safePayload } = payload;
+
+  return requestVoiceCloneJson<DunoNativeCloneResponse>(
+    '/voice-clone/duno/native',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // Keep the native DUNO payload lean. The browser still uses the local
+      // data URL for preview state, but the backend only needs the base64 audio.
+      body: JSON.stringify(safePayload),
+    },
+    {
+      requireAuth: true,
+      ...(options?.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+    }
+  );
+};
+
 export const separateVoiceAndBackgroundWithDemucs = async (
   payload: OpenVoiceStemSeparationRequest,
   options?: { baseUrl?: string; timeoutMs?: number }
-): Promise<OpenVoiceStemSeparationResponse> => requestJson<OpenVoiceStemSeparationResponse>(
+): Promise<OpenVoiceStemSeparationResponse> => requestVoiceCloneJson<OpenVoiceStemSeparationResponse>(
   '/voice-clone/openvoice/separate',
   {
     method: 'POST',
@@ -129,6 +179,88 @@ const trimTrailingSlash = (value: string): string => String(value || '').replace
 const stripV1Suffix = (value: string): string => {
   const token = trimTrailingSlash(value);
   return token.replace(/\/v1$/i, '');
+};
+
+const isLocalAbsoluteVoiceCloneBaseUrl = (value: string): boolean => {
+  const token = String(value || '').trim();
+  if (!/^https?:\/\//i.test(token)) return false;
+  try {
+    const parsed = new URL(token);
+    const hostname = String(parsed.hostname || '').trim().toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
+};
+
+const isVoiceCloneRetryableError = (error: unknown): boolean => {
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error
+      ? Number((error as { status?: unknown }).status)
+      : 0;
+  if (status === 404) {
+    return true;
+  }
+
+  const message = String((error as { message?: unknown })?.message || error || '').trim().toLowerCase();
+  if (!message) return false;
+  return [
+    'failed to fetch',
+    'fetch failed',
+    'networkerror',
+    'network error',
+    'load failed',
+    'econnrefused',
+    'err_connection_refused',
+  ].some((token) => message.includes(token));
+};
+
+const buildVoiceCloneRequestBaseUrls = (baseUrl?: string): string[] => {
+  const directBaseUrl = String(baseUrl || '').trim();
+  const attempts: string[] = [];
+  const pushAttempt = (candidate: string) => {
+    const normalized = String(candidate || '').trim();
+    if (!normalized) return;
+    if (attempts.includes(normalized)) return;
+    attempts.push(normalized);
+  };
+  const shouldPreferProxy = isLocalAbsoluteVoiceCloneBaseUrl(directBaseUrl);
+  if (shouldPreferProxy) {
+    pushAttempt(DEFAULT_VOICE_CLONE_PROXY_BASE_URL);
+  }
+  if (directBaseUrl) {
+    pushAttempt(directBaseUrl);
+  }
+  if (directBaseUrl !== DEFAULT_VOICE_CLONE_PROXY_BASE_URL) {
+    pushAttempt(DEFAULT_VOICE_CLONE_PROXY_BASE_URL);
+  }
+  return attempts;
+};
+
+const requestVoiceCloneJson = async <T>(
+  path: string,
+  init?: RequestInit,
+  options?: { baseUrl?: string; timeoutMs?: number; requireAuth?: boolean }
+): Promise<T> => {
+  const baseUrls = buildVoiceCloneRequestBaseUrls(options?.baseUrl);
+  let lastError: unknown = null;
+
+  for (const [index, baseUrl] of baseUrls.entries()) {
+    try {
+      return await requestJson<T>(path, init, {
+        requireAuth: true,
+        baseUrl,
+        ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
+      });
+    } catch (error) {
+      lastError = error;
+      if (index >= baseUrls.length - 1 || !isVoiceCloneRetryableError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw (lastError instanceof Error ? lastError : new Error('Voice clone request failed.'));
 };
 
 const buildStressRequestAttempts = (

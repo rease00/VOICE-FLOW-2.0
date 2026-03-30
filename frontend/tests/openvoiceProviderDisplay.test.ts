@@ -3,30 +3,32 @@ import { describe, expect, it } from 'vitest';
 import { getOpenVoiceProviderDisplayStatus } from '../src/features/voice-cloning/openvoiceTypes';
 
 describe('openvoice provider display status', () => {
-  it('prefers explicit provider payload fields', () => {
+  it('reads the modal-only provider status payload', () => {
     expect(
       getOpenVoiceProviderDisplayStatus({
         ok: true,
-        activeProvider: 'cloud_run',
-        defaultProvider: 'cloud_run',
-        provider: {
-          activeProvider: 'cloud_run',
-          providers: {
-            cloud_run: {
-              configured: true,
-              ready: true,
-              detail: 'Seed VC runtime ready',
-              device: 'nvidia-l4',
-            },
-          },
+        activeProvider: 'modal',
+        defaultProvider: 'modal',
+        providerStatus: {
+          key: 'modal',
+          configured: true,
+          ready: true,
+          detail: 'Modal VC runtime ready',
+          device: 'nvidia-l4',
+          expectedGpuConcurrency: 2,
+          runtimeGpuConcurrency: 2,
+          concurrencyVerified: true,
         },
       } as any)
     ).toMatchObject({
-      activeProvider: 'cloud_run',
-      activeProviderLabel: 'Cloud Run',
+      activeProvider: 'modal',
+      activeProviderLabel: 'Modal',
       readyLabel: 'Ready',
-      detail: 'Seed VC runtime ready',
+      detail: 'Modal VC runtime ready',
       device: 'nvidia-l4',
+      expectedGpuConcurrency: 2,
+      runtimeGpuConcurrency: 2,
+      concurrencyVerified: true,
     });
   });
 

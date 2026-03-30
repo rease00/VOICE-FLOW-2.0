@@ -290,7 +290,7 @@ const makePayload = (engine, requestId) => {
   return {
     engine,
     text,
-    voice_id: 'hf_alpha',
+    voice_id: 'deepinfra_default',
     request_id: requestId,
   };
 };

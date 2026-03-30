@@ -17,9 +17,14 @@ describe('resolveHistoryVoiceLabel', () => {
     expect(resolveHistoryVoiceLabel({ voiceName: 'AI Voice', voiceId: 'af_heart' })).toBe('Lyra US');
   });
 
+  it('resolves the DeepInfra-backed Duno default label', () => {
+    expect(resolveHistoryVoiceLabel({ voiceName: 'AI Voice', voiceId: 'deepinfra_default' })).toBe('Default Duno');
+  });
+
   it('falls back to canonical voiceId when no mapped label exists', () => {
     expect(resolveHistoryVoiceLabel({ voiceName: '', voiceId: 'Fenrir' })).toBe('Arjun India Male');
     expect(resolveHistoryVoiceLabel({ voiceName: '', voiceId: 'fenrir' })).toBe('Arjun India Male');
+    expect(resolveHistoryVoiceLabel({ voiceName: '', voiceId: 'deepinfra_default' })).toBe('Default Duno');
   });
 
   it('returns the raw voiceName when no mapped label exists and no voiceId resolves', () => {

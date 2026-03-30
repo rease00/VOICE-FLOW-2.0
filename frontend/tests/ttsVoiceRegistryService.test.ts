@@ -85,19 +85,18 @@ describe('ttsVoiceRegistryService', () => {
     expect(byId.get('v11')?.isPlanRestricted).toBe(true);
   });
 
-  it('normalizes DUNO runtime voices back to canonical DUNO names', async () => {
+  it('preserves DUNO runtime voice metadata instead of overwriting it with legacy presets', async () => {
     vi.mocked(fetchTtsEngineVoices).mockResolvedValueOnce({
       ok: true,
       engine: 'DUNO',
       voices: [
         {
-          voice_id: 'af_heart',
-          voice: 'af_heart',
-          name: 'Meera India Female',
-          mapped_name: 'Meera India Female',
-          accent: 'Hindi',
+          voice_id: 'di_voice_123',
+          voice: 'di_voice_123',
+          name: 'Narrator Clone',
+          accent: 'American English',
           gender: 'female',
-          country: 'India',
+          country: 'United States',
           age_group: 'Adult',
         },
       ],
@@ -107,12 +106,14 @@ describe('ttsVoiceRegistryService', () => {
     const voices = await fetchEngineRuntimeVoices('DUNO', '');
     expect(voices).toHaveLength(1);
     expect(voices[0]).toMatchObject({
-      id: 'af_heart',
-      name: 'Lyra US',
+      id: 'di_voice_123',
+      name: 'Narrator Clone',
       accent: 'American English',
       gender: 'Female',
       country: 'United States',
       ageGroup: 'Adult',
+      accessTier: 'free',
+      isPlanRestricted: false,
     });
   });
 
@@ -135,9 +136,9 @@ describe('ttsVoiceRegistryService', () => {
         engine: 'DUNO',
         voices: [
           {
-            voice_id: 'af_heart',
-            voice: 'af_heart',
-            name: 'Lyra US',
+            voice_id: 'di_voice_123',
+            voice: 'di_voice_123',
+            name: 'Narrator Clone',
           },
         ],
         fetchedAt: new Date().toISOString(),
@@ -149,7 +150,7 @@ describe('ttsVoiceRegistryService', () => {
     expect(registry.DUNO).toEqual(getStaticVoiceFallback('DUNO'));
     expect(registry.DUNO[0]).toMatchObject({
       engine: 'DUNO',
-      id: 'af_heart',
+      id: 'deepinfra_default',
       accessTier: 'free',
     });
   });

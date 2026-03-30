@@ -1,38 +1,9 @@
 {
-  "region": "us-central1",
+  "region": "asia-southeast1",
   "artifactRegistryRepo": "voiceflow",
   "deploymentProfile": "cloudrun-2vcpu",
   "profileContractPath": "infra/cloudrun/profiles.cloudrun-2vcpu.json",
   "services": [
-    {
-      "name": "voiceflow-seed-vc-runtime",
-      "imageName": "voiceflow-seed-vc-runtime",
-      "dockerfile": "infra/cloudrun/docker/Dockerfile.seed-vc-runtime",
-      "ingress": "internal",
-      "allowUnauthenticated": true,
-      "minInstances": 0,
-      "maxInstances": 20,
-      "concurrency": 2,
-      "cpu": "4",
-      "memory": "16Gi",
-      "timeoutSeconds": 1200,
-      "executionEnvironment": "gen2",
-      "startupCpuBoost": true,
-      "cpuAlwaysAllocated": true,
-      "gpuType": "nvidia-l4",
-      "gpuCount": 1,
-      "env": {
-        "PORT": "8080",
-        "VF_OPENVOICE_RUNTIME_DEVICE": "cuda:L4",
-        "VF_OPENVOICE_RUNTIME_MODEL": "seed-vc-l4",
-        "VF_OPENVOICE_RUNTIME_SAMPLE_RATE": "24000",
-        "VF_OPENVOICE_RUNTIME_DEFAULT_DURATION_SEC": "6",
-        "VF_OPENVOICE_RUNTIME_MAX_DURATION_SEC": "30"
-      },
-      "secretEnv": {
-        "VF_OPENVOICE_RUNTIME_TOKEN": "openvoice-runtime-token"
-      }
-    },
     {
       "name": "voiceflow-gemini-runtime",
       "imageName": "voiceflow-gemini-runtime",
@@ -101,8 +72,8 @@
         "VF_REDIS_URL": "__REDIS_URL__",
         "VF_GEMINI_RUNTIME_URL": "__GEMINI_RUNTIME_URL__",
         "VF_DUNO_RUNTIME_URL": "__DUNO_RUNTIME_URL__",
-        "VF_OPENVOICE_PROVIDER_DEFAULT": "cloud_run",
-        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL": "__OPENVOICE_RUNTIME_URL__",
+        "VF_DUNO_RUNTIME_MODEL": "ResembleAI/chatterbox-turbo",
+        "VF_OPENVOICE_PROVIDER_DEFAULT": "modal",
         "VF_OPENVOICE_MODAL_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
         "VF_OPENVOICE_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
         "VF_WHISPER_DEVICE": "cpu",
@@ -116,7 +87,6 @@
         "VF_ADMIN_UNLOCK_SIGNING_SECRET": "vf-admin-unlock-signing-secret",
         "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token",
         "VF_DUNO_RUNTIME_TOKEN": "duno-runtime-token",
-        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_TOKEN": "openvoice-runtime-token",
         "VF_OPENVOICE_MODAL_RUNTIME_TOKEN": "openvoice-runtime-token",
         "VF_OPENVOICE_RUNTIME_TOKEN": "openvoice-runtime-token",
         "VF_OPENVOICE_ARTIFACT_SECRET": "openvoice-artifact-secret"
@@ -162,8 +132,8 @@
         "VF_REDIS_URL": "__REDIS_URL__",
         "VF_GEMINI_RUNTIME_URL": "__GEMINI_RUNTIME_URL__",
         "VF_DUNO_RUNTIME_URL": "__DUNO_RUNTIME_URL__",
-        "VF_OPENVOICE_PROVIDER_DEFAULT": "cloud_run",
-        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_URL": "__OPENVOICE_RUNTIME_URL__",
+        "VF_DUNO_RUNTIME_MODEL": "ResembleAI/chatterbox-turbo",
+        "VF_OPENVOICE_PROVIDER_DEFAULT": "modal",
         "VF_OPENVOICE_MODAL_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
         "VF_OPENVOICE_RUNTIME_URL": "__OPENVOICE_MODAL_RUNTIME_URL__",
         "VF_WHISPER_DEVICE": "cpu",
@@ -175,7 +145,6 @@
         "VF_ADMIN_UNLOCK_SIGNING_SECRET": "vf-admin-unlock-signing-secret",
         "GEMINI_RUNTIME_ADMIN_TOKEN": "gemini-runtime-admin-token",
         "VF_DUNO_RUNTIME_TOKEN": "duno-runtime-token",
-        "VF_OPENVOICE_CLOUD_RUN_RUNTIME_TOKEN": "openvoice-runtime-token",
         "VF_OPENVOICE_MODAL_RUNTIME_TOKEN": "openvoice-runtime-token",
         "VF_OPENVOICE_RUNTIME_TOKEN": "openvoice-runtime-token",
         "VF_OPENVOICE_ARTIFACT_SECRET": "openvoice-artifact-secret"

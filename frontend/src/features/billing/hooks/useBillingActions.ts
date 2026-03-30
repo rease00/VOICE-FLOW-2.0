@@ -19,6 +19,7 @@ interface UseBillingActionsArgs {
 }
 
 type BillingRouteState = 'success' | 'cancel' | 'none';
+type BillingRouteTab = 'plans' | 'token' | 'coupon';
 type BillingLocationLike = Pick<Location, 'origin' | 'pathname'>;
 const BILLING_PUBLIC_PATH = '/billing';
 
@@ -115,12 +116,13 @@ const launchRazorpayCheckout = async (
 export const buildBillingReturnUrl = (
   state: BillingRouteState,
   location: BillingLocationLike = resolveBillingLocation(),
-  returnPath: string = BILLING_PUBLIC_PATH
+  returnPath: string = BILLING_PUBLIC_PATH,
+  tab: BillingRouteTab = 'plans'
 ): string => {
   const safeReturnPath = String(returnPath || BILLING_PUBLIC_PATH).trim();
   const normalizedReturnPath = safeReturnPath.startsWith('/') ? safeReturnPath : BILLING_PUBLIC_PATH;
   const url = new URL(`${location.origin}${normalizedReturnPath}`);
-  url.searchParams.set('tab', 'subscription');
+  url.searchParams.set('tab', tab === 'token' ? 'token-buy' : tab === 'coupon' ? 'coupon' : 'subscription');
   if (state === 'success' || state === 'cancel') {
     url.searchParams.set('billing', state);
   } else {
@@ -132,8 +134,8 @@ export const buildBillingReturnUrl = (
 export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }: UseBillingActionsArgs) => {
   const startPlanCheckout = useCallback(async (plan: BillingPlanKey, couponCode?: string) => {
     const options: { successUrl: string; cancelUrl: string; couponCode?: string } = {
-      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath),
-      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath),
+      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'plans'),
+      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'plans'),
     };
     const normalizedCoupon = couponCode ? String(couponCode).trim() : '';
     if (normalizedCoupon) {
@@ -144,15 +146,15 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
 
   const startTokenPackCheckout = useCallback(async (pack: TokenPackKey) => {
     return createTokenPackCheckoutSession(pack, baseUrl, {
-      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath),
-      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath),
+      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'token'),
+      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'token'),
     });
   }, [baseUrl, returnPath]);
 
   const startVcTokenPackCheckout = useCallback(async (pack: string) => {
     return startVcTokenPackCheckoutSession(pack, baseUrl, {
-      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath),
-      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath),
+      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'token'),
+      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'token'),
     });
   }, [baseUrl, returnPath]);
 

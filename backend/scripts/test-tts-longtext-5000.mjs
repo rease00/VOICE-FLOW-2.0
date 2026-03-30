@@ -74,7 +74,7 @@ const ENGINES = {
     ? {
         DUNO: {
           url: `${DUNO_URL}/synthesize`,
-          voice: 'hf_alpha',
+          voice: 'deepinfra_default',
           language: { en: 'en', hi: 'hi' },
         },
       }

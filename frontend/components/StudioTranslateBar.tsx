@@ -22,61 +22,53 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
 }) => {
   const isPhone = layoutMode === 'phone';
   const isTablet = layoutMode === 'tablet';
+  const selectSizeClass = isPhone
+    ? 'min-h-9 w-[7.5rem] px-2.5 py-1 text-[11px]'
+    : isTablet
+      ? 'min-h-10 w-[10rem] px-3 py-1 text-[12px]'
+      : 'min-h-10 w-[11rem] px-3 py-1 text-[12px]';
+  const runButtonClass = isPhone
+    ? 'min-h-9 px-2.5 py-1 text-[11px]'
+    : isTablet
+      ? 'min-h-10 px-3.5 py-1 text-[12px]'
+      : 'min-h-10 px-3.5 py-1 text-[12px]';
+  const containerClass = isPhone
+    ? 'inline-flex items-center gap-1.5 px-1.5 py-0.5'
+    : 'inline-flex items-center gap-2 px-2 py-1';
+  const runLabel = isPhone ? 'Run' : 'Run Translate';
 
   return (
-    <div className={`vf-translate-bar relative z-10 gap-2 px-4 py-2 ${isPhone ? 'flex items-center' : 'flex items-center justify-between'}`}>
-      <div className={`overflow-hidden ${isPhone ? 'w-full min-w-0' : 'flex items-center gap-2'}`}>
-        <div className={`flex items-center gap-2 overflow-hidden ${isPhone ? 'w-full min-w-0' : ''}`}>
+    <div className={`vf-translate-bar relative z-10 ${containerClass}`}>
+      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
         <Languages size={14} className="vf-translate-icon shrink-0" />
-        <span className={`vf-translate-label text-xs font-bold ${isPhone ? 'sr-only' : 'hidden sm:inline'}`}>Translate:</span>
-        <div className={`vf-translate-shell vf-translate-tabs p-0.5 shadow-sm custom-scrollbar ${isPhone ? 'flex min-w-0 items-center gap-1 overflow-x-auto rounded-xl' : 'flex items-center gap-1 overflow-x-auto'}`}>
-          <button
-            onClick={() => onTargetLang('Hinglish')}
-            className={`vf-translate-chip rounded-md px-3 py-1 text-[10px] font-bold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] whitespace-nowrap ${targetLang === 'Hinglish' ? 'vf-translate-chip--active' : ''}`}
-          >
-            Hinglish
-          </button>
-          <button
-            onClick={() => onTargetLang('English')}
-            className={`vf-translate-chip px-2 py-1 text-[10px] font-bold rounded-md transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] whitespace-nowrap ${targetLang === 'English' ? 'vf-translate-chip--active' : ''}`}
-          >
-            English
-          </button>
-          <button
-            onClick={() => onTargetLang('Hindi')}
-            className={`vf-translate-chip px-2 py-1 text-[10px] font-bold rounded-md transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] whitespace-nowrap ${targetLang === 'Hindi' ? 'vf-translate-chip--active' : ''}`}
-          >
-            Hindi
-          </button>
-          <select
-            value={targetLang}
-            onChange={(e) => onTargetLang(e.target.value)}
-            className={`vf-theme-select bg-transparent px-2 py-1 text-[10px] font-bold outline-none cursor-pointer ${
-              isPhone
-                ? 'min-w-[7.2rem] max-w-[8.4rem] rounded-md border border-current/10'
-                : isTablet
-                  ? 'max-w-[120px]'
-                  : 'max-w-[96px]'
-            }`}
-          >
-            {languages.map((lang) => (
-              <option key={lang.code} value={lang.name}>{lang.name}</option>
-            ))}
-          </select>
-        </div>
-        </div>
+        {isPhone ? (
+          <span className="sr-only">Translate:</span>
+        ) : (
+          <span className="vf-translate-label text-[12px] font-bold">Translate:</span>
+        )}
+        <select
+          value={targetLang}
+          onChange={(e) => onTargetLang(e.target.value)}
+          aria-label="Translation target language"
+          className={`vf-theme-select rounded-full border border-current/10 bg-transparent font-bold outline-none cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 ${selectSizeClass}`}
+        >
+          {languages.map((lang) => (
+            <option key={lang.code} value={lang.name}>
+              {lang.name}
+            </option>
+          ))}
+        </select>
       </div>
       <button
+        type="button"
         onClick={onTranslate}
         disabled={isBusy}
-        className={`vf-translate-run rounded-lg px-3 py-1.5 text-xs font-bold transition-colors flex items-center gap-1 whitespace-nowrap disabled:opacity-55 ${
-          isPhone ? 'shrink-0 px-2.5 py-1.5 text-[11px]' : ''
-        }`}
+        className={`vf-translate-run shrink-0 rounded-full font-bold transition-colors flex items-center gap-1 whitespace-nowrap disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 ${runButtonClass}`}
+        aria-label="Run translate"
       >
-        <Globe size={12} />
-        {isPhone ? 'Run' : 'Run Translate'}
+        <Globe size={13} />
+        {runLabel}
       </button>
     </div>
   );
 };
-

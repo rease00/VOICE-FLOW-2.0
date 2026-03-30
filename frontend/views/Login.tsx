@@ -1,6 +1,6 @@
 'use client';
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, Mail, User, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, Eye, EyeOff, Lock, Mail, User, X } from 'lucide-react';
 import { AppScreen } from '../types';
 import { useAuthSession } from '../src/features/auth/hooks/useAuthSession';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
@@ -8,7 +8,7 @@ import { removeStorageKey, readStorageString, writeStorageString } from '../src/
 import { BrandLogo } from '../components/BrandLogo';
 import { useNotifications } from '../src/shared/notifications/NotificationProvider';
 import { sanitizeUiText } from '../src/shared/ui/terminology';
-import { resolveLegalDocument } from '../src/landing/legal/legalContent';
+import { resolveLegalDocument } from '../src/features/legal/legalContent';
 import { resolveSafeInternalNextPath, type AuthRouteMode } from '../src/app/navigation';
 
 interface LoginProps {
@@ -365,7 +365,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             <BrandLogo size="lg" tone="light" />
           </div>
           <p className="mt-4 inline-flex items-center gap-2 rounded-full border border-[#46E7C7]/18 bg-[#46E7C7]/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#CFFAF0]">
-            Public access
+            Secure account access
           </p>
           <h1 className="vf-auth-shell-title mt-4 text-2xl font-semibold text-[#F5F7FB] sm:text-3xl">{authHeading}</h1>
           <p className="mt-2 text-sm text-[#B8C7DA]">{authSubtitle}</p>
@@ -376,7 +376,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             type="button"
             onClick={() => setAuthMode('login')}
             aria-pressed={mode === 'login'}
-            className={`rounded-[0.9rem] px-3 py-2 text-sm font-semibold ${authButtonFocusClass} ${mode === 'login' ? 'bg-gradient-to-r from-[#46E7C7] to-[#F4B66A] text-[#07131E] shadow-[0_10px_24px_rgba(70,231,199,0.18)]' : 'text-[#A9BCD3] hover:text-[#F5F7FB]'}`}
+            className={`inline-flex min-h-11 items-center justify-center rounded-[0.9rem] px-3 py-3 text-sm font-semibold ${authButtonFocusClass} ${mode === 'login' ? 'bg-gradient-to-r from-[#46E7C7] to-[#F4B66A] text-[#07131E] shadow-[0_10px_24px_rgba(70,231,199,0.18)]' : 'text-[#A9BCD3] hover:text-[#F5F7FB]'}`}
           >
             Login
           </button>
@@ -384,7 +384,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             type="button"
             onClick={() => setAuthMode('signup')}
             aria-pressed={mode === 'signup'}
-            className={`rounded-[0.9rem] px-3 py-2 text-sm font-semibold ${authButtonFocusClass} ${mode === 'signup' ? 'bg-gradient-to-r from-[#46E7C7] to-[#F4B66A] text-[#07131E] shadow-[0_10px_24px_rgba(70,231,199,0.18)]' : 'text-[#A9BCD3] hover:text-[#F5F7FB]'}`}
+            className={`inline-flex min-h-11 items-center justify-center rounded-[0.9rem] px-3 py-3 text-sm font-semibold ${authButtonFocusClass} ${mode === 'signup' ? 'bg-gradient-to-r from-[#46E7C7] to-[#F4B66A] text-[#07131E] shadow-[0_10px_24px_rgba(70,231,199,0.18)]' : 'text-[#A9BCD3] hover:text-[#F5F7FB]'}`}
           >
             Sign Up
           </button>
@@ -510,7 +510,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                 aria-label={showPassword ? 'Hide password' : 'Show password'}
                 aria-pressed={showPassword}
                 aria-controls="auth-password"
-                className={`absolute right-3 top-3.5 rounded-md text-[#7E92A8] hover:text-[#E6EEF8] ${authButtonTransitionClass} ${authButtonFocusClass}`}
+                className={`absolute right-2 top-2 inline-flex h-11 w-11 items-center justify-center rounded-full text-[#7E92A8] hover:text-[#E6EEF8] ${authButtonTransitionClass} ${authButtonFocusClass}`}
                 onClick={() => setShowPassword((prev) => !prev)}
               >
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -527,7 +527,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                   type="button"
                   onClick={handleForgotPassword}
                   disabled={isLoading || isResetting || disableEmailAuthSubmit || !email.trim()}
-                  className={`rounded-md text-xs font-semibold text-[#78EBD1] hover:text-[#CFFAF0] disabled:cursor-not-allowed disabled:opacity-60 ${authButtonFocusClass}`}
+                  className={`inline-flex min-h-11 items-center rounded-md px-1.5 text-xs font-semibold text-[#78EBD1] hover:text-[#CFFAF0] disabled:cursor-not-allowed disabled:opacity-60 ${authButtonFocusClass}`}
                 >
                   {isResetting ? 'Sending reset link...' : 'Forgot password?'}
                 </button>
@@ -561,37 +561,49 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
           {mode === 'signup' && (
             <div className="rounded-[1.2rem] border border-white/10 bg-white/[0.03] px-4 py-4">
               <div className="flex items-start gap-2 text-sm text-[#DCE6F3]">
-                  <input
-                    id="accepted-terms"
-                    name="acceptedTerms"
-                    type="checkbox"
-                    checked={acceptedTerms}
-                  onChange={(event) => {
-                      setAcceptedTerms(event.target.checked);
-                      if (event.target.checked) setTermsErrorMsg(null);
-                    }}
-                    className="mt-0.5 h-4 w-4 cursor-pointer rounded border-[#6B7F96] bg-transparent text-[#46E7C7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
-                  />
-                <div className="min-w-0">
-                  <label htmlFor="accepted-terms" className="inline">
-                    I agree to the{' '}
+                <label htmlFor="accepted-terms" className="flex min-h-12 shrink-0 cursor-pointer items-start">
+                  <span className="relative flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04]">
+                    <input
+                      id="accepted-terms"
+                      name="acceptedTerms"
+                      type="checkbox"
+                      checked={acceptedTerms}
+                      onChange={(event) => {
+                        setAcceptedTerms(event.target.checked);
+                        if (event.target.checked) setTermsErrorMsg(null);
+                      }}
+                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                    />
+                    <span
+                      aria-hidden="true"
+                      className={`flex h-5 w-5 items-center justify-center rounded border transition-colors ${
+                        acceptedTerms ? 'border-[#46E7C7] bg-[#46E7C7] text-[#07131E]' : 'border-[#6B7F96] bg-transparent text-transparent'
+                      }`}
+                    >
+                      <Check size={13} strokeWidth={3} />
+                    </span>
+                  </span>
+                </label>
+                <div className="min-w-0 flex-1">
+                  <label htmlFor="accepted-terms" className="flex min-h-11 cursor-pointer items-center text-sm leading-6">
+                    I agree to the account terms and privacy policy.
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => openLegalModal(TERMS_PATH)}
-                    className="rounded-md font-semibold text-[#78EBD1] underline decoration-[#78EBD1]/60 underline-offset-2 hover:text-[#CFFAF0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
-                  >
-                    Terms and Conditions
-                  </button>
-                  <span>{' '}and the{' '}</span>
-                  <button
-                    type="button"
-                    onClick={() => openLegalModal(PRIVACY_PATH)}
-                    className="rounded-md font-semibold text-[#78EBD1] underline decoration-[#78EBD1]/60 underline-offset-2 hover:text-[#CFFAF0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
-                  >
-                    Privacy Policy
-                  </button>
-                  <span>.</span>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openLegalModal(TERMS_PATH)}
+                      className="inline-flex min-h-11 items-center rounded-md px-3 py-1 font-semibold text-[#78EBD1] underline decoration-[#78EBD1]/60 underline-offset-2 hover:text-[#CFFAF0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                    >
+                      Terms and Conditions
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openLegalModal(PRIVACY_PATH)}
+                      className="inline-flex min-h-11 items-center rounded-md px-3 py-1 font-semibold text-[#78EBD1] underline decoration-[#78EBD1]/60 underline-offset-2 hover:text-[#CFFAF0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                    >
+                      Privacy Policy
+                    </button>
+                  </div>
                 </div>
               </div>
               {termsErrorMsg && (
@@ -604,7 +616,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             type="submit"
             disabled={isLoading || isResetting || disableEmailAuthSubmit}
             aria-busy={isLoading || isResetting}
-            className={`flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#46E7C7] via-[#31B8E6] to-[#F4B66A] py-3.5 text-sm font-bold text-[#07131E] shadow-[0_18px_42px_rgba(70,231,199,0.18)] ${authButtonTransitionClass} ${authButtonFocusClass} hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#46E7C7] via-[#31B8E6] to-[#F4B66A] px-4 py-3 text-sm font-bold text-[#07131E] shadow-[0_18px_42px_rgba(70,231,199,0.18)] ${authButtonTransitionClass} ${authButtonFocusClass} hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             {isLoading ? 'Please wait...' : mode === 'signup' ? 'Create Account' : 'Sign In'} {!isLoading && <ArrowRight size={16} />}
           </button>
@@ -618,7 +630,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
               type="button"
               onClick={handleResendVerification}
               disabled={isResendingVerification || verificationCooldownRemainingSec > 0}
-              className="mt-3 rounded-lg border border-amber-400/20 bg-white/5 px-3 py-1.5 text-xs font-semibold text-[#F5F7FB] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-3 inline-flex min-h-11 items-center rounded-lg border border-amber-400/20 bg-white/5 px-3 py-2 text-xs font-semibold text-[#F5F7FB] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isResendingVerification
                 ? 'Sending...'
@@ -641,7 +653,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
             onClick={handleGoogle}
             disabled={isLoading || disableOAuthAuthSubmit}
             aria-busy={isLoading}
-            className={`rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm font-semibold text-[#F5F7FB] ${authButtonTransitionClass} ${authButtonFocusClass} hover:bg-white/[0.08] disabled:opacity-60`}
+            className={`rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-semibold text-[#F5F7FB] ${authButtonTransitionClass} ${authButtonFocusClass} hover:bg-white/[0.08] disabled:opacity-60`}
           >
             {mode === 'signup' ? 'Continue with Google' : 'Sign in with Google'}
           </button>
@@ -698,7 +710,7 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                 <button
                   type="button"
                   onClick={closeLegalModal}
-                  className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-[#B8C7DA] hover:bg-white/[0.08] ${authButtonFocusClass}`}
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 text-[#B8C7DA] hover:bg-white/[0.08] ${authButtonFocusClass}`}
                   aria-label="Close legal popup"
                 >
                   <X size={16} />
@@ -747,21 +759,21 @@ export const Login: React.FC<LoginProps> = ({ setScreen, initialMode, syncModeTo
                   href={activeLegalPath || TERMS_PATH}
                   target="_blank"
                   rel="noreferrer"
-                  className="mr-auto rounded-md text-xs font-semibold text-[#78EBD1] underline decoration-[#78EBD1]/70 underline-offset-2 hover:text-[#CFFAF0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                  className="mr-auto inline-flex min-h-11 items-center rounded-md px-1 text-xs font-semibold text-[#78EBD1] underline decoration-[#78EBD1]/70 underline-offset-2 hover:text-[#CFFAF0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
                 >
                   Open full legal page
                 </a>
                 <button
                   type="button"
                   onClick={closeLegalModal}
-                  className={`rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-[#F5F7FB] hover:bg-white/[0.08] ${authButtonFocusClass}`}
+                  className={`inline-flex min-h-11 items-center rounded-lg border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-semibold text-[#F5F7FB] hover:bg-white/[0.08] ${authButtonFocusClass}`}
                 >
                   Close
                 </button>
                 <button
                   type="button"
                   onClick={handleAcceptTerms}
-                  className={`rounded-lg bg-gradient-to-r from-[#46E7C7] via-[#31B8E6] to-[#F4B66A] px-3 py-2 text-xs font-semibold text-[#07131E] shadow-md shadow-cyan-500/20 hover:brightness-105 ${authButtonFocusClass}`}
+                  className={`inline-flex min-h-11 items-center rounded-lg bg-gradient-to-r from-[#46E7C7] via-[#31B8E6] to-[#F4B66A] px-4 py-2 text-xs font-semibold text-[#07131E] shadow-md shadow-cyan-500/20 hover:brightness-105 ${authButtonFocusClass}`}
                 >
                   Accept & Continue
                 </button>

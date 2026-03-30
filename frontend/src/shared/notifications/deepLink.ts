@@ -2,6 +2,18 @@ import type { NotificationActionTarget } from './types';
 
 export const NOTIFICATION_DEEP_LINK_EVENT = 'vf:notification-deeplink';
 
+const resolveWorkspacePathForTab = (tabToken: string): string | null => {
+  const token = String(tabToken || '').trim().toUpperCase();
+  if (!token) return null;
+  if (token === 'STUDIO') return '/app/studio';
+  if (token === 'READER') return '/app/reader';
+  if (token === 'VOICE_CLONING' || token === 'CHARACTERS') return '/app/voices';
+  if (token === 'NOVEL') return '/app/writing';
+  if (token === 'HISTORY') return '/app/runs';
+  if (token === 'ADMIN') return '/app/admin';
+  return null;
+};
+
 export const readNotificationDeepLink = (): NotificationActionTarget => {
   if (typeof window === 'undefined') return {};
   const params = new URLSearchParams(window.location.search);
@@ -30,6 +42,7 @@ export const applyNotificationActionTarget = (target: NotificationActionTarget |
   }
 
   const url = new URL(window.location.href);
+  const tabPath = resolveWorkspacePathForTab(String(target.tab || ''));
   const setOrDelete = (key: string, value?: string): void => {
     const safeValue = String(value || '').trim();
     if (safeValue) {
@@ -40,10 +53,17 @@ export const applyNotificationActionTarget = (target: NotificationActionTarget |
   };
 
   setOrDelete('vf-screen', target.screen);
-  setOrDelete('vf-tab', target.tab);
+  if (tabPath) {
+    url.searchParams.delete('vf-tab');
+  } else {
+    setOrDelete('vf-tab', target.tab);
+  }
   setOrDelete('vf-admin-tab', target.adminTab);
   setOrDelete('vf-conversation-id', target.conversationId);
   setOrDelete('vf-job-id', target.jobId);
+  if (tabPath && (url.pathname === '/app' || url.pathname.startsWith('/app/') || url.pathname.startsWith('/reader'))) {
+    url.pathname = tabPath;
+  }
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
   window.dispatchEvent(new CustomEvent<NotificationActionTarget>(NOTIFICATION_DEEP_LINK_EVENT, { detail: target }));
 };

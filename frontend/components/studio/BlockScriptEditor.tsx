@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { GripVertical, Plus, Slash, Sparkles, Trash2 } from 'lucide-react';
+import { GripVertical, Loader2, Plus, Slash, Sparkles, Trash2, Wand2 } from 'lucide-react';
 import { ScriptBlock, ScriptBlockType, StudioEditorMode } from '../../types';
 import {
   createEmptyDialogueBlock,
@@ -20,6 +20,10 @@ interface BlockScriptEditorProps {
   maxChars?: number;
   onOverflow?: (info: { maxChars: number }) => void;
   onModeChange: (mode: StudioEditorMode) => void;
+  directorActionLabel?: string;
+  directorActionTitle?: string;
+  onDirectorAction?: () => void;
+  directorActionBusy?: boolean;
   placeholder?: string;
   className?: string;
   disabled?: boolean;
@@ -49,6 +53,10 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
   maxChars,
   onOverflow,
   onModeChange,
+  directorActionLabel = 'AI Director',
+  directorActionTitle = 'Analyze the current text and apply AI Director tags.',
+  onDirectorAction,
+  directorActionBusy = false,
   placeholder = 'Write your script here...',
   className = '',
   disabled = false,
@@ -183,25 +191,45 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
   return (
     <div className={`vf-block-editor relative flex h-full min-h-0 flex-col ${className}`}>
       <div className="vf-block-editor__header flex items-center justify-between border-b px-4 py-2">
-        <div className="vf-block-editor__mode-toggle inline-flex items-center gap-1 rounded-xl border p-1">
-          <button
-            type="button"
-            onClick={() => onModeChange('blocks')}
-            className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
-              mode === 'blocks' ? 'vf-block-editor__mode-btn--active' : ''
-            }`}
-          >
-            Blocks
-          </button>
-          <button
-            type="button"
-            onClick={() => onModeChange('raw')}
-            className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
-              mode === 'raw' ? 'vf-block-editor__mode-btn--active' : ''
-            }`}
-          >
-            Raw
-          </button>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="vf-block-editor__control-cluster">
+            <div className="vf-block-editor__mode-toggle inline-flex items-center gap-1 rounded-xl border p-1">
+              <button
+                type="button"
+                onClick={() => onModeChange('blocks')}
+                className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[12px] font-bold transition-colors ${
+                  mode === 'blocks' ? 'vf-block-editor__mode-btn--active' : ''
+                }`}
+              >
+                Blocks
+              </button>
+              <button
+                type="button"
+                onClick={() => onModeChange('raw')}
+                className={`vf-block-editor__mode-btn rounded-lg px-2.5 py-1 text-[12px] font-bold transition-colors ${
+                  mode === 'raw' ? 'vf-block-editor__mode-btn--active' : ''
+                }`}
+              >
+                Raw
+              </button>
+            </div>
+          </div>
+
+          {onDirectorAction && (
+            <div className="vf-studio-director-cluster ml-auto" title={directorActionTitle}>
+              <button
+                type="button"
+                onClick={onDirectorAction}
+                disabled={disabled || directorActionBusy}
+                className="vf-toolbar-ai text-sm font-bold disabled:opacity-50 transition-colors"
+                title={directorActionTitle}
+                aria-label={directorActionLabel}
+              >
+                {directorActionBusy ? <Loader2 size={12} aria-hidden="true" className="animate-spin" /> : <Wand2 size={12} aria-hidden="true" />}
+                <span>{directorActionLabel}</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {mode === 'blocks' && (
@@ -209,7 +237,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
             <button
               type="button"
               onClick={() => setMenuOpen((prev) => !prev)}
-              className="vf-block-editor__quick rounded-lg border px-2 py-1 text-[11px] font-bold"
+              className="vf-block-editor__quick rounded-lg border px-2 py-1.5 text-[12px] font-bold"
               title="Add block (+)"
             >
               <Plus size={12} className="inline mr-1" />
@@ -218,7 +246,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
             <button
               type="button"
               onClick={() => setMenuOpen((prev) => !prev)}
-              className="vf-block-editor__quick rounded-lg border px-2 py-1 text-[11px] font-bold"
+              className="vf-block-editor__quick rounded-lg border px-2 py-1.5 text-[12px] font-bold"
               title="Quick insert (/)"
             >
               <Slash size={12} className="inline mr-1" />
@@ -235,7 +263,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                     key={option.type}
                     type="button"
                     onClick={() => addBlock(option.type, commandInsertIndex)}
-                    className="vf-block-editor__menu-item flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs font-semibold"
+                    className="vf-block-editor__menu-item flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm font-semibold"
                   >
                     <span>{option.label}</span>
                     {option.type === 'dialogue' && <Sparkles size={12} className="vf-block-editor__spark" />}
@@ -255,7 +283,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
           disabled={disabled}
           aria-label="Studio script editor (raw mode)"
           placeholder={placeholder}
-          className={`vf-studio-raw-editor custom-scrollbar flex-1 resize-none border-0 bg-transparent px-5 py-4 text-base outline-none ${
+          className={`vf-studio-raw-editor custom-scrollbar min-h-0 flex-1 resize-none border-0 bg-transparent px-5 py-4 text-base outline-none ${
             hasDevanagari ? 'vf-devanagari' : ''
           }`}
         />
@@ -283,16 +311,16 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1">
                     <GripVertical size={14} className="vf-script-block__drag" />
-                    <span className="vf-script-block__type rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide">
+                    <span className="vf-script-block__type rounded-full border px-2 py-0.5 text-[12px] font-bold uppercase tracking-[0.04em]">
                       {block.type}
                     </span>
-                    <span className="vf-script-block__index text-[10px] font-semibold">#{index + 1}</span>
+                    <span className="vf-script-block__index text-[12px] font-semibold">#{index + 1}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() => addBlock('dialogue', index + 1)}
-                      className="vf-block-action rounded-md border px-2 py-1 text-[11px] font-semibold"
+                      className="vf-block-action rounded-md border px-2 py-1.5 text-[12px] font-semibold"
                     >
                       + below
                     </button>
@@ -314,7 +342,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                         onChange={(event) => updateBlock(block.id, { speaker: event.target.value })}
                         list="vf-studio-speakers"
                         placeholder="Speaker"
-                        className="vf-block-field rounded-lg border px-2 py-2 text-xs outline-none"
+                        className="vf-block-field rounded-lg border px-2 py-2 text-sm outline-none"
                       />
                       <select
                         value={block.emotion?.primaryEmotion || 'Neutral'}
@@ -324,7 +352,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                             primaryEmotion: event.target.value,
                           },
                         })}
-                        className="vf-block-field rounded-lg border px-2 py-2 text-xs outline-none"
+                        className="vf-block-field rounded-lg border px-2 py-2 text-sm outline-none"
                       >
                         {emotionOptions.map((emotion) => (
                           <option key={`${block.id}_${emotion}`} value={emotion}>
@@ -336,7 +364,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                         value={cueValue}
                         onChange={(event) => updateCueTags(block.id, event.target.value)}
                         placeholder="Cue tags (comma separated)"
-                        className="vf-block-field rounded-lg border px-2 py-2 text-xs outline-none"
+                        className="vf-block-field rounded-lg border px-2 py-2 text-sm outline-none"
                       />
                     </div>
                     <textarea
@@ -355,7 +383,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                     value={block.text}
                     onChange={(event) => updateBlock(block.id, { text: event.target.value })}
                     placeholder="SFX description"
-                    className="vf-block-field w-full rounded-lg border px-3 py-2 text-xs outline-none"
+                    className="vf-block-field w-full rounded-lg border px-3 py-2 text-sm outline-none"
                   />
                 )}
 
@@ -364,7 +392,7 @@ export const BlockScriptEditor: React.FC<BlockScriptEditorProps> = ({
                     value={block.text}
                     onChange={(event) => updateBlock(block.id, { text: event.target.value })}
                     placeholder="Direction note"
-                    className="vf-block-field w-full min-h-[60px] rounded-lg border px-3 py-2 text-xs outline-none"
+                    className="vf-block-field w-full min-h-[60px] rounded-lg border px-3 py-2 text-sm outline-none"
                   />
                 )}
               </div>

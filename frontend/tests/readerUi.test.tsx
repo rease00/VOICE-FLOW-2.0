@@ -81,11 +81,13 @@ describe('reader browse home', () => {
         isLoading={false}
         bootstrapState="ready"
         legalAccepted
+        showImportFlow={false}
         libraryErrorMessage=""
         onChangeHomeTab={noOp}
         onChangeSearchTerm={noOp}
         onSelectItem={noOp}
         onOpenItem={noOp}
+        onAcceptReaderRights={noOp}
         resolveImportedStatusBadge={() => 'Ready To Play'}
         resolveMediaUrl={(url) => url || ''}
       />
@@ -97,7 +99,135 @@ describe('reader browse home', () => {
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain('Imported');
     expect(markup).not.toContain('Comics');
-    expect(markup).toContain('Reader Dashboard');
+    expect(markup).not.toContain('Reader is ready');
+    expect(markup).not.toContain('Reader status panels');
+    expect(markup).not.toContain('Reader Dashboard');
+    expect(markup).not.toContain('Open Continue Reading');
+    expect(markup).toContain('aria-label="Search reader catalog"');
+  });
+
+  it('shows sign-in required instead of import-rights pending when auth is required', () => {
+    const dashboard = buildReaderDashboardPayloadFromLibrary({
+      surface: 'all',
+      regionId: 'english',
+      regions: [{ id: 'english', label: 'English' }],
+      items: [],
+      activeSession: null,
+      activeSessions: [],
+      counts: {
+        all: 0,
+        visible: 0,
+        books: 0,
+        comics: 0,
+        uploads: 0,
+        resumable: 0,
+      },
+      facets: { providers: [], collections: [], progressStates: [] },
+      shelves: {
+        continueReading: [],
+        trending: [],
+        newArrivals: [],
+        recentlyImported: [],
+      },
+    } satisfies ReaderLibrary);
+    const viewModel = resolveReaderHomeViewModel(dashboard, 'novels', '');
+    const markup = renderToStaticMarkup(
+      <ReaderBrowseHome
+        viewModel={viewModel}
+        homeTab="novels"
+        searchTerm=""
+        selectedItemId=""
+        isLoading={false}
+        bootstrapState="needs_auth"
+        legalAccepted={false}
+        showImportFlow={false}
+        libraryErrorMessage="Sign in required to restore Reader shelves, sessions, and your dashboard state."
+        onChangeHomeTab={noOp}
+        onChangeSearchTerm={noOp}
+        onSelectItem={noOp}
+        onOpenItem={noOp}
+        onAcceptReaderRights={noOp}
+        resolveImportedStatusBadge={() => 'Ready To Play'}
+        resolveMediaUrl={(url) => url || ''}
+      />
+    );
+
+    expect(markup).toContain('Sign in required');
+    expect(markup).not.toContain('Reader rights pending');
+  });
+
+  it('shows the reader rights prompt only after the import flow is armed', () => {
+    const dashboard = buildReaderDashboardPayloadFromLibrary({
+      surface: 'all',
+      regionId: 'english',
+      regions: [{ id: 'english', label: 'English' }],
+      items: [],
+      activeSession: null,
+      activeSessions: [],
+      counts: {
+        all: 0,
+        visible: 0,
+        books: 0,
+        comics: 0,
+        uploads: 0,
+        resumable: 0,
+      },
+      facets: { providers: [], collections: [], progressStates: [] },
+      shelves: {
+        continueReading: [],
+        trending: [],
+        newArrivals: [],
+        recentlyImported: [],
+      },
+    } satisfies ReaderLibrary);
+    const viewModel = resolveReaderHomeViewModel(dashboard, 'novels', '');
+
+    const idleMarkup = renderToStaticMarkup(
+      <ReaderBrowseHome
+        viewModel={viewModel}
+        homeTab="novels"
+        searchTerm=""
+        selectedItemId=""
+        isLoading={false}
+        bootstrapState="ready"
+        legalAccepted={false}
+        showImportFlow={false}
+        libraryErrorMessage=""
+        onChangeHomeTab={noOp}
+        onChangeSearchTerm={noOp}
+        onSelectItem={noOp}
+        onOpenItem={noOp}
+        onAcceptReaderRights={noOp}
+        resolveImportedStatusBadge={() => 'Ready To Play'}
+        resolveMediaUrl={(url) => url || ''}
+      />
+    );
+
+    const armedMarkup = renderToStaticMarkup(
+      <ReaderBrowseHome
+        viewModel={viewModel}
+        homeTab="novels"
+        searchTerm=""
+        selectedItemId=""
+        isLoading={false}
+        bootstrapState="ready"
+        legalAccepted={false}
+        showImportFlow
+        libraryErrorMessage=""
+        onChangeHomeTab={noOp}
+        onChangeSearchTerm={noOp}
+        onSelectItem={noOp}
+        onOpenItem={noOp}
+        onAcceptReaderRights={noOp}
+        resolveImportedStatusBadge={() => 'Ready To Play'}
+        resolveMediaUrl={(url) => url || ''}
+      />
+    );
+
+    expect(idleMarkup).not.toContain('Reader rights pending');
+    expect(idleMarkup).not.toContain('Accept Once');
+    expect(armedMarkup).toContain('Reader rights pending');
+    expect(armedMarkup).toContain('Accept Once');
   });
 });
 

@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
+import { usePathname } from 'next/navigation';
 import {
   ActionCodeSettings,
   ConfirmationResult,
@@ -62,6 +63,7 @@ import { hasActiveAdminActor } from '../src/shared/auth/adminAccess';
 import { clearDriveTokenCache, warmDriveTokenFromGoogleSignIn } from '../services/driveAuthService';
 import { resolveApiBaseUrl } from '../src/shared/api/config';
 import { readEnvBoolean, readEnvValue } from '../src/shared/runtime/env';
+import { shouldBootstrapAccountDataForPath } from '../src/app/navigation';
 import { STORAGE_KEYS } from '../src/shared/storage/keys';
 import { readStorageJson, writeStorageJson, removeStorageKey, writeStorageString } from '../src/shared/storage/localStore';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
@@ -624,6 +626,7 @@ const normalizeHistoryItem = (item: HistoryItem): HistoryItem => {
 const MAX_IN_MEMORY_HISTORY_ITEMS = 30;
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const pathname = usePathname();
   const [authReady, setAuthReady] = useState(false);
   const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
   const [user, setUser] = useState<UserProfile>(BLANK_USER);
@@ -637,6 +640,10 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
   const charactersUnsubscribeRef = useRef<(() => void) | null>(null);
   const hasHydratedStatsRef = useRef(false);
+  const shouldBootstrapAccountData = useMemo(
+    () => shouldBootstrapAccountDataForPath(pathname),
+    [pathname]
+  );
 
   const isAdmin = Boolean(user.isAdmin);
   const isAuthenticated = Boolean(user.uid);
@@ -739,7 +746,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const loadHistory = async (limit = 30) => {
+  const loadHistory = useCallback(async (limit = 30) => {
     const firebaseUser = firebaseAuth.currentUser;
     if (!firebaseUser) {
       setHistory([]);
@@ -754,7 +761,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch {
       // Keep current in-memory history when backend is unavailable.
     }
-  };
+  }, []);
 
   const clearHistoryRemote = async () => {
     try {
@@ -813,7 +820,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       ? window.setTimeout(markAuthReady, 3500)
       : null;
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
-      markAuthReady();
       try {
         if (!firebaseUser) {
           if (charactersUnsubscribeRef.current) {
@@ -849,7 +855,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const profile = await mapFirebaseUserToProfile();
         setUser(profile);
         bootstrapCharacterSync(firebaseUser.uid);
-        void Promise.allSettled([refreshAdminActor(), refreshEntitlements(), loadHistory()]);
       } finally {
         markAuthReady();
       }
@@ -872,10 +877,17 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       return;
     }
+    if (!shouldBootstrapAccountData) return;
     void refreshAdminActor();
   // user.adminActor intentionally excluded to avoid a fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshAdminActor, user.uid]);
+  }, [refreshAdminActor, shouldBootstrapAccountData, user.uid]);
+
+  useEffect(() => {
+    const safeUid = String(user.uid || '').trim();
+    if (!safeUid || !shouldBootstrapAccountData) return;
+    void Promise.allSettled([refreshEntitlements(), loadHistory()]);
+  }, [loadHistory, refreshEntitlements, shouldBootstrapAccountData, user.uid]);
 
   const signInWithEmail = useCallback<UserContextType['signInWithEmail']>(async (email, password) => {
     const rawEmail = String(email || '').trim();

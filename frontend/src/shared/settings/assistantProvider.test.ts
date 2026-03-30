@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { GenerationSettings } from '../../../types';
 import {
   normalizeAssistantProviderControlsEnabled,
@@ -33,89 +33,31 @@ describe('assistant provider settings normalization', () => {
     expect(normalizePreferUserGeminiKey(undefined, true)).toBe(true);
   });
 
-  it('forces GEMINI route when provider controls are disabled', () => {
+  it('locks routing to GEMINI runtime only', () => {
     const routing = resolveAssistantProviderRouting({
       ...baseSettings(),
       helperProvider: 'PERPLEXITY',
-      assistantProviderControlsEnabled: false,
+      assistantProviderControlsEnabled: true,
       preferUserGeminiKey: true,
     });
     expect(routing.controlsEnabled).toBe(false);
     expect(routing.provider).toBe('GEMINI');
     expect(routing.preferUserGeminiKey).toBe(false);
   });
-
-  it('keeps selected provider when controls are enabled', () => {
-    const routing = resolveAssistantProviderRouting({
-      ...baseSettings(),
-      helperProvider: 'LOCAL',
-      assistantProviderControlsEnabled: true,
-    });
-    expect(routing.controlsEnabled).toBe(true);
-    expect(routing.provider).toBe('LOCAL');
-  });
 });
 
 describe('assistant dispatch plan', () => {
-  it('routes controls OFF to runtime Gemini only', () => {
+  it('always routes to runtime Gemini', () => {
     const plan = resolveAssistantTextDispatchPlan({
       ...baseSettings(),
-      helperProvider: 'PERPLEXITY',
-      assistantProviderControlsEnabled: false,
+      helperProvider: 'LOCAL',
+      assistantProviderControlsEnabled: true,
       preferUserGeminiKey: true,
     });
     expect(plan.provider).toBe('GEMINI');
     expect(plan.usePerplexity).toBe(false);
     expect(plan.useRuntimeGemini).toBe(true);
     expect(plan.useUserGeminiKey).toBe(false);
-  });
-
-  it('uses personal key path for GEMINI when enabled', () => {
-    const plan = resolveAssistantTextDispatchPlan({
-      ...baseSettings(),
-      helperProvider: 'GEMINI',
-      assistantProviderControlsEnabled: true,
-      preferUserGeminiKey: true,
-    });
-    expect(plan.usePerplexity).toBe(false);
-    expect(plan.useUserGeminiKey).toBe(true);
-    expect(plan.useRuntimeGemini).toBe(false);
-  });
-
-  it('uses runtime slot set for GEMINI when personal key toggle is OFF', () => {
-    const plan = resolveAssistantTextDispatchPlan({
-      ...baseSettings(),
-      helperProvider: 'GEMINI',
-      assistantProviderControlsEnabled: true,
-      preferUserGeminiKey: false,
-    });
-    expect(plan.usePerplexity).toBe(false);
-    expect(plan.useUserGeminiKey).toBe(false);
-    expect(plan.useRuntimeGemini).toBe(true);
-  });
-
-  it('keeps perplexity path when controls are ON and provider is PERPLEXITY', () => {
-    const plan = resolveAssistantTextDispatchPlan({
-      ...baseSettings(),
-      helperProvider: 'PERPLEXITY',
-      assistantProviderControlsEnabled: true,
-      preferUserGeminiKey: false,
-    });
-    expect(plan.usePerplexity).toBe(true);
-    expect(plan.useRuntimeGemini).toBe(false);
-    expect(plan.useUserGeminiKey).toBe(false);
-  });
-
-  it('keeps local flow unchanged when controls are ON', () => {
-    const plan = resolveAssistantTextDispatchPlan({
-      ...baseSettings(),
-      helperProvider: 'LOCAL',
-      assistantProviderControlsEnabled: true,
-      preferUserGeminiKey: false,
-    });
-    expect(plan.provider).toBe('LOCAL');
-    expect(plan.usePerplexity).toBe(false);
-    expect(plan.useRuntimeGemini).toBe(true);
   });
 
   it('uses runtime-safe Gemini text candidates led by Gemini 2.5 Flash Lite', () => {
@@ -138,4 +80,3 @@ describe('assistant dispatch plan', () => {
     ]);
   });
 });
-
