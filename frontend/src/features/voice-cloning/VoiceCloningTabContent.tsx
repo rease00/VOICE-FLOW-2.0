@@ -2480,11 +2480,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                     checked={cloneConsentAccepted}
                     onChange={(event) => setCloneConsentAccepted(event.target.checked)}
                     type="checkbox"
-                    className="peer absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    className="peer absolute inset-0 z-20 h-full w-full cursor-pointer opacity-0"
                   />
                   <span
                     aria-hidden="true"
-                    className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition sm:h-6 sm:w-6 ${
+                    className={`pointer-events-none mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition sm:h-6 sm:w-6 ${
                       cloneConsentAccepted
                         ? 'border-cyan-400 bg-cyan-400 text-slate-950 shadow-[0_0_0_1px_rgba(34,211,238,0.24)]'
                         : 'border-white/15 bg-slate-950/65 text-transparent group-hover:border-cyan-400/55'
@@ -2492,7 +2492,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   >
                     <CheckCircle2 size={12} className={cloneConsentAccepted ? '' : 'opacity-0'} />
                   </span>
-                  <span className="relative z-10 pt-0.5 leading-4">I confirm I own this voice or have explicit permission to clone it.</span>
+                  <span className="pointer-events-none relative z-10 pt-0.5 leading-4">I confirm I own this voice or have explicit permission to clone it.</span>
                 </label>
                 <label
                   className={`group relative flex min-h-10 cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] transition sm:min-h-11 sm:gap-3 sm:rounded-xl sm:px-3 sm:py-2 sm:text-sm ${
@@ -2505,11 +2505,11 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                     checked={cloneSafetyAccepted}
                     onChange={(event) => setCloneSafetyAccepted(event.target.checked)}
                     type="checkbox"
-                    className="peer absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    className="peer absolute inset-0 z-20 h-full w-full cursor-pointer opacity-0"
                   />
                   <span
                     aria-hidden="true"
-                    className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition sm:h-6 sm:w-6 ${
+                    className={`pointer-events-none mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition sm:h-6 sm:w-6 ${
                       cloneSafetyAccepted
                         ? 'border-cyan-400 bg-cyan-400 text-slate-950 shadow-[0_0_0_1px_rgba(34,211,238,0.24)]'
                         : 'border-white/15 bg-slate-950/65 text-transparent group-hover:border-cyan-400/55'
@@ -2517,7 +2517,7 @@ export const VoiceCloningTabContent: React.FC<VoiceCloningTabContentProps> = ({
                   >
                     <CheckCircle2 size={12} className={cloneSafetyAccepted ? '' : 'opacity-0'} />
                   </span>
-                  <span className="relative z-10 pt-0.5 leading-4">I will not use cloned output for impersonation, fraud, or harmful deception.</span>
+                  <span className="pointer-events-none relative z-10 pt-0.5 leading-4">I will not use cloned output for impersonation, fraud, or harmful deception.</span>
                 </label>
               </div>
             </div>

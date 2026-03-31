@@ -50,6 +50,30 @@ function Invoke-Gcloud {
     return $null
 }
 
+function Get-ExistingServiceUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName
+    )
+    $safeServiceName = [string]$ServiceName
+    if (-not $safeServiceName) {
+        return ""
+    }
+    if ($DryRun) {
+        return "https://$safeServiceName.a.run.app"
+    }
+    try {
+        return [string](Invoke-Gcloud -Capture -Arguments @(
+            "run", "services", "describe", $safeServiceName,
+            "--project", $ProjectId,
+            "--region", $Region,
+            "--format", "value(status.url)"
+        ))
+    }
+    catch {
+        return ""
+    }
+}
+
 function Convert-ObjectToMap {
     param([object]$InputObject)
     $map = @{}
@@ -125,6 +149,9 @@ function Resolve-EnvMap {
             }
             "__VOICEFLOW_WORKER_URL__" {
                 $runtimeUrl = [string]$RuntimeUrls["voiceflow-worker"]
+                if (-not $runtimeUrl) {
+                    $runtimeUrl = Get-ExistingServiceUrl -ServiceName "voiceflow-worker"
+                }
                 if (-not $runtimeUrl) {
                     if ($DryRun) {
                         $resolved[$key] = "https://voiceflow-worker.a.run.app"

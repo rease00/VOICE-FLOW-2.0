@@ -192,7 +192,11 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
         })
       );
 
-  const viable = selectionPool.filter((entry) => Boolean(entry.supportsTts) && Boolean(entry.healthy));
+  const viable = selectionPool.filter((entry) => (
+    Boolean(entry.supportsTts)
+    && Boolean(entry.healthy)
+    && Number.isFinite(Number(entry.rttMs))
+  ));
   if (!viable.length) {
     return { applied: false, reason: 'all_candidate_probes_failed' };
   }
@@ -289,6 +293,7 @@ export const primeLoginTtsSessionKey = async (options?: {
   try {
     const sessionKey = await issueTtsV2SessionKey({
       baseUrl,
+      force: true,
       ...(regionHint ? { regionHint } : {}),
       ...(regionSource ? { regionSource } : {}),
       probeAllSlotRegions: true,

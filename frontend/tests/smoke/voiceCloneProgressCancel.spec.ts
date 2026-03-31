@@ -13,6 +13,7 @@ const PROGRESS_SCREENSHOT = path.resolve(
 );
 const REFERENCE_AUDIO = path.resolve(ROOT_DIR, 'backend', 'assets', 'voice_profiles', 'reference', 'p03_us_m_adult.wav');
 const TARGET_AUDIO = path.resolve(ROOT_DIR, 'backend', 'assets', 'voice_profiles', 'reference', 'p04_us_f_adult.wav');
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const buildDataUrl = (filePath: string): string => {
   const mimeType = 'audio/wav';
@@ -64,7 +65,7 @@ test('voice-clone root progress card supports cancel from the top level', async 
       await route.continue();
       return;
     }
-    await page.waitForTimeout(2500);
+    await delay(2500);
     try {
       await route.fulfill({
         status: 200,

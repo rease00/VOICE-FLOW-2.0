@@ -5,6 +5,7 @@ const issueTtsV2SessionKeyMock = vi.hoisted(() => vi.fn());
 const resolveGeminiRegionSelectionMock = vi.hoisted(() => vi.fn());
 const deriveGeminiRegionSelectionFromLocationMock = vi.hoisted(() => vi.fn());
 const setGeminiRegionSelectionMock = vi.hoisted(() => vi.fn());
+const fetchMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/shared/api/gatewayClient', () => ({
   fetchRoutingBackendCandidates: (...args: unknown[]) => fetchRoutingBackendCandidatesMock(...args),
@@ -35,6 +36,7 @@ describe('applyNearestBackendRoutingOnLogin', () => {
       }),
     };
     vi.stubGlobal('window', { dispatchEvent: vi.fn() } as unknown as Window);
+    vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('sessionStorage', storage as unknown as Storage);
     vi.stubGlobal('localStorage', storage as unknown as Storage);
     resolveGeminiRegionSelectionMock.mockReturnValue({
@@ -50,6 +52,7 @@ describe('applyNearestBackendRoutingOnLogin', () => {
       candidates: [],
       fetchedAt: new Date().toISOString(),
     }));
+    fetchMock.mockResolvedValue({ ok: true });
     issueTtsV2SessionKeyMock.mockResolvedValue('session-key');
   });
 
@@ -137,10 +140,54 @@ describe('applyNearestBackendRoutingOnLogin', () => {
     expect(issueTtsV2SessionKeyMock).toHaveBeenCalledTimes(1);
     expect(issueTtsV2SessionKeyMock).toHaveBeenCalledWith(expect.objectContaining({
       baseUrl: 'https://voiceflow.example',
+      force: true,
       probeAllSlotRegions: true,
       regionHint: 'us-central1',
       regionSource: 'login_auto_nearest',
     }));
+  });
+
+  it('ignores routing candidates whose live health probe fails even if discovery marked them healthy', async () => {
+    fetchRoutingBackendCandidatesMock.mockResolvedValue({
+      ok: true,
+      selectedRegion: 'us-central1',
+      selectedBaseUrl: 'https://voiceflow.example',
+      candidates: [
+        {
+          baseUrl: 'https://dead.example',
+          probeOk: true,
+          healthy: true,
+          region: 'europe-west1',
+          queueDepth: 0,
+          oldestQueuedAgeMs: 10,
+          capabilities: { supportsTts: true },
+        },
+        {
+          baseUrl: 'https://voiceflow.example',
+          probeOk: true,
+          healthy: true,
+          region: 'us-central1',
+          queueDepth: 5,
+          oldestQueuedAgeMs: 20,
+          capabilities: { supportsTts: true },
+        },
+      ],
+      fetchedAt: new Date().toISOString(),
+    });
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return { ok: !url.includes('dead.example') };
+    });
+
+    const { applyNearestBackendRoutingOnLogin, clearNearestBackendRoutingState } = await import('../services/backendRoutingService');
+    clearNearestBackendRoutingState();
+
+    const result = await applyNearestBackendRoutingOnLogin();
+
+    expect(result.applied).toBe(true);
+    expect(result.baseUrl).toBe('https://voiceflow.example');
+    expect(result.selectedRegion).toBe('us-central1');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('prefers the healthiest candidate and persists the selected region hint', async () => {
