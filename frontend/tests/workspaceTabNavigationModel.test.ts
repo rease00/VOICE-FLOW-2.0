@@ -4,7 +4,6 @@ import { WorkspaceTab } from '../src/features/workspace/model/tabs';
 import {
   buildWorkspaceTabNavigationHref,
   formatMobileAvailableCreditsPercent,
-  normalizeWorkspaceTabCandidate,
   resolveWorkspaceTabFromPathname,
 } from '../views/mainAppHelpers';
 
@@ -16,6 +15,7 @@ describe('workspace tab navigation model', () => {
       { tab: WorkspaceTab.NOVEL, path: '/app/writing' },
       { tab: WorkspaceTab.READER, path: '/app/reader' },
       { tab: WorkspaceTab.HISTORY, path: '/app/runs' },
+      { tab: WorkspaceTab.BILLING, path: '/app/billing' },
       { tab: WorkspaceTab.ADMIN, path: '/app/admin' },
     ];
 
@@ -40,26 +40,13 @@ describe('workspace tab navigation model', () => {
     expect(result.changed).toBe(true);
   });
 
-  it('normalizes legacy CHARACTERS selection to VOICE_CLONING', () => {
-    const normalized = normalizeWorkspaceTabCandidate(WorkspaceTab.CHARACTERS);
-    const result = buildWorkspaceTabNavigationHref(
-      'https://voiceflow.local/app/characters',
-      WorkspaceTab.CHARACTERS
-    );
-
-    expect(normalized).toBe(WorkspaceTab.VOICE_CLONING);
-    expect(result.tab).toBe(WorkspaceTab.VOICE_CLONING);
-    expect(result.href).toBe('/app/voices');
+  it('hydrates active tab from pathname and keeps billing canonical', () => {
+    expect(resolveWorkspaceTabFromPathname('/app/billing')).toBe(WorkspaceTab.BILLING);
+    expect(resolveWorkspaceTabFromPathname('/app/voices')).toBe(WorkspaceTab.VOICE_CLONING);
   });
 
-  it('hydrates active tab from pathname and does not fall back to stale tab state', () => {
-    const staleActiveTab = WorkspaceTab.VOICE_CLONING;
-    const pathDrivenTab = normalizeWorkspaceTabCandidate(
-      resolveWorkspaceTabFromPathname('/app/reader')
-    );
-
-    expect(pathDrivenTab).toBe(WorkspaceTab.READER);
-    expect(pathDrivenTab).not.toBe(staleActiveTab);
+  it('does not hydrate active tab from legacy vf-tab state', () => {
+    expect(resolveWorkspaceTabFromPathname('/app/reader')).toBe(WorkspaceTab.READER);
   });
 
   it('formats mobile available credits as percentage of free-limit plus paid capacity', () => {

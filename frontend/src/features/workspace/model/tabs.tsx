@@ -5,9 +5,9 @@ export enum WorkspaceTab {
   STUDIO = 'STUDIO',
   READER = 'READER',
   VOICE_CLONING = 'VOICE_CLONING',
-  CHARACTERS = 'CHARACTERS',
   NOVEL = 'NOVEL',
   HISTORY = 'HISTORY',
+  BILLING = 'BILLING',
   ADMIN = 'ADMIN',
 }
 
@@ -28,24 +28,6 @@ export interface WorkspaceTabItem {
   section: WorkspaceNavSection;
   route: string;
 }
-
-export interface WorkspaceNavActionItem {
-  id: 'BUY';
-  icon: React.ReactNode;
-  label: string;
-  displayLabel: string;
-  section: Extract<WorkspaceNavSection, 'account'>;
-  route: string;
-}
-
-export const WORKSPACE_BILLING_NAV_ITEM: WorkspaceNavActionItem = {
-  id: 'BUY',
-  icon: <Coins size={18} />,
-  label: 'Plans & Billing',
-  displayLabel: 'Plans & Billing',
-  section: 'account',
-  route: '/app/buy',
-};
 
 export interface WorkspacePreloadTargetOptions {
   allowReaderPreload?: boolean;
@@ -89,10 +71,18 @@ export const buildWorkspaceTabs = (isAdmin: boolean): WorkspaceTabItem[] => {
     {
       id: WorkspaceTab.HISTORY,
       icon: <History size={18} />,
-      label: 'History',
-      displayLabel: 'History',
+      label: 'Runs',
+      displayLabel: 'Runs',
       section: 'library',
       route: '/app/runs',
+    },
+    {
+      id: WorkspaceTab.BILLING,
+      icon: <Coins size={18} />,
+      label: 'Billing',
+      displayLabel: 'Billing',
+      section: 'account',
+      route: '/app/billing',
     },
   ];
   if (isAdmin) {

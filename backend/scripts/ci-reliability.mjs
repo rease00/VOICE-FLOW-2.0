@@ -36,9 +36,9 @@ const steps = [
     args: ['--prefix', '../frontend', 'run', 'typecheck'],
   },
   {
-    name: 'Kubernetes manifest validation',
+    name: 'Auth bootstrap audit',
     command: npmBin,
-    args: ['run', 'validate:k8s'],
+    args: ['run', 'audit:auth:bootstrap'],
   },
   {
     name: 'TTS long-text 5000 smoke gate',

@@ -1,8 +1,8 @@
-import type { TokenPackKey } from '../../../../services/accountService';
+import type { BillingVcPackKey, TokenPackKey } from '../../../../services/accountService';
 import type { AuthRouteMode } from '../../../app/navigation';
 
 export type BillingSurfaceMode = 'public' | 'app';
-export type BillingSurfaceTab = 'plans' | 'token' | 'coupon';
+export type BillingSurfaceTab = 'plans' | 'token' | 'vc';
 
 export interface BillingSurfaceWalletSummary {
   monthlyFree: number;
@@ -27,4 +27,5 @@ export interface BillingSurfaceProps {
   onRefreshEntitlements?: () => Promise<void> | void;
   walletSummary?: BillingSurfaceWalletSummary | null;
   defaultTokenPackKey?: TokenPackKey;
+  defaultVcPackKey?: BillingVcPackKey;
 }

@@ -818,6 +818,13 @@ def test_queue_claim_fails_closed_without_redis() -> None:
         queue.claim("job_abcdef", worker_id="worker-2")
 
 
+def test_queue_requires_redis_in_production(monkeypatch) -> None:
+    monkeypatch.setenv("VF_ENV", "production")
+
+    with pytest.raises(RuntimeError, match="Redis is required"):
+        TtsJobQueue(redis_url="", key_prefix="vf:test:tts")
+
+
 def test_decode_openvoice_audio_base64_rejects_invalid_or_oversized_payload(monkeypatch) -> None:
     monkeypatch.setattr("services.openvoice_modal.OPENVOICE_MAX_AUDIO_BYTES", 8)
     monkeypatch.setattr("services.openvoice_modal.OPENVOICE_MAX_AUDIO_BASE64_CHARS", 16)

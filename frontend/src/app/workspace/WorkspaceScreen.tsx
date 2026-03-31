@@ -22,11 +22,13 @@ export function WorkspaceScreen() {
   const [bootStartedAt] = useState<number>(() => Date.now());
   const [elapsedMs, setElapsedMs] = useState<number>(0);
   const isWorkspaceRootPath = String(pathname || '').trim().toLowerCase() === '/app';
+  const hasBootstrapGraceElapsed = elapsedMs >= BOOTSTRAP_STALL_MS;
 
   const setScreen = useCallback((screen: AppScreen) => {
     router.replace(resolveAppPath(screen));
   }, [router]);
 
+  const shouldHoldWorkspaceBootstrap = !authReady && !hasBootstrapGraceElapsed;
   const shouldRedirectToOnboarding = authReady && !isAuthenticated && isWorkspaceRootPath;
 
   useEffect(() => {
@@ -35,12 +37,11 @@ export function WorkspaceScreen() {
   }, [router, shouldRedirectToOnboarding]);
 
   useEffect(() => {
-    if (authReady) return;
     const syncElapsed = () => setElapsedMs(Math.max(0, Date.now() - bootStartedAt));
     syncElapsed();
     const timerId = window.setInterval(syncElapsed, 1_000);
     return () => window.clearInterval(timerId);
-  }, [authReady, bootStartedAt]);
+  }, [bootStartedAt]);
 
   const startupState: WorkspaceStartupState = useMemo(() => {
     if (authReady) return { kind: 'ready' };
@@ -58,7 +59,7 @@ export function WorkspaceScreen() {
     ? "We're checking your session and sending you to the right starting point."
     : 'Reconnecting your account and saved workspace state.';
 
-  if (startupState.kind === 'booting' && !startupState.stalled) {
+  if (shouldHoldWorkspaceBootstrap) {
     return (
       <div
         className="min-h-[100dvh] overflow-hidden bg-[radial-gradient(82%_72%_at_12%_10%,rgba(34,211,238,0.16),transparent_58%),radial-gradient(74%_66%_at_88%_14%,rgba(99,102,241,0.18),transparent_60%),linear-gradient(165deg,#020617_0%,#081226_52%,#050913_100%)] px-4 py-6 text-slate-100"
@@ -159,7 +160,7 @@ export function WorkspaceScreen() {
     );
   }
 
-  if (startupState.kind === 'booting' && startupState.stalled) {
+  if (!authReady && hasBootstrapGraceElapsed) {
     return (
       <div className="min-h-[100dvh] overflow-hidden bg-[radial-gradient(78%_68%_at_14%_10%,rgba(34,211,238,0.14),transparent_58%),radial-gradient(72%_62%_at_88%_12%,rgba(244,114,182,0.14),transparent_60%),linear-gradient(165deg,#020617_0%,#081226_54%,#050913_100%)] px-4 py-6 text-slate-100">
         <div className="mx-auto flex min-h-[100dvh] w-full max-w-5xl items-center justify-center">
@@ -174,7 +175,7 @@ export function WorkspaceScreen() {
                 : 'Retry the interface or move to sign-in if this browser state is stale.'}
             </p>
             <p className="mt-2 text-xs text-slate-400">
-              Elapsed: {Math.round(startupState.elapsedMs / 1_000)}s
+              Elapsed: {Math.round(elapsedMs / 1_000)}s
             </p>
             <div className="mt-6 flex flex-wrap gap-2">
               <button

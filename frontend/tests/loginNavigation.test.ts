@@ -10,7 +10,7 @@ describe('login navigation helpers', () => {
 
   it('accepts allowlisted internal next paths and rejects unsafe targets', () => {
     expect(resolveSafeInternalNextPath('/billing?resumeCheckout=1', null)).toBe('/billing?resumeCheckout=1');
-    expect(resolveSafeInternalNextPath('/app/buy?billing=success', null)).toBe('/app/buy?billing=success');
+    expect(resolveSafeInternalNextPath('/app/billing?billing=success', null)).toBe('/app/billing?billing=success');
     expect(resolveSafeInternalNextPath('/app/login', null)).toBeNull();
     expect(resolveSafeInternalNextPath('https://evil.example/phish', APP_ROUTE_PATHS.main)).toBe(APP_ROUTE_PATHS.main);
   });

@@ -10,6 +10,7 @@ describe('workspace tabs reader contract', () => {
       WorkspaceTab.NOVEL,
       WorkspaceTab.READER,
       WorkspaceTab.HISTORY,
+      WorkspaceTab.BILLING,
     ]);
     expect(tabs.some((item) => item.id === WorkspaceTab.READER && item.label === 'Reader')).toBe(true);
     expect(tabs.some((item) => item.id === WorkspaceTab.VOICE_CLONING && item.label === 'Voices')).toBe(true);

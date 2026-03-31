@@ -17,7 +17,7 @@ spec:
       containers:
         - name: worker
           image: ghcr.io/voiceflow/backend-worker:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command: ["python", "-m", "workers.tts_worker"]
           env:
             - name: VF_SERVICE_ROLE

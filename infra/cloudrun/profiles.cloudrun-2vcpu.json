@@ -1,40 +1,40 @@
 {
   "name": "cloudrun-2vcpu",
-  "description": "Production capacity contract for a 2 vCPU Cloud Run topology with queue-first worker isolation.",
+  "description": "Production capacity contract for a 2 vCPU Cloud Run topology with a single public API region, queue-first worker isolation, and no session-affinity dependency.",
   "services": {
-    "voiceflow-seed-vc-runtime": {
-      "cpu": "4",
-      "memory": "16Gi",
-      "minInstances": 0,
-      "maxInstances": 20,
-      "concurrency": 2,
-      "cpuAlwaysAllocated": true
-    },
     "voiceflow-api": {
       "cpu": "2",
       "memory": "2Gi",
       "minInstances": 1,
       "maxInstances": 20,
-      "concurrency": 16
+      "concurrency": 16,
+      "allowUnauthenticated": true,
+      "ingress": "all",
+      "sessionAffinity": false
     },
     "voiceflow-worker": {
       "cpu": "2",
       "memory": "2Gi",
-      "minInstances": 1,
+      "minInstances": 0,
       "maxInstances": 12,
       "concurrency": 1,
-      "cpuAlwaysAllocated": true
+      "cpuAlwaysAllocated": false,
+      "allowUnauthenticated": false,
+      "ingress": "internal",
+      "sessionAffinity": false
     },
     "voiceflow-gemini-runtime": {
       "cpu": "2",
       "memory": "2Gi",
-      "minInstances": 1,
+      "minInstances": 0,
       "maxInstances": 10,
-      "concurrency": 2
+      "concurrency": 2,
+      "allowUnauthenticated": false,
+      "ingress": "internal",
+      "sessionAffinity": false
     }
   },
   "rolloutOrder": [
-    "voiceflow-seed-vc-runtime",
     "voiceflow-gemini-runtime",
     "voiceflow-worker",
     "voiceflow-api"
@@ -48,7 +48,7 @@
   "loadTest": {
     "concurrency": 12,
     "requests": 12,
-    "maxQueueDepth": 60,
+    "maxQueueDepth": 80,
     "maxOldestQueuedAgeMs": 60000,
     "minCompletionRate": 1
   }

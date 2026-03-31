@@ -18,8 +18,8 @@ const RUNTIME_BASE_URL = String(
   .trim()
   .replace(/\/+$/, '');
 const RUNTIME_SYNTHESIZE_URL = `${RUNTIME_BASE_URL}/synthesize`;
-const OUTPUT_DIR = path.join(ROOT, 'frontend', 'public', 'demo', 'vector-multi');
-const MANIFEST_PATH = path.join(ROOT, 'frontend', 'src', 'landing', 'vectorMultiSpeakerDemoManifest.ts');
+const OUTPUT_DIR = path.join(ROOT, 'frontend', 'public', 'audio', 'vector-multi-demo');
+const MANIFEST_PATH = path.join(ROOT, 'frontend', 'public', 'audio', 'vector-multi-demo', 'manifest.json');
 const VOICE_MAP_PATH = path.join(ROOT, 'backend', 'config', 'voice_id_map.v1.json');
 const PROFILE_BANK_PATH = path.join(ROOT, 'backend', 'config', 'voice_profile_bank.v1.json');
 const REQUEST_TIMEOUT_MS = Math.max(10_000, Number(process.env.VF_VECTOR_DEMO_TIMEOUT_MS || 120_000));
@@ -279,10 +279,37 @@ const DEMO_ENTRIES = [
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const MOJIBAKE_MARKERS = ['Ã¡', 'Ã©', 'Ã­', 'Ã³', 'Ãº', 'Â¿', 'Ø', 'Ù', 'à¤', 'à¥', 'å¤', 'æˆ', 'çš'];
+
 const readJson = async (targetPath) => {
   const raw = await fs.readFile(targetPath, 'utf8');
   return JSON.parse(raw.replace(/^\uFEFF/, ''));
 };
+
+const looksMojibake = (value) => {
+  const sample = String(value || '');
+  return MOJIBAKE_MARKERS.some((marker) => sample.includes(marker));
+};
+
+const repairMojibake = (value) => {
+  const sample = String(value || '');
+  if (!looksMojibake(sample)) return sample;
+  try {
+    return Buffer.from(sample, 'latin1').toString('utf8');
+  } catch {
+    return sample;
+  }
+};
+
+const normalizeEntryText = (entry) => ({
+  ...entry,
+  lines: Array.isArray(entry.lines)
+    ? entry.lines.map((line) => ({
+        ...line,
+        text: repairMojibake(line.text),
+      }))
+    : [],
+});
 
 const fetchWithTimeout = async (url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) => {
   const controller = new AbortController();
@@ -417,49 +444,19 @@ const synthesizeSample = async ({ entry, voicesBySpeaker }) => {
   throw new Error(`Runtime synthesis failed for ${entry.language}. ${attempts.join(' | ')}`);
 };
 
-const renderManifestTs = (entries) => `export interface VectorMultiSpeakerDemoCastMember {
-  speaker: string;
-  role: string;
-  displayName: string;
-  voiceId: string;
-  voiceGender: string;
-  lineCount: number;
-}
-
-export interface VectorMultiSpeakerDemoLine {
-  lineIndex: number;
-  speaker: string;
-  role: string;
-  displayName: string;
-  voiceId: string;
-  voiceGender: string;
-  text: string;
-}
-
-export interface VectorMultiSpeakerDemoEntry {
-  id: string;
-  language: string;
-  languageCode: string;
-  resolvedLanguage: string;
-  market: string;
-  useCase: string;
-  scenario: string;
-  direction: string;
-  summary: string;
-  translation: string;
-  castSummary: string;
-  cast: VectorMultiSpeakerDemoCastMember[];
-  audioSrc: string;
-  lines: VectorMultiSpeakerDemoLine[];
-  rtl?: boolean;
-}
-
-export const VECTOR_MULTI_SPEAKER_DEMO_ENGINE = 'Vector Voice Engine';
-export const VECTOR_MULTI_SPEAKER_DEMO_SELECTION_NOTE = 'Five high-reach language demos for podcast roundtables, spoken briefings, documentary cuts, and multi-speaker audiobooks.';
-export const VECTOR_MULTI_SPEAKER_DEMO_GENERATED_AT = '${new Date().toISOString()}';
-
-export const VECTOR_MULTI_SPEAKER_DEMO_ENTRIES: VectorMultiSpeakerDemoEntry[] = ${JSON.stringify(entries, null, 2)};
-`;
+const renderManifestJson = (entries) =>
+  JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      engine: 'Prime Voice Engine',
+      selectionNote:
+        'Featured roundtable, briefing, audiobook, culture, and documentary demos regenerated from the Prime multi-speaker set.',
+      featuredIds: ['en-roundtable', 'zh-briefing', 'hi-audiobook', 'es-culture', 'ar-documentary'],
+      entries,
+    },
+    null,
+    2,
+  );
 
 const main = async () => {
   const voiceCatalog = await parseVoiceCatalog();
@@ -469,10 +466,11 @@ const main = async () => {
 
   console.log(`[vector-multi-demo] runtime=${RUNTIME_SYNTHESIZE_URL}`);
 
-  for (const entry of DEMO_ENTRIES) {
+  for (const rawEntry of DEMO_ENTRIES) {
+    const entry = normalizeEntryText(rawEntry);
     const voicesBySpeaker = resolveVoiceMap(entry, voiceCatalog);
     const audioFileName = `${entry.id}.wav`;
-    const audioRelativePath = `/demo/vector-multi/${audioFileName}`;
+    const audioRelativePath = `/audio/vector-multi-demo/${audioFileName}`;
     const targetPath = path.join(OUTPUT_DIR, audioFileName);
     let resolvedLanguage = entry.languageCandidates[0];
     try {
@@ -550,7 +548,7 @@ const main = async () => {
   }
 
   await fs.mkdir(path.dirname(MANIFEST_PATH), { recursive: true });
-  await fs.writeFile(MANIFEST_PATH, renderManifestTs(manifestEntries), 'utf8');
+  await fs.writeFile(MANIFEST_PATH, `${renderManifestJson(manifestEntries)}\n`, 'utf8');
   console.log(`[vector-multi-demo] manifest written -> ${path.relative(ROOT, MANIFEST_PATH).replace(/\\/g, '/')}`);
 };
 

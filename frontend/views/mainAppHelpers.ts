@@ -380,9 +380,9 @@ export const WORKSPACE_TAB_DETAILS: Record<Tab, string> = {
   [Tab.STUDIO]: 'Write, direct, and preview your next scene',
   [Tab.READER]: 'Listen, import titles, and continue in progress sessions',
   [Tab.VOICE_CLONING]: 'Manage voices, cloning, and cast-ready voice assets',
-  [Tab.CHARACTERS]: 'Legacy: Cast management moved into Voices',
-  [Tab.NOVEL]: 'Draft longer-form scripts and story work',
-  [Tab.HISTORY]: 'Rendered previews, exports, and session history',
+  [Tab.NOVEL]: 'Draft longer-form writing and story work',
+  [Tab.HISTORY]: 'Rendered previews, exports, and runs history',
+  [Tab.BILLING]: 'Manage plans, credits, and billing',
   [Tab.ADMIN]: 'Staff controls, moderation, and audits',
 };
 
@@ -398,15 +398,10 @@ export type AdminOpsTab = 'usage' | 'tokens' | 'guardian' | 'alerts' | 'schedule
 const WORKSPACE_PATH_TO_TAB: Array<{ prefix: string; tab: Tab }> = [
   { prefix: '/app/studio', tab: Tab.STUDIO },
   { prefix: '/app/reader', tab: Tab.READER },
-  { prefix: '/reader', tab: Tab.READER },
   { prefix: '/app/voices', tab: Tab.VOICE_CLONING },
-  { prefix: '/app/voice-cloning', tab: Tab.VOICE_CLONING },
-  { prefix: '/app/character', tab: Tab.VOICE_CLONING },
-  { prefix: '/app/characters', tab: Tab.VOICE_CLONING },
   { prefix: '/app/writing', tab: Tab.NOVEL },
-  { prefix: '/app/novel', tab: Tab.NOVEL },
   { prefix: '/app/runs', tab: Tab.HISTORY },
-  { prefix: '/app/history', tab: Tab.HISTORY },
+  { prefix: '/app/billing', tab: Tab.BILLING },
   { prefix: '/app/admin', tab: Tab.ADMIN },
 ];
 
@@ -427,12 +422,13 @@ export const resolveWorkspaceRoutePath = (tab: Tab): string => {
     case Tab.READER:
       return '/app/reader';
     case Tab.VOICE_CLONING:
-    case Tab.CHARACTERS:
       return '/app/voices';
     case Tab.NOVEL:
       return '/app/writing';
     case Tab.HISTORY:
       return '/app/runs';
+    case Tab.BILLING:
+      return '/app/billing';
     case Tab.ADMIN:
       return '/app/admin';
     case Tab.STUDIO:
@@ -442,9 +438,7 @@ export const resolveWorkspaceRoutePath = (tab: Tab): string => {
 };
 
 export const normalizeWorkspaceTabCandidate = (candidate: Tab | null | undefined): Tab => (
-  candidate === Tab.CHARACTERS
-    ? Tab.VOICE_CLONING
-    : (candidate || Tab.STUDIO)
+  candidate || Tab.STUDIO
 );
 
 export const buildWorkspaceTabNavigationHref = (
@@ -478,12 +472,7 @@ export const buildWorkspaceTabNavigationHref = (
 export const resolveWorkspaceTabFromUrl = (): Tab | null => {
   if (typeof window === 'undefined') return null;
   const url = new URL(window.location.href);
-  const byPath = resolveWorkspaceTabFromPathname(url.pathname);
-  if (byPath) return byPath;
-  const token = String(url.searchParams.get('vf-tab') || '').trim().toUpperCase();
-  if (token === Tab.CHARACTERS) return Tab.VOICE_CLONING;
-  if (Object.values(Tab).includes(token as Tab)) return token as Tab;
-  return null;
+  return resolveWorkspaceTabFromPathname(url.pathname);
 };
 
 export const resolveWorkspaceTabFromStorage = (): Tab | null => {

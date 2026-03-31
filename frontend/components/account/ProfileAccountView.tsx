@@ -326,7 +326,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const { emit, prefs, setPrefs } = useNotifications();
   const baseUrl = useMemo(() => readSettingsBackendUrl(), []);
-  const billingActions = useBillingActions({ baseUrl, returnPath: '/app/buy' });
+  const billingActions = useBillingActions({ baseUrl, returnPath: '/app/billing' });
 
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>('system');
   const [brandThemeChoice, setBrandThemeChoice] = useState<UiBrandThemeId>('neon');
@@ -1100,14 +1100,14 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
         type="button"
         onClick={() => {
           if (typeof window !== 'undefined') {
-            window.location.href = '/app/buy';
+            window.location.href = '/app/billing';
           }
         }}
         className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-semibold transition ${
           isDarkUi ? 'border-cyan-300/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/18' : 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
         }`}
       >
-        Open Buy Center
+        Open Billing
       </button>
       <div className="flex flex-wrap gap-2 sm:gap-3">
         {billingActionVisibility.showChangePlan ? (
@@ -1169,7 +1169,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
             {summary.paymentMethod?.expMonth && summary.paymentMethod?.expYear
               ? `Expires ${String(summary.paymentMethod.expMonth).padStart(2, '0')}/${summary.paymentMethod.expYear}`
               : canManageBilling
-                ? 'Manage the default payment method inside the Buy center.'
+                ? 'Manage the default payment method inside Billing.'
                 : 'Billing management details are not available yet.'}
           </div>
           <div className="mt-3 grid gap-2.5 sm:mt-4 sm:grid-cols-2 sm:gap-3">
@@ -1776,7 +1776,7 @@ export const ProfileAccountView: React.FC<{ setScreen: (s: AppScreen) => void }>
                 </div>
                 <div className={`rounded-[1rem] border px-4 py-3 ${isDarkUi ? 'border-rose-300/15 bg-rose-400/10 text-rose-50' : 'border-rose-200 bg-rose-50 text-rose-800'}`}>
                   <div className="text-sm font-semibold">Continue to cancel</div>
-                  <div className="mt-2 text-xs">Cancellation settings will be handled in the Buy center.</div>
+                  <div className="mt-2 text-xs">Cancellation settings will be handled in Billing.</div>
                 </div>
               </div>
             </div>

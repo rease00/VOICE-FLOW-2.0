@@ -91,7 +91,7 @@ describe('billingCheckoutIntent', () => {
         kind: 'token-pack',
         selection: { packKey: 'standard' },
         authMode: 'login',
-        resumePath: '/app/buy',
+        resumePath: '/app/billing',
         createdAt,
       },
       createdAt
@@ -101,6 +101,29 @@ describe('billingCheckoutIntent', () => {
     expect(consumeBillingCheckoutIntent(createdAt)).toEqual(intent);
     expect(readBillingCheckoutIntent(createdAt)).toBeNull();
     expect(storage.removeItem).toHaveBeenCalledWith(STORAGE_KEYS.checkoutIntent);
+  });
+
+  it('supports VC pack intents', () => {
+    const createdAt = 2_500_000;
+    const intent = createBillingCheckoutIntent(
+      {
+        kind: 'vc-token-pack',
+        selection: { vcPackKey: 'standard' },
+        authMode: 'login',
+        resumePath: '/billing?tab=vc-packs',
+        createdAt,
+      },
+      createdAt
+    );
+
+    expect(intent).toEqual({
+      kind: 'vc-token-pack',
+      selection: { vcPackKey: 'standard' },
+      authMode: 'login',
+      resumePath: '/billing?tab=vc-packs',
+      createdAt,
+      expiresAt: createdAt + BILLING_CHECKOUT_INTENT_TTL_MS,
+    });
   });
 
   it('expires stale intents and clears them from storage', () => {

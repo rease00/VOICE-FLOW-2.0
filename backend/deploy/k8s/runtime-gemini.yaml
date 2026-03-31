@@ -16,7 +16,7 @@ spec:
       containers:
         - name: gemini-runtime
           image: ghcr.io/voiceflow/gemini-runtime:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - python
             - -m

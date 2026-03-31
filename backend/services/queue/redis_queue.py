@@ -17,6 +17,12 @@ try:
 except Exception:  # pragma: no cover
     redis = None  # type: ignore
 
+try:  # pragma: no cover - scheduler is optional outside Cloud Run
+    from services.queue.cloud_tasks_wake import log_scheduler_failure, request_initial_drain
+except Exception:  # pragma: no cover
+    log_scheduler_failure = None  # type: ignore
+    request_initial_drain = None  # type: ignore
+
 
 DEFAULT_LANE_WEIGHTS = {
     "pro_plus": 10,
@@ -48,6 +54,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not raw:
         return bool(default)
     return raw in {"1", "true", "yes", "on"}
+
+
+def _is_production_like() -> bool:
+    return str(os.getenv("VF_ENV") or os.getenv("ENV") or "").strip().lower() in {"prod", "production"}
+
+
+def _queue_requires_durable_store() -> bool:
+    return _is_production_like() and _env_bool("VF_TTS_QUEUE_ENABLED", True)
 
 
 @dataclass(frozen=True)
@@ -112,6 +126,29 @@ class WeightedInMemoryQueue:
     def depth_by_lane(self) -> dict[str, int]:
         with self._lock:
             return {lane: int(count) for lane, count in self._depth_by_lane.items()}
+
+
+def _maybe_schedule_drain(queue: "TtsJobQueue", *, lane: str, job_id: str, reason: str) -> None:
+    scheduler = request_initial_drain
+    if scheduler is None:
+        return
+    redis_client = getattr(queue, "_redis", None)
+    if redis_client is None:
+        return
+    try:
+        scheduler(redis_client, queue.key_prefix, lane=lane, job_id=job_id, reason=reason)
+    except Exception as exc:  # noqa: BLE001
+        if callable(log_scheduler_failure):
+            try:
+                log_scheduler_failure(
+                    getattr(queue, "_logger", logging.getLogger("voiceflow.tts_queue")),
+                    action="request_initial_drain",
+                    key_prefix=queue.key_prefix,
+                    error=exc,
+                    extra={"lane": lane, "jobId": job_id, "reason": reason},
+                )
+            except Exception:
+                pass
 
 
 class TtsJobQueue:
@@ -261,12 +298,17 @@ return {"reserved", encoded_job}
         self._compat_queue = WeightedInMemoryQueue(self._weights)
         self._lane_rr = deque(self._weighted_lane_order())
         self._redis = None
+        requires_durable_store = _queue_requires_durable_store()
         if redis is not None and str(redis_url or "").strip():
             try:
                 self._redis = redis.Redis.from_url(str(redis_url).strip(), decode_responses=True)
                 self._redis.ping()
-            except Exception:
+            except Exception as exc:
+                if requires_durable_store:
+                    raise RuntimeError("Redis is required for durable TTS queue operations in production.") from exc
                 self._redis = None
+        elif requires_durable_store:
+            raise RuntimeError("Redis is required for durable TTS queue operations in production.")
 
     def is_redis_enabled(self) -> bool:
         return self._redis is not None
@@ -1004,6 +1046,12 @@ return {"reserved", encoded_job}
         except Exception as exc:
             raise RuntimeError(f"Redis requeue failed: {exc}") from exc
         updated = self._persist_record_update(updated)
+        _maybe_schedule_drain(
+            self,
+            lane=str(updated.get("lane") or "free"),
+            job_id=safe_job_id,
+            reason="requeue",
+        )
         return updated
 
     def recover_stalled_claims(self, *, limit: int = 25) -> int:
@@ -1074,12 +1122,26 @@ return {"reserved", encoded_job}
                     if str(existing.get("status") or "").strip().lower() == "queued":
                         claim_metadata = self._claim_metadata(str(existing.get("jobId") or existing_job_id))
                         if claim_metadata:
-                            return self.requeue(
+                            requeued = self.requeue(
                                 str(existing.get("jobId") or existing_job_id),
                                 worker_id=str(claim_metadata.get("workerId") or "") or "worker",
                                 payload=record,
                                 bypass_depth_check=True,
                             ) or dict(existing)
+                            _maybe_schedule_drain(
+                                self,
+                                lane=str(requeued.get("lane") or normalized_lane),
+                                job_id=str(requeued.get("jobId") or existing_job_id),
+                                reason="submit-dedupe-requeue",
+                            )
+                            return requeued
+                    if str(existing.get("status") or "").strip().lower() == "queued":
+                        _maybe_schedule_drain(
+                            self,
+                            lane=str(existing.get("lane") or normalized_lane),
+                            job_id=str(existing.get("jobId") or existing_job_id),
+                            reason="submit-existing-queued",
+                        )
                     return existing
                 try:
                     self._redis.delete(self._dedupe_key(str(record["requestId"])))
@@ -1100,18 +1162,39 @@ return {"reserved", encoded_job}
                     if str(existing.get("status") or "").strip().lower() == "queued":
                         claim_metadata = self._claim_metadata(str(existing.get("jobId") or ""))
                         if claim_metadata:
-                            return self.requeue(
+                            requeued = self.requeue(
                                 str(existing.get("jobId") or ""),
                                 worker_id=str(claim_metadata.get("workerId") or "") or "worker",
                                 payload=record,
                                 bypass_depth_check=True,
                             ) or dict(existing)
+                            _maybe_schedule_drain(
+                                self,
+                                lane=str(requeued.get("lane") or normalized_lane),
+                                job_id=str(requeued.get("jobId") or existing.get("jobId") or ""),
+                                reason="submit-dedupe-requeue",
+                            )
+                            return requeued
+                    if str(existing.get("status") or "").strip().lower() == "queued":
+                        _maybe_schedule_drain(
+                            self,
+                            lane=str(existing.get("lane") or normalized_lane),
+                            job_id=str(existing.get("jobId") or ""),
+                            reason="submit-existing-queued",
+                        )
                     return existing
             self._enforce_user_queued_cap(str(record.get("uid") or ""))
             self._enforce_lane_queue_cap(normalized_lane)
             if self._queue_depth_total() >= self._max_queue_depth:
                 raise RuntimeError("Redis queue depth limit exceeded.")
-            return self._persist_redis_record(record)
+            persisted = self._persist_redis_record(record)
+            _maybe_schedule_drain(
+                self,
+                lane=str(persisted.get("lane") or normalized_lane),
+                job_id=str(persisted.get("jobId") or ""),
+                reason="submit",
+            )
+            return persisted
         self._enforce_user_queued_cap(str(record.get("uid") or ""))
         self._enforce_lane_queue_cap(normalized_lane)
         return self._store_memory_record(record)
@@ -1276,6 +1359,13 @@ return {"reserved", encoded_job}
             updated["statusCode"] = int(status_code or 500)
             updated["error"] = error if isinstance(error, dict) else {"detail": str(error or updated["status"])}
         updated = self._persist_record_update(updated)
+        if requeue:
+            _maybe_schedule_drain(
+                self,
+                lane=str(updated.get("lane") or "free"),
+                job_id=safe_job_id,
+                reason="release-requeue",
+            )
         try:
             self._redis.delete(self._claim_key(safe_job_id))
             if not requeue:

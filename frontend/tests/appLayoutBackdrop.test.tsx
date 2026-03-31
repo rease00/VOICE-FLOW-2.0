@@ -41,7 +41,7 @@ describe('app layout backdrop', () => {
     expect(wallpaperMatches).toHaveLength(1);
   });
 
-  it('wires the shared bootstrap and backdrop selectors for all app routes', () => {
+  it('keeps backdrop ownership in app layout and motion handling in shared helpers', () => {
     const layoutSource = readFileSync(layoutSourcePath, 'utf-8');
     const bootstrapSource = readFileSync(bootstrapSourcePath, 'utf-8');
     const mainAppSource = readFileSync(mainAppSourcePath, 'utf-8');
@@ -50,13 +50,15 @@ describe('app layout backdrop', () => {
     expect(layoutSource).toContain('AppThemeBootstrap');
     expect(layoutSource).toContain('vf-live-wallpaper');
     expect(layoutSource).toContain('data-vf-app-shell');
+
     expect(bootstrapSource).toContain('readUiThemeModeFromStorage');
     expect(bootstrapSource).toContain('readUiBrandThemeFromStorage');
     expect(bootstrapSource).toContain('readUiMotionLevelFromStorage');
     expect(bootstrapSource).toContain('applyMotionLevelToDocument(document, motionLevel)');
-    expect(mainAppSource).not.toContain('vf-live-wallpaper');
+
     expect(mainAppSource).toContain('applyMotionLevelToDocument(document, uiMotionLevel)');
-    expect(mainAppSource).toContain('readUiThemeModeFromStorage');
+    expect(mainAppSource).not.toContain('vf-live-wallpaper');
+
     expect(cssSource).toContain("body[data-vf-resolved-theme='light'] .vf-live-wallpaper");
     expect(cssSource).toContain('.vf-motion-off .vf-live-wallpaper::before');
     expect(cssSource).toContain('.vf-motion-rich .vf-live-wallpaper::after');

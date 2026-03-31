@@ -8,8 +8,8 @@ export const PublicBillingPage: React.FC = () => (
     <BillingSurface
       mode="public"
       returnPath="/billing"
-      appBuyUrl="/app/buy"
-      homeUrl="/app"
+      appBuyUrl="/app/billing"
+      homeUrl="/landing"
       authMode="signup"
     />
   </div>

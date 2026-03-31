@@ -44,7 +44,7 @@ const resolveCurrentPlanCard = (planName: string): PlanCardConfig['id'] | null =
 
 export const SubscriptionModal: React.FC = () => {
   const { showSubscriptionModal, setShowSubscriptionModal, stats, refreshEntitlements } = useUser();
-  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath: '/app/buy' });
+  const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath: '/app/billing' });
   const [isLoading, setIsLoading] = useState<BillingPlanKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshingUsage, setIsRefreshingUsage] = useState(false);
@@ -360,7 +360,7 @@ export const SubscriptionModal: React.FC = () => {
               fullWidth
               onClick={() => {
                 setShowSubscriptionModal(false);
-                window.location.href = '/app/buy';
+                window.location.href = '/app/billing';
               }}
               disabled={isBusy}
               variant="secondary"
@@ -372,7 +372,7 @@ export const SubscriptionModal: React.FC = () => {
               ].join(' ')}
             >
               <Wallet size={15} className="mr-2" />
-              Open Buy Center
+              Open Billing Center
             </Button>
           </div>
 

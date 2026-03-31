@@ -47,6 +47,7 @@ const makeBillingIdempotencyKey = (operation: string, subject: string, extra?: s
 export type BillingPlanName = 'Free' | 'Launcher' | 'Starter' | 'Creator' | 'Pro' | 'Scale';
 export type BillingPlanKey = 'launcher' | 'starter' | 'creator' | 'pro' | 'scale';
 export type TokenPackKey = 'micro' | 'standard' | 'mega' | 'ultra';
+export type BillingVcPackKey = 'standard';
 export type TtsEngineKey = 'DUNO' | 'VECTOR' | 'PRIME';
 
 export interface AccountEntitlements {

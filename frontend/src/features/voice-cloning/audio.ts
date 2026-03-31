@@ -14,6 +14,7 @@ export interface VoiceClonePlayableAudioSource {
 
 export interface VoiceClonePlayableAudioOptions {
   backendBaseUrl?: string;
+  signal?: AbortSignal;
 }
 
 export const resolveVoiceCloneBackendAudioUrl = (
@@ -80,9 +81,13 @@ export const resolveVoiceClonePlayableAudioUrlWithFallback = async (
       return fallbackUrl;
     }
     try {
-      const audioBase64 = await fetchUrlToBase64(fallbackUrl);
+      const audioBase64 = await fetchUrlToBase64(fallbackUrl, options?.signal ? { signal: options.signal } : undefined);
       return audioBase64 ? buildBase64DataUrl(audioBase64, contentType) : fallbackUrl;
-    } catch {
+    } catch (error) {
+      const name = String((error as { name?: unknown } | null | undefined)?.name || '').trim().toLowerCase();
+      if (name === 'aborterror') {
+        throw error;
+      }
       // Try the next resolved backend path before falling back to a raw URL.
     }
   }

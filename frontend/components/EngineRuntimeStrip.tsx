@@ -99,7 +99,7 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
       : []
   );
   return (
-    <div className={`vf-runtime-strip flex items-center whitespace-nowrap ${dense ? 'gap-1 pr-0' : compact ? 'gap-1.5 pr-0.5' : 'gap-2 pr-1'}`}>
+    <div className={`vf-runtime-strip flex items-center whitespace-nowrap ${dense ? 'gap-1 pr-0' : compact ? 'gap-[0.2rem] pr-0' : 'gap-1.5 pr-0.5'}`}>
       {engineOrder.map((engine) => {
         const status = statuses[engine] ?? { state: 'checking', detail: 'Checking runtime...' };
         const isActive = activeEngine === engine;
@@ -140,12 +140,13 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
             aria-pressed={isActive}
             title={titleParts.filter(Boolean).join(' - ')}
             aria-label={`${getEngineDisplayName(engine)} runtime: ${pending ? 'Starting' : getRuntimeStateLabel(status.state)}${showAccessBlockedNote ? '. Access blocked.' : ''}${!engineAllowed ? `. Locked: ${lockCopy}` : ''}${readOnly ? '. Read-only.' : ''}${isActive ? '. Active.' : ''}`}
+            style={{ minHeight: '40px', minWidth: '40px', height: '40px' }}
             className={`vf-runtime-chip group relative inline-flex snap-start items-center justify-center border transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
               dense
-                ? 'h-9 min-w-[2.2rem] gap-0.5 rounded-xl px-1.5'
+                ? 'h-10 min-w-[2.5rem] gap-1 rounded-2xl px-2.5'
                 : compact
-                  ? 'h-11 min-w-[3rem] gap-1 rounded-full px-2.5'
-                  : 'h-11 min-w-[3rem] gap-1.5 rounded-full px-2 sm:min-w-[3.8rem] sm:gap-2 sm:px-2.75'
+                  ? 'h-10 min-w-[2.5rem] gap-1 rounded-full px-2'
+                  : 'h-10 min-w-[2.5rem] gap-[0.25rem] rounded-full px-2 sm:min-w-[3rem] sm:gap-1.5 sm:px-2.5'
             } ${
               resolvedTheme === 'dark'
                 ? 'bg-slate-950/35 hover:bg-slate-900/60'
@@ -155,7 +156,7 @@ export const EngineRuntimeStrip: React.FC<EngineRuntimeStripProps> = ({
             <span className={`vf-runtime-chip__dot absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${dotClass}`} />
             <EngineLogo engine={engine} size="sm" variant="filled" withGlow={isActive || pending} />
             <span
-              className={`vf-runtime-chip__label ${dense ? 'text-[9px] tracking-[0.05em]' : 'text-[11px] tracking-[0.08em]'} font-black ${
+              className={`vf-runtime-chip__label ${dense ? 'text-[9px] tracking-[0.05em]' : 'text-[10px] tracking-[0.08em]'} font-black ${
                 resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-700'
               }`}
             >

@@ -16,7 +16,7 @@ spec:
       containers:
         - name: api
           image: ghcr.io/voiceflow/backend-api:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           env:
             - name: VF_SERVICE_ROLE
               value: "api"

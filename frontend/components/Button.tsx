@@ -9,40 +9,44 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: React.ReactNode;
 }
 
-export const Button: React.FC<ButtonProps> = ({ 
-  children, 
-  variant = 'primary', 
+export const Button: React.FC<ButtonProps> = ({
+  children,
+  variant = 'primary',
   size = 'md',
   fullWidth = false,
   isLoading = false,
   icon,
   className = '',
   disabled,
-  ...props 
+  ...props
 }) => {
-  
-  const baseStyles = "inline-flex items-center justify-center font-medium rounded-lg transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
-  
+  const baseStyles =
+    'inline-flex items-center justify-center gap-2 rounded-xl border font-medium transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] duration-200 backdrop-blur-xl focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+
   const variants = {
-    primary: "bg-indigo-600 hover:bg-indigo-700 text-white focus:ring-indigo-500 shadow-sm",
-    secondary: "bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 focus:ring-indigo-500 shadow-sm",
-    ghost: "bg-transparent hover:bg-gray-100 text-gray-600 focus:ring-gray-500",
-    danger: "bg-red-50 text-red-700 hover:bg-red-100 border border-transparent focus:ring-red-500"
+    primary:
+      'border-transparent bg-gradient-to-r from-cyan-400 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_36px_rgba(8,14,32,0.24)] hover:-translate-y-0.5 hover:brightness-105 focus:ring-cyan-300/40',
+    secondary:
+      'border-white/10 bg-white/[0.06] text-slate-100 shadow-[0_12px_26px_rgba(2,6,23,0.18)] hover:border-white/20 hover:bg-white/[0.1] focus:ring-white/20',
+    ghost:
+      'border-transparent bg-transparent text-slate-200 hover:bg-white/[0.08] hover:text-white focus:ring-white/20',
+    danger:
+      'border-rose-400/20 bg-rose-500/12 text-rose-100 shadow-[0_12px_26px_rgba(127,29,29,0.18)] hover:bg-rose-500/18 focus:ring-rose-300/30',
   };
 
   const sizes = {
-    sm: "h-8 px-3 text-xs",
-    md: "h-10 px-4 text-sm",
-    lg: "h-12 px-6 text-base"
+    sm: 'min-h-11 px-3 text-xs',
+    md: 'min-h-11 px-4 text-sm',
+    lg: 'min-h-12 px-6 text-base',
   };
 
   return (
-    <button 
+    <button
       className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${fullWidth ? 'w-full' : ''} ${className}`}
       disabled={disabled || isLoading}
       {...props}
     >
-      {isLoading && <Loader2 className="animate-spin mr-2" size={size === 'sm' ? 12 : 16} />}
+      {isLoading && <Loader2 className="mr-2 animate-spin" size={size === 'sm' ? 12 : 16} />}
       {!isLoading && icon && <span className="mr-2">{icon}</span>}
       {children}
     </button>

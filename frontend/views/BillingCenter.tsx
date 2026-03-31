@@ -6,7 +6,7 @@ import { useUser } from '../contexts/UserContext';
 import { APP_ROUTE_PATHS } from '../src/app/navigation';
 import { BillingSurface } from '../src/features/billing/surface/BillingSurface';
 
-export const BuyCenter: React.FC = () => {
+export const BillingCenter: React.FC = () => {
   const router = useRouter();
   const { user, stats, hasUnlimitedAccess, refreshEntitlements } = useUser();
 
@@ -27,8 +27,8 @@ export const BuyCenter: React.FC = () => {
   return (
     <BillingSurface
       mode="app"
-      returnPath={APP_ROUTE_PATHS.buy}
-      appBuyUrl={APP_ROUTE_PATHS.buy}
+      returnPath={APP_ROUTE_PATHS.billing}
+      appBuyUrl={APP_ROUTE_PATHS.billing}
       authMode="login"
       isAuthenticated={Boolean(String(user.uid || user.email || '').trim())}
       onBackToWorkspace={() => router.push(APP_ROUTE_PATHS.main)}

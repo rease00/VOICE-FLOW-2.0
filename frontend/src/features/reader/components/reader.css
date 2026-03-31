@@ -1144,9 +1144,25 @@
   }
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 1024px) {
   .vf-reader-v2-shell {
     --reader-v2-dock-bottom-space: 11.5rem;
+    --reader-v2-dock-control-size: 2.75rem;
+    --reader-v2-dock-pill-padding: 0.75rem;
+  }
+
+  .vf-reader-v2-dock {
+    --reader-v2-dock-control-size: 2.75rem;
+    --reader-v2-dock-control-font-size: 0.76rem;
+    --reader-v2-dock-pill-padding: 0.82rem;
+  }
+
+  .vf-reader-v2-dock__mini-circle,
+  .vf-reader-v2-dock__icon-btn--compact {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    height: 2.75rem;
+    min-height: 2.75rem;
   }
 
   .vf-reader-v2-shell[data-reader-dock-mode='mini'] {
@@ -1695,13 +1711,13 @@
 
 .vf-reader-v2-home__card-open {
   width: 100%;
-  min-height: 2.2rem;
-  padding: 0.42rem 0.68rem;
-  font-size: 0.88rem;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.82rem;
+  font-size: 0.92rem;
 }
 
 .vf-reader-v2-home__card-open.vf-reader-v2-primary {
-  min-height: 2.2rem;
+  min-height: 2.75rem;
 }
 
 .vf-reader-v2-home__states {
@@ -1814,6 +1830,7 @@
   .vf-reader-v2-tray__tabs .vf-reader-v2-tab {
     flex: 0 0 auto;
     min-height: 2.75rem;
+    min-width: 2.75rem;
   }
 
   .vf-reader-v2-dock {
@@ -1826,7 +1843,6 @@
     right: 0.46rem;
   }
 
-  .vf-reader-v2-dock__copy-line,
   .vf-reader-v2-dock__status {
     display: none;
   }
@@ -1877,7 +1893,7 @@
   .vf-reader-v2-shell[data-reader-tab-density='compact'] .vf-reader-v2-home__chips .vf-reader-v2-chip {
     flex: 0 0 auto;
     min-width: 7.1rem;
-    min-height: 2.5rem;
+    min-height: 2.75rem;
     padding: 0.4rem 0.6rem;
     font-size: 0.72rem;
     gap: 0.34rem;
@@ -1897,7 +1913,8 @@
 
   .vf-reader-v2-shell[data-reader-tab-density='compact'] .vf-reader-v2-tray__tabs .vf-reader-v2-tab {
     flex: 0 0 auto;
-    min-height: 2.5rem;
+    min-height: 2.75rem;
+    min-width: 2.75rem;
     padding: 0.4rem 0.62rem;
     font-size: 0.72rem;
     gap: 0.28rem;
@@ -1912,7 +1929,7 @@
 @media (max-width: 639px) {
   .vf-reader-v2-shell[data-reader-tab-density='compact'] .vf-reader-v2-home__chips .vf-reader-v2-chip {
     min-width: 6.55rem;
-    min-height: 2.34rem;
+    min-height: 2.75rem;
     padding: 0.34rem 0.52rem;
     font-size: 0.68rem;
   }
@@ -1923,7 +1940,8 @@
   }
 
   .vf-reader-v2-shell[data-reader-tab-density='compact'] .vf-reader-v2-tray__tabs .vf-reader-v2-tab {
-    min-height: 2.34rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
     padding: 0.34rem 0.56rem;
     font-size: 0.68rem;
   }
@@ -1932,7 +1950,7 @@
 @media (max-width: 420px) {
   .vf-reader-v2-shell[data-reader-tab-density='compact'] .vf-reader-v2-home__chips .vf-reader-v2-chip {
     min-width: 6.05rem;
-    min-height: 2.22rem;
+    min-height: 2.75rem;
     padding: 0.3rem 0.46rem;
     font-size: 0.64rem;
   }
@@ -1944,7 +1962,8 @@
   }
 
   .vf-reader-v2-shell[data-reader-tab-density='compact'] .vf-reader-v2-tray__tabs .vf-reader-v2-tab {
-    min-height: 2.2rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
     padding: 0.3rem 0.5rem;
     font-size: 0.64rem;
   }

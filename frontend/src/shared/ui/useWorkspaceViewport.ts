@@ -6,7 +6,7 @@ export type WorkspaceViewportMode = WorkspaceLayoutMode;
 
 export const WORKSPACE_LAYOUT_BREAKPOINTS = {
   phoneMax: 767,
-  tabletMax: 1279,
+  tabletMax: 1023,
 } as const;
 
 const resolveViewportMode = (width: number): WorkspaceViewportMode => {

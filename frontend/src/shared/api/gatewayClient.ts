@@ -242,8 +242,15 @@ export interface RoutingBackendCandidate {
   baseUrl: string;
   probeOk: boolean;
   region?: string;
+  healthy?: boolean;
+  queueDepth?: number;
+  oldestQueuedAgeMs?: number;
   capabilities?: {
     supportsTts?: boolean;
+    supportsQueueDrain?: boolean;
+    supportsDuplicateSuppression?: boolean;
+    supportsBillingIdempotency?: boolean;
+    supportsScaleToZero?: boolean;
   };
   healthUrl?: string;
   runtimeUrl?: string;
@@ -254,6 +261,21 @@ export interface RoutingBackendCandidatesResponse {
   ok: boolean;
   candidates: RoutingBackendCandidate[];
   fetchedAt: string;
+  selectedRegion?: string;
+  selectedBaseUrl?: string;
+  queueDepth?: number;
+  oldestQueuedAgeMs?: number;
+}
+
+interface RoutingRegionsSnapshotResponse {
+  ok: boolean;
+  fetchedAt?: string;
+  selectedRegion?: string;
+  selectedBaseUrl?: string;
+  queueDepth?: number;
+  oldestQueuedAgeMs?: number;
+  regions?: RoutingBackendCandidate[];
+  candidates?: RoutingBackendCandidate[];
 }
 
 export interface TtsEngineLatencyResponse extends EngineStatusItem {
@@ -296,49 +318,163 @@ export const fetchRoutingBackendCandidates = async (options?: {
     };
   }
 
-  const startedAtMs = Date.now();
-  const healthUrl = resolveApiUrl('/health', baseUrl);
   try {
-    const healthSnapshot = await fetchPublicJsonWithTimeout<Record<string, unknown>>('/health', {
+    const routingSnapshot = await fetchPublicJsonWithTimeout<RoutingRegionsSnapshotResponse>('/routing/regions', {
       baseUrl,
       ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? { timeoutMs: options.timeoutMs }
         : {}),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    const region = String(
-      healthSnapshot?.selectedRegion ||
-      healthSnapshot?.region ||
-      healthSnapshot?.regionHint ||
-      ''
-    ).trim();
+    const snapshotCandidates = Array.isArray(routingSnapshot?.candidates) && routingSnapshot.candidates.length > 0
+      ? routingSnapshot.candidates
+      : Array.isArray(routingSnapshot?.regions)
+        ? routingSnapshot.regions
+        : [];
+    const candidates = snapshotCandidates
+      .map((candidate) => {
+        const candidateBaseUrl = resolveApiBaseUrl(String(candidate?.baseUrl || baseUrl).trim());
+        const healthy = Boolean(candidate?.healthy ?? candidate?.probeOk ?? true);
+        const queueDepth = Number.isFinite(Number(candidate?.queueDepth))
+          ? Math.max(0, Math.floor(Number(candidate?.queueDepth)))
+          : 0;
+        const oldestQueuedAgeMs = Number.isFinite(Number(candidate?.oldestQueuedAgeMs))
+          ? Math.max(0, Math.floor(Number(candidate?.oldestQueuedAgeMs)))
+          : 0;
+        const region = String(candidate?.region || '').trim();
+        const healthUrl = String(candidateBaseUrl ? `${candidateBaseUrl.replace(/\/+$/, '')}/health` : candidate?.healthUrl || '').trim();
+        const runtimeUrl = String(candidateBaseUrl || candidate?.runtimeUrl || '').trim();
+        const normalizedCandidate: RoutingBackendCandidate = {
+          baseUrl: candidateBaseUrl,
+          probeOk: Boolean(candidate?.probeOk ?? healthy),
+          healthy,
+          ...(region ? { region } : {}),
+          queueDepth,
+          oldestQueuedAgeMs,
+          capabilities: {
+            supportsTts: true,
+            supportsQueueDrain: true,
+            supportsDuplicateSuppression: true,
+            supportsBillingIdempotency: true,
+            supportsScaleToZero: true,
+            ...(candidate?.capabilities || {}),
+          },
+          ...(Number.isFinite(Number(candidate?.latencyMs))
+            ? { latencyMs: Number(candidate?.latencyMs) }
+            : { latencyMs: null }),
+          ...(healthUrl ? { healthUrl } : {}),
+          ...(runtimeUrl ? { runtimeUrl } : {}),
+        };
+        return normalizedCandidate;
+      })
+      .filter((candidate) => Boolean(candidate.baseUrl));
+    const nowIso = new Date().toISOString();
     return {
-      ok: true,
-      candidates: [{
-        baseUrl,
-        probeOk: true,
-        region,
-        capabilities: { supportsTts: true },
-        healthUrl,
-        runtimeUrl: baseUrl,
-        latencyMs: Math.max(0, Date.now() - startedAtMs),
-      }],
-      fetchedAt: new Date().toISOString(),
+      ok: Boolean(routingSnapshot?.ok ?? candidates.length > 0),
+      candidates: candidates.length > 0
+        ? candidates
+        : [{
+            baseUrl,
+            probeOk: true,
+            healthy: true,
+            region: String(routingSnapshot?.selectedRegion || '').trim(),
+            capabilities: {
+              supportsTts: true,
+              supportsQueueDrain: true,
+              supportsDuplicateSuppression: true,
+              supportsBillingIdempotency: true,
+              supportsScaleToZero: true,
+            },
+            healthUrl: `${baseUrl.replace(/\/+$/, '')}/health`,
+            runtimeUrl: baseUrl,
+            latencyMs: null,
+            queueDepth: Number.isFinite(Number(routingSnapshot?.queueDepth))
+              ? Math.max(0, Math.floor(Number(routingSnapshot?.queueDepth)))
+              : 0,
+            oldestQueuedAgeMs: Number.isFinite(Number(routingSnapshot?.oldestQueuedAgeMs))
+              ? Math.max(0, Math.floor(Number(routingSnapshot?.oldestQueuedAgeMs)))
+              : 0,
+          }],
+      selectedRegion: String(routingSnapshot?.selectedRegion || candidates.find((candidate) => candidate.region)?.region || '').trim(),
+      selectedBaseUrl: String(routingSnapshot?.selectedBaseUrl || baseUrl).trim(),
+      queueDepth: Number.isFinite(Number(routingSnapshot?.queueDepth))
+        ? Math.max(0, Math.floor(Number(routingSnapshot?.queueDepth)))
+        : 0,
+      oldestQueuedAgeMs: Number.isFinite(Number(routingSnapshot?.oldestQueuedAgeMs))
+        ? Math.max(0, Math.floor(Number(routingSnapshot?.oldestQueuedAgeMs)))
+        : 0,
+      fetchedAt: String(routingSnapshot?.fetchedAt || nowIso),
     };
   } catch {
-    return {
-      ok: false,
-      candidates: [{
+    const startedAtMs = Date.now();
+    const healthUrl = resolveApiUrl('/health', baseUrl);
+    try {
+      const healthSnapshot = await fetchPublicJsonWithTimeout<Record<string, unknown>>('/health', {
         baseUrl,
-        probeOk: false,
-        region: '',
-        capabilities: { supportsTts: false },
-        healthUrl,
-        runtimeUrl: baseUrl,
-        latencyMs: null,
-      }],
-      fetchedAt: new Date().toISOString(),
-    };
+        ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+          ? { timeoutMs: options.timeoutMs }
+          : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
+      const region = String(
+        healthSnapshot?.selectedRegion ||
+        healthSnapshot?.region ||
+        healthSnapshot?.regionHint ||
+        ''
+      ).trim();
+      return {
+        ok: true,
+        candidates: [{
+          baseUrl,
+          probeOk: true,
+          healthy: true,
+          region,
+          capabilities: {
+            supportsTts: true,
+            supportsQueueDrain: true,
+            supportsDuplicateSuppression: true,
+            supportsBillingIdempotency: true,
+            supportsScaleToZero: true,
+          },
+          healthUrl,
+          runtimeUrl: baseUrl,
+          latencyMs: Math.max(0, Date.now() - startedAtMs),
+          queueDepth: 0,
+          oldestQueuedAgeMs: 0,
+        }],
+        selectedRegion: region,
+        selectedBaseUrl: baseUrl,
+        queueDepth: 0,
+        oldestQueuedAgeMs: 0,
+        fetchedAt: new Date().toISOString(),
+      };
+    } catch {
+      return {
+        ok: false,
+        candidates: [{
+          baseUrl,
+          probeOk: false,
+          healthy: false,
+          region: '',
+          capabilities: {
+            supportsTts: false,
+            supportsQueueDrain: false,
+            supportsDuplicateSuppression: false,
+            supportsBillingIdempotency: false,
+            supportsScaleToZero: false,
+          },
+          healthUrl,
+          runtimeUrl: baseUrl,
+          latencyMs: null,
+          queueDepth: 0,
+          oldestQueuedAgeMs: 0,
+        }],
+        selectedBaseUrl: baseUrl,
+        queueDepth: 0,
+        oldestQueuedAgeMs: 0,
+        fetchedAt: new Date().toISOString(),
+      };
+    }
   }
 };
 

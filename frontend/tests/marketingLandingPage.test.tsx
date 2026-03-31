@@ -1,33 +1,42 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import HomePage from '../app/(public)/page';
-import { MarketingLanding } from '../src/features/landing/MarketingLanding';
+import LandingPage, { metadata } from '../app/(public)/landing/page';
 
 describe('marketing landing page', () => {
-  it('renders the premium homepage copy and core public links', () => {
-    const html = renderToStaticMarkup(<MarketingLanding />);
+  it('renders the canonical /landing route and keeps its metadata aligned', () => {
+    expect(metadata.alternates?.canonical).toBe('/landing');
+    expect(metadata.openGraph?.url).toBe('/landing');
 
-    expect(html).toContain('Make every line feel');
-    expect(html).toContain('Premium AI voice studio');
-    expect(html).toContain('href="/app/login?mode=signup&amp;next=%2Fapp"');
-    expect(html).toContain('href="/app"');
+    const html = renderToStaticMarkup(<LandingPage />);
+
+    expect(html).toContain('Publish voice work that already sounds finished.');
+    expect(html).toContain('Single-speaker system');
+    expect(html).toContain('Prime multi-speaker scenes');
+    expect(html).toContain('Voice cloning proof');
+    expect(html).toContain('AI Director');
+    expect(html).toContain('Reader playback');
+    expect(html).toContain('href="#single-speaker"');
+    expect(html).toContain('href="#multi-speaker"');
+    expect(html).toContain('href="#voice-cloning"');
+    expect(html).toContain('href="#ai-director"');
+    expect(html).toContain('href="#reader-playback"');
+    expect(html).toContain('data-testid="landing-single-speaker"');
+    expect(html).toContain('data-testid="landing-multi-speaker"');
+    expect(html).toContain('data-testid="landing-voice-cloning"');
+    expect(html).toContain('data-testid="landing-ai-director"');
+    expect(html).toContain('data-testid="landing-reader-playback"');
+    expect(html).toContain('data-testid="landing-ai-director-prompt"');
+    expect(html).toContain('href="/landing"');
     expect(html).toContain('href="/billing"');
-    expect(html).toContain('href="/legal/terms"');
-    expect(html).toContain('configured languages');
-    expect(html).toContain('Voice cloning');
-    expect(html).toContain('Reader review');
-    expect(html).toContain('data-vf-brand-theme="aurora"');
-    expect(html).toContain('vf-marketing-shell');
-  });
-
-  it('keeps software and faq structured data on the public homepage', () => {
-    const html = renderToStaticMarkup(<HomePage />);
-
+    expect(html).toContain('href="/app/studio"');
+    expect(html).toContain('/audio/vector-demo/en-us.wav');
+    expect(html).toContain('/audio/vector-multi-demo/en-roundtable.wav');
+    expect(html).toContain('/audio/vector-multi-demo/ar-documentary.wav');
+    expect(html).toContain('/audio/openvoice-demo/reference.wav');
     expect(html).toContain('application/ld+json');
     expect(html).toContain('SoftwareApplication');
     expect(html).toContain('FAQPage');
-    expect(html).toContain('https://v-flow-ai.com/');
-    expect(html).toContain('/billing');
+    expect(html).toContain('https://v-flow-ai.com/landing');
   });
 });

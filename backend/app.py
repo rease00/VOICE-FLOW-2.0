@@ -43,6 +43,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
 try:
+    from google.auth import default as google_auth_default
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    from google.oauth2 import id_token as google_id_token
+except Exception:
+    google_auth_default = None  # type: ignore
+    GoogleAuthRequest = None  # type: ignore
+    google_id_token = None  # type: ignore
+try:
     from PIL import Image  # type: ignore
 except Exception:
     Image = None  # type: ignore
@@ -58,6 +66,8 @@ stripe = None  # type: ignore
 _STRIPE_IMPORT_ATTEMPTED = False
 _STRIPE_IMPORT_ERROR: Optional[str] = None
 google_bigquery = None  # type: ignore
+_CLOUD_RUN_ID_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_CLOUD_RUN_ID_TOKEN_CACHE_LOCK = threading.Lock()
 
 APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT
@@ -1269,6 +1279,7 @@ VF_TTS_QUEUE_METRICS_WINDOW = max(
     int((os.getenv("VF_TTS_QUEUE_METRICS_WINDOW") or "800").strip() or "800"),
 )
 VF_TTS_QUEUE_KEY_PREFIX = str(os.getenv("VF_TTS_QUEUE_KEY_PREFIX") or "vf:tts:jobs").strip() or "vf:tts:jobs"
+VF_PUBLIC_API_DEFAULT_REGIONS = ("asia-southeast1", "us-central1", "europe-west1")
 VF_TTS_RUNTIME_TIMEOUT_SEC = max(
     10,
     int((os.getenv("VF_TTS_RUNTIME_TIMEOUT_SEC") or "240").strip() or "240"),
@@ -4323,6 +4334,72 @@ def _media_health_snapshot() -> dict[str, Any]:
         if not payload.get("generatedAtMs"):
             payload["generatedAtMs"] = _now_ms()
         return payload
+
+
+def _public_api_region_list() -> list[str]:
+    raw_regions = str(os.getenv("VF_PUBLIC_API_REGIONS") or "").strip()
+    regions = [token.strip().lower() for token in raw_regions.split(",") if token.strip()]
+    current_region = _current_public_api_region()
+    if not regions:
+        regions = [current_region] if current_region else list(VF_PUBLIC_API_DEFAULT_REGIONS)
+    if current_region and current_region not in regions:
+        regions.insert(0, current_region)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for region in regions:
+        safe_region = str(region or "").strip().lower()
+        if not safe_region or safe_region in seen:
+            continue
+        seen.add(safe_region)
+        deduped.append(safe_region)
+    return deduped or list(VF_PUBLIC_API_DEFAULT_REGIONS)
+
+
+def _current_public_api_region() -> str:
+    for env_name in ("GOOGLE_CLOUD_REGION", "CLOUD_RUN_REGION", "REGION", "VF_PUBLIC_API_REGION"):
+        candidate = str(os.getenv(env_name) or "").strip().lower()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _public_api_region_base_urls() -> dict[str, str]:
+    raw = str(os.getenv("VF_PUBLIC_API_REGION_BASE_URLS_JSON") or "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    mapping: dict[str, str] = {}
+    for key, value in payload.items():
+        region = str(key or "").strip().lower()
+        if not region:
+            continue
+        base_url = str(value or "").strip().rstrip("/")
+        if not base_url:
+            continue
+        mapping[region] = base_url
+    return mapping
+
+
+def _public_api_request_base_url(request: Request) -> str:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    forwarded_host = str(
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    ).split(",")[0].strip()
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else str(request.url.scheme or "https").strip().lower()
+    if scheme not in {"http", "https"}:
+        scheme = "https"
+    if not forwarded_host:
+        forwarded_host = str(request.url.netloc or "").strip()
+    if not forwarded_host:
+        forwarded_host = "localhost"
+    return f"{scheme}://{forwarded_host}".rstrip("/")
 
 
 def _should_force_sync_media_health_refresh() -> bool:
@@ -7545,6 +7622,7 @@ def _auth_exempt_path(path: str) -> bool:
         "/health",
         "/system/version",
         "/billing/webhook",
+        "/routing/regions",
     }
     if VF_DOCS_ENABLE:
         public_paths.update(
@@ -17516,6 +17594,43 @@ def _duno_runtime_auth_header_value() -> str:
     return _runtime_bearer_auth_header_value(token)
 
 
+def _cloud_run_service_audience(url: str) -> str:
+    safe_url = str(url or "").strip().rstrip("/")
+    if not safe_url:
+        return ""
+    parsed = urlparse(safe_url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return safe_url
+
+
+def _cloud_run_id_token_for_url(url: str) -> str:
+    audience = _cloud_run_service_audience(url)
+    if not audience or google_id_token is None or GoogleAuthRequest is None:
+        return ""
+    cache_key = audience.lower()
+    now_ms = int(time.time() * 1000)
+    with _CLOUD_RUN_ID_TOKEN_CACHE_LOCK:
+        cached = _CLOUD_RUN_ID_TOKEN_CACHE.get(cache_key)
+        if cached:
+            fetched_at_ms = int(cached.get("fetchedAtMs") or 0)
+            if fetched_at_ms and (now_ms - fetched_at_ms) < 2_700_000:
+                token = str(cached.get("token") or "").strip()
+                if token:
+                    return token
+    try:
+        token = str(google_id_token.fetch_id_token(GoogleAuthRequest(), audience) or "").strip()
+    except Exception:
+        return ""
+    if token:
+        with _CLOUD_RUN_ID_TOKEN_CACHE_LOCK:
+            _CLOUD_RUN_ID_TOKEN_CACHE[cache_key] = {
+                "token": token,
+                "fetchedAtMs": now_ms,
+            }
+    return token
+
+
 def _runtime_auth_headers_for_url(url: str, *, include_accept: bool = False) -> dict[str, str]:
     headers: dict[str, str] = {}
     if include_accept:
@@ -17526,6 +17641,15 @@ def _runtime_auth_headers_for_url(url: str, *, include_accept: bool = False) -> 
         auth_value = _duno_runtime_auth_header_value()
         if auth_value:
             headers["Authorization"] = auth_value
+        return headers
+    gemini_audience = _cloud_run_service_audience(GEMINI_RUNTIME_URL)
+    if gemini_audience and safe_url.lower().startswith(gemini_audience.lower()):
+        id_token = _cloud_run_id_token_for_url(gemini_audience)
+        if id_token:
+            headers["Authorization"] = _runtime_bearer_auth_header_value(id_token)
+        admin_token = str(GEMINI_RUNTIME_ADMIN_TOKEN or "").strip()
+        if admin_token:
+            headers["x-admin-token"] = admin_token
     return headers
 
 
@@ -25668,6 +25792,86 @@ def health() -> JSONResponse:
     return JSONResponse(_media_health_snapshot())
 
 
+@app.get("/routing/regions")
+def routing_regions(request: Request) -> JSONResponse:
+    health_snapshot = _media_health_snapshot()
+    try:
+        queue_snapshot = _tts_queue_metrics_snapshot()
+    except Exception:
+        queue_snapshot = {
+            "queue": {"total": 0, "byLane": {}, "storage": "unknown"},
+            "telemetry": {"oldestQueuedAgeMs": 0},
+        }
+
+    queue_depth = max(0, int((queue_snapshot.get("queue") or {}).get("total") or 0))
+    oldest_queued_age_ms = max(0, int((queue_snapshot.get("telemetry") or {}).get("oldestQueuedAgeMs") or 0))
+    healthy = bool(health_snapshot.get("ok", False)) and bool(health_snapshot.get("ready", False))
+    current_region = _current_public_api_region()
+    configured_regions = _public_api_region_list()
+    if current_region and current_region not in configured_regions:
+        configured_regions = [current_region, *configured_regions]
+    current_base_url = _public_api_request_base_url(request)
+    base_url_map = _public_api_region_base_urls()
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    capabilities = {
+        "supportsTts": True,
+        "supportsQueueDrain": bool(VF_TTS_QUEUE_ENABLED),
+        "supportsDuplicateSuppression": True,
+        "supportsBillingIdempotency": True,
+        "supportsScaleToZero": True,
+    }
+    regions: list[dict[str, Any]] = []
+    for region in configured_regions:
+        safe_region = str(region or "").strip().lower()
+        if not safe_region:
+            continue
+        region_base_url = str(base_url_map.get(safe_region) or current_base_url).strip().rstrip("/") or current_base_url
+        region_payload = {
+            "region": safe_region,
+            "baseUrl": region_base_url,
+            "healthy": bool(healthy),
+            "probeOk": bool(healthy),
+            "queueDepth": queue_depth,
+            "oldestQueuedAgeMs": oldest_queued_age_ms,
+            "capabilities": dict(capabilities),
+            "healthUrl": f"{region_base_url}/health",
+            "runtimeUrl": region_base_url,
+            "latencyMs": None,
+            "selected": safe_region == current_region,
+        }
+        regions.append(region_payload)
+
+    if not regions:
+        regions.append(
+            {
+                "region": current_region or "us-central1",
+                "baseUrl": current_base_url,
+                "healthy": bool(healthy),
+                "probeOk": bool(healthy),
+                "queueDepth": queue_depth,
+                "oldestQueuedAgeMs": oldest_queued_age_ms,
+                "capabilities": dict(capabilities),
+                "healthUrl": f"{current_base_url}/health",
+                "runtimeUrl": current_base_url,
+                "latencyMs": None,
+                "selected": True,
+            }
+        )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "fetchedAt": fetched_at,
+            "selectedRegion": current_region or str(regions[0].get("region") or ""),
+            "selectedBaseUrl": current_base_url,
+            "queueDepth": queue_depth,
+            "oldestQueuedAgeMs": oldest_queued_age_ms,
+            "regions": regions,
+            "candidates": regions,
+        }
+    )
+
+
 @app.get("/system/version")
 def system_version() -> JSONResponse:
     return JSONResponse(
@@ -32900,7 +33104,12 @@ def ai_generate_text(payload: AiGenerateTextRequest, request: Request) -> JSONRe
             if str(candidate).strip()
         ]
     try:
-        response = requests.post(upstream, json=req_payload, timeout=120)
+        response = requests.post(
+            upstream,
+            json=req_payload,
+            timeout=120,
+            headers=_runtime_auth_headers_for_url(upstream, include_accept=True),
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Gemini runtime request failed: {exc}") from exc
 

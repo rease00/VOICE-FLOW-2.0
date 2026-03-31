@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { APP_ROUTE_PATHS, resolveLoginPath } from '../../../app/navigation';
 import { useUser } from '../../auth/context/UserContext';
 import type {
@@ -11,7 +11,6 @@ import type {
   ReaderSessionProgress,
 } from '../../../../types';
 import { VOICES } from '../../../../constants';
-import { parseMultiSpeakerScript } from '../../../../services/geminiService';
 import { readStorageJson, writeStorageJson } from '../../../shared/storage/localStore';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { resolveApiUrl } from '../../../shared/api/config';
@@ -68,6 +67,7 @@ interface ReaderTabContentProps {
   resolvedTheme: ReaderResolvedTheme;
   denseTabs?: boolean;
   onToast: (message: string, type?: 'success' | 'error' | 'info') => void;
+  authReturnPath?: string;
   syncLocation?: boolean;
   isActive?: boolean;
 }
@@ -215,8 +215,11 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   mediaBackendUrl,
   settings,
   resolvedTheme,
-  denseTabs = false,
+  denseTabs,
   onToast,
+  authReturnPath,
+  syncLocation = false,
+  isActive = true,
 }) => {
   const { authReady, isAuthenticated } = useUser();
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -232,6 +235,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       ? null
       : parseReaderDeepLink(window.location.pathname, window.location.search)
   );
+  const closedSessionIdRef = useRef('');
   const [library, setLibrary] = useState<ReaderLibrary | null>(null);
   const [libraryError, setLibraryError] = useState<unknown>(null);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
@@ -310,13 +314,19 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     return error;
   }, []);
   const hasReaderAuthSession = authReady && isAuthenticated;
-  const readerLoginUrl = useMemo(() => resolveLoginPath('login', APP_ROUTE_PATHS.reader), []);
-  const readerSignupUrl = useMemo(() => resolveLoginPath('signup', APP_ROUTE_PATHS.reader), []);
+  const readerAuthReturnPath = useMemo(() => {
+    const safePath = String(authReturnPath || '').trim().replace(/\/+$/, '') || APP_ROUTE_PATHS.reader;
+    if (safePath === '/reader' || safePath.startsWith('/reader/')) return safePath;
+    return APP_ROUTE_PATHS.reader;
+  }, [authReturnPath]);
+  const readerLoginUrl = useMemo(() => resolveLoginPath('login', readerAuthReturnPath), [readerAuthReturnPath]);
+  const readerSignupUrl = useMemo(() => resolveLoginPath('signup', readerAuthReturnPath), [readerAuthReturnPath]);
 
   const activeText = useMemo(
     () => getActiveUnitText(session, mode, activeUnitIndex),
     [activeUnitIndex, mode, session]
   );
+  const deferredActiveText = useDeferredValue(activeText);
   const translationSupported = useMemo(
     () => Boolean(sessionItem?.translationSupport?.page || sessionItem?.translationSupport?.tts || session?.translationState === 'ready' || session?.translationState === 'warming'),
     [session?.translationState, sessionItem?.translationSupport?.page, sessionItem?.translationSupport?.tts]
@@ -329,6 +339,8 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     () => false
   );
   const miniMode = miniModeOverride ?? isCompactDockViewport;
+  const [detectedSpeakersFromText, setDetectedSpeakersFromText] = useState<string[]>([]);
+  const speakerParseRunIdRef = useRef(0);
 
   useEffect(() => {
     const activeSessionId = String(session?.id || '');
@@ -338,20 +350,51 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       return;
     }
     if (lastAutoOpenedSessionIdRef.current !== activeSessionId) {
-      setMiniModeOverride(false);
+      if (!isCompactDockViewport) {
+        setMiniModeOverride(false);
+      }
       lastAutoOpenedSessionIdRef.current = activeSessionId;
     }
-  }, [session?.id]);
+  }, [session?.id, isCompactDockViewport]);
+
+  useEffect(() => {
+    if (isActive === false) return;
+
+    const rawText = String(deferredActiveText || '').trim();
+    if (!rawText) {
+      speakerParseRunIdRef.current += 1;
+      setDetectedSpeakersFromText([]);
+      return;
+    }
+
+    const runId = speakerParseRunIdRef.current + 1;
+    speakerParseRunIdRef.current = runId;
+    let cancelled = false;
+
+    void import('../../../../services/geminiService')
+      .then(({ parseMultiSpeakerScript }) => {
+        if (cancelled || speakerParseRunIdRef.current !== runId) return;
+        const parsed = parseMultiSpeakerScript(rawText).speakersList
+          .map((speaker) => String(speaker || '').trim())
+          .filter((speaker) => Boolean(speaker) && speaker.toLowerCase() !== 'narrator');
+        setDetectedSpeakersFromText(Array.from(new Set(parsed)));
+      })
+      .catch(() => {
+        if (!cancelled && speakerParseRunIdRef.current === runId) setDetectedSpeakersFromText([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deferredActiveText, isActive]);
 
   const detectedSpeakers = useMemo(() => {
     const fromCast = Object.keys(castDraft || {})
       .map((speaker) => String(speaker || '').trim())
       .filter((speaker) => Boolean(speaker) && speaker.toLowerCase() !== 'narrator');
-    const fromText = parseMultiSpeakerScript(activeText).speakersList
-      .map((speaker) => String(speaker || '').trim())
-      .filter((speaker) => Boolean(speaker) && speaker.toLowerCase() !== 'narrator');
+    const fromText = detectedSpeakersFromText;
     return Array.from(new Set([...fromCast, ...fromText]));
-  }, [activeText, castDraft]);
+  }, [castDraft, detectedSpeakersFromText]);
 
   const unassignedSpeakerCount = useMemo(() => {
     if (!multiSpeakerEnabled) return 0;
@@ -538,9 +581,9 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   }, [authReady, isAuthenticated, mediaBackendUrl, onToast, readerAuthError, searchTerm]);
 
   useEffect(() => {
-    if (!authReady) return;
+    if (!authReady || isActive === false) return;
     void loadLibrary();
-  }, [authReady, loadLibrary]);
+  }, [authReady, isActive, loadLibrary]);
 
   const getSessionUpdatedAtMs = useCallback((value: ReaderSession | null | undefined): number => (
     Math.max(0, Number((value as { updatedAtMs?: number } | null | undefined)?.updatedAtMs || 0))
@@ -567,6 +610,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     const nextUpdatedAtMs = getSessionUpdatedAtMs(nextSession);
     if (typeof options?.token === 'number' && options.token !== sessionMutationRef.current[lane]) return false;
     if (options?.expectedSessionId && nextSessionId !== options.expectedSessionId) return false;
+    if (closedSessionIdRef.current && nextSessionId === closedSessionIdRef.current) return false;
     const currentSnapshot = sessionSnapshotRef.current;
     if (!options?.allowSessionSwitch && currentSnapshot.sessionId && nextSessionId && currentSnapshot.sessionId !== nextSessionId) {
       return false;
@@ -603,6 +647,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       fromDeepLink?: boolean;
     }
   ): Promise<boolean> => {
+    closedSessionIdRef.current = '';
     const openToken = issueSessionMutationToken('open');
     try {
       const nextSession = await createReaderSession(mediaBackendUrl, {
@@ -719,6 +764,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
   }, [library, openReaderItem]);
 
   useEffect(() => {
+    if (!syncLocation) return;
     if (typeof window === 'undefined') return;
     if (!sessionItemId) {
       const url = new URL(window.location.href);
@@ -739,7 +785,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     if (nextHref !== currentHref) {
       window.history.replaceState({}, '', nextHref);
     }
-  }, [activeTab, activeUnitIndex, mode, sessionItemId]);
+  }, [activeTab, activeUnitIndex, mode, sessionItemId, syncLocation]);
 
   useEffect(() => {
     if (!sessionItemId) return;
@@ -986,6 +1032,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
       audioNode.removeAttribute('src');
       audioNode.load();
     }
+    closedSessionIdRef.current = String(session?.id || sessionItemId || '').trim();
     invalidateSessionMutations();
     setSession(null);
     setSessionItemId('');
@@ -1006,7 +1053,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     const readerQueryKeys = ['tab', 'chapter', 'episode', 'vf-reader-mode', 'vf-reader-item', 'vf-reader-title', 'vf-reader-tab', 'vf-reader-chapter', 'vf-reader-episode'];
     readerQueryKeys.forEach((key) => url.searchParams.delete(key));
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-  }, [invalidateSessionMutations]);
+  }, [invalidateSessionMutations, session?.id, sessionItemId]);
 
   const runCommercialCheckForItem = useCallback((item: ReaderCatalogItem) => {
     const sourceMeta = item.sourceMeta && typeof item.sourceMeta === 'object'
@@ -1199,7 +1246,7 @@ export const ReaderTabContent: React.FC<ReaderTabContentProps> = ({
     <div className={getReaderThemeClassName(resolvedTheme)}>
       <div
         className="vf-reader-v2-shell"
-        data-reader-tab-density={denseTabs ? 'compact' : 'default'}
+        data-reader-tab-density={(denseTabs ?? isCompactDockViewport) ? 'compact' : 'default'}
         data-reader-dock-mode={miniMode ? 'mini' : 'full'}
       >
         {!session ? (

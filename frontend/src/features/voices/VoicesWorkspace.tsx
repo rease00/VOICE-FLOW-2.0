@@ -507,6 +507,7 @@ export function VoicesWorkspace({
               <VoiceCloningTabContent
                 backendBaseUrl={backendBaseUrl}
                 selectedEngine={selectedEngine}
+                denseTabs
                 layout={isDesktop ? 'workspace' : 'stacked'}
                 showRail={false}
                 diagnosticsExpanded={viewState.diagnosticsExpanded}

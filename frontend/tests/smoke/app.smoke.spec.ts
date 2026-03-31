@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
 const ROUTE_TIMEOUT_MS = 20_000;
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
@@ -6,7 +6,14 @@ const MOBILE_VIEWPORT = { width: 390, height: 844 };
 type RouteAssertion = {
   path: string;
   title: string;
-  expect: (page: Page) => Promise<void>;
+  expect: (page: Page, testInfo: TestInfo) => Promise<void>;
+};
+
+const resolveWritingViewport = (projectName: string) => {
+  const normalized = projectName.toLowerCase();
+  if (normalized.includes('mobile')) return { width: 390, height: 844 };
+  if (normalized.includes('tablet')) return { width: 820, height: 1180 };
+  return { width: 1440, height: 900 };
 };
 
 const waitForAnyVisible = async (page: Page, labels: string[]): Promise<void> => {
@@ -72,8 +79,8 @@ const routeSmokeCases: RouteAssertion[] = [
     title: 'billing public page',
     expect: async (page) => {
       await expect(page.getByTestId('brand-logo')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByText('Plans & Billing', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
-      await expect(page.getByRole('heading', { name: /Plans, credits, and billing/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByText('Billing', { exact: true })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      await expect(page.getByRole('heading', { name: /Billing, credits, and checkout/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
     },
   },
   {
@@ -99,6 +106,32 @@ const routeSmokeCases: RouteAssertion[] = [
       await page.setViewportSize(MOBILE_VIEWPORT);
       await waitForAnyVisible(page, ['Opening Studio', 'Restoring your workspace', 'Workspace handoff']);
       await expect(page.locator('body')).toBeVisible();
+      await expectNoHorizontalBleed(page);
+    },
+  },
+  {
+    path: '/app/writing',
+    title: 'novel workspace responsive',
+    expect: async (page, testInfo) => {
+      const viewport = resolveWritingViewport(testInfo.project.name);
+      await page.setViewportSize(viewport);
+      await waitForAnyVisible(page, ['Novel Workspace', 'Library']);
+      await expect(page.getByTestId('novel-workspace')).toHaveAttribute(
+        'data-novel-layout',
+        testInfo.project.name.includes('mobile')
+          ? 'phone'
+          : testInfo.project.name.includes('tablet')
+            ? 'tablet'
+            : 'desktop'
+      );
+
+      if (testInfo.project.name.includes('mobile')) {
+        await expect(page.getByRole('button', { name: 'Create novel' })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+        await expect(page.getByRole('button', { name: /Create chapter/i })).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      } else {
+        await expect(page.getByPlaceholder('Novel name')).toBeVisible({ timeout: ROUTE_TIMEOUT_MS });
+      }
+
       await expectNoHorizontalBleed(page);
     },
   },
@@ -157,14 +190,14 @@ const routeSmokeCases: RouteAssertion[] = [
 ];
 
 for (const routeCase of routeSmokeCases) {
-  test(routeCase.title, async ({ page }) => {
+  test(routeCase.title, async ({ page }, testInfo) => {
     const assertRouteHealth = trackRouteHealth(page);
 
     await page.goto(routeCase.path, {
       waitUntil: 'domcontentloaded',
       timeout: ROUTE_TIMEOUT_MS,
     });
-    await routeCase.expect(page);
+    await routeCase.expect(page, testInfo);
     await expect(page.locator('body')).toBeVisible();
 
     assertRouteHealth();

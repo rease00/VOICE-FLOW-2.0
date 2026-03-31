@@ -11,7 +11,7 @@ import {
   type BillingSubscriptionActionResult,
   type RazorpayCheckoutOptions,
 } from '../api/billingApi';
-import type { BillingPlanKey, TokenPackKey } from '../../../../services/accountService';
+import type { BillingPlanKey, BillingVcPackKey, TokenPackKey } from '../../../../services/accountService';
 
 interface UseBillingActionsArgs {
   baseUrl: string;
@@ -19,7 +19,7 @@ interface UseBillingActionsArgs {
 }
 
 type BillingRouteState = 'success' | 'cancel' | 'none';
-type BillingRouteTab = 'plans' | 'token' | 'coupon';
+type BillingRouteTab = 'plans' | 'token' | 'vc';
 type BillingLocationLike = Pick<Location, 'origin' | 'pathname'>;
 const BILLING_PUBLIC_PATH = '/billing';
 
@@ -122,7 +122,7 @@ export const buildBillingReturnUrl = (
   const safeReturnPath = String(returnPath || BILLING_PUBLIC_PATH).trim();
   const normalizedReturnPath = safeReturnPath.startsWith('/') ? safeReturnPath : BILLING_PUBLIC_PATH;
   const url = new URL(`${location.origin}${normalizedReturnPath}`);
-  url.searchParams.set('tab', tab === 'token' ? 'token-buy' : tab === 'coupon' ? 'coupon' : 'subscription');
+  url.searchParams.set('tab', tab === 'token' ? 'token-buy' : tab === 'vc' ? 'vc-packs' : 'subscription');
   if (state === 'success' || state === 'cancel') {
     url.searchParams.set('billing', state);
   } else {
@@ -151,10 +151,10 @@ export const useBillingActions = ({ baseUrl, returnPath = BILLING_PUBLIC_PATH }:
     });
   }, [baseUrl, returnPath]);
 
-  const startVcTokenPackCheckout = useCallback(async (pack: string) => {
+  const startVcTokenPackCheckout = useCallback(async (pack: BillingVcPackKey) => {
     return startVcTokenPackCheckoutSession(pack, baseUrl, {
-      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'token'),
-      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'token'),
+      successUrl: buildBillingReturnUrl('success', resolveBillingLocation(), returnPath, 'vc'),
+      cancelUrl: buildBillingReturnUrl('cancel', resolveBillingLocation(), returnPath, 'vc'),
     });
   }, [baseUrl, returnPath]);
 

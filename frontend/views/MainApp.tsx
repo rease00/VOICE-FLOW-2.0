@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Suspense, lazy, startTransition, useDeferredValue, useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { 
     Mic, Play, Pause, Settings, X, Wand2, Trash2, Sparkles, 
     Music, Video, 
@@ -80,7 +80,6 @@ import {
   type AdminOpsTab,
   COUNTRY_TAG_BY_NAME,
   TOKEN_PACK_MATRIX,
-  WORKSPACE_TAB_DETAILS,
   STUDIO_SPEECH_GAIN_MAX,
   STUDIO_SPEECH_GAIN_MIN,
   SELECTED_ENGINE_TELEMETRY_HISTORY_LIMIT,
@@ -100,7 +99,6 @@ import {
   resolveAdminOpsTabFromUrl,
   resolveEngineToken,
   resolveInitialStudioDraftText,
-  resolveInitialWorkspaceTab,
   resolveTokenPackDiscountPercent,
   resolveMediaBackendUrl,
   normalizePlanToken,
@@ -109,6 +107,8 @@ import {
   resolveStudioMusicGain,
   resolveStudioSpeechGain,
   resolvePrimeAllowedEngines,
+  resolveWorkspaceRoutePath,
+  resolveWorkspaceTabFromPathname,
   runDubbingEditorTool,
   shouldRefreshSelectedEngineTelemetry,
 } from './mainAppHelpers';
@@ -139,14 +139,16 @@ import { getSharedAudioContext as getAudioContext } from '../src/shared/audio/au
 import { hydrateRuntimeStatusSnapshot } from '../src/shared/runtime/runtimeStatusHydration';
 import {
   BACKEND_ROUTING_APPLIED_EVENT,
-  bootstrapLoginSeasonPinning,
+  applyNearestBackendRoutingOnLogin,
   clearNearestBackendRoutingState,
+  primeLoginTtsSessionKey,
 } from '../services/backendRoutingService';
 import { resolveHistoryVoiceLabel } from '../src/shared/voices/historyVoiceLabel';
 import type { EngineRuntimeUiState, EngineRuntimeUiStatus } from '../services/runtimeStatusMapping';
 import { createSynthesisTraceId } from '../services/synthesisContractService';
 import { APP_ROUTE_PATHS, resolveLoginPath } from '../src/app/navigation';
 import type { VoiceCloneModalResult } from '../src/features/voice-cloning/VoiceCloneModal';
+import { applyMotionLevelToDocument } from '../src/shared/theme/themeDom';
 
 const TTS_RUNTIME_STATUS_EVENT = 'voiceflow:tts-runtime-status';
 
@@ -1263,11 +1265,31 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     setCenterOpen,
   } = useNotifications();
   const { mode: viewportMode, width: viewportWidth, isPhone, isTablet, isDesktop } = useWorkspaceViewport();
+  const [viewportHeight, setViewportHeight] = useState<number>(() => (
+    typeof window === 'undefined' ? 0 : Math.max(0, Math.round(window.innerHeight || 0))
+  ));
   const isLargeDesktop = viewportWidth >= 1600;
   const isUltraWideDesktop = viewportWidth >= 2048;
   const isNarrowDesktop = isDesktop && viewportWidth < 1152;
+  const isShortPhone = isPhone && viewportHeight > 0 && viewportHeight <= 860;
   const hasSessionIdentity = Boolean(String(user.uid || '').trim());
   const hasAdminConsoleAccess = useMemo(() => canUseAdminConsole(user), [user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const syncViewportHeight = () => {
+      setViewportHeight(Math.max(0, Math.round(window.innerHeight || 0)));
+    };
+
+    syncViewportHeight();
+    window.addEventListener('resize', syncViewportHeight);
+    window.addEventListener('orientationchange', syncViewportHeight);
+    return () => {
+      window.removeEventListener('resize', syncViewportHeight);
+      window.removeEventListener('orientationchange', syncViewportHeight);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1291,8 +1313,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [emit]);
   
   // --- State ---
-  const [activeTab, setActiveTab] = useState<Tab>(resolveInitialWorkspaceTab);
+  const router = useRouter();
   const pathname = usePathname();
+  const [activeTab, setActiveTab] = useState<Tab>(() => resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO);
   const isStudioWorkspaceTab = activeTab === Tab.STUDIO;
   const [initialAdminOpsTab, setInitialAdminOpsTab] = useState<AdminOpsTab>(resolveAdminOpsTabFromUrl);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -1394,6 +1417,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     normalizeStoredSingleInflightGenerationLedger(readStorageJson(STORAGE_KEYS.studioSingleInflightGeneration))
   );
   const singleInflightAutoResumeAttemptedRef = useRef(false);
+  const backendRoutingRediscoveryInFlightRef = useRef(false);
+  const backendRoutingRediscoveryLastAttemptAtRef = useRef(0);
   const seenLiveChunkKeysRef = useRef<Set<string>>(new Set());
   const studioQueueStateRef = useRef<StudioQueueState | null>(studioQueueState);
   const isStudioQueueRunActiveRef = useRef(false);
@@ -1515,7 +1540,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     speaker: true,
     mix: false,
     multiSpeaker: false,
-    cast: true,
+    cast: !isPhone,
     queue: false,
     live: false,
   });
@@ -1531,9 +1556,13 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioImportInputRef = useRef<HTMLInputElement>(null);
 
   const toggleStudioMobilePanel = useCallback((panel: keyof typeof studioMobilePanels) => {
-    if (panel === 'cast') return;
     setStudioMobilePanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
   }, []);
+
+  useEffect(() => {
+    if (!isPhone) return;
+    setStudioMobilePanels((prev) => (prev.cast ? { ...prev, cast: false } : prev));
+  }, [isPhone]);
 
   const toggleStudioDirectorOption = useCallback((option: StudioDirectorOptionKey) => {
     setStudioDirectorModeState((prev) => ({ ...prev, [option]: !prev[option] }));
@@ -2076,6 +2105,32 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     },
     [probeProtectedTtsAccess]
   );
+  const rediscoverBackendRouting = useCallback(
+    async (reason: string): Promise<boolean> => {
+      if (!hasSessionIdentity) return false;
+      const now = Date.now();
+      if (backendRoutingRediscoveryInFlightRef.current) return false;
+      if ((now - backendRoutingRediscoveryLastAttemptAtRef.current) < 30_000) return false;
+      backendRoutingRediscoveryInFlightRef.current = true;
+      backendRoutingRediscoveryLastAttemptAtRef.current = now;
+      try {
+        clearNearestBackendRoutingState();
+        const routingResult = await applyNearestBackendRoutingOnLogin();
+        void primeLoginTtsSessionKey({
+          baseUrl: routingResult.baseUrl || mediaBackendUrl,
+          ...(routingResult.regionHint ? { regionHint: routingResult.regionHint } : {}),
+          ...(routingResult.regionSource ? { regionSource: routingResult.regionSource } : {}),
+        });
+        return true;
+      } catch (error: unknown) {
+        console.warn('[studio.backend_routing_rediscovery]', reason, error);
+        return false;
+      } finally {
+        backendRoutingRediscoveryInFlightRef.current = false;
+      }
+    },
+    [hasSessionIdentity, mediaBackendUrl]
+  );
   const syncRuntimeBlockedStateFromError = useCallback(
     (_engine: GenerationSettings['engine'], error: unknown) => {
       const raw = String((error as { message?: string })?.message || error || '').trim();
@@ -2211,7 +2266,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (target.tab) {
               const tabToken = String(target.tab || '').trim().toUpperCase();
               if (Object.values(Tab).includes(tabToken as Tab)) {
-                  setActiveTab(tabToken as Tab);
+                  router.replace(resolveWorkspaceRoutePath(tabToken as Tab));
               }
           }
           if (target.adminTab) {
@@ -2283,7 +2338,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       dubbingLiveQueueRef.current.push(url);
       pumpDubbingLivePlayback();
   }, [pumpDubbingLivePlayback]);
-  const billingActions = useBillingActions({ baseUrl: mediaBackendUrl, returnPath: APP_ROUTE_PATHS.buy });
+  const billingActions = useBillingActions({ baseUrl: mediaBackendUrl, returnPath: APP_ROUTE_PATHS.billing });
   const isGemRuntimeEngine = useCallback(
     (engine: GenerationSettings['engine']) => engine === 'PRIME' || engine === 'VECTOR',
     []
@@ -3671,6 +3726,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           if (!silent) {
               showToast(message, 'error');
           }
+          if (hasSessionIdentity && /unreachable|timeout|failed to fetch|network|econn|enotfound/i.test(message)) {
+              void rediscoverBackendRouting('backend_health_probe_failed');
+          }
       } finally {
           setIsCheckingBackend(false);
       }
@@ -4099,8 +4157,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                   await authStateReady.call(firebaseAuth).catch(() => undefined);
               }
               if (cancelled) return;
-              await bootstrapLoginSeasonPinning({ signal: startupProbeController.signal });
+              const routingResult = await applyNearestBackendRoutingOnLogin({ signal: startupProbeController.signal });
               if (cancelled) return;
+              void primeLoginTtsSessionKey({
+                baseUrl: routingResult.baseUrl || mediaBackendUrl,
+                ...(routingResult.regionHint ? { regionHint: routingResult.regionHint } : {}),
+                ...(routingResult.regionSource ? { regionSource: routingResult.regionSource } : {}),
+                signal: startupProbeController.signal,
+              });
               await refreshTtsAccessState(true, { signal: startupProbeController.signal });
           } catch (error: unknown) {
               if (error instanceof Error && error.name === 'AbortError') return;
@@ -4741,16 +4805,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   }, [uiDensity]);
 
   useEffect(() => {
-      const previousMotion = document.body.dataset.motion;
-      document.body.dataset.motion = uiMotionLevel;
-      document.body.classList.toggle('vf-motion-off', uiMotionLevel === 'off');
-      document.body.classList.toggle('vf-motion-balanced', uiMotionLevel === 'balanced');
-      document.body.classList.toggle('vf-motion-rich', uiMotionLevel === 'rich');
-      return () => {
-          if (previousMotion) document.body.dataset.motion = previousMotion;
-          else delete document.body.dataset.motion;
-          document.body.classList.remove('vf-motion-off', 'vf-motion-balanced', 'vf-motion-rich');
-      };
+      if (typeof document === 'undefined') return undefined;
+      return applyMotionLevelToDocument(document, uiMotionLevel);
   }, [uiMotionLevel]);
 
   useEffect(() => {
@@ -6353,8 +6409,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
       return;
     }
     if (isWalletBlocked && !canRunDunoWithoutWallet) {
-      showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Buy to top up or upgrade.`, 'error');
-      openBuyCenter();
+      showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Billing to top up or upgrade.`, 'error');
+      openBillingCenter();
       return;
     }
     await runSingleGeneration();
@@ -6877,8 +6933,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const handleGenerateDub = async () => {
       if (dubbingClips.length <= 0) return showToast("Upload at least one video first", "info");
       if (isWalletBlocked && !canRunDunoWithoutWallet) {
-          showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Buy to top up or upgrade.`, 'error');
-          openBuyCenter();
+          showToast(`Insufficient ${getEngineDisplayName(settings.engine)} VF balance. Open Billing to top up or upgrade.`, 'error');
+          openBillingCenter();
           return;
       }
 
@@ -7879,29 +7935,20 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           showToast(`Failed to activate ${getEngineLabel(targetEngine)}: ${error?.message || 'Unknown error'}`, 'error');
       }
   };
-  const activeTabLabel = activeTab === Tab.STUDIO
-    ? 'Studio'
-    : activeTab === Tab.READER
-      ? 'Reader'
-      : activeTab === Tab.VOICE_CLONING
-        ? 'Voice Cloning'
-      : activeTab === Tab.CHARACTERS
-        ? 'Character'
-      : activeTab === Tab.NOVEL
-          ? 'Novel'
-          : activeTab === Tab.HISTORY
-            ? 'History'
-            : activeTab === Tab.ADMIN
-              ? 'Admin'
-              : 'Studio';
-  const activeTabDetail = WORKSPACE_TAB_DETAILS[activeTab] || 'Workspace controls';
+  const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
   const contentMaxWidthClass = isStudioWorkspaceTab
       ? 'max-w-[1320px]'
       : activeTab === Tab.READER || activeTab === Tab.VOICE_CLONING
         ? 'max-w-[1360px]'
         : 'max-w-5xl';
-  const workspaceTabs = useMemo(() => buildWorkspaceTabs(hasAdminConsoleAccess), [hasAdminConsoleAccess]);
   const isStandaloneReaderRoute = String(pathname || '').trim().toLowerCase().startsWith('/reader');
+
+  useEffect(() => {
+      const nextTab = resolveWorkspaceTabFromPathname(pathname) || Tab.STUDIO;
+      if (nextTab !== activeTab) {
+          setActiveTab(nextTab);
+      }
+  }, [activeTab, pathname]);
 
   useEffect(() => {
       if (!hasAdminConsoleAccess && activeTab === Tab.ADMIN) {
@@ -7914,14 +7961,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           setActiveTab(Tab.STUDIO);
       }
   }, [activeTab, workspaceTabs]);
-  useEffect(() => {
-      if (typeof window === 'undefined') return;
-      const url = new URL(window.location.href);
-      const currentToken = String(url.searchParams.get('vf-tab') || '').trim().toUpperCase();
-      if (currentToken === activeTab) return;
-      url.searchParams.set('vf-tab', activeTab);
-      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-  }, [activeTab]);
   useEffect(() => {
       const preloadActive = TAB_PRELOADERS[activeTab];
       if (preloadActive) {
@@ -7946,31 +7985,19 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const openAuthScreen = (mode: 'login' | 'signup') => {
       writeStorageString(STORAGE_KEYS.authIntent, mode);
       setIsMobileMenuOpen(false);
-      if (typeof window !== 'undefined') {
-          window.location.href = resolveLoginPath(mode);
-          return;
-      }
-      setScreen(AppScreen.LOGIN);
+      router.push(resolveLoginPath(mode, pathname || resolveWorkspaceRoutePath(activeTab)));
   };
 
-  const openBuyCenter = useCallback(() => {
+  const openBillingCenter = useCallback(() => {
       if (hasSessionIdentity && !isGuestSession) {
           setIsMobileMenuOpen(false);
-          if (typeof window !== 'undefined') {
-              window.location.href = APP_ROUTE_PATHS.buy;
-              return;
-          }
-          setScreen(AppScreen.MAIN);
+          router.push(APP_ROUTE_PATHS.billing);
           return;
       }
       writeStorageString(STORAGE_KEYS.authIntent, 'login');
       setIsMobileMenuOpen(false);
-      if (typeof window !== 'undefined') {
-          window.location.href = resolveLoginPath('login');
-          return;
-      }
-      setScreen(AppScreen.LOGIN);
-  }, [hasSessionIdentity, isGuestSession, setScreen]);
+      router.push(resolveLoginPath('login', APP_ROUTE_PATHS.billing));
+  }, [hasSessionIdentity, isGuestSession, router]);
 
   const handleSignOut = async () => {
       try {
@@ -8005,7 +8032,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           const result = await billingActions.startTokenPackCheckout(selectedTokenPack);
           await billingActions.launchCheckout(result, {
               onSuccess: () => {
-                  window.location.href = `${APP_ROUTE_PATHS.buy}?billing=success`;
+                  window.location.href = `${APP_ROUTE_PATHS.billing}?billing=success`;
               },
               onDismiss: () => {
                   setIsBuyingTokenPack(false);
@@ -8140,7 +8167,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button
-              onClick={openBuyCenter}
+              onClick={openBillingCenter}
               className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold ${
                 isDarkUi
                   ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
@@ -8148,7 +8175,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               }`}
             >
               <Bell size={12} />
-              Open Buy
+              Open Billing
             </button>
             <button
               onClick={() => { void handleBuyTokenPack(); }}
@@ -8223,6 +8250,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
     const primaryWorkspaceTabs = workspaceTabs.filter((item) => item.id !== Tab.ADMIN);
     const createWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'create');
     const libraryWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'library');
+    const accountWorkspaceTabs = primaryWorkspaceTabs.filter((item) => item.section === 'account');
     const adminWorkspaceTab = workspaceTabs.find((item) => item.id === Tab.ADMIN);
     const getSidebarButtonClassName = (isActive: boolean) => `flex w-full items-center rounded-xl text-sm font-semibold transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
       isDesktopCompact ? 'flex-col justify-center gap-0.5 px-1.5 py-2' : 'gap-3 px-3.5 py-2.5'
@@ -8235,14 +8263,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
           ? 'text-slate-300 hover:bg-slate-900 hover:text-slate-100'
           : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
     } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2`;
-    const handleBuyClick = () => {
-      if (isGuestSession) {
-        openAuthScreen('signup');
-        return;
-      }
-      setIsMobileMenuOpen(false);
-      openBuyCenter();
-    };
     const sectionHeaderClassName = `px-3 pb-1 text-[10px] font-black uppercase tracking-[0.16em] ${
       isDarkUi ? 'text-slate-500' : 'text-gray-400'
     }`;
@@ -8276,7 +8296,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    router.push(item.route);
+                  }}
                   aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
                   aria-label={item.label}
                   title={item.label}
@@ -8302,7 +8325,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }}
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    router.push(item.route);
+                  }}
                   aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
                   aria-label={item.label}
                   title={item.label}
@@ -8319,27 +8345,35 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               ))}
             </div>
           ) : null}
-          <div className="space-y-1">
-            {!isDesktopCompact && (
-              <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.account}</p>
-            )}
-            <button
-              type="button"
-              onClick={handleBuyClick}
-              aria-current={isCreditsSurfaceOpen ? 'page' : undefined}
-              aria-label="Buy"
-              title="Buy"
-              className={getSidebarButtonClassName(isCreditsSurfaceOpen)}
-            >
-              <span className="shrink-0"><Coins size={18} /></span>
-              {!isDesktopCompact && <span className="truncate">Buy</span>}
-              {isDesktopCompact && (
-                <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
-                  Buy
-                </span>
+          {accountWorkspaceTabs.length > 0 ? (
+            <div className="space-y-1">
+              {!isDesktopCompact && (
+                <p className={sectionHeaderClassName}>{WORKSPACE_NAV_SECTION_LABELS.account}</p>
               )}
-            </button>
-          </div>
+              {accountWorkspaceTabs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    router.push(item.route);
+                  }}
+                  aria-current={!isCreditsSurfaceOpen && activeTab === item.id ? 'page' : undefined}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={getSidebarButtonClassName(!isCreditsSurfaceOpen && activeTab === item.id)}
+                >
+                  <span className="shrink-0">{item.icon}</span>
+                  {!isDesktopCompact && <span className="truncate">{item.label}</span>}
+                  {isDesktopCompact && (
+                    <span className="max-w-full truncate text-[9px] font-bold leading-none tracking-wide">
+                      {item.label}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {adminWorkspaceTab ? (
             <div className="space-y-1">
               {!isDesktopCompact && (
@@ -8348,7 +8382,10 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
               <button
                 key={adminWorkspaceTab.id}
                 type="button"
-                onClick={() => { setActiveTab(adminWorkspaceTab.id); setIsMobileMenuOpen(false); }}
+                onClick={() => {
+                  setIsMobileMenuOpen(false);
+                  router.push(adminWorkspaceTab.route);
+                }}
                 aria-current={!isCreditsSurfaceOpen && activeTab === adminWorkspaceTab.id ? 'page' : undefined}
                 aria-label={adminWorkspaceTab.label}
                 title={adminWorkspaceTab.label}
@@ -8442,7 +8479,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
-                onClick={openBuyCenter}
+                onClick={openBillingCenter}
                 className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-[11px] font-semibold ${
                   isDarkUi
                     ? 'border-cyan-400/35 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
@@ -8450,7 +8487,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 }`}
               >
                 <Bell size={12} />
-                Open Buy
+                Open Billing
             </button>
             <button
               onClick={() => { void handleBuyTokenPack(); }}
@@ -8462,7 +8499,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                 }`}
               >
                 {isBuyingTokenPack ? <Loader2 size={12} className="animate-spin" /> : <Coins size={12} />}
-                Buy {selectedTokenPackMeta.label}
+                Purchase {selectedTokenPackMeta.label}
               </button>
             </div>
             <div className="mt-2">
@@ -8944,13 +8981,18 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const usesCompactFloatingStudioDock = isStudioWorkspaceTab && (isTablet || isDesktop);
   const shouldHideAssistantForReader = activeTab === Tab.READER;
   const useDesktopPinnedMixRail = isDesktop && !isPhone;
+  const isStudioCastPanelOpen = !isPhone || studioMobilePanels.cast;
   const studioMainSpacingClass = isPhone
-    ? 'space-y-2'
+    ? isShortPhone
+      ? 'space-y-1.5'
+      : 'space-y-2'
     : isNarrowDesktop
       ? 'space-y-2.5'
       : 'space-y-4';
   const studioEditorHeightClass = isPhone
-    ? 'min-h-[17.5rem] h-[min(28.5rem,calc(100dvh-11.6rem))]'
+    ? isShortPhone
+      ? 'min-h-[15.5rem] h-[min(24.5rem,calc(100dvh-9rem))]'
+      : 'min-h-[17.5rem] h-[min(28.5rem,calc(100dvh-11.6rem))]'
     : isTablet
       ? 'min-h-[22rem] h-[min(39.5rem,calc(100dvh-11.5rem))]'
       : isLargeDesktop
@@ -8961,7 +9003,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const studioScrollPaddingClass =
     isStudioWorkspaceTab
       ? isPhone
-        ? 'pb-[calc(env(safe-area-inset-bottom)+9.25rem)]'
+        ? isShortPhone
+          ? 'pb-[calc(env(safe-area-inset-bottom)+7.25rem)]'
+          : 'pb-[calc(env(safe-area-inset-bottom)+9.25rem)]'
         : isTablet
           ? 'pb-[calc(env(safe-area-inset-bottom)+8rem)]'
           : isNarrowDesktop
@@ -8973,11 +9017,21 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
   const workspaceHorizontalPaddingClass = isPhone ? 'px-2.5 sm:px-4 md:px-8' : 'px-4 md:px-8';
   const workspaceScrollFrameClass =
     `vf-main-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain ${workspaceHorizontalPaddingClass} ${studioScrollPaddingClass}`;
-  const topbarShellSizeClass = isPhone ? 'mx-1.5 mt-1.5 h-12 rounded-xl' : 'mx-2 mt-2 h-14 rounded-2xl';
+  const topbarShellSizeClass = isPhone
+    ? isShortPhone
+      ? 'mx-1.5 mt-1.5 h-11 rounded-xl'
+      : 'mx-1.5 mt-1.5 h-12 rounded-xl'
+    : 'mx-2 mt-2 h-14 rounded-2xl';
   const topbarInnerClass = isPhone
-    ? 'relative flex h-full w-full items-center gap-1.5 px-1.5'
+    ? isShortPhone
+      ? 'relative flex h-full w-full items-center gap-1 px-1'
+      : 'relative flex h-full w-full items-center gap-1.5 px-1.5'
     : 'relative flex h-full w-full items-center gap-2 px-2 xl:px-3';
-  const workspaceContentStackClass = isPhone ? 'space-y-4' : 'space-y-6';
+  const workspaceContentStackClass = isPhone
+    ? isShortPhone
+      ? 'space-y-3'
+      : 'space-y-4'
+    : 'space-y-6';
   const studioFloatingDockWidthClass = isDesktop
     ? (isLargeDesktop
       ? 'w-[clamp(16.25rem,25vw,18.5rem)] max-w-[calc(100vw-2rem)]'
@@ -9007,7 +9061,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
   return (
     <div className={`relative h-[100dvh] min-h-screen overflow-hidden vf-motion-${uiMotionLevel} ${resolvedTheme === 'dark' ? 'vf-theme-dark theme-dark vf-hybrid-aod' : 'vf-hybrid-light'}`}>
-      <div className="vf-live-wallpaper" aria-hidden />
       <div className={`vf-app-shell flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent font-sans text-gray-900 xl:grid xl:grid-cols-[auto_minmax(0,1fr)] xl:gap-4 ${uiDensity === 'compact' ? 'vf-compact' : ''}`}>
         {/* Mobile Overlay */}
         {isMobileMenuOpen && (
@@ -9038,7 +9091,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
              }`} />
              <div className={topbarInnerClass}>
                  <button
-                    className={`xl:hidden ${isPhone ? 'p-1.5' : 'p-2'} -ml-1 shrink-0 ${resolvedTheme === 'dark' ? 'text-slate-300' : 'text-gray-600'}`}
+                    className={`xl:hidden -ml-1 inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-full ${resolvedTheme === 'dark' ? 'text-slate-300' : 'text-gray-600'}`}
                     onClick={() => setIsMobileMenuOpen(true)}
                     aria-label="Open navigation menu"
                  >
@@ -9046,41 +9099,23 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                  </button>
                  <button
                     type="button"
-                    className={`hidden xl:inline-flex p-2 shrink-0 rounded-full transition-colors ${resolvedTheme === 'dark' ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-600 hover:bg-gray-100'}`}
+                    className={`hidden xl:inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-full transition-colors ${resolvedTheme === 'dark' ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-600 hover:bg-gray-100'}`}
                     onClick={() => setSidebarMode((current) => (current === 'compact' ? 'expanded' : 'compact'))}
                     aria-label={sidebarMode === 'compact' ? 'Expand sidebar' : 'Compact sidebar'}
                     title={sidebarMode === 'compact' ? 'Expand sidebar' : 'Compact sidebar'}
                   >
                     {sidebarMode === 'compact' ? <Maximize2 size={18} /> : <Minimize2 size={18} />}
                   </button>
-                 <div className="sm:hidden flex shrink-0 items-center">
-                   <BrandLogo size="sm" showWordmark={false} />
+                 <div className="flex shrink-0 items-center">
+                   <img
+                     src="/brand-logo.svg"
+                     alt="V Flow AI"
+                     draggable={false}
+                     className="h-8 w-8 shrink-0 select-none object-contain"
+                   />
                  </div>
 
-                  <div className={`vf-topbar-title-shell hidden md:flex min-w-[14rem] max-w-[20rem] shrink-0 items-center gap-3 rounded-xl border-x-0 border-y px-3 py-2 ${
-                   resolvedTheme === 'dark'
-                    ? 'border-slate-700 bg-slate-900/85 text-slate-200'
-                    : 'border-slate-200 bg-white/90 text-slate-700'
-                  }`}>
-                    <span className="shrink-0 origin-left scale-[0.82]">
-                      <BrandLogo size="sm" showWordmark={false} />
-                    </span>
-                     <div className="min-w-0">
-                       <div className={`text-[9px] font-black uppercase tracking-[0.22em] ${
-                         resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500'
-                       }`}>
-                        Workspace
-                      </div>
-                      <div className="vf-topbar-tab-label truncate text-sm font-semibold">{activeTabLabel}</div>
-                    </div>
-                    <div className={`hidden xl:block max-w-[9rem] text-right text-[10px] leading-4 ${
-                      resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500'
-                    }`}>
-                      {activeTabDetail}
-                    </div>
-                 </div>
-
-                 <div className={`vf-topbar-runtime-wrap min-w-0 flex-1 ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity overflow-x-auto overflow-y-hidden px-0.5' : 'overflow-hidden'}`}>
+                 <div className={`vf-topbar-runtime-wrap min-w-0 flex-1 ${isPhone ? 'hidden' : 'overflow-hidden'}`}>
                      <EngineRuntimeStrip
                        engineOrder={ENGINE_ORDER}
                        statuses={ttsRuntimeStatus}
@@ -9099,8 +9134,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                      <button
                         type="button"
                         ref={creditsSurfaceTriggerRef}
-                        onClick={openBuyCenter}
-                        aria-label="Open buy center"
+                        onClick={openBillingCenter}
+                        aria-label="Open billing"
                         className={`inline-flex items-center rounded-full border font-bold ${isPhone ? 'gap-1 px-1.5 py-0.5 text-[9px]' : 'gap-1.5 sm:gap-2 px-2 py-1 sm:px-2.5 text-[10px]'} ${
                           resolvedTheme === 'dark'
                             ? 'border-slate-700 bg-slate-900/85 text-slate-200 hover:bg-slate-800'
@@ -9129,7 +9164,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                           type="button"
                           onClick={() => setIsChatOpen((open) => !open)}
                           aria-label={isChatOpen ? 'Close assistant' : 'Open assistant'}
-                          className={`relative ${isPhone ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
+                          className={`relative inline-flex h-[44px] w-[44px] items-center justify-center rounded-full transition-colors ${
                           resolvedTheme === 'dark'
                            ? 'hover:bg-slate-800 text-slate-300'
                            : 'hover:bg-gray-100 text-gray-500'
@@ -9143,7 +9178,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                      <button
                         onClick={() => setCenterOpen((open) => !open)}
                         aria-label="Open notifications"
-                        className={`relative ${isPhone ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
+                        className={`relative inline-flex h-[44px] w-[44px] items-center justify-center rounded-full transition-colors ${
                         resolvedTheme === 'dark'
                          ? 'hover:bg-slate-800 text-slate-300'
                          : 'hover:bg-gray-100 text-gray-500'
@@ -9162,7 +9197,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         ref={settingsTriggerRef}
                         onClick={() => setShowSettings(true)}
                         aria-label="Open configuration"
-                        className={`${isPhone ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
+                        className={`inline-flex h-[44px] w-[44px] items-center justify-center rounded-full transition-colors ${
                         resolvedTheme === 'dark'
                          ? 'hover:bg-slate-800 text-slate-300'
                          : 'hover:bg-gray-100 text-gray-500'
@@ -9329,8 +9364,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     onTranslate={() => { void handleTranslate(); }}
                                 />
 
-                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-2.5 py-1.5 gap-1.5' : 'px-4 sm:px-6 py-3 gap-3'}`}>
-                                    <div className="flex flex-wrap items-center gap-2">
+                                <div className={`vf-editor-footer border-t text-xs flex flex-wrap items-center justify-between ${isPhone ? 'px-2 py-1 gap-1' : 'px-4 sm:px-6 py-3 gap-3'}`}>
+                                    <div className={`flex flex-wrap items-center ${isPhone ? 'gap-1' : 'gap-2'}`}>
                                         <span className="vf-editor-count">{`${text.length.toLocaleString()} / ${maxCharsPerGeneration.toLocaleString()} chars`}</span>
                                         {studioDirectorPreview && (
                                             <span className="vf-director-preview__pending">
@@ -9347,12 +9382,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             </span>
                                         )}
                                     </div>
-                                    <div className={`flex items-center ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity flex-nowrap gap-1.5 overflow-x-auto pb-0.5' : 'flex-wrap gap-2'}`}>
+                                    <div className={`flex items-center ${isPhone ? 'vf-scrollbar-invisible snap-x snap-proximity flex-nowrap gap-1 overflow-x-auto pb-0.5' : 'flex-wrap gap-2'}`}>
                                         <button
                                             type="button"
                                             onClick={() => setStudioQueueModeEnabled(!isStudioQueueModeEnabled)}
                                             disabled={isGenerating || studioQueueState?.items.some((item) => item.status === 'running' || item.status === 'cooldown')}
-                                            className={`inline-flex items-center gap-1 rounded-xl border font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-60 ${isPhone ? 'shrink-0 snap-start px-2 py-1 text-[9px]' : 'px-3 py-1.5 text-[10px]'} ${
+                                            className={`inline-flex items-center gap-1 rounded-xl border font-bold uppercase tracking-wide transition whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-60 ${isPhone ? 'shrink-0 snap-start min-h-[36px] px-2 py-1 text-[9px] leading-none' : 'px-3 py-1.5 text-[10px]'} ${
                                                 isStudioQueueModeEnabled
                                                     ? isDarkUi
                                                         ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
@@ -9373,7 +9408,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                 }
                                                 toggleStudioMultiSpeaker();
                                             }}
-                                            className={`inline-flex items-center gap-1 rounded-xl border font-bold uppercase tracking-wide transition ${isPhone ? 'shrink-0 snap-start px-2 py-1 text-[9px]' : 'px-3 py-1.5 text-[10px]'} ${
+                                            className={`inline-flex items-center gap-1 rounded-xl border font-bold uppercase tracking-wide transition whitespace-nowrap ${isPhone ? 'shrink-0 snap-start min-h-[36px] px-2 py-1 text-[9px] leading-none' : 'px-3 py-1.5 text-[10px]'} ${
                                                 isStudioMultiSpeakerEnabled
                                                     ? isDarkUi
                                                         ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200'
@@ -9386,7 +9421,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             <Users size={12} />
                                             Multi-Speaker {isStudioMultiSpeakerEnabled ? 'On' : 'Off'}
                                         </button>
-                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex shrink-0 snap-start items-center gap-1"><Save size={12}/> Save Draft</button>
+                                        <button onClick={() => saveDraft(`Draft ${new Date().toLocaleTimeString()}`, text, settings)} className="vf-editor-link flex shrink-0 snap-start items-center gap-1 whitespace-nowrap"><Save size={11}/> Save Draft</button>
                                     </div>
                                 </div>
                             </SectionCard>
@@ -9468,7 +9503,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                               </SectionCard>
                               )}
 		                            {studioRailTab === 'voice' && !useDesktopPinnedMixRail && (
-	                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+	                            <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <div className="flex w-full items-start justify-between gap-2">
                                             <button
@@ -9478,33 +9513,26 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                             >
                                                 <div>
                                                     <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Speaker</h3>
-                                                    <div className="mt-1 flex items-center gap-2">
-                                                        <span className={`text-xs font-bold ${
-                                                            settings.engine === 'DUNO'
-                                                              ? 'text-cyan-600'
-                                                              : settings.engine === 'VECTOR'
-                                                                ? 'text-amber-600'
-                                                                : 'text-indigo-600'
-                                                        }`}>
-                                                            {getEngineDisplayName(settings.engine)}
-                                                        </span>
+                                                    <div className="mt-1 flex items-center gap-1.5">
                                                         <span className="text-[10px] font-semibold text-gray-500">{studioVoiceOptions.length} voices</span>
                                                     </div>
                                                 </div>
                                                 {studioMobilePanels.speaker ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
                                             </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => openVoiceConversionForVoiceId(
-                                                  settings.voiceId,
-                                                  characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
-                                                  characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id
-                                                )}
-                                                className={`inline-flex h-8 min-w-[4.8rem] items-center justify-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold transition ${
-                                                  isDarkUi
-                                                    ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
-                                                    : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
-                                                }`}
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openVoiceConversionForVoiceId(
+                                                      settings.voiceId,
+                                                      characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
+                                                      characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id
+                                                    )}
+                                                    className={`inline-flex items-center justify-center gap-1.5 rounded-full border px-2.5 font-semibold transition ${
+                                                      isPhone ? 'h-[44px] min-h-[44px] min-w-[7rem] px-3.5 text-sm' : 'h-8 min-w-[4.8rem] text-[11px]'
+                                                    } ${
+                                                      isDarkUi
+                                                        ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
+                                                        : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
+                                                    }`}
                                                 title="Clone this speaker with reference audio"
                                                 aria-label="Clone this speaker with reference audio"
                                             >
@@ -9533,7 +9561,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                           characterLibrary.find((char) => char.voiceId === settings.voiceId)?.name,
                                                           characterLibrary.find((char) => char.voiceId === settings.voiceId)?.id
                                                         )}
-                                                        className={`inline-flex h-8 min-w-[4.8rem] items-center justify-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold transition ${
+                                                        className={`inline-flex items-center justify-center gap-1.5 rounded-full border px-2.5 font-semibold transition ${
+                                                          isPhone ? 'h-[44px] min-h-[44px] min-w-[7rem] px-3.5 text-sm' : 'h-8 min-w-[4.8rem] text-[11px]'
+                                                        } ${
                                                           isDarkUi
                                                             ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
                                                             : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
@@ -9652,7 +9682,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
 	                            {/* Studio Audio Mix */}
                                   {(studioRailTab === 'mix' || useDesktopPinnedMixRail) && (
-		                            <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+		                            <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                     {isPhone ? (
                                         <button
                                             type="button"
@@ -9755,7 +9785,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                       isStudioMultiSpeakerEnabled ? (
 		                            <>
 		                            {/* Cast & Crew */}
-	                            <SectionCard className={`${isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
+	                            <SectionCard className={`${isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'} border animate-in fade-in ${
                                       isDarkUi
                                         ? 'bg-slate-900/75 border-indigo-500/20'
                                         : 'bg-indigo-50 border-indigo-100'
@@ -9763,9 +9793,36 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     {isPhone ? (
                                         <div className="mb-3 flex flex-col gap-2">
                                             <div className="flex items-start justify-between gap-3">
-                                                <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
-                                                    isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
-                                                }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => toggleStudioMobilePanel('cast')}
+                                                    className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left"
+                                                    aria-expanded={isStudioCastPanelOpen}
+                                                    aria-controls="studio-cast-panel"
+                                                >
+                                                    <div className="min-w-0">
+                                                        <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${
+                                                            isDarkUi ? 'text-indigo-200' : 'text-indigo-400'
+                                                        }`}><Bot size={14}/> Cast &amp; Crew</h3>
+                                                        <p className={`mt-1 text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                            {isStudioMultiSpeakerEnabled
+                                                              ? `${activeScriptLanguageCode.toUpperCase()} - ${castSpeakers.length} speakers`
+                                                              : 'Disabled'}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        {studioCrewTags.length > 0 && (
+                                                            <span className={`shrink-0 rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-wide ${
+                                                                isDarkUi
+                                                                  ? 'border-cyan-500/30 bg-slate-950 text-cyan-200'
+                                                                  : 'border-cyan-100 bg-white text-cyan-600'
+                                                            }`}>
+                                                                {studioCrewTags.length} crew
+                                                            </span>
+                                                        )}
+                                                        {isStudioCastPanelOpen ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                                                    </div>
+                                                </button>
                                                 <button
                                                     type="button"
                                                     onClick={autoAssignCastVoices}
@@ -9787,9 +9844,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                     AI Auto
                                                 </button>
                                             </div>
-                                            <p className={`text-[10px] font-semibold uppercase tracking-wide ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
-                                                {isStudioMultiSpeakerEnabled ? `${activeScriptLanguageCode.toUpperCase()} - ${studioCrewTags.length} crew cues` : 'Disabled'}
-                                            </p>
+                                            {!isStudioCastPanelOpen && (
+                                                <p className={`text-[11px] font-medium ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>
+                                                    Tap to expand cast mappings and reference audio.
+                                                </p>
+                                            )}
                                         </div>
                                     ) : (
                                     <div className="flex items-center justify-between mb-3">
@@ -9836,13 +9895,14 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </div>
                                     </div>
                                     )}
-                                    <>
+                                    {isStudioCastPanelOpen && (
+                                      <>
                                     {!isStudioMultiSpeakerEnabled && (
                                       <p className="mb-3 text-[11px] font-medium text-gray-500">
                                         Enable Multi-Speaker Mode to edit cast mappings.
                                       </p>
                                     )}
-                                    <div className="space-y-2">
+                                    <div className="space-y-2" id="studio-cast-panel">
                                         {castSpeakers.map(speaker => {
                                             const char = characterLibrary.find(c => c.name.toLowerCase() === speaker.toLowerCase()) || null;
                                             const selectedVoiceId = char?.voiceId || resolveMappedVoiceForSpeaker(speaker) || castFreeVoiceOptions[0]?.id || castVoiceOptions[0]?.id || '';
@@ -9893,7 +9953,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                             <button
                                                                 type="button"
                                                                 onClick={() => clearSpeakerVcReference(speaker)}
-                                                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition ${
+                                                                className={`inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-full border transition xl:h-7 xl:w-7 ${
                                                                   isDarkUi
                                                                     ? 'border-slate-700 bg-slate-900 text-slate-300 hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-200'
                                                                     : 'border-gray-200 bg-white text-gray-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600'
@@ -9911,7 +9971,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                               speaker,
                                                               char?.id
                                                             )}
-                                                            className={`inline-flex h-8 min-w-[4.8rem] shrink-0 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold transition ${
+                                                            className={`inline-flex h-[44px] min-w-[6.8rem] shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[11px] font-semibold transition xl:h-8 xl:min-w-[4.8rem] ${
                                                               isDarkUi
                                                                 ? 'border-slate-700 bg-slate-900 text-fuchsia-200 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/10'
                                                                 : 'border-gray-200 bg-white text-fuchsia-600 hover:border-fuchsia-200 hover:bg-fuchsia-50'
@@ -10017,11 +10077,12 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 	                                                ? 'Single-speaker mode active. Voice is enabled and Cast & Crew is disabled.'
 	                                                : 'Multi-speaker mode active. Cast & Crew is enabled and Voice is disabled.'}
 		                                    </div>
-                                    </>
+                                      </>
+                                    )}
 		                                </SectionCard>
                                     </>
                                       ) : (
-                                        <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+                                        <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                           <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400">Cast &amp; Crew</h3>
                                           <p className={`mt-2 text-[11px] ${isDarkUi ? 'text-slate-300' : 'text-gray-600'}`}>
                                             Enable Multi-Speaker Mode from the editor toolbar to configure cast mappings.
@@ -10043,7 +10104,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                     )}
 
                                     {studioRailTab === 'queue' && !useDesktopPinnedMixRail && shouldShowStudioQueuePanel && (
-                                        <Suspense fallback={<SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}><div className={`text-sm ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading queue...</div></SectionCard>}>
+                                        <Suspense fallback={<SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}><div className={`text-sm ${isDarkUi ? 'text-slate-400' : 'text-gray-500'}`}>Loading queue...</div></SectionCard>}>
                                           <LazyStudioQueuePanel
                                               queueState={studioQueueState}
                                               draftPartCount={studioQueueDraftPartCount}
@@ -10066,7 +10127,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                         </Suspense>
                                     )}
                                     {studioRailTab === 'queue' && !useDesktopPinnedMixRail && !shouldShowStudioQueuePanel && (
-                                      <SectionCard className={isPhone ? 'p-4 rounded-2xl' : 'p-5 rounded-3xl'}>
+                                      <SectionCard className={isPhone ? 'p-3 rounded-2xl' : 'p-5 rounded-3xl'}>
                                         <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-400">
                                           <Clock size={13} /> Queue
                                         </h3>
@@ -10081,8 +10142,8 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     </div>
                 )}
 
-                {/* --- REDESIGNED CHARACTER TAB --- */}
-                {activeTab === Tab.CHARACTERS && (
+                {/* --- REDESIGNED CHARACTER TAB (legacy, removed from nav) --- */}
+                {false && (
                     <div className="max-w-5xl mx-auto animate-in fade-in">
                         
                         {/* Tab Switcher & Header */}
@@ -10246,7 +10307,9 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                                                      
                                                      <button 
                                                         onClick={() => handleVoicePreview(v.id, v.name)}
-                                                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${isPlaying ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-indigo-100 hover:text-indigo-600'}`}
+                                                        className={`inline-flex items-center justify-center rounded-full transition-[background-color,border-color,color,box-shadow,transform,opacity,filter] ${
+                                                          isPhone ? 'h-[44px] w-[44px]' : 'h-8 w-8'
+                                                        } ${isPlaying ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-indigo-100 hover:text-indigo-600'}`}
                                                      >
                                                          {isLoading ? <Loader2 size={14} className="animate-spin"/> : isPlaying ? <Pause size={14} fill="currentColor"/> : <Play size={14} fill="currentColor"/>}
                                                      </button>
@@ -10549,7 +10612,6 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                         settings={settings}
                         mediaBackendUrl={mediaBackendUrl}
                         resolvedTheme={resolvedTheme}
-                        denseTabs={isPhone}
                         onToast={showToast}
                         syncLocation={isStandaloneReaderRoute && activeTab === Tab.READER}
                         isActive={activeTab === Tab.READER}
@@ -10565,7 +10627,11 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     className={activeTab === Tab.VOICE_CLONING ? '' : 'hidden'}
                   >
                     <Suspense fallback={<SectionCard className="rounded-3xl p-6 text-sm">Loading voice cloning workspace...</SectionCard>}>
-                      <VoiceCloningTabContent backendBaseUrl={mediaBackendUrl} selectedEngine={settings.engine} denseTabs={isPhone} />
+                      <VoiceCloningTabContent
+                        backendBaseUrl={mediaBackendUrl}
+                        selectedEngine={settings.engine}
+                        denseTabs={isPhone || isTablet || isNarrowDesktop}
+                      />
                     </Suspense>
                   </div>
                 )}
@@ -10594,7 +10660,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
                     >
                         <div className="mx-auto w-full max-w-[1140px]">
                             <div className="mx-auto w-full max-w-xl pointer-events-auto">
-                                <div className="vf-studio-generate-dock rounded-xl border border-indigo-400/35 p-1.5 backdrop-blur-lg">
+                                <div className="vf-studio-generate-dock rounded-xl border border-indigo-400/35 p-1 backdrop-blur-lg">
                                     <MorphingGenerateButton
                                       onClick={handleGenerate}
                                       onCancel={handleCancelGeneration}
@@ -10614,7 +10680,7 @@ export const MainApp: React.FC<MainAppProps> = ({ setScreen }) => {
 
         {usesCompactFloatingStudioDock && !isChatOpen && (
             <div className={`vf-studio-generate-anchor ${studioFloatingDockVariantClass} fixed z-[47] ${studioFloatingDockWidthClass}`}>
-                <div className={`vf-studio-generate-dock rounded-2xl border border-indigo-400/35 backdrop-blur-lg ${isDesktop ? 'p-2' : 'p-1.5'}`}>
+                <div className={`vf-studio-generate-dock rounded-2xl border border-indigo-400/35 backdrop-blur-lg ${isDesktop ? 'p-1.5' : 'p-1'}`}>
                     <MorphingGenerateButton
                       onClick={handleGenerate}
                       onCancel={handleCancelGeneration}

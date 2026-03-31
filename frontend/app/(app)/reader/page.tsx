@@ -1,1 +1,1 @@
-export { WorkspaceScreen as default } from '../../../src/app/workspace/WorkspaceScreen';
+export { ReaderRouteScreen as default } from '../../../src/app/reader/ReaderRouteScreen';

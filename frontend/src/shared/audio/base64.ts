@@ -20,13 +20,20 @@ export const fileToBase64 = async (file: File): Promise<string> => {
   return blobToBase64(file);
 };
 
-export const fetchUrlToBase64 = async (url: string): Promise<string> => {
+export interface FetchUrlToBase64Options {
+  signal?: AbortSignal;
+}
+
+export const fetchUrlToBase64 = async (url: string, options?: FetchUrlToBase64Options): Promise<string> => {
   const raw = String(url || '').trim();
   if (!raw) return '';
   const isOpaqueBrowserUrl = /^(?:blob:|data:)/i.test(raw);
   const response = isOpaqueBrowserUrl
-    ? await fetch(raw)
-    : await authFetch(raw, undefined, { requireAuth: true });
+    ? await fetch(raw, options?.signal ? { signal: options.signal } : undefined)
+    : await authFetch(raw, undefined, {
+        requireAuth: true,
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }

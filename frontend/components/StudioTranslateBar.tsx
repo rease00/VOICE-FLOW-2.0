@@ -23,15 +23,15 @@ export const StudioTranslateBar: React.FC<StudioTranslateBarProps> = ({
   const isPhone = layoutMode === 'phone';
   const isTablet = layoutMode === 'tablet';
   const selectSizeClass = isPhone
-    ? 'min-h-9 w-[7.5rem] px-2.5 py-1 text-[11px]'
+    ? 'min-h-11 w-[8.5rem] px-3 py-2 text-[12px]'
     : isTablet
-      ? 'min-h-10 w-[10rem] px-3 py-1 text-[12px]'
-      : 'min-h-10 w-[11rem] px-3 py-1 text-[12px]';
+      ? 'min-h-11 w-[10.5rem] px-3.5 py-2 text-[12px]'
+      : 'min-h-11 w-[11rem] px-3.5 py-2 text-[12px]';
   const runButtonClass = isPhone
-    ? 'min-h-9 px-2.5 py-1 text-[11px]'
+    ? 'min-h-11 px-3 py-2 text-[12px]'
     : isTablet
-      ? 'min-h-10 px-3.5 py-1 text-[12px]'
-      : 'min-h-10 px-3.5 py-1 text-[12px]';
+      ? 'min-h-11 px-3.5 py-2 text-[12px]'
+      : 'min-h-11 px-3.5 py-2 text-[12px]';
   const containerClass = isPhone
     ? 'inline-flex items-center gap-1.5 px-1.5 py-0.5'
     : 'inline-flex items-center gap-2 px-2 py-1';

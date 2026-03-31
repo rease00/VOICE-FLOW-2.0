@@ -4,18 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildWorkspaceTabs, WorkspaceTab } from '../src/features/workspace/model/tabs';
 
-const redirectMock = vi.hoisted(() => vi.fn());
 const workspaceScreenMock = vi.hoisted(() => vi.fn(() => <div data-testid="workspace-screen-stub">Workspace Screen</div>));
-
-vi.mock('next/navigation', () => ({
-  redirect: (...args: unknown[]) => redirectMock(...args),
-}));
 
 vi.mock('../src/app/workspace/WorkspaceScreen', () => ({
   WorkspaceScreen: (...args: unknown[]) => workspaceScreenMock(...args),
 }));
 
-import LegacyVoiceCloningRoutePage from '../app/(app)/app/voice-cloning/page';
 import VoicesRoutePage from '../app/(app)/app/voices/page';
 
 describe('voices route contract', () => {
@@ -35,11 +29,5 @@ describe('voices route contract', () => {
 
     expect(html).toContain('Workspace Screen');
     expect(workspaceScreenMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('redirects /app/voice-cloning to /app/voices', () => {
-    LegacyVoiceCloningRoutePage();
-
-    expect(redirectMock).toHaveBeenCalledWith('/app/voices');
   });
 });

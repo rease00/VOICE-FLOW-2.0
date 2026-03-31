@@ -1,4 +1,4 @@
-import type { BillingPlanKey, TokenPackKey } from '../../../services/accountService';
+import type { BillingPlanKey, BillingVcPackKey, TokenPackKey } from '../../../services/accountService';
 
 export interface BillingPlanCatalogRow {
   key: BillingPlanKey;
@@ -11,6 +11,13 @@ export interface BillingTokenPackCatalogRow {
   key: TokenPackKey;
   label: string;
   vf: number;
+  priceInr: number;
+}
+
+export interface BillingVcPackCatalogRow {
+  key: BillingVcPackKey;
+  label: string;
+  vc: number;
   priceInr: number;
 }
 
@@ -29,5 +36,10 @@ export const BILLING_TOKEN_PACK_ROWS: readonly BillingTokenPackCatalogRow[] = [
   { key: 'ultra', label: 'Ultra', vf: 600000, priceInr: 5200 },
 ] as const;
 
+export const BILLING_VC_PACK_ROWS: readonly BillingVcPackCatalogRow[] = [
+  { key: 'standard', label: 'Standard', vc: 750, priceInr: 699 },
+] as const;
+
 export const BILLING_PLAN_KEYS = BILLING_PLAN_ROWS.map((row) => row.key) as BillingPlanKey[];
 export const BILLING_TOKEN_PACK_KEYS = BILLING_TOKEN_PACK_ROWS.map((row) => row.key) as TokenPackKey[];
+export const BILLING_VC_PACK_KEYS = BILLING_VC_PACK_ROWS.map((row) => row.key) as BillingVcPackKey[];

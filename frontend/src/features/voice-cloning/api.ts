@@ -81,7 +81,7 @@ export interface OpenVoiceStemSeparationResponse {
 }
 
 export const fetchOpenVoiceCloneStatus = async (
-  options?: { baseUrl?: string; timeoutMs?: number }
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
 ): Promise<OpenVoiceBenchmarkStatusResponse> => requestVoiceCloneJson<OpenVoiceBenchmarkStatusResponse>(
   '/voice-clone/openvoice/status',
   undefined,
@@ -90,7 +90,7 @@ export const fetchOpenVoiceCloneStatus = async (
 
 export const cloneVoiceWithOpenVoice = async (
   payload: OpenVoiceCloneRequest,
-  options?: { baseUrl?: string; timeoutMs?: number }
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
 ): Promise<OpenVoiceCloneResponse> => requestVoiceCloneJson<OpenVoiceCloneResponse>(
   '/voice-clone/openvoice',
   {
@@ -101,6 +101,7 @@ export const cloneVoiceWithOpenVoice = async (
       mode: 'vc',
       runKind: 'warm',
     }),
+    ...(options?.signal ? { signal: options.signal } : {}),
   },
   {
     requireAuth: true,
@@ -111,7 +112,7 @@ export const cloneVoiceWithOpenVoice = async (
 
 export const cloneVoiceWithDunoNative = async (
   payload: DunoNativeCloneRequest,
-  options?: { baseUrl?: string; timeoutMs?: number }
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
 ): Promise<DunoNativeCloneResponse> => {
   const { referenceAudioUrl: _referenceAudioUrl, ...safePayload } = payload;
 
@@ -123,6 +124,7 @@ export const cloneVoiceWithDunoNative = async (
       // Keep the native DUNO payload lean. The browser still uses the local
       // data URL for preview state, but the backend only needs the base64 audio.
       body: JSON.stringify(safePayload),
+      ...(options?.signal ? { signal: options.signal } : {}),
     },
     {
       requireAuth: true,
@@ -134,13 +136,14 @@ export const cloneVoiceWithDunoNative = async (
 
 export const separateVoiceAndBackgroundWithDemucs = async (
   payload: OpenVoiceStemSeparationRequest,
-  options?: { baseUrl?: string; timeoutMs?: number }
+  options?: { baseUrl?: string; timeoutMs?: number; signal?: AbortSignal }
 ): Promise<OpenVoiceStemSeparationResponse> => requestVoiceCloneJson<OpenVoiceStemSeparationResponse>(
   '/voice-clone/openvoice/separate',
   {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...(options?.signal ? { signal: options.signal } : {}),
   },
   {
     requireAuth: true,
@@ -237,24 +240,64 @@ const buildVoiceCloneRequestBaseUrls = (baseUrl?: string): string[] => {
   return attempts;
 };
 
+const extractVoiceCloneIdempotencyKey = (init?: RequestInit): string => {
+  const body = init?.body;
+  if (typeof body !== 'string' || !body.trim()) {
+    return '';
+  }
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return String(
+      parsed.idempotencyKey ||
+      parsed.idempotency_key ||
+      parsed.requestId ||
+      parsed.request_id ||
+      ''
+    ).trim();
+  } catch {
+    return '';
+  }
+};
+
+const withIdempotencyHeader = (init: RequestInit | undefined, idempotencyKey: string): RequestInit | undefined => {
+  if (!idempotencyKey) {
+    return init;
+  }
+  const headers = new Headers(init?.headers || {});
+  if (!headers.has('Idempotency-Key')) {
+    headers.set('Idempotency-Key', idempotencyKey);
+  }
+  return {
+    ...(init || {}),
+    headers,
+  };
+};
+
 const requestVoiceCloneJson = async <T>(
   path: string,
   init?: RequestInit,
-  options?: { baseUrl?: string; timeoutMs?: number; requireAuth?: boolean }
+  options?: { baseUrl?: string; timeoutMs?: number; requireAuth?: boolean; signal?: AbortSignal }
 ): Promise<T> => {
   const baseUrls = buildVoiceCloneRequestBaseUrls(options?.baseUrl);
+  const idempotencyKey = extractVoiceCloneIdempotencyKey(init);
+  const baseInit = withIdempotencyHeader(init, idempotencyKey);
+  const requestMethod = String(init?.method || 'GET').trim().toUpperCase();
+  const canRetryAcrossBaseUrls = requestMethod !== 'POST' || Boolean(idempotencyKey);
   let lastError: unknown = null;
 
   for (const [index, baseUrl] of baseUrls.entries()) {
     try {
-      return await requestJson<T>(path, init, {
+      const requestInit = options?.signal
+        ? { ...baseInit, signal: options.signal }
+        : baseInit;
+      return await requestJson<T>(path, requestInit, {
         requireAuth: true,
         baseUrl,
         ...(Number.isFinite(options?.timeoutMs) ? { timeoutMs: Number(options?.timeoutMs) } : {}),
       });
     } catch (error) {
       lastError = error;
-      if (index >= baseUrls.length - 1 || !isVoiceCloneRetryableError(error)) {
+      if (index >= baseUrls.length - 1 || !isVoiceCloneRetryableError(error) || !canRetryAcrossBaseUrls) {
         throw error;
       }
     }
@@ -265,8 +308,10 @@ const requestVoiceCloneJson = async <T>(
 
 const buildStressRequestAttempts = (
   path: string,
-  options?: VoiceCloneStressRequestOptions
+  options?: VoiceCloneStressRequestOptions,
+  method?: string
 ): VoiceCloneStressRequestAttempt[] => {
+  const requestMethod = String(method || 'GET').trim().toUpperCase();
   const timeoutOnlyOptions = Number.isFinite(options?.timeoutMs)
     ? { timeoutMs: Number(options?.timeoutMs) }
     : undefined;
@@ -288,11 +333,12 @@ const buildStressRequestAttempts = (
       });
     } else {
       attempts.push({ path: `/v1${path}`, options });
+      if (requestMethod !== 'POST') {
+        // Last-resort: try the default API base (proxy/env default) when a custom backend URL misses admin routes.
+        attempts.push({ path, options: timeoutOnlyOptions });
+        attempts.push({ path: `/v1${path}`, options: timeoutOnlyOptions });
+      }
     }
-
-    // Last-resort: try the default API base (proxy/env default) when a custom backend URL misses admin routes.
-    attempts.push({ path, options: timeoutOnlyOptions });
-    attempts.push({ path: `/v1${path}`, options: timeoutOnlyOptions });
   }
 
   const deduped = new Map<string, VoiceCloneStressRequestAttempt>();
@@ -310,7 +356,8 @@ const requestVoiceCloneStressJson = async <T>(
   init?: RequestInit,
   options?: VoiceCloneStressRequestOptions
 ): Promise<T> => {
-  const attempts = buildStressRequestAttempts(path, options);
+  const requestMethod = String(init?.method || 'GET').trim().toUpperCase();
+  const attempts = buildStressRequestAttempts(path, options, requestMethod);
   let lastError: unknown = null;
   for (const [index, attempt] of attempts.entries()) {
     try {

@@ -8,6 +8,7 @@ export interface DunoClonePreviewInput {
   voiceId: string;
   voiceName: string;
   voiceModel?: string | undefined;
+  signal?: AbortSignal;
 }
 
 const buildPreviewSettings = (input: DunoClonePreviewInput): GenerationSettings => ({
@@ -43,7 +44,7 @@ export const buildDunoClonePreviewUrl = async (input: DunoClonePreviewInput): Pr
       voiceName,
       previewSettings,
       'speech',
-      undefined,
+      input.signal,
       {
         context: 'preview',
         preferLiveChunks: true,

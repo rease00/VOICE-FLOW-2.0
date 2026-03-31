@@ -176,6 +176,7 @@ def test_tts_status_cache_coalesces_concurrent_refresh(monkeypatch) -> None:
 def test_frontend_gateway_routes_are_registered() -> None:
     expected = {
         ("GET", "/health"),
+        ("GET", "/routing/regions"),
         ("GET", "/system/version"),
         ("GET", "/tts/engines/status"),
         ("GET", "/tts/engines/capabilities"),
@@ -204,6 +205,61 @@ def test_frontend_gateway_routes_are_registered() -> None:
 
     missing = sorted(expected - registered)
     assert not missing, f"Missing frontend gateway route bindings: {missing}"
+
+
+def test_routing_regions_snapshot_returns_candidate_list(monkeypatch) -> None:
+    monkeypatch.setenv("VF_PUBLIC_API_REGIONS", "asia-southeast1,us-central1,europe-west1")
+    monkeypatch.setenv("VF_PUBLIC_API_REGION", "asia-southeast1")
+    monkeypatch.setattr(backend_app, "_media_health_snapshot", lambda: {"ok": True, "ready": True, "generatedAtMs": 123})
+    monkeypatch.setattr(
+        backend_app,
+        "_tts_queue_metrics_snapshot",
+        lambda: {"queue": {"total": 3, "byLane": {"free": 3}, "storage": "redis"}, "telemetry": {"oldestQueuedAgeMs": 42}},
+    )
+
+    response = client.get(
+        "/routing/regions",
+        headers={
+            "host": "voiceflow.example",
+            "x-forwarded-host": "voiceflow.example",
+            "x-forwarded-proto": "https",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["selectedRegion"] == "asia-southeast1"
+    assert payload["selectedBaseUrl"] == "https://voiceflow.example"
+    assert payload["queueDepth"] == 3
+    assert payload["oldestQueuedAgeMs"] == 42
+    assert len(payload["candidates"]) == 3
+    assert payload["candidates"][0]["selected"] is True
+    assert {candidate["region"] for candidate in payload["candidates"]} == {
+        "asia-southeast1",
+        "us-central1",
+        "europe-west1",
+    }
+
+
+def test_routing_regions_is_public_when_auth_enforcement_is_on(monkeypatch) -> None:
+    monkeypatch.setattr(backend_app, "VF_AUTH_ENFORCE", True)
+    monkeypatch.setattr(backend_app, "_media_health_snapshot", lambda: {"ok": True, "ready": True, "generatedAtMs": 123})
+    monkeypatch.setattr(
+        backend_app,
+        "_tts_queue_metrics_snapshot",
+        lambda: {"queue": {"total": 0, "byLane": {}, "storage": "unknown"}, "telemetry": {"oldestQueuedAgeMs": 0}},
+    )
+
+    response = client.get(
+        "/routing/regions",
+        headers={
+            "host": "voiceflow.example",
+            "x-forwarded-host": "voiceflow.example",
+            "x-forwarded-proto": "https",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
 
 
 def test_legacy_tts_routes_return_410() -> None:

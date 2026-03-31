@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 const mainAppSourcePath = fileURLToPath(new URL('../views/MainApp.tsx', import.meta.url));
 
 describe('MainApp backdrop contract', () => {
-  it('uses the shared motion helper and no longer mounts the wallpaper locally', () => {
+  it('uses the shared motion helper and does not mount the wallpaper locally', () => {
     const source = readFileSync(mainAppSourcePath, 'utf-8');
 
     expect(source).toContain('applyMotionLevelToDocument(document, uiMotionLevel)');

@@ -2,12 +2,12 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { ArrowLeft, ArrowRight, Coins, CreditCard, Sparkles, Ticket, Wallet } from 'lucide-react';
-import type { BillingPlanKey, TokenPackKey } from '../../../../services/accountService';
+import { ArrowLeft, ArrowRight, Coins, CreditCard, Sparkles, Wallet } from 'lucide-react';
+import type { BillingPlanKey, BillingVcPackKey, TokenPackKey } from '../../../../services/accountService';
 import { BrandLogo } from '../../../../components/BrandLogo';
 import { firebaseAuth } from '../../../../services/firebaseClient';
 import { useBillingActions } from '../hooks/useBillingActions';
-import { BILLING_PLAN_ROWS, BILLING_TOKEN_PACK_ROWS } from '../catalog';
+import { BILLING_PLAN_ROWS, BILLING_TOKEN_PACK_ROWS, BILLING_VC_PACK_ROWS } from '../catalog';
 import { resolveApiBaseUrl } from '../../../shared/api/config';
 import { STORAGE_KEYS } from '../../../shared/storage/keys';
 import { readStorageJson } from '../../../shared/storage/localStore';
@@ -39,23 +39,24 @@ const parseBillingState = (search: string): 'success' | 'cancel' | '' => {
   return '';
 };
 
-const tabTokenToId = (token: string, couponEnabled: boolean): BillingSurfaceTab => {
+const tabTokenToId = (token: string): BillingSurfaceTab => {
   const safeToken = String(token || '').trim().toLowerCase();
   if (safeToken === 'subscription' || safeToken === 'plan' || safeToken === 'plans') return 'plans';
   if (safeToken === 'token-buy' || safeToken === 'token' || safeToken === 'buy') return 'token';
-  if (couponEnabled && safeToken === 'coupon') return 'coupon';
+  if (safeToken === 'vc-packs' || safeToken === 'vc' || safeToken === 'vc-pack') return 'vc';
+  if (safeToken === 'coupon') return 'plans';
   return 'plans';
 };
 
-const parseTabFromSearch = (search: string, couponEnabled: boolean): BillingSurfaceTab => {
+const parseTabFromSearch = (search: string): BillingSurfaceTab => {
   const token = String(new URLSearchParams(search).get('tab') || '').trim();
-  return tabTokenToId(token, couponEnabled);
+  return tabTokenToId(token);
 };
 
 const tabIdToToken = (tab: BillingSurfaceTab): string => {
   if (tab === 'plans') return 'subscription';
   if (tab === 'token') return 'token-buy';
-  return 'coupon';
+  return 'vc-packs';
 };
 
 const resolveBackendUrl = (): string => {
@@ -70,6 +71,13 @@ const FALLBACK_TOKEN_PACK: { key: TokenPackKey; label: string; vf: number; price
   priceInr: 1450,
 };
 
+const FALLBACK_VC_PACK: { key: BillingVcPackKey; label: string; vc: number; priceInr: number } = {
+  key: 'standard',
+  label: 'Standard',
+  vc: 750,
+  priceInr: 699,
+};
+
 const isAuthError = (error: unknown): boolean => {
   const candidate = error as { status?: unknown; cause?: { status?: unknown }; message?: unknown; detail?: unknown };
   const status = Number(candidate?.status ?? candidate?.cause?.status ?? 0);
@@ -81,7 +89,7 @@ const isAuthError = (error: unknown): boolean => {
 export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   mode,
   returnPath,
-  appBuyUrl = '/app/buy',
+  appBuyUrl = '/app/billing',
   homeUrl = '/',
   authMode,
   isAuthenticated,
@@ -89,16 +97,16 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   onRefreshEntitlements,
   walletSummary = null,
   defaultTokenPackKey = 'standard',
+  defaultVcPackKey = 'standard',
 }) => {
-  const couponEnabled = true;
-  const visibleTabs = ['plans', 'token', 'coupon'] as const;
+  const visibleTabs = ['plans', 'token', 'vc'] as const;
   const selectedTabItems = visibleTabs.map((id) => ({ id }));
 
   const billingActions = useBillingActions({ baseUrl: resolveBackendUrl(), returnPath });
 
   const [activeTab, setActiveTab] = useState<BillingSurfaceTab>('plans');
-  const [couponCode, setCouponCode] = useState('');
   const [selectedPack, setSelectedPack] = useState<TokenPackKey>(defaultTokenPackKey);
+  const [selectedVcPack, setSelectedVcPack] = useState<BillingVcPackKey>(defaultVcPackKey);
   const [loadingKey, setLoadingKey] = useState('');
   const [error, setError] = useState('');
   const [banner, setBanner] = useState<BillingSurfaceBanner | null>(null);
@@ -107,21 +115,24 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
 
   const resolvedAuthMode = authMode || (mode === 'public' ? 'signup' : 'login');
   const hasActiveAuthSession = Boolean(hasFirebaseSession || isAuthenticated);
-  const publicSignInUrl = resolveLoginPath('login', resolveSafeInternalNextPath(appBuyUrl, appBuyUrl));
 
   const selectedPackSummary = useMemo(
     () => BILLING_TOKEN_PACK_ROWS.find((item) => item.key === selectedPack) || BILLING_TOKEN_PACK_ROWS[1] || BILLING_TOKEN_PACK_ROWS[0] || FALLBACK_TOKEN_PACK,
     [selectedPack]
   );
 
+  const selectedVcPackSummary = useMemo(
+    () => BILLING_VC_PACK_ROWS.find((item) => item.key === selectedVcPack) || BILLING_VC_PACK_ROWS[0] || FALLBACK_VC_PACK,
+    [selectedVcPack]
+  );
+
   const setTab = useCallback((tab: BillingSurfaceTab): void => {
-    if (!couponEnabled && tab === 'coupon') return;
     setActiveTab(tab);
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
     url.searchParams.set('tab', tabIdToToken(tab));
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
-  }, [couponEnabled]);
+  }, []);
 
   const managedTabs = useManagedTabs<BillingSurfaceTab>({
     items: selectedTabItems,
@@ -134,7 +145,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const initialTab = parseTabFromSearch(window.location.search, couponEnabled);
+    const initialTab = parseTabFromSearch(window.location.search);
     setActiveTab(initialTab);
 
     const state = parseBillingState(window.location.search);
@@ -171,7 +182,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         tone: 'success',
         message: refreshed
           ? 'Payment completed. Account balances refreshed.'
-          : 'Payment completed. Open Plans & Billing to refresh your live account summary.',
+          : 'Payment completed. Open Billing to refresh your live account summary.',
       });
     };
 
@@ -179,7 +190,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [couponEnabled, onRefreshEntitlements]);
+  }, [onRefreshEntitlements]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
@@ -204,19 +215,11 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     window.location.href = resolveLoginPath(resolvedAuthMode, safeNext);
   }, [activeTab, resolveResumePath, resolvedAuthMode]);
 
-  const redirectToAuthTab = useCallback((tab: BillingSurfaceTab, authTarget: 'login' | 'signup' = resolvedAuthMode): void => {
-    if (typeof window === 'undefined') return;
-    const resumePath = resolveResumePath(tab);
-    const safeNext = resolveSafeInternalNextPath(resumePath, resumePath);
-    window.location.href = resolveLoginPath(authTarget, safeNext);
-  }, [resolveResumePath, resolvedAuthMode]);
-
-  const runPlanCheckout = useCallback(async (planKey: BillingPlanKey, rawCouponCode?: string): Promise<void> => {
-    const couponCodeTrimmed = String(rawCouponCode || '').trim();
+  const runPlanCheckout = useCallback(async (planKey: BillingPlanKey): Promise<void> => {
     if (!hasActiveAuthSession) {
       redirectToAuthWithIntent({
         kind: 'subscription',
-        selection: couponCodeTrimmed ? { planKey, couponCode: couponCodeTrimmed } : { planKey },
+        selection: { planKey },
         authMode: resolvedAuthMode,
         resumePath: resolveResumePath('plans'),
       });
@@ -227,7 +230,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     setBanner(null);
     setLoadingKey(`plan:${planKey}`);
     try {
-      const launch = await billingActions.startPlanCheckout(planKey, couponCodeTrimmed || undefined);
+      const launch = await billingActions.startPlanCheckout(planKey);
       await billingActions.launchCheckout(launch, {
         onSuccess: () => {
           window.location.href = `${returnPath}?billing=success`;
@@ -240,7 +243,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       if (isAuthError(checkoutError)) {
         redirectToAuthWithIntent({
           kind: 'subscription',
-          selection: couponCodeTrimmed ? { planKey, couponCode: couponCodeTrimmed } : { planKey },
+          selection: { planKey },
           authMode: resolvedAuthMode,
           resumePath: resolveResumePath('plans'),
         });
@@ -292,6 +295,46 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     }
   }, [billingActions, hasActiveAuthSession, redirectToAuthWithIntent, resolveResumePath, resolvedAuthMode, returnPath]);
 
+  const runVcCheckout = useCallback(async (packKey: BillingVcPackKey): Promise<void> => {
+    if (!hasActiveAuthSession) {
+      redirectToAuthWithIntent({
+        kind: 'vc-token-pack',
+        selection: { vcPackKey: packKey },
+        authMode: resolvedAuthMode,
+        resumePath: resolveResumePath('vc'),
+      });
+      return;
+    }
+
+    setError('');
+    setBanner(null);
+    setLoadingKey(`vc:${packKey}`);
+    try {
+      const launch = await billingActions.startVcTokenPackCheckout(packKey);
+      await billingActions.launchCheckout(launch, {
+        onSuccess: () => {
+          window.location.href = `${returnPath}?billing=success`;
+        },
+        onDismiss: () => {
+          setLoadingKey('');
+        },
+      });
+    } catch (checkoutError: any) {
+      if (isAuthError(checkoutError)) {
+        redirectToAuthWithIntent({
+          kind: 'vc-token-pack',
+          selection: { vcPackKey: packKey },
+          authMode: resolvedAuthMode,
+          resumePath: resolveResumePath('vc'),
+        });
+        return;
+      }
+      setError(checkoutError?.message || 'Could not start VC pack checkout.');
+    } finally {
+      setLoadingKey('');
+    }
+  }, [billingActions, hasActiveAuthSession, redirectToAuthWithIntent, resolveResumePath, resolvedAuthMode, returnPath]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -314,10 +357,8 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
     }
 
     if (intent.kind === 'subscription' && 'planKey' in intent.selection) {
-      const couponCodeToken = 'couponCode' in intent.selection ? String(intent.selection.couponCode || '') : '';
-      setCouponCode(couponCodeToken);
       setTab('plans');
-      void runPlanCheckout(intent.selection.planKey, couponCodeToken);
+      void runPlanCheckout(intent.selection.planKey);
       return;
     }
 
@@ -325,45 +366,26 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
       setSelectedPack(intent.selection.packKey);
       setTab('token');
       void runTokenCheckout(intent.selection.packKey);
+      return;
     }
-  }, [hasActiveAuthSession, runPlanCheckout, runTokenCheckout, setTab]);
+
+    if (intent.kind === 'vc-token-pack' && 'vcPackKey' in intent.selection) {
+      setSelectedVcPack(intent.selection.vcPackKey);
+      setTab('vc');
+      void runVcCheckout(intent.selection.vcPackKey);
+    }
+  }, [hasActiveAuthSession, runPlanCheckout, runTokenCheckout, runVcCheckout, setTab]);
 
   const handlePlanCheckout = async (planKey: BillingPlanKey) => {
-    await runPlanCheckout(planKey, couponCode);
+    await runPlanCheckout(planKey);
   };
 
   const handleTokenCheckout = async () => {
     await runTokenCheckout(selectedPack);
   };
 
-  const handleRedeemCoupon = async () => {
-    if (!hasActiveAuthSession) {
-      redirectToAuthTab('coupon');
-      return;
-    }
-    const code = couponCode.trim().toUpperCase();
-    if (!code) {
-      setError('Enter coupon code first.');
-      return;
-    }
-    setError('');
-    setBanner(null);
-    setLoadingKey('coupon');
-    try {
-      const result = await billingActions.redeemWalletCoupon(code);
-      setCouponCode('');
-      setBanner({
-        tone: 'success',
-        message: `Coupon applied: +${formatNumber(result.creditedVf)} VF`,
-      });
-      if (onRefreshEntitlements) {
-        await onRefreshEntitlements();
-      }
-    } catch (couponError: any) {
-      setError(couponError?.message || 'Coupon redeem failed.');
-    } finally {
-      setLoadingKey('');
-    }
+  const handleVcCheckout = async () => {
+    await runVcCheckout(selectedVcPack);
   };
 
   const bannerToneClass = banner?.tone === 'success'
@@ -383,19 +405,19 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(78%_72%_at_6%_8%,rgba(34,211,238,0.14),transparent_62%),radial-gradient(72%_68%_at_92%_10%,rgba(139,92,246,0.12),transparent_64%),radial-gradient(80%_72%_at_50%_95%,rgba(37,99,235,0.10),transparent_72%)]" />
       ) : null}
 
-      <div className={`relative z-10 mx-auto w-full ${mode === 'app' ? 'max-w-7xl px-4 pb-10 pt-5 sm:px-6 sm:pt-7' : 'max-w-6xl px-4 pb-10 pt-5 sm:px-6 sm:pt-8'}`}>
-        <header className={`rounded-2xl border p-3 shadow-[0_18px_44px_rgba(2,6,23,0.45)] backdrop-blur ${
+      <div className={`relative z-10 mx-auto w-full ${mode === 'app' ? 'max-w-7xl px-4 pb-8 pt-4 sm:px-6 sm:pt-6' : 'max-w-6xl px-4 pb-8 pt-4 sm:px-6 sm:pt-7'}`}>
+        <header className={`rounded-2xl border p-2.5 shadow-[0_18px_44px_rgba(2,6,23,0.45)] backdrop-blur ${
           mode === 'app'
             ? 'border-cyan-300/20 bg-slate-950/70'
             : 'border-white/10 bg-slate-950/72'
         }`}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
               {mode === 'app' && onBackToWorkspace ? (
                 <button
                   type="button"
                   onClick={onBackToWorkspace}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-3.5 py-2.5 text-[13px] font-semibold text-slate-200 transition hover:bg-slate-800"
+                  className="inline-flex min-h-10 items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-3 py-2 text-[12px] font-semibold text-slate-200 transition hover:bg-slate-800"
                 >
                   <ArrowLeft size={15} />
                   Workspace
@@ -408,33 +430,33 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
               <div className="flex items-center gap-2">
                 <a
                   href={homeUrl}
-                  className="inline-flex min-h-11 items-center rounded-full border border-white/14 bg-white/5 px-4 py-2.5 text-[13px] font-semibold text-slate-100 transition hover:bg-white/10"
+                  className="inline-flex min-h-10 items-center rounded-full border border-white/14 bg-white/5 px-3.5 py-2 text-[12px] font-semibold text-slate-100 transition hover:bg-white/10"
                 >
                   Home
                 </a>
                 <a
                   href={appBuyUrl}
-                  className="inline-flex min-h-11 items-center rounded-full bg-gradient-to-r from-cyan-400 via-sky-500 to-indigo-500 px-5 py-2.5 text-[13px] font-semibold text-slate-950 shadow-[0_16px_36px_rgba(34,211,238,0.22)] transition hover:translate-y-[-1px] hover:brightness-105"
+                  className="inline-flex min-h-10 items-center rounded-full bg-gradient-to-r from-cyan-400 via-sky-500 to-indigo-500 px-4 py-2 text-[12px] font-semibold text-slate-950 shadow-[0_16px_36px_rgba(34,211,238,0.22)] transition hover:translate-y-[-1px] hover:brightness-105"
                 >
-                  Open Plans & Billing
+                  Open Billing
                 </a>
               </div>
             ) : null}
           </div>
 
-          <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
+          <div className="mt-2.5 flex flex-wrap items-end justify-between gap-2.5">
             <div>
-              <p className={`text-[11px] font-black uppercase tracking-[0.18em] ${
+              <p className={`text-[10px] font-black uppercase tracking-[0.18em] ${
                 mode === 'app' ? 'text-cyan-200/80' : 'text-cyan-200/80'
-              }`}>Plans & Billing</p>
-              <h1 className={`mt-1 text-xl font-semibold tracking-tight sm:text-2xl ${
+              }`}>Billing</p>
+              <h1 className={`mt-1 text-lg font-semibold tracking-tight sm:text-xl ${
                 mode === 'app' ? 'text-white' : 'text-white'
               }`}>
                 {mode === 'public'
-                  ? 'Plans, credits, and billing'
-                  : 'Manage plans, credits, and billing'}
+                  ? 'Billing, credits, and checkout'
+                  : 'Manage billing, credits, and checkout'}
               </h1>
-              <p className={`mt-2 text-sm ${
+              <p className={`mt-1.5 text-[13px] leading-5 ${
                 mode === 'app' ? 'text-slate-300' : 'text-slate-300'
               }`}>
                 Choose the plan that fits your workflow, add credits when you need extra volume, and confirm pricing before checkout.
@@ -442,23 +464,23 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
             </div>
 
             {mode === 'app' && walletSummary ? (
-              <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
-                <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-3 py-2">
+              <div className="grid w-full grid-cols-3 gap-1.5 text-[11px]">
+                <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-2.5 py-1.5">
                   <div className="text-slate-400">Spendable</div>
-                  <div className="mt-1 font-semibold text-slate-100">{formatNumber(walletSummary.spendableVf)} VF</div>
-                  {walletSummary.hasUnlimitedAccess ? <div className="mt-1 text-[10px] text-emerald-300">Unlimited access active</div> : null}
+                  <div className="mt-0.5 font-semibold text-slate-100">{formatNumber(walletSummary.spendableVf)} VF</div>
+                  {walletSummary.hasUnlimitedAccess ? <div className="mt-0.5 text-[10px] text-emerald-300">Unlimited access active</div> : null}
                 </div>
-                <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-3 py-2">
+                <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-2.5 py-1.5">
                   <div className="text-slate-400">Monthly free</div>
-                  <div className="mt-1 font-semibold text-slate-100">{formatNumber(walletSummary.monthlyFree)} VF</div>
+                  <div className="mt-0.5 font-semibold text-slate-100">{formatNumber(walletSummary.monthlyFree)} VF</div>
                 </div>
-                <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-3 py-2">
+                <div className="rounded-xl border border-slate-700 bg-slate-900/65 px-2.5 py-1.5">
                   <div className="text-slate-400">Paid credits</div>
-                  <div className="mt-1 font-semibold text-slate-100">{formatNumber(walletSummary.paidBalance)} VF</div>
+                  <div className="mt-0.5 font-semibold text-slate-100">{formatNumber(walletSummary.paidBalance)} VF</div>
                 </div>
               </div>
             ) : (
-              <div className={`rounded-2xl border px-4 py-3 text-xs font-semibold ${
+              <div className={`rounded-2xl border px-3.5 py-2.5 text-[11px] font-semibold ${
                 mode === 'app'
                   ? 'border-cyan-300/25 bg-cyan-500/10 text-cyan-100'
                   : 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
@@ -470,13 +492,13 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
         </header>
 
         {banner ? (
-          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${bannerToneClass}`}>
+          <div className={`mt-3 rounded-xl border px-3.5 py-2.5 text-[13px] ${bannerToneClass}`}>
             {banner.message}
           </div>
         ) : null}
 
         {error ? (
-          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
+          <div className={`mt-3 rounded-xl border px-3.5 py-2.5 text-[13px] ${
             mode === 'app'
               ? 'border-rose-300/35 bg-rose-500/10 text-rose-100'
               : 'border-rose-300/35 bg-rose-500/12 text-rose-100'
@@ -485,35 +507,33 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           </div>
         ) : null}
 
-        <main className={`mt-4 rounded-2xl border p-3 shadow-[0_18px_44px_rgba(2,6,23,0.42)] backdrop-blur sm:p-4 ${
+        <main className={`mt-3 rounded-2xl border p-2.5 shadow-[0_18px_44px_rgba(2,6,23,0.42)] backdrop-blur sm:p-3 ${
           mode === 'app'
             ? 'border-slate-700/70 bg-slate-950/70'
             : 'border-white/10 bg-slate-950/68'
         }`}>
-          <div className={`grid grid-cols-1 gap-2 rounded-xl border p-2 sm:inline-grid ${
-            couponEnabled ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
-          } ${
+          <div className={`grid w-full grid-cols-3 gap-1.5 rounded-xl border p-1.5 ${
             mode === 'app'
               ? 'border-slate-700 bg-slate-900/60'
               : 'border-white/10 bg-white/[0.04]'
           }`} {...managedTabs.listProps}>
             {visibleTabs.map((tab) => {
-              const Icon = tab === 'plans' ? CreditCard : tab === 'token' ? Coins : Ticket;
+              const Icon = tab === 'plans' ? CreditCard : tab === 'token' ? Coins : Sparkles;
               const isActive = activeTab === tab;
               return (
                 <button
                   key={tab}
                   type="button"
                   {...managedTabs.getTabProps(tab)}
-                    className={`inline-flex min-h-11 items-center justify-center rounded-lg px-3 py-2 text-[13px] font-semibold transition sm:text-xs ${
-                      isActive
-                        ? (mode === 'app' ? 'bg-cyan-500/18 text-cyan-100' : 'bg-white/10 text-white shadow-[0_10px_24px_rgba(2,6,23,0.28)]')
-                        : (mode === 'app' ? 'bg-slate-900/70 text-slate-200 hover:bg-slate-800' : 'text-slate-300 hover:bg-white/5 hover:text-white')
+                  className={`inline-flex min-h-10 items-center justify-center rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition sm:text-xs ${
+                    isActive
+                      ? (mode === 'app' ? 'bg-cyan-500/18 text-cyan-100' : 'bg-white/10 text-white shadow-[0_10px_24px_rgba(2,6,23,0.28)]')
+                      : (mode === 'app' ? 'bg-slate-900/70 text-slate-200 hover:bg-slate-800' : 'text-slate-300 hover:bg-white/5 hover:text-white')
                   }`}
                 >
-                  <span className="inline-flex items-center gap-1">
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap">
                     <Icon size={13} />
-                    {tab === 'plans' ? 'Plans' : tab === 'token' ? 'Credit Packs' : 'Promo Code'}
+                    {tab === 'plans' ? 'Plans' : tab === 'token' ? 'Credit Packs' : 'VC Packs'}
                   </span>
                 </button>
               );
@@ -521,26 +541,26 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
           </div>
 
           {activeTab === 'plans' ? (
-            <section className="mt-4">
-              <div className={`mb-3 flex items-center gap-2 text-sm font-semibold ${
+            <section className="mt-3">
+              <div className={`mb-2.5 flex items-center gap-2 text-[13px] font-semibold ${
                 mode === 'app' ? 'text-slate-100' : 'text-white'
               }`}>
-                <CreditCard size={15} />
+                <CreditCard size={14} />
                 Plans
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-5">
                 {BILLING_PLAN_ROWS.map((plan) => {
                   const effectiveRate = Math.round((plan.priceInr / Math.max(1, plan.vfCredits)) * 10000);
                   return (
-                    <article key={plan.key} className={`rounded-xl border p-3 ${
+                    <article key={plan.key} className={`rounded-xl border p-2.5 ${
                       mode === 'app'
                         ? 'border-slate-700 bg-slate-900/60'
                         : 'border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.66),rgba(7,12,24,0.92))]'
                     }`}>
-                      <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start justify-between gap-2">
                         <div>
-                          <div className={`text-sm font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{plan.name}</div>
-                          <div className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                          <div className={`text-[13px] font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{plan.name}</div>
+                          <div className={`mt-0.5 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
                             mode === 'app'
                               ? 'border-cyan-400/35 bg-cyan-500/12 text-cyan-100'
                               : 'border-cyan-400/30 bg-cyan-500/10 text-cyan-100'
@@ -548,12 +568,12 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                             {formatNumber(plan.vfCredits)} VF
                           </div>
                         </div>
-                        <div className={`text-sm font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>
+                        <div className={`text-[13px] font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>
                           {formatInr(plan.priceInr)}
                         </div>
                       </div>
 
-                      <div className={`mt-2 text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
+                      <div className={`mt-1.5 text-[10px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
                         Effective: {formatInr(effectiveRate)} / 10k VF
                       </div>
 
@@ -561,7 +581,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                         type="button"
                         onClick={() => void handlePlanCheckout(plan.key)}
                         disabled={Boolean(loadingKey)}
-                        className={`mt-3 inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                        className={`mt-2.5 inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                           mode === 'app'
                             ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
                             : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
@@ -574,39 +594,22 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   );
                 })}
               </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <input
-                  value={couponCode}
-                  onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
-                  placeholder="Optional promo code"
-                  className={`min-h-11 w-full rounded-lg border px-4 text-[13px] sm:w-72 ${
-                    mode === 'app'
-                      ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500'
-                      : 'border-white/10 bg-black/20 text-slate-100 placeholder:text-slate-500'
-                  }`}
-                />
-                {mode === 'public' ? (
-                  <a href={publicSignInUrl} className="inline-flex min-h-11 items-center text-[13px] font-semibold text-cyan-200 transition hover:text-white">
-                    Already have an account? Sign in
-                  </a>
-                ) : null}
-              </div>
             </section>
           ) : null}
 
           {activeTab === 'token' ? (
-            <section className={`mt-4 rounded-xl border p-3 ${
+            <section className={`mt-3 rounded-xl border p-2.5 ${
               mode === 'app'
                 ? 'border-slate-700/60 bg-transparent'
                 : 'border-white/10 bg-white/[0.04]'
             }`}>
-              <div className={`flex items-center gap-2 text-sm font-semibold ${
+              <div className={`flex items-center gap-2 text-[13px] font-semibold ${
                 mode === 'app' ? 'text-slate-100' : 'text-white'
               }`}>
-                <Wallet size={15} />
+                <Wallet size={14} />
                 Credit Packs
               </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="mt-2.5 grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-5">
                 {BILLING_TOKEN_PACK_ROWS.map((pack) => {
                   const isSelected = selectedPack === pack.key;
                   const effectiveRate = Math.round((pack.priceInr / Math.max(1, pack.vf)) * 10000);
@@ -615,7 +618,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                       key={pack.key}
                       type="button"
                       onClick={() => setSelectedPack(pack.key)}
-                      className={`min-h-11 rounded-xl border px-4 py-3 text-left transition ${
+                      className={`min-h-10 rounded-xl border px-3.5 py-2.5 text-left transition ${
                         isSelected
                           ? (mode === 'app'
                               ? 'border-cyan-300/65 bg-cyan-500/18 shadow-[0_8px_18px_rgba(6,182,212,0.16)]'
@@ -628,12 +631,12 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div>
-                          <div className={`text-sm font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{pack.label}</div>
-                          <div className={`text-xs ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>{formatNumber(pack.vf)} VF</div>
+                          <div className={`text-[13px] font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{pack.label}</div>
+                          <div className={`text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>{formatNumber(pack.vf)} VF</div>
                         </div>
-                        <div className={`text-sm font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>{formatInr(pack.priceInr)}</div>
+                        <div className={`text-[13px] font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>{formatInr(pack.priceInr)}</div>
                       </div>
-                      <div className={`mt-2 text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
+                      <div className={`mt-1.5 text-[10px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
                         Effective: {formatInr(effectiveRate)} / 10k VF
                       </div>
                     </button>
@@ -641,14 +644,14 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                 })}
               </div>
               <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <p className={`text-xs ${mode === 'app' ? 'text-slate-300' : 'text-slate-300'}`}>
+                <p className={`text-[11px] ${mode === 'app' ? 'text-slate-300' : 'text-slate-300'}`}>
                   Selected: <span className={`font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{selectedPackSummary.label}</span> - {formatNumber(selectedPackSummary.vf)} VF for {formatInr(selectedPackSummary.priceInr)}.
                 </p>
                 <button
                   type="button"
                   onClick={() => void handleTokenCheckout()}
                   disabled={Boolean(loadingKey)}
-                  className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                     mode === 'app'
                       ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
                       : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
@@ -662,7 +665,7 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
                   <ArrowRight size={14} />
                 </button>
               </div>
-              <div className={`mt-4 rounded-xl border px-4 py-3 text-xs ${
+              <div className={`mt-3 rounded-xl border px-3.5 py-2.5 text-[11px] ${
                 mode === 'app'
                   ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
                   : 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
@@ -672,28 +675,80 @@ export const BillingSurface: React.FC<BillingSurfaceProps> = ({
             </section>
           ) : null}
 
-          {couponEnabled && activeTab === 'coupon' ? (
-            <section className="mt-4 rounded-xl border border-slate-700 bg-slate-900/60 p-3">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
-                <Sparkles size={15} />
-                Promo Code
+          {activeTab === 'vc' ? (
+            <section className={`mt-3 rounded-xl border p-2.5 ${
+              mode === 'app'
+                ? 'border-slate-700/60 bg-transparent'
+                : 'border-white/10 bg-white/[0.04]'
+            }`}>
+              <div className={`flex items-center gap-2 text-[13px] font-semibold ${
+                mode === 'app' ? 'text-slate-100' : 'text-white'
+              }`}>
+                <Sparkles size={14} />
+                VC Packs
               </div>
-              <p className="mt-2 text-xs text-slate-400">Redeem a promo code to add credits directly to your account.</p>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                <input
-                  value={couponCode}
-                  onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
-                  placeholder="Enter promo code"
-                  className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 text-[13px] text-slate-100 placeholder:text-slate-500"
-                />
+              <div className="mt-2.5 grid gap-1.5">
+                {BILLING_VC_PACK_ROWS.map((pack) => {
+                  const isSelected = selectedVcPack === pack.key;
+                  const effectiveRate = Math.round((pack.priceInr / Math.max(1, pack.vc)) * 10000);
+                  return (
+                    <button
+                      key={pack.key}
+                      type="button"
+                      onClick={() => setSelectedVcPack(pack.key)}
+                      className={`min-h-10 rounded-xl border px-3.5 py-2.5 text-left transition ${
+                        isSelected
+                          ? (mode === 'app'
+                              ? 'border-cyan-300/65 bg-cyan-500/18 shadow-[0_8px_18px_rgba(6,182,212,0.16)]'
+                              : 'border-cyan-300/55 bg-cyan-500/14 shadow-[0_10px_24px_rgba(34,211,238,0.16)]')
+                          : (mode === 'app'
+                              ? 'border-slate-700 bg-slate-950/70 hover:border-cyan-400/35 hover:bg-cyan-500/10'
+                              : 'border-white/10 bg-black/20 hover:border-cyan-300/35 hover:bg-cyan-500/10')
+                      }`}
+                      aria-pressed={isSelected}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className={`text-[13px] font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{pack.label}</div>
+                          <div className={`text-[11px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>{formatNumber(pack.vc)} VC</div>
+                        </div>
+                        <div className={`text-[13px] font-bold ${mode === 'app' ? 'text-white' : 'text-white'}`}>{formatInr(pack.priceInr)}</div>
+                      </div>
+                      <div className={`mt-1.5 text-[10px] ${mode === 'app' ? 'text-slate-400' : 'text-slate-400'}`}>
+                        Effective: {formatInr(effectiveRate)} / 10k VC
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <p className={`text-[11px] ${mode === 'app' ? 'text-slate-300' : 'text-slate-300'}`}>
+                  Selected: <span className={`font-semibold ${mode === 'app' ? 'text-slate-100' : 'text-white'}`}>{selectedVcPackSummary.label}</span> - {formatNumber(selectedVcPackSummary.vc)} VC for {formatInr(selectedVcPackSummary.priceInr)}.
+                </p>
                 <button
                   type="button"
-                  onClick={() => void handleRedeemCoupon()}
-                  disabled={loadingKey === 'coupon'}
-                  className="inline-flex min-h-11 items-center justify-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-4 py-2.5 text-[13px] font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => void handleVcCheckout()}
+                  disabled={Boolean(loadingKey)}
+                  className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                    mode === 'app'
+                      ? 'border border-cyan-400/35 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25'
+                      : 'border border-cyan-400/30 bg-cyan-500/12 text-cyan-50 hover:bg-cyan-500/22'
+                  }`}
                 >
-                  {loadingKey === 'coupon' ? 'Redeeming...' : hasActiveAuthSession ? 'Redeem' : authContinueLabel}
+                  {loadingKey === `vc:${selectedVcPack}`
+                    ? 'Starting checkout...'
+                    : hasActiveAuthSession
+                      ? `Checkout ${selectedVcPackSummary.label} VC pack`
+                      : authContinueLabel}
+                  <ArrowRight size={14} />
                 </button>
+              </div>
+              <div className={`mt-3 rounded-xl border px-3.5 py-2.5 text-[11px] ${
+                mode === 'app'
+                  ? 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
+                  : 'border-emerald-300/25 bg-emerald-500/10 text-emerald-100'
+              }`}>
+                VC pack pricing, validity, and renewal terms are confirmed before checkout is completed.
               </div>
             </section>
           ) : null}

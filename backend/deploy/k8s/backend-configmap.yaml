@@ -45,6 +45,7 @@ data:
   VF_GEMINI_RUNTIME_URL: "http://voiceflow-gemini-runtime.voiceflow.svc.cluster.local:7810"
   VF_DUNO_RUNTIME_URL: "https://api.deepinfra.com/v1"
   VF_DUNO_RUNTIME_MODEL: "ResembleAI/chatterbox-turbo"
+  VF_OPENVOICE_MODAL_RUNTIME_URL: "https://your-openvoice-modal-endpoint"
   VF_OPENVOICE_RUNTIME_URL: "https://your-openvoice-modal-endpoint"
   VF_WHISPER_DEVICE: "cpu"
   VF_WHISPER_COMPUTE: "int8"

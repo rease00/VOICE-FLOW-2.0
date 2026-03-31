@@ -31,29 +31,41 @@
   --vf-radius-xl: 1.5rem;
   --vf-shadow-soft: 0 6px 20px rgba(15, 35, 55, 0.08);
   --vf-shadow-card: 0 12px 30px rgba(15, 35, 55, 0.14);
+  --vf-glass-panel: rgba(255, 255, 255, 0.7);
+  --vf-glass-panel-strong: rgba(255, 255, 255, 0.86);
+  --vf-glass-panel-soft: rgba(255, 255, 255, 0.5);
+  --vf-glass-border: rgba(148, 163, 184, 0.24);
+  --vf-glass-highlight: rgba(255, 255, 255, 0.16);
+  --vf-glass-blur: 18px;
   --vf-motion-fast: 140ms;
   --vf-motion-base: 220ms;
   --vf-motion-slow: 360ms;
 }
 
 body.theme-dark {
-  --vf-color-bg: #101820;
-  --vf-color-bg-deep: #0a1117;
-  --vf-color-surface: #17232d;
-  --vf-color-surface-2: #1d2c37;
-  --vf-color-border: #2b3c49;
-  --vf-color-text: #f5f7fa;
-  --vf-color-text-muted: #b7c2ce;
+  --vf-color-bg: #09111b;
+  --vf-color-bg-deep: #050913;
+  --vf-color-surface: rgba(12, 19, 34, 0.74);
+  --vf-color-surface-2: rgba(16, 26, 44, 0.62);
+  --vf-color-border: rgba(110, 134, 171, 0.26);
+  --vf-color-text: #f4f8ff;
+  --vf-color-text-muted: #b7c5d8;
   --vf-accent-primary: #22d3ee;
-  --vf-accent-secondary: #818cf8;
+  --vf-accent-secondary: #8b5cf6;
   --vf-accent-tertiary: #f472b6;
-  --vf-accent-primary-soft: rgba(34, 211, 238, 0.22);
-  --vf-accent-secondary-soft: rgba(129, 140, 248, 0.22);
-  --vf-accent-tertiary-soft: rgba(244, 114, 182, 0.2);
-  --vf-accent-primary-glow: rgba(34, 211, 238, 0.3);
-  --vf-accent-secondary-glow: rgba(129, 140, 248, 0.28);
-  --vf-accent-tertiary-glow: rgba(244, 114, 182, 0.26);
+  --vf-accent-primary-soft: rgba(34, 211, 238, 0.2);
+  --vf-accent-secondary-soft: rgba(139, 92, 246, 0.18);
+  --vf-accent-tertiary-soft: rgba(244, 114, 182, 0.16);
+  --vf-accent-primary-glow: rgba(34, 211, 238, 0.28);
+  --vf-accent-secondary-glow: rgba(139, 92, 246, 0.24);
+  --vf-accent-tertiary-glow: rgba(244, 114, 182, 0.22);
   --vf-color-accent: var(--vf-accent-primary);
   --vf-color-accent-soft: var(--vf-accent-primary-soft);
-  --vf-color-highlight: #fb923c;
+  --vf-color-highlight: #fbbf24;
+  --vf-glass-panel: rgba(8, 16, 31, 0.66);
+  --vf-glass-panel-strong: rgba(7, 13, 25, 0.84);
+  --vf-glass-panel-soft: rgba(9, 18, 33, 0.56);
+  --vf-glass-border: rgba(125, 145, 184, 0.28);
+  --vf-glass-highlight: rgba(255, 255, 255, 0.1);
+  --vf-glass-blur: 20px;
 }

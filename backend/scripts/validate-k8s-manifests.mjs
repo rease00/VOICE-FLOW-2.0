@@ -37,6 +37,9 @@ const validateRuntimeManifest = (manifest, { runtimeName, port }) => {
   if (!has(text, /envFrom:\s*[\s\S]*secretRef:\s*[\s\S]*name:\s*voiceflow-runtime-admin/i)) {
     failures.push('Missing envFrom secretRef voiceflow-runtime-admin.');
   }
+  if (!has(text, /imagePullPolicy:\s*Always/i)) {
+    failures.push('imagePullPolicy must be Always so runtime rollouts do not reuse cached images.');
+  }
   if (runtimeName === 'gemini' && !has(text, /GEMINI_RUNTIME_ADMIN_TOKEN/i)) {
     warnings.push('GEMINI_RUNTIME_ADMIN_TOKEN not explicitly referenced in runtime-gemini manifest.');
   }
@@ -104,6 +107,9 @@ const main = async () => {
   }
   if (!has(workerText, /envFrom:\s*[\s\S]*secretRef:\s*[\s\S]*name:\s*voiceflow-runtime-admin/i)) {
     workerFailures.push('Worker missing envFrom secretRef voiceflow-runtime-admin.');
+  }
+  if (!has(workerText, /imagePullPolicy:\s*Always/i)) {
+    workerFailures.push('Worker imagePullPolicy must be Always so rollouts do not reuse cached images.');
   }
   report.checks.push({ file: 'worker-deployment.yaml', failures: workerFailures, warnings: [] });
 

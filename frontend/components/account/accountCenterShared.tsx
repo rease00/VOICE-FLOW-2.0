@@ -74,7 +74,7 @@ export const describePaymentMethod = (summary: AccountBillingSummary): string =>
   if (summary.paymentMethod?.brand && summary.paymentMethod?.last4) {
     return `${String(summary.paymentMethod.brand).toUpperCase()} ending in ${summary.paymentMethod.last4}`;
   }
-  if (summary.billing.hasBillingManagement || summary.billing.hasPortalAccess) return 'Payment method managed in the Buy center';
+  if (summary.billing.hasBillingManagement || summary.billing.hasPortalAccess) return 'Payment method managed in Billing';
   return 'No payment method on file';
 };
 

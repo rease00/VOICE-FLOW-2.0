@@ -22,9 +22,9 @@ export const UI_BRAND_THEME_CONFIGS: Record<UiBrandThemeId, UiBrandThemeConfig> 
     accent: '#22d3ee',
     accent2: '#8b5cf6',
     accent3: '#ec4899',
-    glow: 'rgba(34, 211, 238, 0.34)',
-    backdrop: 'linear-gradient(180deg, #050913 0%, #070b14 48%, #04070f 100%)',
-    surface: 'rgba(8, 14, 28, 0.82)',
+    glow: 'rgba(34, 211, 238, 0.36)',
+    backdrop: 'linear-gradient(180deg, #040913 0%, #081423 48%, #03060d 100%)',
+    surface: 'rgba(8, 14, 28, 0.86)',
   },
   aurora: {
     id: 'aurora',

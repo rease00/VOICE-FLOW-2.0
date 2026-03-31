@@ -1,5 +1,8 @@
-import { permanentRedirect } from 'next/navigation';
+import type { Metadata } from 'next';
+import { PublicLandingPage, landingMetadata } from '../../../src/features/landing/PublicLandingPage';
 
-export default function LegacyLandingPage() {
-  permanentRedirect('/');
+export const metadata: Metadata = landingMetadata;
+
+export default function LandingPage() {
+  return <PublicLandingPage />;
 }

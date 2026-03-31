@@ -182,12 +182,16 @@ const buildReaderSmokeLibrary = (items: ReaderCatalogItem[]): ReaderLibrary => (
     collections: [],
     progressStates: [],
   },
-  shelves: {
-    continueReading: [],
-    trending: [],
-    newArrivals: [],
-    recentlyImported: [],
-  },
+  shelves: (() => {
+    const importedItems = items.filter((item) => item.surface === 'uploads');
+    const primaryItems = items.filter((item) => item.surface !== 'uploads');
+    return {
+      continueReading: primaryItems.filter((item) => Boolean(item.sessionId || item.resume?.hasProgress)).slice(0, 2),
+      trending: primaryItems.slice(0, 2),
+      newArrivals: primaryItems.slice(0, 2),
+      recentlyImported: importedItems,
+    };
+  })(),
 });
 
 const mergeRestoreState = (
@@ -498,11 +502,15 @@ test('Reader import opens the player immediately and restores the saved tab afte
   const readerHome = page.getByTestId('reader-home');
   const readerTray = page.getByTestId('reader-utility-tray');
   const readerStage = page.getByTestId('reader-playback-stage');
+  const expandDockButton = page.getByLabel('Expand reader dock');
   const textTab = readerTray.getByRole('tab', { name: /^Text$/i });
 
   await page.goto('/reader', { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await expect(readerHome).toBeVisible({ timeout: 30_000 });
-  const fileInput = readerHome.locator('input[type="file"]');
+  if (await expandDockButton.isVisible().catch(() => false)) {
+    await expandDockButton.click();
+  }
+  const fileInput = page.locator('.vf-reader-v2-dock__import-input');
   await fileInput.setInputFiles({
     name: 'reader-import.txt',
     mimeType: 'text/plain',

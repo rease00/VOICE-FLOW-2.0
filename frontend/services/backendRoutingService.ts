@@ -11,7 +11,6 @@ import {
 } from './geminiRegionRouting';
 
 const LOGIN_ROUTING_SESSION_FLAG = 'vf_backend_routing_login_once_v1';
-const LOGIN_TTS_SESSION_BOOTSTRAP_FLAG = 'vf_tts_v2_login_season_pin_once_v1';
 const DEFAULT_PROBE_TIMEOUT_MS = 3500;
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 2500;
 
@@ -112,10 +111,10 @@ interface LoginRoutingResult {
   regionSource?: string;
 }
 
-export interface LoginSeasonPinBootstrapResult extends LoginRoutingResult {
+export interface LoginTtsSessionPrimeResult {
+  primed: boolean;
+  reason: string;
   sessionKey?: string;
-  sessionIssued?: boolean;
-  sessionReason?: string;
 }
 
 export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: AbortSignal }): Promise<LoginRoutingResult> => {
@@ -128,7 +127,6 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
   if (hasSessionRoutingRun()) {
     return { applied: false, reason: 'already_ran' };
   }
-  markSessionRouted();
 
   const discoveryBase = readCurrentBackendUrl();
   let payload;
@@ -159,30 +157,63 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
     return { applied: false, reason: 'no_reachable_candidates' };
   }
 
-  const candidatePool = reachable;
+  const selectedRegionFromPayload = String(payload?.selectedRegion || '').trim().toLowerCase();
+  const selectedBaseUrlFromPayload = String(payload?.selectedBaseUrl || '').trim();
+  const normalizedBaseUrls = new Set(reachable.map((candidate) => resolveApiBaseUrl(String(candidate.baseUrl || '').trim())));
+  const sharesBaseUrl = normalizedBaseUrls.size <= 1;
 
-  const probes = await Promise.all(
-    candidatePool.map(async (candidate) => {
-      const baseUrl = String(candidate.baseUrl || '').trim();
-      const rttMs = await probeCandidateRtt(baseUrl, DEFAULT_PROBE_TIMEOUT_MS, options?.signal);
-      return {
-        baseUrl,
-        region: String(candidate.region || '').trim(),
-        supportsTts: Boolean(candidate.capabilities?.supportsTts),
-        rttMs,
-      };
-    })
-  );
+  const selectionPool = sharesBaseUrl
+    ? reachable.map((candidate) => ({
+        baseUrl: resolveApiBaseUrl(String(candidate.baseUrl || '').trim()),
+        region: String(candidate.region || '').trim().toLowerCase(),
+        supportsTts: Boolean(candidate.capabilities?.supportsTts ?? true),
+        healthy: Boolean(candidate.healthy ?? candidate.probeOk ?? true),
+        queueDepth: Number.isFinite(Number(candidate.queueDepth)) ? Math.max(0, Math.floor(Number(candidate.queueDepth))) : 0,
+        oldestQueuedAgeMs: Number.isFinite(Number(candidate.oldestQueuedAgeMs))
+          ? Math.max(0, Math.floor(Number(candidate.oldestQueuedAgeMs)))
+          : 0,
+        rttMs: 0,
+      }))
+    : await Promise.all(
+        reachable.map(async (candidate) => {
+          const baseUrl = String(candidate.baseUrl || '').trim();
+          const rttMs = await probeCandidateRtt(baseUrl, DEFAULT_PROBE_TIMEOUT_MS, options?.signal);
+          return {
+            baseUrl,
+            region: String(candidate.region || '').trim().toLowerCase(),
+            supportsTts: Boolean(candidate.capabilities?.supportsTts ?? true),
+            healthy: Boolean(candidate.healthy ?? candidate.probeOk ?? true),
+            queueDepth: Number.isFinite(Number(candidate.queueDepth)) ? Math.max(0, Math.floor(Number(candidate.queueDepth))) : 0,
+            oldestQueuedAgeMs: Number.isFinite(Number(candidate.oldestQueuedAgeMs))
+              ? Math.max(0, Math.floor(Number(candidate.oldestQueuedAgeMs)))
+              : 0,
+            rttMs,
+          };
+        })
+      );
 
-  const viable = probes.filter((entry) => Number.isFinite(entry.rttMs));
+  const viable = selectionPool.filter((entry) => Boolean(entry.supportsTts) && Boolean(entry.healthy));
   if (!viable.length) {
     return { applied: false, reason: 'all_candidate_probes_failed' };
   }
 
-  const preferred = viable.filter((entry) => Boolean(entry.supportsTts));
-  const selectionPool = preferred.length > 0 ? preferred : viable;
-  selectionPool.sort((a, b) => a.rttMs - b.rttMs || a.baseUrl.localeCompare(b.baseUrl));
-  const selected = selectionPool[0];
+  viable.sort((a, b) => {
+    const aQueue = Number.isFinite(Number(a.queueDepth)) ? Number(a.queueDepth) : Number.POSITIVE_INFINITY;
+    const bQueue = Number.isFinite(Number(b.queueDepth)) ? Number(b.queueDepth) : Number.POSITIVE_INFINITY;
+    if (aQueue !== bQueue) return aQueue - bQueue;
+    const aOldest = Number.isFinite(Number(a.oldestQueuedAgeMs)) ? Number(a.oldestQueuedAgeMs) : Number.POSITIVE_INFINITY;
+    const bOldest = Number.isFinite(Number(b.oldestQueuedAgeMs)) ? Number(b.oldestQueuedAgeMs) : Number.POSITIVE_INFINITY;
+    if (aOldest !== bOldest) return aOldest - bOldest;
+    const aSelected = selectedRegionFromPayload && a.region === selectedRegionFromPayload ? 0 : 1;
+    const bSelected = selectedRegionFromPayload && b.region === selectedRegionFromPayload ? 0 : 1;
+    if (aSelected !== bSelected) return aSelected - bSelected;
+    const aRtt = Number.isFinite(Number(a.rttMs)) ? Number(a.rttMs) : Number.POSITIVE_INFINITY;
+    const bRtt = Number.isFinite(Number(b.rttMs)) ? Number(b.rttMs) : Number.POSITIVE_INFINITY;
+    if (aRtt !== bRtt) return aRtt - bRtt;
+    if (a.baseUrl !== b.baseUrl) return a.baseUrl.localeCompare(b.baseUrl);
+    return a.region.localeCompare(b.region);
+  });
+  const selected = viable[0];
   if (!selected) {
     return { applied: false, reason: 'selection_failed' };
   }
@@ -201,11 +232,13 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
   const regionSource = String(regionSelection.regionSource || '').trim();
   const routingDetail: Record<string, string> = {};
   if (selectedRegion) routingDetail.selectedRegion = selectedRegion;
+  if (selectedBaseUrlFromPayload) routingDetail.selectedBaseUrl = selectedBaseUrlFromPayload;
   if (regionHint) routingDetail.regionHint = regionHint;
   if (regionSource) routingDetail.regionSource = regionSource;
 
   const currentBase = readCurrentBackendUrl();
   const nextBase = persistBackendUrl(selected.baseUrl);
+  markSessionRouted();
   if (resolveApiBaseUrl(currentBase) === resolveApiBaseUrl(nextBase)) {
     return {
       applied: false,
@@ -235,64 +268,44 @@ export const applyNearestBackendRoutingOnLogin = async (options?: { signal?: Abo
   };
 };
 
-const hasSessionTtsBootstrapRun = (): boolean => {
-  try {
-    return sessionStorage.getItem(LOGIN_TTS_SESSION_BOOTSTRAP_FLAG) === '1';
-  } catch {
-    return false;
-  }
-};
-
-const markSessionTtsBootstrapRun = (): void => {
-  try {
-    sessionStorage.setItem(LOGIN_TTS_SESSION_BOOTSTRAP_FLAG, '1');
-  } catch {
-    // no-op
-  }
-};
-
-export const bootstrapLoginSeasonPinning = async (options?: { signal?: AbortSignal }): Promise<LoginSeasonPinBootstrapResult> => {
+export const primeLoginTtsSessionKey = async (options?: {
+  baseUrl?: string;
+  regionHint?: string;
+  regionSource?: string;
+  signal?: AbortSignal;
+}): Promise<LoginTtsSessionPrimeResult> => {
   if (typeof window === 'undefined') {
-    return { applied: false, reason: 'window_unavailable', sessionIssued: false, sessionReason: 'window_unavailable' };
+    return { primed: false, reason: 'window_unavailable' };
   }
   if (options?.signal?.aborted) {
-    throw createAbortError();
+    return { primed: false, reason: 'aborted' };
   }
-  if (hasSessionTtsBootstrapRun()) {
-    return { applied: false, reason: 'already_ran', sessionIssued: false, sessionReason: 'already_ran' };
-  }
-  markSessionTtsBootstrapRun();
 
-  const routingResult = await applyNearestBackendRoutingOnLogin(
-    options?.signal ? { signal: options.signal } : undefined
-  );
-  const baseUrl = String(routingResult.baseUrl || readCurrentBackendUrl()).trim();
+  const baseUrl = String(options?.baseUrl || readCurrentBackendUrl()).trim();
   const persistedRegionSelection = resolveGeminiRegionSelection();
-  const regionHint = String(routingResult.regionHint || persistedRegionSelection.regionHint || '').trim();
-  const regionSource = String(routingResult.regionSource || persistedRegionSelection.regionSource || '').trim();
+  const regionHint = String(options?.regionHint || persistedRegionSelection.regionHint || '').trim();
+  const regionSource = String(options?.regionSource || persistedRegionSelection.regionSource || '').trim();
 
   try {
     const sessionKey = await issueTtsV2SessionKey({
       baseUrl,
-      force: true,
       ...(regionHint ? { regionHint } : {}),
       ...(regionSource ? { regionSource } : {}),
       probeAllSlotRegions: true,
       ...(options?.signal ? { signal: options.signal } : {}),
     });
     return {
-      ...routingResult,
+      primed: true,
+      reason: 'primed',
       sessionKey,
-      sessionIssued: true,
     };
   } catch {
     if (options?.signal?.aborted) {
-      throw createAbortError();
+      return { primed: false, reason: 'aborted' };
     }
     return {
-      ...routingResult,
-      sessionIssued: false,
-      sessionReason: 'session_issue_failed',
+      primed: false,
+      reason: 'session_issue_failed',
     };
   }
 };
@@ -300,7 +313,6 @@ export const bootstrapLoginSeasonPinning = async (options?: { signal?: AbortSign
 export const clearNearestBackendRoutingState = (): void => {
   try {
     sessionStorage.removeItem(LOGIN_ROUTING_SESSION_FLAG);
-    sessionStorage.removeItem(LOGIN_TTS_SESSION_BOOTSTRAP_FLAG);
   } catch {
     // no-op
   }

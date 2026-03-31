@@ -9,7 +9,7 @@ param(
     [string]$DunoRuntimeToken = $env:VF_DUNO_RUNTIME_TOKEN,
     [string]$KokoroRuntimeUrl = $env:VF_KOKORO_RUNTIME_URL,
     [string]$KokoroRuntimeToken = $env:VF_KOKORO_RUNTIME_TOKEN,
-    [string]$OpenVoiceRuntimeUrl = $env:VF_OPENVOICE_RUNTIME_URL,
+    [string]$OpenVoiceRuntimeUrl = $env:VF_OPENVOICE_MODAL_RUNTIME_URL,
     [string]$OpenVoiceRuntimeToken = $env:VF_OPENVOICE_RUNTIME_TOKEN,
     [string]$OpenVoiceArtifactSecret = $env:VF_OPENVOICE_ARTIFACT_SECRET,
     [string]$VpcConnector = $env:VF_CLOUDRUN_VPC_CONNECTOR,
@@ -19,6 +19,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if (-not $OpenVoiceRuntimeUrl) {
+    $OpenVoiceRuntimeUrl = [string]$env:VF_OPENVOICE_RUNTIME_URL
+}
 
 function Invoke-Gcloud {
     param(
@@ -58,11 +62,41 @@ function Convert-ObjectToMap {
     return $map
 }
 
+function Convert-ToStringArray {
+    param([object]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    if ($Value -is [System.Array]) {
+        return @($Value | ForEach-Object { [string]$_ })
+    }
+    return @([string]$Value)
+}
+
+function Test-StringArrayEqual {
+    param(
+        [object]$Expected,
+        [object]$Actual
+    )
+    $expectedItems = @((Convert-ToStringArray -Value $Expected) | ForEach-Object { [string]$_ })
+    $actualItems = @((Convert-ToStringArray -Value $Actual) | ForEach-Object { [string]$_ })
+    if ($expectedItems.Count -ne $actualItems.Count) {
+        return $false
+    }
+    for ($index = 0; $index -lt $expectedItems.Count; $index++) {
+        if ([string]$expectedItems[$index] -ne [string]$actualItems[$index]) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Resolve-EnvMap {
     param(
         [hashtable]$RawMap,
         [hashtable]$RuntimeUrls,
-        [string]$RedisValue
+        [string]$RedisValue,
+        [string]$CurrentServiceName = ""
     )
     $resolved = @{}
     foreach ($key in $RawMap.Keys) {
@@ -89,6 +123,21 @@ function Resolve-EnvMap {
                 }
                 $resolved[$key] = $runtimeUrl
             }
+            "__VOICEFLOW_WORKER_URL__" {
+                $runtimeUrl = [string]$RuntimeUrls["voiceflow-worker"]
+                if (-not $runtimeUrl) {
+                    if ($DryRun) {
+                        $resolved[$key] = "https://voiceflow-worker.a.run.app"
+                        break
+                    }
+                    if ([string]$CurrentServiceName -eq "voiceflow-worker") {
+                        $resolved[$key] = ""
+                        break
+                    }
+                    throw "Worker runtime URL is not available yet."
+                }
+                $resolved[$key] = $runtimeUrl
+            }
             "__DUNO_RUNTIME_URL__" {
                 if (-not $DunoRuntimeUrl) {
                     if ($DryRun) {
@@ -111,15 +160,15 @@ function Resolve-EnvMap {
                 $resolved[$key] = [string]$KokoroRuntimeUrl
             }
             "__OPENVOICE_RUNTIME_URL__" {
-                $runtimeUrl = [string]$RuntimeUrls["voiceflow-seed-vc-runtime"]
-                if (-not $runtimeUrl) {
+                if (-not $OpenVoiceRuntimeUrl) {
                     if ($DryRun) {
-                        $resolved[$key] = "https://voiceflow-seed-vc-runtime.a.run.app"
+                        $resolved[$key] = ""
                         break
                     }
-                    throw "Seed VC runtime URL is not available yet."
+                    $resolved[$key] = ""
+                    break
                 }
-                $resolved[$key] = $runtimeUrl
+                $resolved[$key] = [string]$OpenVoiceRuntimeUrl
             }
             "__OPENVOICE_MODAL_RUNTIME_URL__" {
                 if (-not $OpenVoiceRuntimeUrl) {
@@ -289,8 +338,16 @@ if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "
             throw "Service '$serviceName' is not declared in profile contract '$Profile'."
         }
         $contractSvc = $contractServices.$serviceName
-        foreach ($field in @("cpu", "memory", "minInstances", "maxInstances", "concurrency", "cpuAlwaysAllocated")) {
+        foreach ($field in @("cpu", "memory", "minInstances", "maxInstances", "concurrency", "cpuAlwaysAllocated", "allowUnauthenticated", "ingress", "sessionAffinity", "serviceAccount", "regions")) {
             if (-not ($contractSvc.PSObject.Properties.Name -contains $field)) {
+                continue
+            }
+            if ($field -eq "regions") {
+                if (-not (Test-StringArrayEqual -Expected $contractSvc.$field -Actual $svc.$field)) {
+                    $expectedText = ((Convert-ToStringArray -Value $contractSvc.$field) -join ",")
+                    $actualText = ((Convert-ToStringArray -Value $svc.$field) -join ",")
+                    throw "Profile contract mismatch for $serviceName.$field (expected '$expectedText', found '$actualText')."
+                }
                 continue
             }
             $expected = [string]$contractSvc.$field
@@ -299,6 +356,35 @@ if ($profileContract -and ($profileContract.PSObject.Properties.Name -contains "
                 throw "Profile contract mismatch for $serviceName.$field (expected '$expected', found '$actual')."
             }
         }
+    }
+}
+
+$drainQueueName = ""
+$drainQueueLocation = ""
+foreach ($svc in $services) {
+    $envMap = Convert-ObjectToMap -InputObject $svc.env
+    if (-not $drainQueueName -and ($envMap.ContainsKey("VF_TTS_DRAIN_QUEUE_NAME"))) {
+        $drainQueueName = [string]$envMap["VF_TTS_DRAIN_QUEUE_NAME"]
+    }
+    if (-not $drainQueueLocation -and ($envMap.ContainsKey("VF_TTS_DRAIN_QUEUE_LOCATION"))) {
+        $drainQueueLocation = [string]$envMap["VF_TTS_DRAIN_QUEUE_LOCATION"]
+    }
+}
+if ($drainQueueName -and $drainQueueLocation) {
+    try {
+        Invoke-Gcloud -Arguments @(
+            "tasks", "queues", "describe", $drainQueueName,
+            "--project", $ProjectId,
+            "--location", $drainQueueLocation
+        ) | Out-Null
+    }
+    catch {
+        Write-Host "Cloud Tasks queue '$drainQueueName' not found in $drainQueueLocation. Creating..."
+        Invoke-Gcloud -Arguments @(
+            "tasks", "queues", "create", $drainQueueName,
+            "--project", $ProjectId,
+            "--location", $drainQueueLocation
+        ) | Out-Null
     }
 }
 
@@ -394,8 +480,12 @@ foreach ($svc in $deployOrder) {
     $name = [string]$svc.name
     $imageUri = [string]$imageByService[$name]
     $envMap = Convert-ObjectToMap -InputObject $svc.env
-    $resolvedEnvMap = Resolve-EnvMap -RawMap $envMap -RuntimeUrls $runtimeUrls -RedisValue $RedisUrl
+    $resolvedEnvMap = Resolve-EnvMap -RawMap $envMap -RuntimeUrls $runtimeUrls -RedisValue $RedisUrl -CurrentServiceName $name
     $secretEnvMap = Convert-ObjectToMap -InputObject $svc.secretEnv
+    $regions = @()
+    if ($svc.PSObject.Properties.Name -contains "regions") {
+        $regions = Convert-ToStringArray -Value $svc.regions
+    }
     $serviceAccount = ""
     if ($svc.PSObject.Properties.Name -contains "serviceAccount") {
         $serviceAccount = [string]$svc.serviceAccount
@@ -419,21 +509,39 @@ foreach ($svc in $deployOrder) {
         $startupCpuBoost = [bool]$svc.startupCpuBoost
     }
     $hasCpuAlwaysAllocated = $svc.PSObject.Properties.Name -contains "cpuAlwaysAllocated"
-
-    $deployArgs = @(
-        "run", "deploy", $name,
-        "--project", $ProjectId,
-        "--region", $Region,
-        "--platform", "managed",
-        "--image", $imageUri,
-        "--port", "8080",
-        "--ingress", [string]$svc.ingress,
-        "--min-instances", [string]$svc.minInstances,
-        "--max-instances", [string]$svc.maxInstances,
-        "--concurrency", [string]$svc.concurrency,
-        "--cpu", [string]$svc.cpu,
-        "--memory", [string]$svc.memory
-    )
+    $isMultiRegion = $regions.Count -gt 1
+    if ($isMultiRegion) {
+        $deployArgs = @(
+            "run", "deploy", $name,
+            "--project", $ProjectId,
+            "--platform", "managed",
+            "--image", $imageUri,
+            "--port", "8080",
+            "--ingress", [string]$svc.ingress,
+            "--min-instances", [string]$svc.minInstances,
+            "--max-instances", [string]$svc.maxInstances,
+            "--concurrency", [string]$svc.concurrency,
+            "--cpu", [string]$svc.cpu,
+            "--memory", [string]$svc.memory,
+            "--regions", ($regions -join ",")
+        )
+    }
+    else {
+        $deployArgs = @(
+            "run", "deploy", $name,
+            "--project", $ProjectId,
+            "--region", $Region,
+            "--platform", "managed",
+            "--image", $imageUri,
+            "--port", "8080",
+            "--ingress", [string]$svc.ingress,
+            "--min-instances", [string]$svc.minInstances,
+            "--max-instances", [string]$svc.maxInstances,
+            "--concurrency", [string]$svc.concurrency,
+            "--cpu", [string]$svc.cpu,
+            "--memory", [string]$svc.memory
+        )
+    }
 
     $gpuCount = 0
     if ($svc.PSObject.Properties.Name -contains "gpuCount") {
@@ -468,6 +576,15 @@ foreach ($svc in $deployOrder) {
     }
     else {
         $deployArgs += "--no-allow-unauthenticated"
+    }
+
+    if ($svc.PSObject.Properties.Name -contains "sessionAffinity") {
+        if ([bool]$svc.sessionAffinity) {
+            $deployArgs += "--session-affinity"
+        }
+        else {
+            $deployArgs += "--no-session-affinity"
+        }
     }
 
     if ($hasCpuAlwaysAllocated) {
@@ -516,23 +633,42 @@ foreach ($svc in $deployOrder) {
     Write-Host "Deploying service: $name"
     Invoke-Gcloud -Arguments $deployArgs | Out-Null
 
-    $url = Invoke-Gcloud -Capture -Arguments @(
-        "run", "services", "describe", $name,
-        "--project", $ProjectId,
-        "--region", $Region,
-        "--format", "value(status.url)"
-    )
+    $url = ""
+    if ($isMultiRegion) {
+        $url = Invoke-Gcloud -Capture -Arguments @(
+            "run", "multi-region-services", "describe", $name,
+            "--project", $ProjectId,
+            "--format", "value(status.url)"
+        )
+    }
+    else {
+        $url = Invoke-Gcloud -Capture -Arguments @(
+            "run", "services", "describe", $name,
+            "--project", $ProjectId,
+            "--region", $Region,
+            "--format", "value(status.url)"
+        )
+    }
 
     if ($url) {
         Write-Host "Service URL: $name => $url"
         $runtimeUrls[$name] = $url
+        if ($name -eq "voiceflow-worker" -and $envMap.ContainsKey("VF_TTS_DRAIN_WORKER_URL") -and [string]$envMap["VF_TTS_DRAIN_WORKER_URL"] -eq "__VOICEFLOW_WORKER_URL__") {
+            Write-Host "Updating worker drain URL to the deployed Cloud Run URL..."
+            Invoke-Gcloud -Arguments @(
+                "run", "services", "update", $name,
+                "--project", $ProjectId,
+                "--region", $Region,
+                "--update-env-vars", "VF_TTS_DRAIN_WORKER_URL=$url"
+            ) | Out-Null
+        }
     }
 }
 
 Write-Host ""
 Write-Host "Cloud Run deployment completed."
 Write-Host "Runtime URLs:"
-foreach ($key in @("voiceflow-seed-vc-runtime", "voiceflow-gemini-runtime")) {
+foreach ($key in @("voiceflow-gemini-runtime")) {
     $value = [string]$runtimeUrls[$key]
     if ($value) {
         Write-Host "  $key = $value"
